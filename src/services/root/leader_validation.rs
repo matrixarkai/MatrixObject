@@ -6,7 +6,7 @@ impl MatrixRootService {
                 "root leader lease ttl must be positive".to_string(),
             ));
         }
-        if ttl_ms > self.placement_coordinator_config.session_ttl_ms {
+        if ttl_ms > self.coordinator_config.session_ttl_ms {
             return Err(ObjectError::InvalidArgument(
                 "root leader lease ttl exceeds configured coordinator session ttl".to_string(),
             ));
@@ -19,9 +19,9 @@ impl MatrixRootService {
                 "root leader candidate is not an active rootserver".to_string(),
             ));
         }
-        if !is_embedded_coordinator_backend(&self.placement_coordinator_config.backend)
+        if !is_embedded_coordinator_backend(&self.coordinator_config.backend)
             && !self
-                .placement_coordinator_config
+                .coordinator_config
                 .endpoints
                 .iter()
                 .any(|endpoint| endpoint == &node.endpoint)

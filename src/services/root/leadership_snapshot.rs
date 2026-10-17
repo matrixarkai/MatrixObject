@@ -55,7 +55,7 @@ impl MatrixRootService {
             operation: "campaign".to_string(),
             request_checksum,
             lease: lease.clone(),
-            commit_index: self.placement_commit_index.saturating_sub(1),
+            commit_index: self.next_commit_index.saturating_sub(1),
             update_time_ms: now_ms,
             receipt_proof_checksum: String::new(),
         };
@@ -118,7 +118,7 @@ impl MatrixRootService {
             operation: "renew".to_string(),
             request_checksum,
             lease: lease.clone(),
-            commit_index: self.placement_commit_index.saturating_sub(1),
+            commit_index: self.next_commit_index.saturating_sub(1),
             update_time_ms: now_ms,
             receipt_proof_checksum: String::new(),
         };
@@ -191,14 +191,14 @@ impl MatrixRootService {
         Ok(page)
     }
 
-    pub fn export_snapshot(&self) -> RootSnapshot {
+    pub fn export_placement_snapshot(&self) -> RootSnapshot {
         let mut snapshot = RootSnapshot {
             nodes: self.nodes.clone(),
             placements: self.placements.clone(),
             leader_lease: self.leader_lease.clone(),
             leader_lease_receipts: self.leader_lease_receipts.clone(),
-            coordinator_config: self.placement_coordinator_config.clone(),
-            next_commit_index: self.placement_commit_index,
+            coordinator_config: self.coordinator_config.clone(),
+            next_commit_index: self.next_commit_index,
             checksum: String::new(),
         };
         snapshot.checksum = snapshot.checksum_material_hash();
@@ -209,7 +209,7 @@ impl MatrixRootService {
         if let Some(fingerprint) = self.root_state_fingerprint_cache.borrow().as_ref() {
             return fingerprint.clone();
         }
-        let snapshot = self.export_snapshot();
+        let snapshot = self.export_placement_snapshot();
         let leader_node_id = snapshot
             .leader_lease
             .as_ref()
@@ -244,32 +244,32 @@ impl MatrixRootService {
     fn snapshot_cache_stamp(&self) -> String {
         format!(
             "root-commit:{}:{}:{}:{}",
-            self.placement_commit_index,
+            self.next_commit_index,
             self.nodes.len(),
             self.placements.len(),
             self.leader_lease_receipts.len()
         )
     }
 
-    fn export_snapshot_image(&self) -> Result<RootSnapshotExportCache, ObjectError> {
+    fn export_placement_snapshot_image(&self) -> Result<RootSnapshotExportCache, ObjectError> {
         let stamp = self.snapshot_cache_stamp();
-        if let Some(cache) = self.placement_snapshot_export_cache.borrow().as_ref() {
+        if let Some(cache) = self.snapshot_export_cache.borrow().as_ref() {
             if cache.stamp == stamp {
                 return Ok(cache.clone());
             }
         }
-        let snapshot = self.export_snapshot();
+        let snapshot = self.export_placement_snapshot();
         let bytes = snapshot.to_bytes()?;
         let cache = RootSnapshotExportCache {
             stamp,
             checksum: etag(&bytes),
             bytes: std::sync::Arc::from(bytes.into_boxed_slice()),
         };
-        *self.placement_snapshot_export_cache.borrow_mut() = Some(cache.clone());
+        *self.snapshot_export_cache.borrow_mut() = Some(cache.clone());
         Ok(cache)
     }
 
-    pub fn export_snapshot_chunk(
+    pub fn export_placement_snapshot_chunk(
         &self,
         offset: u64,
         max_payload_bytes: usize,
@@ -279,7 +279,7 @@ impl MatrixRootService {
                 "root snapshot chunk budget must be positive".to_string(),
             ));
         }
-        let image = self.export_snapshot_image()?;
+        let image = self.export_placement_snapshot_image()?;
         let chunk = export_root_snapshot_chunk_bytes_with_checksum(
             image.bytes.as_ref(),
             &image.checksum,
@@ -287,7 +287,7 @@ impl MatrixRootService {
             max_payload_bytes,
         )?;
         if chunk.eof {
-            let mut cache = self.placement_snapshot_export_cache.borrow_mut();
+            let mut cache = self.snapshot_export_cache.borrow_mut();
             if cache
                 .as_ref()
                 .map(|cached| cached.stamp == image.stamp)
@@ -299,25 +299,25 @@ impl MatrixRootService {
         Ok(chunk)
     }
 
-    pub fn install_snapshot(&mut self, snapshot: RootSnapshot) -> Result<(), ObjectError> {
+    pub fn install_placement_snapshot(&mut self, snapshot: RootSnapshot) -> Result<(), ObjectError> {
         snapshot.validate()?;
         self.invalidate_snapshot_export_cache();
         self.nodes = snapshot.nodes;
         self.placements = snapshot.placements;
         self.leader_lease = snapshot.leader_lease;
         self.leader_lease_receipts = snapshot.leader_lease_receipts;
-        self.placement_coordinator_config = snapshot.coordinator_config;
-        self.placement_commit_index = snapshot.next_commit_index;
+        self.coordinator_config = snapshot.coordinator_config;
+        self.next_commit_index = snapshot.next_commit_index;
         Ok(())
     }
 
-    pub fn install_snapshot_bytes(&mut self, bytes: &[u8]) -> Result<RootSnapshot, ObjectError> {
+    pub fn install_placement_snapshot_bytes(&mut self, bytes: &[u8]) -> Result<RootSnapshot, ObjectError> {
         let snapshot = RootSnapshot::from_bytes(bytes)?;
-        self.install_snapshot(snapshot.clone())?;
+        self.install_placement_snapshot(snapshot.clone())?;
         Ok(snapshot)
     }
 
-    pub fn install_snapshot_bytes_in_place(&mut self, bytes: &[u8]) -> Result<(), ObjectError> {
-        self.install_snapshot(RootSnapshot::from_bytes(bytes)?)
+    pub fn install_placement_snapshot_bytes_in_place(&mut self, bytes: &[u8]) -> Result<(), ObjectError> {
+        self.install_placement_snapshot(RootSnapshot::from_bytes(bytes)?)
     }
 }
