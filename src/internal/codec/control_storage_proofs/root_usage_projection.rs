@@ -7,18 +7,18 @@ pub(crate) fn root_node_usage(
     referenced_bytes: u64,
 ) -> RootNodeUsage {
     let free_bytes = node.capacity_bytes.saturating_sub(node.committed_bytes);
-    let reported_free_bytes = MatrixRootService::node_effective_free_bytes(node);
+    let reported_free_bytes = MatrixMetaService::node_effective_free_bytes(node);
     let committed_vs_reported_delta_bytes = node.committed_bytes.abs_diff(node.used_bytes);
     let reclaimable_bytes = node.used_bytes.saturating_sub(node.committed_bytes);
     let overcommitted_bytes = node.committed_bytes.saturating_sub(node.used_bytes);
-    let data_service = MatrixRootService::is_data_service_node(node);
+    let data_service = MatrixMetaService::is_data_service_node(node);
     let chunk_reclaim_pressure = node.chunk_health.reclaimable_bytes > 0
         || node.chunk_health.trailing_trim_bytes > 0
         || node.chunk_health.discarded_range_count > 0
         || node.chunk_health.fragmented_chunk_count > 0
         || node.chunk_health.fragmented_discarded_bytes > 0;
-    let placement_eligible = MatrixRootService::node_accepts_new_placement(node)
-        && node.committed_bytes <= MatrixRootService::node_effective_capacity_bytes(node)
+    let placement_eligible = MatrixMetaService::node_accepts_new_placement(node)
+        && node.committed_bytes <= MatrixMetaService::node_effective_capacity_bytes(node)
         && (min_free_bytes == 0 || reported_free_bytes >= min_free_bytes);
     let effective_reclaimable_bytes = reclaimable_bytes.max(node.chunk_health.reclaimable_bytes);
     let reclaim_pressure = data_service

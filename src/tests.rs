@@ -7050,7 +7050,7 @@ fn rootserver_plans_capacity_and_persists_placements() {
 
 #[test]
 fn rootserver_snapshot_chunks_restore_replacement_nodes() {
-    let mut root = MatrixRootService::new();
+    let mut root = MatrixMetaService::new();
     root.register_node(root_node("chunk-a", "rack-a", 100))
         .unwrap();
     root.register_node(root_node("chunk-b", "rack-b", 100))
@@ -7244,7 +7244,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
         meta_health.control_proof.state_bytes
     );
 
-    let mut replacement = MatrixRootService::new();
+    let mut replacement = MatrixMetaService::new();
     let restored = replacement.install_placement_snapshot_bytes(&snapshot_bytes).unwrap();
     assert_eq!(restored.next_commit_index, snapshot.next_commit_index);
     assert_eq!(
@@ -7292,7 +7292,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
 
 #[test]
 fn rootserver_leader_lease_is_fenced_and_snapshotted() {
-    let mut root = MatrixRootService::new();
+    let mut root = MatrixMetaService::new();
     root.register_node(RootNode {
         node_id: "root-a".to_string(),
         endpoint: "root-a.local:9100".to_string(),
@@ -7392,7 +7392,7 @@ fn rootserver_leader_lease_is_fenced_and_snapshotted() {
     );
     assert_eq!(snapshot.leader_lease_receipts.len(), 2);
     let bytes = snapshot.to_bytes().unwrap();
-    let mut restored = MatrixRootService::new();
+    let mut restored = MatrixMetaService::new();
     restored.install_placement_snapshot_bytes(&bytes).unwrap();
     assert_eq!(
         restored.leader_lease().unwrap(),
@@ -7732,7 +7732,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
 
 #[test]
 fn rootserver_raft_status_exposes_service_coverage() {
-    let mut root = MatrixRootService::new();
+    let mut root = MatrixMetaService::new();
     root.register_node(RootNode {
         node_id: "root-a".to_string(),
         endpoint: "root-a.local:9100".to_string(),
@@ -7865,7 +7865,7 @@ fn rootserver_raft_status_exposes_service_coverage() {
 
 #[test]
 fn rootserver_tracks_page_allocator_shard_coverage() {
-    let mut root = MatrixRootService::new();
+    let mut root = MatrixMetaService::new();
     root.register_node(pageserver_root_node("block-a", "rack-a", 0, 2))
         .unwrap();
     let incomplete = root.page_allocator_shard_coverage();
@@ -7899,7 +7899,7 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
 
     let snapshot = root.export_placement_snapshot();
     let bytes = snapshot.to_bytes().unwrap();
-    let mut restored = MatrixRootService::new();
+    let mut restored = MatrixMetaService::new();
     restored.install_placement_snapshot_bytes(&bytes).unwrap();
     assert_eq!(restored.page_allocator_shard_coverage(), complete);
 
@@ -7958,7 +7958,7 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
 
 #[test]
 fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
-    let mut root = MatrixRootService::new();
+    let mut root = MatrixMetaService::new();
     assert_eq!(root.pageserver_service_coverage().status, "none");
 
     let mut page_a = pageserver_root_node("block-a", "rack-a", 0, 2);
@@ -8008,7 +8008,7 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
 
     let snapshot = root.export_placement_snapshot();
     let bytes = snapshot.to_bytes().unwrap();
-    let mut restored = MatrixRootService::new();
+    let mut restored = MatrixMetaService::new();
     restored.install_placement_snapshot_bytes(&bytes).unwrap();
     assert_eq!(restored.pageserver_service_coverage(), degraded);
 
@@ -8112,7 +8112,7 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
 
 #[test]
 fn rootserver_tracks_chunkserver_coverage_for_write_routing() {
-    let mut root = MatrixRootService::new();
+    let mut root = MatrixMetaService::new();
     assert_eq!(root.chunkserver_coverage(8).status, "none");
 
     let mut non_data = root_node("chunk-non-data", "rack-z", 64);
@@ -8125,7 +8125,7 @@ fn rootserver_tracks_chunkserver_coverage_for_write_routing() {
     ));
     let snapshot = root.export_placement_snapshot();
     let bytes = snapshot.to_bytes().unwrap();
-    let mut restored = MatrixRootService::new();
+    let mut restored = MatrixMetaService::new();
     restored.install_placement_snapshot_bytes(&bytes).unwrap();
     assert_eq!(
         restored.nodes.get("chunk-non-data").unwrap().data_eligible,
@@ -8301,7 +8301,7 @@ fn rootserver_tracks_chunkserver_coverage_for_write_routing() {
 
 #[test]
 fn rootserver_placement_honors_chunkserver_service_health() {
-    let mut root = MatrixRootService::new();
+    let mut root = MatrixMetaService::new();
     let mut frozen = root_node("chunk-frozen", "rack-a", 100);
     frozen.chunk_health.frozen = true;
     frozen.chunk_health.capacity_free_bytes = 100;
@@ -9178,7 +9178,7 @@ fn raft_backed_store_replays_root_node_removal() {
 
 #[test]
 fn rootserver_pages_placement_health_for_repair_controllers() {
-    let mut root = MatrixRootService::new();
+    let mut root = MatrixMetaService::new();
     for (node_id, domain) in [
         ("chunk-a", "rack-a"),
         ("chunk-b", "rack-b"),
@@ -9278,7 +9278,7 @@ fn rootserver_pages_placement_health_for_repair_controllers() {
 
 #[test]
 fn rootserver_repairs_unhealthy_placements_from_health_audit() {
-    let mut root = MatrixRootService::new();
+    let mut root = MatrixMetaService::new();
     for (node_id, domain) in [
         ("chunk-a", "rack-a"),
         ("chunk-b", "rack-b"),
