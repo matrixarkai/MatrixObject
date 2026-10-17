@@ -13,9 +13,9 @@ pub struct MatrixRootService {
     pub(crate) placements: BTreeMap<ObjectId, ObjectPlacement>,
     leader_lease: Option<RootLeaderLease>,
     leader_lease_receipts: BTreeMap<String, RootLeaderLeaseReceipt>,
-    coordinator_config: MetadataCoordinatorConfig,
-    pub(crate) next_commit_index: u64,
-    snapshot_export_cache: RefCell<Option<RootSnapshotExportCache>>,
+    placement_coordinator_config: MetadataCoordinatorConfig,
+    pub(crate) placement_commit_index: u64,
+    placement_snapshot_export_cache: RefCell<Option<RootSnapshotExportCache>>,
     root_state_fingerprint_cache: RefCell<Option<String>>,
 }
 
@@ -40,12 +40,12 @@ impl Default for MatrixRootService {
 
 impl MatrixRootService {
     fn invalidate_snapshot_export_cache(&self) {
-        *self.snapshot_export_cache.borrow_mut() = None;
+        *self.placement_snapshot_export_cache.borrow_mut() = None;
         *self.root_state_fingerprint_cache.borrow_mut() = None;
     }
 
     fn advance_commit_index(&mut self) {
         self.invalidate_snapshot_export_cache();
-        self.next_commit_index = self.next_commit_index.saturating_add(1);
+        self.placement_commit_index = self.placement_commit_index.saturating_add(1);
     }
 }

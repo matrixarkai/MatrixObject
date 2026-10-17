@@ -5,12 +5,12 @@ impl MatrixRootService {
             placements: BTreeMap::new(),
             leader_lease: None,
             leader_lease_receipts: BTreeMap::new(),
-            coordinator_config: MetadataCoordinatorConfig {
+            placement_coordinator_config: MetadataCoordinatorConfig {
                 namespace_path: "/matrixobjectstore/rootserver".to_string(),
                 ..MetadataCoordinatorConfig::default()
             },
-            next_commit_index: 1,
-            snapshot_export_cache: RefCell::new(None),
+            placement_commit_index: 1,
+            placement_snapshot_export_cache: RefCell::new(None),
             root_state_fingerprint_cache: RefCell::new(None),
         }
     }

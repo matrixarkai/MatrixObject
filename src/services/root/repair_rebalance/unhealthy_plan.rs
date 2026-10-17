@@ -108,8 +108,8 @@ impl MatrixRootService {
             report,
             before_state_fingerprint: self.root_state_fingerprint(),
             request_checksum,
-            expected_previous_commit_index: self.next_commit_index.saturating_sub(1),
-            prepared_commit_index: self.next_commit_index,
+            expected_previous_commit_index: self.placement_commit_index.saturating_sub(1),
+            prepared_commit_index: self.placement_commit_index,
             raft_entry_checksum: String::new(),
         };
         prepared.raft_entry_checksum = prepared_root_unhealthy_placement_repair_checksum(&prepared);
