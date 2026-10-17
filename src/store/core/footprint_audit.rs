@@ -18,8 +18,7 @@ impl MatrixObjectStore {
         for value in self.payloads.values() {
             payload_len = payload_len.saturating_add(value.len);
             payload_cap = payload_cap
-                .saturating_add(std::mem::size_of::<StoredPayload>() as u64)
-                .saturating_add(value.etag.capacity() as u64);
+                .saturating_add(std::mem::size_of::<StoredPayload>() as u64);
         }
         push("payloads.entries", self.payloads.len() as u64);
         push("payloads.indexed_bytes", payload_len);
