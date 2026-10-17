@@ -84,6 +84,35 @@ Nothing external is required to build or run the tests.
 | `write_quorum` | 2 | replicas that must accept a write |
 | `reuse_stale_slab_space` | false | take the space a superseded object left instead of growing the slab |
 
+### Sizing `chunk_size` for your object size
+
+`chunk_size` is the one option worth setting deliberately before you store small
+objects, because a write's undo is currently the chunk it lands in rather than
+the range it wrote. Measured per put, with a deterministic allocation counter:
+
+```
+undo bytes per put  ~=  replica_count  x  0.572  x  chunk_size
+```
+
+The 0.572 is a chunk's average occupancy as it fills, and the per-replica factor
+came out identical at three and five replicas. At the defaults that is about
+1.7 MiB copied to store a 1 KiB object. The effect on time, 4,000 puts of 1 KiB
+at three replicas:
+
+| `chunk_size` | put seconds |
+|---:|---:|
+| 1 MiB (default) | 8.84 |
+| 256 KiB | 2.12 |
+| 64 KiB | 0.70 |
+
+So pick a `chunk_size` near the size of the objects you actually store. The
+trade is that smaller chunks mean more of them to track: allocation *count* rose
+from 23,091,061 to 23,764,493 across that range, while bytes and time both fell
+much further.
+
+This is a property of the write undo, not of the storage layout, and it is
+tracked as an issue rather than accepted as the design.
+
 ## Contributing
 
 Anyone can contribute: fork, commit, open a pull request. Issues are open.
