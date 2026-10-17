@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn chunkserver_coverage(&self, min_free_bytes: u64) -> RootChunkServerCoverage {
         let mut coverage = RootChunkServerCoverage {
             min_free_bytes,

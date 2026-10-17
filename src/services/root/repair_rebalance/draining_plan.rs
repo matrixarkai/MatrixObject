@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     fn finalize_root_placement_repair_report(report: &mut RootPlacementRepairReport) {
         report.repair_needed = report.repair_objects > 0;
         report.repair_can_apply =

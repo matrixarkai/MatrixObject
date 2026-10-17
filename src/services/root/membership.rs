@@ -1,18 +1,12 @@
-impl MatrixRootService {
-    pub fn new() -> Self {
-        Self {
-            nodes: BTreeMap::new(),
-            placements: BTreeMap::new(),
-            leader_lease: None,
-            leader_lease_receipts: BTreeMap::new(),
-            placement_coordinator_config: MetadataCoordinatorConfig {
-                namespace_path: "/matrixobjectstore/rootserver".to_string(),
-                ..MetadataCoordinatorConfig::default()
-            },
-            placement_commit_index: 1,
-            placement_snapshot_export_cache: RefCell::new(None),
-            root_state_fingerprint_cache: RefCell::new(None),
-        }
+impl MatrixMetaService {
+    fn invalidate_snapshot_export_cache(&self) {
+        *self.placement_snapshot_export_cache.borrow_mut() = None;
+        *self.root_state_fingerprint_cache.borrow_mut() = None;
+    }
+
+    fn advance_commit_index(&mut self) {
+        self.invalidate_snapshot_export_cache();
+        self.placement_commit_index = self.placement_commit_index.saturating_add(1);
     }
 
     pub fn register_node(&mut self, mut node: RootNode) -> Result<RootNode, ObjectError> {

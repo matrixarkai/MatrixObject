@@ -61,7 +61,7 @@ fn root_serving_gates(
     }
 }
 
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn raft_status(
         &self,
         metadata_replication_quorum: u64,

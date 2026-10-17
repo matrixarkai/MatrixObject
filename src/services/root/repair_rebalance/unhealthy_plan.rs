@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn plan_unhealthy_placement_repairs(
         &self,
         marker: Option<&ObjectId>,

@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn list_node_usage(
         &self,
         marker: Option<&str>,

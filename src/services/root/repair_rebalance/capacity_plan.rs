@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn plan_capacity_rebalance(
         &self,
         max_objects: usize,

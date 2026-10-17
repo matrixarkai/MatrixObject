@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn apply_prepared_capacity_rebalance(
         &mut self,
         prepared: PreparedRootCapacityRebalance,

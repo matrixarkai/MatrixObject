@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     fn repair_source_for_placement(&self, placement: &ObjectPlacement) -> Option<String> {
         placement.node_ids.iter().find_map(|node_id| {
             let Some(node) = self.nodes.get(node_id) else {

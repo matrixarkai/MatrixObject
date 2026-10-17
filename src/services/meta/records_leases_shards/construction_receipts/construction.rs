@@ -1,6 +1,17 @@
 impl MatrixMetaService {
     pub fn new() -> Self {
         Self {
+            nodes: BTreeMap::new(),
+            placements: BTreeMap::new(),
+            leader_lease: None,
+            leader_lease_receipts: BTreeMap::new(),
+            placement_coordinator_config: MetadataCoordinatorConfig {
+                namespace_path: "/matrixobjectstore/rootserver".to_string(),
+                ..MetadataCoordinatorConfig::default()
+            },
+            placement_commit_index: 1,
+            placement_snapshot_export_cache: RefCell::new(None),
+            root_state_fingerprint_cache: RefCell::new(None),
             records: BTreeMap::new(),
             leases: BTreeMap::new(),
             lease_receipts: BTreeMap::new(),

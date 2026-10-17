@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn list_object_placements(
         &self,
         marker: Option<&ObjectId>,
