@@ -5,7 +5,7 @@ impl MatrixRootService {
             placements: BTreeMap::new(),
             leader_lease: None,
             leader_lease_receipts: BTreeMap::new(),
-            coordinator_config: MetadataCoordinatorConfig {
+            placement_coordinator_config: MetadataCoordinatorConfig {
                 namespace_path: "/matrixobjectstore/rootserver".to_string(),
                 ..MetadataCoordinatorConfig::default()
             },

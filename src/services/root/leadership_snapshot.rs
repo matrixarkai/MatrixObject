@@ -197,7 +197,7 @@ impl MatrixRootService {
             placements: self.placements.clone(),
             leader_lease: self.leader_lease.clone(),
             leader_lease_receipts: self.leader_lease_receipts.clone(),
-            coordinator_config: self.coordinator_config.clone(),
+            coordinator_config: self.placement_coordinator_config.clone(),
             next_commit_index: self.placement_commit_index,
             checksum: String::new(),
         };
@@ -306,7 +306,7 @@ impl MatrixRootService {
         self.placements = snapshot.placements;
         self.leader_lease = snapshot.leader_lease;
         self.leader_lease_receipts = snapshot.leader_lease_receipts;
-        self.coordinator_config = snapshot.coordinator_config;
+        self.placement_coordinator_config = snapshot.coordinator_config;
         self.placement_commit_index = snapshot.next_commit_index;
         Ok(())
     }
