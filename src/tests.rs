@@ -32932,3 +32932,94 @@ fn metaserver_prefix_delete_and_change_checkpoints_are_durable() {
         "live-c"
     );
 }
+
+#[test]
+fn a_put_that_fails_after_mutating_leaves_the_store_unchanged() {
+    // The put path mutates the store before it can still reject the request.
+    // An overwrite runs `mark_extents_stale`, which drops payload index
+    // entries, moves a slab's live and stale byte counters and discards chunk
+    // ranges on every replica -- and only after that does
+    // `verify_expected_object_checksum` get its chance to refuse. So an
+    // overwrite carrying a wrong expected checksum drives the whole rollback.
+    //
+    // Nothing else in this file reached that path: `mutation_batch` appeared in
+    // none of the other tests, so begin, end and abort were all uncovered.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "k", b"original-contents".to_vec(), "text/plain")
+        .unwrap();
+    store
+        .put_object("bucket", "other", b"untouched".to_vec(), "text/plain")
+        .unwrap();
+
+    let before_bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    let before_audit = store.footprint_audit();
+    // A third view, because the two above are blind to it: neither the store
+    // snapshot nor the audit covers what the metadata service holds, so a
+    // record left behind by a refused put reads as clean in both.
+    let before_metadata = store.metadata_state_fingerprint();
+
+    let options = PutOptions {
+        expected_checksum: Some("fnv1a64:0000000000000000".to_string()),
+        ..PutOptions::default()
+    };
+    let rejected = store.put_object_with_options(
+        "bucket",
+        "k",
+        b"replacement-contents".to_vec(),
+        "text/plain",
+        options,
+    );
+    assert!(
+        rejected.is_err(),
+        "an overwrite with a wrong expected checksum must be refused"
+    );
+
+    // The audit first, because it names which container moved; the snapshot
+    // bytes then catch anything the audit does not count.
+    let after_audit = store.footprint_audit();
+    if before_audit != after_audit {
+        let moved = before_audit
+            .iter()
+            .zip(after_audit.iter())
+            .filter(|(before, after)| before != after)
+            .map(|(before, after)| format!("{} {} -> {}", before.0, before.1, after.1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        panic!("the refused put left state behind: {moved}");
+    }
+    let after_bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    assert_eq!(
+        before_bytes, after_bytes,
+        "the refused put changed the store snapshot, so the rollback is incomplete"
+    );
+    assert_eq!(
+        before_metadata,
+        store.metadata_state_fingerprint(),
+        "the refused put left a metadata record behind"
+    );
+
+    // What this does NOT reach, so nobody reads it as covering the whole
+    // rollback: the metadata record and the object placement are both written
+    // *after* the checksum gate -- `commit_meta_projection` calls
+    // `meta_service.commit_record` at the very end of the put -- so at this
+    // failure point neither has been touched and `restore_record_undo` has
+    // nothing to undo. Reaching them needs `end_mutation_batch` to fail after
+    // the put otherwise succeeded, and there is no public way to force that
+    // today. Deleting the `restore_record_undo` call leaves this test green;
+    // that is the reason, and it is not evidence the call is unnecessary.
+    //
+    // The other direction, so a pass means something: the same write with no
+    // expected checksum MUST change the store. Without this the test would
+    // still pass if the request were refused before it touched anything, which
+    // is how a guard like this goes quietly dead.
+    store
+        .put_object("bucket", "k", b"replacement-contents".to_vec(), "text/plain")
+        .unwrap();
+    let changed_bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    assert_ne!(
+        before_bytes, changed_bytes,
+        "a successful overwrite must change the store, or this test is aimed at a dead path"
+    );
+}
