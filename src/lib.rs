@@ -179,10 +179,6 @@ pub use meta_service::*;
 mod root_protocol;
 pub use root_protocol::*;
 
-#[path = "services/root.rs"]
-mod root_service;
-pub use root_service::*;
-
 #[path = "services/chunk.rs"]
 mod chunk_service;
 pub use chunk_service::*;

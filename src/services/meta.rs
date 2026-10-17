@@ -7,15 +7,15 @@ include!("meta/maintenance_persistence.inc.rs");
 
 // The placement service, folded in: these live in this module because the
 // state they operate on is private to it.
-include!("root/membership.rs");
-include!("root/coverage_raft.rs");
-include!("root/object_placement.rs");
-include!("root/placement_migration_planning.rs");
-include!("root/placement_migration_raft.rs");
-include!("root/repair_rebalance.rs");
-include!("root/queries_health.rs");
-include!("root/leadership_snapshot.rs");
-include!("root/placement_policy_internals.rs");
-include!("root/placement_repair_internals.rs");
-include!("root/placement_capacity_internals.rs");
-include!("root/leader_validation.rs");
+include!("meta/placement/membership.rs");
+include!("meta/placement/coverage_raft.rs");
+include!("meta/placement/object_placement.rs");
+include!("meta/placement/placement_migration_planning.rs");
+include!("meta/placement/placement_migration_raft.rs");
+include!("meta/placement/repair_rebalance.rs");
+include!("meta/placement/queries_health.rs");
+include!("meta/placement/leadership_snapshot.rs");
+include!("meta/placement/placement_policy_internals.rs");
+include!("meta/placement/placement_repair_internals.rs");
+include!("meta/placement/placement_capacity_internals.rs");
+include!("meta/placement/leader_validation.rs");

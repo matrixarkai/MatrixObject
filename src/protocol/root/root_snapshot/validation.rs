@@ -16,7 +16,7 @@ impl RootSnapshot {
                     "root snapshot node is invalid".to_string(),
                 ));
             }
-            MatrixRootService::validate_page_allocator_shard(node)?;
+            MatrixMetaService::validate_page_allocator_shard(node)?;
         }
         let mut committed: BTreeMap<String, u64> = BTreeMap::new();
         for (object_id, placement) in &self.placements {
