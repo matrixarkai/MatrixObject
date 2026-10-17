@@ -1,0 +1,6 @@
+include!("storage_control_fingerprints.rs");
+include!("bootstrap_readiness_codec.rs");
+include!("bootstrap_report_checksums.rs");
+include!("block_repair_envelopes.rs");
+include!("prepared_block_mutation_checksums.rs");
+include!("block_audit_config_checksums.rs");

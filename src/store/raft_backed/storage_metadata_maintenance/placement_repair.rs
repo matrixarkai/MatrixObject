@@ -1,0 +1,13 @@
+include!("placement_repair/root_decommission.rs");
+include!("placement_repair/root_read_fences.rs");
+include!("placement_repair/root_inventory_queries.rs");
+include!("placement_repair/root_placement_queries.rs");
+include!("placement_repair/object_repair_decommission.rs");
+include!("placement_repair/prepared_migration.rs");
+include!("placement_repair/repair_rebalance_envelopes.rs");
+include!("placement_repair/capacity_rebalance_planner.rs");
+include!("placement_repair/capacity_rebalance_fenced.rs");
+include!("placement_repair/repair_reads_local.rs");
+include!("placement_repair/repair_reads_shard.rs");
+include!("placement_repair/repair_reads_batch.rs");
+include!("placement_repair/repair_reads_bounded.rs");

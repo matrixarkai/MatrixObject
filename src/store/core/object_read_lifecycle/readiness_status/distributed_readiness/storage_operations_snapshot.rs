@@ -1,0 +1,98 @@
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct DistributedStorageOperationsSnapshot {
+    cumulative_repair_checked_chunks: u64,
+    cumulative_repair_degraded_chunks: u64,
+    cumulative_repaired_replicas: u64,
+    cumulative_failed_repairs: u64,
+    replica_fallback_reads: u64,
+    local_replica_read_repairs: u64,
+    local_replica_read_repair_failures: u64,
+    partial_reclaim_chunks: u64,
+    partial_reclaim_bytes: u64,
+    partial_reclaim_failures: u64,
+    last_partial_reclaim_failure_status: String,
+    readable_replicas: u64,
+    writable_replicas: u64,
+    active_replicas: u64,
+    quarantined_replicas: u64,
+    frozen_replicas: u64,
+    draining_replicas: u64,
+    capacity_pressure_replicas: u64,
+    trim_flow_limited_replicas: u64,
+    trim_flow_available_ops: u64,
+    trim_flow_throttled_ops: u64,
+    total_capacity_bytes: u64,
+    total_capacity_free_bytes: u64,
+    total_reclaimable_bytes: u64,
+    total_fragmented_chunk_count: u64,
+    total_fragmented_discarded_bytes: u64,
+    total_trailing_trim_bytes: u64,
+    page_read_parallelism: u64,
+    page_write_parallelism: u64,
+    page_batch_read_parallelism: u64,
+    page_batch_write_parallelism: u64,
+    page_batch_discard_parallelism: u64,
+    page_repair_parallelism: u64,
+    page_chunk_fanout_parallelism: u64,
+    effective_chunk_fanout_parallelism: u64,
+    local_replica_store_parallelism: u64,
+    effective_local_replica_store_parallelism: u64,
+    reclaim_pressure: bool,
+    physical_read_count: u64,
+    coalesced_read_count: u64,
+}
+
+impl DistributedStorageOperationsSnapshot {
+    fn capture(page: &PageStorageReadiness) -> Self {
+        Self {
+            cumulative_repair_checked_chunks: page.cumulative_repair_checked_chunks,
+            cumulative_repair_degraded_chunks: page.cumulative_repair_degraded_chunks,
+            cumulative_repaired_replicas: page.cumulative_repaired_replicas,
+            cumulative_failed_repairs: page.cumulative_failed_repairs,
+            replica_fallback_reads: page.cumulative_replica_fallback_reads,
+            local_replica_read_repairs: page.cumulative_replica_read_repairs,
+            local_replica_read_repair_failures: page.cumulative_replica_read_repair_failures,
+            partial_reclaim_chunks: page.reclaimable_replicas,
+            partial_reclaim_bytes: page.total_reclaimable_bytes,
+            partial_reclaim_failures: page.partial_reclaim_failures,
+            last_partial_reclaim_failure_status: if page
+                .last_partial_reclaim_failure_status
+                .is_empty()
+            {
+                "ok".to_string()
+            } else {
+                page.last_partial_reclaim_failure_status.clone()
+            },
+            readable_replicas: page.readable_replicas,
+            writable_replicas: page.writable_replicas,
+            active_replicas: page.active_replicas,
+            quarantined_replicas: page.quarantined_replicas,
+            frozen_replicas: page.frozen_replicas,
+            draining_replicas: page.draining_replicas,
+            capacity_pressure_replicas: page.capacity_pressure_replicas,
+            trim_flow_limited_replicas: page.trim_flow_limited_replicas,
+            trim_flow_available_ops: page.total_trim_flow_available_ops,
+            trim_flow_throttled_ops: page.total_trim_flow_throttled_ops,
+            total_capacity_bytes: page.total_capacity_bytes,
+            total_capacity_free_bytes: page.total_capacity_free_bytes,
+            total_reclaimable_bytes: page.total_reclaimable_bytes,
+            total_fragmented_chunk_count: page.total_fragmented_chunk_count,
+            total_fragmented_discarded_bytes: page.total_fragmented_discarded_bytes,
+            total_trailing_trim_bytes: page.total_trailing_trim_bytes,
+            page_read_parallelism: page.page_read_parallelism,
+            page_write_parallelism: page.page_write_parallelism,
+            page_batch_read_parallelism: page.page_batch_read_parallelism,
+            page_batch_write_parallelism: page.page_batch_write_parallelism,
+            page_batch_discard_parallelism: page.page_batch_discard_parallelism,
+            page_repair_parallelism: page.page_repair_parallelism,
+            page_chunk_fanout_parallelism: page.page_chunk_fanout_parallelism,
+            effective_chunk_fanout_parallelism: page.effective_chunk_fanout_parallelism,
+            local_replica_store_parallelism: page.local_replica_store_parallelism,
+            effective_local_replica_store_parallelism: page
+                .effective_local_replica_store_parallelism,
+            reclaim_pressure: page.reclaimable_replicas != 0,
+            physical_read_count: page.cumulative_physical_chunk_read_count,
+            coalesced_read_count: page.cumulative_coalesced_chunk_read_count,
+        }
+    }
+}

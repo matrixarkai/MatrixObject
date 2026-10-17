@@ -1,0 +1,13 @@
+[package]
+name = "matrixobjectstore-rs"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Rust MatrixObjectStore core with object semantics, segment GC accounting, and raft-shaped replication"
+
+[features]
+default = ["raft-rs"]
+raft-rs = ["dep:raft"]
+
+[dependencies]
+raft = { version = "0.7", optional = true, default-features = false, features = ["prost-codec"] }

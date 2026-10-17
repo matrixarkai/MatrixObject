@@ -1,0 +1,10 @@
+include!("readiness_bootstrap/readiness_state.inc.rs");
+include!("readiness_bootstrap/metadata_control_proof.inc.rs");
+include!("readiness_bootstrap/metadata_read_options.inc.rs");
+include!("readiness_bootstrap/bootstrap_reports.inc.rs");
+include!("readiness_bootstrap/admission_proofs.inc.rs");
+include!("readiness_bootstrap/block_admission_proofs.inc.rs");
+include!("readiness_bootstrap/object_admission_proofs.inc.rs");
+include!("readiness_bootstrap/batch_read_proofs.inc.rs");
+include!("readiness_bootstrap/listing_metadata_proofs.inc.rs");
+include!("readiness_bootstrap/mutation_receipt_proofs.inc.rs");

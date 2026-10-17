@@ -1,0 +1,12 @@
+include!("root_placement_mutations/changefeed_cursor.rs");
+include!("root_placement_mutations/put_placement.rs");
+include!("root_placement_mutations/delete_release.rs");
+include!("root_placement_mutations/batch_delete.rs");
+include!("root_placement_mutations/delete_version.rs");
+include!("root_placement_mutations/delete_prefix_mutations.rs");
+include!("root_placement_mutations/delete_prefix_proven_mutations.rs");
+include!("root_placement_mutations/delete_prefix_shard_mutations.rs");
+include!("root_placement_mutations/delete_prefix_shard_route_mutations.rs");
+include!("root_placement_mutations/single_placement_refresh.rs");
+include!("root_placement_mutations/placement_refresh_pages.rs");
+include!("root_placement_mutations/migration_commit.rs");

@@ -1,0 +1,303 @@
+impl MatrixObjectStore {
+    fn collect_slab_compaction_live_objects(
+        &self,
+        slab_id: &SlabId,
+    ) -> Result<Vec<ObjectId>, ObjectError> {
+        if !self.slabs.contains_key(slab_id) {
+            return Err(ObjectError::NotFound(format!("segment {:?}", slab_id)));
+        }
+        let mut live_objects = Vec::new();
+        for metadata in self.objects.values() {
+            if metadata.deleted {
+                continue;
+            }
+            if metadata
+                .extents
+                .iter()
+                .any(|extent| &extent.slab_id == slab_id)
+            {
+                live_objects.push(metadata.object_id.clone());
+            }
+        }
+        Ok(live_objects)
+    }
+
+    pub fn compact_slab_at(
+        &mut self,
+        slab_id: &SlabId,
+        update_time_ms: u64,
+    ) -> Result<(), ObjectError> {
+        let live_objects = self.collect_slab_compaction_live_objects(slab_id)?;
+        for object_id in live_objects {
+            let object = self.get_object(&object_id.bucket, &object_id.key)?;
+            self.apply_put_storage_batched(
+                object_id.bucket,
+                object_id.key,
+                object.data,
+                object.metadata.content_type,
+                update_time_ms,
+                PutOptions::default(),
+                "compact_segment_put",
+            )?;
+        }
+        if let Some(slab) = self.slabs.get_mut(slab_id) {
+            slab.stale_ranges.push(DataRange {
+                offset: 0,
+                length: slab.next_offset,
+            });
+            slab.stale_ranges = merge_ranges(std::mem::take(&mut slab.stale_ranges));
+            slab.stale_bytes = slab.next_offset;
+            slab.live_bytes = 0;
+        }
+        Ok(())
+    }
+
+    pub fn compact_slab(&mut self, slab_id: &SlabId) -> Result<(), ObjectError> {
+        self.compact_slab_at(slab_id, now_millis())
+    }
+
+    pub fn compact_all_at(
+        &mut self,
+        min_stale_bytes: u64,
+        update_time_ms: u64,
+    ) -> Result<u64, ObjectError> {
+        let mut candidates = self
+            .slabs
+            .iter()
+            .filter_map(|(slab_id, slab)| {
+                if slab.stale_bytes >= min_stale_bytes && slab.next_offset > 0 {
+                    Some(slab_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|slab_id| (slab_id.volume_id, slab_id.id));
+        let mut compacted = 0u64;
+        for slab_id in candidates {
+            self.compact_slab_at(&slab_id, update_time_ms)?;
+            compacted = compacted.saturating_add(1);
+        }
+        Ok(compacted)
+    }
+
+    pub fn compact_all(&mut self, min_stale_bytes: u64) -> Result<u64, ObjectError> {
+        self.compact_all_at(min_stale_bytes, now_millis())
+    }
+
+    pub fn plan_full_compaction(&self, min_stale_bytes: u64) -> FullCompactionPlan {
+        self.plan_full_compaction_fenced(min_stale_bytes, None, "")
+            .expect("unfenced full compaction planning cannot fail")
+    }
+
+    pub fn plan_full_compaction_fenced(
+        &self,
+        min_stale_bytes: u64,
+        expected_route_control_checksum: Option<&str>,
+        expected_object_gc_report_proof_checksum: impl AsRef<str>,
+    ) -> Result<FullCompactionPlan, ObjectError> {
+        self.page_service
+            .check_expected_route_control_checksum(expected_route_control_checksum)?;
+        let gc_report = self.gc_report_with_discard_policy_proof_fenced(
+            min_stale_bytes,
+            0,
+            expected_route_control_checksum,
+            expected_object_gc_report_proof_checksum.as_ref(),
+        )?;
+        let mut candidate_slab_ids = Vec::new();
+        let mut candidate_stale_bytes = 0u64;
+        let mut candidate_live_bytes = 0u64;
+        let mut candidate_logical_bytes = 0u64;
+        for (slab_id, slab) in &self.slabs {
+            if slab.stale_bytes >= min_stale_bytes && slab.next_offset > 0 {
+                candidate_slab_ids.push(slab_id.clone());
+                candidate_stale_bytes = saturating_add(candidate_stale_bytes, slab.stale_bytes);
+                candidate_live_bytes = saturating_add(candidate_live_bytes, slab.live_bytes);
+                candidate_logical_bytes =
+                    saturating_add(candidate_logical_bytes, slab.logical_bytes);
+            }
+        }
+        candidate_slab_ids.sort_by_key(|slab_id| (slab_id.volume_id, slab_id.id));
+        Ok(FullCompactionPlan {
+            min_stale_bytes,
+            candidate_count: candidate_slab_ids.len() as u64,
+            candidate_stale_bytes,
+            candidate_live_bytes,
+            candidate_logical_bytes,
+            candidate_slab_ids,
+            route_control_proof: self.page_service.route_control_proof(),
+            expected_route_control_checksum: expected_route_control_checksum
+                .unwrap_or("")
+                .to_string(),
+            object_gc_report_proof_checksum: gc_report.proof_checksum(),
+        })
+    }
+
+    pub fn prepare_slab_compaction_raft_entry(
+        &self,
+        slab_id: &SlabId,
+        min_stale_bytes: u64,
+        update_time_ms: u64,
+        expected_previous_commit_index: u64,
+    ) -> Result<PreparedSlabCompaction, ObjectError> {
+        let admitted_route_checksum = self.page_service.route_control_proof().state_checksum;
+        self.prepare_slab_compaction_raft_entry_fenced(
+            slab_id,
+            min_stale_bytes,
+            update_time_ms,
+            expected_previous_commit_index,
+            Some(&admitted_route_checksum),
+            None,
+        )
+    }
+
+    pub fn prepare_slab_compaction_raft_entry_fenced(
+        &self,
+        slab_id: &SlabId,
+        min_stale_bytes: u64,
+        update_time_ms: u64,
+        expected_previous_commit_index: u64,
+        expected_route_control_checksum: Option<&str>,
+        expected_object_gc_report_proof_checksum: Option<&str>,
+    ) -> Result<PreparedSlabCompaction, ObjectError> {
+        self.page_service
+            .check_expected_route_control_checksum(expected_route_control_checksum)?;
+        let expected_object_gc_report_proof_checksum =
+            expected_object_gc_report_proof_checksum.unwrap_or("");
+        if !expected_object_gc_report_proof_checksum.is_empty() {
+            self.gc_report_with_discard_policy_proof_fenced(
+                min_stale_bytes,
+                0,
+                expected_route_control_checksum,
+                expected_object_gc_report_proof_checksum,
+            )?;
+        }
+        if expected_previous_commit_index != self.last_applied_index {
+            return Err(ObjectError::PreconditionFailed(format!(
+                "segment compaction expected previous commit {} does not match applied {}",
+                expected_previous_commit_index, self.last_applied_index
+            )));
+        }
+        let slab = self
+            .slabs
+            .get(slab_id)
+            .ok_or_else(|| ObjectError::NotFound(format!("segment {:?}", slab_id)))?;
+        if slab.stale_bytes < min_stale_bytes {
+            return Err(ObjectError::PreconditionFailed(format!(
+                "segment stale bytes {} below compaction threshold {}",
+                slab.stale_bytes, min_stale_bytes
+            )));
+        }
+        let live_objects = self.collect_slab_compaction_live_objects(slab_id)?;
+        let before_state_fingerprint = self.state_fingerprint_without_payload_clones();
+        let mut projected = self.clone();
+        projected.compact_slab_at(slab_id, update_time_ms)?;
+        let after_state_fingerprint = projected.state_fingerprint_without_payload_clones();
+        let request_checksum =
+            slab_compaction_request_checksum(slab_id, min_stale_bytes, update_time_ms);
+        let route_control_proof = self.page_service.route_control_proof();
+        let expected_route_control_checksum =
+            expected_route_control_checksum.unwrap_or("").to_string();
+        let mut prepared = PreparedSlabCompaction {
+            slab_id: slab_id.clone(),
+            min_stale_bytes,
+            update_time_ms,
+            live_objects,
+            source_stale_ranges: merge_range_slice(&slab.stale_ranges),
+            source_discarded_ranges: merge_range_slice(&slab.discarded_ranges),
+            before_state_fingerprint,
+            after_state_fingerprint,
+            request_checksum,
+            expected_previous_commit_index,
+            prepared_commit_index: expected_previous_commit_index.saturating_add(1),
+            route_control_proof,
+            expected_route_control_checksum,
+            expected_object_gc_report_proof_checksum: expected_object_gc_report_proof_checksum
+                .to_string(),
+            raft_entry_checksum: String::new(),
+        };
+        prepared.raft_entry_checksum = prepared_slab_compaction_checksum(&prepared);
+        Ok(prepared)
+    }
+
+    pub fn apply_prepared_slab_compaction(
+        &mut self,
+        prepared: PreparedSlabCompaction,
+    ) -> Result<(), ObjectError> {
+        let expected_checksum = prepared_slab_compaction_checksum(&PreparedSlabCompaction {
+            raft_entry_checksum: String::new(),
+            ..prepared.clone()
+        });
+        if prepared.raft_entry_checksum != expected_checksum {
+            return Err(ObjectError::Corruption(
+                "prepared segment compaction checksum mismatch".to_string(),
+            ));
+        }
+        if prepared.request_checksum
+            != slab_compaction_request_checksum(
+                &prepared.slab_id,
+                prepared.min_stale_bytes,
+                prepared.update_time_ms,
+            )
+        {
+            return Err(ObjectError::Corruption(
+                "prepared segment compaction request checksum mismatch".to_string(),
+            ));
+        }
+        if prepared.expected_previous_commit_index != self.last_applied_index {
+            return Err(ObjectError::PreconditionFailed(
+                "prepared segment compaction previous commit fence mismatch".to_string(),
+            ));
+        }
+        if prepared.before_state_fingerprint != self.state_fingerprint_without_payload_clones() {
+            return Err(ObjectError::PreconditionFailed(
+                "prepared segment compaction source state changed".to_string(),
+            ));
+        }
+        if prepared.expected_route_control_checksum.is_empty() {
+            return Err(ObjectError::PreconditionFailed(
+                "prepared segment compaction route fence is required".to_string(),
+            ));
+        }
+        if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
+            return Err(ObjectError::PreconditionFailed(
+                "prepared segment compaction route proof checksum mismatch".to_string(),
+            ));
+        }
+        self.page_service
+            .check_prepared_route_control_proof_cursor(
+                &prepared.route_control_proof,
+                "prepared segment compaction",
+            )?;
+        let current = self.prepare_slab_compaction_raft_entry_fenced(
+            &prepared.slab_id,
+            prepared.min_stale_bytes,
+            prepared.update_time_ms,
+            prepared.expected_previous_commit_index,
+            Some(prepared.route_control_proof.state_checksum.as_str()),
+            if prepared.expected_object_gc_report_proof_checksum.is_empty() {
+                None
+            } else {
+                Some(prepared.expected_object_gc_report_proof_checksum.as_str())
+            },
+        )?;
+        if current.live_objects != prepared.live_objects
+            || current.source_stale_ranges != prepared.source_stale_ranges
+            || current.source_discarded_ranges != prepared.source_discarded_ranges
+            || current.after_state_fingerprint != prepared.after_state_fingerprint
+            || current.route_control_proof != prepared.route_control_proof
+        {
+            return Err(ObjectError::PreconditionFailed(
+                "prepared segment compaction no longer matches current state".to_string(),
+            ));
+        }
+        self.compact_slab_at(&prepared.slab_id, prepared.update_time_ms)?;
+        if self.state_fingerprint_without_payload_clones() != prepared.after_state_fingerprint {
+            return Err(ObjectError::Corruption(
+                "prepared segment compaction post-state checksum mismatch".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+}

@@ -1,0 +1,9 @@
+include!("object_tags.rs");
+include!("object_retention_lock.rs");
+include!("object_transition_restore.rs");
+include!("bucket_quota.rs");
+include!("bucket_lifecycle_config.rs");
+include!("bucket_policy.rs");
+include!("bucket_tagging.rs");
+include!("bucket_cors.rs");
+include!("bucket_lifecycle_apply.rs");

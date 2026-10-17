@@ -1,0 +1,9 @@
+include!("root_placement_discovery_control/readiness_and_placement.rs");
+include!("root_placement_discovery_control/coordinator_and_leader.rs");
+include!("root_placement_discovery_control/migration_and_rebalance.rs");
+include!("root_placement_discovery_control/root_status.rs");
+include!("root_placement_discovery_control/metaserver_discovery.rs");
+include!("root_placement_discovery_control/blockserver_discovery.rs");
+include!("root_placement_discovery_control/chunkserver_discovery.rs");
+include!("root_placement_discovery_control/gateway_discovery.rs");
+include!("root_placement_discovery_control/control_plane_configuration.rs");

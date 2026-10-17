@@ -1,0 +1,309 @@
+use super::*;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StoreSnapshotExportCache {
+    stamp: String,
+    bytes: std::sync::Arc<[u8]>,
+    checksum: String,
+}
+
+#[derive(Clone, Debug)]
+struct PersistentSnapshotDurableStamp {
+    state_stamp: String,
+    file_stamp: PersistentSnapshotFileStamp,
+}
+
+/// What the store keeps about a written payload: its length and content hash,
+/// not its bytes.
+///
+/// The bytes live in the page service, which is where the read path already
+/// goes - `allocate_extents`/`read` paths all call `page_service` directly.
+/// Keeping a second copy here cost one extra copy of every byte written, about
+/// 1.00x of the store's resident footprint, and nothing ever looked this map up
+/// by key: its only consumers are the snapshot export, the state fingerprint and
+/// the audit, and each of those needs only the length and the hash.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StoredPayload {
+    pub(crate) len: u64,
+    pub(crate) etag: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct MatrixObjectStore {
+    pub(crate) options: StoreOptions,
+    persistent_snapshot_path: String,
+    persistent_journal_path: String,
+    pub(crate) buckets: BTreeSet<String>,
+    bucket_versioning: BTreeSet<String>,
+    pub(crate) objects: BTreeMap<ObjectId, ObjectMetadata>,
+    pub(crate) versions: BTreeMap<ObjectId, Vec<ObjectMetadata>>,
+    bucket_retention: BTreeMap<String, u64>,
+    bucket_quotas: BTreeMap<String, BucketQuota>,
+    bucket_lifecycle: BTreeMap<String, BucketLifecyclePolicy>,
+    bucket_policy_documents: BTreeMap<String, BucketPolicyDocument>,
+    bucket_tags: BTreeMap<String, BucketTagSet>,
+    bucket_cors: BTreeMap<String, BucketCorsPolicy>,
+    pub(crate) bucket_policy_receipts: BTreeMap<String, BucketPolicyMutationReceipt>,
+    pub(crate) bucket_cors_receipts: BTreeMap<String, BucketCorsMutationReceipt>,
+    multipart_uploads: BTreeMap<String, MultipartUpload>,
+    pub(crate) multipart_complete_receipts: BTreeMap<String, MultipartCompleteReceipt>,
+    pub(crate) multipart_abort_receipts: BTreeMap<String, MultipartAbortReceipt>,
+    object_changes: Vec<ObjectChangeRecord>,
+    object_change_cursors: BTreeMap<String, ObjectChangeCursor>,
+    next_object_change_sequence: u64,
+    pub(crate) meta_service: MatrixMetaService,
+    metadata_route_cache: BTreeMap<String, MetadataRouteCacheEntry>,
+    metadata_route_cache_hits: u64,
+    metadata_route_cache_misses: u64,
+    metadata_route_cache_invalidations: u64,
+    metadata_route_cache_expired_invalidations: u64,
+    metadata_route_cache_capacity_evictions: u64,
+    metadata_route_cache_sequence: u64,
+    pub(crate) root_service: MatrixRootService,
+    pub(crate) slabs: BTreeMap<SlabId, SlabInfo>,
+    payloads: BTreeMap<(SlabId, u64), StoredPayload>,
+    pub(crate) page_service: MatrixPageService,
+    next_slab_id: u64,
+    next_upload_sequence: u64,
+    logical_written_bytes: u64,
+    physical_written_bytes: u64,
+    last_object_manifest_checkpoint_index: u64,
+    last_object_metadata_checkpoint_index: u64,
+    last_applied_index: u64,
+    last_applied_term: u64,
+    applied_raft_receipts: BTreeMap<u64, RaftApplyReceipt>,
+    raft_voter_node_ids: Vec<String>,
+    raft_healthy_peer_count: u64,
+    raft_membership_epoch: u64,
+    raft_membership_receipts: BTreeMap<String, RaftMembershipReceipt>,
+    consensus_read_refreshes: Cell<u64>,
+    consensus_read_cache_hits: Cell<u64>,
+    consensus_read_last_status: RefCell<String>,
+    chunk_read_cache_max_bytes_per_replica: u64,
+    chunk_read_cache_max_cacheable_read_bytes_per_replica: u64,
+    snapshot_export_cache: RefCell<Option<StoreSnapshotExportCache>>,
+    persistent_snapshot_durable_stamp: RefCell<Option<PersistentSnapshotDurableStamp>>,
+    snapshot_assembler: StoreSnapshotChunkAssembler,
+}
+
+#[derive(Clone, Debug)]
+/// What a put changed in the three containers it does not copy.
+///
+/// A put inserts one `buckets` entry, writes one `objects` key and appends one
+/// `object_changes` record, so each can be undone exactly. Copying those three
+/// maps instead is 83.7% of the allocations a put makes.
+struct PutTargetedUndo {
+    meta: MetaRecordUndo,
+    bucket: String,
+    bucket_existed: bool,
+    object_id: ObjectId,
+    previous_object: Option<ObjectMetadata>,
+    object_changes_len: usize,
+}
+
+struct ObjectMutationRollback {
+    /// Present only for the put path, where the three containers below are
+    /// undone by hand and so are captured empty.
+    put_targeted: Option<PutTargetedUndo>,
+    buckets: BTreeSet<String>,
+    bucket_versioning: BTreeSet<String>,
+    bucket_retention: BTreeMap<String, u64>,
+    bucket_quotas: BTreeMap<String, BucketQuota>,
+    bucket_lifecycle: BTreeMap<String, BucketLifecyclePolicy>,
+    bucket_policy_documents: BTreeMap<String, BucketPolicyDocument>,
+    bucket_tags: BTreeMap<String, BucketTagSet>,
+    bucket_cors: BTreeMap<String, BucketCorsPolicy>,
+    bucket_policy_receipts: BTreeMap<String, BucketPolicyMutationReceipt>,
+    bucket_cors_receipts: BTreeMap<String, BucketCorsMutationReceipt>,
+    objects: BTreeMap<ObjectId, ObjectMetadata>,
+    versions: BTreeMap<ObjectId, Vec<ObjectMetadata>>,
+    object_changes: Vec<ObjectChangeRecord>,
+    next_object_change_sequence: u64,
+    multipart_uploads: BTreeMap<String, MultipartUpload>,
+    multipart_complete_receipts: BTreeMap<String, MultipartCompleteReceipt>,
+    multipart_abort_receipts: BTreeMap<String, MultipartAbortReceipt>,
+    next_upload_sequence: u64,
+    meta_service: Option<MatrixMetaService>,
+    root_service: MatrixRootService,
+    slabs: BTreeMap<SlabId, SlabInfo>,
+    payloads: BTreeMap<(SlabId, u64), StoredPayload>,
+    page_service: MatrixPageService,
+    logical_written_bytes: u64,
+    physical_written_bytes: u64,
+    last_object_manifest_checkpoint_index: u64,
+    last_object_metadata_checkpoint_index: u64,
+}
+
+fn chunk_catalog_service_mode(readiness: &ChunkStorageReadiness) -> String {
+    if readiness.draining {
+        "draining".to_string()
+    } else if !readiness.accepting_writes {
+        "read_only".to_string()
+    } else {
+        "read_write".to_string()
+    }
+}
+
+fn catalog_chunk_draining(readiness: &ChunkStorageReadiness) -> bool {
+    readiness.draining || !readiness.accepting_writes || readiness.frozen
+}
+
+fn catalog_capacity_bytes(readiness: &ChunkStorageReadiness) -> u64 {
+    if readiness.capacity_bytes == 0 {
+        u64::MAX
+    } else {
+        readiness.capacity_bytes
+    }
+}
+
+fn root_chunk_health_from_readiness(readiness: &ChunkStorageReadiness) -> RootChunkHealth {
+    let mut service_health_reasons = Vec::new();
+    if !readiness.ready && !readiness.reason.is_empty() && readiness.reason != "ok" {
+        service_health_reasons.push(readiness.reason.clone());
+    }
+    if !readiness.readable {
+        service_health_reasons.push("read_unavailable".to_string());
+    }
+    if !readiness.writable {
+        service_health_reasons.push("write_unavailable".to_string());
+    }
+    if !readiness.accepting_writes {
+        service_health_reasons.push("not_accepting_writes".to_string());
+    }
+    if readiness.frozen {
+        service_health_reasons.push("frozen".to_string());
+    }
+    if readiness.draining {
+        service_health_reasons.push("draining".to_string());
+    }
+    if readiness.capacity_pressure {
+        service_health_reasons.push("capacity_pressure".to_string());
+    }
+    if readiness.read_cache_corrupt_pages != 0 || readiness.read_cache_corrupt_bytes != 0 {
+        service_health_reasons.push("read_cache_corruption".to_string());
+    }
+    if readiness.ec_reconstruction_failures != 0 {
+        service_health_reasons.push("ec_reconstruction_failures".to_string());
+    }
+    if readiness.partial_reclaim_failures != 0 {
+        service_health_reasons.push("partial_reclaim_failures".to_string());
+    }
+    if readiness.capacity_rejected_writes != 0 {
+        service_health_reasons.push("capacity_rejected_writes".to_string());
+    }
+    if readiness.service_mode_rejected_mutations != 0 {
+        service_health_reasons.push("service_mode_rejected_mutations".to_string());
+    }
+    service_health_reasons.sort();
+    service_health_reasons.dedup();
+    let service_fault_tolerant = readiness.ready
+        && readiness.readable
+        && readiness.writable
+        && readiness.accepting_writes
+        && !readiness.frozen
+        && !readiness.draining
+        && !readiness.capacity_pressure
+        && readiness.read_cache_corrupt_pages == 0
+        && readiness.read_cache_corrupt_bytes == 0
+        && readiness.ec_reconstruction_failures == 0
+        && readiness.partial_reclaim_failures == 0
+        && readiness.capacity_rejected_writes == 0
+        && readiness.service_mode_rejected_mutations == 0;
+    let service_health = if service_fault_tolerant {
+        "ok"
+    } else if !readiness.readable {
+        "unavailable"
+    } else {
+        "degraded"
+    };
+    RootChunkHealth {
+        accepting_writes: readiness.accepting_writes,
+        frozen: readiness.frozen,
+        raft_writable: true,
+        capacity_free_bytes: readiness.capacity_free_bytes,
+        discarded_range_count: readiness.discarded_range_count,
+        reclaimable_bytes: readiness.reclaimable_bytes,
+        trailing_trim_bytes: readiness.trailing_trim_bytes,
+        fragmented_chunk_count: readiness.fragmented_chunk_count,
+        fragmented_discarded_bytes: readiness.fragmented_discarded_bytes,
+        service_mode: chunk_catalog_service_mode(readiness),
+        control_proof_format: readiness.chunkserver_control_proof_format.clone(),
+        control_proof_checksum: readiness.chunkserver_control_proof_checksum.clone(),
+        control_proof_bytes: readiness.chunkserver_control_proof_bytes,
+        raft_commit_index: readiness.control_proof.chunk_mutation_control_commit_index,
+        control_read_ready: readiness.readable,
+        control_write_ready: readiness.writable,
+        service_health: service_health.to_string(),
+        service_health_reason_count: service_health_reasons.len() as u64,
+        service_health_reasons: service_health_reasons.join(";"),
+        service_fault_tolerant,
+    }
+}
+
+fn catalog_page_draining(readiness: &PageStorageReadiness) -> bool {
+    !readiness.writable || readiness.quarantined_replicas >= readiness.replica_count
+}
+
+fn catalog_page_capacity_bytes(readiness: &PageStorageReadiness) -> u64 {
+    if readiness.total_capacity_bytes == 0 {
+        u64::MAX
+    } else {
+        readiness.total_capacity_bytes
+    }
+}
+
+fn root_page_health_from_readiness(readiness: &PageStorageReadiness) -> RootPageHealth {
+    RootPageHealth {
+        ready: readiness.writable,
+        read_ready: readiness.readable,
+        route_control_checksum: readiness.page_route_control_proof_checksum.clone(),
+        route_control_commit_index: readiness
+            .route_control_proof
+            .page_route_control_commit_index,
+        chunk_endpoint_count: readiness.chunk_endpoint_count,
+        write_quorum: readiness.write_quorum,
+        read_quorum: readiness.read_quorum,
+        writable_chunk_endpoint_count: readiness.effective_writable_chunk_endpoints,
+        healthy_chunk_endpoint_count: readiness.readable_replicas,
+        raft_writable_chunk_endpoint_count: readiness.writable_replicas,
+        raft_readable_chunk_endpoint_count: readiness.readable_replicas,
+        capacity_ready_writable_chunk_endpoint_count: readiness
+            .writable_replicas
+            .saturating_sub(readiness.capacity_pressure_replicas),
+        quarantined_chunk_replicas: readiness.quarantined_replicas,
+        chunk_capacity_bytes: readiness.total_capacity_bytes,
+        chunk_capacity_free_bytes: readiness.total_capacity_free_bytes,
+        chunk_metadata_dirty_endpoint_count: readiness.metadata_dirty_replicas,
+        chunk_metadata_dirty_mutations: readiness.metadata_dirty_mutations,
+        chunk_metadata_checkpoint_interval: readiness.max_metadata_checkpoint_interval,
+        deferred_metadata_checkpoint_endpoint_count: readiness
+            .deferred_metadata_checkpoint_replicas,
+        deferred_metadata_checkpoint_requests: readiness.deferred_metadata_checkpoint_requests,
+        deferred_metadata_checkpoint_runs: readiness.deferred_metadata_checkpoint_runs,
+        chunk_capacity_rejected_writes: readiness.capacity_rejected_writes,
+        chunk_service_mode_rejected_mutations: readiness.service_mode_rejected_mutations,
+        chunk_physical_write_count: readiness.physical_write_count,
+        chunk_physical_write_bytes: readiness.physical_write_bytes,
+        chunk_physical_discard_range_count: readiness.physical_discard_ranges,
+        chunk_physical_discard_bytes: readiness.physical_discard_bytes,
+        total_reclaimable_bytes: readiness.total_reclaimable_bytes,
+        total_trailing_trim_bytes: readiness.total_trailing_trim_bytes,
+        total_fragmented_chunk_count: readiness.total_fragmented_chunk_count,
+        total_fragmented_discarded_bytes: readiness.total_fragmented_discarded_bytes,
+        allocation_receipt_count: readiness.allocation_receipt_count,
+        batch_allocation_receipt_count: readiness.batch_allocation_receipt_count,
+        release_allocation_receipt_count: readiness.release_allocation_receipt_count,
+        write_receipt_count: readiness.write_receipt_count,
+        batch_write_receipt_count: readiness.batch_write_receipt_count,
+        discard_receipt_count: readiness.discard_receipt_count,
+        batch_discard_receipt_count: readiness.batch_discard_receipt_count,
+    }
+}
+
+include!("core/construction_control.inc.rs");
+include!("core/readiness_catalog.inc.rs");
+include!("core/metadata_object_api.inc.rs");
+include!("core/object_read_lifecycle.inc.rs");
+include!("core/storage_service_control.inc.rs");
+include!("core/raft_apply_persistence.inc.rs");
+include!("core/footprint_audit.rs");

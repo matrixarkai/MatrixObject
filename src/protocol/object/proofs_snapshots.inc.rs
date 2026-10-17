@@ -1,0 +1,9 @@
+include!("object_read_proof_types.inc.rs");
+include!("object_read_cache_proofs.inc.rs");
+include!("object_metadata_read_proofs.inc.rs");
+include!("object_route_fenced_proofs.inc.rs");
+include!("receipt_read_proofs.inc.rs");
+include!("admission_read_proofs.inc.rs");
+include!("storage_read_proofs.inc.rs");
+include!("snapshot_proof_contracts.inc.rs");
+include!("snapshot_proof_reports.inc.rs");

@@ -1,0 +1,10 @@
+include!("root_chunk_block_proofs/snapshot_streams.rs");
+include!("root_chunk_block_proofs/object_gc_compaction.rs");
+include!("root_chunk_block_proofs/raft_membership.rs");
+include!("root_chunk_block_proofs/chunk_receipts.rs");
+include!("root_chunk_block_proofs/reclaim_maintenance.rs");
+include!("root_chunk_block_proofs/chunk_prepared_controls.rs");
+include!("root_chunk_block_proofs/metadata_receipt_common.rs");
+include!("root_chunk_block_proofs/metadata_transaction_proofs.rs");
+include!("root_chunk_block_proofs/metadata_shard_lease_proofs.rs");
+include!("root_chunk_block_proofs/metadata_coordinator_proofs.rs");

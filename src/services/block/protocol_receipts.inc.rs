@@ -1,0 +1,10 @@
+include!("protocol_receipts/allocations_and_receipts.rs");
+include!("protocol_receipts/prepared_mutations.rs");
+include!("protocol_receipts/receipt_pages.rs");
+include!("protocol_receipts/batch_admission.rs");
+include!("protocol_receipts/read_reports.rs");
+include!("protocol_receipts/route_control_proof.rs");
+include!("protocol_receipts/chunk_control_proof.rs");
+include!("protocol_receipts/route_qos.rs");
+include!("protocol_receipts/bootstrap_reports.rs");
+include!("protocol_receipts/state_snapshot.rs");

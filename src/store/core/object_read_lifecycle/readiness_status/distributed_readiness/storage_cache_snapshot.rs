@@ -1,0 +1,58 @@
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct DistributedStorageCacheSnapshot {
+    bytes: u64,
+    entries: u64,
+    max_bytes: u64,
+    max_cacheable_read_bytes: u64,
+    pressure: bool,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+    corrupt_pages: u64,
+    corrupt_bytes: u64,
+    invalidations: u64,
+    invalidated_entries: u64,
+    invalidated_bytes: u64,
+    clears: u64,
+    cleared_entries: u64,
+    cleared_bytes: u64,
+    direct_fill_pages: u64,
+    direct_fill_bytes: u64,
+    compressed_fill_pages: u64,
+    compressed_fill_bytes: u64,
+    ec_fill_pages: u64,
+    ec_fill_bytes: u64,
+    uncacheable_read_pages: u64,
+    uncacheable_read_bytes: u64,
+}
+
+impl DistributedStorageCacheSnapshot {
+    fn capture(page: &PageStorageReadiness, cache: &ChunkReadCacheStats) -> Self {
+        Self {
+            bytes: cache.bytes,
+            entries: page.total_read_cache_entries,
+            max_bytes: page.total_read_cache_max_bytes,
+            max_cacheable_read_bytes: cache.max_cacheable_read_bytes,
+            pressure: page.read_cache_pressure,
+            hits: page.total_read_cache_hits,
+            misses: page.total_read_cache_misses,
+            evictions: page.total_read_cache_evictions,
+            corrupt_pages: page.total_read_cache_corrupt_pages,
+            corrupt_bytes: page.total_read_cache_corrupt_bytes,
+            invalidations: page.total_read_cache_invalidations,
+            invalidated_entries: page.total_read_cache_invalidated_entries,
+            invalidated_bytes: page.total_read_cache_invalidated_bytes,
+            clears: page.total_read_cache_clears,
+            cleared_entries: page.total_read_cache_cleared_entries,
+            cleared_bytes: page.total_read_cache_cleared_bytes,
+            direct_fill_pages: page.total_read_cache_direct_fill_pages,
+            direct_fill_bytes: page.total_read_cache_direct_fill_bytes,
+            compressed_fill_pages: page.total_read_cache_compressed_fill_pages,
+            compressed_fill_bytes: page.total_read_cache_compressed_fill_bytes,
+            ec_fill_pages: page.total_read_cache_ec_fill_pages,
+            ec_fill_bytes: page.total_read_cache_ec_fill_bytes,
+            uncacheable_read_pages: page.total_read_cache_uncacheable_read_pages,
+            uncacheable_read_bytes: page.total_read_cache_uncacheable_read_bytes,
+        }
+    }
+}

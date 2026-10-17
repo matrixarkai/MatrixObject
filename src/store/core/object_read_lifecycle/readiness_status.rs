@@ -1,0 +1,9 @@
+include!("readiness_status/distributed_readiness.rs");
+include!("readiness_status/module_status/health_labels.rs");
+include!("readiness_status/module_status/root_projection.rs");
+include!("readiness_status/module_status/metadata_projection.rs");
+include!("readiness_status/module_status/storage_projection.rs");
+include!("readiness_status/module_status/lifecycle_projection.rs");
+include!("readiness_status/module_status/report_builder.rs");
+include!("readiness_status/module_status.rs");
+include!("readiness_status/module_status/fenced.rs");
