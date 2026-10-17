@@ -9,8 +9,8 @@ impl MatrixRootService {
                 namespace_path: "/matrixobjectstore/rootserver".to_string(),
                 ..MetadataCoordinatorConfig::default()
             },
-            next_commit_index: 1,
-            snapshot_export_cache: RefCell::new(None),
+            placement_commit_index: 1,
+            placement_snapshot_export_cache: RefCell::new(None),
             root_state_fingerprint_cache: RefCell::new(None),
         }
     }

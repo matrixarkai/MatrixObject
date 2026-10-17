@@ -82,7 +82,7 @@ impl MatrixRootService {
         pageserver: &RootPageServerServiceCoverage,
         chunkserver: &RootChunkServerCoverage,
     ) -> RootRaftStatus {
-        let last_applied_index = self.next_commit_index.saturating_sub(1);
+        let last_applied_index = self.placement_commit_index.saturating_sub(1);
         let leader_active = self
             .leader_lease
             .as_ref()
@@ -102,7 +102,7 @@ impl MatrixRootService {
                 .as_ref()
                 .map_or_else(String::new, |lease| lease.leader_node_id.clone()),
             term: self.leader_lease.as_ref().map_or(0, |lease| lease.epoch),
-            next_log_index: self.next_commit_index,
+            next_log_index: self.placement_commit_index,
             last_applied_index,
             commit_index: last_applied_index,
             read_index: last_applied_index,

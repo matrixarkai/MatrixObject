@@ -55,7 +55,7 @@ impl MatrixRootService {
             operation: "campaign".to_string(),
             request_checksum,
             lease: lease.clone(),
-            commit_index: self.next_commit_index.saturating_sub(1),
+            commit_index: self.placement_commit_index.saturating_sub(1),
             update_time_ms: now_ms,
             receipt_proof_checksum: String::new(),
         };
@@ -118,7 +118,7 @@ impl MatrixRootService {
             operation: "renew".to_string(),
             request_checksum,
             lease: lease.clone(),
-            commit_index: self.next_commit_index.saturating_sub(1),
+            commit_index: self.placement_commit_index.saturating_sub(1),
             update_time_ms: now_ms,
             receipt_proof_checksum: String::new(),
         };
@@ -198,7 +198,7 @@ impl MatrixRootService {
             leader_lease: self.leader_lease.clone(),
             leader_lease_receipts: self.leader_lease_receipts.clone(),
             coordinator_config: self.coordinator_config.clone(),
-            next_commit_index: self.next_commit_index,
+            next_commit_index: self.placement_commit_index,
             checksum: String::new(),
         };
         snapshot.checksum = snapshot.checksum_material_hash();
@@ -244,7 +244,7 @@ impl MatrixRootService {
     fn snapshot_cache_stamp(&self) -> String {
         format!(
             "root-commit:{}:{}:{}:{}",
-            self.next_commit_index,
+            self.placement_commit_index,
             self.nodes.len(),
             self.placements.len(),
             self.leader_lease_receipts.len()
@@ -253,7 +253,7 @@ impl MatrixRootService {
 
     fn export_snapshot_image(&self) -> Result<RootSnapshotExportCache, ObjectError> {
         let stamp = self.snapshot_cache_stamp();
-        if let Some(cache) = self.snapshot_export_cache.borrow().as_ref() {
+        if let Some(cache) = self.placement_snapshot_export_cache.borrow().as_ref() {
             if cache.stamp == stamp {
                 return Ok(cache.clone());
             }
@@ -265,7 +265,7 @@ impl MatrixRootService {
             checksum: etag(&bytes),
             bytes: std::sync::Arc::from(bytes.into_boxed_slice()),
         };
-        *self.snapshot_export_cache.borrow_mut() = Some(cache.clone());
+        *self.placement_snapshot_export_cache.borrow_mut() = Some(cache.clone());
         Ok(cache)
     }
 
@@ -287,7 +287,7 @@ impl MatrixRootService {
             max_payload_bytes,
         )?;
         if chunk.eof {
-            let mut cache = self.snapshot_export_cache.borrow_mut();
+            let mut cache = self.placement_snapshot_export_cache.borrow_mut();
             if cache
                 .as_ref()
                 .map(|cached| cached.stamp == image.stamp)
@@ -307,7 +307,7 @@ impl MatrixRootService {
         self.leader_lease = snapshot.leader_lease;
         self.leader_lease_receipts = snapshot.leader_lease_receipts;
         self.coordinator_config = snapshot.coordinator_config;
-        self.next_commit_index = snapshot.next_commit_index;
+        self.placement_commit_index = snapshot.next_commit_index;
         Ok(())
     }
 
