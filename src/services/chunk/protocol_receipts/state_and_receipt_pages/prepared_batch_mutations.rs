@@ -2,7 +2,11 @@
 struct ChunkMutationBatch {
     batch_id: String,
     started_control_commit_index: u64,
-    snapshot: Box<ChunkServiceSnapshot>,
+    /// The undo, when this batch owns it. `None` when the caller that opened
+    /// the batch holds the undo instead, which is what the page service does:
+    /// its own batch snapshot already carries every replica, and its abort
+    /// rebuilds the replicas from it, so a second copy here is never read.
+    snapshot: Option<Box<ChunkServiceSnapshot>>,
 }
 
 pub struct ChunkMutationBatchStatus {

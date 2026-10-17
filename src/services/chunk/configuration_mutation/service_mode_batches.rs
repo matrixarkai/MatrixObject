@@ -16,9 +16,30 @@ impl MatrixChunkService {
         }
     }
 
+    /// Opens a batch that owns its undo.
     pub fn begin_mutation_batch(
         &mut self,
         batch_id: impl Into<String>,
+    ) -> Result<ChunkMutationBatchStatus, ObjectError> {
+        self.begin_mutation_batch_inner(batch_id, true)
+    }
+
+    /// Opens a batch whose undo the caller holds.
+    ///
+    /// Use this when the caller already captured enough to restore this service.
+    /// It skips the snapshot, which copies every chunk this replica holds, so on
+    /// a put it is the difference between one copy of the chunk state and two.
+    pub fn begin_mutation_batch_without_undo(
+        &mut self,
+        batch_id: impl Into<String>,
+    ) -> Result<ChunkMutationBatchStatus, ObjectError> {
+        self.begin_mutation_batch_inner(batch_id, false)
+    }
+
+    fn begin_mutation_batch_inner(
+        &mut self,
+        batch_id: impl Into<String>,
+        capture_undo: bool,
     ) -> Result<ChunkMutationBatchStatus, ObjectError> {
         self.ensure_writable()?;
         let batch_id = batch_id.into();
@@ -33,11 +54,15 @@ impl MatrixChunkService {
                 "chunk mutation batch already active".to_string(),
             ));
         }
-        let snapshot = self.export_snapshot_unsealed();
+        let snapshot = if capture_undo {
+            Some(Box::new(self.export_snapshot_unsealed()))
+        } else {
+            None
+        };
         self.active_mutation_batch = Some(ChunkMutationBatch {
             batch_id,
             started_control_commit_index: self.chunk_mutation_control_commit_index,
-            snapshot: Box::new(snapshot),
+            snapshot,
         });
         Ok(self.mutation_batch_status())
     }
@@ -79,9 +104,13 @@ impl MatrixChunkService {
         }
         let batch_id = active.batch_id;
         let started_control_commit_index = active.started_control_commit_index;
-        let mut rollback = *active.snapshot;
-        rollback.seal_checksum();
-        self.install_snapshot(rollback)?;
+        // A marker batch has no undo: whoever opened it holds one, and
+        // restoring is theirs to do.
+        if let Some(snapshot) = active.snapshot {
+            let mut rollback = *snapshot;
+            rollback.seal_checksum();
+            self.install_snapshot(rollback)?;
+        }
         let mut status = self.mutation_batch_status();
         status.batch_id = batch_id;
         status.started_control_commit_index = started_control_commit_index;
