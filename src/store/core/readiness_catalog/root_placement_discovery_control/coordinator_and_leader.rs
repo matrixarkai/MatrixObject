@@ -1,6 +1,6 @@
 impl MatrixObjectStore {
     pub fn root_coordinator_config(&self) -> MetadataCoordinatorConfig {
-        self.root_service.coordinator_config()
+        self.root_service.placement_coordinator_config()
     }
 
     pub fn root_coordinator_policy_control_fields(

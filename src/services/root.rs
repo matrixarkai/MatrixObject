@@ -13,7 +13,7 @@ pub struct MatrixRootService {
     pub(crate) placements: BTreeMap<ObjectId, ObjectPlacement>,
     leader_lease: Option<RootLeaderLease>,
     leader_lease_receipts: BTreeMap<String, RootLeaderLeaseReceipt>,
-    coordinator_config: MetadataCoordinatorConfig,
+    placement_coordinator_config: MetadataCoordinatorConfig,
     pub(crate) placement_commit_index: u64,
     placement_snapshot_export_cache: RefCell<Option<RootSnapshotExportCache>>,
     root_state_fingerprint_cache: RefCell<Option<String>>,
