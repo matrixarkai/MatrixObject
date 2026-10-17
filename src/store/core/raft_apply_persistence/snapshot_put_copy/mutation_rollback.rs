@@ -62,7 +62,7 @@ impl MatrixObjectStore {
         }
     }
 
-    /// Captures a rollback for the put path.
+    /// Captures a rollback for a single-key object mutation.
     ///
     /// `page_service` is not copied either. `begin_mutation_batch` takes its own
     /// full snapshot of the page service and holds it for the batch, nothing
@@ -80,7 +80,16 @@ impl MatrixObjectStore {
     /// those three is 83.7% of the allocations a put makes, and it is what made
     /// a put cost O(stored objects). Every other field, `versions` included, is
     /// still copied, and every other caller keeps the copying behaviour.
-    fn capture_put_mutation_rollback(&self, bucket: &str, key: &str) -> ObjectMutationRollback {
+    /// A delete uses this too. Its mutations are a strict subset of a put's --
+    /// `mark_extents_stale` or a `versions` push, one `objects` entry, one
+    /// metadata record and one appended change -- where a put also inserts a
+    /// bucket, allocates extents and moves `logical_written_bytes`. So an undo
+    /// sufficient for a put is sufficient for a delete.
+    fn capture_targeted_mutation_rollback(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> ObjectMutationRollback {
         let object_id = ObjectId::new(bucket.to_string(), key.to_string());
         let targeted = PutTargetedUndo {
             meta: self.meta_service.capture_record_undo(&meta_object_key(&object_id)),

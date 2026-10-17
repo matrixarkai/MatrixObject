@@ -9,7 +9,7 @@ impl MatrixObjectStore {
         options: PutOptions,
         operation: &str,
     ) -> Result<ObjectMetadata, ObjectError> {
-        let rollback = self.capture_put_mutation_rollback(&bucket, &key);
+        let rollback = self.capture_targeted_mutation_rollback(&bucket, &key);
         let batch_material = format!("{operation}:{bucket}/{key}:{update_time_ms}:{}", data.len());
         let batch_id = format!("object-put-{}", etag(batch_material.as_bytes()));
         if let Err(err) = self.page_service.begin_mutation_batch(batch_id.clone()) {

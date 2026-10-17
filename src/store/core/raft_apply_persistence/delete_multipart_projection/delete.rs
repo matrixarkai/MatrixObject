@@ -8,7 +8,7 @@ impl MatrixObjectStore {
     ) -> Result<ObjectMetadata, ObjectError> {
         let batch_material = format!("delete_object:{bucket}/{key}:{update_time_ms}");
         let batch_id = format!("object-delete-{}", etag(batch_material.as_bytes()));
-        let rollback = self.capture_object_mutation_rollback();
+        let rollback = self.capture_targeted_mutation_rollback(&bucket, &key);
         if let Err(err) = self.page_service.begin_mutation_batch(batch_id.clone()) {
             self.restore_object_mutation_rollback(rollback);
             return Err(err);
