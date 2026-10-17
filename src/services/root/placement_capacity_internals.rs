@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     fn plan_capacity_rebalance_target(
         &self,
         placement: &ObjectPlacement,

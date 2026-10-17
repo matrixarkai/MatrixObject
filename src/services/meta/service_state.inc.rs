@@ -7,8 +7,28 @@ pub(crate) struct MetaSnapshotExportCache {
     last_applied_index: u64,
 }
 
+// The placement snapshot cache, moved here with the state it caches:
+// its fields are private, and privacy is by module.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RootSnapshotExportCache {
+    stamp: String,
+    bytes: std::sync::Arc<[u8]>,
+    checksum: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct MatrixMetaService {
+    // Placement state, folded in from the service that used to own it. Each
+    // name differs from its metadata counterpart on purpose: they count and
+    // cache different things, and sharing a name would fuse them.
+    pub(crate) nodes: BTreeMap<String, RootNode>,
+    pub(crate) placements: BTreeMap<ObjectId, ObjectPlacement>,
+    leader_lease: Option<RootLeaderLease>,
+    leader_lease_receipts: BTreeMap<String, RootLeaderLeaseReceipt>,
+    placement_coordinator_config: MetadataCoordinatorConfig,
+    pub(crate) placement_commit_index: u64,
+    placement_snapshot_export_cache: RefCell<Option<RootSnapshotExportCache>>,
+    root_state_fingerprint_cache: RefCell<Option<String>>,
     pub(crate) records: BTreeMap<String, MetadataRecord>,
     pub(crate) leases: BTreeMap<String, MetadataLease>,
     lease_receipts: BTreeMap<String, MetadataLeaseReceipt>,

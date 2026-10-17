@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn apply_prepared_draining_placement_repair(
         &mut self,
         prepared: PreparedRootPlacementRepair,

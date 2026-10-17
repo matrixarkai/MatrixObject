@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     fn release_committed_bytes(&mut self, placement: &ObjectPlacement) {
         for node_id in &placement.node_ids {
             if let Some(node) = self.nodes.get_mut(node_id) {

@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn plan_object_placement(
         &self,
         object_id: ObjectId,

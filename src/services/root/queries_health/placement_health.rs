@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn object_placement(&self, object_id: &ObjectId) -> Result<ObjectPlacement, ObjectError> {
         self.placements
             .get(object_id)

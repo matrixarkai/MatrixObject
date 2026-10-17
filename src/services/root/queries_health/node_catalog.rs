@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn list_nodes(&self) -> Vec<RootNode> {
         self.nodes.values().cloned().collect()
     }

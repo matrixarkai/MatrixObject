@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn prepare_placement_migration_raft_entry(
         &self,
         plan: PlacementMigrationPlan,

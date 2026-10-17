@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn campaign_leader(
         &mut self,
         node_id: &str,
@@ -241,7 +241,7 @@ impl MatrixRootService {
         fingerprint
     }
 
-    fn snapshot_cache_stamp(&self) -> String {
+    fn placement_snapshot_cache_stamp(&self) -> String {
         format!(
             "root-commit:{}:{}:{}:{}",
             self.placement_commit_index,
@@ -252,7 +252,7 @@ impl MatrixRootService {
     }
 
     fn export_placement_snapshot_image(&self) -> Result<RootSnapshotExportCache, ObjectError> {
-        let stamp = self.snapshot_cache_stamp();
+        let stamp = self.placement_snapshot_cache_stamp();
         if let Some(cache) = self.placement_snapshot_export_cache.borrow().as_ref() {
             if cache.stamp == stamp {
                 return Ok(cache.clone());

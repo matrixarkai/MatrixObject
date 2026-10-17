@@ -1,4 +1,4 @@
-impl MatrixRootService {
+impl MatrixMetaService {
     pub fn page_allocator_shard_coverage(&self) -> RootPageAllocatorShardCoverage {
         let mut coverage = RootPageAllocatorShardCoverage {
             status: "none".to_string(),
