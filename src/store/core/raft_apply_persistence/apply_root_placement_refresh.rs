@@ -32,7 +32,7 @@ impl MatrixObjectStore {
             .ok_or_else(|| {
                 ObjectError::NotFound(format!("{}/{}", object_id.bucket, object_id.key))
             })?;
-        let plan = self.root_service.plan_object_placement(
+        let plan = self.meta_service.plan_object_placement(
             object_id.clone(),
             metadata.length,
             replica_count,
@@ -45,7 +45,7 @@ impl MatrixObjectStore {
             update_time_ms,
         };
         if self
-            .root_service
+            .meta_service
             .object_placement(&metadata.object_id)
             .map_or(false, |current| {
                 current.version == desired.version
@@ -62,7 +62,7 @@ impl MatrixObjectStore {
         // rejected refresh, copy every map in the store and discard the copy.
         let rollback = self.capture_object_mutation_rollback();
         if let Err(err) = self
-            .root_service
+            .meta_service
             .commit_object_placement(desired, &plan.plan_checksum)
         {
             self.restore_object_mutation_rollback(rollback);

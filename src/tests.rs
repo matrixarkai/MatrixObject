@@ -387,7 +387,7 @@ fn persistent_journal_replays_objectstore_gateway_catalog() {
     }
 
     let reopened = MatrixObjectStore::new(options).unwrap();
-    let node = reopened.root_service.nodes.get("objectstore-j").unwrap();
+    let node = reopened.meta_service.nodes.get("objectstore-j").unwrap();
     assert_eq!(node.endpoint, "objectstore-j.local:9200");
     assert_eq!(node.service_kind, "objectstore");
     assert!(node.gateway_eligible);
@@ -396,7 +396,7 @@ fn persistent_journal_replays_objectstore_gateway_catalog() {
     assert!(node.draining);
     assert!(!node.online);
     assert_eq!(node.last_heartbeat_ms, 30);
-    let live_node = reopened.root_service.nodes.get("objectstore-live").unwrap();
+    let live_node = reopened.meta_service.nodes.get("objectstore-live").unwrap();
     assert_eq!(live_node.used_bytes, 768);
     assert!(live_node.online);
     assert!(!live_node.draining);
@@ -505,7 +505,7 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
     }
 
     let reopened = MatrixObjectStore::new(options).unwrap();
-    let page_offline = reopened.root_service.nodes.get("block-j").unwrap();
+    let page_offline = reopened.meta_service.nodes.get("block-j").unwrap();
     assert_eq!(page_offline.endpoint, "block-j.local:9300");
     assert_eq!(page_offline.service_kind, "blockserver");
     assert_eq!(page_offline.page_allocator_shard_index, 0);
@@ -515,12 +515,12 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
     assert!(!page_offline.page_health.ready);
     assert!(!page_offline.page_health.read_ready);
     assert_eq!(page_offline.last_heartbeat_ms, 30);
-    let page_live = reopened.root_service.nodes.get("block-live").unwrap();
+    let page_live = reopened.meta_service.nodes.get("block-live").unwrap();
     assert_eq!(page_live.page_allocator_shard_index, 1);
     assert!(page_live.online);
     assert!(!page_live.draining);
     assert!(page_live.page_health.ready);
-    let chunk_offline = reopened.root_service.nodes.get("chunk-j").unwrap();
+    let chunk_offline = reopened.meta_service.nodes.get("chunk-j").unwrap();
     assert_eq!(chunk_offline.endpoint, "chunk-j.local:9400");
     assert_eq!(chunk_offline.service_kind, "chunkserver");
     assert!(chunk_offline.draining);
@@ -528,7 +528,7 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
     assert!(!chunk_offline.chunk_health.accepting_writes);
     assert_eq!(chunk_offline.chunk_health.service_mode, "offline");
     assert_eq!(chunk_offline.last_heartbeat_ms, 80);
-    let chunk_live = reopened.root_service.nodes.get("chunk-live").unwrap();
+    let chunk_live = reopened.meta_service.nodes.get("chunk-live").unwrap();
     assert!(chunk_live.online);
     assert!(!chunk_live.draining);
     assert!(chunk_live.chunk_health.accepting_writes);
@@ -575,13 +575,13 @@ fn persistent_journal_replays_embedded_control_plane_bootstrap() {
     }
 
     let reopened = MatrixObjectStore::new(options).unwrap();
-    let meta_node = reopened.root_service.nodes.get("meta-j").unwrap();
+    let meta_node = reopened.meta_service.nodes.get("meta-j").unwrap();
     assert_eq!(meta_node.endpoint, "meta-j.local:9105");
     assert_eq!(meta_node.service_kind, "metaserver");
     assert!(meta_node.metadata_eligible);
     assert!(meta_node.meta_health.control_proof.read_ready);
     assert!(meta_node.meta_health.control_proof.write_ready);
-    let root_node = reopened.root_service.nodes.get("root-j").unwrap();
+    let root_node = reopened.meta_service.nodes.get("root-j").unwrap();
     assert_eq!(root_node.service_kind, "rootserver");
     assert!(root_node.metadata_eligible);
     let lease = reopened.root_leader_lease().unwrap();
@@ -7431,7 +7431,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         })
         .unwrap();
     store
-        .root_service
+        .meta_service
         .campaign_leader("root-a", 100, 1)
         .unwrap();
     store
@@ -7587,7 +7587,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         })
         .unwrap();
     lagging_store
-        .root_service
+        .meta_service
         .campaign_leader("root-a", 100, 1)
         .unwrap();
     let mut lagging_meta =
@@ -7662,7 +7662,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         })
         .unwrap();
     read_fence_lag_store
-        .root_service
+        .meta_service
         .campaign_leader("root-a", 100, 1)
         .unwrap();
     let mut read_fence_lag_meta =
@@ -7928,7 +7928,7 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
         })
         .unwrap();
     store
-        .root_service
+        .meta_service
         .campaign_leader("root-a", 100, 1)
         .unwrap();
     store
@@ -8037,7 +8037,7 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
         })
         .unwrap();
     store
-        .root_service
+        .meta_service
         .campaign_leader("root-a", 100, 1)
         .unwrap();
     let mut unready_a = pageserver_root_node("block-a", "rack-a", 0, 2);
@@ -8238,7 +8238,7 @@ fn rootserver_tracks_chunkserver_coverage_for_write_routing() {
         })
         .unwrap();
     store
-        .root_service
+        .meta_service
         .campaign_leader("root-a", 100, 1)
         .unwrap();
     let mut blocked = root_node("chunk-blocked", "rack-a", 64);
@@ -8446,7 +8446,7 @@ fn rootserver_health_heartbeats_update_service_coverage() {
             .page_health,
         page_health
     );
-    let page_coverage = store.root_service.pageserver_service_coverage();
+    let page_coverage = store.meta_service.pageserver_service_coverage();
     assert_eq!(page_coverage.ready_pageserver_count, 0);
     assert_eq!(page_coverage.read_ready_pageserver_count, 1);
     assert_eq!(page_coverage.total_chunk_endpoint_count, 4);
@@ -8506,7 +8506,7 @@ fn rootserver_health_heartbeats_update_service_coverage() {
             .chunk_health,
         chunk_health
     );
-    let chunk_coverage = store.root_service.chunkserver_coverage(8);
+    let chunk_coverage = store.meta_service.chunkserver_coverage(8);
     assert_eq!(chunk_coverage.active_chunkserver_count, 1);
     assert_eq!(chunk_coverage.writable_chunkserver_count, 0);
     assert_eq!(chunk_coverage.frozen_chunkserver_count, 1);
@@ -8831,7 +8831,7 @@ fn rootserver_expires_stale_node_heartbeats() {
     assert_eq!(store.expire_root_node_heartbeats(10, 20).unwrap(), 0);
     assert_eq!(
         store
-            .root_service
+            .meta_service
             .chunkserver_coverage(1)
             .active_chunkserver_count,
         2
@@ -8851,7 +8851,7 @@ fn rootserver_expires_stale_node_heartbeats() {
     assert!(node_b.online);
     assert_eq!(
         store
-            .root_service
+            .meta_service
             .chunkserver_coverage(1)
             .active_chunkserver_count,
         1
@@ -9041,12 +9041,12 @@ fn raft_backed_store_replays_root_health_heartbeats() {
     assert_eq!(chunk_receipt.content_type, "root/chunk-health-heartbeat");
     let page_coverage = replicated
         .store()
-        .root_service
+        .meta_service
         .pageserver_service_coverage();
     assert_eq!(page_coverage.ready_pageserver_count, 1);
     assert_eq!(page_coverage.read_ready_pageserver_count, 1);
     assert_eq!(page_coverage.total_chunk_capacity_free_bytes, 300);
-    let chunk_coverage = replicated.store().root_service.chunkserver_coverage(8);
+    let chunk_coverage = replicated.store().meta_service.chunkserver_coverage(8);
     assert_eq!(chunk_coverage.writable_chunkserver_count, 1);
     assert_eq!(chunk_coverage.total_reported_free_bytes, 88);
     assert_eq!(chunk_coverage.control_proof_count, 1);
@@ -9269,7 +9269,7 @@ fn rootserver_pages_placement_health_for_repair_controllers() {
     ));
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
-    store.root_service = root;
+    store.meta_service = root;
     let via_store = store
         .audit_root_placement_health(None, 10, 2, 10, true, 0)
         .unwrap();
@@ -9355,7 +9355,7 @@ fn rootserver_repairs_unhealthy_placements_from_health_audit() {
         2
     );
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
-    store.root_service = root;
+    store.meta_service = root;
     let final_health = store
         .audit_root_placement_health(None, 10, 2, 10, true, 0)
         .unwrap();
@@ -9464,7 +9464,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         })
         .unwrap();
     let root_lease = store
-        .root_service
+        .meta_service
         .campaign_leader("root-a", 100, 10)
         .unwrap();
     let ready = store.distributed_readiness(0, 10, 0, 0, 2, 100, 0).unwrap();
@@ -31015,7 +31015,7 @@ fn pageserver_storage_fanout_uses_production_tunables() {
     assert!(!distributed.root_state_fingerprint.is_empty());
     assert_eq!(
         distributed.root_state_fingerprint,
-        store.root_service.root_state_fingerprint()
+        store.meta_service.root_state_fingerprint()
     );
     assert!(!distributed.root_raft_status_checksum.is_empty());
     assert!(!distributed.chunk_state_fingerprint.is_empty());

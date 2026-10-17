@@ -48,7 +48,6 @@ impl MatrixObjectStore {
             } else {
                 Some(self.meta_service.clone())
             },
-            root_service: self.root_service.clone(),
             slabs: self.slabs.clone(),
             payloads: self.payloads.clone(),
             page_service: self.page_service.clone(),
@@ -122,7 +121,6 @@ impl MatrixObjectStore {
         if let Some(meta_service) = rollback.meta_service {
             self.meta_service = meta_service;
         }
-        self.root_service = rollback.root_service;
         self.slabs = rollback.slabs;
         self.payloads = rollback.payloads;
         self.page_service = rollback.page_service;

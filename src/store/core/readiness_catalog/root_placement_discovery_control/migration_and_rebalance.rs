@@ -8,7 +8,7 @@ impl MatrixObjectStore {
     ) -> Result<PlacementMigrationPlan, ObjectError> {
         validate_bucket(bucket)?;
         validate_key(key)?;
-        self.root_service.plan_placement_migration(
+        self.meta_service.plan_placement_migration(
             &ObjectId::new(bucket, key),
             source_node_id,
             target_node_id,
@@ -20,7 +20,7 @@ impl MatrixObjectStore {
         plan: PlacementMigrationPlan,
         expected_plan_checksum: &str,
     ) -> Result<ObjectPlacement, ObjectError> {
-        self.root_service
+        self.meta_service
             .commit_placement_migration(plan, expected_plan_checksum)
     }
 
@@ -30,7 +30,7 @@ impl MatrixObjectStore {
         expected_plan_checksum: &str,
         min_free_bytes: u64,
     ) -> Result<ObjectPlacement, ObjectError> {
-        self.root_service.commit_placement_migration_with_min_free(
+        self.meta_service.commit_placement_migration_with_min_free(
             plan,
             expected_plan_checksum,
             min_free_bytes,
@@ -42,7 +42,7 @@ impl MatrixObjectStore {
         plan: PlacementMigrationPlan,
         expected_plan_checksum: &str,
     ) -> Result<PreparedRootPlacementMigration, ObjectError> {
-        self.root_service
+        self.meta_service
             .prepare_placement_migration_raft_entry(plan, expected_plan_checksum)
     }
 
@@ -52,7 +52,7 @@ impl MatrixObjectStore {
         expected_plan_checksum: &str,
         min_free_bytes: u64,
     ) -> Result<PreparedRootPlacementMigration, ObjectError> {
-        self.root_service
+        self.meta_service
             .prepare_placement_migration_raft_entry_with_min_free(
                 plan,
                 expected_plan_checksum,
@@ -64,7 +64,7 @@ impl MatrixObjectStore {
         &mut self,
         prepared: PreparedRootPlacementMigration,
     ) -> Result<ObjectPlacement, ObjectError> {
-        self.root_service
+        self.meta_service
             .apply_prepared_placement_migration(prepared)
     }
 
@@ -72,7 +72,7 @@ impl MatrixObjectStore {
         &self,
         max_objects: usize,
     ) -> RootPlacementRepairReport {
-        self.root_service
+        self.meta_service
             .plan_draining_placement_repairs(max_objects)
     }
 
@@ -80,7 +80,7 @@ impl MatrixObjectStore {
         &mut self,
         max_objects: usize,
     ) -> RootPlacementRepairReport {
-        self.root_service.repair_draining_placements(max_objects)
+        self.meta_service.repair_draining_placements(max_objects)
     }
 
     pub fn plan_unhealthy_root_placement_repairs(
@@ -91,7 +91,7 @@ impl MatrixObjectStore {
         min_free_bytes: u64,
         max_payload_bytes: u64,
     ) -> Result<RootPlacementRepairReport, ObjectError> {
-        self.root_service.plan_unhealthy_placement_repairs(
+        self.meta_service.plan_unhealthy_placement_repairs(
             marker,
             max_objects,
             expected_replica_count,
@@ -108,7 +108,7 @@ impl MatrixObjectStore {
         min_free_bytes: u64,
         max_payload_bytes: u64,
     ) -> Result<RootPlacementRepairReport, ObjectError> {
-        self.root_service.repair_unhealthy_placements(
+        self.meta_service.repair_unhealthy_placements(
             marker,
             max_objects,
             expected_replica_count,
@@ -122,7 +122,7 @@ impl MatrixObjectStore {
         max_objects: usize,
         min_free_bytes: u64,
     ) -> RootCapacityRebalanceReport {
-        self.root_service
+        self.meta_service
             .plan_capacity_rebalance(max_objects, min_free_bytes)
     }
 
@@ -131,7 +131,7 @@ impl MatrixObjectStore {
         max_objects: usize,
         min_free_bytes: u64,
     ) -> RootCapacityRebalanceReport {
-        self.root_service
+        self.meta_service
             .rebalance_capacity(max_objects, min_free_bytes)
     }
 
@@ -140,7 +140,7 @@ impl MatrixObjectStore {
         max_objects: usize,
         min_free_bytes: u64,
     ) -> PreparedRootCapacityRebalance {
-        self.root_service
+        self.meta_service
             .prepare_capacity_rebalance_raft_entry(max_objects, min_free_bytes)
     }
 
@@ -148,7 +148,7 @@ impl MatrixObjectStore {
         &self,
         max_objects: usize,
     ) -> PreparedRootPlacementRepair {
-        self.root_service
+        self.meta_service
             .prepare_draining_placement_repair_raft_entry(max_objects)
     }
 
@@ -156,7 +156,7 @@ impl MatrixObjectStore {
         &mut self,
         prepared: PreparedRootPlacementRepair,
     ) -> Result<RootPlacementRepairReport, ObjectError> {
-        self.root_service
+        self.meta_service
             .apply_prepared_draining_placement_repair(prepared)
     }
 
@@ -168,7 +168,7 @@ impl MatrixObjectStore {
         min_free_bytes: u64,
         max_payload_bytes: u64,
     ) -> Result<PreparedRootUnhealthyPlacementRepair, ObjectError> {
-        self.root_service
+        self.meta_service
             .prepare_unhealthy_placement_repair_raft_entry(
                 marker,
                 max_objects,
@@ -182,7 +182,7 @@ impl MatrixObjectStore {
         &mut self,
         prepared: PreparedRootUnhealthyPlacementRepair,
     ) -> Result<RootPlacementRepairReport, ObjectError> {
-        self.root_service
+        self.meta_service
             .apply_prepared_unhealthy_placement_repair(prepared)
     }
 
@@ -190,7 +190,7 @@ impl MatrixObjectStore {
         &mut self,
         prepared: PreparedRootCapacityRebalance,
     ) -> Result<RootCapacityRebalanceReport, ObjectError> {
-        self.root_service
+        self.meta_service
             .apply_prepared_capacity_rebalance(prepared)
     }
 

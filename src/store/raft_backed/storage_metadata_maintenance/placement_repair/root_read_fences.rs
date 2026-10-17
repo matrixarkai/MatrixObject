@@ -38,7 +38,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             root_applied_index: applied_index,
             root_read_index_lag: requested_index.saturating_sub(applied_index),
             root_raft_term: self.raft.term(),
-            root_state_fingerprint: self.store.root_service.root_state_fingerprint(),
+            root_state_fingerprint: self.store.meta_service.root_state_fingerprint(),
             proof_checksum: String::new(),
         };
         proof.proof_checksum = root_read_proof_checksum(&proof);

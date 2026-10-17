@@ -7,7 +7,7 @@ impl MatrixObjectStore {
     ) -> ObjectCapacityRebalanceReport {
         let root_limit = if marker.is_some() { 0 } else { max_objects };
         let root_plan = self
-            .root_service
+            .meta_service
             .plan_capacity_rebalance(root_limit, min_free_bytes);
         let mut report = ObjectCapacityRebalanceReport {
             min_free_bytes,
@@ -91,7 +91,7 @@ impl MatrixObjectStore {
                     report.skipped_migration_objects.saturating_add(1);
                 continue;
             }
-            match self.root_service.commit_placement_migration_with_min_free(
+            match self.meta_service.commit_placement_migration_with_min_free(
                 item.plan.clone(),
                 &item.plan.plan_checksum,
                 min_free_bytes,

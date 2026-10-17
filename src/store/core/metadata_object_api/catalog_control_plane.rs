@@ -67,7 +67,7 @@ impl MatrixObjectStore {
         data_eligible_filter: Option<bool>,
         gateway_eligible_filter: Option<bool>,
     ) -> Result<RootNodePage, ObjectError> {
-        self.root_service.list_nodes_page(
+        self.meta_service.list_nodes_page(
             marker,
             limit,
             service_kind_filter,
@@ -92,7 +92,7 @@ impl MatrixObjectStore {
         min_free_bytes: u64,
         min_reclaimable_bytes: u64,
     ) -> Result<RootNodeUsagePage, ObjectError> {
-        self.root_service.list_node_usage(
+        self.meta_service.list_node_usage(
             marker,
             limit,
             service_kind_filter,
@@ -119,7 +119,7 @@ impl MatrixObjectStore {
         min_page_physical_discard_bytes: u64,
         min_page_physical_discard_ranges: u64,
     ) -> Result<RootReclaimNodePlanPage, ObjectError> {
-        self.root_service.plan_reclaim_nodes(
+        self.meta_service.plan_reclaim_nodes(
             marker,
             limit,
             service_kind_filter,
@@ -139,7 +139,7 @@ impl MatrixObjectStore {
         limit: usize,
         node_id_filter: Option<&str>,
     ) -> Result<RootPlacementPage, ObjectError> {
-        self.root_service
+        self.meta_service
             .list_object_placements(marker, limit, node_id_filter)
     }
 
@@ -152,7 +152,7 @@ impl MatrixObjectStore {
         degraded_only: bool,
         max_payload_bytes: u64,
     ) -> Result<RootPlacementHealthPage, ObjectError> {
-        self.root_service.audit_placement_health(
+        self.meta_service.audit_placement_health(
             marker,
             limit,
             expected_replica_count,
@@ -167,7 +167,7 @@ impl MatrixObjectStore {
         bucket: &str,
         key: &str,
     ) -> Result<ObjectPlacement, ObjectError> {
-        self.root_service
+        self.meta_service
             .object_placement(&ObjectId::new(bucket, key))
     }
 

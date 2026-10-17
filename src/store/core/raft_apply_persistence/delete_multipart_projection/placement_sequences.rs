@@ -4,7 +4,7 @@ impl MatrixObjectStore {
         object_id: &ObjectId,
         keep: Option<&ObjectPlacement>,
     ) {
-        let Some(existing) = self.root_service.placements.get(object_id).cloned() else {
+        let Some(existing) = self.meta_service.placements.get(object_id).cloned() else {
             return;
         };
         if keep.map_or(false, |placement| {
@@ -14,7 +14,7 @@ impl MatrixObjectStore {
         }) {
             return;
         }
-        let _ = self.root_service.release_object_placement(object_id);
+        let _ = self.meta_service.release_object_placement(object_id);
     }
 
     fn next_object_version(&self, object_id: &ObjectId) -> u64 {

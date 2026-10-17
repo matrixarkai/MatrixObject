@@ -130,7 +130,7 @@ impl MatrixObjectStore {
         validate_bucket(&upload.bucket)?;
         validate_key(&upload.key)?;
         let object_id = ObjectId::new(upload.bucket.clone(), upload.key.clone());
-        let plan = self.root_service.plan_object_placement(
+        let plan = self.meta_service.plan_object_placement(
             object_id.clone(),
             upload.total_bytes,
             replica_count,
@@ -161,7 +161,7 @@ impl MatrixObjectStore {
             update_time_ms,
         };
         let committed = match self
-            .root_service
+            .meta_service
             .commit_object_placement(placement, &plan.plan_checksum)
         {
             Ok(committed) => committed,
