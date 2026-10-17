@@ -26,7 +26,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let value = self
             .store
-            .root_service
+            .meta_service
             .export_placement_snapshot_chunk(offset, max_payload_bytes)?;
         Ok(ProvenRootRead { value, proof })
     }
@@ -66,7 +66,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         loop {
             let value = self
                 .store
-                .root_service
+                .meta_service
                 .export_placement_snapshot_chunk(offset, max_payload_bytes)?;
             let eof = value.eof;
             let payload_len = value.payload.len() as u64;
@@ -360,7 +360,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         self.store
-            .root_service
+            .meta_service
             .install_placement_snapshot_bytes_in_place(&assembled_snapshot)?;
         drop(assembled_snapshot);
         Ok(snapshot_install_progress(

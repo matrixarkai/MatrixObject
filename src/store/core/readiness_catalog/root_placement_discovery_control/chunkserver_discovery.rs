@@ -15,7 +15,7 @@ impl MatrixObjectStore {
         if let Some(expected) = expected_catalog_route_checksum {
             endpoint_set.require_catalog_route_checksum(expected)?;
         }
-        let coverage = self.root_service.chunkserver_coverage(min_free_bytes);
+        let coverage = self.meta_service.chunkserver_coverage(min_free_bytes);
         if coverage.status == "none" {
             return Err(ObjectError::PreconditionFailed(
                 "catalog has no active chunkserver endpoints".to_string(),
@@ -37,7 +37,7 @@ impl MatrixObjectStore {
         let mut endpoints = Vec::new();
         let mut disabled_endpoint_indexes = BTreeSet::new();
         let mut seen = BTreeSet::new();
-        for node in self.root_service.list_nodes() {
+        for node in self.meta_service.list_nodes() {
             if node.service_kind != "chunkserver" || !node.online || !node.data_eligible {
                 continue;
             }

@@ -11,7 +11,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_objects: usize,
     ) -> RootPlacementRepairReport {
         self.store
-            .root_service
+            .meta_service
             .plan_draining_placement_repairs(max_objects)
     }
 

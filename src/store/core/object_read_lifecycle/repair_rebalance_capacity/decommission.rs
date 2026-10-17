@@ -5,7 +5,7 @@ impl MatrixObjectStore {
         max_repair_chunks_per_object: usize,
     ) -> ObjectReplicaDecommissionReport {
         let plan = self
-            .root_service
+            .meta_service
             .plan_draining_placement_repairs(max_objects);
         let mut report = ObjectReplicaDecommissionReport {
             plan,
@@ -75,7 +75,7 @@ impl MatrixObjectStore {
             report.attempted_migration_objects =
                 report.attempted_migration_objects.saturating_add(1);
             match self
-                .root_service
+                .meta_service
                 .commit_placement_migration(item.plan.clone(), &item.plan.plan_checksum)
             {
                 Ok(placement) => {

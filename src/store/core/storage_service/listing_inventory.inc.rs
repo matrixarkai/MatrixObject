@@ -47,7 +47,7 @@ impl MatrixObjectStore {
                 }
                 continue;
             }
-            let placement = self.root_service.object_placement(object_id).ok();
+            let placement = self.meta_service.object_placement(object_id).ok();
             let record = ObjectInventoryRecord {
                 metadata: metadata.clone(),
                 placement,

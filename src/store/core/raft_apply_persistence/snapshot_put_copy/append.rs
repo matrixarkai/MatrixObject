@@ -194,7 +194,7 @@ impl MatrixObjectStore {
             .ok_or_else(|| {
                 ObjectError::InvalidArgument("object append length overflow".to_string())
             })?;
-        let plan = self.root_service.plan_object_placement(
+        let plan = self.meta_service.plan_object_placement(
             object_id.clone(),
             planned_length,
             replica_count,
@@ -215,7 +215,7 @@ impl MatrixObjectStore {
             update_time_ms,
         };
         match self
-            .root_service
+            .meta_service
             .commit_object_placement(placement, &plan.plan_checksum)
         {
             Ok(_) => Ok(metadata),

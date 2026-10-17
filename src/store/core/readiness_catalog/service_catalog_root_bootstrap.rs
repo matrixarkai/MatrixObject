@@ -1,6 +1,6 @@
 impl MatrixObjectStore {
     pub fn register_root_node(&mut self, node: RootNode) -> Result<RootNode, ObjectError> {
-        self.root_service.register_node(node)
+        self.meta_service.register_node(node)
     }
 
     pub fn bootstrap_embedded_control_plane(
@@ -124,7 +124,7 @@ impl MatrixObjectStore {
             metaserver_node,
             embedded_root_node,
             root_leader_lease,
-            root_state_fingerprint: self.root_service.root_state_fingerprint(),
+            root_state_fingerprint: self.meta_service.root_state_fingerprint(),
             metadata_control_proof,
         })
     }
@@ -138,7 +138,7 @@ impl MatrixObjectStore {
         online: bool,
         now_ms: u64,
     ) -> Result<RootNode, ObjectError> {
-        self.root_service.heartbeat_node(
+        self.meta_service.heartbeat_node(
             node_id,
             used_bytes,
             capacity_bytes,
@@ -154,7 +154,7 @@ impl MatrixObjectStore {
         health: RootPageHealth,
         now_ms: u64,
     ) -> Result<RootNode, ObjectError> {
-        self.root_service
+        self.meta_service
             .heartbeat_page_health(node_id, health, now_ms)
     }
 
@@ -164,7 +164,7 @@ impl MatrixObjectStore {
         health: RootChunkHealth,
         now_ms: u64,
     ) -> Result<RootNode, ObjectError> {
-        self.root_service
+        self.meta_service
             .heartbeat_chunk_health(node_id, health, now_ms)
     }
 

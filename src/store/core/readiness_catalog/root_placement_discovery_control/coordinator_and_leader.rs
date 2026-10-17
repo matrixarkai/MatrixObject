@@ -1,6 +1,6 @@
 impl MatrixObjectStore {
     pub fn root_coordinator_config(&self) -> MetadataCoordinatorConfig {
-        self.root_service.placement_coordinator_config()
+        self.meta_service.placement_coordinator_config()
     }
 
     pub fn root_coordinator_policy_control_fields(
@@ -20,7 +20,7 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let config = self.root_service.configure_placement_coordinator_config(config)?;
+        let config = self.meta_service.configure_placement_coordinator_config(config)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
                 if let Some(rollback) = rollback {
@@ -44,7 +44,7 @@ impl MatrixObjectStore {
         ttl_ms: u64,
         now_ms: u64,
     ) -> Result<RootLeaderLease, ObjectError> {
-        self.root_service.campaign_leader(node_id, ttl_ms, now_ms)
+        self.meta_service.campaign_leader(node_id, ttl_ms, now_ms)
     }
 
     pub fn campaign_root_leader_idempotent(
@@ -54,7 +54,7 @@ impl MatrixObjectStore {
         now_ms: u64,
         idempotency_key: &str,
     ) -> Result<(RootLeaderLease, RootLeaderLeaseReceipt), ObjectError> {
-        self.root_service
+        self.meta_service
             .campaign_leader_idempotent(node_id, ttl_ms, now_ms, idempotency_key)
     }
 
@@ -65,7 +65,7 @@ impl MatrixObjectStore {
         ttl_ms: u64,
         now_ms: u64,
     ) -> Result<RootLeaderLease, ObjectError> {
-        self.root_service
+        self.meta_service
             .renew_leader(node_id, epoch, ttl_ms, now_ms)
     }
 
@@ -77,12 +77,12 @@ impl MatrixObjectStore {
         now_ms: u64,
         idempotency_key: &str,
     ) -> Result<(RootLeaderLease, RootLeaderLeaseReceipt), ObjectError> {
-        self.root_service
+        self.meta_service
             .renew_leader_idempotent(node_id, epoch, ttl_ms, now_ms, idempotency_key)
     }
 
     pub fn root_leader_lease(&self) -> Option<RootLeaderLease> {
-        self.root_service.leader_lease()
+        self.meta_service.leader_lease()
     }
 
     pub fn list_root_leader_lease_receipts(
@@ -92,7 +92,7 @@ impl MatrixObjectStore {
         operation: Option<&str>,
         leader_node_id: Option<&str>,
     ) -> Result<RootLeaderLeaseReceiptPage, ObjectError> {
-        self.root_service
+        self.meta_service
             .list_leader_lease_receipts(marker, limit, operation, leader_node_id)
     }
 

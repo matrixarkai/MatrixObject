@@ -75,7 +75,7 @@ impl MatrixObjectStore {
                 })?
         };
         let destination_id = ObjectId::new(destination_bucket.clone(), destination_key.clone());
-        let plan = self.root_service.plan_object_placement(
+        let plan = self.meta_service.plan_object_placement(
             destination_id.clone(),
             source.length,
             replica_count,
@@ -114,7 +114,7 @@ impl MatrixObjectStore {
             update_time_ms,
         };
         let committed = match self
-            .root_service
+            .meta_service
             .commit_object_placement(placement, &plan.plan_checksum)
         {
             Ok(committed) => committed,

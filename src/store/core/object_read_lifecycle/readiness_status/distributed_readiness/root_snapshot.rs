@@ -88,11 +88,11 @@ impl DistributedRootReadinessSnapshot {
                 && root_metadata_coverage.metadata_control_apply_quorum_available
                 && root_metadata_control_ready
                 && root_metadata_external_coordinator_ready);
-        let root_page_allocator_coverage = store.root_service.page_allocator_shard_coverage();
+        let root_page_allocator_coverage = store.meta_service.page_allocator_shard_coverage();
         let root_page_allocator_ready = root_page_allocator_coverage.active_pageserver_count
             == 0
             || root_page_allocator_coverage.complete;
-        let root_pageserver_service_coverage = store.root_service.pageserver_service_coverage();
+        let root_pageserver_service_coverage = store.meta_service.pageserver_service_coverage();
         let root_pageserver_service_ready =
             root_pageserver_service_coverage.active_pageserver_count == 0
                 || (root_pageserver_service_coverage.ready_pageserver_count > 0
@@ -102,7 +102,7 @@ impl DistributedRootReadinessSnapshot {
                 || (root_pageserver_service_coverage.route_control_write_ready_count > 0
                     && root_pageserver_service_coverage.route_control_read_ready_count > 0);
         let root_chunkserver_coverage = store
-            .root_service
+            .meta_service
             .chunkserver_coverage(min_capacity_free_bytes);
         let root_chunkserver_ready = root_chunkserver_coverage.active_chunkserver_count == 0
             || root_chunkserver_coverage.writable_chunkserver_count > 0;
@@ -115,8 +115,8 @@ impl DistributedRootReadinessSnapshot {
             .map_or_else(String::new, |lease| lease.leader_node_id.clone());
         let root_lease_epoch = root_lease.as_ref().map_or(0, |lease| lease.epoch);
         let root_lease_expire_time_ms = root_lease.as_ref().map_or(0, |lease| lease.expire_time_ms);
-        let root_state_fingerprint = store.root_service.root_state_fingerprint();
-        let root_raft_status = store.root_service.raft_status_from_coverage(
+        let root_state_fingerprint = store.meta_service.root_state_fingerprint();
+        let root_raft_status = store.meta_service.raft_status_from_coverage(
             &root_metadata_coverage,
             &root_page_allocator_coverage,
             &root_pageserver_service_coverage,

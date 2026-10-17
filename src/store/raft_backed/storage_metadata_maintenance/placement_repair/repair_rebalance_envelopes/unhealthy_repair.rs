@@ -5,7 +5,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectMetadata, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index()
             || prepared.expected_previous_commit_index
-                != self.store.root_service.placement_commit_index.saturating_sub(1)
+                != self.store.meta_service.placement_commit_index.saturating_sub(1)
         {
             return Err(ObjectError::PreconditionFailed(
                 "prepared root unhealthy placement repair requires raft/root commit alignment"

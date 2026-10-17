@@ -23,7 +23,7 @@ impl MatrixObjectStore {
         ttl_ms: u64,
         now_ms: u64,
     ) -> Result<u64, ObjectError> {
-        self.root_service.expire_node_heartbeats(ttl_ms, now_ms)
+        self.meta_service.expire_node_heartbeats(ttl_ms, now_ms)
     }
 
     pub fn remove_root_node(
@@ -31,7 +31,7 @@ impl MatrixObjectStore {
         node_id: &str,
         force: bool,
     ) -> Result<RootNodeRemoveReport, ObjectError> {
-        self.root_service.remove_node(node_id, force)
+        self.meta_service.remove_node(node_id, force)
     }
 
     pub fn plan_object_placement(
@@ -43,7 +43,7 @@ impl MatrixObjectStore {
     ) -> Result<PlacementPlan, ObjectError> {
         validate_bucket(bucket)?;
         validate_key(key)?;
-        self.root_service
+        self.meta_service
             .plan_object_placement(ObjectId::new(bucket, key), length, replica_count)
     }
 
@@ -52,7 +52,7 @@ impl MatrixObjectStore {
         placement: ObjectPlacement,
         expected_plan_checksum: &str,
     ) -> Result<ObjectPlacement, ObjectError> {
-        self.root_service
+        self.meta_service
             .commit_object_placement(placement, expected_plan_checksum)
     }
 
@@ -61,7 +61,7 @@ impl MatrixObjectStore {
         bucket: &str,
         key: &str,
     ) -> Result<ObjectPlacement, ObjectError> {
-        self.root_service
+        self.meta_service
             .release_object_placement(&ObjectId::new(bucket, key))
     }
 

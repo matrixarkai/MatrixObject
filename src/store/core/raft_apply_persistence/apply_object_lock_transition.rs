@@ -164,7 +164,7 @@ impl MatrixObjectStore {
         if current.storage_class == storage_class {
             return Ok(current);
         }
-        let plan = self.root_service.plan_object_placement(
+        let plan = self.meta_service.plan_object_placement(
             object_id.clone(),
             current.length,
             replica_count,
@@ -240,7 +240,7 @@ impl MatrixObjectStore {
             update_time_ms,
         };
         let committed = match self
-            .root_service
+            .meta_service
             .commit_object_placement(placement, &plan.plan_checksum)
         {
             Ok(committed) => committed,

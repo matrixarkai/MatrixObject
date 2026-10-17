@@ -45,7 +45,7 @@ impl MatrixObjectStore {
         discovery.catalog_route_checksum = endpoint_set.catalog_route_checksum;
         discovery.readiness_policy = readiness_policy.to_string();
         let mut seen = BTreeSet::new();
-        for node in self.root_service.list_nodes() {
+        for node in self.meta_service.list_nodes() {
             if node.service_kind != "objectstore" {
                 continue;
             }

@@ -46,7 +46,7 @@ impl MatrixObjectStore {
                 return Err(err);
             }
         }
-        let placement = self.root_service.object_placement(&metadata.object_id)?;
+        let placement = self.meta_service.object_placement(&metadata.object_id)?;
         Ok((metadata, placement))
     }
 

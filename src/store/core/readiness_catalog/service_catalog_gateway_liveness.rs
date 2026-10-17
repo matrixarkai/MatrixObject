@@ -290,7 +290,7 @@ impl MatrixObjectStore {
             ));
         }
         let existing = self
-            .root_service
+            .meta_service
             .nodes
             .get(node_id)
             .ok_or_else(|| ObjectError::NotFound("root node missing".to_string()))?
