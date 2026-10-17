@@ -25,7 +25,11 @@ struct PersistentSnapshotDurableStamp {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StoredPayload {
     pub(crate) len: u64,
-    pub(crate) etag: String,
+    /// The digest itself, not its spelling. `etag` formats this same number
+    /// as "fnv1a64:" followed by 16 hex digits, so holding the number costs
+    /// 8 bytes where holding the text cost 24 inline plus a 24-byte buffer,
+    /// and cloning the map no longer allocates once per entry.
+    pub(crate) etag_fnv1a64: u64,
 }
 
 #[derive(Clone, Debug)]

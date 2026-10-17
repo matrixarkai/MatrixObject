@@ -12,7 +12,7 @@ impl MatrixObjectStore {
                 (slab_id.clone(), offset),
                 StoredPayload {
                     len: chunk_len as u64,
-                    etag: etag(&data),
+                    etag_fnv1a64: fnv1a64(&data),
                 },
             );
             self.physical_written_bytes =
@@ -41,7 +41,7 @@ impl MatrixObjectStore {
             (slab_id.clone(), offset),
             StoredPayload {
                 len: chunk_len as u64,
-                etag: etag(&data),
+                etag_fnv1a64: fnv1a64(&data),
             },
         );
         self.physical_written_bytes =
@@ -87,7 +87,7 @@ impl MatrixObjectStore {
                 (slab_id.clone(), offset),
                 StoredPayload {
                     len: chunk_len as u64,
-                    etag: etag(&data[cursor..cursor + chunk_len]),
+                    etag_fnv1a64: fnv1a64(&data[cursor..cursor + chunk_len]),
                 },
             );
             self.physical_written_bytes =

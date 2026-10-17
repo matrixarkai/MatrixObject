@@ -10,6 +10,12 @@ pub(crate) fn append_etag(out: &mut String, data: &[u8]) {
     append_hex64(out, fnv1a64(data));
 }
 
+/// The same spelling as [`append_etag`], for a digest already in hand.
+pub(crate) fn append_etag_of_digest(out: &mut String, digest: u64) {
+    out.push_str("fnv1a64:");
+    append_hex64(out, digest);
+}
+
 pub(crate) fn etag_matches(data: &[u8], expected: &str) -> bool {
     const PREFIX: &str = "fnv1a64:";
     let Some(hex) = expected.strip_prefix(PREFIX) else {

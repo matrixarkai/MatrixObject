@@ -202,10 +202,11 @@ impl MatrixObjectStore {
                 offset,
                 payload.len
             );
-            // `append_etag` writes "fnv1a64:" followed by the hex digest, which is
-            // exactly what the stored etag string already is, so the material is
-            // unchanged and the fingerprint keeps its value across this change.
-            material.push_str(&payload.etag);
+            // The entry holds the digest, not its spelling. This writes the same
+            // "fnv1a64:" prefix and the same 16 hex digits the stored string used
+            // to carry, so the material is unchanged and the fingerprint keeps
+            // its value.
+            append_etag_of_digest(&mut material, payload.etag_fnv1a64);
         }
         let _ = write!(material, "|multipart-payloads:{multipart_payload_count}");
         for (upload_id, upload) in &self.multipart_uploads {
@@ -595,7 +596,7 @@ impl MatrixObjectStore {
                 (slab_id.clone(), *offset),
                 StoredPayload {
                     len: payload.len() as u64,
-                    etag: etag(payload),
+                    etag_fnv1a64: fnv1a64(payload),
                 },
             );
         }
