@@ -134,6 +134,10 @@ struct PhaseResult {
     ops: u64,
     bytes: u64,
     max_inflight: u64,
+    /// Allocations made while this phase ran. The counters are process-global,
+    /// so only a delta across the phase boundary is attributable to the phase.
+    allocs: u64,
+    alloc_bytes: u64,
     seconds: f64,
     avg_ms: f64,
     p50_ms: f64,
@@ -484,6 +488,15 @@ fn bounded_latency_reserve(total_ops: u64, worker_count: u64) -> usize {
     cmp::min(per_worker, MAX_WORKER_LATENCY_RESERVE) as usize
 }
 
+/// A phase's cost per operation. Zero ops reports zero rather than dividing.
+fn per_op(total: u64, ops: u64) -> u64 {
+    if ops == 0 {
+        0
+    } else {
+        total / ops
+    }
+}
+
 fn run_batched_concurrent<F>(
     total_ops: u64,
     bytes_per_op: u64,
@@ -494,6 +507,8 @@ fn run_batched_concurrent<F>(
 where
     F: Fn(u64, u64, u64) -> Result<(), ObjectError> + Send + Sync + 'static,
 {
+    let allocs_at_start = ALLOC_COUNT.load(Ordering::Relaxed);
+    let alloc_bytes_at_start = ALLOC_BYTES.load(Ordering::Relaxed);
     let start = Instant::now();
     let next = Arc::new(AtomicU64::new(0));
     let ok_ops = Arc::new(AtomicU64::new(0));
@@ -575,6 +590,12 @@ where
     };
     let (p50_ms, p95_ms, p99_ms, p999_ms) = latency_percentiles_ms(&mut latencies);
     Ok(PhaseResult {
+        allocs: ALLOC_COUNT
+            .load(Ordering::Relaxed)
+            .saturating_sub(allocs_at_start),
+        alloc_bytes: ALLOC_BYTES
+            .load(Ordering::Relaxed)
+            .saturating_sub(alloc_bytes_at_start),
         ops,
         bytes: ops.saturating_mul(bytes_per_op),
         max_inflight: max_inflight.load(Ordering::Relaxed),
@@ -4503,6 +4524,16 @@ fn run() -> Result<(), ObjectError> {
         LIVE_PEAK_BYTES.load(Ordering::Relaxed)
     );
     println!("put_ops={}", put_phase.ops);
+    println!("put_allocs={}", put_phase.allocs);
+    println!("put_alloc_bytes={}", put_phase.alloc_bytes);
+    println!(
+        "put_allocs_per_op={}",
+        per_op(put_phase.allocs, put_phase.ops)
+    );
+    println!(
+        "put_alloc_bytes_per_op={}",
+        per_op(put_phase.alloc_bytes, put_phase.ops)
+    );
     println!("put_bytes={}", put_phase.bytes);
     println!("put_max_inflight={}", put_phase.max_inflight);
     println!("put_seconds={}", put_phase.seconds);
@@ -4514,6 +4545,16 @@ fn run() -> Result<(), ObjectError> {
     println!("put_p99_ms={}", put_phase.p99_ms);
     println!("put_p999_ms={}", put_phase.p999_ms);
     println!("range_ops={}", range_phase.ops);
+    println!("range_allocs={}", range_phase.allocs);
+    println!("range_alloc_bytes={}", range_phase.alloc_bytes);
+    println!(
+        "range_allocs_per_op={}",
+        per_op(range_phase.allocs, range_phase.ops)
+    );
+    println!(
+        "range_alloc_bytes_per_op={}",
+        per_op(range_phase.alloc_bytes, range_phase.ops)
+    );
     println!("range_bytes={}", range_phase.bytes);
     println!("range_max_inflight={}", range_phase.max_inflight);
     println!("range_seconds={}", range_phase.seconds);
@@ -4525,10 +4566,30 @@ fn run() -> Result<(), ObjectError> {
     println!("range_p99_ms={}", range_phase.p99_ms);
     println!("range_p999_ms={}", range_phase.p999_ms);
     println!("overwrite_ops={}", overwrite_phase.ops);
+    println!("overwrite_allocs={}", overwrite_phase.allocs);
+    println!("overwrite_alloc_bytes={}", overwrite_phase.alloc_bytes);
+    println!(
+        "overwrite_allocs_per_op={}",
+        per_op(overwrite_phase.allocs, overwrite_phase.ops)
+    );
+    println!(
+        "overwrite_alloc_bytes_per_op={}",
+        per_op(overwrite_phase.alloc_bytes, overwrite_phase.ops)
+    );
     println!("overwrite_max_inflight={}", overwrite_phase.max_inflight);
     println!("overwrite_seconds={}", overwrite_phase.seconds);
     println!("overwrite_ops_per_sec={}", qps(&overwrite_phase));
     println!("delete_ops={}", delete_phase.ops);
+    println!("delete_allocs={}", delete_phase.allocs);
+    println!("delete_alloc_bytes={}", delete_phase.alloc_bytes);
+    println!(
+        "delete_allocs_per_op={}",
+        per_op(delete_phase.allocs, delete_phase.ops)
+    );
+    println!(
+        "delete_alloc_bytes_per_op={}",
+        per_op(delete_phase.alloc_bytes, delete_phase.ops)
+    );
     println!("delete_max_inflight={}", delete_phase.max_inflight);
     println!("delete_seconds={}", delete_phase.seconds);
     println!("delete_ops_per_sec={}", qps(&delete_phase));
