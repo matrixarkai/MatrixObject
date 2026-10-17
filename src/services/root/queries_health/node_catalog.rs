@@ -3,21 +3,21 @@ impl MatrixRootService {
         self.nodes.values().cloned().collect()
     }
 
-    pub fn placement_coordinator_config(&self) -> MetadataCoordinatorConfig {
-        self.placement_coordinator_config.clone()
+    pub fn coordinator_config(&self) -> MetadataCoordinatorConfig {
+        self.coordinator_config.clone()
     }
 
-    pub fn configure_coordinator_config(
+    pub fn configure_placement_coordinator_config(
         &mut self,
         mut config: MetadataCoordinatorConfig,
     ) -> Result<MetadataCoordinatorConfig, ObjectError> {
         config.endpoints.sort();
         config.endpoints.dedup();
         validate_metadata_coordinator_config(&config)?;
-        if config.revision <= self.placement_coordinator_config.revision {
-            config.revision = self.placement_coordinator_config.revision.saturating_add(1);
+        if config.revision <= self.coordinator_config.revision {
+            config.revision = self.coordinator_config.revision.saturating_add(1);
         }
-        self.placement_coordinator_config = config.clone();
+        self.coordinator_config = config.clone();
         self.advance_commit_index();
         Ok(config)
     }

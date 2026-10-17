@@ -7140,7 +7140,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
     let mut chunks = Vec::new();
     let mut offset = 0;
     loop {
-        let chunk = root.export_snapshot_chunk(offset, 80).unwrap();
+        let chunk = root.export_placement_snapshot_chunk(offset, 80).unwrap();
         assert_eq!(chunk.offset, offset);
         let next_offset = offset.saturating_add(chunk.payload.len() as u64);
         assert_snapshot_progress(
@@ -7245,7 +7245,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
     );
 
     let mut replacement = MatrixRootService::new();
-    let restored = replacement.install_snapshot_bytes(&snapshot_bytes).unwrap();
+    let restored = replacement.install_placement_snapshot_bytes(&snapshot_bytes).unwrap();
     assert_eq!(restored.next_commit_index, snapshot.next_commit_index);
     assert_eq!(
         replacement.object_placement(&object_id).unwrap().node_ids,
@@ -7384,7 +7384,7 @@ fn rootserver_leader_lease_is_fenced_and_snapshotted() {
         Err(ObjectError::PreconditionFailed(_))
     ));
 
-    let snapshot = root.export_snapshot();
+    let snapshot = root.export_placement_snapshot();
     snapshot.validate().unwrap();
     assert_eq!(
         snapshot.leader_lease.as_ref().unwrap().leader_node_id,
@@ -7393,7 +7393,7 @@ fn rootserver_leader_lease_is_fenced_and_snapshotted() {
     assert_eq!(snapshot.leader_lease_receipts.len(), 2);
     let bytes = snapshot.to_bytes().unwrap();
     let mut restored = MatrixRootService::new();
-    restored.install_snapshot_bytes(&bytes).unwrap();
+    restored.install_placement_snapshot_bytes(&bytes).unwrap();
     assert_eq!(
         restored.leader_lease().unwrap(),
         snapshot.leader_lease.unwrap()
@@ -7783,7 +7783,7 @@ fn rootserver_raft_status_exposes_service_coverage() {
     assert_eq!(status.term, 1);
     assert_eq!(
         status.next_log_index,
-        root.export_snapshot().next_commit_index
+        root.export_placement_snapshot().next_commit_index
     );
     assert_eq!(
         status.last_applied_index,
@@ -7897,10 +7897,10 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
     assert!(complete.complete);
     assert_eq!(complete.status, "complete");
 
-    let snapshot = root.export_snapshot();
+    let snapshot = root.export_placement_snapshot();
     let bytes = snapshot.to_bytes().unwrap();
     let mut restored = MatrixRootService::new();
-    restored.install_snapshot_bytes(&bytes).unwrap();
+    restored.install_placement_snapshot_bytes(&bytes).unwrap();
     assert_eq!(restored.page_allocator_shard_coverage(), complete);
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
@@ -8006,10 +8006,10 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
     assert!(!degraded.route_control_proof_checksum.is_empty());
     assert_eq!(degraded.status, "frozen_degraded");
 
-    let snapshot = root.export_snapshot();
+    let snapshot = root.export_placement_snapshot();
     let bytes = snapshot.to_bytes().unwrap();
     let mut restored = MatrixRootService::new();
-    restored.install_snapshot_bytes(&bytes).unwrap();
+    restored.install_placement_snapshot_bytes(&bytes).unwrap();
     assert_eq!(restored.pageserver_service_coverage(), degraded);
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
@@ -8123,10 +8123,10 @@ fn rootserver_tracks_chunkserver_coverage_for_write_routing() {
         root.plan_object_placement(ObjectId::new("bucket", "non-data"), 1, 1),
         Err(ObjectError::PreconditionFailed(_))
     ));
-    let snapshot = root.export_snapshot();
+    let snapshot = root.export_placement_snapshot();
     let bytes = snapshot.to_bytes().unwrap();
     let mut restored = MatrixRootService::new();
-    restored.install_snapshot_bytes(&bytes).unwrap();
+    restored.install_placement_snapshot_bytes(&bytes).unwrap();
     assert_eq!(
         restored.nodes.get("chunk-non-data").unwrap().data_eligible,
         false

@@ -1,6 +1,6 @@
 impl MatrixObjectStore {
     pub fn root_coordinator_config(&self) -> MetadataCoordinatorConfig {
-        self.root_service.placement_coordinator_config()
+        self.root_service.coordinator_config()
     }
 
     pub fn root_coordinator_policy_control_fields(
@@ -20,7 +20,7 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let config = self.root_service.configure_coordinator_config(config)?;
+        let config = self.root_service.configure_placement_coordinator_config(config)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
                 if let Some(rollback) = rollback {

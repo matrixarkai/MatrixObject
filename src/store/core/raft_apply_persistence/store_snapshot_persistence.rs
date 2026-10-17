@@ -128,7 +128,7 @@ impl MatrixObjectStore {
             slabs: self.slabs.clone(),
             payloads,
             meta_snapshot: self.meta_service.export_snapshot(),
-            root_snapshot: self.root_service.export_snapshot(),
+            root_snapshot: self.root_service.export_placement_snapshot(),
             next_slab_id: self.next_slab_id,
             next_upload_sequence: self.next_upload_sequence,
             logical_written_bytes: self.logical_written_bytes,
@@ -225,7 +225,7 @@ impl MatrixObjectStore {
 
     fn compact_metadata_checksum_without_payload_clones(&self) -> String {
         let meta_snapshot = self.meta_service.export_snapshot();
-        let root_snapshot = self.root_service.export_snapshot();
+        let root_snapshot = self.root_service.export_placement_snapshot();
         let mut material = Vec::with_capacity(self.compact_metadata_checksum_size_hint());
         append_u64(&mut material, self.options.slab_size);
         append_u64(&mut material, self.options.max_extent_bytes);
@@ -625,7 +625,7 @@ impl MatrixObjectStore {
         self.object_change_cursors = snapshot.object_change_cursors;
         self.next_object_change_sequence = snapshot.next_object_change_sequence;
         self.meta_service.install_snapshot(snapshot.meta_snapshot)?;
-        self.root_service.install_snapshot(snapshot.root_snapshot)?;
+        self.root_service.install_placement_snapshot(snapshot.root_snapshot)?;
         self.slabs = snapshot.slabs;
         self.payloads = payload_index;
         self.page_service = page_service;
