@@ -3,13 +3,13 @@ impl MatrixRootService {
         &mut self,
         prepared: PreparedRootUnhealthyPlacementRepair,
     ) -> Result<RootPlacementRepairReport, ObjectError> {
-        if prepared.expected_previous_commit_index != self.next_commit_index.saturating_sub(1) {
+        if prepared.expected_previous_commit_index != self.placement_commit_index.saturating_sub(1) {
             return Err(ObjectError::PreconditionFailed(
                 "root prepared unhealthy placement repair previous commit fence mismatch"
                     .to_string(),
             ));
         }
-        if prepared.prepared_commit_index != self.next_commit_index {
+        if prepared.prepared_commit_index != self.placement_commit_index {
             return Err(ObjectError::PreconditionFailed(
                 "root prepared unhealthy placement repair commit index must be contiguous"
                     .to_string(),

@@ -40,8 +40,8 @@ impl MatrixRootService {
             root_raft_term: 0,
             root_read_proof_checksum: String::new(),
             request_checksum,
-            expected_previous_commit_index: self.next_commit_index.saturating_sub(1),
-            prepared_commit_index: self.next_commit_index,
+            expected_previous_commit_index: self.placement_commit_index.saturating_sub(1),
+            prepared_commit_index: self.placement_commit_index,
             raft_entry_checksum: String::new(),
         };
         prepared.raft_entry_checksum = prepared_root_placement_migration_checksum(&prepared);
@@ -52,12 +52,12 @@ impl MatrixRootService {
         &mut self,
         prepared: PreparedRootPlacementMigration,
     ) -> Result<ObjectPlacement, ObjectError> {
-        if prepared.expected_previous_commit_index != self.next_commit_index.saturating_sub(1) {
+        if prepared.expected_previous_commit_index != self.placement_commit_index.saturating_sub(1) {
             return Err(ObjectError::PreconditionFailed(
                 "root prepared placement migration previous commit fence mismatch".to_string(),
             ));
         }
-        if prepared.prepared_commit_index != self.next_commit_index {
+        if prepared.prepared_commit_index != self.placement_commit_index {
             return Err(ObjectError::PreconditionFailed(
                 "root prepared placement migration commit index must be contiguous".to_string(),
             ));
