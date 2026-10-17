@@ -125,7 +125,9 @@ struct ObjectMutationRollback {
     meta_service: Option<MatrixMetaService>,
     slabs: BTreeMap<SlabId, SlabInfo>,
     payloads: BTreeMap<(SlabId, u64), StoredPayload>,
-    page_service: MatrixPageService,
+    /// Absent on the put path, where the page service's own mutation batch
+    /// holds the undo and the put drives its abort.
+    page_service: Option<MatrixPageService>,
     logical_written_bytes: u64,
     physical_written_bytes: u64,
     last_object_manifest_checkpoint_index: u64,

@@ -50,7 +50,11 @@ impl MatrixObjectStore {
             },
             slabs: self.slabs.clone(),
             payloads: self.payloads.clone(),
-            page_service: self.page_service.clone(),
+            page_service: if targeted {
+                None
+            } else {
+                Some(self.page_service.clone())
+            },
             logical_written_bytes: self.logical_written_bytes,
             physical_written_bytes: self.physical_written_bytes,
             last_object_manifest_checkpoint_index: self.last_object_manifest_checkpoint_index,
@@ -59,6 +63,16 @@ impl MatrixObjectStore {
     }
 
     /// Captures a rollback for the put path.
+    ///
+    /// `page_service` is not copied either. `begin_mutation_batch` takes its own
+    /// full snapshot of the page service and holds it for the batch, nothing
+    /// mutates the page service between that call and this capture, and every
+    /// error path aborts the batch before restoring here -- so this copy was
+    /// overwriting a restore that had already happened. One consequence is
+    /// deliberate: the batch snapshot does not carry the rate-limit token state
+    /// or the cumulative read counters, so an aborted put now keeps both
+    /// instead of rewinding them. Work that happened stays counted, and a
+    /// failed put does not refund its tokens.
     ///
     /// `buckets`, `objects` and `object_changes` are left empty and recorded as
     /// a targeted undo instead: a put inserts one bucket, writes one object key
@@ -123,7 +137,9 @@ impl MatrixObjectStore {
         }
         self.slabs = rollback.slabs;
         self.payloads = rollback.payloads;
-        self.page_service = rollback.page_service;
+        if let Some(page_service) = rollback.page_service {
+            self.page_service = page_service;
+        }
         self.logical_written_bytes = rollback.logical_written_bytes;
         self.physical_written_bytes = rollback.physical_written_bytes;
         self.last_object_manifest_checkpoint_index = rollback.last_object_manifest_checkpoint_index;
