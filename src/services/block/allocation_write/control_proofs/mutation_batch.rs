@@ -30,7 +30,11 @@ impl MatrixPageService {
         }
         for index in &replica_indices {
             let replica_batch_id = page_chunk_mutation_batch_id(&batch_id, *index);
-            if let Err(err) = self.replicas[*index].begin_mutation_batch(replica_batch_id) {
+            // `snapshot` above already carries every replica, and the abort below
+            // rebuilds them from it, so the replica needs no second copy.
+            if let Err(err) =
+                self.replicas[*index].begin_mutation_batch_without_undo(replica_batch_id)
+            {
                 // `install_snapshot` clears `active_mutation_batch` itself, and
                 // this batch has not been registered yet, so the snapshot is
                 // still in hand and needs no copy.
