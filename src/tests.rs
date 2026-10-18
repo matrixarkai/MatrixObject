@@ -12375,7 +12375,7 @@ fn storage_class_and_restore_windows_gate_cold_payload_reads() {
     ));
 
     let restored = store.restore_object("bucket", "cold", 60_000).unwrap();
-    assert!(restored.restore_until_ms >= now_millis());
+    assert!(restored.lock.restore_until_ms >= now_millis());
     assert_eq!(
         store.get_object("bucket", "cold").unwrap().data,
         b"frozen".to_vec()
@@ -12384,7 +12384,7 @@ fn storage_class_and_restore_windows_gate_cold_payload_reads() {
         .copy_object("bucket", "cold", "bucket", "cold-copy")
         .unwrap();
     assert_eq!(copied.storage_class, "ARCHIVE");
-    assert!(copied.restore_until_ms >= now_millis());
+    assert!(copied.lock.restore_until_ms >= now_millis());
 
     let upload = store
         .create_multipart_upload(
@@ -12786,7 +12786,7 @@ fn retention_and_legal_hold_gate_destructive_object_paths() {
     let copied = store
         .copy_object("bucket", "held", "bucket", "held-copy")
         .unwrap();
-    assert!(copied.legal_hold);
+    assert!(copied.lock.legal_hold);
     assert!(matches!(
         store.delete_object("bucket", "held-copy"),
         Err(ObjectError::PreconditionFailed(_))
@@ -25833,8 +25833,8 @@ fn raft_backed_store_replays_retention_and_legal_hold_commands() {
         .unwrap();
     assert_eq!(follower_retry.commit_index, 8);
     let metadata = follower.head_object("bucket", "object").unwrap();
-    assert!(metadata.legal_hold);
-    assert_eq!(metadata.retention_until_ms, 240_000);
+    assert!(metadata.lock.legal_hold);
+    assert_eq!(metadata.lock.retention_until_ms, 240_000);
     assert!(matches!(
         follower.delete_object("bucket", "object"),
         Err(ObjectError::PreconditionFailed(_))
@@ -33629,6 +33629,7 @@ fn the_metadata_breakdown_accounts_for_every_byte_of_its_total() {
         "objects.metadata_inline",
         "objects.mapkey_heap",
         "objects.inner_id_heap",
+        "objects.lock_bytes",
         "objects.etag_heap",
         "objects.content_type_heap",
         "objects.storage_class_heap",
@@ -34427,5 +34428,76 @@ fn an_extent_list_carries_no_spare_capacity() {
         restored.get_object("bucket", "grown").unwrap().data.len(),
         64,
         "and the bytes read back"
+    );
+}
+
+#[test]
+fn an_object_under_no_lock_pays_one_pointer_for_it() {
+    // Three timestamps and a flag, zero and false for every object that has
+    // never been restored, held or placed under retention -- which is almost
+    // all of them -- and twenty-five inline bytes in every one.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    assert_eq!(
+        std::mem::size_of::<ObjectLock>(),
+        std::mem::size_of::<usize>(),
+        "the inline cost is one pointer"
+    );
+    assert!(
+        std::mem::size_of::<ObjectLock>() < std::mem::size_of::<ObjectLockState>(),
+        "which is smaller than the state it points at"
+    );
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "plain", vec![b'v'; 16], "text/plain")
+        .unwrap();
+    let plain = store.head_object("bucket", "plain").unwrap();
+    assert_eq!(plain.lock.retention_until_ms, 0);
+    assert_eq!(plain.lock.legal_hold, false);
+    assert_eq!(
+        audit_value(&store, "objects.lock_bytes"),
+        0,
+        "an object under none of the three owes nothing for them"
+    );
+
+    // Put one under a legal hold and the state appears, on the heap and in the
+    // audit, and still reads back.
+    store
+        .set_object_legal_hold("bucket", "plain", true)
+        .unwrap();
+    let held = store.head_object("bucket", "plain").unwrap();
+    assert_eq!(held.lock.legal_hold, true);
+    assert!(
+        held.lock.legal_hold_update_time_ms > 0,
+        "the store stamps the hold with its own clock"
+    );
+    assert_eq!(
+        audit_value(&store, "objects.lock_bytes"),
+        std::mem::size_of::<ObjectLockState>() as u64,
+        "and one under a hold owes the state, which has moved to the heap"
+    );
+
+    // Both survive a reload, which is the half a decode can quietly drop.
+    let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    let mut restored = MatrixObjectStore::new(test_options()).unwrap();
+    restored.install_snapshot_bytes(&bytes).unwrap();
+    let reloaded = restored.head_object("bucket", "plain").unwrap();
+    assert_eq!(reloaded.lock.legal_hold, true);
+    assert_eq!(
+        reloaded.lock.legal_hold_update_time_ms,
+        held.lock.legal_hold_update_time_ms
+    );
+    assert_eq!(
+        audit_value(&restored, "objects.lock_bytes"),
+        std::mem::size_of::<ObjectLockState>() as u64
     );
 }

@@ -84,15 +84,15 @@ impl StoreSnapshot {
             validate_user_metadata(&metadata.user_metadata)?;
             validate_tags(&metadata.tags)?;
             validate_storage_class(&metadata.storage_class)?;
-            if !is_cold_storage_class(&metadata.storage_class) && metadata.restore_until_ms != 0 {
+            if !is_cold_storage_class(&metadata.storage_class) && metadata.lock.restore_until_ms != 0 {
                 return Err(ObjectError::Corruption(
                     "snapshot warm object carries restore window".to_string(),
                 ));
             }
             if metadata.deleted
-                && (metadata.legal_hold
-                    || metadata.retention_until_ms != 0
-                    || metadata.restore_until_ms != 0
+                && (metadata.lock.legal_hold
+                    || metadata.lock.retention_until_ms != 0
+                    || metadata.lock.restore_until_ms != 0
                     || metadata.storage_class != k_standard_storage_class())
             {
                 return Err(ObjectError::Corruption(

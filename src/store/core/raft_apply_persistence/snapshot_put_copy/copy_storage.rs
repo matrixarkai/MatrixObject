@@ -47,10 +47,10 @@ impl MatrixObjectStore {
             copy_options,
             "copy_object",
         )?;
-        metadata.legal_hold = source.legal_hold;
-        metadata.legal_hold_update_time_ms = source.legal_hold_update_time_ms;
-        metadata.retention_until_ms = source.retention_until_ms;
-        metadata.restore_until_ms = source.restore_until_ms;
+        metadata.lock.legal_hold = source.lock.legal_hold;
+        metadata.lock.legal_hold_update_time_ms = source.lock.legal_hold_update_time_ms;
+        metadata.lock.retention_until_ms = source.lock.retention_until_ms;
+        metadata.lock.restore_until_ms = source.lock.restore_until_ms;
         self.objects
             .insert(metadata.object_id.clone(), metadata.clone());
         self.commit_meta_projection(

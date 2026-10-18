@@ -138,7 +138,7 @@ impl MatrixObjectStore {
     }
 
     pub fn get_object_legal_hold(&self, bucket: &str, key: &str) -> Result<bool, ObjectError> {
-        Ok(self.head_object(bucket, key)?.legal_hold)
+        Ok(self.head_object(bucket, key)?.lock.legal_hold)
     }
 
     pub fn get_object_legal_hold_with_metadata_read(
@@ -148,7 +148,7 @@ impl MatrixObjectStore {
         options: MetadataReadOptions,
     ) -> Result<(bool, MetadataRaftReadiness), ObjectError> {
         let (metadata, readiness) = self.head_object_with_metadata_read(bucket, key, options)?;
-        Ok((metadata.legal_hold, readiness))
+        Ok((metadata.lock.legal_hold, readiness))
     }
 
     pub fn set_object_retention(
@@ -186,7 +186,7 @@ impl MatrixObjectStore {
     }
 
     pub fn get_object_retention(&self, bucket: &str, key: &str) -> Result<u64, ObjectError> {
-        Ok(self.head_object(bucket, key)?.retention_until_ms)
+        Ok(self.head_object(bucket, key)?.lock.retention_until_ms)
     }
 
     pub fn get_object_retention_with_metadata_read(
@@ -196,7 +196,7 @@ impl MatrixObjectStore {
         options: MetadataReadOptions,
     ) -> Result<(u64, MetadataRaftReadiness), ObjectError> {
         let (metadata, readiness) = self.head_object_with_metadata_read(bucket, key, options)?;
-        Ok((metadata.retention_until_ms, readiness))
+        Ok((metadata.lock.retention_until_ms, readiness))
     }
 
 }

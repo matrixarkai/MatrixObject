@@ -114,12 +114,12 @@ pub(crate) fn metadata_projection_value(metadata: &ObjectMetadata) -> String {
         metadata.content_type,
         metadata.user_metadata.len(),
         metadata.storage_class,
-        metadata.restore_until_ms,
+        metadata.lock.restore_until_ms,
         metadata.deleted,
         metadata.extents.len(),
         metadata.tags.len(),
-        metadata.legal_hold,
-        metadata.retention_until_ms
+        metadata.lock.legal_hold,
+        metadata.lock.retention_until_ms
     )
 }
 
@@ -154,7 +154,7 @@ pub(crate) fn retention_active(
     metadata: &ObjectMetadata,
     now_ms: u64,
 ) -> bool {
-    if metadata.retention_until_ms > now_ms {
+    if metadata.lock.retention_until_ms > now_ms {
         return true;
     }
     bucket_retention

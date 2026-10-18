@@ -169,3 +169,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: An object under no lock pays one pointer
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::an_object_under_no_lock_pays_one_pointer_for_it -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }

@@ -101,7 +101,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let report = ObjectLegalHoldMutationReport {
-            enabled: metadata.legal_hold,
+            enabled: metadata.lock.legal_hold,
             route_control_proof,
             expected_route_control_checksum: expected_page_route_control_checksum.to_string(),
             metadata,

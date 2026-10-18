@@ -14,11 +14,8 @@ pub struct ObjectMetadata {
     pub content_type: Box<str>,
     pub user_metadata: ObjectAttributes,
     pub storage_class: SharedText,
-    pub restore_until_ms: u64,
     pub tags: ObjectAttributes,
-    pub legal_hold: bool,
-    pub legal_hold_update_time_ms: u64,
-    pub retention_until_ms: u64,
+    pub lock: ObjectLock,
     pub update_time_ms: u64,
     pub extents: Box<[ObjectExtent]>,
     pub deleted: bool,
@@ -65,15 +62,15 @@ impl ObjectMetadata {
         );
         fields.insert(
             format!("{field_prefix}legal_hold"),
-            self.legal_hold.to_string().into(),
+            self.lock.legal_hold.to_string().into(),
         );
         fields.insert(
             format!("{field_prefix}legal_hold_update_time_ms"),
-            self.legal_hold_update_time_ms.to_string().into(),
+            self.lock.legal_hold_update_time_ms.to_string().into(),
         );
         fields.insert(
             format!("{field_prefix}retention_until_ms"),
-            self.retention_until_ms.to_string().into(),
+            self.lock.retention_until_ms.to_string().into(),
         );
         fields.insert(
             format!("{field_prefix}storage_class"),
@@ -85,7 +82,7 @@ impl ObjectMetadata {
         );
         fields.insert(
             format!("{field_prefix}restore_until_ms"),
-            self.restore_until_ms.to_string().into(),
+            self.lock.restore_until_ms.to_string().into(),
         );
         fields.extend(self.metadata_to_indexed_fields(&format!("{field_prefix}metadata.")));
         fields.extend(self.tags_to_indexed_fields(&format!("{field_prefix}tag.")));

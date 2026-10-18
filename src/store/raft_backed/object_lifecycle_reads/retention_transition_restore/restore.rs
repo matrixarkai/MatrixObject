@@ -55,7 +55,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let report = ObjectRestoreMutationReport {
-            restore_until_ms: metadata.restore_until_ms,
+            restore_until_ms: metadata.lock.restore_until_ms,
             metadata,
             route_control_proof: PageRouteControlProof::default(),
             expected_route_control_checksum: String::new(),
@@ -118,7 +118,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let report = ObjectRestoreMutationReport {
-            restore_until_ms: metadata.restore_until_ms,
+            restore_until_ms: metadata.lock.restore_until_ms,
             metadata,
             route_control_proof: PageRouteControlProof::default(),
             expected_route_control_checksum: String::new(),
@@ -305,7 +305,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let report = ObjectRestoreMutationReport {
-            restore_until_ms: metadata.restore_until_ms,
+            restore_until_ms: metadata.lock.restore_until_ms,
             route_control_proof,
             expected_route_control_checksum: expected_page_route_control_checksum.to_string(),
             metadata,

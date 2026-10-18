@@ -32,7 +32,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let report = ObjectRetentionMutationReport {
-            retention_until_ms: metadata.retention_until_ms,
+            retention_until_ms: metadata.lock.retention_until_ms,
             route_control_proof,
             expected_route_control_checksum: expected_page_route_control_checksum.to_string(),
             metadata,
