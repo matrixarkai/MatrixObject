@@ -34998,3 +34998,58 @@ fn what_a_put_undoes_by_hand_does_not_grow_with_the_store() {
          double this leg: {small_payloads} and {large_payloads}"
     );
 }
+
+#[test]
+fn a_retained_idempotency_key_carries_no_slack() {
+    // A receipt map is keyed by an idempotency key and holds up to
+    // `receipt_retention` of them, so the key's allocation is resident for as
+    // long as the receipt is and the audit counts its capacity. A key built by
+    // `format!` gets a buffer sized at twice the literal and then doubled when
+    // the digest overruns it, which put 45 characters in 84 bytes.
+    //
+    // Stated as a property rather than a figure, so it also covers a key added
+    // later: whatever a retained key is, it is allocated at its length.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    let keys = ["a", "b", "c", "d"];
+    for key in keys.iter() {
+        store
+            .put_object("bucket", key, vec![b'v'; 64], "text/plain")
+            .unwrap();
+    }
+    for key in keys.iter() {
+        store.delete_object("bucket", key).unwrap();
+    }
+    let mut checked = 0usize;
+    for replica in store.page_service.replicas.iter() {
+        for key in replica.batch_discard_request_receipts.keys() {
+            assert_eq!(
+                key.capacity(),
+                key.len(),
+                "a retained idempotency key must be allocated at its length, but \
+                 {key:?} holds {} characters in {} bytes",
+                key.len(),
+                key.capacity()
+            );
+            checked += 1;
+        }
+        for key in replica.batch_write_request_receipts.keys() {
+            assert_eq!(
+                key.capacity(),
+                key.len(),
+                "a retained idempotency key must be allocated at its length, but \
+                 {key:?} holds {} characters in {} bytes",
+                key.len(),
+                key.capacity()
+            );
+            checked += 1;
+        }
+    }
+    // Without this the test passes by seeing nothing, which is the failure mode
+    // of every test that scans a collection.
+    assert!(
+        checked > 0,
+        "the workload must leave at least one retained receipt for this to mean \
+         anything, and it left none"
+    );
+}
