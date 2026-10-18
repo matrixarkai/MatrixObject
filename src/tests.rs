@@ -35532,6 +35532,61 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
 }
 
 #[test]
+fn a_cloned_receipt_map_costs_what_the_map_costs() {
+    // The snapshot a mutation batch holds is a CLONE of the service, so its
+    // receipt maps cost exactly what the live maps cost. Two halves of the
+    // audit measured that same thing separately, and they drifted: the
+    // snapshot's half counted the inline struct and the key characters and
+    // skipped the strings each receipt owns, which understated the copy by 69
+    // bytes a receipt -- a quarter of it.
+    //
+    // Both halves now call one function per receipt kind, and this asserts the
+    // equality that made the drift detectable in the first place. A figure that
+    // can be derived two ways should be asserted equal, or the cheaper way
+    // quietly becomes the published one.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..30u32 {
+        let key = format!("prefix/{index:04}/kkkkkkkkkk");
+        store
+            .put_object("bucket", &key, vec![b'x'; 4096], "application/octet-stream")
+            .unwrap();
+        store.delete_object("bucket", &key).unwrap();
+    }
+    let live: u64 = store
+        .page_service
+        .replicas
+        .iter()
+        .map(|replica| replica.receipt_bytes())
+        .sum();
+    assert!(
+        live > 0,
+        "thirty writes and deletes must leave receipts behind, and left none"
+    );
+
+    store
+        .page_service
+        .begin_mutation_batch("batch-the-clone-costs-the-same")
+        .unwrap();
+    let copied = store
+        .footprint_audit()
+        .into_iter()
+        .find(|(key, _)| key == "open_batch.replica_receipts.bytes")
+        .map(|(_, value)| value)
+        .unwrap_or(0);
+    println!("CLONECOST live={live} copied={copied}");
+    assert_eq!(
+        copied, live,
+        "a clone of the receipt maps costs what the maps cost: the live maps \
+         are {live} bytes and the snapshot of them was measured at {copied}"
+    );
+}
+
+#[test]
 fn the_audit_reports_what_an_open_mutation_batch_holds() {
     // `begin_mutation_batch` boxes a whole page-service snapshot and holds it
     // until the mutation commits or aborts. Until now `Store::footprint_audit`
@@ -35799,9 +35854,9 @@ fn the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk() {
     // And the breakdown accounts for every byte of what it says it copies, so a
     // leg added later cannot fall out of the headline.
     for audit in [&few_objects, &more_objects, &more_chunks] {
-        let legs = get(audit, "batch.page_receipts.inline_and_key_bytes")
+        let legs = get(audit, "batch.page_receipts.bytes")
             + get(audit, "batch.page_other.bytes")
-            + get(audit, "batch.replica_receipts.inline_and_key_bytes")
+            + get(audit, "batch.replica_receipts.bytes")
             + get(audit, "batch.replica_other.bytes")
             + get(audit, "batch.replica_chunks.copied_bytes");
         assert_eq!(
@@ -36130,6 +36185,84 @@ fn every_retained_receipt_is_filed_under_the_key_it_carries() {
         get("block.receipts.duplicate_key_bytes") > 0,
         "those matching keys must account for some bytes"
     );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_an_open_batch_holds_once_the_receipts_fill() {
+    // The snapshot a batch holds copies the receipt maps as well as the chunk
+    // maps, and the receipt maps are bounded by `receipt_retention` -- 100,000
+    // by default -- rather than by what is stored. Every figure recorded for an
+    // open batch so far came from a store with almost no receipts in it, so the
+    // receipt term has never been measured at all.
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let objects = env_usize("MEASURE_OBJECTS", 400);
+    let size = env_usize("MEASURE_SIZE", 256 * 1024);
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    let read = |store: &MatrixObjectStore, wanted: &str| -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value)
+            .unwrap_or(0)
+    };
+    let report = |store: &mut MatrixObjectStore, label: &str| {
+        store
+            .page_service
+            .begin_mutation_batch("batch-measure")
+            .unwrap();
+        let legs: Vec<(String, u64)> = store
+            .footprint_audit()
+            .into_iter()
+            .filter(|(key, value)| key.starts_with("open_batch.") && *value != 0)
+            .collect();
+        for (key, value) in legs {
+            println!("OPENBATCH {label} {key}={value}");
+        }
+        store
+            .page_service
+            .abort_mutation_batch("batch-measure")
+            .unwrap();
+    };
+
+    for index in 0..objects {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; size],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    println!(
+        "OPENBATCH written objects={objects} size={size} receipts={}",
+        read(&store, "replica.receipts")
+    );
+    report(&mut store, "written");
+
+    for index in 0..objects {
+        store
+            .delete_object("bucket", &format!("prefix/{index:08}/kkkkkkkkkk"))
+            .unwrap();
+    }
+    println!(
+        "OPENBATCH deleted receipts={} block_receipt_bytes={}",
+        read(&store, "replica.receipts"),
+        read(&store, "block.receipts.bytes")
+    );
+    report(&mut store, "deleted");
 }
 
 #[test]

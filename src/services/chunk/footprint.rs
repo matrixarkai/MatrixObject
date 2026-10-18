@@ -166,6 +166,50 @@ where
     })
 }
 
+// The heap each receipt kind owns, named once.
+//
+// Both the live service and a snapshot of it hold these maps, and a snapshot is
+// a clone, so the same receipt costs the same in either. Writing the figure
+// twice is how the snapshot's half came to count only the inline struct and the
+// key, and to miss the strings the value owns -- 69 bytes a receipt on the
+// discard path, which is a third of what a copied receipt really costs.
+
+pub(crate) fn chunk_write_receipt_heap(receipt: &ChunkWriteReceipt) -> u64 {
+    (receipt.request_checksum.capacity()
+        + receipt.payload_checksum.capacity()
+        + receipt.idempotency_key.capacity()) as u64
+}
+
+pub(crate) fn chunk_discard_receipt_heap(receipt: &ChunkDiscardReceipt) -> u64 {
+    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+}
+
+pub(crate) fn chunk_batch_write_receipt_heap(receipt: &ChunkBatchWriteReceipt) -> u64 {
+    (receipt.request_checksum.capacity()
+        + receipt.payload_checksum.capacity()
+        + receipt.idempotency_key.capacity()) as u64
+}
+
+pub(crate) fn chunk_batch_discard_receipt_heap(receipt: &ChunkBatchDiscardReceipt) -> u64 {
+    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+}
+
+pub(crate) fn chunk_state_install_receipt_heap(receipt: &ChunkStateInstallReceipt) -> u64 {
+    (receipt.request_checksum.capacity()
+        + receipt.payload_checksum.capacity()
+        + receipt.state_checksum.capacity()
+        + receipt.idempotency_key.capacity()) as u64
+}
+
+pub(crate) fn chunk_reclaim_receipt_heap(receipt: &ChunkReclaimReceipt) -> u64 {
+    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+}
+
+pub(crate) fn chunk_repair_receipt_heap(receipt: &ChunkRepairReceipt) -> u64 {
+    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+        + chunk_repair_report_bytes(&receipt.report)
+}
+
 pub(crate) fn route_control_proof_bytes(proof: &PageRouteControlProof) -> u64 {
     (proof.state_format.capacity() + proof.state_checksum.capacity()) as u64
 }
@@ -178,6 +222,38 @@ pub(crate) fn chunk_repair_report_bytes(report: &ChunkRepairReport) -> u64 {
         .unwrap_or(0)
         + report.expected_route_control_checksum.capacity()) as u64
         + route_control_proof_bytes(&report.route_control_proof)
+}
+
+/// The seven receipt maps of a chunk service, live or snapshotted.
+///
+/// A snapshot holds the same seven maps with the same types, and it is a clone,
+/// so it costs the same. One function, so the two cannot drift.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chunk_receipt_maps_bytes(
+    write: &BTreeMap<String, ChunkWriteReceipt>,
+    discard: &BTreeMap<String, ChunkDiscardReceipt>,
+    batch_write: &BTreeMap<String, ChunkBatchWriteReceipt>,
+    batch_discard: &BTreeMap<String, ChunkBatchDiscardReceipt>,
+    state_install: &BTreeMap<String, ChunkStateInstallReceipt>,
+    reclaim: &BTreeMap<String, ChunkReclaimReceipt>,
+    repair: &BTreeMap<String, ChunkRepairReceipt>,
+) -> u64 {
+    chunk_receipt_map_bytes(write, chunk_write_receipt_heap)
+        .saturating_add(chunk_receipt_map_bytes(discard, chunk_discard_receipt_heap))
+        .saturating_add(chunk_receipt_map_bytes(
+            batch_write,
+            chunk_batch_write_receipt_heap,
+        ))
+        .saturating_add(chunk_receipt_map_bytes(
+            batch_discard,
+            chunk_batch_discard_receipt_heap,
+        ))
+        .saturating_add(chunk_receipt_map_bytes(
+            state_install,
+            chunk_state_install_receipt_heap,
+        ))
+        .saturating_add(chunk_receipt_map_bytes(reclaim, chunk_reclaim_receipt_heap))
+        .saturating_add(chunk_receipt_map_bytes(repair, chunk_repair_receipt_heap))
 }
 
 impl MatrixChunkService {
@@ -241,52 +317,14 @@ impl MatrixChunkService {
 
     /// The seven receipt maps, in bytes rather than entries.
     pub(crate) fn receipt_bytes(&self) -> u64 {
-        chunk_receipt_map_bytes(&self.write_request_receipts, |receipt| {
-            (receipt.request_checksum.capacity()
-                + receipt.payload_checksum.capacity()
-                + receipt.idempotency_key.capacity()) as u64
-        })
-        .saturating_add(chunk_receipt_map_bytes(
+        chunk_receipt_maps_bytes(
+            &self.write_request_receipts,
             &self.discard_request_receipts,
-            |receipt| {
-                (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
-            },
-        ))
-        .saturating_add(chunk_receipt_map_bytes(
             &self.batch_write_request_receipts,
-            |receipt| {
-                (receipt.request_checksum.capacity()
-                    + receipt.payload_checksum.capacity()
-                    + receipt.idempotency_key.capacity()) as u64
-            },
-        ))
-        .saturating_add(chunk_receipt_map_bytes(
             &self.batch_discard_request_receipts,
-            |receipt| {
-                (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
-            },
-        ))
-        .saturating_add(chunk_receipt_map_bytes(
             &self.state_install_request_receipts,
-            |receipt| {
-                (receipt.request_checksum.capacity()
-                    + receipt.payload_checksum.capacity()
-                    + receipt.state_checksum.capacity()
-                    + receipt.idempotency_key.capacity()) as u64
-            },
-        ))
-        .saturating_add(chunk_receipt_map_bytes(
             &self.reclaim_request_receipts,
-            |receipt| {
-                (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
-            },
-        ))
-        .saturating_add(chunk_receipt_map_bytes(
             &self.repair_request_receipts,
-            |receipt| {
-                (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
-                    + chunk_repair_report_bytes(&receipt.report)
-            },
-        ))
+        )
     }
 }
