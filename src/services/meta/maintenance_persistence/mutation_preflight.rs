@@ -16,6 +16,8 @@ impl MetaRecordUndo {
     /// both would report a copy that is not there. The service accounts for
     /// itself here for the same reason the rest of its footprint does: these
     /// fields are private to this module.
+    /// HELD: the meta service's footprint does not add the preflight's own bytes.
+    #[allow(dead_code)]
     pub(crate) fn footprint_bytes(&self, ledger: &mut SharedTextLedger) -> u64 {
         let record = self.previous_record.as_ref().map_or(0u64, |record| {
             ledger

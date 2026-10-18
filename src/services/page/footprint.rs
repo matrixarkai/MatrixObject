@@ -218,6 +218,14 @@ impl MatrixPageService {
 /// Heap a value owns below its inline size is not counted, which is what the
 /// `inline_and_key` in these key names says. B-tree node slack is excluded, as
 /// it is everywhere in this audit.
+// HELD, NOT DEAD: written and not yet aggregated.
+//
+// CI builds with `-D warnings`, so an unaggregated audit fails the build rather than warning,
+// and main has been red on eight consecutive commits because of these. Deleting them would
+// throw away measurement code; aggregating them changes what `Store::footprint_audit` reports,
+// which roughly twenty tests read, so that is a measured change and not a build fix. See the
+// issue linked from the audit's own module doc.
+#[allow(dead_code)]
 fn snapshot_map_inline_and_key_bytes<V>(map: &BTreeMap<String, V>) -> u64 {
     map.keys().fold(0u64, |total, key| {
         total
@@ -231,12 +239,21 @@ fn snapshot_map_inline_and_key_bytes<V>(map: &BTreeMap<String, V>) -> u64 {
 /// A chunk's payload is named by the live replica and by every snapshot taken of
 /// it, and adding its length at each holder would report copies that do not
 /// exist.
+// HELD, NOT DEAD: written and not yet aggregated.
+//
+// CI builds with `-D warnings`, so an unaggregated audit fails the build rather than warning,
+// and main has been red on eight consecutive commits because of these. Deleting them would
+// throw away measurement code; aggregating them changes what `Store::footprint_audit` reports,
+// which roughly twenty tests read, so that is a measured change and not a build fix. See the
+// issue linked from the audit's own module doc.
+#[allow(dead_code)]
 #[derive(Default)]
 struct SharedPayloadLedger {
     charged: std::collections::HashSet<usize>,
 }
 
 impl SharedPayloadLedger {
+    #[allow(dead_code)]
     fn charge(&mut self, payload: &std::sync::Arc<Vec<u8>>) -> u64 {
         if self
             .charged
@@ -251,6 +268,9 @@ impl SharedPayloadLedger {
 }
 
 impl PageServiceSnapshot {
+    /// HELD: this is the PAGE service's half of the footprint, and `Store::footprint_audit`
+    /// does not call it, so every total that audit has ever reported excludes it.
+    #[allow(dead_code)]
     pub(crate) fn footprint_audit(&self) -> Vec<(String, u64)> {
         let page_receipts = snapshot_map_inline_and_key_bytes(&self.pending_allocations)
             .saturating_add(snapshot_map_inline_and_key_bytes(&self.allocation_request_receipts))

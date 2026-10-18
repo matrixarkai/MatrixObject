@@ -514,6 +514,14 @@ impl MatrixObjectStore {
 /// values that are plain structs and a floor for the few that own a `Vec`. Said
 /// here rather than left to be inferred, because the undo audit below reports
 /// nine of these maps as a single leg.
+// HELD, NOT DEAD: written and not yet aggregated.
+//
+// CI builds with `-D warnings`, so an unaggregated audit fails the build rather than warning,
+// and main has been red on eight consecutive commits because of these. Deleting them would
+// throw away measurement code; aggregating them changes what `Store::footprint_audit` reports,
+// which roughly twenty tests read, so that is a measured change and not a build fix. See the
+// issue linked from the audit's own module doc.
+#[allow(dead_code)]
 fn audit_bucket_keyed_inline_bytes<V>(map: &BTreeMap<String, V>) -> u64 {
     map.keys().fold(0u64, |total, key| {
         total
@@ -535,6 +543,8 @@ impl ObjectMutationRollback {
     /// Reported per field because that is the only form in which the question
     /// can be answered. A targeted undo leaves most of these empty by
     /// construction; what is worth knowing is which of the rest still scale.
+    /// HELD: nothing sums this, so no reported total includes the undo state.
+    #[allow(dead_code)]
     pub(crate) fn footprint_audit(&self) -> Vec<(String, u64)> {
         let mut ledger = SharedTextLedger::default();
 
