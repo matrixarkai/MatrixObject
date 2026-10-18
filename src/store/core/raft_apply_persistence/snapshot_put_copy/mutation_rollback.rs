@@ -39,7 +39,21 @@ impl MatrixObjectStore {
                 self.object_changes.clone()
             },
             next_object_change_sequence: self.next_object_change_sequence,
-            multipart_uploads: self.multipart_uploads.clone(),
+            // An upload in flight holds the part bytes it has buffered, and
+            // this copied all of them into the undo of every mutation. With one
+            // 8 MiB upload open, a 1 KiB put's undo measured 8,391,068 bytes
+            // against 1,153 with none open.
+            //
+            // A put, an append and a delete never touch this map. Its writers
+            // are the four multipart commands, the lifecycle abort and a
+            // snapshot install, and every one of those captures the whole store
+            // -- so the narrowed undo does not need it, and the restore below
+            // must not put an empty map back in its place.
+            multipart_uploads: if targeted {
+                Default::default()
+            } else {
+                self.multipart_uploads.clone()
+            },
             multipart_complete_receipts: self.multipart_complete_receipts.clone(),
             multipart_abort_receipts: self.multipart_abort_receipts.clone(),
             next_upload_sequence: self.next_upload_sequence,
@@ -228,7 +242,9 @@ impl MatrixObjectStore {
         self.bucket_cors_receipts = rollback.bucket_cors_receipts;
         self.versions = rollback.versions;
         self.next_object_change_sequence = rollback.next_object_change_sequence;
-        self.multipart_uploads = rollback.multipart_uploads;
+        if !was_targeted {
+            self.multipart_uploads = rollback.multipart_uploads;
+        }
         self.multipart_complete_receipts = rollback.multipart_complete_receipts;
         self.multipart_abort_receipts = rollback.multipart_abort_receipts;
         self.next_upload_sequence = rollback.next_upload_sequence;
