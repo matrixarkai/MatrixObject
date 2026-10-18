@@ -196,3 +196,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: The read cache is in the byte headline
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_read_cache_is_in_the_byte_headline -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }

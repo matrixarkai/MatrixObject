@@ -5,3 +5,4 @@ include!("page/allocation_write.inc.rs");
 include!("page/read_repair.inc.rs");
 include!("page/discard_reclaim_snapshot.inc.rs");
 include!("page/snapshot_helpers.inc.rs");
+include!("page/footprint.rs");
