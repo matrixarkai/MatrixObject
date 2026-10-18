@@ -36,7 +36,7 @@ impl MatrixObjectStore {
             copy_options.tags = source.tags.clone().into();
         }
         if copy_options.storage_class.is_none() {
-            copy_options.storage_class = Some(source.storage_class.clone());
+            copy_options.storage_class = Some(source.storage_class.to_string());
         }
         let mut metadata = self.apply_put_with_change(
             destination_bucket,

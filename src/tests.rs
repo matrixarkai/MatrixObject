@@ -34280,3 +34280,87 @@ fn an_object_without_attributes_pays_one_pointer_for_them() {
         "and an object that carried none still carries none"
     );
 }
+
+#[test]
+fn four_storage_classes_cost_four_allocations() {
+    // A storage class is one of four names, so a store holding a million
+    // objects held a million copies of the word STANDARD.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    const OBJECTS: usize = 8;
+    for index in 0..OBJECTS {
+        store
+            .put_object("bucket", &format!("k{index}"), vec![b'v'; 8], "text/plain")
+            .unwrap();
+    }
+
+    let classes: Vec<_> = store
+        .objects
+        .values()
+        .map(|metadata| metadata.storage_class.clone())
+        .collect();
+    assert_eq!(classes.len(), OBJECTS);
+    assert_eq!(classes[0].as_str(), "STANDARD");
+    for other in &classes[1..] {
+        assert!(
+            classes[0].shares_with(other),
+            "two objects of the same storage class must name it through one              allocation"
+        );
+    }
+
+    // Charged once for the store, not once per object: the characters and the
+    // header, one time.
+    let header = 2 * std::mem::size_of::<usize>() as u64;
+    assert_eq!(
+        audit_value(&store, "objects.storage_class_heap"),
+        "STANDARD".len() as u64 + header,
+        "eight objects, one storage class, one allocation"
+    );
+
+    // And it survives a reload, which is the half a decode can quietly miss.
+    let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    let mut restored = MatrixObjectStore::new(test_options()).unwrap();
+    restored.install_snapshot_bytes(&bytes).unwrap();
+    assert_eq!(
+        audit_value(&restored, "objects.storage_class_heap"),
+        "STANDARD".len() as u64 + header,
+        "a store loaded from a snapshot shares on the same terms"
+    );
+}
+
+#[test]
+fn the_interned_storage_classes_are_the_valid_ones() {
+    // The table and the validation are two lists of the same four names. If one
+    // gains a name the other does not, an object of that class quietly stops
+    // sharing -- or is refused while the table offers it.
+    for class in ["STANDARD", "ARCHIVE", "GLACIER", "DEEP_ARCHIVE"] {
+        validate_storage_class(class)
+            .unwrap_or_else(|error| panic!("{class} should be valid: {error:?}"));
+        assert_eq!(
+            interned_storage_class(class).as_str(),
+            class,
+            "a valid class must be in the table"
+        );
+        assert!(
+            interned_storage_class(class).shares_with(&interned_storage_class(class)),
+            "and must come back as the same allocation every time"
+        );
+    }
+    // A name outside the set is not refused here; it simply gets its own
+    // allocation, because refusing is the validation's job.
+    assert!(validate_storage_class("NEARLINE").is_err());
+    assert_eq!(interned_storage_class("NEARLINE").as_str(), "NEARLINE");
+    assert!(
+        !interned_storage_class("NEARLINE").shares_with(&interned_storage_class("NEARLINE")),
+        "an unknown name is not in the table, so each call owns its own"
+    );
+}

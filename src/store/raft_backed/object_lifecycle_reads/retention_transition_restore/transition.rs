@@ -102,7 +102,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let report = ObjectTransitionMutationReport {
-            storage_class: metadata.storage_class.clone(),
+            storage_class: metadata.storage_class.to_string(),
             route_control_proof,
             expected_route_control_checksum: expected_page_route_control_checksum.to_string(),
             metadata,
@@ -289,7 +289,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let report = ObjectTransitionMutationReport {
-            storage_class: metadata.storage_class.clone(),
+            storage_class: metadata.storage_class.to_string(),
             route_control_proof,
             expected_route_control_checksum: expected_page_route_control_checksum.to_string(),
             metadata,
