@@ -34,7 +34,7 @@ impl MatrixObjectStore {
         bucket: &str,
         key: &str,
     ) -> Result<BTreeMap<String, String>, ObjectError> {
-        Ok(self.head_object(bucket, key)?.tags)
+        Ok(self.head_object(bucket, key)?.tags.into())
     }
 
     pub fn get_object_tags_with_metadata_read(
@@ -44,7 +44,7 @@ impl MatrixObjectStore {
         options: MetadataReadOptions,
     ) -> Result<(BTreeMap<String, String>, MetadataRaftReadiness), ObjectError> {
         let (metadata, readiness) = self.head_object_with_metadata_read(bucket, key, options)?;
-        Ok((metadata.tags, readiness))
+        Ok((metadata.tags.into(), readiness))
     }
 
     pub fn list_objects_by_tag(

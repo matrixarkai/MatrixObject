@@ -56,8 +56,8 @@ impl MatrixObjectStore {
             self.restore_object_version_source(bucket, key, version, update_time_ms)?;
         let data = self.read_extents(&source.extents, 0, source.length)?;
         let mut options = PutOptions::default();
-        options.user_metadata = source.user_metadata.clone();
-        options.tags = source.tags.clone();
+        options.user_metadata = source.user_metadata.clone().into();
+        options.tags = source.tags.clone().into();
         options.storage_class = Some(source.storage_class.clone());
         self.apply_put_storage_batched(
             object_id.bucket.to_string(),
@@ -82,8 +82,8 @@ impl MatrixObjectStore {
             self.restore_object_version_source(bucket, key, version, update_time_ms)?;
         let data = self.read_extents(&source.extents, 0, source.length)?;
         let mut options = PutOptions::default();
-        options.user_metadata = source.user_metadata.clone();
-        options.tags = source.tags.clone();
+        options.user_metadata = source.user_metadata.clone().into();
+        options.tags = source.tags.clone().into();
         options.storage_class = Some(source.storage_class.clone());
         self.apply_put_with_root_placement(
             object_id.bucket.to_string(),

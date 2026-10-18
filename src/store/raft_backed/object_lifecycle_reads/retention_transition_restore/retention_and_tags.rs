@@ -127,7 +127,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let report = ObjectTagsMutationReport {
-            tags: metadata.tags.clone(),
+            tags: metadata.tags.clone().into(),
             route_control_proof,
             expected_route_control_checksum: expected_page_route_control_checksum.to_string(),
             metadata,

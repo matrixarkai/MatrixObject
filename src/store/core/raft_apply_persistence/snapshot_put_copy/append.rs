@@ -127,15 +127,15 @@ impl MatrixObjectStore {
                 .map_or(content_type, |metadata| metadata.content_type.clone()),
             user_metadata: previous.as_ref().map_or_else(
                 || options.user_metadata.clone(),
-                |metadata| metadata.user_metadata.clone(),
-            ),
+                |metadata| metadata.user_metadata.clone().into(),
+            ).into(),
             storage_class: previous
                 .as_ref()
                 .map_or(storage_class, |metadata| metadata.storage_class.clone()),
             restore_until_ms: 0,
             tags: previous
                 .as_ref()
-                .map_or_else(|| options.tags.clone(), |metadata| metadata.tags.clone()),
+                .map_or_else(|| options.tags.clone(), |metadata| metadata.tags.clone().into()).into(),
             legal_hold: previous
                 .as_ref()
                 .map_or(false, |metadata| metadata.legal_hold),

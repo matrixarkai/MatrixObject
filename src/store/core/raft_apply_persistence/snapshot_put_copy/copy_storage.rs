@@ -30,10 +30,10 @@ impl MatrixObjectStore {
         let destination_type = content_type.unwrap_or_else(|| source.content_type.clone());
         let mut copy_options = options;
         if copy_options.user_metadata.is_empty() {
-            copy_options.user_metadata = source.user_metadata.clone();
+            copy_options.user_metadata = source.user_metadata.clone().into();
         }
         if copy_options.tags.is_empty() {
-            copy_options.tags = source.tags.clone();
+            copy_options.tags = source.tags.clone().into();
         }
         if copy_options.storage_class.is_none() {
             copy_options.storage_class = Some(source.storage_class.clone());
