@@ -149,7 +149,7 @@ impl MatrixObjectStore {
             extents,
             deleted: false,
         };
-        if self.bucket_versioning.contains(&object_id.bucket) {
+        if self.bucket_versioning.contains(object_id.bucket.as_str()) {
             if let Some(previous) = previous {
                 self.versions
                     .entry(object_id.clone())

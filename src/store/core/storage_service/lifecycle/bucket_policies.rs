@@ -97,8 +97,8 @@ impl MatrixObjectStore {
                     let target = policy.transition_storage_class.clone().unwrap();
                     if current.storage_class != target {
                         match self.apply_transition_object_with_root_placement(
-                            object_id.bucket.clone(),
-                            object_id.key.clone(),
+                            object_id.bucket.to_string(),
+                            object_id.key.to_string(),
                             target,
                             now_ms,
                             self.options.replica_count,
@@ -131,8 +131,8 @@ impl MatrixObjectStore {
                     })
                 {
                     match self.apply_delete(
-                        object_id.bucket.clone(),
-                        object_id.key.clone(),
+                        object_id.bucket.to_string(),
+                        object_id.key.to_string(),
                         now_ms,
                         latest.as_ref().map(|metadata| metadata.etag.clone()),
                     ) {

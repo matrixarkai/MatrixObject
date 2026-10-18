@@ -5,8 +5,8 @@ impl MatrixObjectStore {
         max_payload_bytes: u64,
     ) -> ObjectRangeAdmission {
         let mut report = ObjectRangeAdmission {
-            bucket: metadata.object_id.bucket.clone(),
-            key: metadata.object_id.key.clone(),
+            bucket: metadata.object_id.bucket.to_string(),
+            key: metadata.object_id.key.to_string(),
             can_accept: true,
             object_length: metadata.length,
             requested_offset: 0,
@@ -33,8 +33,8 @@ impl MatrixObjectStore {
         max_payload_bytes: u64,
     ) -> ObjectRangeAdmission {
         let mut report = ObjectRangeAdmission {
-            bucket: metadata.object_id.bucket.clone(),
-            key: metadata.object_id.key.clone(),
+            bucket: metadata.object_id.bucket.to_string(),
+            key: metadata.object_id.key.to_string(),
             can_accept: true,
             object_length: metadata.length,
             requested_offset: offset,

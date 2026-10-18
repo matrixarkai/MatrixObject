@@ -94,10 +94,10 @@ pub(crate) fn make_prepared_slab_compaction_envelope(
         source_discarded_range_count: prepared.source_discarded_ranges.len() as u64,
         first_live_object_bucket: first_live_object
             .map(|object_id| object_id.bucket.clone())
-            .unwrap_or_default(),
+            .unwrap_or_default().to_string(),
         first_live_object_key: first_live_object
             .map(|object_id| object_id.key.clone())
-            .unwrap_or_default(),
+            .unwrap_or_default().to_string(),
         before_state_fingerprint: prepared.before_state_fingerprint.clone(),
         after_state_fingerprint: prepared.after_state_fingerprint.clone(),
         request_checksum: prepared.request_checksum.clone(),

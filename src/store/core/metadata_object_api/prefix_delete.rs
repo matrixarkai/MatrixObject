@@ -67,8 +67,8 @@ impl MatrixObjectStore {
         let requests: Vec<ObjectDeleteRequest> = listed
             .iter()
             .map(|metadata| ObjectDeleteRequest {
-                bucket: metadata.object_id.bucket.clone(),
-                key: metadata.object_id.key.clone(),
+                bucket: metadata.object_id.bucket.to_string(),
+                key: metadata.object_id.key.to_string(),
                 if_match_etag: Some(metadata.etag.clone()),
                 version: None,
             })
@@ -84,7 +84,7 @@ impl MatrixObjectStore {
         Ok(ObjectPrefixDeleteReport {
             prefix: prefix.to_string(),
             marker: marker.map(ToString::to_string),
-            next_marker,
+            next_marker: next_marker.map(|marker| marker.to_string()),
             listed_objects: listed.len() as u64,
             has_more: listed.len() >= max_objects,
             batch,

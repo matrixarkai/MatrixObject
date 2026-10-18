@@ -20,12 +20,12 @@ impl RootSnapshot {
         let mut placements = BTreeMap::new();
         for _ in 0..cursor.read_count("root snapshot placement count")? {
             let map_object_id = ObjectId {
-                bucket: cursor.read_string()?,
-                key: cursor.read_string()?,
+                bucket: cursor.read_string()?.into(),
+                key: cursor.read_string()?.into(),
             };
             let object_id = ObjectId {
-                bucket: cursor.read_string()?,
-                key: cursor.read_string()?,
+                bucket: cursor.read_string()?.into(),
+                key: cursor.read_string()?.into(),
             };
             let version = cursor.read_u64()?;
             let length = cursor.read_u64()?;

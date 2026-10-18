@@ -62,7 +62,7 @@ impl MatrixObjectStore {
             }
         }
         self.check_retention_for_mutation(&previous, "delete", update_time_ms)?;
-        if self.bucket_versioning.contains(&object_id.bucket) {
+        if self.bucket_versioning.contains(object_id.bucket.as_str()) {
             self.versions
                 .entry(object_id.clone())
                 .or_default()
@@ -142,7 +142,7 @@ impl MatrixObjectStore {
     ) -> Result<ObjectMetadata, ObjectError> {
         let previous = self.head_object(&bucket, &key)?;
         let metadata = self.apply_delete_inner(bucket, key, update_time_ms, if_match_etag)?;
-        if !self.bucket_versioning.contains(&previous.object_id.bucket) {
+        if !self.bucket_versioning.contains(previous.object_id.bucket.as_str()) {
             self.release_root_placement_if_present(&previous.object_id, None);
         }
         Ok(metadata)
@@ -209,7 +209,7 @@ impl MatrixObjectStore {
             .get(&object_id)
             .map_or(false, |metadata| metadata.version == version)
         {
-            return self.apply_delete_inner(object_id.bucket, object_id.key, update_time_ms, None);
+            return self.apply_delete_inner(object_id.bucket.to_string(), object_id.key.to_string(), update_time_ms, None);
         }
         let index = self
             .versions

@@ -29554,7 +29554,7 @@ fn snapshot_round_trips_validated_versioned_state() {
     corrupt_object_key.objects.insert(
         ObjectId {
             bucket: original_id.bucket.clone(),
-            key: "wrong-object-index".to_string(),
+            key: "wrong-object-index".into(),
         },
         metadata,
     );
@@ -29575,7 +29575,7 @@ fn snapshot_round_trips_validated_versioned_state() {
     corrupt_version_key.versions.insert(
         ObjectId {
             bucket: original_id.bucket,
-            key: "wrong-version-index".to_string(),
+            key: "wrong-version-index".into(),
         },
         versions,
     );
@@ -33663,6 +33663,18 @@ fn the_metadata_breakdown_accounts_for_every_byte_of_its_total() {
         at(&values, "objects.entries"),
         "every object's identity is held as the map key and inside the value"
     );
+    // And held through one allocation, which is why `inner_id_heap` is zero
+    // above rather than a second copy of the same characters.
+    assert_eq!(
+        at(&values, "objects.id_text_shared"),
+        at(&values, "objects.entries"),
+        "the two namings of an object share one allocation"
+    );
+    assert_eq!(
+        at(&values, "objects.inner_id_heap"),
+        0,
+        "the value's naming of the object costs nothing beyond the map key's"
+    );
     assert_eq!(
         at(&values, "meta.records.key_text_duplicated"),
         at(&values, "meta.records"),
@@ -33674,4 +33686,68 @@ fn the_metadata_breakdown_accounts_for_every_byte_of_its_total() {
     assert!(at(&values, "meta.records.value_len") <= at(&values, "meta.records.value_capacity"));
     assert!(at(&values, "meta.records.mapkey_len") <= at(&values, "meta.records.mapkey_capacity"));
     assert!(at(&values, "objects.extents_len") <= at(&values, "objects.extents_capacity"));
+}
+
+#[test]
+fn the_holders_that_name_one_object_share_its_key_characters() {
+    // Six holders used to keep their own copy of every key character, 6.0
+    // bytes per character per object. A byte figure cannot tell a share from a
+    // copy and neither can a text comparison, so this asks the only question
+    // that settles it: do they point at the same allocation?
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    const KEY: &str = "a-key-long-enough-that-copying-it-would-show";
+    store
+        .put_object("bucket", KEY, vec![b'x'; 64], "text/plain")
+        .unwrap();
+
+    let (map_key, metadata) = store
+        .objects
+        .iter()
+        .next()
+        .expect("the object was just written");
+    assert_eq!(map_key.key.as_str(), KEY);
+    assert!(
+        map_key.key.shares_with(&metadata.object_id.key),
+        "the map files the object under a key the value states again, so the          two must be one allocation"
+    );
+    assert!(
+        map_key.bucket.shares_with(&metadata.object_id.bucket),
+        "the bucket is shared on the same terms as the key"
+    );
+
+    // Read through the public feed: a clone of the record is still a clone of
+    // the same allocation, so it is a fair probe.
+    let shared_key = map_key.key.clone();
+    let changes = store.list_object_changes_after(0, 16).unwrap();
+    let change = changes.last().expect("the put appended a change");
+    assert!(
+        shared_key.shares_with(&change.object_id.key),
+        "the change feed names the object it describes, and names it through          the same allocation"
+    );
+
+    // And after a restart. A snapshot states the identity once as the map key
+    // and again inside the value, so a decode that reads them separately
+    // rebuilds the copies this removed -- which is a saving that would quietly
+    // not survive the first reload.
+    let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    let mut restored = MatrixObjectStore::new(test_options()).unwrap();
+    restored.install_snapshot_bytes(&bytes).unwrap();
+    let (restored_key, restored_metadata) = restored
+        .objects
+        .iter()
+        .next()
+        .expect("the snapshot carried the object");
+    assert_eq!(restored_key.key.as_str(), KEY);
+    assert!(
+        restored_key.key.shares_with(&restored_metadata.object_id.key),
+        "a store loaded from a snapshot shares on the same terms as the store          that wrote it"
+    );
+    let restored_changes = restored.list_object_changes_after(0, 16).unwrap();
+    if let Some(restored_change) = restored_changes.last() {
+        assert!(
+            restored_key.key.shares_with(&restored_change.object_id.key),
+            "the restored change feed names the object through the same              allocation as the map it was restored beside"
+        );
+    }
 }

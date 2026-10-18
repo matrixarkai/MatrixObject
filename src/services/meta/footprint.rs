@@ -115,7 +115,7 @@ fn meta_optional_string_heap(value: Option<&String>) -> u64 {
 }
 
 impl MatrixMetaService {
-    pub(crate) fn footprint_bytes(&self) -> MetaServiceFootprint {
+    pub(crate) fn footprint_bytes(&self, ledger: &mut SharedTextLedger) -> MetaServiceFootprint {
         let records = meta_map_bytes(&self.records, meta_record_heap);
 
         // One record per record mutation, trimmed only when an operator
@@ -195,8 +195,8 @@ impl MatrixMetaService {
             ),
             |total, (object_id, placement)| {
                 total
-                    .saturating_add(audit_object_id_heap(object_id))
-                    .saturating_add(audit_object_id_heap(&placement.object_id))
+                    .saturating_add(audit_object_id_heap(ledger, object_id))
+                    .saturating_add(audit_object_id_heap(ledger, &placement.object_id))
                     .saturating_add(meta_string_vec_bytes(&placement.node_ids))
             },
         ))

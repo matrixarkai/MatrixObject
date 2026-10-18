@@ -12,21 +12,21 @@ impl ObjectPlacement {
         let mut fields = BTreeMap::new();
         fields.insert(
             format!("{field_prefix}bucket"),
-            self.object_id.bucket.clone(),
+            self.object_id.bucket.to_string(),
         );
-        fields.insert(format!("{field_prefix}key"), self.object_id.key.clone());
-        fields.insert(format!("{field_prefix}version"), self.version.to_string());
-        fields.insert(format!("{field_prefix}length"), self.length.to_string());
+        fields.insert(format!("{field_prefix}key"), self.object_id.key.to_string());
+        fields.insert(format!("{field_prefix}version"), self.version.to_string().into());
+        fields.insert(format!("{field_prefix}length"), self.length.to_string().into());
         fields.insert(
             format!("{field_prefix}node_count"),
-            self.node_ids.len().to_string(),
+            self.node_ids.len().to_string().into(),
         );
         for (index, node_id) in self.node_ids.iter().enumerate() {
-            fields.insert(format!("{field_prefix}node.{index}"), node_id.clone());
+            fields.insert(format!("{field_prefix}node.{index}"), node_id.clone().into());
         }
         fields.insert(
             format!("{field_prefix}update_time_ms"),
-            self.update_time_ms.to_string(),
+            self.update_time_ms.to_string().into(),
         );
         fields
     }
