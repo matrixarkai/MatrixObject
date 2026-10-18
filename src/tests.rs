@@ -35356,3 +35356,117 @@ fn a_refused_put_leaves_an_upload_in_flight_intact() {
         .complete_multipart_upload(&upload.upload_id, None, None)
         .expect("the upload must still complete after a refused put");
 }
+
+#[test]
+fn a_copy_that_fails_after_mutating_leaves_the_store_unchanged() {
+    // The copy path has the put's shape -- capture, open a page-service
+    // mutation batch, abort and restore on every error -- and its inner
+    // function *is* the put's: `apply_copy_storage_batched_inner` reads the
+    // source and then calls `apply_put_with_change` for the destination. So a
+    // copy writes one object key, and the narrowed undo covers it. This is the
+    // test that says so.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "source", b"source-contents".to_vec(), "text/plain")
+        .unwrap();
+    store
+        .put_object("bucket", "destination", b"destination".to_vec(), "text/plain")
+        .unwrap();
+    store
+        .put_object("bucket", "other", b"untouched".to_vec(), "text/plain")
+        .unwrap();
+
+    let before_audit = store.footprint_audit();
+    let before_metadata = store.metadata_state_fingerprint();
+    let before_source = store.get_object("bucket", "source").unwrap().data;
+
+    let rejected = store.copy_object_with_options(
+        "bucket",
+        "source",
+        "bucket",
+        "destination",
+        None,
+        PutOptions {
+            expected_checksum: Some("fnv1a64:0000000000000000".to_string()),
+            ..PutOptions::default()
+        },
+    );
+    assert!(
+        rejected.is_err(),
+        "a copy onto a destination with a wrong expected checksum must be refused"
+    );
+
+    // A copy is the first of these guards whose path *reads*, and that makes
+    // one class of key move the other way. `apply_copy_storage_batched_inner`
+    // calls `read_extents` on the source before the destination's checksum gate
+    // can refuse, and a read fills a read cache -- measured here as
+    // `replica.read_cache.payload_bytes` 0 -> 30 across the refusal. A cache is
+    // not state: it may be filled by the read that happened, and it may be
+    // dropped by the rollback invalidating it, so it may move in either
+    // direction, and the two ACCOUNTED totals that contain it move with it.
+    fn may_move(key: &str) -> bool {
+        key.contains("read_cache")
+            || key.contains("page_validation")
+            || key == "ACCOUNTED.byte_buffers"
+            || key == "ACCOUNTED.total_bytes"
+    }
+    // These may only fall, for the two reasons the put guard records: a cache
+    // dropped, or a container restored by a clone that allocates exactly.
+    fn may_fall(key: &str) -> bool {
+        key.contains("export_caches") || key.contains("receipts.bytes")
+    }
+    let after_audit = store.footprint_audit();
+    let mut moved = Vec::new();
+    for (before, after) in before_audit.iter().zip(after_audit.iter()) {
+        assert_eq!(before.0, after.0, "the audit changed which keys it reports");
+        if may_move(&before.0) {
+            continue;
+        }
+        if may_fall(&before.0) {
+            assert!(
+                after.1 <= before.1,
+                "a refused copy may drop a cache or tighten a clone, and must \
+                 never grow either: {} {} -> {}",
+                before.0,
+                before.1,
+                after.1
+            );
+            continue;
+        }
+        if before.1 != after.1 {
+            moved.push(format!("{} {} -> {}", before.0, before.1, after.1));
+        }
+    }
+    if !moved.is_empty() {
+        panic!("the refused copy left state behind: {}", moved.join(", "));
+    }
+    assert_eq!(
+        before_metadata,
+        store.metadata_state_fingerprint(),
+        "the refused copy left a metadata record behind"
+    );
+    // The source is read by this path, so it is worth saying it survives, and
+    // the destination must still be what it was rather than half a copy.
+    assert_eq!(
+        before_source,
+        store.get_object("bucket", "source").unwrap().data,
+        "a refused copy must not disturb its source"
+    );
+    assert_eq!(
+        store.get_object("bucket", "destination").unwrap().data,
+        b"destination".to_vec(),
+        "a refused copy must leave the destination as it was"
+    );
+
+    // The other direction, so a pass means something.
+    store
+        .copy_object("bucket", "source", "bucket", "destination")
+        .unwrap();
+    assert_eq!(
+        store.get_object("bucket", "destination").unwrap().data,
+        b"source-contents".to_vec(),
+        "an accepted copy must replace the destination, or the refusal above \
+         proved nothing"
+    );
+}
