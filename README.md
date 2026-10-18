@@ -95,9 +95,9 @@ Measured at three replicas, 26-character keys, with the metadata counted:
 
 | object size | objects | amplification | data-only figure |
 |---:|---:|---:|---:|
-| 64 KiB | 1,000 | **3.02x** | 3.00x |
-| 4 KiB | 4,000 | **3.20x** | 3.00x |
-| 1 KiB | 8,000 | **3.76x** | 3.02x |
+| 64 KiB | 1,000 | **3.01x** | 3.00x |
+| 4 KiB | 4,000 | **3.19x** | 3.00x |
+| 1 KiB | 8,000 | **3.71x** | 3.02x |
 
 Reproduce any row with the measurement harness:
 
@@ -109,7 +109,7 @@ MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib \
 ### Metadata is per object, and the per-object figure depends on how many there are
 
 At a fixed object count the metadata total is **identical** whatever the objects
-contain: 3,155,478 bytes for 4,000 objects at both 1 KiB and 4 KiB. So it
+contain: 2,963,470 bytes for 4,000 objects at both 1 KiB and 4 KiB. So it
 disappears into a large object and dominates a small one, which is the whole
 reason the two totals are reported separately.
 
@@ -118,25 +118,27 @@ are bounded rather than per object:
 
 | objects | 100 | 1,000 | 4,000 | 8,000 |
 |---:|---:|---:|---:|---:|
-| metadata per object | 1,005 B | 956 B | 789 B | **761 B** |
+| metadata per object | 957 B | 908 B | 741 B | **713 B** |
 
-Both change feeds cap at 1,024 records, so together they are 26.8% of metadata
-at a hundred objects and 3.7% at eight thousand. Everything else is exactly
-linear, which gives an asymptote of **733 bytes per object** plus 223,232 bytes
+Both change feeds cap at 1,024 records, so together they are 28.2% of metadata
+at a hundred objects and 3.9% at eight thousand. Everything else is exactly
+linear, which gives an asymptote of **685 bytes per object** plus 223,232 bytes
 of capped feeds spread across however many objects there are.
 
-That 733 splits almost exactly in half:
+That 685 splits roughly in half:
 
 | | per object | share |
 |---|---:|---:|
-| `meta.records` — the metadata projection record | 363 B | 49.5% |
-| `objects` — the structured metadata | 346 B | 47.2% |
-| payload index keys | 24 B | 3.3% |
+| `meta.records` — the metadata projection record | 355 B | 51.8% |
+| `objects` — the structured metadata | 306 B | 44.7% |
+| payload index keys | 24 B | 3.5% |
 
 The largest single item inside either half is the projection record's **value**,
-at 227 bytes per object — **31% of everything the store holds per object** — of
+at 227 bytes per object — **33% of everything the store holds per object** — of
 which 151 bytes are field names that nothing parses. Issue #40 has the
-measurement and what closing it would require.
+measurement and what closing it would require. It is unchanged in absolute
+terms while everything around it has shrunk, which is why its share keeps
+rising.
 
 So if you store small objects, three replicas do not cost 3x. Any amplification
 figure published for this store before the metadata was counted was the
