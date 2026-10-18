@@ -18,6 +18,10 @@
 pub(crate) struct MetaServiceFootprint {
     pub(crate) records: u64,
     pub(crate) change_log: u64,
+    /// Counts, not bytes, so deliberately not part of `total()`. The difference
+    /// between the two is the log's slack, which is the point of reporting them.
+    pub(crate) change_log_len: u64,
+    pub(crate) change_log_capacity: u64,
     pub(crate) receipts: u64,
     pub(crate) entities: u64,
     pub(crate) export_caches: u64,
@@ -145,6 +149,8 @@ impl MatrixMetaService {
 
         // One record per record mutation, trimmed only when an operator
         // reconfigures retention.
+        let change_log_len = self.changes.len() as u64;
+        let change_log_capacity = self.changes.capacity() as u64;
         let mut change_log = (self.changes.capacity() as u64)
             .saturating_mul(std::mem::size_of::<MetadataChange>() as u64);
         for change in &self.changes {
@@ -299,6 +305,8 @@ impl MatrixMetaService {
         MetaServiceFootprint {
             records,
             change_log,
+            change_log_len,
+            change_log_capacity,
             receipts,
             entities,
             export_caches,

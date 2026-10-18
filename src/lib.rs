@@ -86,6 +86,22 @@ const MAX_META_RETENTION_LIMIT: usize = 10_000_000;
 /// on the page -- which is the read path's existing contract and what it
 /// answers after any compaction.
 const UNCONSUMED_OBJECT_CHANGE_RETENTION: usize = 1_024;
+
+/// The same bound for the metadata service's own change log.
+///
+/// Its compaction is checkpoint-driven -- it drops only the prefix every
+/// registered checkpoint has passed -- so with no checkpoint it declines to drop
+/// anything, and the retention trim beside it has exactly one caller,
+/// `configure_retention`. A service nobody checkpoints therefore kept every
+/// change it had ever recorded, and `change_log_retention_limit` defaults to
+/// `DEFAULT_META_RETENTION_LIMIT`, which is far above what such a service
+/// reaches in practice.
+///
+/// A constant for the same reason as the object feed: the log is replicated
+/// state covered by the snapshot checksum, so a limit that differed between
+/// replicas would diverge them and a limit carried in the snapshot would be a
+/// durable format change.
+const UNCHECKPOINTED_METADATA_CHANGE_RETENTION: usize = 1_024;
 const DEFAULT_META_MAX_BATCH_MUTATIONS: usize = 10_000;
 const DEFAULT_META_MAX_BATCH_VALUE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_META_MAX_OPEN_TRANSACTIONS: usize = 1_000_000;

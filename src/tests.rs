@@ -33980,3 +33980,138 @@ fn a_shared_allocation_is_charged_for_its_header() {
         "and the value names the object through those same two"
     );
 }
+
+#[test]
+fn a_metadata_change_log_nobody_checkpointed_is_bounded() {
+    // The metadata changefeed compaction drops only the prefix every registered
+    // checkpoint has passed, so with no checkpoint it declines to drop anything,
+    // and the retention trim beside it has one caller, `configure_retention`.
+    // A service nobody checkpointed kept every change it had ever recorded.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    let bound = crate::UNCHECKPOINTED_METADATA_CHANGE_RETENTION as u64;
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..(bound + 128) {
+        store
+            .put_object("bucket", &format!("k{index}"), b"v".to_vec(), "text/plain")
+            .unwrap();
+    }
+
+    let retained = store.metadata_changes_after(0, bound as usize * 4);
+    let highest = retained
+        .last()
+        .expect("the log should not be empty")
+        .sequence;
+    assert!(
+        highest > bound,
+        "this run never reached the bound, so it cannot test it: {highest} changes recorded, bound {bound}"
+    );
+    assert_eq!(
+        audit_value(&store, "meta.change_log.len"),
+        bound,
+        "a log with no checkpoint should settle at the bound"
+    );
+    // Trimmed before the push, so the vector never doubles past the bound. Were
+    // it trimmed afterwards this would be twice the bound.
+    assert_eq!(
+        audit_value(&store, "meta.change_log.capacity"),
+        bound,
+        "the capacity should settle at the bound"
+    );
+
+    // The window kept is the newest records, not the oldest.
+    assert_eq!(retained.len(), bound as usize);
+    assert_eq!(
+        retained[0].sequence,
+        highest - bound + 1,
+        "the retained window should be the newest {bound} changes"
+    );
+
+    // Once something checkpoints the log the bound stops governing: the
+    // checkpoint decides what is safe to drop, and this trim must not pre-empt
+    // it.
+    store
+        .commit_metadata_change_checkpoint(MetadataChangeCheckpoint {
+            consumer_id: "replicator".to_string(),
+            prefix: "object/".to_string(),
+            after_change_sequence: highest,
+            after_commit_index: 0,
+            update_time_ms: 1,
+            owner: "footprint".to_string(),
+            note: String::new(),
+        })
+        .unwrap();
+    for index in 0..64u64 {
+        store
+            .put_object("bucket", &format!("later{index}"), b"v".to_vec(), "text/plain")
+            .unwrap();
+    }
+    assert!(
+        audit_value(&store, "meta.change_log.len") > bound,
+        "with a checkpoint registered the log should grow past the bound and wait for it"
+    );
+}
+
+#[test]
+fn a_rolled_back_record_commit_leaves_no_metadata_change_behind_it() {
+    // `restore_record_undo` dropped what the mutation appended by length, which
+    // was exact while `apply_mutation` only appended. Bounding the log means it
+    // can also trim the front, and a trim plus an append leaves the length
+    // unchanged -- so a length could not undo it.
+    let bound = crate::UNCHECKPOINTED_METADATA_CHANGE_RETENTION as u64;
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..(bound + 16) {
+        store
+            .put_object("bucket", &format!("k{index}"), b"v".to_vec(), "text/plain")
+            .unwrap();
+    }
+    let before = store.metadata_changes_after(0, bound as usize * 4);
+    assert_eq!(
+        before.len(),
+        bound as usize,
+        "the log should be at the bound, or this test is not exercising a trim"
+    );
+    let highest_before = before.last().unwrap().sequence;
+
+    let undo = store.meta_service.capture_record_undo("object/bucket/undone");
+    store
+        .meta_service
+        .commit_record("object/bucket/undone", "version=1".to_string(), 0, None, None, 1)
+        .unwrap();
+    let during = store.metadata_changes_after(0, bound as usize * 4);
+    assert!(
+        during.last().unwrap().sequence > highest_before,
+        "the commit should have appended a change for the undo to remove"
+    );
+    assert_eq!(
+        during.len(),
+        bound as usize,
+        "and the length should be unchanged, which is why a length cannot undo it"
+    );
+    store.meta_service.restore_record_undo(undo);
+
+    let after = store.metadata_changes_after(0, bound as usize * 4);
+    assert!(
+        after.iter().all(|change| change.sequence <= highest_before),
+        "the rolled back commit left its change behind: highest retained {} against {highest_before}",
+        after.last().map_or(0, |change| change.sequence)
+    );
+    let mut previous = 0u64;
+    for change in &after {
+        assert!(
+            change.sequence > previous,
+            "the retained log is not strictly ordered at {}",
+            change.sequence
+        );
+        previous = change.sequence;
+    }
+}
