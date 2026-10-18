@@ -204,9 +204,117 @@ impl MatrixObjectStore {
         let payload_key_bytes = (self.payloads.len() as u64)
             .saturating_mul(std::mem::size_of::<(SlabId, u64)>() as u64);
         push("objects.bytes", objects_bytes);
+        // The two largest metadata line items, broken into their parts. Both
+        // sums are asserted against the totals above by
+        // `the_metadata_breakdown_accounts_for_every_byte_of_its_total`: a new
+        // field counted in one place and not the other fails that test.
+        //
+        // `objects` holds the identity twice -- once as the map key and once
+        // inside the value -- so `objects.id_text_duplicated` says how many of
+        // those two texts are the same, rather than leaving it to be inferred.
+        {
+            let n = self.objects.len() as u64;
+            push(
+                "objects.mapkey_inline",
+                n.saturating_mul(std::mem::size_of::<ObjectId>() as u64),
+            );
+            push(
+                "objects.metadata_inline",
+                n.saturating_mul(std::mem::size_of::<ObjectMetadata>() as u64),
+            );
+            push("objects.metadata_size", std::mem::size_of::<ObjectMetadata>() as u64);
+            let mut mapkey_heap = 0u64;
+            let mut inner_id_heap = 0u64;
+            let mut etag_heap = 0u64;
+            let mut content_type_heap = 0u64;
+            let mut storage_class_heap = 0u64;
+            let mut user_metadata_bytes = 0u64;
+            let mut tags_bytes = 0u64;
+            let mut extents_bytes = 0u64;
+            let mut extents_len = 0u64;
+            let mut extents_capacity = 0u64;
+            let mut id_text_duplicated = 0u64;
+            for (object_id, metadata) in self.objects.iter() {
+                mapkey_heap = mapkey_heap.saturating_add(audit_object_id_heap(object_id));
+                inner_id_heap =
+                    inner_id_heap.saturating_add(audit_object_id_heap(&metadata.object_id));
+                etag_heap = etag_heap.saturating_add(audit_string_heap(&metadata.etag));
+                content_type_heap =
+                    content_type_heap.saturating_add(audit_string_heap(&metadata.content_type));
+                storage_class_heap =
+                    storage_class_heap.saturating_add(audit_string_heap(&metadata.storage_class));
+                user_metadata_bytes = user_metadata_bytes
+                    .saturating_add(audit_string_map_bytes(&metadata.user_metadata));
+                tags_bytes = tags_bytes.saturating_add(audit_string_map_bytes(&metadata.tags));
+                extents_len = extents_len.saturating_add(metadata.extents.len() as u64);
+                extents_capacity =
+                    extents_capacity.saturating_add(metadata.extents.capacity() as u64);
+                extents_bytes = extents_bytes.saturating_add(
+                    (metadata.extents.capacity() as u64)
+                        .saturating_mul(std::mem::size_of::<ObjectExtent>() as u64),
+                );
+                if object_id.bucket == metadata.object_id.bucket
+                    && object_id.key == metadata.object_id.key
+                {
+                    id_text_duplicated = id_text_duplicated.saturating_add(1);
+                }
+            }
+            push("objects.mapkey_heap", mapkey_heap);
+            push("objects.inner_id_heap", inner_id_heap);
+            push("objects.id_text_duplicated", id_text_duplicated);
+            push("objects.etag_heap", etag_heap);
+            push("objects.content_type_heap", content_type_heap);
+            push("objects.storage_class_heap", storage_class_heap);
+            push("objects.user_metadata_bytes", user_metadata_bytes);
+            push("objects.tags_bytes", tags_bytes);
+            push("objects.extents_bytes", extents_bytes);
+            push("objects.extents_len", extents_len);
+            push("objects.extents_capacity", extents_capacity);
+        }
+
         push("versions.bytes", versions_bytes);
         push("object_changes.bytes", changes_bytes);
         push("meta.records.bytes", meta_record_bytes);
+        // `meta.records` holds the key twice as well -- once as the map key
+        // and once in the record -- and the value is a formatted restatement of
+        // fields the `objects` map already holds structured. The `_len` counters
+        // sit beside the `_capacity` ones because the difference is slack, and
+        // slack is what this audit exists to show.
+        {
+            let records = &self.meta_service.records;
+            let n = records.len() as u64;
+            push(
+                "meta.records.struct_inline",
+                n.saturating_mul(
+                    (std::mem::size_of::<String>() + std::mem::size_of::<MetadataRecord>()) as u64,
+                ),
+            );
+            push("meta.records.record_size", std::mem::size_of::<MetadataRecord>() as u64);
+            let mut mapkey_len = 0u64;
+            let mut mapkey_capacity = 0u64;
+            let mut record_key_capacity = 0u64;
+            let mut value_len = 0u64;
+            let mut value_capacity = 0u64;
+            let mut key_text_duplicated = 0u64;
+            for (key, record) in records.iter() {
+                mapkey_len = mapkey_len.saturating_add(key.len() as u64);
+                mapkey_capacity = mapkey_capacity.saturating_add(key.capacity() as u64);
+                record_key_capacity =
+                    record_key_capacity.saturating_add(record.key.capacity() as u64);
+                value_len = value_len.saturating_add(record.value.len() as u64);
+                value_capacity = value_capacity.saturating_add(record.value.capacity() as u64);
+                if key.as_str() == record.key.as_str() {
+                    key_text_duplicated = key_text_duplicated.saturating_add(1);
+                }
+            }
+            push("meta.records.mapkey_len", mapkey_len);
+            push("meta.records.mapkey_capacity", mapkey_capacity);
+            push("meta.records.record_key_capacity", record_key_capacity);
+            push("meta.records.key_text_duplicated", key_text_duplicated);
+            push("meta.records.value_len", value_len);
+            push("meta.records.value_capacity", value_capacity);
+        }
+
         push("meta.change_log.bytes", meta.change_log);
         push("meta.receipts.bytes", meta.receipts);
         push("meta.entities.bytes", meta.entities);
