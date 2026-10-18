@@ -259,3 +259,21 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: A refused put leaves an upload in flight intact
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_refused_put_leaves_an_upload_in_flight_intact -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: An upload in flight is not copied by an unrelated mutation
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::an_upload_in_flight_is_not_copied_by_an_unrelated_mutation -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }

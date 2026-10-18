@@ -35226,3 +35226,133 @@ fn an_append_that_fails_after_mutating_leaves_the_store_unchanged() {
          nothing"
     );
 }
+
+#[test]
+fn an_upload_in_flight_is_not_copied_by_an_unrelated_mutation() {
+    // A multipart upload holds the parts it has buffered, and the undo of every
+    // mutation used to copy them. Measured before this changed: a 1 KiB put's
+    // undo was 1,153 bytes with no upload open and 8,391,068 with one 8 MiB
+    // upload open, because the whole map rode along.
+    //
+    // Asserted as independence rather than as a figure: whatever an upload
+    // holds, an unrelated mutation's undo must not grow by it.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "resident", vec![b'r'; 1024], "application/octet-stream")
+        .unwrap();
+    fn undo(store: &MatrixObjectStore, wanted: &str) -> u64 {
+        store
+            .capture_targeted_mutation_rollback("bucket", "resident")
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value)
+            .unwrap_or(0)
+    }
+
+    let before = undo(&store, "undo.total_bytes");
+    assert!(before > 0, "a put's undo cannot be free");
+
+    let upload = store
+        .create_multipart_upload(
+            "bucket",
+            "big",
+            "application/octet-stream",
+            PutOptions::default(),
+        )
+        .unwrap();
+    for part in 1..=4u32 {
+        store
+            .upload_part(&upload.upload_id, part, vec![b'p'; 256 * 1024])
+            .unwrap();
+    }
+
+    assert_eq!(
+        undo(&store, "undo.multipart.bytes"),
+        0,
+        "the undo of a mutation that cannot touch an upload must not carry one"
+    );
+    assert_eq!(
+        undo(&store, "undo.total_bytes"),
+        before,
+        "an unrelated mutation's undo must not grow because an upload is in \
+         flight, and 1 MiB of buffered parts moved it"
+    );
+    // And the upload is still there to be completed, which is the other half of
+    // the claim: not copying it must not mean losing it.
+    assert_eq!(
+        store.list_multipart_uploads(Some("bucket"), None, 10).unwrap().len(),
+        1,
+        "the upload must still be listed"
+    );
+}
+
+#[test]
+fn a_refused_put_leaves_an_upload_in_flight_intact() {
+    // The correctness half. The narrowed undo captures no multipart map, so its
+    // restore must leave the live one alone rather than assigning what it
+    // captured -- which would be empty, and would drop every upload in flight
+    // on any refused put.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "k", b"original".to_vec(), "text/plain")
+        .unwrap();
+    let upload = store
+        .create_multipart_upload(
+            "bucket",
+            "big",
+            "application/octet-stream",
+            PutOptions::default(),
+        )
+        .unwrap();
+    for part in 1..=3u32 {
+        store
+            .upload_part(&upload.upload_id, part, vec![b'p'; 64])
+            .unwrap();
+    }
+    let before = store
+        .footprint_audit()
+        .into_iter()
+        .find(|(key, _)| key == "multipart.payload_bytes")
+        .map(|(_, value)| value)
+        .unwrap_or(0);
+    assert!(before > 0, "the upload must have buffered something");
+
+    let refused = store.put_object_with_options(
+        "bucket",
+        "k",
+        b"replacement".to_vec(),
+        "text/plain",
+        PutOptions {
+            expected_checksum: Some("fnv1a64:0000000000000000".to_string()),
+            ..PutOptions::default()
+        },
+    );
+    assert!(refused.is_err(), "the put must be refused");
+
+    assert_eq!(
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == "multipart.payload_bytes")
+            .map(|(_, value)| value)
+            .unwrap_or(0),
+        before,
+        "a refused put must not disturb the parts an upload has buffered"
+    );
+    assert_eq!(
+        store.list_multipart_uploads(Some("bucket"), None, 10).unwrap().len(),
+        1,
+        "a refused put must not drop an upload in flight"
+    );
+    // Completable afterwards, which is the property a caller actually has.
+    store
+        .complete_multipart_upload(&upload.upload_id, None, None)
+        .expect("the upload must still complete after a refused put");
+}
