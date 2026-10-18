@@ -1,4 +1,26 @@
 impl MatrixObjectStore {
+    /// The allocation the object map already names this object through.
+    ///
+    /// A mutation arrives with its own `ObjectId`, and `BTreeMap::insert`
+    /// keeps the key it already holds. Without adopting, an overwrite leaves
+    /// the map key and everything the mutation builds in two allocations of
+    /// the same characters.
+    pub(crate) fn filed_object_key(&self, object_id: ObjectId) -> ObjectId {
+        self.objects
+            .get_key_value(&object_id)
+            .map(|(existing, _)| existing.clone())
+            .unwrap_or(object_id)
+    }
+
+    /// File an object, making the stored value name it through the key the map
+    /// keeps rather than through the mutation's own copy.
+    pub(crate) fn file_object(&mut self, object_id: ObjectId, metadata: &mut ObjectMetadata) {
+        if let Some((existing, _)) = self.objects.get_key_value(&object_id) {
+            metadata.object_id = existing.clone();
+        }
+        self.objects.insert(object_id, metadata.clone());
+    }
+
     fn apply_put_storage_batched(
         &mut self,
         bucket: String,
@@ -90,10 +112,8 @@ impl MatrixObjectStore {
             }
             self.check_retention_for_mutation(&previous, "overwrite", update_time_ms)?;
             if self.bucket_versioning.contains(object_id.bucket.as_str()) {
-                self.versions
-                    .entry(object_id.clone())
-                    .or_default()
-                    .push(previous);
+                let versions_key = self.filed_object_key(object_id.clone());
+                self.versions.entry(versions_key).or_default().push(previous);
             } else {
                 self.mark_extents_stale(&previous.extents)?;
             }
@@ -108,7 +128,7 @@ impl MatrixObjectStore {
         let object_etag = etag(&data);
         let extents = self.allocate_extents_owned(data)?;
         let version = self.next_object_version(&object_id);
-        let metadata = ObjectMetadata {
+        let mut metadata = ObjectMetadata {
             object_id: object_id.clone(),
             version,
             length,
@@ -126,7 +146,7 @@ impl MatrixObjectStore {
             deleted: false,
         };
         self.logical_written_bytes = saturating_add(self.logical_written_bytes, length);
-        self.objects.insert(object_id, metadata.clone());
+        self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
             &metadata.object_id,
             &metadata_projection_value(&metadata),

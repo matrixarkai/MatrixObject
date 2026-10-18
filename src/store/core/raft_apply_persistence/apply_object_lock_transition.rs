@@ -24,7 +24,7 @@ impl MatrixObjectStore {
         metadata.legal_hold = enabled;
         metadata.legal_hold_update_time_ms = update_time_ms;
         metadata.update_time_ms = update_time_ms;
-        self.objects.insert(object_id, metadata.clone());
+        self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
             &metadata.object_id,
             &metadata_projection_value(&metadata),
@@ -67,7 +67,7 @@ impl MatrixObjectStore {
         }
         metadata.retention_until_ms = retention_until_ms;
         metadata.update_time_ms = update_time_ms;
-        self.objects.insert(object_id, metadata.clone());
+        self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
             &metadata.object_id,
             &metadata_projection_value(&metadata),
@@ -116,7 +116,7 @@ impl MatrixObjectStore {
             metadata.restore_until_ms = 0;
         }
         metadata.update_time_ms = update_time_ms;
-        self.objects.insert(object_id, metadata.clone());
+        self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
             &metadata.object_id,
             &metadata_projection_value(&metadata),
@@ -213,7 +213,7 @@ impl MatrixObjectStore {
         metadata.update_time_ms = update_time_ms;
         metadata.extents = new_extents;
         self.logical_written_bytes = saturating_add(self.logical_written_bytes, metadata.length);
-        self.objects.insert(object_id, metadata.clone());
+        self.file_object(object_id, &mut metadata);
         if let Err(err) = self.commit_meta_projection(
             &metadata.object_id,
             &metadata_projection_value(&metadata),

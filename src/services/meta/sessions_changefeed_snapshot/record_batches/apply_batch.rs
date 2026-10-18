@@ -100,7 +100,7 @@ impl MatrixMetaService {
             }
         }
         for image in &prepared.images {
-            self.records.insert(image.key.clone(), image.clone());
+            self.file_record(image.key.clone(), image.clone());
             self.changes.push(MetadataChange {
                 sequence: self.next_change_sequence,
                 commit_index: prepared.prepared_commit_index,
