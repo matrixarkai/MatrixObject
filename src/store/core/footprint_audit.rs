@@ -457,12 +457,84 @@ impl MatrixObjectStore {
         // until commit or abort, and previously invisible: the audit reported
         // only how many uploads existed.
         push("multipart.payload_bytes", multipart_payload_bytes);
+        // ---- three structures that were counted and never weighed -----------
+        //
+        // Each was reported as an entry count with no byte leg, so none was in
+        // any total. The raft apply receipts matter most: a receipt carries the
+        // whole `ObjectMetadata` the command produced, and the map is trimmed
+        // to `k_max_raft_apply_receipts()`, which is 4,096.
+        //
+        // The object identity inside a receipt is charged through the same
+        // ledger as everything else, so a receipt naming an object the store
+        // still holds pays for the handle and not for the characters again.
+        // That is what the figure is for -- what is resident, not what a
+        // structure would cost alone.
+        let mut raft_receipt_bytes = 0u64;
+        for receipt in self.applied_raft_receipts.values() {
+            raft_receipt_bytes = raft_receipt_bytes
+                .saturating_add(
+                    (std::mem::size_of::<u64>() + std::mem::size_of::<RaftApplyReceipt>()) as u64,
+                )
+                .saturating_add(audit_string_heap(&receipt.command_checksum))
+                .saturating_add(audit_object_metadata_heap(&mut ledger, &receipt.result));
+        }
+        push("applied_raft_receipts.bytes", raft_receipt_bytes);
+
+        // The route cache is bounded by `metadata_route_cache_entries`, which
+        // defaults to 100,000. The shard and the owner session are counted at
+        // their inline size; the text below them is the endpoints and the three
+        // checksums, which is what grows per entry.
+        let mut route_cache_bytes = 0u64;
+        for (key, entry) in self.metadata_route_cache.iter() {
+            route_cache_bytes = route_cache_bytes
+                .saturating_add(
+                    (std::mem::size_of::<String>()
+                        + std::mem::size_of::<MetadataRouteCacheEntry>()) as u64,
+                )
+                .saturating_add(audit_string_heap(key))
+                .saturating_add(audit_string_heap(&entry.topology_checksum))
+                .saturating_add(audit_string_heap(&entry.shard_topology_checksum))
+                .saturating_add(audit_string_heap(&entry.session_checksum))
+                .saturating_add(audit_string_heap(&entry.route.preferred_endpoint))
+                // The shard travels inside the route, and its four strings are
+                // per cached entry: the id, both key bounds and the owner.
+                .saturating_add(audit_string_heap(&entry.route.shard.shard_id))
+                .saturating_add(audit_string_heap(&entry.route.shard.start_key))
+                .saturating_add(audit_string_heap(&entry.route.shard.end_key))
+                .saturating_add(audit_string_heap(&entry.route.shard.owner_node_id));
+            for endpoint in &entry.route.fallback_endpoints {
+                route_cache_bytes = route_cache_bytes
+                    .saturating_add(std::mem::size_of::<String>() as u64)
+                    .saturating_add(audit_string_heap(endpoint));
+            }
+        }
+        push("metadata_route_cache.bytes", route_cache_bytes);
+
+        // The slab records. Their two range lists grow with how fragmented a
+        // slab becomes, and both are merged on every extend, so this is what
+        // fragmentation costs rather than what deletion does.
+        let mut slab_bytes = 0u64;
+        for slab in self.slabs.values() {
+            slab_bytes = slab_bytes
+                .saturating_add(
+                    (std::mem::size_of::<SlabId>() + std::mem::size_of::<SlabInfo>()) as u64,
+                )
+                .saturating_add(
+                    ((slab.stale_ranges.capacity() + slab.discarded_ranges.capacity()) as u64)
+                        .saturating_mul(std::mem::size_of::<DataRange>() as u64),
+                );
+        }
+        push("segments.bytes", slab_bytes);
+
         let metadata_bytes = objects_bytes
             .saturating_add(versions_bytes)
             .saturating_add(changes_bytes)
             .saturating_add(meta.total())
             .saturating_add(payload_key_bytes)
-            .saturating_add(multipart_metadata_bytes);
+            .saturating_add(multipart_metadata_bytes)
+            .saturating_add(raft_receipt_bytes)
+            .saturating_add(route_cache_bytes)
+            .saturating_add(slab_bytes);
         push("ACCOUNTED.metadata_bytes", metadata_bytes);
 
         // ---- the headline: bytes we can actually name ------------------------
