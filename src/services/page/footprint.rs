@@ -15,6 +15,11 @@ pub(crate) struct PageServiceFootprint {
     /// Eleven receipt maps here and seven in each replica, every one bounded
     /// by `receipt_retention`, which defaults to 100,000.
     pub(crate) receipts: u64,
+    /// Of `receipts`, the part that is a receipt repeating its own map key.
+    pub(crate) receipt_duplicate_keys: u64,
+    /// How many receipts those bytes come from -- one per receipt that agrees
+    /// with its own key.
+    pub(crate) receipt_matching_keys: u64,
 }
 
 impl PageServiceFootprint {
@@ -38,6 +43,8 @@ impl MatrixPageService {
                 .unwrap_or(0)
                 .saturating_add(self.snapshot_assembler.footprint_bytes()),
             receipts: self.receipt_bytes(),
+            receipt_duplicate_keys: self.receipt_duplicate_key_bytes(),
+            receipt_matching_keys: self.receipt_matching_key_count(),
             ..PageServiceFootprint::default()
         };
         for replica in &self.replicas {
@@ -51,6 +58,12 @@ impl MatrixPageService {
             total.page_validation = total.page_validation.saturating_add(replica.page_validation);
             total.export_caches = total.export_caches.saturating_add(replica.export_caches);
             total.receipts = total.receipts.saturating_add(replica.receipts);
+            total.receipt_duplicate_keys = total
+                .receipt_duplicate_keys
+                .saturating_add(replica.receipt_duplicate_keys);
+            total.receipt_matching_keys = total
+                .receipt_matching_keys
+                .saturating_add(replica.receipt_matching_keys);
         }
         total
     }
@@ -81,6 +94,45 @@ where
     })
 }
 
+/// Key characters a receipt repeats inside itself.
+///
+/// Every one of these maps is keyed by the idempotency key, and every receipt
+/// in them also carries an `idempotency_key` field holding the same text in a
+/// second allocation. The field is in the receipt's proof, so it cannot be
+/// dropped without a migration -- but the allocation can be shared, and this
+/// says what that is worth before anything changes.
+fn page_receipt_duplicate_key_bytes<V, F>(map: &BTreeMap<String, V>, key_of: F) -> u64
+where
+    F: Fn(&V) -> &String,
+{
+    map.iter().fold(0u64, |total, (key, value)| {
+        let repeated = key_of(value);
+        if repeated == key {
+            total.saturating_add(repeated.capacity() as u64)
+        } else {
+            total
+        }
+    })
+}
+
+/// Receipts whose own field holds exactly the key they are filed under.
+///
+/// Reported next to the bytes because sharing one allocation between the two is
+/// only sound while they agree, and a receipt filed under a key it does not
+/// carry would make that substitution lose the field's value silently.
+fn page_receipt_matching_key_count<V, F>(map: &BTreeMap<String, V>, key_of: F) -> u64
+where
+    F: Fn(&V) -> &String,
+{
+    map.iter().fold(0u64, |total, (key, value)| {
+        if key_of(value) == key {
+            total.saturating_add(1)
+        } else {
+            total
+        }
+    })
+}
+
 fn page_allocation_bytes(allocation: &PageAllocation) -> u64 {
     allocation.allocation_id.capacity() as u64
 }
@@ -108,6 +160,64 @@ impl MatrixPageService {
     /// The eleven receipt maps, in bytes rather than entries. The pending
     /// allocations are counted here too: they are the same shape and the same
     /// growth, differing only in that a commit removes them.
+    /// Of `receipt_bytes`, the part that is one receipt holding its own map key
+    /// twice. Measured across the maps whose receipts carry the field.
+    pub(crate) fn receipt_duplicate_key_bytes(&self) -> u64 {
+        page_receipt_duplicate_key_bytes(&self.write_request_receipts, |r| &r.idempotency_key)
+            .saturating_add(page_receipt_duplicate_key_bytes(
+                &self.batch_write_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(page_receipt_duplicate_key_bytes(
+                &self.discard_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(page_receipt_duplicate_key_bytes(
+                &self.batch_discard_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(page_receipt_duplicate_key_bytes(
+                &self.repair_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(page_receipt_duplicate_key_bytes(
+                &self.range_repair_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(page_receipt_duplicate_key_bytes(
+                &self.audit_repair_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+    }
+
+    pub(crate) fn receipt_matching_key_count(&self) -> u64 {
+        page_receipt_matching_key_count(&self.write_request_receipts, |r| &r.idempotency_key)
+            .saturating_add(page_receipt_matching_key_count(
+                &self.batch_write_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(page_receipt_matching_key_count(
+                &self.discard_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(page_receipt_matching_key_count(
+                &self.batch_discard_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(page_receipt_matching_key_count(
+                &self.repair_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(page_receipt_matching_key_count(
+                &self.range_repair_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(page_receipt_matching_key_count(
+                &self.audit_repair_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+    }
+
     pub(crate) fn receipt_bytes(&self) -> u64 {
         page_receipt_map_bytes(&self.pending_allocations, page_allocation_bytes)
             .saturating_add(page_receipt_map_bytes(

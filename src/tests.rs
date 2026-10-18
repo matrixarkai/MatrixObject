@@ -35916,6 +35916,178 @@ fn keys_on_one_shard_share_three_cached_checksums() {
 }
 
 #[test]
+fn every_retained_receipt_is_filed_under_the_key_it_carries() {
+    // A receipt map is keyed by an idempotency key and the receipt it stores
+    // carries that same key in its own field, so the text is resident twice.
+    // Closing that means sharing one allocation between the two, and the
+    // substitution is sound only while the two always agree: a receipt filed
+    // under a key it does not carry would lose its field's value silently.
+    //
+    // This asserts the premise rather than the saving, because the saving is in
+    // the measurement beside this and the premise is what a later change relies
+    // on. 29 bytes a receipt are recoverable; 274 is what one costs today.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..40u32 {
+        let key = format!("prefix/{index:08}/kkkkkkkkkk");
+        store
+            .put_object("bucket", &key, vec![b'x'; 1024], "application/octet-stream")
+            .unwrap();
+        store.delete_object("bucket", &key).unwrap();
+    }
+    let audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let get = |wanted: &str| -> u64 { audit.get(wanted).copied().unwrap_or(0) };
+
+    // The maps whose receipts carry the field, as the audit counts them.
+    let filed = get("replica.receipts")
+        + get("block.write_receipts")
+        + get("block.batch_write_receipts")
+        + get("block.discard_receipts")
+        + get("block.batch_discard_receipts");
+    assert!(
+        filed > 0,
+        "40 objects written and deleted must leave receipts behind, and left none"
+    );
+    assert_eq!(
+        get("block.receipts.matching_key_entries"),
+        filed,
+        "every retained receipt must carry the key it is filed under"
+    );
+    assert!(
+        get("block.receipts.duplicate_key_bytes") > 0,
+        "those matching keys must account for some bytes"
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_the_retained_receipts_cost() {
+    // Every write files an idempotency receipt, and the maps holding them are
+    // bounded by `receipt_retention`, which defaults to 100,000. The audit
+    // reported `block.receipts.bytes` as one number and the entry counts
+    // separately, so nothing said what one receipt costs or what reaching the
+    // bound costs.
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let objects = env_usize("MEASURE_OBJECTS", 500);
+    let size = env_usize("MEASURE_SIZE", 1024);
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    let read = |store: &MatrixObjectStore, wanted: &str| -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value)
+            .unwrap_or(0)
+    };
+    let counted = |store: &MatrixObjectStore| -> u64 {
+        [
+            "block.alloc_receipts",
+            "block.batch_alloc_receipts",
+            "block.release_receipts",
+            "block.write_receipts",
+            "block.batch_write_receipts",
+            "block.discard_receipts",
+            "block.batch_discard_receipts",
+            "replica.receipts",
+        ]
+        .iter()
+        .map(|leg| read(store, leg))
+        .sum()
+    };
+    let before_bytes = read(&store, "block.receipts.bytes");
+    let before_count = counted(&store);
+    for index in 0..objects {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; size],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let after_bytes = read(&store, "block.receipts.bytes");
+    let after_count = counted(&store);
+    println!(
+        "RECEIPTS puts={objects} size={size} entries={before_count}->{after_count}          bytes={before_bytes}->{after_bytes}"
+    );
+    for leg in [
+        "block.alloc_receipts",
+        "block.batch_alloc_receipts",
+        "block.release_receipts",
+        "block.write_receipts",
+        "block.batch_write_receipts",
+        "block.discard_receipts",
+        "block.batch_discard_receipts",
+        "replica.receipts",
+    ] {
+        let value = read(&store, leg);
+        if value != 0 {
+            println!("RECEIPTS   {leg}={value}");
+        }
+    }
+    let filed = after_count.saturating_sub(before_count);
+    if filed > 0 {
+        let per = after_bytes.saturating_sub(before_bytes) / filed;
+        println!("RECEIPTS per_receipt={per}");
+        println!(
+            "RECEIPTS at_the_default_bound_of_100000={}",
+            per.saturating_mul(100_000)
+        );
+    }
+    // And again after deleting everything, because a delete files its own
+    // receipts and removes none of the write receipts.
+    for index in 0..objects {
+        store
+            .delete_object("bucket", &format!("prefix/{index:08}/kkkkkkkkkk"))
+            .unwrap();
+    }
+    let deleted_entries = counted(&store);
+    let deleted_bytes = read(&store, "block.receipts.bytes");
+    let duplicate = read(&store, "block.receipts.duplicate_key_bytes");
+    println!("RECEIPTS-AFTER-DELETES entries={deleted_entries} bytes={deleted_bytes}");
+    if deleted_entries > 0 {
+        let per = deleted_bytes / deleted_entries;
+        println!("RECEIPTS-AFTER-DELETES per_receipt={per}");
+        let duplicate_per = duplicate / deleted_entries;
+        println!(
+            "RECEIPTS-AFTER-DELETES duplicate_key_bytes={duplicate} per_receipt={duplicate_per}              share={}%",
+            duplicate.saturating_mul(100) / deleted_bytes.max(1)
+        );
+        // Sharing the allocation does not recover the characters -- it replaces
+        // two owned copies with one `Arc<str>`, whose two reference counts sit
+        // in front of the characters. So the recoverable part is the duplicate
+        // less two words per receipt, and quoting the duplicate as the saving
+        // would overstate it by a third.
+        let refcount = 2 * std::mem::size_of::<usize>() as u64;
+        let recoverable = duplicate_per.saturating_sub(refcount);
+        println!(
+            "RECEIPTS-AFTER-DELETES recoverable_per_receipt={recoverable}              (duplicate {duplicate_per} less {refcount} of reference count)"
+        );
+        println!(
+            "RECEIPTS-AFTER-DELETES at_the_default_bound_of_100000={} recoverable={}",
+            per.saturating_mul(100_000),
+            recoverable.saturating_mul(100_000)
+        );
+    }
+}
+
+#[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_what_a_filled_metadata_route_cache_costs() {
     // The route cache is keyed by metadata key -- one entry per object key a

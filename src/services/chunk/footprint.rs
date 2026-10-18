@@ -24,6 +24,11 @@ pub(crate) struct ChunkServiceFootprint {
     pub(crate) export_caches: u64,
     /// The seven receipt maps, each bounded by `receipt_retention`.
     pub(crate) receipts: u64,
+    /// Of `receipts`, the part that is a receipt repeating its own map key.
+    pub(crate) receipt_duplicate_keys: u64,
+    /// How many receipts those bytes come from -- one per receipt that agrees
+    /// with its own key.
+    pub(crate) receipt_matching_keys: u64,
 }
 
 impl MatrixChunkService {
@@ -83,6 +88,8 @@ impl MatrixChunkService {
             page_validation,
             export_caches,
             receipts: self.receipt_bytes(),
+            receipt_duplicate_keys: self.receipt_duplicate_key_bytes(),
+            receipt_matching_keys: self.receipt_matching_key_count(),
         }
     }
 }
@@ -120,6 +127,45 @@ where
     })
 }
 
+/// Key characters a receipt repeats inside itself.
+///
+/// Each of these maps is keyed by the idempotency key, and each receipt also
+/// carries an `idempotency_key` field holding that same text in a second
+/// allocation. The field is part of the receipt's proof, so dropping it is a
+/// migration -- the allocation is what can be shared, and this says what that
+/// is worth before anything changes.
+fn chunk_receipt_duplicate_key_bytes<V, F>(map: &BTreeMap<String, V>, key_of: F) -> u64
+where
+    F: Fn(&V) -> &String,
+{
+    map.iter().fold(0u64, |total, (key, value)| {
+        let repeated = key_of(value);
+        if repeated == key {
+            total.saturating_add(repeated.capacity() as u64)
+        } else {
+            total
+        }
+    })
+}
+
+/// Receipts whose own field holds exactly the key they are filed under.
+///
+/// Reported next to the bytes because sharing one allocation between the two is
+/// only sound while they agree, and a receipt filed under a key it does not
+/// carry would make that substitution lose the field's value silently.
+fn chunk_receipt_matching_key_count<V, F>(map: &BTreeMap<String, V>, key_of: F) -> u64
+where
+    F: Fn(&V) -> &String,
+{
+    map.iter().fold(0u64, |total, (key, value)| {
+        if key_of(value) == key {
+            total.saturating_add(1)
+        } else {
+            total
+        }
+    })
+}
+
 pub(crate) fn route_control_proof_bytes(proof: &PageRouteControlProof) -> u64 {
     (proof.state_format.capacity() + proof.state_checksum.capacity()) as u64
 }
@@ -135,6 +181,64 @@ pub(crate) fn chunk_repair_report_bytes(report: &ChunkRepairReport) -> u64 {
 }
 
 impl MatrixChunkService {
+    /// Of `receipt_bytes`, the part that is one receipt holding its own map key
+    /// twice, across all seven maps.
+    pub(crate) fn receipt_duplicate_key_bytes(&self) -> u64 {
+        chunk_receipt_duplicate_key_bytes(&self.write_request_receipts, |r| &r.idempotency_key)
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
+                &self.discard_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
+                &self.batch_write_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
+                &self.batch_discard_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
+                &self.state_install_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
+                &self.reclaim_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
+                &self.repair_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+    }
+
+    pub(crate) fn receipt_matching_key_count(&self) -> u64 {
+        chunk_receipt_matching_key_count(&self.write_request_receipts, |r| &r.idempotency_key)
+            .saturating_add(chunk_receipt_matching_key_count(
+                &self.discard_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(chunk_receipt_matching_key_count(
+                &self.batch_write_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(chunk_receipt_matching_key_count(
+                &self.batch_discard_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(chunk_receipt_matching_key_count(
+                &self.state_install_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(chunk_receipt_matching_key_count(
+                &self.reclaim_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+            .saturating_add(chunk_receipt_matching_key_count(
+                &self.repair_request_receipts,
+                |r| &r.idempotency_key,
+            ))
+    }
+
     /// The seven receipt maps, in bytes rather than entries.
     pub(crate) fn receipt_bytes(&self) -> u64 {
         chunk_receipt_map_bytes(&self.write_request_receipts, |receipt| {
