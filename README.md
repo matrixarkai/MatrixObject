@@ -35,6 +35,23 @@ Two words are used deliberately narrowly:
   they never leave the chunk they came from.
 - **page** names the service that coordinates replicas, not a unit of storage.
 
+The file tree now matches those types: `src/services/page`, `chunk_page`,
+`SlabId`, `slab_size`. What is still spelled the old way is spelled that way
+deliberately, and it is worth knowing which before you reach for a tidy-up:
+
+| still named the old way | why it stays |
+|---|---|
+| **148 durable format constants** (36 contain `BLOCK`, 3 `SEGMENT`) | they are hashed into proofs, so changing the text changes every checksum computed from it |
+| **154 control-field and report keys** | they are observable output -- someone's dashboard reads them |
+
+The key count is distinct lower-case string literals containing `block` or
+`segment`; counted another way it comes out differently, which is why the
+definition is here and not just the figure.
+
+Both classes are a versioned migration rather than a rename, and
+`every_durable_format_constant_is_accounted_for` pins all 148 constants by name
+in both directions: a renamed constant fails it, and so does a new one.
+
 ## Services
 
 | service | responsibility |
@@ -61,6 +78,53 @@ Two words are used deliberately narrowly:
 - **Object semantics.** Buckets, versioning, multipart upload, object lock and
   retention, lifecycle policies, tagging, CORS and bucket policies, quotas, and
   a change feed.
+
+## What the footprint audit reports, and which total to divide by
+
+`footprint_audit()` returns two totals, and the difference between them is the
+whole point:
+
+- **`byte_buffers`** is payload buffers, replica data, shards and checksums. An
+  amplification derived from it alone is **data-only**, because everything else
+  the store holds used to be reported as an entry count and never converted to
+  bytes.
+- **`total_bytes`** adds the metadata the store keeps to describe that data, and
+  is the one to divide by `logical.written`.
+
+Measured at three replicas, with the metadata counted:
+
+| object size | amplification | data-only figure |
+|---:|---:|---:|
+| 64 KiB | **3.01x** | 3.00x |
+| 4 KiB | **3.26x** | 3.00x |
+| 1 KiB | **4.04x** | 3.01x |
+
+Metadata costs about **1,150 bytes per object almost regardless of object
+size**, so it disappears at 64 KiB and is 25.4% of the real footprint at 1 KiB
+-- where a data-only headline understates the store by 34%. It splits into three
+near-equal parts per object: `ObjectMetadata` and its strings 411 B, the
+metadata projection 368 B, the change feed 351 B.
+
+So if you store small objects, three replicas do not cost 3x. Any amplification
+figure published for this store before the metadata was counted was the data-only
+column, including in this file.
+
+Neither total includes B-tree node slack or allocator overhead, which is what
+the remainder against process RSS is. Capacity is counted rather than length,
+because the slack is resident and showing slack is what the audit is for.
+
+### The change feed used to keep its high-water mark
+
+`Vec::drain` moves the tail down and keeps the allocation, so a change feed that
+once reached a peak held those slots for the life of the process -- the audit
+caught 4,600 records sitting in a capacity of 8,192, and compacting the front
+away returned none of it. Compaction now shrinks, which costs one copy per
+compaction rather than one per append.
+
+The slack was a doubling sawtooth, so no single byte figure describes it: between
+4,097 and 8,192 records the capacity is 8,192 and the waste runs from about half
+the term down to nothing. What was not a sawtooth is that compaction never gave
+any of it back.
 
 ## Building
 
@@ -170,9 +234,8 @@ arrival teaches people to ignore the ones that matter:
   against `tools/known_failures.txt`, so you can tell a pre-existing failure
   from one you just caused. It fails if a failure is new **and** if a recorded
   one has started passing, so the list cannot quietly rot, and it refuses
-  outright if the suite did not run rather than reporting everything fixed. They are not regressions and they are not masked: the local gate
-  compares failures by name against that baseline and refuses anything new.
-  Run `cargo test` and expect `249 passed; 21 failed`.
+  outright if the suite did not run rather than reporting everything fixed.
+  Run `cargo test` and expect `250 passed; 21 failed`.
 - **`cargo fmt --check`.** The tree has never been rustfmt-clean; there were 93
   diff hunks at the first commit. Reformatting 33,000 lines of tests to turn one
   check green is a change nobody asked for, and it would bury real history.
