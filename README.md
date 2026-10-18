@@ -160,6 +160,77 @@ shared between holders is charged once per allocation — the characters and the
 two counts in front of them — so `mapkey_capacity` against `mapkey_len` is that
 header rather than slack.
 
+### What a mutation holds while it runs
+
+Every figure above is the store **at rest**. A mutation also holds a copy of what
+it may have to put back, from the moment it starts until it commits or is
+refused, so peak resident is the store plus that copy — and a copy taken and
+dropped inside one call is invisible to a figure taken at rest.
+
+Two copies exist, and they are reported separately because they are bounded by
+different things.
+
+**The store's own undo**, reported by `ObjectMutationRollback::footprint_audit`,
+at 1 KiB objects:
+
+| stored objects | undo |
+|---:|---:|
+| 250 | 1,225 B |
+| 1,000 | 1,225 B |
+| 2,000 | **1,225 B** |
+
+Flat, because a put, a delete, an append and a copy each write one object key,
+one metadata record and one change record, and the undo carries exactly that.
+Three terms used to make it grow instead: the payload index at 40 bytes per
+stored object, every container in the store for an append or a copy, and — the
+largest — every byte of every multipart upload in flight, which made an
+unrelated put's undo 8,391,068 bytes while an 8 MiB upload was open.
+
+**The page service's mutation batch** holds a second copy, boxed, so the undo
+above can leave the page service alone. It separates what it copies from what it
+only names:
+
+| stored objects | copied | named |
+|---:|---:|---:|
+| 250 | 2,941 B | 768,096 B |
+| 1,000 | **2,941 B** | 3,072,096 B |
+
+Also flat, because a chunk's payload is shared rather than duplicated. What it
+copies is the structure around the payload and the receipt maps — and the receipt
+maps are the one term here that still grows.
+
+```
+cargo test --release --lib measure_what_a_mutation_undo_costs -- --ignored --nocapture
+cargo test --release --lib measure_what_a_mutation_batch_snapshot_costs -- --ignored --nocapture
+```
+
+#### A delete does not reclaim, it trades
+
+Writing 500 objects of 1 KiB and then deleting every one leaves the store
+**22.0% larger** than when it held them:
+
+| | bytes |
+|---|---:|
+| holding 500 objects | 1,986,202 |
+| after deleting all 500 | 2,423,886 |
+
+The payload index is given back in full. What replaces it is **822 bytes of
+idempotency receipt per delete** across three replicas, bounded only by
+`receipt_retention`, which defaults to 100,000; plus 144 bytes of change feed and
+57 of metadata change log per delete, both bounded by their retention constants.
+The object's own entry does not go away either — a delete files a delete marker,
+so 226 of the 282 bytes an object cost stay, which is what the change feed and
+the versioned paths read.
+
+Those receipts are also the term that makes the mutation batch grow: after N
+deletes, every subsequent mutation's batch copies **615 bytes per retained
+receipt**, which at the default bound is about 61.5 MB copied per mutation.
+Issue #20 has the measurement and what narrowing it requires.
+
+So a deployment sizing from the figures above should add the undo and the batch
+copy to the resting total, and a workload that deletes should expect the receipt
+retention to dominate both.
+
 ### The change feeds used to grow without bound
 
 `Vec::drain` moves the tail down and keeps the allocation, so a change feed that
