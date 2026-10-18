@@ -113,6 +113,32 @@ much further.
 This is a property of the write undo, not of the storage layout, and it is
 tracked as an issue rather than accepted as the design.
 
+### Receipt retention costs something per mutation
+
+Allocation, write, discard and repair carry receipts so a retried request is not
+applied twice. Those receipts are held per replica, bounded by
+`receipt_retention` (default 100,000), and a mutation's rollback snapshot copies
+them, so **the cost of a mutation grows with the number of receipts being held**.
+
+Measured over the same workload, changing only the bound:
+
+| | retention 100,000 | retention 8 |
+|---|---:|---:|
+| total allocations | 4,351,882 | 2,703,037 |
+| allocations per overwrite | 2,732 | 932 |
+| allocations per delete | 5,527 | 911 |
+| delete seconds | 0.096 | 0.016 |
+
+A put is unaffected, because a put writes no discard receipt.
+
+Set `receipt_retention` to cover the retry window you actually need rather than
+leaving it at the default. The trade is that an evicted receipt no longer
+deduplicates its retry.
+
+This is a property of what the rollback snapshot carries rather than of
+receipts themselves, and it is tracked as an issue rather than accepted as the
+design.
+
 ## Contributing
 
 Anyone can contribute: fork, commit, open a pull request. Issues are open.
