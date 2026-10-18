@@ -33942,3 +33942,41 @@ fn a_rolled_back_mutation_leaves_no_change_behind_it() {
         "a trimmed prefix should still report cursor_compacted and resync_required"
     );
 }
+
+#[test]
+fn a_shared_allocation_is_charged_for_its_header() {
+    // The audit charged only the characters behind a shared handle, so every
+    // figure the key-sharing work produced was understated by one header per
+    // allocation -- and the swap from `String`, which has no header, looked
+    // better than it is.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    const KEY: &str = "a-key-of-a-known-length-to-count";
+    store
+        .put_object("bucket", KEY, vec![b'x'; 16], "text/plain")
+        .unwrap();
+
+    // One object, one bucket name and one key, each its own allocation: the
+    // characters plus two reference counts apiece.
+    let header = 2 * std::mem::size_of::<usize>() as u64;
+    let characters = ("bucket".len() + KEY.len()) as u64;
+    assert_eq!(
+        audit_value(&store, "objects.mapkey_heap"),
+        characters + 2 * header,
+        "the two shared allocations behind one object's identity cost their          characters and their headers, not their characters alone"
+    );
+    assert_eq!(
+        audit_value(&store, "objects.inner_id_heap"),
+        0,
+        "and the value names the object through those same two"
+    );
+}

@@ -19,9 +19,18 @@ pub(crate) struct SharedTextLedger {
 }
 
 impl SharedTextLedger {
+    /// The characters plus the two counts in front of them.
+    ///
+    /// A `String` has no header, so a shared handle only pays for itself once
+    /// the sharing, or the smaller inline handle, covers these bytes. Leaving
+    /// them out made every figure the sharing produced look better than it is.
+    /// The allocator's own size rounding is excluded, as capacity rounding is
+    /// everywhere else in this audit.
+    const SHARED_ALLOCATION_HEADER: u64 = 2 * std::mem::size_of::<usize>() as u64;
+
     pub(crate) fn charge(&mut self, value: &SharedText) -> u64 {
         if self.charged.insert(value.allocation_id()) {
-            value.as_str().len() as u64
+            (value.as_str().len() as u64).saturating_add(Self::SHARED_ALLOCATION_HEADER)
         } else {
             0
         }
