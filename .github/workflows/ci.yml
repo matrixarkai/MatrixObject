@@ -15,22 +15,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Pinned, not `stable`. The first attempt used the stable channel with
-      # warnings denied; the runner had a newer compiler than the one this was
-      # verified on and the build failed on lints that did not exist locally.
-      # Denying warnings against a moving channel means a compiler release
-      # breaks the build, which is not a signal anyone can act on.
+      # Pinned, so "it builds" means the same thing here and locally, and so
+      # that denying warnings below cannot be broken by a compiler release
+      # nobody in this repository chose.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build everything
+      - name: Build everything, warnings denied
         run: cargo build --all-targets --locked
+        env:
+          RUSTFLAGS: "-D warnings"
 
       - name: Docs
         run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
 
   guards:
     name: format and rollback guards

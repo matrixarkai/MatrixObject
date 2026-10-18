@@ -157,7 +157,7 @@ Two invariants worth knowing before you start:
 ## Continuous integration
 
 Every push and pull request runs two jobs: a build of all targets and the
-documentation, and the two guards that protect properties
+documentation with warnings denied, and the two guards that protect properties
 nothing else protects -- that the durable format constants have not changed, and
 that a mutation which fails after it has already mutated leaves the store
 byte-identical.
@@ -173,11 +173,10 @@ arrival teaches people to ignore the ones that matter:
   diff hunks at the first commit. Reformatting 33,000 lines of tests to turn one
   check green is a change nobody asked for, and it would bury real history.
 
-The toolchain is **pinned**, not the stable channel. The first attempt denied
-warnings on stable, and the runner's newer compiler failed on lints that did not
-exist locally -- denying warnings against a moving channel means a compiler
-release breaks the build, which is not a signal anyone can act on. Bumping the
-pin is a deliberate change.
+`Cargo.lock` is committed, because this crate ships a binary and CI builds with
+`--locked` so that a dependency release cannot change what is being tested. The
+toolchain is **pinned** for the same reason: "it builds" should mean the same
+thing in CI and on your machine. Bumping either is a deliberate change.
 
 If you fix one of the 21, or format the tree, add the corresponding check here
 in the same change.
