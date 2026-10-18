@@ -7,6 +7,11 @@ include!("metadata_records_transactions_snapshot/transaction_preparation_and_app
 include!("metadata_records_transactions_snapshot/maintenance_preparation_and_apply.rs");
 include!("metadata_records_transactions_snapshot/receipts_and_transaction_listing.rs");
 include!("metadata_records_transactions_snapshot/transaction_lifecycle.rs");
-include!("metadata_records_transactions_snapshot/retention_admission_and_qos.rs");
-include!("metadata_records_transactions_snapshot/tombstones_prefix_and_checkpoints.rs");
+include!("metadata_records_transactions_snapshot/metadata_changefeed.rs");
+include!("metadata_records_transactions_snapshot/snapshot_retention.rs");
+include!("metadata_records_transactions_snapshot/admission_policy.rs");
+include!("metadata_records_transactions_snapshot/qos_config.rs");
+include!("metadata_records_transactions_snapshot/tombstone_compaction.rs");
+include!("metadata_records_transactions_snapshot/prefix_delete.rs");
+include!("metadata_records_transactions_snapshot/change_checkpoints.rs");
 include!("metadata_records_transactions_snapshot/snapshot_export_and_install.rs");
