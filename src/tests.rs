@@ -35532,57 +35532,119 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
 }
 
 #[test]
-fn a_cloned_receipt_map_costs_what_the_map_costs() {
-    // The snapshot a mutation batch holds is a CLONE of the service, so its
-    // receipt maps cost exactly what the live maps cost. Two halves of the
-    // audit measured that same thing separately, and they drifted: the
-    // snapshot's half counted the inline struct and the key characters and
-    // skipped the strings each receipt owns, which understated the copy by 69
-    // bytes a receipt -- a quarter of it.
+fn a_batch_shares_the_receipt_maps_until_it_writes_one() {
+    // A snapshot of a service used to clone its seven receipt maps, which is
+    // 82.2 MB at the default `receipt_retention` of 100,000 across three
+    // replicas -- paid whenever a mutation batch opened, however little was
+    // stored. Measured: an ordinary put writes none of those maps, so all of
+    // that copying restored maps to exactly what they already held.
     //
-    // Both halves now call one function per receipt kind, and this asserts the
-    // equality that made the drift detectable in the first place. A figure that
-    // can be derived two ways should be asserted equal, or the cheaper way
-    // quietly becomes the published one.
+    // Each map now sits behind a shared handle. A snapshot clones handles; a
+    // write takes `Arc::make_mut`, which copies the one map it is about to
+    // change. This asserts both halves by pointer identity, which is the only
+    // thing that can tell a share from a copy.
+    //
+    // This replaces `a_cloned_receipt_map_costs_what_the_map_costs`, which
+    // asserted that a snapshot of the maps costs what the maps cost. That was
+    // true, and it is deliberately false now.
     let mut store = MatrixObjectStore::new(StoreOptions {
         volume_count: 2,
         ..StoreOptions::default()
     })
     .unwrap();
     store.create_bucket("bucket").unwrap();
+    // Writes and deletes, so the discard maps hold something worth not copying.
     for index in 0..30u32 {
-        let key = format!("prefix/{index:04}/kkkkkkkkkk");
+        let key = format!("seed/{index:04}/kkkkkkkkkk");
         store
             .put_object("bucket", &key, vec![b'x'; 4096], "application/octet-stream")
             .unwrap();
         store.delete_object("bucket", &key).unwrap();
     }
-    let live: u64 = store
-        .page_service
-        .replicas
-        .iter()
-        .map(|replica| replica.receipt_bytes())
-        .sum();
-    assert!(
-        live > 0,
-        "thirty writes and deletes must leave receipts behind, and left none"
+    let snapshot = store.page_service.export_snapshot_unsealed();
+    // The state-install, reclaim and repair maps are private to the service;
+    // these four are the ones a put or a delete can reach.
+    let shared = |snapshot: &PageServiceSnapshot, store: &MatrixObjectStore| -> (u64, u64) {
+        let mut same = 0u64;
+        let mut total = 0u64;
+        for (index, taken) in snapshot.replicas.iter().enumerate() {
+            let Some(live) = store.page_service.replicas.get(index) else {
+                continue;
+            };
+            let pairs: [(bool, &str); 4] = [
+                (
+                    std::sync::Arc::ptr_eq(
+                        &live.write_request_receipts,
+                        &taken.write_request_receipts,
+                    ),
+                    "write",
+                ),
+                (
+                    std::sync::Arc::ptr_eq(
+                        &live.discard_request_receipts,
+                        &taken.discard_request_receipts,
+                    ),
+                    "discard",
+                ),
+                (
+                    std::sync::Arc::ptr_eq(
+                        &live.batch_write_request_receipts,
+                        &taken.batch_write_request_receipts,
+                    ),
+                    "batch_write",
+                ),
+                (
+                    std::sync::Arc::ptr_eq(
+                        &live.batch_discard_request_receipts,
+                        &taken.batch_discard_request_receipts,
+                    ),
+                    "batch_discard",
+                ),
+            ];
+            for (is_shared, _name) in pairs {
+                total += 1;
+                if is_shared {
+                    same += 1;
+                }
+            }
+        }
+        (same, total)
+    };
+
+    let (at_snapshot, total) = shared(&snapshot, &store);
+    println!("MAPSHARE at_snapshot={at_snapshot} of {total}");
+    assert!(total >= 4, "this needs replicas with receipt maps, saw {total}");
+    assert_eq!(
+        at_snapshot, total,
+        "taking a snapshot must copy no receipt map at all"
     );
 
+    // A put writes none of them, so every map must still be shared afterwards.
     store
-        .page_service
-        .begin_mutation_batch("batch-the-clone-costs-the-same")
+        .put_object(
+            "bucket",
+            "after/put",
+            vec![b'y'; 4096],
+            "application/octet-stream",
+        )
         .unwrap();
-    let copied = store
-        .footprint_audit()
-        .into_iter()
-        .find(|(key, _)| key == "open_batch.replica_receipts.bytes")
-        .map(|(_, value)| value)
-        .unwrap_or(0);
-    println!("CLONECOST live={live} copied={copied}");
+    let (after_put, _) = shared(&snapshot, &store);
+    println!("MAPSHARE after_put={after_put} of {total}");
     assert_eq!(
-        copied, live,
-        "a clone of the receipt maps costs what the maps cost: the live maps \
-         are {live} bytes and the snapshot of them was measured at {copied}"
+        after_put, total,
+        "a put writes no receipt map, so none of them may be copied"
+    );
+
+    // A delete writes the batch-discard map, and only that one.
+    store.delete_object("bucket", "after/put").unwrap();
+    let (after_delete, _) = shared(&snapshot, &store);
+    let copied = total - after_delete;
+    let replicas = store.page_service.replicas.len() as u64;
+    println!("MAPSHARE after_delete={after_delete} of {total} copied={copied}");
+    assert_eq!(
+        copied, replicas,
+        "a delete must copy one receipt map on each of {replicas} replicas, \
+         and copied {copied}"
     );
 }
 
@@ -35856,7 +35918,7 @@ fn the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk() {
     for audit in [&few_objects, &more_objects, &more_chunks] {
         let legs = get(audit, "batch.page_receipts.bytes")
             + get(audit, "batch.page_other.bytes")
-            + get(audit, "batch.replica_receipts.bytes")
+            + get(audit, "batch.replica_receipts.copied_bytes")
             + get(audit, "batch.replica_other.bytes")
             + get(audit, "batch.replica_chunks.copied_bytes");
         assert_eq!(
@@ -36185,6 +36247,119 @@ fn every_retained_receipt_is_filed_under_the_key_it_carries() {
         get("block.receipts.duplicate_key_bytes") > 0,
         "those matching keys must account for some bytes"
     );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_which_receipt_maps_a_batch_actually_writes() {
+    // An open batch copies all seven receipt maps of every replica. Whether
+    // that copy is necessary depends on which of them the batch goes on to
+    // write: a map the batch never touches is restored to exactly what it
+    // already holds.
+    //
+    // Counted by taking the maps' lengths and byte figures either side of a
+    // real mutation, rather than by reading the write paths and hoping.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    let lengths = |store: &MatrixObjectStore| -> Vec<(String, usize)> {
+        let mut out = Vec::new();
+        for (index, replica) in store.page_service.replicas.iter().enumerate() {
+            out.push((format!("r{index}.write"), replica.write_request_receipts.len()));
+            out.push((format!("r{index}.discard"), replica.discard_request_receipts.len()));
+            out.push((
+                format!("r{index}.batch_write"),
+                replica.batch_write_request_receipts.len(),
+            ));
+            out.push((
+                format!("r{index}.batch_discard"),
+                replica.batch_discard_request_receipts.len(),
+            ));
+            // The state-install, reclaim and repair maps are private to the
+            // service; the four here are the ones an ordinary put or delete can
+            // reach, which is what this measures.
+        }
+        out
+    };
+    let show = |label: &str, before: &[(String, usize)], after: &[(String, usize)]| {
+        let mut touched = 0;
+        let mut untouched = 0;
+        for ((name, b), (_, a)) in before.iter().zip(after.iter()) {
+            if a != b {
+                println!("WHICHMAPS {label} TOUCHED {name} {b} -> {a}");
+                touched += 1;
+            } else {
+                untouched += 1;
+            }
+        }
+        println!("WHICHMAPS {label} touched={touched} untouched={untouched}");
+    };
+
+    // Fill the discard maps first, so there is something expensive to copy.
+    for index in 0..200u32 {
+        let key = format!("seed/{index:05}/kkkkkkkkkk");
+        store
+            .put_object("bucket", &key, vec![b'x'; 4096], "application/octet-stream")
+            .unwrap();
+        store.delete_object("bucket", &key).unwrap();
+    }
+    let seeded = lengths(&store);
+    println!(
+        "WHICHMAPS seeded replica_receipts={} bytes={}",
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(k, _)| k == "replica.receipts")
+            .map(|(_, v)| v)
+            .unwrap_or(0),
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(k, _)| k == "block.receipts.bytes")
+            .map(|(_, v)| v)
+            .unwrap_or(0)
+    );
+
+    // One put.
+    let before = lengths(&store);
+    store
+        .put_object(
+            "bucket",
+            "after/put",
+            vec![b'y'; 4096],
+            "application/octet-stream",
+        )
+        .unwrap();
+    show("one_put", &before, &lengths(&store));
+
+    // One delete.
+    let before = lengths(&store);
+    store.delete_object("bucket", "after/put").unwrap();
+    show("one_delete", &before, &lengths(&store));
+
+    // One overwrite of an existing object.
+    store
+        .put_object(
+            "bucket",
+            "after/overwrite",
+            vec![b'z'; 4096],
+            "application/octet-stream",
+        )
+        .unwrap();
+    let before = lengths(&store);
+    store
+        .put_object(
+            "bucket",
+            "after/overwrite",
+            vec![b'w'; 8192],
+            "application/octet-stream",
+        )
+        .unwrap();
+    show("one_overwrite", &before, &lengths(&store));
+    let _ = seeded;
 }
 
 #[test]

@@ -1,3 +1,20 @@
+/// Trims a shared receipt map, taking the owned map only when a trim is due.
+///
+/// `Arc::make_mut` copies on ACCESS rather than on modification, and this runs
+/// after every receipt insert across all seven maps. Asking for the owned map
+/// first would copy all seven the moment a batch wrote one receipt, which is
+/// the cost sharing them exists to avoid. The length is readable through the
+/// handle, so the common case -- nothing to trim -- touches nothing.
+fn trim_shared_map_to_retention<V: Clone>(
+    map: &mut std::sync::Arc<BTreeMap<String, V>>,
+    retention: usize,
+) -> u64 {
+    if map.len() <= retention {
+        return 0;
+    }
+    trim_btree_map_to_retention(std::sync::Arc::make_mut(map), retention)
+}
+
 impl MatrixChunkService {
     pub fn new() -> Self {
         Self {
@@ -6,13 +23,13 @@ impl MatrixChunkService {
             // only recovery there is.
             keep_ec_sidecar: true,
             receipt_retention: DEFAULT_STORAGE_RECEIPT_RETENTION,
-            write_request_receipts: BTreeMap::new(),
-            discard_request_receipts: BTreeMap::new(),
-            batch_write_request_receipts: BTreeMap::new(),
-            batch_discard_request_receipts: BTreeMap::new(),
-            state_install_request_receipts: BTreeMap::new(),
-            reclaim_request_receipts: BTreeMap::new(),
-            repair_request_receipts: BTreeMap::new(),
+            write_request_receipts: std::sync::Arc::new(BTreeMap::new()),
+            discard_request_receipts: std::sync::Arc::new(BTreeMap::new()),
+            batch_write_request_receipts: std::sync::Arc::new(BTreeMap::new()),
+            batch_discard_request_receipts: std::sync::Arc::new(BTreeMap::new()),
+            state_install_request_receipts: std::sync::Arc::new(BTreeMap::new()),
+            reclaim_request_receipts: std::sync::Arc::new(BTreeMap::new()),
+            repair_request_receipts: std::sync::Arc::new(BTreeMap::new()),
             accepting_writes: true,
             draining: false,
             frozen: false,
@@ -96,28 +113,28 @@ impl MatrixChunkService {
     }
 
     pub(crate) fn trim_receipts_to_retention(&mut self) -> u64 {
-        trim_btree_map_to_retention(&mut self.write_request_receipts, self.receipt_retention)
-            .saturating_add(trim_btree_map_to_retention(
+        trim_shared_map_to_retention(&mut self.write_request_receipts, self.receipt_retention)
+            .saturating_add(trim_shared_map_to_retention(
                 &mut self.discard_request_receipts,
                 self.receipt_retention,
             ))
-            .saturating_add(trim_btree_map_to_retention(
+            .saturating_add(trim_shared_map_to_retention(
                 &mut self.batch_write_request_receipts,
                 self.receipt_retention,
             ))
-            .saturating_add(trim_btree_map_to_retention(
+            .saturating_add(trim_shared_map_to_retention(
                 &mut self.batch_discard_request_receipts,
                 self.receipt_retention,
             ))
-            .saturating_add(trim_btree_map_to_retention(
+            .saturating_add(trim_shared_map_to_retention(
                 &mut self.state_install_request_receipts,
                 self.receipt_retention,
             ))
-            .saturating_add(trim_btree_map_to_retention(
+            .saturating_add(trim_shared_map_to_retention(
                 &mut self.reclaim_request_receipts,
                 self.receipt_retention,
             ))
-            .saturating_add(trim_btree_map_to_retention(
+            .saturating_add(trim_shared_map_to_retention(
                 &mut self.repair_request_receipts,
                 self.receipt_retention,
             ))

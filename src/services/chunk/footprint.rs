@@ -114,7 +114,7 @@ impl ChunkSnapshotExportCache {
 
 /// Inline plus heap for a receipt map: the key handle and the value per entry,
 /// the key's own characters, and whatever the value owns.
-fn chunk_receipt_map_bytes<V, F>(map: &BTreeMap<String, V>, value_heap: F) -> u64
+pub(crate) fn chunk_receipt_map_bytes<V, F>(map: &BTreeMap<String, V>, value_heap: F) -> u64
 where
     F: Fn(&V) -> u64,
 {

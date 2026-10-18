@@ -314,7 +314,7 @@ impl MatrixObjectStore {
         replica.physical_discard_bytes = replica
             .physical_discard_bytes
             .saturating_add(prepared.receipt.stats.physical_discard_bytes);
-        replica.batch_discard_request_receipts.insert(
+        std::sync::Arc::make_mut(&mut replica.batch_discard_request_receipts).insert(
             prepared.receipt.idempotency_key.clone(),
             prepared.receipt.clone(),
         );

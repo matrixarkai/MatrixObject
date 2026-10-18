@@ -15,7 +15,7 @@ impl ChunkServiceSnapshot {
                 .saturating_add(state.ec_parity_fragment.len())
                 .saturating_add(U64 * 2 * state.discarded_ranges.len());
         }
-        for (key, receipt) in &self.write_request_receipts {
+        for (key, receipt) in self.write_request_receipts.iter() {
             bytes = bytes
                 .saturating_add(encoded_string_len(key))
                 .saturating_add(chunk_id_encoded_len())
@@ -24,7 +24,7 @@ impl ChunkServiceSnapshot {
                 .saturating_add(encoded_string_len(&receipt.payload_checksum))
                 .saturating_add(encoded_string_len(&receipt.idempotency_key));
         }
-        for (key, receipt) in &self.discard_request_receipts {
+        for (key, receipt) in self.discard_request_receipts.iter() {
             bytes = bytes
                 .saturating_add(encoded_string_len(key))
                 .saturating_add(chunk_id_encoded_len())
@@ -32,7 +32,7 @@ impl ChunkServiceSnapshot {
                 .saturating_add(encoded_string_len(&receipt.request_checksum))
                 .saturating_add(encoded_string_len(&receipt.idempotency_key));
         }
-        for (key, receipt) in &self.batch_write_request_receipts {
+        for (key, receipt) in self.batch_write_request_receipts.iter() {
             bytes = bytes
                 .saturating_add(encoded_string_len(key))
                 .saturating_add(chunk_id_encoded_len())
@@ -41,7 +41,7 @@ impl ChunkServiceSnapshot {
                 .saturating_add(encoded_string_len(&receipt.idempotency_key))
                 .saturating_add(chunk_write_batch_stats_encoded_len());
         }
-        for (key, receipt) in &self.batch_discard_request_receipts {
+        for (key, receipt) in self.batch_discard_request_receipts.iter() {
             bytes = bytes
                 .saturating_add(encoded_string_len(key))
                 .saturating_add(chunk_id_encoded_len())
@@ -49,17 +49,17 @@ impl ChunkServiceSnapshot {
                 .saturating_add(encoded_string_len(&receipt.idempotency_key))
                 .saturating_add(chunk_discard_batch_stats_encoded_len());
         }
-        for (key, receipt) in &self.state_install_request_receipts {
+        for (key, receipt) in self.state_install_request_receipts.iter() {
             bytes = bytes
                 .saturating_add(encoded_string_len(key))
                 .saturating_add(chunk_state_install_receipt_encoded_len(receipt));
         }
-        for (key, receipt) in &self.reclaim_request_receipts {
+        for (key, receipt) in self.reclaim_request_receipts.iter() {
             bytes = bytes
                 .saturating_add(encoded_string_len(key))
                 .saturating_add(chunk_reclaim_receipt_encoded_len(receipt));
         }
-        for (key, receipt) in &self.repair_request_receipts {
+        for (key, receipt) in self.repair_request_receipts.iter() {
             bytes = bytes
                 .saturating_add(encoded_string_len(key))
                 .saturating_add(chunk_repair_receipt_encoded_len(receipt));
@@ -132,37 +132,37 @@ impl ChunkServiceSnapshot {
             }
         }
         append_u64(&mut out, self.write_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.write_request_receipts {
+        for (idempotency_key, receipt) in self.write_request_receipts.iter() {
             append_string(&mut out, idempotency_key);
             append_chunk_write_receipt(&mut out, receipt);
         }
         append_u64(&mut out, self.discard_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.discard_request_receipts {
+        for (idempotency_key, receipt) in self.discard_request_receipts.iter() {
             append_string(&mut out, idempotency_key);
             append_chunk_discard_receipt(&mut out, receipt);
         }
         append_u64(&mut out, self.batch_write_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.batch_write_request_receipts {
+        for (idempotency_key, receipt) in self.batch_write_request_receipts.iter() {
             append_string(&mut out, idempotency_key);
             append_chunk_batch_write_receipt(&mut out, receipt);
         }
         append_u64(&mut out, self.batch_discard_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.batch_discard_request_receipts {
+        for (idempotency_key, receipt) in self.batch_discard_request_receipts.iter() {
             append_string(&mut out, idempotency_key);
             append_chunk_batch_discard_receipt(&mut out, receipt);
         }
         append_u64(&mut out, self.state_install_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.state_install_request_receipts {
+        for (idempotency_key, receipt) in self.state_install_request_receipts.iter() {
             append_string(&mut out, idempotency_key);
             append_chunk_state_install_receipt(&mut out, receipt);
         }
         append_u64(&mut out, self.reclaim_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.reclaim_request_receipts {
+        for (idempotency_key, receipt) in self.reclaim_request_receipts.iter() {
             append_string(&mut out, idempotency_key);
             append_chunk_reclaim_receipt(&mut out, receipt);
         }
         append_u64(&mut out, self.repair_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.repair_request_receipts {
+        for (idempotency_key, receipt) in self.repair_request_receipts.iter() {
             append_string(&mut out, idempotency_key);
             append_chunk_repair_receipt(&mut out, receipt);
         }
