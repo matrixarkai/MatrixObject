@@ -34,8 +34,8 @@ pub(crate) fn read_string_map(
 
 pub(crate) fn read_object_id(cursor: &mut SnapshotByteCursor<'_>) -> Result<ObjectId, ObjectError> {
     Ok(ObjectId {
-        bucket: cursor.read_string()?,
-        key: cursor.read_string()?,
+        bucket: cursor.read_string()?.into(),
+        key: cursor.read_string()?.into(),
     })
 }
 

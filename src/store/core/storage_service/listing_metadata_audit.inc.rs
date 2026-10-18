@@ -93,7 +93,7 @@ impl MatrixObjectStore {
                     ));
                 }
                 audit.has_more = true;
-                audit.next_marker = Some(object_id.key);
+                audit.next_marker = Some(object_id.key.to_string());
                 return Ok(());
             }
             audit.payload_bytes = audit.payload_bytes.saturating_add(payload);
@@ -190,7 +190,7 @@ impl MatrixObjectStore {
                 )?;
                 if audit.has_more || audit.items.len() >= limit {
                     audit.has_more = true;
-                    audit.next_marker = Some(object_id.key.clone());
+                    audit.next_marker = Some(object_id.key.to_string());
                     return Ok(audit);
                 }
             }

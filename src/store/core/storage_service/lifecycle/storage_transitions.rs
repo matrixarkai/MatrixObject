@@ -51,8 +51,8 @@ impl MatrixObjectStore {
                     continue;
                 }
                 match self.apply_transition_object_with_root_placement(
-                    object_id.bucket.clone(),
-                    object_id.key.clone(),
+                    object_id.bucket.to_string(),
+                    object_id.key.to_string(),
                     target.clone(),
                     now_ms,
                     self.options.replica_count,

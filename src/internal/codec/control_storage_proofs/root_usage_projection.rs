@@ -158,7 +158,7 @@ pub(crate) fn retention_active(
         return true;
     }
     bucket_retention
-        .get(&metadata.object_id.bucket)
+        .get(metadata.object_id.bucket.as_str())
         .map_or(false, |retain_for_ms| {
             *retain_for_ms > 0 && metadata.update_time_ms.saturating_add(*retain_for_ms) > now_ms
         })

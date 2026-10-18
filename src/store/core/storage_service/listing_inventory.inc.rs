@@ -42,7 +42,7 @@ impl MatrixObjectStore {
             if metadata.deleted {
                 if scanned >= max_scan {
                     page.has_more = true;
-                    page.next_marker = Some(object_id.key.clone());
+                    page.next_marker = Some(object_id.key.to_string());
                     break;
                 }
                 continue;
@@ -61,7 +61,7 @@ impl MatrixObjectStore {
             }
             page.payload_bytes = next_payload;
             page.listed_objects = page.listed_objects.saturating_add(1);
-            page.next_marker = Some(object_id.key.clone());
+            page.next_marker = Some(object_id.key.to_string());
             page.records.push(record);
             if page.records.len() >= limit {
                 page.has_more = true;

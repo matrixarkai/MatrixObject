@@ -2,12 +2,12 @@ use super::*;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ObjectId {
-    pub bucket: String,
-    pub key: String,
+    pub bucket: SharedText,
+    pub key: SharedText,
 }
 
 impl ObjectId {
-    pub fn new(bucket: impl Into<String>, key: impl Into<String>) -> Self {
+    pub fn new(bucket: impl Into<SharedText>, key: impl Into<SharedText>) -> Self {
         Self {
             bucket: bucket.into(),
             key: key.into(),
@@ -16,8 +16,8 @@ impl ObjectId {
 
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
-        fields.insert(format!("{field_prefix}bucket"), self.bucket.clone());
-        fields.insert(format!("{field_prefix}key"), self.key.clone());
+        fields.insert(format!("{field_prefix}bucket"), self.bucket.to_string());
+        fields.insert(format!("{field_prefix}key"), self.key.to_string());
         fields
     }
 }

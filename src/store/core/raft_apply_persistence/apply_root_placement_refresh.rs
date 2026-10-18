@@ -101,8 +101,8 @@ impl MatrixObjectStore {
         };
         for object_id in object_ids.iter().cloned() {
             match self.apply_refresh_object_root_placement_inner(
-                object_id.bucket,
-                object_id.key,
+                object_id.bucket.to_string(),
+                object_id.key.to_string(),
                 replica_count,
                 update_time_ms,
             ) {

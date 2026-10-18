@@ -56,7 +56,7 @@ impl MatrixObjectStore {
             }
         };
         if previous.as_ref().map_or(false, |old| {
-            !self.bucket_versioning.contains(&old.object_id.bucket)
+            !self.bucket_versioning.contains(old.object_id.bucket.as_str())
         }) {
             self.release_root_placement_if_present(&metadata.object_id, Some(&committed));
         }

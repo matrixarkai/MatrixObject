@@ -16,7 +16,7 @@ impl MatrixObjectStore {
         object_id: &ObjectId,
         new_length: u64,
     ) -> Result<(), ObjectError> {
-        let Some(quota) = self.bucket_quotas.get(&object_id.bucket) else {
+        let Some(quota) = self.bucket_quotas.get(object_id.bucket.as_str()) else {
             return Ok(());
         };
         if quota.disabled() {

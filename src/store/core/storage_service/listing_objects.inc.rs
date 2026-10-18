@@ -151,14 +151,14 @@ impl MatrixObjectStore {
                     page.payload_bytes = page.payload_bytes.saturating_add(payload_bytes);
                     page.emitted_common_prefixes = page.emitted_common_prefixes.saturating_add(1);
                     page.common_prefixes.push(common_prefix);
-                    last_marker = Some(key.clone());
+                    last_marker = Some(key.to_string());
                     if would_exceed_payload {
                         page.has_more = true;
                         page.next_marker = last_marker;
                         break;
                     }
                 }
-                last_marker = Some(key);
+                last_marker = Some(key.to_string());
                 continue;
             }
             if page
@@ -181,7 +181,7 @@ impl MatrixObjectStore {
             }
             page.payload_bytes = page.payload_bytes.saturating_add(payload_bytes);
             page.emitted_objects = page.emitted_objects.saturating_add(1);
-            last_marker = Some(key);
+            last_marker = Some(key.to_string());
             page.objects.push(metadata.clone());
             if would_exceed_payload {
                 page.has_more = true;

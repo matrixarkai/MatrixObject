@@ -25,9 +25,9 @@ impl ObjectChangeRecord {
         fields.insert(format!("{field_prefix}operation"), self.operation.clone());
         fields.insert(
             format!("{field_prefix}bucket"),
-            self.object_id.bucket.clone(),
+            self.object_id.bucket.to_string(),
         );
-        fields.insert(format!("{field_prefix}key"), self.object_id.key.clone());
+        fields.insert(format!("{field_prefix}key"), self.object_id.key.to_string());
         fields.insert(format!("{field_prefix}version"), self.version.to_string());
         fields.insert(
             format!("{field_prefix}metadata_commit_index"),

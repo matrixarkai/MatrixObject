@@ -60,8 +60,8 @@ impl MatrixObjectStore {
         options.tags = source.tags.clone();
         options.storage_class = Some(source.storage_class.clone());
         self.apply_put_storage_batched(
-            object_id.bucket,
-            object_id.key,
+            object_id.bucket.to_string(),
+            object_id.key.to_string(),
             data,
             source.content_type,
             update_time_ms,
@@ -86,8 +86,8 @@ impl MatrixObjectStore {
         options.tags = source.tags.clone();
         options.storage_class = Some(source.storage_class.clone());
         self.apply_put_with_root_placement(
-            object_id.bucket,
-            object_id.key,
+            object_id.bucket.to_string(),
+            object_id.key.to_string(),
             data,
             source.content_type,
             update_time_ms,

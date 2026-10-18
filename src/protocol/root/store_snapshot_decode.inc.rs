@@ -1,3 +1,35 @@
+/// Hands back one allocation per distinct piece of key text seen in a decode.
+///
+/// A snapshot states an object's identity once as the map key and again inside
+/// the value, and the change feed states it a third time. Decoded separately
+/// those are three allocations of equal characters, so a store restored from a
+/// snapshot would hold copies that the store which wrote it did not. Interning
+/// is purely about which allocation the characters live in; the characters
+/// themselves are untouched.
+#[derive(Default)]
+struct ObjectKeyPool {
+    texts: std::collections::HashMap<String, SharedText>,
+}
+
+impl ObjectKeyPool {
+    fn intern(&mut self, text: SharedText) -> SharedText {
+        match self.texts.get(text.as_str()) {
+            Some(shared) => shared.clone(),
+            None => {
+                self.texts.insert(text.as_str().to_string(), text.clone());
+                text
+            }
+        }
+    }
+
+    fn intern_object_id(&mut self, object_id: &mut ObjectId) {
+        let bucket = std::mem::take(&mut object_id.bucket);
+        let key = std::mem::take(&mut object_id.key);
+        object_id.bucket = self.intern(bucket);
+        object_id.key = self.intern(key);
+    }
+}
+
 impl StoreSnapshot {
     pub fn from_bytes(data: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = SnapshotByteCursor::new(data);
@@ -151,18 +183,24 @@ impl StoreSnapshot {
                 );
             }
         }
+        let mut key_pool = ObjectKeyPool::default();
         let mut objects = BTreeMap::new();
         for _ in 0..cursor.read_count("store snapshot object count")? {
-            let object_id = read_object_id(&mut cursor)?;
-            let metadata = read_metadata(&mut cursor, snapshot_version >= 21)?;
+            let mut object_id = read_object_id(&mut cursor)?;
+            key_pool.intern_object_id(&mut object_id);
+            let mut metadata = read_metadata(&mut cursor, snapshot_version >= 21)?;
+            key_pool.intern_object_id(&mut metadata.object_id);
             objects.insert(object_id, metadata);
         }
         let mut versions = BTreeMap::new();
         for _ in 0..cursor.read_count("store snapshot version key count")? {
-            let object_id = read_object_id(&mut cursor)?;
+            let mut object_id = read_object_id(&mut cursor)?;
+            key_pool.intern_object_id(&mut object_id);
             let mut object_versions = Vec::new();
             for _ in 0..cursor.read_count("store snapshot object version count")? {
-                object_versions.push(read_metadata(&mut cursor, snapshot_version >= 21)?);
+                let mut row = read_metadata(&mut cursor, snapshot_version >= 21)?;
+                key_pool.intern_object_id(&mut row.object_id);
+                object_versions.push(row);
             }
             versions.insert(object_id, object_versions);
         }
@@ -193,7 +231,9 @@ impl StoreSnapshot {
         }
         let mut object_changes = Vec::new();
         for _ in 0..cursor.read_count("store snapshot object change count")? {
-            object_changes.push(read_object_change_record(&mut cursor)?);
+            let mut change = read_object_change_record(&mut cursor)?;
+            key_pool.intern_object_id(&mut change.object_id);
+            object_changes.push(change);
         }
         let mut object_change_cursors = BTreeMap::new();
         for _ in 0..cursor.read_count("store snapshot object change cursor count")? {

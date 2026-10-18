@@ -31,8 +31,8 @@ impl MatrixObjectStore {
         for object_id in live_objects {
             let object = self.get_object(&object_id.bucket, &object_id.key)?;
             self.apply_put_storage_batched(
-                object_id.bucket,
-                object_id.key,
+                object_id.bucket.to_string(),
+                object_id.key.to_string(),
                 object.data,
                 object.metadata.content_type,
                 update_time_ms,

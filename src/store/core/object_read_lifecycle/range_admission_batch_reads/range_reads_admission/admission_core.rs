@@ -48,8 +48,8 @@ impl MatrixObjectStore {
             ObjectError::InvalidArgument("object range admission overflows".to_string())
         })?;
         let mut report = ObjectRangeAdmission {
-            bucket: metadata.object_id.bucket.clone(),
-            key: metadata.object_id.key.clone(),
+            bucket: metadata.object_id.bucket.to_string(),
+            key: metadata.object_id.key.to_string(),
             can_accept: true,
             object_length: metadata.length,
             requested_offset: offset,

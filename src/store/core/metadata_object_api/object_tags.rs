@@ -132,11 +132,11 @@ impl MatrixObjectStore {
             page.scanned_objects = page.scanned_objects.saturating_add(1);
             if page.scanned_objects as usize > max_scan {
                 page.has_more = true;
-                page.next_marker = Some(object_id.key.clone());
+                page.next_marker = Some(object_id.key.to_string());
                 break;
             }
             if metadata.deleted {
-                last_marker = Some(object_id.key.clone());
+                last_marker = Some(object_id.key.to_string());
                 continue;
             }
             if metadata
@@ -144,7 +144,7 @@ impl MatrixObjectStore {
                 .get(tag_key)
                 .map_or(true, |value| value != tag_value)
             {
-                last_marker = Some(object_id.key.clone());
+                last_marker = Some(object_id.key.to_string());
                 continue;
             }
             if page.objects.len() >= limit {
@@ -162,7 +162,7 @@ impl MatrixObjectStore {
             }
             page.payload_bytes = page.payload_bytes.saturating_add(payload_bytes);
             page.emitted_objects = page.emitted_objects.saturating_add(1);
-            last_marker = Some(object_id.key.clone());
+            last_marker = Some(object_id.key.to_string());
             page.objects.push(metadata.clone());
             if would_exceed_payload {
                 page.has_more = true;

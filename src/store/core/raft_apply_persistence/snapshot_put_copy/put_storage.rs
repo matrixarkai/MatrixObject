@@ -89,7 +89,7 @@ impl MatrixObjectStore {
                 ));
             }
             self.check_retention_for_mutation(&previous, "overwrite", update_time_ms)?;
-            if self.bucket_versioning.contains(&object_id.bucket) {
+            if self.bucket_versioning.contains(object_id.bucket.as_str()) {
                 self.versions
                     .entry(object_id.clone())
                     .or_default()

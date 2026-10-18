@@ -6,6 +6,28 @@ pub(crate) fn audit_string_heap(value: &String) -> u64 {
     value.capacity() as u64
 }
 
+/// Charges the characters behind a `SharedText` once per allocation, however
+/// many holders name it.
+///
+/// Several holders name the same object, and since they share the characters,
+/// adding the length at each one would report copies that do not exist -- and
+/// would leave the figure unmoved by the sharing it exists to show. `Arc<str>`
+/// has no spare capacity, so the charge is the length.
+#[derive(Default)]
+pub(crate) struct SharedTextLedger {
+    charged: std::collections::HashSet<usize>,
+}
+
+impl SharedTextLedger {
+    pub(crate) fn charge(&mut self, value: &SharedText) -> u64 {
+        if self.charged.insert(value.allocation_id()) {
+            value.as_str().len() as u64
+        } else {
+            0
+        }
+    }
+}
+
 /// Inline plus heap for a `BTreeMap<String, String>`, excluding B-tree node
 /// slack: a node holds up to eleven pairs, so the entries are counted but the
 /// unused capacity of a partly filled node is not.
@@ -43,13 +65,15 @@ fn audit_multipart_bytes(upload: &MultipartUpload) -> (u64, u64) {
     (metadata, payload)
 }
 
-pub(crate) fn audit_object_id_heap(object_id: &ObjectId) -> u64 {
-    audit_string_heap(&object_id.bucket).saturating_add(audit_string_heap(&object_id.key))
+pub(crate) fn audit_object_id_heap(ledger: &mut SharedTextLedger, object_id: &ObjectId) -> u64 {
+    ledger
+        .charge(&object_id.bucket)
+        .saturating_add(ledger.charge(&object_id.key))
 }
 
 /// Everything one `ObjectMetadata` owns beyond its own inline size.
-fn audit_object_metadata_heap(metadata: &ObjectMetadata) -> u64 {
-    audit_object_id_heap(&metadata.object_id)
+fn audit_object_metadata_heap(ledger: &mut SharedTextLedger, metadata: &ObjectMetadata) -> u64 {
+    audit_object_id_heap(ledger, &metadata.object_id)
         .saturating_add(audit_string_heap(&metadata.etag))
         .saturating_add(audit_string_heap(&metadata.content_type))
         .saturating_add(audit_string_heap(&metadata.storage_class))
@@ -166,38 +190,42 @@ impl MatrixObjectStore {
         push("replica.receipts", chunk_receipts);
 
         // ---- the metadata, which the byte-buffer headline excludes -----------
-        let objects_bytes = self.objects.iter().fold(0u64, |total, (object_id, metadata)| {
-            total
+        // One ledger for the whole pass: the holders below name the same
+        // objects, and the characters are one allocation between them.
+        let mut ledger = SharedTextLedger::default();
+        let mut objects_bytes = 0u64;
+        for (object_id, metadata) in self.objects.iter() {
+            objects_bytes = objects_bytes
                 .saturating_add(std::mem::size_of::<ObjectId>() as u64)
                 .saturating_add(std::mem::size_of::<ObjectMetadata>() as u64)
-                .saturating_add(audit_object_id_heap(object_id))
-                .saturating_add(audit_object_metadata_heap(metadata))
-        });
-        let versions_bytes = self.versions.iter().fold(0u64, |total, (object_id, rows)| {
-            let row_bytes = rows.iter().fold(
-                (rows.capacity() as u64)
-                    .saturating_mul(std::mem::size_of::<ObjectMetadata>() as u64),
-                |inner, metadata| inner.saturating_add(audit_object_metadata_heap(metadata)),
-            );
-            total
+                .saturating_add(audit_object_id_heap(&mut ledger, object_id))
+                .saturating_add(audit_object_metadata_heap(&mut ledger, metadata));
+        }
+        let mut versions_bytes = 0u64;
+        for (object_id, rows) in self.versions.iter() {
+            let mut row_bytes = (rows.capacity() as u64)
+                .saturating_mul(std::mem::size_of::<ObjectMetadata>() as u64);
+            for metadata in rows.iter() {
+                row_bytes =
+                    row_bytes.saturating_add(audit_object_metadata_heap(&mut ledger, metadata));
+            }
+            versions_bytes = versions_bytes
                 .saturating_add(std::mem::size_of::<ObjectId>() as u64)
-                .saturating_add(audit_object_id_heap(object_id))
-                .saturating_add(row_bytes)
-        });
-        let changes_bytes = self.object_changes.iter().fold(
-            (self.object_changes.capacity() as u64)
-                .saturating_mul(std::mem::size_of::<ObjectChangeRecord>() as u64),
-            |total, change| {
-                total
-                    .saturating_add(audit_string_heap(&change.operation))
-                    .saturating_add(audit_object_id_heap(&change.object_id))
-                    .saturating_add(audit_string_heap(&change.etag))
-            },
-        );
+                .saturating_add(audit_object_id_heap(&mut ledger, object_id))
+                .saturating_add(row_bytes);
+        }
+        let mut changes_bytes = (self.object_changes.capacity() as u64)
+            .saturating_mul(std::mem::size_of::<ObjectChangeRecord>() as u64);
+        for change in self.object_changes.iter() {
+            changes_bytes = changes_bytes
+                .saturating_add(audit_string_heap(&change.operation))
+                .saturating_add(audit_object_id_heap(&mut ledger, &change.object_id))
+                .saturating_add(audit_string_heap(&change.etag));
+        }
         // The service accounts for itself: its change log, receipt maps,
         // entity maps and snapshot export caches are private to its module,
         // and until this was asked for, only the record map was in any total.
-        let meta = self.meta_service.footprint_bytes();
+        let meta = self.meta_service.footprint_bytes(&mut ledger);
         let meta_record_bytes = meta.records;
         // The payload headline counts only the value struct; the key is a
         // `(SlabId, u64)` and was never in the figure.
@@ -209,9 +237,13 @@ impl MatrixObjectStore {
         // `the_metadata_breakdown_accounts_for_every_byte_of_its_total`: a new
         // field counted in one place and not the other fails that test.
         //
-        // `objects` holds the identity twice -- once as the map key and once
-        // inside the value -- so `objects.id_text_duplicated` says how many of
-        // those two texts are the same, rather than leaving it to be inferred.
+        // `objects` names the identity twice -- once as the map key and once
+        // inside the value -- but the two share one allocation, so
+        // `objects.inner_id_heap` reads zero and `objects.id_text_shared` says
+        // for how many objects that holds, rather than leaving it to be
+        // inferred. `objects.id_text_duplicated` stays beside it: the texts are
+        // still equal, and equal-but-copied is the state worth telling apart
+        // from equal-and-shared.
         {
             let n = self.objects.len() as u64;
             push(
@@ -234,10 +266,23 @@ impl MatrixObjectStore {
             let mut extents_len = 0u64;
             let mut extents_capacity = 0u64;
             let mut id_text_duplicated = 0u64;
+            let mut id_text_shared = 0u64;
+            // The breakdown's own ledger, so each part is what that part costs
+            // and the parts still sum to the total: charged in holder order,
+            // the map key pays for the characters and the value pays nothing.
+            let mut detail_ledger = SharedTextLedger::default();
             for (object_id, metadata) in self.objects.iter() {
-                mapkey_heap = mapkey_heap.saturating_add(audit_object_id_heap(object_id));
-                inner_id_heap =
-                    inner_id_heap.saturating_add(audit_object_id_heap(&metadata.object_id));
+                mapkey_heap =
+                    mapkey_heap.saturating_add(audit_object_id_heap(&mut detail_ledger, object_id));
+                inner_id_heap = inner_id_heap.saturating_add(audit_object_id_heap(
+                    &mut detail_ledger,
+                    &metadata.object_id,
+                ));
+                if object_id.bucket.shares_with(&metadata.object_id.bucket)
+                    && object_id.key.shares_with(&metadata.object_id.key)
+                {
+                    id_text_shared = id_text_shared.saturating_add(1);
+                }
                 etag_heap = etag_heap.saturating_add(audit_string_heap(&metadata.etag));
                 content_type_heap =
                     content_type_heap.saturating_add(audit_string_heap(&metadata.content_type));
@@ -262,6 +307,7 @@ impl MatrixObjectStore {
             push("objects.mapkey_heap", mapkey_heap);
             push("objects.inner_id_heap", inner_id_heap);
             push("objects.id_text_duplicated", id_text_duplicated);
+            push("objects.id_text_shared", id_text_shared);
             push("objects.etag_heap", etag_heap);
             push("objects.content_type_heap", content_type_heap);
             push("objects.storage_class_heap", storage_class_heap);

@@ -208,8 +208,8 @@ impl<T: RootCatalogControlFields> ProvenRootCatalogRegistration<T> {
         );
         for (index, receipt) in self.raft_receipts.iter().enumerate() {
             let prefix = format!("raft_receipt.{index}.");
-            fields.insert(format!("{prefix}bucket"), receipt.object_id.bucket.clone());
-            fields.insert(format!("{prefix}key"), receipt.object_id.key.clone());
+            fields.insert(format!("{prefix}bucket"), receipt.object_id.bucket.to_string());
+            fields.insert(format!("{prefix}key"), receipt.object_id.key.to_string());
             fields.insert(format!("{prefix}version"), receipt.version.to_string());
             fields.insert(format!("{prefix}length"), receipt.length.to_string());
             fields.insert(format!("{prefix}etag"), receipt.etag.clone());
