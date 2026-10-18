@@ -19,6 +19,30 @@ fn audit_string_map_bytes(map: &BTreeMap<String, String>) -> u64 {
     })
 }
 
+/// What one in-flight multipart upload holds: its own strings, its part table,
+/// and the part bytes themselves. The payload is returned separately because it
+/// is data awaiting commit rather than metadata describing data.
+fn audit_multipart_bytes(upload: &MultipartUpload) -> (u64, u64) {
+    let metadata = (std::mem::size_of::<MultipartUpload>() as u64)
+        .saturating_add(audit_string_heap(&upload.upload_id))
+        .saturating_add(audit_string_heap(&upload.bucket))
+        .saturating_add(audit_string_heap(&upload.key))
+        .saturating_add(audit_string_heap(&upload.content_type))
+        .saturating_add(
+            (upload.parts.len() as u64).saturating_mul(
+                (std::mem::size_of::<u32>() + std::mem::size_of::<MultipartPart>()) as u64,
+            ),
+        )
+        .saturating_add((upload.part_payloads.len() as u64).saturating_mul(
+            (std::mem::size_of::<u32>() + std::mem::size_of::<Vec<u8>>()) as u64,
+        ));
+    let payload = upload
+        .part_payloads
+        .values()
+        .fold(0u64, |total, part| total.saturating_add(part.capacity() as u64));
+    (metadata, payload)
+}
+
 fn audit_object_id_heap(object_id: &ObjectId) -> u64 {
     audit_string_heap(&object_id.bucket).saturating_add(audit_string_heap(&object_id.key))
 }
@@ -191,11 +215,29 @@ impl MatrixObjectStore {
         push("object_changes.bytes", changes_bytes);
         push("meta.records.bytes", meta_record_bytes);
         push("payloads.key_bytes", payload_key_bytes);
+        let (multipart_metadata_bytes, multipart_payload_bytes) = self
+            .multipart_uploads
+            .iter()
+            .fold((0u64, 0u64), |(meta, payload), (upload_id, upload)| {
+                let (one_meta, one_payload) = audit_multipart_bytes(upload);
+                (
+                    meta.saturating_add(std::mem::size_of::<String>() as u64)
+                        .saturating_add(audit_string_heap(upload_id))
+                        .saturating_add(one_meta),
+                    payload.saturating_add(one_payload),
+                )
+            });
+        push("multipart.metadata_bytes", multipart_metadata_bytes);
+        // The part bytes of uploads that have not completed. Held in memory
+        // until commit or abort, and previously invisible: the audit reported
+        // only how many uploads existed.
+        push("multipart.payload_bytes", multipart_payload_bytes);
         let metadata_bytes = objects_bytes
             .saturating_add(versions_bytes)
             .saturating_add(changes_bytes)
             .saturating_add(meta_record_bytes)
-            .saturating_add(payload_key_bytes);
+            .saturating_add(payload_key_bytes)
+            .saturating_add(multipart_metadata_bytes);
         push("ACCOUNTED.metadata_bytes", metadata_bytes);
 
         // ---- the headline: bytes we can actually name ------------------------
@@ -206,7 +248,9 @@ impl MatrixObjectStore {
         push("ACCOUNTED.byte_buffers", accounted);
         push(
             "ACCOUNTED.total_bytes",
-            accounted.saturating_add(metadata_bytes),
+            accounted
+                .saturating_add(metadata_bytes)
+                .saturating_add(multipart_payload_bytes),
         );
         push("logical.written", self.logical_written_bytes);
         push("physical.written", self.physical_written_bytes);

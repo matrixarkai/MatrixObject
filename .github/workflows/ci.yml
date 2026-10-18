@@ -79,3 +79,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: An upload in progress is counted
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_audit_counts_bytes_held_by_an_unfinished_multipart_upload -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
