@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build & docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned, so "it builds" means the same thing here and locally, and so
+      # that denying warnings below cannot be broken by a compiler release
+      # nobody in this repository chose.
+      # raft-proto's build script shells out to protoc, which the runner does
+      # not ship. Without this the build fails in 30 seconds with
+      # "Could not find `protoc` installation".
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build everything, warnings denied
+        run: cargo build --all-targets --locked
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: Docs
+        run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  guards:
+    name: format and rollback guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # raft-proto's build script shells out to protoc, which the runner does
+      # not ship. Without this the build fails in 30 seconds with
+      # "Could not find `protoc` installation".
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Each guard asserts that it actually RAN. `cargo test` reports success
+      # when a filter matches nothing, so a step checking only the exit status
+      # passes while testing nothing -- and `--exact` needs the full `tests::`
+      # path or it matches nothing at all.
+      - name: Durable format constants are unchanged
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::every_durable_format_constant_is_accounted_for -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: A refused mutation leaves the store unchanged
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_put_that_fails_after_mutating_leaves_the_store_unchanged -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }

@@ -33015,7 +33015,12 @@ fn a_put_that_fails_after_mutating_leaves_the_store_unchanged() {
     // still pass if the request were refused before it touched anything, which
     // is how a guard like this goes quietly dead.
     store
-        .put_object("bucket", "k", b"replacement-contents".to_vec(), "text/plain")
+        .put_object(
+            "bucket",
+            "k",
+            b"replacement-contents".to_vec(),
+            "text/plain",
+        )
         .unwrap();
     let changed_bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
     assert_ne!(
@@ -33023,7 +33028,6 @@ fn a_put_that_fails_after_mutating_leaves_the_store_unchanged() {
         "a successful overwrite must change the store, or this test is aimed at a dead path"
     );
 }
-
 
 #[test]
 fn every_durable_format_constant_is_accounted_for() {

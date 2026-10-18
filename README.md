@@ -154,6 +154,37 @@ Two invariants worth knowing before you start:
   to say what they are per: per put, per live byte, per stored object. "Faster"
   without one is not a result.
 
+## Continuous integration
+
+Every push and pull request runs two jobs: a build of all targets and the
+documentation with warnings denied, and the two guards that protect properties
+nothing else protects -- that the durable format constants have not changed, and
+that a mutation which fails after it has already mutated leaves the store
+byte-identical.
+
+Two things CI deliberately does **not** run, because a check that is red on
+arrival teaches people to ignore the ones that matter:
+
+- **The full test suite.** 21 tests fail on `main`, and have done since the
+  first commit. `tools/suite_gate.sh` runs it and compares the failures by name
+  against `tools/known_failures.txt`, so you can tell a pre-existing failure
+  from one you just caused. It fails if a failure is new **and** if a recorded
+  one has started passing, so the list cannot quietly rot, and it refuses
+  outright if the suite did not run rather than reporting everything fixed. They are not regressions and they are not masked: the local gate
+  compares failures by name against that baseline and refuses anything new.
+  Run `cargo test` and expect `249 passed; 21 failed`.
+- **`cargo fmt --check`.** The tree has never been rustfmt-clean; there were 93
+  diff hunks at the first commit. Reformatting 33,000 lines of tests to turn one
+  check green is a change nobody asked for, and it would bury real history.
+
+`Cargo.lock` is committed, because this crate ships a binary and CI builds with
+`--locked` so that a dependency release cannot change what is being tested. The
+toolchain is **pinned** for the same reason: "it builds" should mean the same
+thing in CI and on your machine. Bumping either is a deliberate change.
+
+If you fix one of the 21, or format the tree, add the corresponding check here
+in the same change.
+
 ## Licence
 
 Apache License 2.0. See [LICENSE](LICENSE).
