@@ -1,5 +1,5 @@
 impl StoreSnapshot {
-    fn validate_raft_and_checksum(&self) -> Result<(), ObjectError> {
+    fn validate_raft_state(&self) -> Result<(), ObjectError> {
         if self.last_applied_index > 0 && self.last_applied_term == 0 {
             return Err(ObjectError::Corruption(
                 "snapshot applied index has no raft term".to_string(),
@@ -55,12 +55,6 @@ impl StoreSnapshot {
                     "snapshot raft apply receipt has empty command checksum".to_string(),
                 ));
             }
-        }
-        let expected = self.checksum_material_hash();
-        if self.snapshot_checksum != expected {
-            return Err(ObjectError::Corruption(
-                "snapshot checksum mismatch".to_string(),
-            ));
         }
         Ok(())
     }
