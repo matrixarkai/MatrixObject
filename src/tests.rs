@@ -33489,6 +33489,98 @@ fn a_changefeed_nobody_subscribes_to_is_bounded() {
 }
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_a_metadata_record_value_actually_holds() {
+    // `meta.records.value_capacity` is 226 bytes a record at 1 KiB objects, the
+    // largest single metadata item, and the audit's own comment calls it "a
+    // formatted restatement of fields the `objects` map already holds
+    // structured". Before deciding whether that is recoverable, look at one.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object(
+            "bucket",
+            "prefix/00000001/kkkkkkkkkk",
+            vec![b'x'; 1024],
+            "application/octet-stream",
+        )
+        .unwrap();
+    for (key, record) in store.meta_service.records.iter() {
+        println!("RECORDVALUE key_len={} key={}", key.len(), key.as_str());
+        println!(
+            "RECORDVALUE value_len={} value={}",
+            record.value.len(),
+            record.value
+        );
+    }
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_the_space_amplification() {
+    // What a stored byte costs in resident bytes, at several object sizes.
+    //
+    // The denominator is what a caller handed us. The numerator is
+    // `ACCOUNTED.total_bytes`, which counts the payload at every replica, the
+    // redundancy pieces, and the metadata that describes it all -- so this is
+    // the whole figure rather than the data-only one.
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let objects = env_usize("MEASURE_OBJECTS", 200);
+    let sizes: Vec<usize> = std::env::var("MEASURE_SIZES")
+        .ok()
+        .map(|raw| raw.split(',').filter_map(|one| one.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![1024, 16384, 65536, 262144, 1048576]);
+    for size in sizes {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("prefix/{index:08}/kkkkkkkkkk"),
+                    vec![b'x'; size],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        let audit: std::collections::BTreeMap<String, u64> =
+            store.footprint_audit().into_iter().collect();
+        let get = |k: &str| -> u64 { audit.get(k).copied().unwrap_or(0) };
+        let logical = (objects as u64).saturating_mul(size as u64);
+        let total = get("ACCOUNTED.total_bytes");
+        let buffers = get("ACCOUNTED.byte_buffers");
+        let metadata = get("ACCOUNTED.metadata_bytes");
+        println!(
+            "AMPLIFICATION size={size} objects={objects} logical={logical} total={total} \
+             buffers={buffers} metadata={metadata}"
+        );
+        if logical > 0 {
+            println!(
+                "AMPLIFICATION size={size} total_x={:.4} data_x={:.4} metadata_x={:.4} \
+                 metadata_per_object={}",
+                total as f64 / logical as f64,
+                buffers as f64 / logical as f64,
+                metadata as f64 / logical as f64,
+                metadata / objects as u64
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_metadata_footprint() {
     // `test_options` sets max_extent_bytes and chunk_size to 4 bytes, which
     // turns a 1 KiB object into 256 extents and makes every per-object figure
@@ -35528,6 +35620,101 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
                 println!("BATCH-AFTER-DELETES objects={objects} {key}={value}");
             }
         }
+    }
+}
+
+#[test]
+fn a_write_reaches_every_replica_from_the_coordinator_in_one_hop() {
+    // Two write topologies are possible for a replicated chunk. In one the
+    // coordinator hands the payload to every replica itself -- one hop each,
+    // and the coordinator pays the bandwidth. In the other it hands the payload
+    // to a single replica, which forwards it to the rest -- fewer bytes out of
+    // the coordinator, one more hop of latency, and a failure mode where the
+    // replicas disagree about what was forwarded.
+    //
+    // This store does the first. That has been true by construction rather than
+    // by assertion: the page service builds the admitted-replica list, requires
+    // a write quorum, and applies the prepared write to each replica directly,
+    // so no replica is ever asked to pass a write to another.
+    //
+    // Asserted here because it is a property a reader should be able to rely on
+    // and because the alternative is a reasonable thing for someone to
+    // introduce: every admitted replica must record the write as its OWN
+    // physical write, and hold byte-identical data afterwards.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+
+    let writes_before: Vec<u64> = store
+        .page_service
+        .replicas
+        .iter()
+        .map(|replica| replica.physical_write_count)
+        .collect();
+    assert!(
+        writes_before.len() >= 3,
+        "this needs several replicas, and has {}",
+        writes_before.len()
+    );
+
+    store
+        .put_object(
+            "bucket",
+            "prefix/one-hop",
+            vec![b'x'; 4096],
+            "application/octet-stream",
+        )
+        .unwrap();
+
+    let writes_after: Vec<u64> = store
+        .page_service
+        .replicas
+        .iter()
+        .map(|replica| replica.physical_write_count)
+        .collect();
+    let advanced: Vec<u64> = writes_before
+        .iter()
+        .zip(writes_after.iter())
+        .map(|(before, after)| after.saturating_sub(*before))
+        .collect();
+    println!("STARWRITE physical_writes_per_replica={advanced:?}");
+
+    assert!(
+        advanced.iter().all(|count| *count > 0),
+        "every replica must record the write as its own, and these did not: \
+         {advanced:?}"
+    );
+    assert!(
+        advanced.windows(2).all(|pair| pair[0] == pair[1]),
+        "a coordinator that writes each replica itself gives them the same \
+         count; differing counts mean one replica carried another's write: \
+         {advanced:?}"
+    );
+
+    // And every replica ends up holding the same bytes, which a forwarded write
+    // is what would put at risk.
+    let mut contents: Vec<Vec<(ChunkId, Vec<u8>)>> = Vec::new();
+    for replica in store.page_service.replicas.iter() {
+        let mut held: Vec<(ChunkId, Vec<u8>)> = replica
+            .chunks
+            .iter()
+            .map(|(id, state)| (id.clone(), state.data.as_ref().clone()))
+            .collect();
+        held.sort_by(|a, b| a.0.cmp(&b.0));
+        contents.push(held);
+    }
+    assert!(
+        !contents[0].is_empty(),
+        "the write must have reached the replicas at all"
+    );
+    for (index, held) in contents.iter().enumerate().skip(1) {
+        assert_eq!(
+            held, &contents[0],
+            "replica {index} holds different bytes from replica 0 after one write"
+        );
     }
 }
 
