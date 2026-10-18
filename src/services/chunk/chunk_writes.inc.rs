@@ -307,7 +307,17 @@ impl MatrixChunkService {
         }
         self.mark_metadata_mutation();
         if record_internal_receipt {
-            let idempotency_key = format!("direct-batch-write-{request_checksum}");
+            // `format!` sizes its buffer at twice the literal's length and
+            // then grows by doubling, so these 43 characters landed in a
+            // 76-byte allocation. A receipt map holds up to
+            // `receipt_retention` of these keys -- 100,000 by default -- and
+            // the slack is resident for as long as the receipt is, which is
+            // why the audit counts capacity. Built to its length instead.
+            const PREFIX: &str = "direct-batch-write-";
+            let mut idempotency_key =
+                String::with_capacity(PREFIX.len() + request_checksum.len());
+            idempotency_key.push_str(PREFIX);
+            idempotency_key.push_str(&request_checksum);
             let receipt = ChunkBatchWriteReceipt {
                 chunk_id,
                 request_checksum,

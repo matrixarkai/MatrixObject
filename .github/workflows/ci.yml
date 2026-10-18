@@ -232,3 +232,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: A retained idempotency key carries no slack
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_retained_idempotency_key_carries_no_slack -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
