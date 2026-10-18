@@ -147,7 +147,7 @@ impl MatrixMetaService {
                     }
                 }
                 for record in &prepared.receipt.records {
-                    self.records.insert(record.key.clone(), record.clone());
+                    self.file_record(record.key.clone(), record.clone());
                     self.changes.push(MetadataChange {
                         sequence: self.next_change_sequence,
                         commit_index: prepared.prepared_commit_index,

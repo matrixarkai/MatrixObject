@@ -108,8 +108,8 @@ impl MatrixObjectStore {
                     self.buckets.remove(&targeted.bucket);
                 }
                 match targeted.previous_object {
-                    Some(previous) => {
-                        self.objects.insert(targeted.object_id, previous);
+                    Some(mut previous) => {
+                        self.file_object(targeted.object_id, &mut previous);
                     }
                     None => {
                         self.objects.remove(&targeted.object_id);

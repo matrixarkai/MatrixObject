@@ -33483,6 +33483,12 @@ fn measure_the_metadata_footprint() {
     // The key text is resident in several places at once, so its length is a
     // variable in its own right, not a detail of the fixture.
     let key_len = env_usize("MEASURE_KEYLEN", 26);
+    // Versioning is off by default, so `versions` reads zero in every run and
+    // the per-object cost of keeping old versions has never been in a figure.
+    let versions = env_usize("MEASURE_VERSIONS", 0);
+    if versions > 0 {
+        store.set_bucket_versioning("bucket", true).unwrap();
+    }
     for index in 0..objects {
         let stem = format!("prefix/{index:08}/");
         let mut key = stem.clone();
@@ -33493,9 +33499,14 @@ fn measure_the_metadata_footprint() {
         store
             .put_object("bucket", &key, vec![b'x'; size], "application/octet-stream")
             .unwrap();
+        for _ in 0..versions {
+            store
+                .put_object("bucket", &key, vec![b'y'; size], "application/octet-stream")
+                .unwrap();
+        }
     }
-    let written = (objects * size) as u64;
-    println!("MEASURE objects={objects} size={size} key_len={key_len} written={written}");
+    let written = (objects * size * (1 + versions)) as u64;
+    println!("MEASURE objects={objects} size={size} key_len={key_len} versions={versions} written={written}");
     for (key, value) in store.footprint_audit() {
         if value != 0 {
             println!("MEASURE {key}={value}");
@@ -33730,6 +33741,25 @@ fn the_holders_that_name_one_object_share_its_key_characters() {
         "the change feed names the object it describes, and names it through          the same allocation"
     );
 
+    // And after an overwrite. `BTreeMap::insert` replaces the value and keeps
+    // the key it already holds, so a mutation that arrives with its own
+    // `ObjectId` leaves the map and the value in two allocations unless the
+    // filing adopts the key -- which made the sharing hold for a first write
+    // and silently stop holding after that.
+    store
+        .put_object("bucket", KEY, vec![b'w'; 48], "text/plain")
+        .unwrap();
+    let (rewritten_key, rewritten) = store
+        .objects
+        .iter()
+        .next()
+        .expect("the object is still there");
+    assert!(
+        rewritten_key.key.shares_with(&rewritten.object_id.key),
+        "an overwrite must leave the two naming the object through one \
+         allocation, as the first write did"
+    );
+
     // And after a restart. A snapshot states the identity once as the map key
     // and again inside the value, so a decode that reads them separately
     // rebuilds the copies this removed -- which is a saving that would quietly
@@ -33780,6 +33810,11 @@ fn the_metadata_record_key_is_one_allocation_across_its_holders() {
             }
             store
                 .put_object("bucket", &key, vec![b'v'; 32], "text/plain")
+                .unwrap();
+            // Overwritten, because the record map keeps the key it already
+            // holds and an update is where the sharing stopped holding.
+            store
+                .put_object("bucket", &key, vec![b'w'; 48], "text/plain")
                 .unwrap();
         }
         store

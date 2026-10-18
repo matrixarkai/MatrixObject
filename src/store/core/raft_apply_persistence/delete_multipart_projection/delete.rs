@@ -70,7 +70,7 @@ impl MatrixObjectStore {
         } else {
             self.mark_extents_stale(&previous.extents)?;
         }
-        let delete_marker = ObjectMetadata {
+        let mut delete_marker = ObjectMetadata {
             object_id: object_id.clone(),
             version: self.next_object_version(&object_id),
             length: 0,
@@ -87,7 +87,7 @@ impl MatrixObjectStore {
             extents: Vec::new(),
             deleted: true,
         };
-        self.objects.insert(object_id, delete_marker.clone());
+        self.file_object(object_id, &mut delete_marker);
         self.commit_meta_projection(
             &delete_marker.object_id,
             &metadata_projection_value(&delete_marker),

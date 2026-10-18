@@ -24,7 +24,7 @@ impl MatrixObjectStore {
             })?;
         metadata.tags = tags;
         metadata.update_time_ms = update_time_ms;
-        self.objects.insert(object_id, metadata.clone());
+        self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
             &metadata.object_id,
             &metadata_projection_value(&metadata),

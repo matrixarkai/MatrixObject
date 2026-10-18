@@ -9,6 +9,30 @@ pub(crate) struct MetaRecordUndo {
 }
 
 impl MatrixMetaService {
+    /// The allocation the record map already names this key through.
+    ///
+    /// Adopted once at the top of a mutation, so the record, the map and the
+    /// change log all name the key through one allocation -- including on an
+    /// update, where `BTreeMap::insert` keeps the key it already holds and the
+    /// mutation's own copy would otherwise become a second one.
+    pub(crate) fn filed_record_key(&self, key: SharedText) -> SharedText {
+        self.records
+            .get_key_value(key.as_str())
+            .map(|(existing, _)| existing.clone())
+            .unwrap_or(key)
+    }
+
+    /// File a record, making it name its key through the allocation the map
+    /// keeps. `BTreeMap::insert` keeps the key it already holds, so without
+    /// this an update leaves the map key and the record's own naming of it in
+    /// two allocations.
+    pub(crate) fn file_record(&mut self, key: SharedText, mut record: MetadataRecord) {
+        if let Some((existing, _)) = self.records.get_key_value(key.as_str()) {
+            record.key = existing.clone();
+        }
+        self.records.insert(key, record);
+    }
+
     fn preflight_mutations(
         &self,
         mutations: &[MetadataMutation],
@@ -206,7 +230,7 @@ impl MatrixMetaService {
     pub(crate) fn restore_record_undo(&mut self, undo: MetaRecordUndo) {
         match undo.previous_record {
             Some(record) => {
-                self.records.insert(undo.key.into(), record);
+                self.file_record(undo.key.into(), record);
             }
             None => {
                 self.records.remove(undo.key.as_str());
@@ -232,19 +256,22 @@ impl MatrixMetaService {
                 "metadata expected version mismatch".to_string(),
             ));
         }
+        // One allocation for the three holders: the map files the record under
+        // it, the record states it again, and the change log names it.
+        let key = self.filed_record_key(mutation.key);
         let record = MetadataRecord {
-            key: mutation.key.clone(),
+            key: key.clone(),
             value: mutation.value,
             version: current_version.saturating_add(1),
             update_time_ms: now_ms,
             deleted: mutation.delete,
         };
         self.next_commit_index = self.next_commit_index.saturating_add(1);
-        self.records.insert(mutation.key.clone(), record.clone());
+        self.records.insert(key.clone(), record.clone());
         self.changes.push(MetadataChange {
             sequence: self.next_change_sequence,
             commit_index: self.next_commit_index.saturating_sub(1),
-            key: mutation.key,
+            key,
             version: record.version,
             deleted: record.deleted,
             update_time_ms: now_ms,

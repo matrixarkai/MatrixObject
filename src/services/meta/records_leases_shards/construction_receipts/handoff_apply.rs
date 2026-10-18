@@ -135,7 +135,7 @@ impl MatrixMetaService {
         }
         for record in &installed {
             let should_emit_change = self.records.get(&record.key) != Some(record);
-            self.records.insert(record.key.clone(), record.clone());
+            self.file_record(record.key.clone(), record.clone());
             if should_emit_change {
                 self.changes.push(MetadataChange {
                     sequence: self.next_change_sequence,

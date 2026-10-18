@@ -117,7 +117,7 @@ impl MatrixObjectStore {
         etag_data.extend_from_slice(&data);
         verify_expected_object_checksum(options.expected_checksum.as_deref(), &etag_data)?;
         let version = self.next_object_version(&object_id);
-        let metadata = ObjectMetadata {
+        let mut metadata = ObjectMetadata {
             object_id: object_id.clone(),
             version,
             length,
@@ -158,7 +158,7 @@ impl MatrixObjectStore {
             }
         }
         self.logical_written_bytes = saturating_add(self.logical_written_bytes, data.len() as u64);
-        self.objects.insert(object_id, metadata.clone());
+        self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
             &metadata.object_id,
             &metadata_projection_value(&metadata),
