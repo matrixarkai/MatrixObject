@@ -115,3 +115,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: A shared allocation is charged for its header
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_shared_allocation_is_charged_for_its_header -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
