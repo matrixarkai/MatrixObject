@@ -145,6 +145,7 @@ impl MatrixObjectStore {
             persistent_journal_path: persistent_journal_path.clone(),
             options,
             buckets: BTreeSet::new(),
+            content_types: BTreeSet::new(),
             bucket_versioning: BTreeSet::new(),
             objects: BTreeMap::new(),
             versions: BTreeMap::new(),

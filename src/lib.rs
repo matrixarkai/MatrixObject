@@ -102,6 +102,22 @@ const UNCONSUMED_OBJECT_CHANGE_RETENTION: usize = 1_024;
 /// replicas would diverge them and a limit carried in the snapshot would be a
 /// durable format change.
 const UNCHECKPOINTED_METADATA_CHANGE_RETENTION: usize = 1_024;
+
+/// How many distinct content types share one allocation each.
+///
+/// Every object carried its own copy of its content type, so a store holding a
+/// million objects of one type held a million copies of the same string. The
+/// set is open -- a content type is whatever the client sent -- so this needs a
+/// bound that the four storage classes do not: a pool entry outlives the object
+/// that introduced it, and a client writing and deleting a million objects with
+/// distinct types would otherwise leave a million entries behind.
+///
+/// Past the bound an object owns its own string, which is exactly what every
+/// object did before, so the behaviour degrades to the previous one rather than
+/// failing. A constant rather than a setting for the same reason as the two
+/// bounds above: it is derived from replicated state, and a limit that differed
+/// between replicas would make their footprints differ for no stated reason.
+const MAX_SHARED_CONTENT_TYPES: usize = 256;
 const DEFAULT_META_MAX_BATCH_MUTATIONS: usize = 10_000;
 const DEFAULT_META_MAX_BATCH_VALUE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_META_MAX_OPEN_TRANSACTIONS: usize = 1_000_000;

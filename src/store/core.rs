@@ -38,6 +38,12 @@ pub struct MatrixObjectStore {
     persistent_snapshot_path: String,
     persistent_journal_path: String,
     pub(crate) buckets: BTreeSet<SharedText>,
+    /// One allocation per distinct content type, up to
+    /// `MAX_SHARED_CONTENT_TYPES`. Derived state: it is not in a snapshot, it
+    /// is rebuilt when one is installed, and a mutation that is rolled back
+    /// leaves its entry behind -- which interns a type no object uses until the
+    /// bound is reached, and is why the per-mutation undo does not capture it.
+    pub(crate) content_types: BTreeSet<SharedText>,
     bucket_versioning: BTreeSet<String>,
     pub(crate) objects: BTreeMap<ObjectId, ObjectMetadata>,
     pub(crate) versions: BTreeMap<ObjectId, Vec<ObjectMetadata>>,

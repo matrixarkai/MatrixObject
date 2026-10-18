@@ -117,7 +117,7 @@ fn audit_object_metadata_heap(ledger: &mut SharedTextLedger, metadata: &ObjectMe
     audit_object_lock_bytes(&metadata.lock)
         .saturating_add(audit_object_id_heap(ledger, &metadata.object_id))
         .saturating_add(audit_boxed_str_heap(&metadata.etag))
-        .saturating_add(audit_boxed_str_heap(&metadata.content_type))
+        .saturating_add(ledger.charge(&metadata.content_type))
         .saturating_add(ledger.charge(&metadata.storage_class))
         .saturating_add(audit_object_attributes_bytes(&metadata.user_metadata))
         .saturating_add(audit_object_attributes_bytes(&metadata.tags))
@@ -329,7 +329,7 @@ impl MatrixObjectStore {
                 lock_bytes = lock_bytes.saturating_add(audit_object_lock_bytes(&metadata.lock));
                 etag_heap = etag_heap.saturating_add(audit_boxed_str_heap(&metadata.etag));
                 content_type_heap =
-                    content_type_heap.saturating_add(audit_boxed_str_heap(&metadata.content_type));
+                    content_type_heap.saturating_add(detail_ledger.charge(&metadata.content_type));
                 storage_class_heap =
                     storage_class_heap.saturating_add(detail_ledger.charge(&metadata.storage_class));
                 user_metadata_bytes = user_metadata_bytes

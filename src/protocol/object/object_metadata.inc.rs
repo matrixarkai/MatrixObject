@@ -11,7 +11,7 @@ pub struct ObjectMetadata {
     pub version: u64,
     pub length: u64,
     pub etag: Box<str>,
-    pub content_type: Box<str>,
+    pub content_type: SharedText,
     pub user_metadata: ObjectAttributes,
     pub storage_class: SharedText,
     pub tags: ObjectAttributes,

@@ -19,6 +19,23 @@ impl MatrixObjectStore {
         object_id
     }
 
+    /// One allocation per distinct content type, up to
+    /// `MAX_SHARED_CONTENT_TYPES`.
+    ///
+    /// Past the bound an object owns its own string, which is what every object
+    /// did before, so the behaviour degrades rather than failing. The pool is
+    /// derived state and is rebuilt when a snapshot is installed.
+    pub(crate) fn shared_content_type(&mut self, content_type: &SharedText) -> SharedText {
+        if let Some(shared) = self.content_types.get(content_type.as_str()) {
+            return shared.clone();
+        }
+        if self.content_types.len() >= MAX_SHARED_CONTENT_TYPES {
+            return content_type.clone();
+        }
+        self.content_types.insert(content_type.clone());
+        content_type.clone()
+    }
+
     /// File an object, making the stored value name it through the key the map
     /// keeps rather than through the mutation's own copy.
     pub(crate) fn file_object(&mut self, object_id: ObjectId, metadata: &mut ObjectMetadata) {
@@ -31,6 +48,7 @@ impl MatrixObjectStore {
         // Whichever path built this metadata, its storage class is one of four
         // names, and this is where every mutation's object becomes resident.
         metadata.storage_class = interned_storage_class(&metadata.storage_class);
+        metadata.content_type = self.shared_content_type(&metadata.content_type);
         self.objects.insert(object_id, metadata.clone());
     }
 

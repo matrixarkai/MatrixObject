@@ -618,6 +618,28 @@ impl MatrixObjectStore {
         self.bucket_policy_receipts = snapshot.bucket_policy_receipts;
         self.bucket_cors_receipts = snapshot.bucket_cors_receipts;
         self.objects = snapshot.objects;
+        // The pool is derived, so a snapshot does not carry it. Rebuilt in map
+        // order, which may intern a different subset past the bound than a
+        // replica that replayed the log -- a footprint difference and not a
+        // state one, since nothing reads the pool but this sharing.
+        self.content_types.clear();
+        let mut shared: Vec<(ObjectId, SharedText)> = Vec::new();
+        for (object_id, metadata) in self.objects.iter() {
+            if let Some(existing) = self.content_types.get(metadata.content_type.as_str()) {
+                if !existing.shares_with(&metadata.content_type) {
+                    shared.push((object_id.clone(), existing.clone()));
+                }
+                continue;
+            }
+            if self.content_types.len() < MAX_SHARED_CONTENT_TYPES {
+                self.content_types.insert(metadata.content_type.clone());
+            }
+        }
+        for (object_id, content_type) in shared {
+            if let Some(metadata) = self.objects.get_mut(&object_id) {
+                metadata.content_type = content_type;
+            }
+        }
         self.versions = snapshot.versions;
         self.multipart_uploads = snapshot.multipart_uploads;
         self.multipart_complete_receipts = snapshot.multipart_complete_receipts;
