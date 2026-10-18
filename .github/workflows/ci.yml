@@ -286,3 +286,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: The snapshot a mutation holds shares payload rather than copying it
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_snapshot_a_mutation_holds_shares_payload_rather_than_copying_it -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
