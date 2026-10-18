@@ -35606,3 +35606,131 @@ fn the_snapshot_a_mutation_holds_shares_payload_rather_than_copying_it() {
         );
     }
 }
+
+#[test]
+fn a_refused_mutation_leaves_exactly_the_receipts_it_found() {
+    // The byte figures cannot carry this one. `a_put_that_fails_after_mutating_
+    // leaves_the_store_unchanged` has to *allow* the receipt bytes to fall,
+    // because the abort restores the maps by cloning and a clone allocates
+    // exactly, so a restored receipt holds the same text in a tighter
+    // allocation. That allowance is also a blind spot: a byte figure that may
+    // fall cannot distinguish a tighter allocation from a lost receipt.
+    //
+    // An idempotency receipt is not a cache. If an abort drops one the mutation
+    // did not file, a request that was already answered can execute a second
+    // time; if it keeps one the aborted mutation filed, a retry is deduped
+    // against work that was rolled back and the caller is told it succeeded. So
+    // this asserts the exact set of keys, by name, across a refused mutation.
+    fn receipt_keys(store: &MatrixObjectStore) -> Vec<String> {
+        let page = &store.page_service;
+        let mut keys: Vec<String> = Vec::new();
+        let mut take = |label: &str, map_keys: Vec<&String>| {
+            for key in map_keys {
+                keys.push(format!("{label}/{key}"));
+            }
+        };
+        take("page.pending_allocations", page.pending_allocations.keys().collect());
+        take("page.allocation", page.allocation_request_receipts.keys().collect());
+        take(
+            "page.batch_allocation",
+            page.batch_allocation_request_receipts.keys().collect(),
+        );
+        take(
+            "page.release_allocation",
+            page.release_allocation_request_receipts.keys().collect(),
+        );
+        take("page.write", page.write_request_receipts.keys().collect());
+        take("page.batch_write", page.batch_write_request_receipts.keys().collect());
+        take("page.discard", page.discard_request_receipts.keys().collect());
+        take(
+            "page.batch_discard",
+            page.batch_discard_request_receipts.keys().collect(),
+        );
+        for (index, replica) in page.replicas.iter().enumerate() {
+            take(
+                &format!("replica{index}.write"),
+                replica.write_request_receipts.keys().collect(),
+            );
+            take(
+                &format!("replica{index}.discard"),
+                replica.discard_request_receipts.keys().collect(),
+            );
+            take(
+                &format!("replica{index}.batch_write"),
+                replica.batch_write_request_receipts.keys().collect(),
+            );
+            take(
+                &format!("replica{index}.batch_discard"),
+                replica.batch_discard_request_receipts.keys().collect(),
+            );
+            // A replica's state-install, reclaim and repair receipt maps are
+            // private to the chunk service, and widening them for a test is the
+            // wrong trade: they are filed by the state-handoff, reclaim and
+            // repair commands, none of which is on the path a refused put
+            // takes. The four a put and a delete actually file -- write, batch
+            // write, discard, batch discard -- are all here, on every replica.
+        }
+        keys.sort();
+        keys
+    }
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "k", b"original-contents".to_vec(), "text/plain")
+        .unwrap();
+    // A delete files receipts, so the maps are not empty when the refusal runs.
+    // Without this the assertion would compare two empty sets and pass by
+    // having nothing to compare.
+    store
+        .put_object("bucket", "doomed", b"doomed-contents".to_vec(), "text/plain")
+        .unwrap();
+    store.delete_object("bucket", "doomed").unwrap();
+
+    let before = receipt_keys(&store);
+    assert!(
+        !before.is_empty(),
+        "the workload must leave receipts for this to compare, and it left none"
+    );
+
+    let refused = store.put_object_with_options(
+        "bucket",
+        "k",
+        b"replacement-contents".to_vec(),
+        "text/plain",
+        PutOptions {
+            expected_checksum: Some("fnv1a64:0000000000000000".to_string()),
+            ..PutOptions::default()
+        },
+    );
+    assert!(refused.is_err(), "the put must be refused");
+
+    // Which half of this is proven today, stated rather than left to be
+    // assumed. Planting a batch snapshot that forgets the receipts it found
+    // fails the `lost` assertion, naming the dropped key. Planting an abort
+    // that keeps what the mutation filed does NOT fail the `gained` one,
+    // because a put files no chunk receipt in this store -- the chunk service's
+    // internal receipt is off for the store's own writes, which is why
+    // `block.receipts.bytes` reads 144 on a put-only workload and every receipt
+    // measured here comes from a delete.
+    //
+    // The `gained` assertion stays because narrowing the batch snapshot --
+    // issue 20, where the undo becomes "the receipts this mutation filed"
+    // instead of a copy of every receipt held -- is exactly the change that
+    // makes it reachable, and it is the direction with the worse failure: a
+    // retry deduped against work that was rolled back is answered with a
+    // success that did not happen.
+    let after = receipt_keys(&store);
+    let lost: Vec<&String> = before.iter().filter(|key| !after.contains(key)).collect();
+    let gained: Vec<&String> = after.iter().filter(|key| !before.contains(key)).collect();
+    assert!(
+        lost.is_empty(),
+        "a refused mutation dropped receipts it did not file, so an answered \
+         request can execute again: {lost:?}"
+    );
+    assert!(
+        gained.is_empty(),
+        "a refused mutation kept receipts it filed, so a retry is deduped \
+         against work that was rolled back: {gained:?}"
+    );
+}
