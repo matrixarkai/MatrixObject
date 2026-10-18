@@ -33560,3 +33560,118 @@ fn the_audit_counts_what_the_metadata_service_holds() {
         "the store total must include the metadata total"
     );
 }
+
+#[test]
+fn the_metadata_breakdown_accounts_for_every_byte_of_its_total() {
+    // `objects.bytes` and `meta.records.bytes` are the two largest metadata
+    // line items, and each is now reported as its parts as well as its total.
+    // A part is only useful if it is exhaustive: a field added to
+    // `ObjectMetadata` and counted in the total but not in the breakdown, or
+    // the other way round, would silently misattribute the footprint. So the
+    // parts are asserted to sum to the total rather than merely to exist.
+    fn audit(store: &MatrixObjectStore) -> BTreeMap<String, u64> {
+        store.footprint_audit().into_iter().collect()
+    }
+    fn at(values: &BTreeMap<String, u64>, key: &str) -> u64 {
+        *values
+            .get(key)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    // The benchmark never sets tags or user metadata, so in a bench run both of
+    // those parts read zero. Set them here, or this test would inherit that
+    // hole and could not tell an uncounted map from an empty one.
+    for index in 0..8 {
+        store
+            .put_object_with_options(
+                "bucket",
+                &format!("k{index}"),
+                vec![b'v'; 16],
+                "text/plain",
+                PutOptions {
+                    user_metadata: tags(&[("owner", "footprint"), ("tier", "warm")]),
+                    tags: tags(&[("class", "hot")]),
+                    storage_class: Some("STANDARD".to_string()),
+                    ..PutOptions::default()
+                },
+            )
+            .unwrap();
+    }
+    let values = audit(&store);
+
+    let objects_parts = [
+        "objects.mapkey_inline",
+        "objects.metadata_inline",
+        "objects.mapkey_heap",
+        "objects.inner_id_heap",
+        "objects.etag_heap",
+        "objects.content_type_heap",
+        "objects.storage_class_heap",
+        "objects.user_metadata_bytes",
+        "objects.tags_bytes",
+        "objects.extents_bytes",
+    ];
+    let objects_sum = objects_parts
+        .iter()
+        .fold(0u64, |total, key| total + at(&values, key));
+    assert_eq!(
+        objects_sum,
+        at(&values, "objects.bytes"),
+        "the objects breakdown does not account for its own total; parts {:?}",
+        objects_parts
+            .iter()
+            .map(|key| (*key, at(&values, key)))
+            .collect::<Vec<_>>()
+    );
+
+    let meta_parts = [
+        "meta.records.struct_inline",
+        "meta.records.mapkey_capacity",
+        "meta.records.record_key_capacity",
+        "meta.records.value_capacity",
+    ];
+    let meta_sum = meta_parts
+        .iter()
+        .fold(0u64, |total, key| total + at(&values, key));
+    assert_eq!(
+        meta_sum,
+        at(&values, "meta.records.bytes"),
+        "the meta.records breakdown does not account for its own total; parts {:?}",
+        meta_parts
+            .iter()
+            .map(|key| (*key, at(&values, key)))
+            .collect::<Vec<_>>()
+    );
+
+    // Not vacuous. Zero on both sides would satisfy the sums above, and the two
+    // map parts are exactly the ones a bench run leaves empty.
+    assert!(at(&values, "objects.bytes") > 0);
+    assert!(at(&values, "meta.records.bytes") > 0);
+    assert!(
+        at(&values, "objects.tags_bytes") > 0 && at(&values, "objects.user_metadata_bytes") > 0,
+        "this run left the two map parts empty, so it cannot tell an uncounted \
+         map from an absent one"
+    );
+
+    // Both maps hold their identity twice, and these counters say so by
+    // comparing the texts rather than leaving it to be inferred from the
+    // struct definitions.
+    assert_eq!(
+        at(&values, "objects.id_text_duplicated"),
+        at(&values, "objects.entries"),
+        "every object's identity is held as the map key and inside the value"
+    );
+    assert_eq!(
+        at(&values, "meta.records.key_text_duplicated"),
+        at(&values, "meta.records"),
+        "every projection key is held as the map key and inside the record"
+    );
+
+    // Capacity is what the totals count; length sits beside it so the slack is
+    // visible, and it must never exceed the capacity.
+    assert!(at(&values, "meta.records.value_len") <= at(&values, "meta.records.value_capacity"));
+    assert!(at(&values, "meta.records.mapkey_len") <= at(&values, "meta.records.mapkey_capacity"));
+    assert!(at(&values, "objects.extents_len") <= at(&values, "objects.extents_capacity"));
+}
