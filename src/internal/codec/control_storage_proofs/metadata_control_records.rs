@@ -26,7 +26,7 @@ pub(crate) fn coordinator_session_metadata(
         legal_hold_update_time_ms: 0,
         retention_until_ms: 0,
         update_time_ms: session.last_renew_ms,
-        extents: Vec::new(),
+        extents: Vec::new().into(),
         deleted: false,
     }
 }
@@ -52,7 +52,7 @@ pub(crate) fn metadata_coordinator_config_metadata(
         legal_hold_update_time_ms: 0,
         retention_until_ms: 0,
         update_time_ms,
-        extents: Vec::new(),
+        extents: Vec::new().into(),
         deleted: false,
     }
 }
@@ -76,7 +76,7 @@ pub(crate) fn root_coordinator_config_metadata(
         legal_hold_update_time_ms: 0,
         retention_until_ms: 0,
         update_time_ms: now_millis(),
-        extents: Vec::new(),
+        extents: Vec::new().into(),
         deleted: false,
     }
 }
@@ -102,7 +102,7 @@ pub(crate) fn metadata_lease_metadata(lease: &MetadataLease, content_type: &str)
         legal_hold_update_time_ms: 0,
         retention_until_ms: 0,
         update_time_ms: lease.expire_time_ms.saturating_sub(lease.ttl_ms),
-        extents: Vec::new(),
+        extents: Vec::new().into(),
         deleted: content_type.starts_with("metaserver/lease-release"),
     }
 }
@@ -135,7 +135,7 @@ pub(crate) fn root_leader_lease_metadata(
         legal_hold_update_time_ms: 0,
         retention_until_ms: 0,
         update_time_ms: lease.expire_time_ms.saturating_sub(lease.ttl_ms),
-        extents: Vec::new(),
+        extents: Vec::new().into(),
         deleted: false,
     }
 }
@@ -162,7 +162,7 @@ pub(crate) fn metadata_control_metadata(
         legal_hold_update_time_ms: 0,
         retention_until_ms: 0,
         update_time_ms,
-        extents: Vec::new(),
+        extents: Vec::new().into(),
         deleted: false,
     }
 }

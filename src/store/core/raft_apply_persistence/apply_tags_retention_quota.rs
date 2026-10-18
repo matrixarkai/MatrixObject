@@ -71,7 +71,7 @@ impl MatrixObjectStore {
             legal_hold_update_time_ms: 0,
             retention_until_ms: 0,
             update_time_ms,
-            extents: Vec::new(),
+            extents: Vec::new().into(),
             deleted: retain_for_ms == 0,
         })
     }
@@ -114,7 +114,7 @@ impl MatrixObjectStore {
             legal_hold_update_time_ms: 0,
             retention_until_ms: 0,
             update_time_ms,
-            extents: Vec::new(),
+            extents: Vec::new().into(),
             deleted: quota.disabled(),
         })
     }

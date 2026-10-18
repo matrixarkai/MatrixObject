@@ -106,7 +106,7 @@ impl MatrixObjectStore {
         let appended_extents = self.allocate_extents(&data)?;
         let mut extents = previous
             .as_ref()
-            .map_or_else(Vec::new, |metadata| metadata.extents.clone());
+            .map_or_else(Vec::new, |metadata| metadata.extents.to_vec());
         extents.extend(appended_extents);
 
         let mut etag_data = previous
@@ -146,7 +146,7 @@ impl MatrixObjectStore {
                 .as_ref()
                 .map_or(0, |metadata| metadata.retention_until_ms),
             update_time_ms,
-            extents,
+            extents: extents.into(),
             deleted: false,
         };
         if self.bucket_versioning.contains(object_id.bucket.as_str()) {

@@ -103,7 +103,7 @@ fn audit_object_metadata_heap(ledger: &mut SharedTextLedger, metadata: &ObjectMe
         .saturating_add(audit_object_attributes_bytes(&metadata.user_metadata))
         .saturating_add(audit_object_attributes_bytes(&metadata.tags))
         .saturating_add(
-            (metadata.extents.capacity() as u64)
+            (metadata.extents.len() as u64)
                 .saturating_mul(std::mem::size_of::<ObjectExtent>() as u64),
         )
 }
@@ -316,9 +316,9 @@ impl MatrixObjectStore {
                 tags_bytes = tags_bytes.saturating_add(audit_object_attributes_bytes(&metadata.tags));
                 extents_len = extents_len.saturating_add(metadata.extents.len() as u64);
                 extents_capacity =
-                    extents_capacity.saturating_add(metadata.extents.capacity() as u64);
+                    extents_capacity.saturating_add(metadata.extents.len() as u64);
                 extents_bytes = extents_bytes.saturating_add(
-                    (metadata.extents.capacity() as u64)
+                    (metadata.extents.len() as u64)
                         .saturating_mul(std::mem::size_of::<ObjectExtent>() as u64),
                 );
                 if object_id.bucket == metadata.object_id.bucket

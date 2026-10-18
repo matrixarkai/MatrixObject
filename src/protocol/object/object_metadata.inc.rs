@@ -20,7 +20,7 @@ pub struct ObjectMetadata {
     pub legal_hold_update_time_ms: u64,
     pub retention_until_ms: u64,
     pub update_time_ms: u64,
-    pub extents: Vec<ObjectExtent>,
+    pub extents: Box<[ObjectExtent]>,
     pub deleted: bool,
 }
 

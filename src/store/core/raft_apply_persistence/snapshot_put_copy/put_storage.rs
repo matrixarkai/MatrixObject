@@ -155,7 +155,7 @@ impl MatrixObjectStore {
             legal_hold_update_time_ms: 0,
             retention_until_ms: 0,
             update_time_ms,
-            extents,
+            extents: extents.into(),
             deleted: false,
         };
         self.logical_written_bytes = saturating_add(self.logical_written_bytes, length);

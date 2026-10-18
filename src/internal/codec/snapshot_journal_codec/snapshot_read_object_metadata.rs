@@ -50,7 +50,7 @@ pub(crate) fn read_metadata(
         legal_hold_update_time_ms,
         retention_until_ms,
         update_time_ms,
-        extents,
+        extents: extents.into(),
         deleted,
     })
 }
