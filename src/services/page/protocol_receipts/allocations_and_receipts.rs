@@ -1,5 +1,5 @@
 // Page protocol types are grouped by mutation and receipt ownership.
-include!("block_range_types.rs");
+include!("page_range_types.rs");
 include!("allocation_receipt_types.rs");
 include!("prepared_allocation_types.rs");
 include!("prepared_batch_allocation_types.rs");

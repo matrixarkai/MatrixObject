@@ -1,6 +1,6 @@
 include!("store_snapshot_validation/configuration_and_policies.rs");
 include!("store_snapshot_validation/raft_and_checksum.rs");
-include!("store_snapshot_validation/segments_and_objects.rs");
+include!("store_snapshot_validation/slabs_and_objects.rs");
 include!("store_snapshot_validation/multipart_uploads.rs");
 include!("store_snapshot_validation/changefeed_state.rs");
 

@@ -1,7 +1,7 @@
 include!("metadata_object_proofs/maintenance_payload.rs");
 include!("metadata_object_proofs/transaction_proofs.rs");
 include!("metadata_object_proofs/metadata_qos.rs");
-include!("metadata_object_proofs/block_route_qos.rs");
+include!("metadata_object_proofs/page_route_qos.rs");
 include!("metadata_object_proofs/chunk_mutation_qos.rs");
 include!("metadata_object_proofs/retention_lease_coordinator.rs");
 include!("metadata_object_proofs/shard_integrity_routes.rs");
