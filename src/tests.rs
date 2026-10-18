@@ -33706,6 +33706,32 @@ fn the_metadata_breakdown_accounts_for_every_byte_of_its_total() {
 
     // Capacity is what the totals count; length sits beside it so the slack is
     // visible, and it must never exceed the capacity.
+    // The map key and the record name one allocation, so the record's own naming
+    // is free. If the key stopped being shared this would become non-zero, and
+    // nothing else in the suite would notice.
+    let records = at(&values, "meta.records");
+    assert_eq!(
+        at(&values, "meta.records.key_text_shared"),
+        records,
+        "every record should share its key allocation with the map key"
+    );
+    assert_eq!(
+        at(&values, "meta.records.record_key_capacity"),
+        0,
+        "a shared key should cost nothing at its second holder"
+    );
+    // And the charge for those keys is the characters plus one sixteen-byte
+    // header per allocation -- NOT spare capacity, which shared text does not
+    // have. Asserting the arithmetic is what stops the difference being read as
+    // recoverable slack: `mapkey_len` is summed from `key.len()` and owes nothing
+    // to the ledger that produced `mapkey_capacity`.
+    const SHARED_HEADER: u64 = 2 * std::mem::size_of::<usize>() as u64;
+    assert_eq!(
+        at(&values, "meta.records.mapkey_capacity"),
+        at(&values, "meta.records.mapkey_len") + SHARED_HEADER * records,
+        "the map-key charge should be the characters plus one header per record"
+    );
+
     assert!(at(&values, "meta.records.value_len") <= at(&values, "meta.records.value_capacity"));
     assert!(at(&values, "meta.records.mapkey_len") <= at(&values, "meta.records.mapkey_capacity"));
     assert!(at(&values, "objects.extents_len") <= at(&values, "objects.extents_capacity"));

@@ -330,11 +330,26 @@ impl MatrixObjectStore {
         push("versions.bytes", versions_bytes);
         push("object_changes.bytes", changes_bytes);
         push("meta.records.bytes", meta_record_bytes);
-        // `meta.records` holds the key twice as well -- once as the map key
-        // and once in the record -- and the value is a formatted restatement of
-        // fields the `objects` map already holds structured. The `_len` counters
-        // sit beside the `_capacity` ones because the difference is slack, and
-        // slack is what this audit exists to show.
+        // `meta.records` names the key twice -- once as the map key and once in
+        // the record -- and the value is a formatted restatement of fields the
+        // `objects` map already holds structured.
+        //
+        // The two names now share one allocation, which is what
+        // `meta.records.key_text_shared` reports and why
+        // `meta.records.record_key_capacity` reads zero: the record's own naming
+        // is the map key's allocation and costs nothing again.
+        //
+        // **The two `_len` counters are not comparable with each other.**
+        // `value_capacity` against `value_len` is slack, because the value is a
+        // `String` and its spare capacity is resident. `mapkey_capacity` against
+        // `mapkey_len` is *not* slack: shared text has no spare capacity, and the
+        // difference is the strong and weak counts the ledger charges in front of
+        // the characters -- sixteen bytes once per allocation. Reading it as
+        // slack would send someone looking for tens of kilobytes that are not
+        // recoverable without unsharing the key.
+        //
+        // `the_metadata_breakdown_accounts_for_every_byte_of_its_total` pins both
+        // readings, so neither can drift back into the other.
         {
             let records = &self.meta_service.records;
             let n = records.len() as u64;
