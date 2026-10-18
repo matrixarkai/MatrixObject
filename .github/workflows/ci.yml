@@ -304,3 +304,23 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: The MatrixRaft state machine builds and its tests pass
+        run: |
+          set -o pipefail
+          cargo build --lib --features matrix-raft
+          cargo test --lib --features matrix-raft \
+            tests::a_metadata_snapshot_crosses_a_raft_state_machine_intact -- --exact \
+            | tee /tmp/matrixraft.log
+          grep -q '^test result: ok. 1 passed' /tmp/matrixraft.log \
+            || { echo "::error::a_metadata_snapshot_crosses_a_raft_state_machine_intact did not run"; exit 1; }
+          cargo test --lib --features matrix-raft \
+            tests::a_snapshot_chunk_at_the_wrong_offset_is_refused -- --exact \
+            | tee /tmp/matrixraft.log
+          grep -q '^test result: ok. 1 passed' /tmp/matrixraft.log \
+            || { echo "::error::a_snapshot_chunk_at_the_wrong_offset_is_refused did not run"; exit 1; }
+          cargo test --lib --features matrix-raft \
+            tests::applying_an_entry_reports_the_codec_the_log_format_would_need -- --exact \
+            | tee /tmp/matrixraft.log
+          grep -q '^test result: ok. 1 passed' /tmp/matrixraft.log \
+            || { echo "::error::applying_an_entry_reports_the_codec_the_log_format_would_need did not run"; exit 1; }

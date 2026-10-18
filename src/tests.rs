@@ -35734,3 +35734,91 @@ fn a_refused_mutation_leaves_exactly_the_receipts_it_found() {
          against work that was rolled back: {gained:?}"
     );
 }
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_metadata_snapshot_crosses_a_raft_state_machine_intact() {
+    // What the snapshot half of `matrixraft::StateMachine` is for: a node that
+    // has fallen behind takes a snapshot from a peer and installs it. The bytes
+    // that travel are the metadata snapshot encoding this store already writes,
+    // carried in MatrixRaft's opaque `data` field, so the install validates them
+    // exactly as a local install would.
+    let mut source_store = MatrixObjectStore::new(test_options()).unwrap();
+    source_store.create_bucket("bucket").unwrap();
+    source_store
+        .put_object("bucket", "k", b"contents".to_vec(), "text/plain")
+        .unwrap();
+    source_store
+        .put_object("bucket", "other", b"more".to_vec(), "text/plain")
+        .unwrap();
+    let expected = source_store.metadata_state_fingerprint();
+
+    let source = MetadataStateMachine::new(source_store);
+    let chunk = matrixraft::StateMachine::snapshot(&source).expect("the source exports a snapshot");
+    assert!(chunk.done, "a single-chunk snapshot is complete");
+    assert!(!chunk.data.is_empty(), "the snapshot carries bytes");
+    assert_eq!(chunk.offset, 0);
+
+    let mut target = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    assert_ne!(
+        target.store().metadata_state_fingerprint(),
+        expected,
+        "the target must start out different, or this proves nothing"
+    );
+    matrixraft::StateMachine::install_snapshot(&mut target, chunk).expect("the target installs it");
+    assert_eq!(
+        target.store().metadata_state_fingerprint(),
+        expected,
+        "after installing the snapshot the target holds the source's metadata"
+    );
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_snapshot_chunk_at_the_wrong_offset_is_refused() {
+    // A sender that restarts a transfer begins again at zero. A chunk claiming
+    // any other offset that does not continue what has arrived is a gap, and
+    // appending it would install a snapshot with a hole in it.
+    let mut target = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    let mut source = MetadataStateMachine::new({
+        let mut store = MatrixObjectStore::new(test_options()).unwrap();
+        store.create_bucket("bucket").unwrap();
+        store
+            .put_object("bucket", "k", b"contents".to_vec(), "text/plain")
+            .unwrap();
+        store
+    });
+    let _ = &mut source;
+    let mut chunk = matrixraft::StateMachine::snapshot(&source).unwrap();
+    chunk.offset = 4096;
+    let refused = matrixraft::StateMachine::install_snapshot(&mut target, chunk);
+    assert!(
+        refused.is_err(),
+        "a chunk starting past what has arrived must be refused"
+    );
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn applying_an_entry_reports_the_codec_the_log_format_would_need() {
+    // The apply half is deliberately not wired. A MatrixRaft payload is bytes,
+    // so applying one means decoding an `ObjectCommand` -- 212 variants with no
+    // byte codec, where writing one fixes the raft log format for all of them.
+    // This asserts the refusal says so rather than failing obscurely.
+    let mut machine =
+        MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    let request = matrixraft::ApplyRequest {
+        group_id: 1,
+        log_id: matrixraft::LogId { term: 1, index: 7 },
+        payload: b"whatever".to_vec(),
+    };
+    match matrixraft::StateMachine::apply(&mut machine, request) {
+        Err(matrixraft::RaftError::InvalidRequest(message)) => {
+            assert!(
+                message.contains("ObjectCommand byte codec"),
+                "the refusal must name what is missing: {message}"
+            );
+        }
+        other => panic!("expected the codec refusal, got {other:?}"),
+    }
+}
