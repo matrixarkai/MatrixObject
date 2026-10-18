@@ -166,7 +166,11 @@ Two things CI deliberately does **not** run, because a check that is red on
 arrival teaches people to ignore the ones that matter:
 
 - **The full test suite.** 21 tests fail on `main`, and have done since the
-  first commit. They are not regressions and they are not masked: the local gate
+  first commit. `tools/suite_gate.sh` runs it and compares the failures by name
+  against `tools/known_failures.txt`, so you can tell a pre-existing failure
+  from one you just caused. It fails if a failure is new **and** if a recorded
+  one has started passing, so the list cannot quietly rot, and it refuses
+  outright if the suite did not run rather than reporting everything fixed. They are not regressions and they are not masked: the local gate
   compares failures by name against that baseline and refuses anything new.
   Run `cargo test` and expect `249 passed; 21 failed`.
 - **`cargo fmt --check`.** The tree has never been rustfmt-clean; there were 93
