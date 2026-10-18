@@ -106,7 +106,7 @@ impl MatrixMetaService {
             .iter()
             .map(|mutation| MetadataRecord {
                 key: mutation.key.clone(),
-                value: String::new(),
+                value: String::new().into(),
                 version: mutation.expected_version.saturating_add(1),
                 update_time_ms: now_ms,
                 deleted: true,
@@ -221,7 +221,7 @@ impl MatrixMetaService {
             .iter()
             .map(|mutation| MetadataRecord {
                 key: mutation.key.clone(),
-                value: String::new(),
+                value: String::new().into(),
                 version: mutation.expected_version.saturating_add(1),
                 update_time_ms: now_ms,
                 deleted: true,

@@ -27,7 +27,7 @@ impl MatrixObjectStore {
                 })?
         };
         let data = self.read_extents(&source.extents, 0, source.length)?;
-        let destination_type = content_type.unwrap_or_else(|| source.content_type.clone());
+        let destination_type = content_type.unwrap_or_else(|| source.content_type.to_string());
         let mut copy_options = options;
         if copy_options.user_metadata.is_empty() {
             copy_options.user_metadata = source.user_metadata.clone().into();

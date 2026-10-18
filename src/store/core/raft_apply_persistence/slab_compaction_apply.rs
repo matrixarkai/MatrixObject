@@ -34,7 +34,7 @@ impl MatrixObjectStore {
                 object_id.bucket.to_string(),
                 object_id.key.to_string(),
                 object.data,
-                object.metadata.content_type,
+                object.metadata.content_type.to_string(),
                 update_time_ms,
                 PutOptions::default(),
                 "compact_segment_put",

@@ -6,6 +6,12 @@ pub(crate) fn audit_string_heap(value: &String) -> u64 {
     value.capacity() as u64
 }
 
+/// Heap bytes a `Box<str>` owns. It has no spare capacity by construction --
+/// which is why these fields are boxed -- so the length is the whole of it.
+pub(crate) fn audit_boxed_str_heap(value: &str) -> u64 {
+    value.len() as u64
+}
+
 /// Charges the characters behind a `SharedText` once per allocation, however
 /// many holders name it.
 ///
@@ -97,8 +103,8 @@ pub(crate) fn audit_object_id_heap(ledger: &mut SharedTextLedger, object_id: &Ob
 /// Everything one `ObjectMetadata` owns beyond its own inline size.
 fn audit_object_metadata_heap(ledger: &mut SharedTextLedger, metadata: &ObjectMetadata) -> u64 {
     audit_object_id_heap(ledger, &metadata.object_id)
-        .saturating_add(audit_string_heap(&metadata.etag))
-        .saturating_add(audit_string_heap(&metadata.content_type))
+        .saturating_add(audit_boxed_str_heap(&metadata.etag))
+        .saturating_add(audit_boxed_str_heap(&metadata.content_type))
         .saturating_add(ledger.charge(&metadata.storage_class))
         .saturating_add(audit_object_attributes_bytes(&metadata.user_metadata))
         .saturating_add(audit_object_attributes_bytes(&metadata.tags))
@@ -306,9 +312,9 @@ impl MatrixObjectStore {
                 {
                     id_text_shared = id_text_shared.saturating_add(1);
                 }
-                etag_heap = etag_heap.saturating_add(audit_string_heap(&metadata.etag));
+                etag_heap = etag_heap.saturating_add(audit_boxed_str_heap(&metadata.etag));
                 content_type_heap =
-                    content_type_heap.saturating_add(audit_string_heap(&metadata.content_type));
+                    content_type_heap.saturating_add(audit_boxed_str_heap(&metadata.content_type));
                 storage_class_heap =
                     storage_class_heap.saturating_add(detail_ledger.charge(&metadata.storage_class));
                 user_metadata_bytes = user_metadata_bytes
@@ -394,7 +400,7 @@ impl MatrixObjectStore {
                 record_key_capacity = record_key_capacity
                     .saturating_add(detail_record_ledger.charge(&record.key));
                 value_len = value_len.saturating_add(record.value.len() as u64);
-                value_capacity = value_capacity.saturating_add(record.value.capacity() as u64);
+                value_capacity = value_capacity.saturating_add(record.value.len() as u64);
                 if key.as_str() == record.key.as_str() {
                     key_text_duplicated = key_text_duplicated.saturating_add(1);
                 }

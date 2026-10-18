@@ -105,7 +105,7 @@ impl MatrixObjectStore {
             })?;
         if if_match_etag
             .as_ref()
-            .is_some_and(|expected| expected != &metadata.etag)
+            .is_some_and(|expected| **expected != *metadata.etag)
         {
             return Err(ObjectError::PreconditionFailed(
                 "transition if-match etag does not match current object".to_string(),
@@ -155,7 +155,7 @@ impl MatrixObjectStore {
             })?;
         if if_match_etag
             .as_ref()
-            .is_some_and(|expected| expected != &current.etag)
+            .is_some_and(|expected| **expected != *current.etag)
         {
             return Err(ObjectError::PreconditionFailed(
                 "transition if-match etag does not match current object".to_string(),

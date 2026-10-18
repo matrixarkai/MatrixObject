@@ -75,9 +75,9 @@ impl MatrixMetaService {
             images.push(MetadataRecord {
                 key: mutation.key.clone(),
                 value: if mutation.delete {
-                    String::new()
+                    String::new().into()
                 } else {
-                    mutation.value.clone()
+                    mutation.value.clone().into()
                 },
                 version: current_version.saturating_add(1),
                 update_time_ms: now_ms,

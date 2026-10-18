@@ -121,10 +121,10 @@ impl MatrixObjectStore {
             object_id: object_id.clone(),
             version,
             length,
-            etag: etag(&etag_data),
+            etag: etag(&etag_data).into(),
             content_type: previous
                 .as_ref()
-                .map_or(content_type, |metadata| metadata.content_type.clone()),
+                .map_or(content_type.into(), |metadata| metadata.content_type.clone()),
             user_metadata: previous.as_ref().map_or_else(
                 || options.user_metadata.clone(),
                 |metadata| metadata.user_metadata.clone().into(),

@@ -34,7 +34,7 @@ impl<T> ProvenRootCatalogRegistration<T> {
     pub fn raft_receipt_sequence(&self) -> Vec<String> {
         self.raft_receipts
             .iter()
-            .map(|receipt| receipt.content_type.clone())
+            .map(|receipt| receipt.content_type.to_string())
             .collect()
     }
 
@@ -66,7 +66,7 @@ impl<T> ProvenRootCatalogRegistration<T> {
         }
         for (index, expected) in expected_content_types.iter().enumerate() {
             let actual = &self.raft_receipts[index].content_type;
-            if actual != expected {
+            if **actual != **expected {
                 return Err(ObjectError::PreconditionFailed(format!(
                     "root catalog raft receipt {index} content type mismatch: expected {expected}, got {actual}"
                 )));
@@ -212,10 +212,10 @@ impl<T: RootCatalogControlFields> ProvenRootCatalogRegistration<T> {
             fields.insert(format!("{prefix}key"), receipt.object_id.key.to_string());
             fields.insert(format!("{prefix}version"), receipt.version.to_string());
             fields.insert(format!("{prefix}length"), receipt.length.to_string());
-            fields.insert(format!("{prefix}etag"), receipt.etag.clone());
+            fields.insert(format!("{prefix}etag"), receipt.etag.to_string());
             fields.insert(
                 format!("{prefix}content_type"),
-                receipt.content_type.clone(),
+                receipt.content_type.to_string(),
             );
             fields.insert(
                 format!("{prefix}update_time_ms"),

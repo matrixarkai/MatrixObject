@@ -3,7 +3,7 @@ pub(crate) fn read_metadata_record(
 ) -> Result<MetadataRecord, ObjectError> {
     Ok(MetadataRecord {
         key: cursor.read_string()?.into(),
-        value: cursor.read_string()?,
+        value: cursor.read_string()?.into(),
         version: cursor.read_u64()?,
         update_time_ms: cursor.read_u64()?,
         deleted: cursor.read_bool()?,

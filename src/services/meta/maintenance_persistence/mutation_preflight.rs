@@ -292,7 +292,7 @@ impl MatrixMetaService {
         let key = self.filed_record_key(mutation.key);
         let record = MetadataRecord {
             key: key.clone(),
-            value: mutation.value,
+            value: mutation.value.into(),
             version: current_version.saturating_add(1),
             update_time_ms: now_ms,
             deleted: mutation.delete,

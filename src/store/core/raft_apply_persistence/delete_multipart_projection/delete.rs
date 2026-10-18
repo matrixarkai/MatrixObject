@@ -55,7 +55,7 @@ impl MatrixObjectStore {
             )));
         }
         if let Some(expected) = &if_match_etag {
-            if &previous.etag != expected {
+            if *previous.etag != **expected {
                 return Err(ObjectError::PreconditionFailed(
                     "delete if-match etag does not match current object".to_string(),
                 ));
@@ -74,8 +74,8 @@ impl MatrixObjectStore {
             object_id: object_id.clone(),
             version: self.next_object_version(&object_id),
             length: 0,
-            etag: String::new(),
-            content_type: String::new(),
+            etag: String::new().into(),
+            content_type: String::new().into(),
             user_metadata: BTreeMap::new().into(),
             storage_class: k_standard_storage_class().to_string().into(),
             restore_until_ms: 0,
