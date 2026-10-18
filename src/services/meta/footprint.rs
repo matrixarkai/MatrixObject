@@ -101,7 +101,7 @@ fn meta_optional_string_heap(value: Option<&String>) -> u64 {
 fn meta_record_heap(ledger: &mut SharedTextLedger, record: &MetadataRecord) -> u64 {
     ledger
         .charge(&record.key)
-        .saturating_add(audit_string_heap(&record.value))
+        .saturating_add(audit_boxed_str_heap(&record.value))
 }
 
 fn meta_records_vec_bytes(ledger: &mut SharedTextLedger, records: &[MetadataRecord]) -> u64 {

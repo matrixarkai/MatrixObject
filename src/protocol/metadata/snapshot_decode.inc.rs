@@ -101,7 +101,7 @@ impl MetaSnapshot {
             let key: SharedText = cursor.read_string()?.into();
             let record = MetadataRecord {
                 key: key.clone(),
-                value: cursor.read_string()?,
+                value: cursor.read_string()?.into(),
                 version: cursor.read_u64()?,
                 update_time_ms: cursor.read_u64()?,
                 deleted: cursor.read_bool()?,

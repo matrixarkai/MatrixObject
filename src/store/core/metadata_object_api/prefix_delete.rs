@@ -69,7 +69,7 @@ impl MatrixObjectStore {
             .map(|metadata| ObjectDeleteRequest {
                 bucket: metadata.object_id.bucket.to_string(),
                 key: metadata.object_id.key.to_string(),
-                if_match_etag: Some(metadata.etag.clone()),
+                if_match_etag: Some(metadata.etag.to_string()),
                 version: None,
             })
             .collect();

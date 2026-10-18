@@ -3,7 +3,7 @@ use super::*;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataRecord {
     pub key: SharedText,
-    pub value: String,
+    pub value: Box<str>,
     pub version: u64,
     pub update_time_ms: u64,
     pub deleted: bool,

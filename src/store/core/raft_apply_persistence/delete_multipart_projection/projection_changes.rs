@@ -38,7 +38,7 @@ impl MatrixObjectStore {
             object_id: metadata.object_id.clone(),
             version: metadata.version,
             length: metadata.length,
-            etag: metadata.etag.clone(),
+            etag: metadata.etag.to_string(),
             deleted: metadata.deleted,
             event_time_ms: metadata.update_time_ms,
         });
@@ -81,7 +81,7 @@ impl MatrixObjectStore {
         }
         change.version = metadata.version;
         change.length = metadata.length;
-        change.etag = metadata.etag.clone();
+        change.etag = metadata.etag.to_string();
         change.deleted = metadata.deleted;
         change.event_time_ms = metadata.update_time_ms;
     }

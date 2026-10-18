@@ -56,7 +56,7 @@ impl MatrixObjectStore {
                     target.clone(),
                     now_ms,
                     self.options.replica_count,
-                    Some(current.etag.clone()),
+                    Some(current.etag.to_string()),
                 ) {
                     Ok(_) => {
                         result.transitioned_current_objects =

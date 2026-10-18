@@ -141,7 +141,7 @@ impl MatrixObjectStore {
             match metadata.as_ref() {
                 Some(current) if !current.deleted => {
                     let expected = metadata_projection_value(current);
-                    if !projection.deleted && projection.value != expected {
+                    if !projection.deleted && projection.value != expected.into() {
                         audit.stale_projection_count =
                             audit.stale_projection_count.saturating_add(1);
                         issues.push("projection_payload_mismatch");
