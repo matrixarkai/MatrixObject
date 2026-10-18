@@ -33023,3 +33023,229 @@ fn a_put_that_fails_after_mutating_leaves_the_store_unchanged() {
         "a successful overwrite must change the store, or this test is aimed at a dead path"
     );
 }
+
+
+#[test]
+fn every_durable_format_constant_is_accounted_for() {
+    // The project calls a durable format a contract: these strings are hashed
+    // into proofs and checksums, so changing the *text* of one changes every
+    // checksum computed from it. That makes a rename a migration. Nothing
+    // enforced it, and there is no CI, so this is the only thing standing
+    // between a tidy-up rename and every stored proof failing to verify.
+    //
+    // The list asserts BOTH directions. A renamed or deleted constant fails it,
+    // and so does a new one -- a guard that only checks the names it already
+    // knows cannot tell you that something stopped existing. If you are adding
+    // a format deliberately, add it here in the same change.
+    //
+    // This file is excluded from the scan on purpose: finding the constants in
+    // the guard itself would make the assertion unfalsifiable.
+    const EXPECTED: &[&str] = &[
+        "MOSRS-BLOCK-ROUTE-BOOTSTRAP1",
+        "MOSRS-BLOCKSERVER-BOOTSTRAP1",
+        "MOSRS-BUCKET-CORS-REQUEST1",
+        "MOSRS-BUCKET-CREATE-REQUEST1",
+        "MOSRS-BUCKET-DELETE-REQUEST1",
+        "MOSRS-BUCKET-LIFECYCLE-REQUEST1",
+        "MOSRS-BUCKET-POLICY-DOCUMENT-REQUEST1",
+        "MOSRS-BUCKET-QUOTA-REQUEST1",
+        "MOSRS-BUCKET-RETENTION-REQUEST1",
+        "MOSRS-BUCKET-VERSIONING-REQUEST1",
+        "MOSRS-CHUNK-MUTATION-BOOTSTRAP1",
+        "MOSRS-CHUNK-RECLAIM-RECEIPT-PROOF1",
+        "MOSRS-CHUNK-STATE-INSTALL-RECEIPT-PROOF1",
+        "MOSRS-CHUNKSERVER-BOOTSTRAP1",
+        "MOSRS-CONTROL-PLANE-CATALOG-ENDPOINT-SET1",
+        "MOSRS-CONTROL-PLANE-CATALOG-SELECTION1",
+        "MOSRS-META-SERVICE-CONTROL3",
+        "MOSRS-METASERVER-BOOTSTRAP1",
+        "MOSRS-METASERVER-COORDINATOR-BOOTSTRAP1",
+        "MOSRS-METASERVER-RAFT-BOOTSTRAP1",
+        "MOSRS-MODULE-CATALOG-ROUTE1",
+        "MOSRS-MULTIPART-ABORT-REQUEST1",
+        "MOSRS-MULTIPART-COMPLETE-REQUEST1",
+        "MOSRS-ROOT-CATALOG-BOOTSTRAP1",
+        "MOSRS-ROOT-CATALOG-ROUTE1",
+        "MOSRS-ROOTSERVER-BOOTSTRAP1",
+        "MOSRS-STORAGE-MAINTENANCE-APPLY-REQUEST1",
+        "MOSRSBLOCK",
+        "MOSRSBLOCK-CHUNK-CONTROL-PROOF1",
+        "MOSRSBLOCK-FINGERPRINT17",
+        "MOSRSBLOCK23",
+        "MOSRSBLOCKROUTE10",
+        "MOSRSCHUNK",
+        "MOSRSCHUNK-AGG-FINGERPRINT8",
+        "MOSRSCHUNK-FINGERPRINT4",
+        "MOSRSCHUNK22",
+        "MOSRSCHUNKCONTROL12",
+        "MOSRSJNL1",
+        "MOSRSMETA",
+        "MOSRSMETA-CONTROL12",
+        "MOSRSMETA-FINGERPRINT1",
+        "MOSRSMETA-INTEGRITY1",
+        "MOSRSMETA16",
+        "MOSRSMODULESTATUS32",
+        "MOSRSOBJECTREADY77",
+        "MOSRSROOT",
+        "MOSRSROOT-FINGERPRINT1",
+        "MOSRSROOT-PLACEMENT-MIGRATION-COMMIT-ENVELOPE2",
+        "MOSRSROOT-PLACEMENT-MIGRATION-ENVELOPE2",
+        "MOSRSROOT32",
+        "MOSRSROOTRAFTSTATUS7",
+        "MOSRSSTORE",
+        "MOSRSSTORE27",
+        "MXOS-BLOCK-ALLOCATION-BATCH-RECEIPT-PAGE-PROOF1",
+        "MXOS-BLOCK-ALLOCATION-BATCH-RECEIPT-PROOF1",
+        "MXOS-BLOCK-ALLOCATION-RECEIPT-PAGE-PROOF1",
+        "MXOS-BLOCK-ALLOCATION-RECEIPT-PROOF1",
+        "MXOS-BLOCK-ALLOCATION-RELEASE-RECEIPT-PAGE-PROOF1",
+        "MXOS-BLOCK-ALLOCATION-RELEASE-RECEIPT-PROOF1",
+        "MXOS-BLOCK-AUDIT-REPAIR-RECEIPT-PAGE-PROOF1",
+        "MXOS-BLOCK-AUDIT-REPAIR-RECEIPT1",
+        "MXOS-BLOCK-DISCARD-BATCH-PROOF1",
+        "MXOS-BLOCK-DISCARD-BATCH-RECEIPT-PAGE-PROOF1",
+        "MXOS-BLOCK-DISCARD-RECEIPT-PAGE-PROOF1",
+        "MXOS-BLOCK-DISCARD-RECEIPT-PROOF1",
+        "MXOS-BLOCK-RANGE-REPAIR-RECEIPT-PAGE-PROOF1",
+        "MXOS-BLOCK-RANGE-REPAIR-RECEIPT1",
+        "MXOS-BLOCK-WRITE-BATCH-PROOF1",
+        "MXOS-BLOCK-WRITE-BATCH-RECEIPT-PAGE-PROOF1",
+        "MXOS-BLOCK-WRITE-RECEIPT-PAGE-PROOF1",
+        "MXOS-BLOCK-WRITE-RECEIPT-PROOF1",
+        "MXOS-CACHE-BATCH-PROOF1",
+        "MXOS-CHUNK-DISCARD-BATCH-PROOF1",
+        "MXOS-CHUNK-DISCARD-BATCH-RECEIPT-PAGE-PROOF1",
+        "MXOS-CHUNK-DISCARD-RECEIPT-PAGE-PROOF1",
+        "MXOS-CHUNK-DISCARD-RECEIPT-PROOF1",
+        "MXOS-CHUNK-HEAD-BATCH-PROOF1",
+        "MXOS-CHUNK-READ-BATCH-PROOF1",
+        "MXOS-CHUNK-REPAIR-RECEIPT-PAGE-PROOF1",
+        "MXOS-CHUNK-REPAIR-RECEIPT1",
+        "MXOS-CHUNK-WRITE-BATCH-PROOF1",
+        "MXOS-CHUNK-WRITE-BATCH-RECEIPT-PAGE-PROOF1",
+        "MXOS-CHUNK-WRITE-RECEIPT-PAGE-PROOF1",
+        "MXOS-CHUNK-WRITE-RECEIPT-PROOF1",
+        "MXOS-COORDINATOR-POLICY1",
+        "MXOS-COPY-BATCH-PROOF1",
+        "MXOS-DELETE-BATCH-PROOF1",
+        "MXOS-META-BATCH-RECEIPT-PAGE-PROOF1",
+        "MXOS-META-BATCH-RECEIPT-PROOF1",
+        "MXOS-META-COORDINATOR-CONFIG-RECEIPT-PAGE-PROOF1",
+        "MXOS-META-COORDINATOR-CONFIG-RECEIPT-PROOF1",
+        "MXOS-META-COORDINATOR-SESSION-RECEIPT-PAGE-PROOF1",
+        "MXOS-META-COORDINATOR-SESSION-RECEIPT-PROOF1",
+        "MXOS-META-LEASE-RECEIPT-PAGE-PROOF1",
+        "MXOS-META-LEASE-RECEIPT-PROOF1",
+        "MXOS-META-MUTATION-RECEIPT-PAGE-PROOF1",
+        "MXOS-META-MUTATION-RECEIPT-PROOF1",
+        "MXOS-META-SHARD-RECEIPT-PAGE-PROOF1",
+        "MXOS-META-SHARD-RECEIPT-PROOF1",
+        "MXOS-META-TRANSACTION-PAGE-PROOF1",
+        "MXOS-META-TRANSACTION-RECEIPT-PAGE-PROOF1",
+        "MXOS-META-TRANSACTION-RECEIPT-PROOF1",
+        "MXOS-META-TRANSACTION-SUMMARY-PAGE-PROOF1",
+        "MXOS-METADATA-BATCH-READ-PROOF1",
+        "MXOS-MULTIPART-ABORT-PROOF1",
+        "MXOS-MULTIPART-COMPLETE-PROOF1",
+        "MXOS-MULTIPART-CREATE-PROOF1",
+        "MXOS-MULTIPART-PART-PROOF1",
+        "MXOS-OBJECT-BATCH-READ-PROOF1",
+        "MXOS-OBJECT-CHANGE-PAGE-PROOF1",
+        "MXOS-OBJECT-LIST-PAGE-PROOF1",
+        "MXOS-PUT-BATCH-PROOF1",
+        "MXOS-RAFT-MEMBERSHIP-RECEIPT-PAGE-PROOF1",
+        "MXOS-RAFT-MEMBERSHIP-RECEIPT-PROOF1",
+        "MXOS-ROOT-LEADER-LEASE-RECEIPT-PAGE-PROOF1",
+        "MXOS-ROOT-LEADER-LEASE-RECEIPT-PROOF1",
+        "MXOS-RUST-FULL-COMPACTION-PLAN-PROOF1",
+        "MXOS-RUST-METADATA-REPLICATION-PROOF5",
+        "MXOS-RUST-METADATA-SNAPSHOT-INSTALL-SOURCE-PROOF1",
+        "MXOS-RUST-METADATA-SNAPSHOT-READ-PROOFS1",
+        "MXOS-RUST-METASERVER-SNAPSHOT-READ-PROOFS1",
+        "MXOS-RUST-OBJECT-GC-REPORT-PROOF1",
+        "MXOS-RUST-ROOT-SNAPSHOT-READ-PROOFS1",
+        "MXOS-RUST-SEGMENT-DISCARD-RUN-PROOF1",
+        "MXOS-RUST-SERVICE-SNAPSHOT-INSTALL-SOURCE-PROOF1",
+        "MXOS-RUST-STORAGE-SNAPSHOT-INSTALL-SOURCE-PROOF1",
+        "MXOS-RUST-STORAGE-SNAPSHOT-READ-PROOFS1",
+        "MXOS-STORAGE-ADMISSION-PROOF2",
+        "MXOS-STORAGE-RECEIPT-PAGE-PROOF1",
+        "MXOSBLOCK-ALLOCATION-RELEASE-ENVELOPE1",
+        "MXOSBLOCK-ALLOCATION-RELEASE-REQUEST1",
+        "MXOSBLOCK-ALLOCATION-RESERVATION-ENVELOPE1",
+        "MXOSBLOCK-ALLOCATION-RESERVATION-REQUEST1",
+        "MXOSBLOCK-AUDIT-REPAIR-ENVELOPE1",
+        "MXOSBLOCK-BATCH-ALLOCATION-RESERVATION-ENVELOPE1",
+        "MXOSBLOCK-BATCH-ALLOCATION-RESERVATION-REQUEST1",
+        "MXOSBLOCK-CHUNK-HANDOFF-ENVELOPE1",
+        "MXOSBLOCK-CHUNK-HANDOFF-REQUEST1",
+        "MXOSBLOCK-STORAGE-MAINTENANCE-ENVELOPE1",
+        "MXOSCHUNK-HANDOFF-ENVELOPE1",
+        "MXOSCHUNK-HANDOFF-REQUEST1",
+        "MXOSCHUNK-RECLAIM-ENVELOPE1",
+        "MXOSROOT-BLOCK-ROUTE-CONTROL-PROOF1",
+        "MXOSROOT-CATALOG-LIVENESS-RECEIPT1",
+        "MXOSROOT-CHUNK-CONTROL-PROOF1",
+        "MXOSROOT-META-CONTROL-PROOF1",
+        "MXOSSEGMENT-COMPACTION-ENVELOPE2",
+        "MXOSSEGMENT-DISCARD-ENVELOPE1",
+    ];
+
+    fn collect(dir: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
+        let entries = std::fs::read_dir(dir).expect("src directory is readable");
+        for entry in entries {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                collect(&path, out);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("source file is readable");
+            let bytes = text.as_bytes();
+            let mut index = 0usize;
+            while index < bytes.len() {
+                if bytes[index] != b'"' {
+                    index += 1;
+                    continue;
+                }
+                let start = index + 1;
+                let mut end = start;
+                while end < bytes.len() && bytes[end] != b'"' {
+                    end += 1;
+                }
+                let value = &text[start..end.min(text.len())];
+                if (value.starts_with("MXOS") || value.starts_with("MOSRS"))
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+                {
+                    out.insert(value.to_string());
+                }
+                index = end + 1;
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = std::collections::BTreeSet::new();
+    collect(&root, &mut found);
+
+    let expected: std::collections::BTreeSet<String> =
+        EXPECTED.iter().map(|name| (*name).to_string()).collect();
+    let added: Vec<_> = found.difference(&expected).cloned().collect();
+    let removed: Vec<_> = expected.difference(&found).cloned().collect();
+    assert!(
+        added.is_empty() && removed.is_empty(),
+        "durable format constants moved. Added: {added:?}. Removed or renamed: {removed:?}.          Each of these is hashed into a proof, so a change here is a migration --          update this list in the same change that changes the format."
+    );
+    assert_eq!(
+        found.len(),
+        148,
+        "the count is pinned as well, so a rename that happens to swap two names cannot pass"
+    );
+}
