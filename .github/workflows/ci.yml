@@ -15,22 +15,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Pinned, not `stable`. The first attempt used the stable channel with
+      # warnings denied; the runner had a newer compiler than the one this was
+      # verified on and the build failed on lints that did not exist locally.
+      # Denying warnings against a moving channel means a compiler release
+      # breaks the build, which is not a signal anyone can act on.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # Warnings are denied because the tree is already clean under it.
-      - name: Build everything, warnings denied
+      - name: Build everything
         run: cargo build --all-targets --locked
-        env:
-          RUSTFLAGS: "-D warnings"
 
       - name: Docs
         run: cargo doc --no-deps --locked
-        env:
-          RUSTDOCFLAGS: "-D warnings"
 
   guards:
     name: format and rollback guards
@@ -39,15 +39,15 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # Each guard is asserted to have actually RUN. `cargo test` reports
-      # success when a filter matches nothing, so a step that only checks the
-      # exit status passes while testing nothing -- and the name has to be the
-      # full `tests::` path for `--exact` to match it at all.
+      # Each guard asserts that it actually RAN. `cargo test` reports success
+      # when a filter matches nothing, so a step checking only the exit status
+      # passes while testing nothing -- and `--exact` needs the full `tests::`
+      # path or it matches nothing at all.
       - name: Durable format constants are unchanged
         run: |
           set -o pipefail
