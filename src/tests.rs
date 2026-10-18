@@ -34364,3 +34364,68 @@ fn the_interned_storage_classes_are_the_valid_ones() {
         "an unknown name is not in the table, so each call owns its own"
     );
 }
+
+#[test]
+fn an_extent_list_carries_no_spare_capacity() {
+    // The extent list is never grown in place -- an append builds a fresh list
+    // from the previous one -- so it does not need a `Vec`'s capacity field,
+    // and the doubling that field implies is slack an appended object carried
+    // for nothing.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    assert_eq!(
+        std::mem::size_of::<Box<[ObjectExtent]>>(),
+        2 * std::mem::size_of::<usize>(),
+        "a pointer and a length"
+    );
+    assert!(
+        std::mem::size_of::<Box<[ObjectExtent]>>() < std::mem::size_of::<Vec<ObjectExtent>>(),
+        "which is smaller than a pointer, a length and a capacity"
+    );
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "grown", vec![b'v'; 16], "text/plain")
+        .unwrap();
+    // Three appends, which is where a doubling `Vec` would have overshot.
+    for _ in 0..3 {
+        store
+            .append_object("bucket", "grown", vec![b'w'; 16], "text/plain")
+            .unwrap();
+    }
+    let grown = store.head_object("bucket", "grown").unwrap();
+    assert_eq!(
+        grown.length, 64,
+        "the appends landed: sixteen bytes four times"
+    );
+    assert!(
+        grown.extents.len() >= 1,
+        "and the object has the extents to show for it"
+    );
+    assert_eq!(
+        audit_value(&store, "objects.extents_len"),
+        audit_value(&store, "objects.extents_capacity"),
+        "length and capacity are the same thing for a boxed slice, so no          object carries extent slack"
+    );
+
+    // And the list survives a reload with the same contents.
+    let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    let mut restored = MatrixObjectStore::new(test_options()).unwrap();
+    restored.install_snapshot_bytes(&bytes).unwrap();
+    let reloaded = restored.head_object("bucket", "grown").unwrap();
+    assert_eq!(reloaded.length, grown.length);
+    assert_eq!(reloaded.extents, grown.extents);
+    assert_eq!(
+        restored.get_object("bucket", "grown").unwrap().data.len(),
+        64,
+        "and the bytes read back"
+    );
+}

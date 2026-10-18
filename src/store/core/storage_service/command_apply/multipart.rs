@@ -54,7 +54,7 @@ impl MatrixObjectStore {
                     legal_hold_update_time_ms: 0,
                     retention_until_ms: 0,
                     update_time_ms: upload.update_time_ms,
-                    extents: Vec::new(),
+                    extents: Vec::new().into(),
                     deleted: false,
                 })
             }
@@ -90,7 +90,7 @@ impl MatrixObjectStore {
                     legal_hold_update_time_ms: 0,
                     retention_until_ms: 0,
                     update_time_ms: upload.update_time_ms,
-                    extents: Vec::new(),
+                    extents: Vec::new().into(),
                     deleted: false,
                 })
             }
@@ -116,7 +116,7 @@ impl MatrixObjectStore {
                     legal_hold_update_time_ms: 0,
                     retention_until_ms: 0,
                     update_time_ms: part.update_time_ms,
-                    extents: Vec::new(),
+                    extents: Vec::new().into(),
                     deleted: false,
                 })
             }
@@ -148,7 +148,7 @@ impl MatrixObjectStore {
                     legal_hold_update_time_ms: 0,
                     retention_until_ms: 0,
                     update_time_ms: part.update_time_ms,
-                    extents: Vec::new(),
+                    extents: Vec::new().into(),
                     deleted: false,
                 })
             }
@@ -215,7 +215,7 @@ impl MatrixObjectStore {
                     legal_hold_update_time_ms: 0,
                     retention_until_ms: 0,
                     update_time_ms,
-                    extents: Vec::new(),
+                    extents: Vec::new().into(),
                     deleted: true,
                 })
             }

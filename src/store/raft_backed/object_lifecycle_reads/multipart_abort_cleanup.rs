@@ -34,7 +34,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     legal_hold_update_time_ms: 0,
                     retention_until_ms: 0,
                     update_time_ms: existing.update_time_ms,
-                    extents: Vec::new(),
+                    extents: Vec::new().into(),
                     deleted: true,
                 });
             }

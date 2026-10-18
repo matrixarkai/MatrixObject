@@ -211,7 +211,7 @@ impl MatrixObjectStore {
         metadata.storage_class = storage_class.into();
         metadata.restore_until_ms = 0;
         metadata.update_time_ms = update_time_ms;
-        metadata.extents = new_extents;
+        metadata.extents = new_extents.into();
         self.logical_written_bytes = saturating_add(self.logical_written_bytes, metadata.length);
         self.file_object(object_id, &mut metadata);
         if let Err(err) = self.commit_meta_projection(
