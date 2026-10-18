@@ -2,7 +2,7 @@
 /// slack is resident too and making slack visible is what this audit is for.
 /// The 24 bytes of pointer, length and capacity live inside whatever holds the
 /// string and are counted there.
-fn audit_string_heap(value: &String) -> u64 {
+pub(crate) fn audit_string_heap(value: &String) -> u64 {
     value.capacity() as u64
 }
 
@@ -43,7 +43,7 @@ fn audit_multipart_bytes(upload: &MultipartUpload) -> (u64, u64) {
     (metadata, payload)
 }
 
-fn audit_object_id_heap(object_id: &ObjectId) -> u64 {
+pub(crate) fn audit_object_id_heap(object_id: &ObjectId) -> u64 {
     audit_string_heap(&object_id.bucket).saturating_add(audit_string_heap(&object_id.key))
 }
 
@@ -194,18 +194,11 @@ impl MatrixObjectStore {
                     .saturating_add(audit_string_heap(&change.etag))
             },
         );
-        let meta_record_bytes =
-            self.meta_service
-                .records
-                .iter()
-                .fold(0u64, |total, (key, record)| {
-                    total
-                        .saturating_add(std::mem::size_of::<String>() as u64)
-                        .saturating_add(std::mem::size_of::<MetadataRecord>() as u64)
-                        .saturating_add(audit_string_heap(key))
-                        .saturating_add(audit_string_heap(&record.key))
-                        .saturating_add(audit_string_heap(&record.value))
-                });
+        // The service accounts for itself: its change log, receipt maps,
+        // entity maps and snapshot export caches are private to its module,
+        // and until this was asked for, only the record map was in any total.
+        let meta = self.meta_service.footprint_bytes();
+        let meta_record_bytes = meta.records;
         // The payload headline counts only the value struct; the key is a
         // `(SlabId, u64)` and was never in the figure.
         let payload_key_bytes = (self.payloads.len() as u64)
@@ -214,6 +207,10 @@ impl MatrixObjectStore {
         push("versions.bytes", versions_bytes);
         push("object_changes.bytes", changes_bytes);
         push("meta.records.bytes", meta_record_bytes);
+        push("meta.change_log.bytes", meta.change_log);
+        push("meta.receipts.bytes", meta.receipts);
+        push("meta.entities.bytes", meta.entities);
+        push("meta.export_caches.bytes", meta.export_caches);
         push("payloads.key_bytes", payload_key_bytes);
         let (multipart_metadata_bytes, multipart_payload_bytes) = self
             .multipart_uploads
@@ -235,7 +232,7 @@ impl MatrixObjectStore {
         let metadata_bytes = objects_bytes
             .saturating_add(versions_bytes)
             .saturating_add(changes_bytes)
-            .saturating_add(meta_record_bytes)
+            .saturating_add(meta.total())
             .saturating_add(payload_key_bytes)
             .saturating_add(multipart_metadata_bytes);
         push("ACCOUNTED.metadata_bytes", metadata_bytes);

@@ -33456,3 +33456,107 @@ fn a_changefeed_nobody_subscribes_to_is_bounded() {
          for the cursor, but it held at {len_with_consumer}"
     );
 }
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_the_metadata_footprint() {
+    // `test_options` sets max_extent_bytes and chunk_size to 4 bytes, which
+    // turns a 1 KiB object into 256 extents and makes every per-object figure
+    // a property of the fixture. Measure on the shipped geometry instead.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let objects = env_usize("MEASURE_OBJECTS", 200);
+    let size = env_usize("MEASURE_SIZE", 1024);
+    // The key text is resident in several places at once, so its length is a
+    // variable in its own right, not a detail of the fixture.
+    let key_len = env_usize("MEASURE_KEYLEN", 26);
+    for index in 0..objects {
+        let stem = format!("prefix/{index:08}/");
+        let mut key = stem.clone();
+        while key.len() < key_len {
+            key.push('k');
+        }
+        key.truncate(key_len.max(stem.len()));
+        store
+            .put_object("bucket", &key, vec![b'x'; size], "application/octet-stream")
+            .unwrap();
+    }
+    let written = (objects * size) as u64;
+    println!("MEASURE objects={objects} size={size} key_len={key_len} written={written}");
+    for (key, value) in store.footprint_audit() {
+        if value != 0 {
+            println!("MEASURE {key}={value}");
+        }
+    }
+}
+
+#[test]
+fn the_audit_counts_what_the_metadata_service_holds() {
+    // The audit read one of the metadata service's twenty-odd maps and
+    // reported four more as entry counts, so its change log -- one record per
+    // record mutation, trimmed only when an operator reconfigures retention --
+    // was absent from every metadata total the audit produced.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    let empty_change_log = audit_value(&store, "meta.change_log.bytes");
+    for index in 0..8 {
+        let key = format!("object-{index}-with-a-key-long-enough-to-see");
+        store
+            .put_object("bucket", &key, vec![b'z'; 64], "application/octet-stream")
+            .unwrap();
+    }
+
+    let change_log = audit_value(&store, "meta.change_log.bytes");
+    assert!(
+        change_log > empty_change_log,
+        "eight mutations each append a change naming the object, so the log          must have grown past {empty_change_log}, not sat at {change_log}"
+    );
+    // Each change names the object it describes, so the log holds at least one
+    // copy of every key written.
+    let key_characters: u64 = (0..8)
+        .map(|index| format!("object-{index}-with-a-key-long-enough-to-see").len() as u64)
+        .sum();
+    assert!(
+        change_log >= key_characters,
+        "the log holds a copy of each key, so at least {key_characters} bytes"
+    );
+
+    let parts = [
+        "objects.bytes",
+        "object_changes.bytes",
+        "meta.records.bytes",
+        "meta.change_log.bytes",
+        "meta.receipts.bytes",
+        "meta.entities.bytes",
+        "meta.export_caches.bytes",
+        "payloads.key_bytes",
+    ];
+    let summed: u64 = parts.iter().map(|key| audit_value(&store, key)).sum();
+    let reported = audit_value(&store, "ACCOUNTED.metadata_bytes");
+    assert!(
+        reported >= summed,
+        "the metadata total must include every part it reports: {reported} < {summed}"
+    );
+    assert!(
+        audit_value(&store, "ACCOUNTED.total_bytes") >= reported,
+        "the store total must include the metadata total"
+    );
+}

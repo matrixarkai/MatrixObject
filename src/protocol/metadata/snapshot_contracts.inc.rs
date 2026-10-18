@@ -48,6 +48,21 @@ pub struct MetaSnapshotChunkAssembler {
     buffer: Vec<u8>,
 }
 
+impl MetaSnapshotChunkAssembler {
+    /// What a partly received snapshot is holding. The buffer grows to the
+    /// whole snapshot before it is installed, so it belongs in any footprint
+    /// figure; its fields are private to this module, which is why the
+    /// accounting lives here rather than with the rest of the audit.
+    pub(crate) fn footprint_bytes(&self) -> u64 {
+        (self.buffer.capacity() as u64).saturating_add(
+            self.expected_full_checksum
+                .as_ref()
+                .map(|checksum| checksum.capacity() as u64)
+                .unwrap_or(0),
+        )
+    }
+}
+
 pub(crate) struct MetaSnapshotAssembledImage {
     pub bytes: Vec<u8>,
     pub full_checksum: String,
