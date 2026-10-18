@@ -60,6 +60,7 @@ impl MatrixChunkService {
             .chunks
             .get_mut(chunk_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
+        let chunk = std::sync::Arc::make_mut(chunk);
         merge_discard_ranges_in_place(
             &mut chunk.discarded_ranges,
             &[DataRange { offset, length }],
@@ -331,6 +332,7 @@ impl MatrixChunkService {
             .chunks
             .get_mut(chunk_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
+        let chunk = std::sync::Arc::make_mut(chunk);
         merge_discard_ranges_in_place(&mut chunk.discarded_ranges, &merged);
         chunk.write_sequence = chunk.write_sequence.saturating_add(1);
         let _ = chunk;

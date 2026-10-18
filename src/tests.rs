@@ -3345,10 +3345,7 @@ fn page_service_scrubs_missing_and_corrupt_replicas() {
     page
         .remove_replica_chunk_for_repair(0, &first_chunk)
         .unwrap();
-    page.replicas[1]
-        .chunks
-        .get_mut(&second_chunk)
-        .unwrap()
+    std::sync::Arc::make_mut(page.replicas[1].chunks.get_mut(&second_chunk).unwrap())
         .checksum = "fnv1a64:0000000000000000".to_string();
 
     let plan = page.scrub_chunk_replicas(false).unwrap();
@@ -3528,10 +3525,7 @@ fn page_service_pages_replica_audit_for_repair_controllers() {
     page
         .remove_replica_chunk_for_repair(0, &first_chunk)
         .unwrap();
-    page.replicas[1]
-        .chunks
-        .get_mut(&second_chunk)
-        .unwrap()
+    std::sync::Arc::make_mut(page.replicas[1].chunks.get_mut(&second_chunk).unwrap())
         .checksum = "fnv1a64:0000000000000000".to_string();
     page.configure_quorums(1, 1).unwrap();
     page.set_replica_frozen(2, true).unwrap();
@@ -35538,6 +35532,87 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
 }
 
 #[test]
+fn a_write_while_a_snapshot_is_held_copies_only_the_chunk_it_touches() {
+    // A chunk's state sits behind an `Arc`, so a snapshot of a replica clones
+    // handles rather than states. A write then takes `Arc::make_mut`, which
+    // copies the one state it is about to change if a snapshot still names it,
+    // and leaves every other chunk shared.
+    //
+    // Counted by pointer identity between the live replica and the snapshot,
+    // because that is the only thing that can tell a share from a copy: the
+    // states are equal by construction either way.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..8u32 {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:04}"),
+                vec![b'x'; 256 * 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let snapshot = store.page_service.export_snapshot_unsealed();
+    // Of the chunks the snapshot holds, how many does the live replica still
+    // name by the very same allocation.
+    let still_shared = |snapshot: &PageServiceSnapshot, store: &MatrixObjectStore| -> (u64, u64) {
+        let mut shared = 0u64;
+        let mut held = 0u64;
+        for (index, taken) in snapshot.replicas.iter().enumerate() {
+            let Some(replica) = store.page_service.replicas.get(index) else {
+                continue;
+            };
+            for (chunk_id, state) in taken.chunks.iter() {
+                held += 1;
+                if let Some(live) = replica.chunks.get(chunk_id) {
+                    if std::sync::Arc::ptr_eq(live, state) {
+                        shared += 1;
+                    }
+                }
+            }
+        }
+        (shared, held)
+    };
+    let (shared_at_snapshot, held) = still_shared(&snapshot, &store);
+    println!("COPYONWRITE held={held} shared_at_snapshot={shared_at_snapshot}");
+    assert!(held > 1, "this needs more than one chunk, and has {held}");
+    assert_eq!(
+        shared_at_snapshot, held,
+        "taking a snapshot must copy no chunk state at all"
+    );
+
+    store
+        .put_object(
+            "bucket",
+            "prefix/0000",
+            vec![b'y'; 256 * 1024],
+            "application/octet-stream",
+        )
+        .unwrap();
+    let (shared_after_write, held_after) = still_shared(&snapshot, &store);
+    let replicas = store.page_service.replicas.len() as u64;
+    let diverged = held_after.saturating_sub(shared_after_write);
+    println!(
+        "COPYONWRITE after_one_overwrite shared={shared_after_write} held={held_after} \
+         replicas={replicas} diverged={diverged}"
+    );
+    assert_eq!(
+        diverged, replicas,
+        "overwriting one object must copy one chunk's state on each of \
+         {replicas} replicas, and copied {diverged}"
+    );
+    assert!(
+        shared_after_write > 0,
+        "the chunks the write did not touch must still be shared, and none are"
+    );
+}
+
+#[test]
 fn the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk() {
     // `begin_mutation_batch` boxes a whole page-service snapshot and holds it for
     // the mutation. A chunk's payload is an `Arc<Vec<u8>>`, so the snapshot NAMES
@@ -35584,8 +35659,8 @@ fn the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk() {
     let more_chunks = batch_at(40, 256 * 1024);
 
     // ---- the payload is named, not duplicated ------------------------------
-    let few_shared = get(&few_objects, "batch.replica_chunks.shared_payload_bytes");
-    let more_shared = get(&more_objects, "batch.replica_chunks.shared_payload_bytes");
+    let few_shared = get(&few_objects, "batch.replica_chunks.shared_state_and_payload_bytes");
+    let more_shared = get(&more_objects, "batch.replica_chunks.shared_state_and_payload_bytes");
     assert!(
         few_shared > 0,
         "the snapshot must name the stored payload, and it named nothing"

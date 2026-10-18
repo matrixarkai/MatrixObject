@@ -2,7 +2,7 @@ impl MatrixChunkService {
     pub fn read_chunk_state(&self, chunk_id: &ChunkId) -> Result<ChunkState, ObjectError> {
         self.chunks
             .get(chunk_id)
-            .cloned()
+            .map(|state| state.as_ref().clone())
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))
     }
 

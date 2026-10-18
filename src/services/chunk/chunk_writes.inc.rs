@@ -21,14 +21,13 @@ impl MatrixChunkService {
             now_millis(),
         )?;
         let cache_chunk_id = chunk_id.clone();
-        let chunk = self.chunks.entry(chunk_id).or_insert_with(|| ChunkState {
-            logical_length: 0,
-            write_sequence: 0,
-            checksum: etag(&[]),
-            data: std::sync::Arc::new(Vec::new()),
-            ec_parity_fragment: std::sync::Arc::new(Vec::new()),
-            discarded_ranges: Vec::new(),
-        });
+        // `make_mut` copies this one chunk's state if a snapshot still names
+        // it, so the copy is per chunk WRITTEN rather than per chunk held.
+        let chunk = std::sync::Arc::make_mut(
+            self.chunks
+                .entry(chunk_id)
+                .or_insert_with(|| std::sync::Arc::new(ChunkState::empty())),
+        );
         let end_index = usize::try_from(end).map_err(|_| {
             ObjectError::InvalidArgument("chunk write range exceeds memory size".to_string())
         })?;
@@ -250,14 +249,11 @@ impl MatrixChunkService {
         let mut invalidations = Vec::with_capacity(coalesced.len());
         let cache_chunk_id = chunk_id.clone();
         {
-            let chunk = self.chunks.entry(chunk_id.clone()).or_insert_with(|| ChunkState {
-                logical_length: 0,
-                write_sequence: 0,
-                checksum: etag(&[]),
-                data: std::sync::Arc::new(Vec::new()),
-                ec_parity_fragment: std::sync::Arc::new(Vec::new()),
-                discarded_ranges: Vec::new(),
-            });
+            let chunk = std::sync::Arc::make_mut(
+                self.chunks
+                    .entry(chunk_id.clone())
+                    .or_insert_with(|| std::sync::Arc::new(ChunkState::empty())),
+            );
             let projected_len_index = usize::try_from(projected_len).map_err(|_| {
                 ObjectError::InvalidArgument(
                     "chunk batch write range exceeds memory size".to_string(),

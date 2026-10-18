@@ -15,7 +15,7 @@ impl MatrixChunkService {
         validate_chunk_state(&state)?;
         self.ensure_capacity_for_chunk_len(&chunk_id, state.data.len() as u64)?;
         self.invalidate_chunk_cache(&chunk_id, 0, state.logical_length);
-        self.chunks.insert(chunk_id, state);
+        self.chunks.insert(chunk_id, std::sync::Arc::new(state));
         Ok(())
     }
 
@@ -85,6 +85,7 @@ impl MatrixChunkService {
             .chunks
             .get_mut(chunk_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
+        let chunk = std::sync::Arc::make_mut(chunk);
         if etag_matches(&chunk.data, &chunk.checksum) {
             return Ok(false);
         }

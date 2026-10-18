@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkServiceSnapshot {
-    pub chunks: BTreeMap<ChunkId, ChunkState>,
+    pub chunks: BTreeMap<ChunkId, std::sync::Arc<ChunkState>>,
     pub receipt_retention: usize,
     pub write_request_receipts: BTreeMap<String, ChunkWriteReceipt>,
     pub discard_request_receipts: BTreeMap<String, ChunkDiscardReceipt>,
