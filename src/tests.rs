@@ -35482,6 +35482,10 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
     // Reported at several store sizes, and again after every object is deleted,
     // because the two things that can make it grow are the chunks stored and the
     // receipts retained.
+    //
+    // Vary MEASURE_SIZE, not only MEASURE_SERIES. The default series walks the
+    // OBJECT count at 1 KiB, which holds the chunk count at three and makes the
+    // copy look flat; the copy is per chunk, so only the object size moves it.
     fn env_usize(name: &str, fallback: usize) -> usize {
         std::env::var(name)
             .ok()
@@ -35534,16 +35538,21 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
 }
 
 #[test]
-fn the_snapshot_a_mutation_holds_shares_payload_rather_than_copying_it() {
-    // `begin_mutation_batch` boxes a whole page-service snapshot and holds it
-    // for the mutation. A chunk's payload is an `Arc<Vec<u8>>`, so that snapshot
-    // names the stored bytes rather than duplicating them -- and this is the
-    // test that says so, because the difference between naming and duplicating
-    // is the difference between a 2,941-byte snapshot and a 3 MB one.
+fn the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk() {
+    // `begin_mutation_batch` boxes a whole page-service snapshot and holds it for
+    // the mutation. A chunk's payload is an `Arc<Vec<u8>>`, so the snapshot NAMES
+    // the stored bytes rather than duplicating them. That part has always held.
     //
-    // Doubling what is stored must double what the snapshot *names* and leave
-    // what it *copies* alone.
-    fn batch_at(objects: usize) -> std::collections::BTreeMap<String, u64> {
+    // What it copies is the structure around them, and that is per CHUNK: the
+    // chunk identity, the inline state, the checksum text and the discarded
+    // ranges, for every chunk of every replica.
+    //
+    // This test used to assert that what the snapshot copies "must not depend on
+    // how much is stored", comparing 40 objects against 80 at 1 KiB each. Both
+    // fit in three chunks, so the figure it pinned was its fixture's and not a
+    // law. Varying the object SIZE moves the chunk count and the copy moves with
+    // it, exactly in step.
+    fn batch_at(objects: usize, size: usize) -> std::collections::BTreeMap<String, u64> {
         let mut store = MatrixObjectStore::new(StoreOptions {
             volume_count: 2,
             ..StoreOptions::default()
@@ -35555,7 +35564,7 @@ fn the_snapshot_a_mutation_holds_shares_payload_rather_than_copying_it() {
                 .put_object(
                     "bucket",
                     &format!("prefix/{index:08}/k"),
-                    vec![b'x'; 1024],
+                    vec![b'x'; size],
                     "application/octet-stream",
                 )
                 .unwrap();
@@ -35570,30 +35579,58 @@ fn the_snapshot_a_mutation_holds_shares_payload_rather_than_copying_it() {
     let get = |audit: &std::collections::BTreeMap<String, u64>, key: &str| -> u64 {
         audit.get(key).copied().unwrap_or(0)
     };
-    let small = batch_at(40);
-    let large = batch_at(80);
+    let few_objects = batch_at(40, 1024);
+    let more_objects = batch_at(80, 1024);
+    let more_chunks = batch_at(40, 256 * 1024);
 
-    let small_shared = get(&small, "batch.replica_chunks.shared_payload_bytes");
-    let large_shared = get(&large, "batch.replica_chunks.shared_payload_bytes");
+    // ---- the payload is named, not duplicated ------------------------------
+    let few_shared = get(&few_objects, "batch.replica_chunks.shared_payload_bytes");
+    let more_shared = get(&more_objects, "batch.replica_chunks.shared_payload_bytes");
     assert!(
-        small_shared > 0,
+        few_shared > 0,
         "the snapshot must name the stored payload, and it named nothing"
     );
     assert!(
-        large_shared > small_shared,
-        "doubling the stored objects must increase what the snapshot names: \
-         {small_shared} and {large_shared}"
+        more_shared > few_shared,
+        "doubling the stored objects must increase what the snapshot names:          {few_shared} and {more_shared}"
+    );
+
+    // ---- what it copies is per chunk, not per object -----------------------
+    assert_eq!(
+        get(&few_objects, "batch.replica_chunks.entries"),
+        get(&more_objects, "batch.replica_chunks.entries"),
+        "40 and 80 objects of 1 KiB must occupy the same chunks, or this          comparison is not about objects"
     );
     assert_eq!(
-        get(&small, "batch.COPIED_bytes"),
-        get(&large, "batch.COPIED_bytes"),
-        "what a mutation's snapshot copies must not depend on how much is \
-         stored, and doubling the store moved it"
+        get(&few_objects, "batch.COPIED_bytes"),
+        get(&more_objects, "batch.COPIED_bytes"),
+        "at a fixed chunk count, what the snapshot copies must not depend on          how many objects are stored"
     );
+    assert!(
+        get(&more_chunks, "batch.replica_chunks.entries")
+            > get(&few_objects, "batch.replica_chunks.entries"),
+        "256 KiB objects must occupy more chunks than 1 KiB objects"
+    );
+    assert!(
+        get(&more_chunks, "batch.COPIED_bytes") > get(&few_objects, "batch.COPIED_bytes"),
+        "more chunks must cost more to copy -- this is the dependence the          earlier version of this test asserted away"
+    );
+
+    // The cost per chunk is the same in all three, which is the actual law and
+    // the figure a deployment has to multiply by its own chunk count.
+    let per_chunk = |audit: &std::collections::BTreeMap<String, u64>| -> u64 {
+        let chunks = get(audit, "batch.replica_chunks.entries");
+        assert!(chunks > 0, "a store with objects in it must hold chunks");
+        get(audit, "batch.replica_chunks.copied_bytes") / chunks
+    };
+    let law = per_chunk(&few_objects);
+    println!("BATCHPERCHUNK copied_bytes_per_chunk={law}");
+    assert_eq!(law, per_chunk(&more_objects), "the per-chunk copy is a constant");
+    assert_eq!(law, per_chunk(&more_chunks), "the per-chunk copy is a constant");
 
     // And the breakdown accounts for every byte of what it says it copies, so a
     // leg added later cannot fall out of the headline.
-    for audit in [&small, &large] {
+    for audit in [&few_objects, &more_objects, &more_chunks] {
         let legs = get(audit, "batch.page_receipts.inline_and_key_bytes")
             + get(audit, "batch.page_other.bytes")
             + get(audit, "batch.replica_receipts.inline_and_key_bytes")
