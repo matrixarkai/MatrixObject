@@ -62,12 +62,12 @@ impl ChunkServiceSnapshot {
             }
         }
         append_u64(&mut material, self.write_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.write_request_receipts {
+        for (idempotency_key, receipt) in self.write_request_receipts.iter() {
             append_string(&mut material, idempotency_key);
             append_chunk_write_receipt(&mut material, receipt);
         }
         append_u64(&mut material, self.discard_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.discard_request_receipts {
+        for (idempotency_key, receipt) in self.discard_request_receipts.iter() {
             append_string(&mut material, idempotency_key);
             append_chunk_discard_receipt(&mut material, receipt);
         }
@@ -75,7 +75,7 @@ impl ChunkServiceSnapshot {
             &mut material,
             self.batch_write_request_receipts.len() as u64,
         );
-        for (idempotency_key, receipt) in &self.batch_write_request_receipts {
+        for (idempotency_key, receipt) in self.batch_write_request_receipts.iter() {
             append_string(&mut material, idempotency_key);
             append_chunk_batch_write_receipt(&mut material, receipt);
         }
@@ -83,7 +83,7 @@ impl ChunkServiceSnapshot {
             &mut material,
             self.batch_discard_request_receipts.len() as u64,
         );
-        for (idempotency_key, receipt) in &self.batch_discard_request_receipts {
+        for (idempotency_key, receipt) in self.batch_discard_request_receipts.iter() {
             append_string(&mut material, idempotency_key);
             append_chunk_batch_discard_receipt(&mut material, receipt);
         }
@@ -91,17 +91,17 @@ impl ChunkServiceSnapshot {
             &mut material,
             self.state_install_request_receipts.len() as u64,
         );
-        for (idempotency_key, receipt) in &self.state_install_request_receipts {
+        for (idempotency_key, receipt) in self.state_install_request_receipts.iter() {
             append_string(&mut material, idempotency_key);
             append_chunk_state_install_receipt(&mut material, receipt);
         }
         append_u64(&mut material, self.reclaim_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.reclaim_request_receipts {
+        for (idempotency_key, receipt) in self.reclaim_request_receipts.iter() {
             append_string(&mut material, idempotency_key);
             append_chunk_reclaim_receipt(&mut material, receipt);
         }
         append_u64(&mut material, self.repair_request_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.repair_request_receipts {
+        for (idempotency_key, receipt) in self.repair_request_receipts.iter() {
             append_string(&mut material, idempotency_key);
             append_chunk_repair_receipt(&mut material, receipt);
         }

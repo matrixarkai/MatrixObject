@@ -70,7 +70,7 @@ impl MatrixChunkService {
             discard_range_count: state.discarded_ranges.len() as u64,
             deduped: false,
         };
-        self.state_install_request_receipts
+        std::sync::Arc::make_mut(&mut self.state_install_request_receipts)
             .insert(idempotency_key.to_string(), receipt.clone());
         self.trim_receipts_to_retention();
         Ok(receipt)

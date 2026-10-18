@@ -329,7 +329,7 @@ impl MatrixObjectStore {
         replica.physical_write_bytes = replica
             .physical_write_bytes
             .saturating_add(prepared.receipt.stats.physical_write_bytes);
-        replica.batch_write_request_receipts.insert(
+        std::sync::Arc::make_mut(&mut replica.batch_write_request_receipts).insert(
             prepared.receipt.idempotency_key.clone(),
             prepared.receipt.clone(),
         );

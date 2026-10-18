@@ -118,7 +118,7 @@ impl MatrixChunkService {
             idempotency_key: idempotency_key.to_string(),
             deduped: false,
         };
-        self.write_request_receipts
+        std::sync::Arc::make_mut(&mut self.write_request_receipts)
             .insert(idempotency_key.to_string(), receipt.clone());
         self.trim_receipts_to_retention();
         Ok(receipt)
@@ -322,7 +322,7 @@ impl MatrixChunkService {
                 stats: stats.clone(),
                 deduped: false,
             };
-            self.batch_write_request_receipts
+            std::sync::Arc::make_mut(&mut self.batch_write_request_receipts)
                 .insert(idempotency_key, receipt);
             self.trim_receipts_to_retention();
         }
@@ -383,7 +383,7 @@ impl MatrixChunkService {
             stats: stats.clone(),
             deduped: false,
         };
-        self.batch_write_request_receipts
+        std::sync::Arc::make_mut(&mut self.batch_write_request_receipts)
             .insert(idempotency_key.to_string(), receipt.clone());
         self.trim_receipts_to_retention();
         Ok((stats, receipt))
@@ -443,7 +443,7 @@ impl MatrixChunkService {
             stats: stats.clone(),
             deduped: false,
         };
-        self.batch_write_request_receipts
+        std::sync::Arc::make_mut(&mut self.batch_write_request_receipts)
             .insert(idempotency_key.to_string(), receipt.clone());
         self.trim_receipts_to_retention();
         Ok((stats, receipt))

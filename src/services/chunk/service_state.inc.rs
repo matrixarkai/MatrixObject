@@ -22,13 +22,19 @@ pub struct MatrixChunkService {
     /// replicas disagreeing about whether a sidecar exists would never agree.
     pub(crate) keep_ec_sidecar: bool,
     pub(crate) receipt_retention: usize,
-    pub(crate) write_request_receipts: BTreeMap<String, ChunkWriteReceipt>,
-    pub(crate) discard_request_receipts: BTreeMap<String, ChunkDiscardReceipt>,
-    pub(crate) batch_write_request_receipts: BTreeMap<String, ChunkBatchWriteReceipt>,
-    pub(crate) batch_discard_request_receipts: BTreeMap<String, ChunkBatchDiscardReceipt>,
-    state_install_request_receipts: BTreeMap<String, ChunkStateInstallReceipt>,
-    reclaim_request_receipts: BTreeMap<String, ChunkReclaimReceipt>,
-    repair_request_receipts: BTreeMap<String, ChunkRepairReceipt>,
+    /// The seven receipt maps, each behind a shared handle so that a snapshot
+    /// of this service clones handles rather than maps. A write takes
+    /// `Arc::make_mut`, which copies the one map it is about to change -- so an
+    /// open batch copies the maps it WRITES rather than all seven.
+    ///
+    /// Measured: an ordinary put writes none of them.
+    pub(crate) write_request_receipts: std::sync::Arc<BTreeMap<String, ChunkWriteReceipt>>,
+    pub(crate) discard_request_receipts: std::sync::Arc<BTreeMap<String, ChunkDiscardReceipt>>,
+    pub(crate) batch_write_request_receipts: std::sync::Arc<BTreeMap<String, ChunkBatchWriteReceipt>>,
+    pub(crate) batch_discard_request_receipts: std::sync::Arc<BTreeMap<String, ChunkBatchDiscardReceipt>>,
+    state_install_request_receipts: std::sync::Arc<BTreeMap<String, ChunkStateInstallReceipt>>,
+    reclaim_request_receipts: std::sync::Arc<BTreeMap<String, ChunkReclaimReceipt>>,
+    repair_request_receipts: std::sync::Arc<BTreeMap<String, ChunkRepairReceipt>>,
     accepting_writes: bool,
     draining: bool,
     frozen: bool,

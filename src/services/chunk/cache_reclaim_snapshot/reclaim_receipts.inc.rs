@@ -48,7 +48,7 @@ impl MatrixChunkService {
             report: report.clone(),
             deduped: false,
         };
-        self.reclaim_request_receipts
+        std::sync::Arc::make_mut(&mut self.reclaim_request_receipts)
             .insert(idempotency_key.to_string(), receipt.clone());
         self.trim_receipts_to_retention();
         Ok((report, receipt))

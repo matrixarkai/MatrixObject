@@ -384,6 +384,19 @@ impl SharedPayloadLedger {
         }
     }
 
+    /// Charges `bytes` for an allocation named by `ptr`, once.
+    ///
+    /// Used for whole receipt maps, which a snapshot shares with the live
+    /// service: the snapshot copies a handle and names the map, so adding the
+    /// map's bytes at both would report a duplicate that no longer exists.
+    fn charge_allocation(&mut self, ptr: *const u8, bytes: u64) -> u64 {
+        if self.charged.insert(ptr as usize) {
+            bytes
+        } else {
+            0
+        }
+    }
+
     fn charge(&mut self, payload: &std::sync::Arc<Vec<u8>>) -> u64 {
         if self
             .charged
@@ -456,21 +469,75 @@ impl PageServiceSnapshot {
         // A second ledger, because a chunk's state and its payload are
         // separate allocations and one set of pointers cannot stand for both.
         let mut state_ledger = SharedPayloadLedger::default();
+        // A third, for the receipt maps: a map is an allocation of its own and
+        // one set of pointers cannot stand for three kinds of thing.
+        let mut map_ledger = SharedPayloadLedger::default();
         let mut replica_receipts = 0u64;
+        let mut replica_receipts_shared = 0u64;
         let mut chunks_copied = 0u64;
         let mut chunks_shared = 0u64;
         let mut replica_other = 0u64;
         let mut chunk_count = 0u64;
         for replica in &self.replicas {
-            replica_receipts = replica_receipts.saturating_add(chunk_receipt_maps_bytes(
-                &replica.write_request_receipts,
-                &replica.discard_request_receipts,
-                &replica.batch_write_request_receipts,
-                &replica.batch_discard_request_receipts,
-                &replica.state_install_request_receipts,
-                &replica.reclaim_request_receipts,
-                &replica.repair_request_receipts,
-            ));
+            // Seven handles, and the maps behind them are shared with the
+            // live service until the batch writes one -- at which point
+            // `Arc::make_mut` copies that one map and no other. So the handles
+            // are what the snapshot COPIES and the maps are what it NAMES, and
+            // the maps' bytes are already in `block.receipts.bytes`: adding
+            // them here as well would double count a store with a batch open.
+            replica_receipts = replica_receipts.saturating_add(
+                (7 * std::mem::size_of::<std::sync::Arc<BTreeMap<String, ()>>>()) as u64,
+            );
+            replica_receipts_shared = replica_receipts_shared
+                .saturating_add(map_ledger.charge_allocation(
+                    std::sync::Arc::as_ptr(&replica.write_request_receipts) as *const u8,
+                    chunk_receipt_map_bytes(
+                        &replica.write_request_receipts,
+                        chunk_write_receipt_heap,
+                    ),
+                ))
+                .saturating_add(map_ledger.charge_allocation(
+                    std::sync::Arc::as_ptr(&replica.discard_request_receipts) as *const u8,
+                    chunk_receipt_map_bytes(
+                        &replica.discard_request_receipts,
+                        chunk_discard_receipt_heap,
+                    ),
+                ))
+                .saturating_add(map_ledger.charge_allocation(
+                    std::sync::Arc::as_ptr(&replica.batch_write_request_receipts) as *const u8,
+                    chunk_receipt_map_bytes(
+                        &replica.batch_write_request_receipts,
+                        chunk_batch_write_receipt_heap,
+                    ),
+                ))
+                .saturating_add(map_ledger.charge_allocation(
+                    std::sync::Arc::as_ptr(&replica.batch_discard_request_receipts) as *const u8,
+                    chunk_receipt_map_bytes(
+                        &replica.batch_discard_request_receipts,
+                        chunk_batch_discard_receipt_heap,
+                    ),
+                ))
+                .saturating_add(map_ledger.charge_allocation(
+                    std::sync::Arc::as_ptr(&replica.state_install_request_receipts) as *const u8,
+                    chunk_receipt_map_bytes(
+                        &replica.state_install_request_receipts,
+                        chunk_state_install_receipt_heap,
+                    ),
+                ))
+                .saturating_add(map_ledger.charge_allocation(
+                    std::sync::Arc::as_ptr(&replica.reclaim_request_receipts) as *const u8,
+                    chunk_receipt_map_bytes(
+                        &replica.reclaim_request_receipts,
+                        chunk_reclaim_receipt_heap,
+                    ),
+                ))
+                .saturating_add(map_ledger.charge_allocation(
+                    std::sync::Arc::as_ptr(&replica.repair_request_receipts) as *const u8,
+                    chunk_receipt_map_bytes(
+                        &replica.repair_request_receipts,
+                        chunk_repair_receipt_heap,
+                    ),
+                ));
             replica_other = replica_other
                 .saturating_add(std::mem::size_of::<ChunkServiceSnapshot>() as u64)
                 .saturating_add(replica.checksum.capacity() as u64)
@@ -500,8 +567,14 @@ impl PageServiceSnapshot {
             ("batch.page_receipts.bytes".to_string(), page_receipts),
             ("batch.page_other.bytes".to_string(), page_other),
             (
-                "batch.replica_receipts.bytes".to_string(),
+                "batch.replica_receipts.copied_bytes".to_string(),
                 replica_receipts,
+            ),
+            // Named by the live replicas as well, so this is what the snapshot
+            // points at rather than what it duplicates.
+            (
+                "batch.replica_receipts.shared_bytes".to_string(),
+                replica_receipts_shared,
             ),
             ("batch.replica_other.bytes".to_string(), replica_other),
             ("batch.replica_chunks.copied_bytes".to_string(), chunks_copied),

@@ -132,7 +132,7 @@ impl ChunkServiceSnapshot {
                 "chunk service snapshot compression accounting mismatch".to_string(),
             ));
         }
-        for (idempotency_key, receipt) in &self.write_request_receipts {
+        for (idempotency_key, receipt) in self.write_request_receipts.iter() {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.length == 0
@@ -151,7 +151,7 @@ impl ChunkServiceSnapshot {
                 ));
             }
         }
-        for (idempotency_key, receipt) in &self.discard_request_receipts {
+        for (idempotency_key, receipt) in self.discard_request_receipts.iter() {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.length == 0
@@ -168,7 +168,7 @@ impl ChunkServiceSnapshot {
                 ));
             }
         }
-        for (idempotency_key, receipt) in &self.batch_write_request_receipts {
+        for (idempotency_key, receipt) in self.batch_write_request_receipts.iter() {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.request_checksum.is_empty()
@@ -181,7 +181,7 @@ impl ChunkServiceSnapshot {
                 ));
             }
         }
-        for (idempotency_key, receipt) in &self.batch_discard_request_receipts {
+        for (idempotency_key, receipt) in self.batch_discard_request_receipts.iter() {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.request_checksum.is_empty()
@@ -193,7 +193,7 @@ impl ChunkServiceSnapshot {
                 ));
             }
         }
-        for (idempotency_key, receipt) in &self.state_install_request_receipts {
+        for (idempotency_key, receipt) in self.state_install_request_receipts.iter() {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.request_checksum.is_empty()
@@ -206,7 +206,7 @@ impl ChunkServiceSnapshot {
                 ));
             }
         }
-        for (idempotency_key, receipt) in &self.reclaim_request_receipts {
+        for (idempotency_key, receipt) in self.reclaim_request_receipts.iter() {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.request_checksum.is_empty()
@@ -225,7 +225,7 @@ impl ChunkServiceSnapshot {
                 ));
             }
         }
-        for (idempotency_key, receipt) in &self.repair_request_receipts {
+        for (idempotency_key, receipt) in self.repair_request_receipts.iter() {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.request_checksum.is_empty()
