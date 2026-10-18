@@ -318,7 +318,10 @@ impl MatrixObjectStore {
         }
         replica
             .chunks
-            .insert(prepared.receipt.chunk_id.clone(), prepared.state);
+            .insert(
+                prepared.receipt.chunk_id.clone(),
+                std::sync::Arc::new(prepared.state),
+            );
         let _ = replica.invalidate_chunk_cache(&prepared.receipt.chunk_id, 0, projected_len);
         replica.physical_write_count = replica
             .physical_write_count

@@ -212,14 +212,14 @@ impl ChunkServiceSnapshot {
             }
             chunks.insert(
                 chunk_id,
-                ChunkState {
+                std::sync::Arc::new(ChunkState {
                     logical_length,
                     write_sequence,
                     checksum,
                     data,
                     ec_parity_fragment,
                     discarded_ranges,
-                },
+                }),
             );
         }
         let mut write_request_receipts = BTreeMap::new();

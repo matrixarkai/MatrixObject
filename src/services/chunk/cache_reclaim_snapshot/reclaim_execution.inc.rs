@@ -162,6 +162,7 @@ impl MatrixChunkService {
             let Some(state) = self.chunks.get_mut(&candidate.chunk_id) else {
                 continue;
             };
+            let state = std::sync::Arc::make_mut(state);
             let ranges = merge_ranges(std::mem::take(&mut state.discarded_ranges));
             for range in ranges {
                 let Ok(start) = usize::try_from(range.offset) else {

@@ -48,6 +48,22 @@ pub struct ChunkState {
 }
 
 impl ChunkState {
+    /// A chunk that exists and holds nothing.
+    ///
+    /// Both write paths built this same literal inline. Moving the state behind
+    /// a shared handle made that construction a second thing to keep in step,
+    /// so it is one thing now.
+    pub fn empty() -> Self {
+        Self {
+            logical_length: 0,
+            write_sequence: 0,
+            checksum: etag(&[]),
+            data: std::sync::Arc::new(Vec::new()),
+            ec_parity_fragment: std::sync::Arc::new(Vec::new()),
+            discarded_ranges: Vec::new(),
+        }
+    }
+
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         let ec_data_fragments = chunk_ec_data_fragments(&self.data);

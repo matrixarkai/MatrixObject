@@ -12,6 +12,7 @@ impl MatrixChunkService {
             .chunks
             .get_mut(chunk_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
+        let chunk = std::sync::Arc::make_mut(chunk);
         if chunk.data.is_empty() {
             std::sync::Arc::make_mut(&mut chunk.data).push(0xff);
         } else {

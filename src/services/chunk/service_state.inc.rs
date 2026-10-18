@@ -7,7 +7,12 @@ pub(crate) struct ChunkSnapshotExportCache {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatrixChunkService {
-    pub(crate) chunks: BTreeMap<ChunkId, ChunkState>,
+    /// Each chunk's state behind a shared handle, so a snapshot of this
+    /// service clones handles rather than states. A write takes
+    /// `Arc::make_mut`, which copies the one chunk it touches if a snapshot
+    /// still names it -- so the copy is per chunk WRITTEN rather than per chunk
+    /// held.
+    pub(crate) chunks: BTreeMap<ChunkId, std::sync::Arc<ChunkState>>,
     /// Whether this replica keeps the XOR sidecar for its chunks.
     ///
     /// True only when this replica is the only copy. Above one replica a damaged

@@ -44,7 +44,9 @@ fn chunk_compression_stats(state: &ChunkState) -> (u64, u64) {
     }
 }
 
-fn chunk_map_compression_stats(chunks: &BTreeMap<ChunkId, ChunkState>) -> (u64, u64) {
+fn chunk_map_compression_stats(
+    chunks: &BTreeMap<ChunkId, std::sync::Arc<ChunkState>>,
+) -> (u64, u64) {
     chunks.values().fold((0u64, 0u64), |(count, bytes), state| {
         let (chunk_count, saved_bytes) = chunk_compression_stats(state);
         (

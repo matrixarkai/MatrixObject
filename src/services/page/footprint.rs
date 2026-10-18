@@ -317,11 +317,15 @@ impl MatrixPageService {
 // much is stored.
 //
 // The figures separate what the snapshot copies from what it only names. A
-// chunk's payload is an `Arc<Vec<u8>>`, so cloning the chunk map shares the bytes
-// and copies the structure around them -- the map's nodes, the chunk identity,
-// the inline state and the checksum text. Reporting those together would read as
+// chunk's payload is an `Arc<Vec<u8>>` and its state is now an
+// `Arc<ChunkState>`, so cloning the chunk map copies a chunk identity and a
+// handle and names everything behind it. Reporting those together would read as
 // if a mutation copied every stored byte, which it does not; reporting only the
 // shared bytes would hide the part that does grow.
+//
+// What the copy is per has not changed -- it is still per chunk -- but it fell
+// from 128 bytes a chunk to the identity and the handle, because the state the
+// handle points at is no longer duplicated.
 
 /// A `BTreeMap<String, V>` at its inline size plus its key characters.
 ///
@@ -363,6 +367,28 @@ struct SharedPayloadLedger {
 }
 
 impl SharedPayloadLedger {
+    /// A chunk's state, charged once however many snapshots name it.
+    ///
+    /// The state lives behind an `Arc` so that taking a snapshot clones a
+    /// handle rather than a state. Charging it at every holder would report
+    /// copies that do not exist, which is the same rule the payload below
+    /// follows.
+    fn charge_chunk_state(&mut self, state: &std::sync::Arc<ChunkState>) -> u64 {
+        if self
+            .charged
+            .insert(std::sync::Arc::as_ptr(state) as *const u8 as usize)
+        {
+            ((std::mem::size_of::<ChunkState>() + 2 * std::mem::size_of::<usize>()) as u64)
+                .saturating_add(state.checksum.capacity() as u64)
+                .saturating_add(
+                    (state.discarded_ranges.capacity() as u64)
+                        .saturating_mul(std::mem::size_of::<DataRange>() as u64),
+                )
+        } else {
+            0
+        }
+    }
+
     #[allow(dead_code)]
     fn charge(&mut self, payload: &std::sync::Arc<Vec<u8>>) -> u64 {
         if self
@@ -426,6 +452,9 @@ impl PageServiceSnapshot {
         }
 
         let mut ledger = SharedPayloadLedger::default();
+        // A second ledger, because a chunk's state and its payload are
+        // separate allocations and one set of pointers cannot stand for both.
+        let mut state_ledger = SharedPayloadLedger::default();
         let mut replica_receipts = 0u64;
         let mut chunks_copied = 0u64;
         let mut chunks_shared = 0u64;
@@ -458,16 +487,15 @@ impl PageServiceSnapshot {
                 .saturating_add(replica.last_partial_reclaim_failure_status.capacity() as u64);
             for (_, state) in replica.chunks.iter() {
                 chunk_count = chunk_count.saturating_add(1);
-                chunks_copied = chunks_copied
-                    .saturating_add(
-                        (std::mem::size_of::<ChunkId>() + std::mem::size_of::<ChunkState>()) as u64,
-                    )
-                    .saturating_add(state.checksum.capacity() as u64)
-                    .saturating_add(
-                        (state.discarded_ranges.capacity() as u64)
-                            .saturating_mul(std::mem::size_of::<DataRange>() as u64),
-                    );
+                // The chunk identity and one handle. The state behind the
+                // handle is named rather than copied, so it is charged below
+                // and once.
+                chunks_copied = chunks_copied.saturating_add(
+                    (std::mem::size_of::<ChunkId>()
+                        + std::mem::size_of::<std::sync::Arc<ChunkState>>()) as u64,
+                );
                 chunks_shared = chunks_shared
+                    .saturating_add(state_ledger.charge_chunk_state(state))
                     .saturating_add(ledger.charge(&state.data))
                     .saturating_add(ledger.charge(&state.ec_parity_fragment));
             }
@@ -491,7 +519,7 @@ impl PageServiceSnapshot {
             // Named by the live replicas as well, so this is what the snapshot
             // points at rather than what it duplicates.
             (
-                "batch.replica_chunks.shared_payload_bytes".to_string(),
+                "batch.replica_chunks.shared_state_and_payload_bytes".to_string(),
                 chunks_shared,
             ),
             ("batch.COPIED_bytes".to_string(), copied),
