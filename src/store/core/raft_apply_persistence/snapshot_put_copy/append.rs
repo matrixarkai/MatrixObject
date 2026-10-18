@@ -8,7 +8,13 @@ impl MatrixObjectStore {
         update_time_ms: u64,
         options: PutOptions,
     ) -> Result<ObjectMetadata, ObjectError> {
-        let rollback = self.capture_object_mutation_rollback();
+        // The narrowed undo, on the same terms as the put path: a page-service
+        // mutation batch is opened below and aborted before every restore, so
+        // the page service owns its own undo, and an append writes one object
+        // key, one metadata record and one change record. What it allocates is
+        // identified from the slab records the undo carries rather than by
+        // copying the payload index.
+        let rollback = self.capture_targeted_mutation_rollback(&bucket, &key);
         let batch_material = format!(
             "append_object:{bucket}/{key}:{update_time_ms}:{}",
             data.len()

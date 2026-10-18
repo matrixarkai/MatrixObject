@@ -1,5 +1,5 @@
 impl MatrixObjectStore {
-    fn capture_object_mutation_rollback(&self) -> ObjectMutationRollback {
+    pub(crate) fn capture_object_mutation_rollback(&self) -> ObjectMutationRollback {
         self.capture_object_mutation_rollback_inner(None)
     }
 
