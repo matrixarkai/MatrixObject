@@ -6,9 +6,14 @@ pub struct MetadataRouteCacheEntry {
     /// rather than one per cached key.
     pub route: std::sync::Arc<MetadataShardRoute>,
     pub topology_epoch: u64,
-    pub topology_checksum: String,
-    pub shard_topology_checksum: String,
-    pub session_checksum: String,
+    /// The three checksums below are store-wide: every entry created in one
+    /// generation holds the same digests, so the allocations are shared. They
+    /// stay per entry because `status_audit` compares each against the current
+    /// value to report WHICH entries are stale, and entries inserted either
+    /// side of a session change legitimately differ.
+    pub topology_checksum: SharedText,
+    pub shard_topology_checksum: SharedText,
+    pub session_checksum: SharedText,
     pub expire_time_ms: u64,
     pub last_access_sequence: u64,
 }

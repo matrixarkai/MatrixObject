@@ -128,8 +128,8 @@ impl MatrixObjectStore {
                     shard_id: entry.route.shard.shard_id.clone(),
                     reason: reasons.join(","),
                     expire_time_ms: entry.expire_time_ms,
-                    entry_topology_checksum: entry.shard_topology_checksum.clone(),
-                    entry_session_checksum: entry.session_checksum.clone(),
+                    entry_topology_checksum: entry.shard_topology_checksum.to_string(),
+                    entry_session_checksum: entry.session_checksum.to_string(),
                     current_topology_checksum: shard_topology_checksum.clone(),
                     current_session_checksum: session_checksum.clone(),
                 });

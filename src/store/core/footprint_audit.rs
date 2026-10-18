@@ -495,15 +495,22 @@ impl MatrixObjectStore {
                     (std::mem::size_of::<String>()
                         + std::mem::size_of::<MetadataRouteCacheEntry>()) as u64,
                 )
-                .saturating_add(audit_string_heap(key));
+                .saturating_add(audit_string_heap(key))
+                // Charged for EVERY entry, and deduplicated by the ledger on
+                // allocation identity rather than by position in this loop.
+                // Entries of one generation share these three, but a session
+                // checksum legitimately differs between entries inserted either
+                // side of a session change -- which is the whole subject of
+                // `status_audit` -- so skipping them for entries that share a
+                // route would undercount exactly the case that matters.
+                .saturating_add(ledger.charge(&entry.topology_checksum))
+                .saturating_add(ledger.charge(&entry.shard_topology_checksum))
+                .saturating_add(ledger.charge(&entry.session_checksum));
             if !charged_routes.insert(std::sync::Arc::as_ptr(&entry.route) as *const u8 as usize) {
                 continue;
             }
             route_cache_bytes = route_cache_bytes
                 .saturating_add(std::mem::size_of::<MetadataShardRoute>() as u64)
-                .saturating_add(audit_string_heap(&entry.topology_checksum))
-                .saturating_add(audit_string_heap(&entry.shard_topology_checksum))
-                .saturating_add(audit_string_heap(&entry.session_checksum))
                 .saturating_add(audit_string_heap(&entry.route.preferred_endpoint))
                 // The shard travels inside the route, and its four strings are
                 // per cached entry: the id, both key bounds and the owner.
@@ -533,6 +540,20 @@ impl MatrixObjectStore {
         push(
             "metadata_route_cache.route_allocations",
             charged_routes.len() as u64,
+        );
+        // And how many distinct checksum allocations the entries name. One
+        // generation has three, so a number near the entry count means the
+        // sharing is not happening.
+        let mut checksum_allocations: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        for entry in self.metadata_route_cache.values() {
+            checksum_allocations.insert(entry.topology_checksum.allocation_id());
+            checksum_allocations.insert(entry.shard_topology_checksum.allocation_id());
+            checksum_allocations.insert(entry.session_checksum.allocation_id());
+        }
+        push(
+            "metadata_route_cache.checksum_allocations",
+            checksum_allocations.len() as u64,
         );
 
         // The slab records. Their two range lists grow with how fragmented a
