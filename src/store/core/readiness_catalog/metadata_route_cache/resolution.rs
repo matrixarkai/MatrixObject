@@ -102,7 +102,7 @@ impl MatrixObjectStore {
         if let Some(entry) = self.metadata_route_cache.get_mut(key) {
             self.metadata_route_cache_hits = self.metadata_route_cache_hits.saturating_add(1);
             entry.last_access_sequence = access_sequence;
-            return Ok(entry.route.clone());
+            return Ok((*entry.route).clone());
         }
         self.metadata_route_cache_misses = self.metadata_route_cache_misses.saturating_add(1);
         let page = self.resolve_metadata_shard_routes(key, None, 1, 0, now_ms)?;
@@ -115,10 +115,23 @@ impl MatrixObjectStore {
             metadata_route_topology_fingerprint(&self.meta_service);
         let (_, shard_topology_checksum) = metadata_shard_topology_fingerprint(&self.meta_service);
         let session_checksum = metadata_route_session_fingerprint(&self.meta_service, now_ms);
+        // Reuse the route already held for this shard when the one just
+        // resolved is equal to it, so the entries for a shard's keys share one
+        // allocation instead of each carrying a copy.
+        let shard_id = route.shard.shard_id.clone();
+        let shared = match self.metadata_route_shared.get(&shard_id) {
+            Some(existing) if **existing == route => std::sync::Arc::clone(existing),
+            _ => {
+                let fresh = std::sync::Arc::new(route.clone());
+                self.metadata_route_shared
+                    .insert(shard_id, std::sync::Arc::clone(&fresh));
+                fresh
+            }
+        };
         self.metadata_route_cache.insert(
             key.to_string(),
             MetadataRouteCacheEntry {
-                route: route.clone(),
+                route: shared,
                 topology_epoch,
                 topology_checksum,
                 shard_topology_checksum,

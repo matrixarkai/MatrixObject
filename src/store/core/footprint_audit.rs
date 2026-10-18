@@ -485,13 +485,22 @@ impl MatrixObjectStore {
         // their inline size; the text below them is the endpoints and the three
         // checksums, which is what grows per entry.
         let mut route_cache_bytes = 0u64;
+        // A route shared by every key on one shard is one allocation, so it is
+        // charged once however many entries name it -- the same rule the shared
+        // key text follows.
+        let mut charged_routes: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for (key, entry) in self.metadata_route_cache.iter() {
             route_cache_bytes = route_cache_bytes
                 .saturating_add(
                     (std::mem::size_of::<String>()
                         + std::mem::size_of::<MetadataRouteCacheEntry>()) as u64,
                 )
-                .saturating_add(audit_string_heap(key))
+                .saturating_add(audit_string_heap(key));
+            if !charged_routes.insert(std::sync::Arc::as_ptr(&entry.route) as *const u8 as usize) {
+                continue;
+            }
+            route_cache_bytes = route_cache_bytes
+                .saturating_add(std::mem::size_of::<MetadataShardRoute>() as u64)
                 .saturating_add(audit_string_heap(&entry.topology_checksum))
                 .saturating_add(audit_string_heap(&entry.shard_topology_checksum))
                 .saturating_add(audit_string_heap(&entry.session_checksum))
@@ -502,6 +511,14 @@ impl MatrixObjectStore {
                 .saturating_add(audit_string_heap(&entry.route.shard.start_key))
                 .saturating_add(audit_string_heap(&entry.route.shard.end_key))
                 .saturating_add(audit_string_heap(&entry.route.shard.owner_node_id));
+            // The owner session rides inside the route too, with three more
+            // strings of its own.
+            if let Some(session) = &entry.route.active_owner_session {
+                route_cache_bytes = route_cache_bytes
+                    .saturating_add(audit_string_heap(&session.session_id))
+                    .saturating_add(audit_string_heap(&session.owner))
+                    .saturating_add(audit_string_heap(&session.endpoint));
+            }
             for endpoint in &entry.route.fallback_endpoints {
                 route_cache_bytes = route_cache_bytes
                     .saturating_add(std::mem::size_of::<String>() as u64)
@@ -509,6 +526,14 @@ impl MatrixObjectStore {
             }
         }
         push("metadata_route_cache.bytes", route_cache_bytes);
+        // How many distinct routes the entries name. Every key resolving to one
+        // shard resolves to the same route, so this is one per shard rather
+        // than one per cached key -- and it is counted by allocation identity,
+        // which is the only thing that tells a shared route from an equal copy.
+        push(
+            "metadata_route_cache.route_allocations",
+            charged_routes.len() as u64,
+        );
 
         // The slab records. Their two range lists grow with how fragmented a
         // slab becomes, and both are merged on every extend, so this is what

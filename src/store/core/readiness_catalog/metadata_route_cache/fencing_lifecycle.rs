@@ -73,6 +73,7 @@ impl MatrixObjectStore {
                 self.metadata_route_cache_invalidations.saturating_add(1);
         }
         self.metadata_route_cache.clear();
+        self.metadata_route_shared.clear();
     }
 
     fn expire_metadata_route_cache(&mut self, now_ms: u64) {

@@ -1,4 +1,5 @@
 impl MatrixObjectStore {
+
     pub fn metadata_route_cache_status(&self) -> MetadataRouteCacheStatus {
         self.metadata_route_cache_status_at(0)
     }

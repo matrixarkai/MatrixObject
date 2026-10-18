@@ -35971,3 +35971,62 @@ fn the_metadata_total_is_the_sum_of_the_legs_it_names() {
         "the slab leg must be exercised, or it is asserted vacuously"
     );
 }
+
+#[test]
+fn keys_on_one_shard_share_one_cached_route() {
+    // The route cache is keyed per object key, so a store serving many objects
+    // through one shard held one copy of that shard's route per key: its four
+    // strings, the owner session's three, the preferred endpoint and the
+    // fallbacks, over and over. They are now one allocation.
+    //
+    // Asserted by pointer identity. A byte figure falling is not evidence of
+    // sharing -- it can fall because something was dropped -- and comparing the
+    // routes for equality cannot tell a share from a copy, since copies are
+    // equal by construction.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store
+        .register_meta_coordinator_session("session-a", "meta-a", "127.0.0.1:9200", 100, 10)
+        .unwrap();
+    store
+        .configure_metadata_shard(MetadataShard {
+            shard_id: "objects-a".to_string(),
+            start_key: "object/bucket/".to_string(),
+            end_key: "object/bucket0".to_string(),
+            owner_node_id: "meta-a".to_string(),
+            epoch: 1,
+            draining: false,
+        })
+        .unwrap();
+
+    let keys = 24;
+    for index in 0..keys {
+        store
+            .resolve_metadata_route_cached(&format!("object/bucket/k{index:04}"), 10)
+            .expect("the shard covers this key");
+    }
+
+    let entries = store.metadata_route_cache_status().entries;
+    assert_eq!(entries as usize, keys, "every key should be cached");
+    let audit: BTreeMap<String, u64> = store.footprint_audit().into_iter().collect();
+    assert_eq!(
+        audit
+            .get("metadata_route_cache.route_allocations")
+            .copied()
+            .unwrap_or(0),
+        1,
+        "{keys} keys on one shard must share one route allocation"
+    );
+
+    // And the figure follows: the bytes a cache of this size reports must be
+    // far below what one copy per key would cost. One route is on the order of
+    // 300 bytes, so 24 copies would be thousands above the shared figure.
+    let bytes = audit
+        .get("metadata_route_cache.bytes")
+        .copied()
+        .unwrap_or(0);
+    assert!(bytes > 0, "the cache must report bytes");
+    assert!(
+        bytes < (keys as u64) * 300,
+        "a shared route should keep this well under one copy per key: {bytes}"
+    );
+}

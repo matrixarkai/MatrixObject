@@ -72,6 +72,10 @@ pub struct MatrixObjectStore {
     next_object_change_sequence: u64,
     pub(crate) meta_service: MatrixMetaService,
     metadata_route_cache: BTreeMap<String, MetadataRouteCacheEntry>,
+    /// One route per shard, so the cache entries for that shard's keys share it
+    /// rather than each holding a copy. Derived and bounded by the shard count,
+    /// and cleared wherever the cache it serves is cleared.
+    metadata_route_shared: BTreeMap<String, std::sync::Arc<MetadataShardRoute>>,
     metadata_route_cache_hits: u64,
     metadata_route_cache_misses: u64,
     metadata_route_cache_invalidations: u64,
