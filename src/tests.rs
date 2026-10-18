@@ -12321,7 +12321,7 @@ fn object_tags_are_durable_listable_and_preserved_by_multipart() {
         .complete_multipart_upload(&upload.upload_id, Some(4), Some(etag(b"part")))
         .unwrap();
     assert_eq!(
-        completed.tags,
+        completed.tags.to_map(),
         tags(&[("class", "hot"), ("source", "multipart")])
     );
 
@@ -34195,4 +34195,88 @@ fn a_rolled_back_record_commit_leaves_no_metadata_change_behind_it() {
         );
         previous = change.sequence;
     }
+}
+
+#[test]
+fn an_object_without_attributes_pays_one_pointer_for_them() {
+    // The two attribute maps were 48 of the 232 inline bytes of every object's
+    // metadata, and in every workload measured they held no content at all --
+    // an empty `BTreeMap` allocates nothing, but its handle is resident in each
+    // object and in each retained version of it.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    assert_eq!(
+        std::mem::size_of::<ObjectAttributes>(),
+        std::mem::size_of::<usize>(),
+        "the inline cost is one pointer"
+    );
+    assert!(
+        std::mem::size_of::<ObjectAttributes>()
+            < std::mem::size_of::<BTreeMap<String, String>>(),
+        "which is the whole point: a map handle is larger"
+    );
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "plain", vec![b'v'; 16], "text/plain")
+        .unwrap();
+    assert_eq!(audit_value(&store, "objects.user_metadata_bytes"), 0);
+    assert_eq!(audit_value(&store, "objects.tags_bytes"), 0);
+
+    // And an object that does carry attributes still owes the map, now on the
+    // heap, as well as its entries -- and still reads them back.
+    store
+        .put_object_with_options(
+            "bucket",
+            "attributed",
+            vec![b'v'; 16],
+            "text/plain",
+            PutOptions {
+                user_metadata: tags(&[("owner", "footprint")]),
+                tags: tags(&[("class", "hot")]),
+                ..PutOptions::default()
+            },
+        )
+        .unwrap();
+    let attributed = store.head_object("bucket", "attributed").unwrap();
+    assert_eq!(attributed.tags.get("class").map(String::as_str), Some("hot"));
+    assert_eq!(
+        attributed.user_metadata.get("owner").map(String::as_str),
+        Some("footprint")
+    );
+    let map_on_the_heap = std::mem::size_of::<BTreeMap<String, String>>() as u64;
+    assert!(
+        audit_value(&store, "objects.tags_bytes") >= map_on_the_heap,
+        "an object carrying attributes owes the map itself, which has moved to \
+         the heap"
+    );
+
+    // The attributes survive a snapshot, which is the part a type change could
+    // quietly break.
+    let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    let mut restored = MatrixObjectStore::new(test_options()).unwrap();
+    restored.install_snapshot_bytes(&bytes).unwrap();
+    let reloaded = restored.head_object("bucket", "attributed").unwrap();
+    assert_eq!(reloaded.tags.to_map(), tags(&[("class", "hot")]));
+    assert_eq!(
+        reloaded.user_metadata.to_map(),
+        tags(&[("owner", "footprint")])
+    );
+    assert_eq!(
+        restored
+            .head_object("bucket", "plain")
+            .unwrap()
+            .tags
+            .is_empty(),
+        true,
+        "and an object that carried none still carries none"
+    );
 }

@@ -1,4 +1,5 @@
 include!("shared_text.rs");
+include!("object_attributes.rs");
 include!("object_identity_ranges.inc.rs");
 include!("object_metadata.inc.rs");
 include!("object_metadata_batches.inc.rs");

@@ -37,6 +37,20 @@ impl SharedTextLedger {
     }
 }
 
+/// What one object's attributes cost beyond the eight-byte pointer inside the
+/// metadata.
+///
+/// An object carrying none owes nothing, because there is no map. One carrying
+/// any owes the map's own inline size, which has moved to the heap, as well as
+/// its entries.
+pub(crate) fn audit_object_attributes_bytes(attributes: &ObjectAttributes) -> u64 {
+    if !attributes.is_allocated() {
+        return 0;
+    }
+    (std::mem::size_of::<BTreeMap<String, String>>() as u64)
+        .saturating_add(audit_string_map_bytes(attributes))
+}
+
 /// Inline plus heap for a `BTreeMap<String, String>`, excluding B-tree node
 /// slack: a node holds up to eleven pairs, so the entries are counted but the
 /// unused capacity of a partly filled node is not.
@@ -86,8 +100,8 @@ fn audit_object_metadata_heap(ledger: &mut SharedTextLedger, metadata: &ObjectMe
         .saturating_add(audit_string_heap(&metadata.etag))
         .saturating_add(audit_string_heap(&metadata.content_type))
         .saturating_add(audit_string_heap(&metadata.storage_class))
-        .saturating_add(audit_string_map_bytes(&metadata.user_metadata))
-        .saturating_add(audit_string_map_bytes(&metadata.tags))
+        .saturating_add(audit_object_attributes_bytes(&metadata.user_metadata))
+        .saturating_add(audit_object_attributes_bytes(&metadata.tags))
         .saturating_add(
             (metadata.extents.capacity() as u64)
                 .saturating_mul(std::mem::size_of::<ObjectExtent>() as u64),
@@ -298,8 +312,8 @@ impl MatrixObjectStore {
                 storage_class_heap =
                     storage_class_heap.saturating_add(audit_string_heap(&metadata.storage_class));
                 user_metadata_bytes = user_metadata_bytes
-                    .saturating_add(audit_string_map_bytes(&metadata.user_metadata));
-                tags_bytes = tags_bytes.saturating_add(audit_string_map_bytes(&metadata.tags));
+                    .saturating_add(audit_object_attributes_bytes(&metadata.user_metadata));
+                tags_bytes = tags_bytes.saturating_add(audit_object_attributes_bytes(&metadata.tags));
                 extents_len = extents_len.saturating_add(metadata.extents.len() as u64);
                 extents_capacity =
                     extents_capacity.saturating_add(metadata.extents.capacity() as u64);

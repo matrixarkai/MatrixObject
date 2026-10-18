@@ -22,7 +22,7 @@ impl MatrixObjectStore {
             .ok_or_else(|| {
                 ObjectError::NotFound(format!("{}/{}", object_id.bucket, object_id.key))
             })?;
-        metadata.tags = tags;
+        *metadata.tags = tags.into();
         metadata.update_time_ms = update_time_ms;
         self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
@@ -63,10 +63,10 @@ impl MatrixObjectStore {
             length: retain_for_ms,
             etag: String::new(),
             content_type: "bucket/retention".to_string(),
-            user_metadata: BTreeMap::new(),
+            user_metadata: BTreeMap::new().into(),
             storage_class: k_standard_storage_class().to_string(),
             restore_until_ms: 0,
-            tags: BTreeMap::new(),
+            tags: BTreeMap::new().into(),
             legal_hold: false,
             legal_hold_update_time_ms: 0,
             retention_until_ms: 0,
@@ -106,10 +106,10 @@ impl MatrixObjectStore {
             length: quota.max_live_bytes,
             etag: String::new(),
             content_type: "bucket/quota".to_string(),
-            user_metadata: BTreeMap::new(),
+            user_metadata: BTreeMap::new().into(),
             storage_class: k_standard_storage_class().to_string(),
             restore_until_ms: 0,
-            tags: BTreeMap::new(),
+            tags: BTreeMap::new().into(),
             legal_hold: false,
             legal_hold_update_time_ms: 0,
             retention_until_ms: 0,
