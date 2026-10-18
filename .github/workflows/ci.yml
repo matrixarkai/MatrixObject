@@ -295,3 +295,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: A refused mutation leaves exactly the receipts it found
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_refused_mutation_leaves_exactly_the_receipts_it_found -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
