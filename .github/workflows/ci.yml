@@ -124,3 +124,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: One bucket name serves the whole bucket
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::every_object_in_a_bucket_names_it_through_one_allocation -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }

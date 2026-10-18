@@ -33471,7 +33471,6 @@ fn measure_the_metadata_footprint() {
         ..StoreOptions::default()
     })
     .unwrap();
-    store.create_bucket("bucket").unwrap();
     fn env_usize(name: &str, fallback: usize) -> usize {
         std::env::var(name)
             .ok()
@@ -33486,8 +33485,17 @@ fn measure_the_metadata_footprint() {
     // Versioning is off by default, so `versions` reads zero in every run and
     // the per-object cost of keeping old versions has never been in a figure.
     let versions = env_usize("MEASURE_VERSIONS", 0);
+    // A six-character bucket understates what the bucket name costs, since
+    // every object named it through an allocation of its own.
+    let bucket_len = env_usize("MEASURE_BUCKETLEN", 6);
+    let mut bucket = String::from("bucket");
+    while bucket.len() < bucket_len {
+        bucket.push('b');
+    }
+    bucket.truncate(bucket_len.max("bucket".len()));
+    store.create_bucket(&bucket).unwrap();
     if versions > 0 {
-        store.set_bucket_versioning("bucket", true).unwrap();
+        store.set_bucket_versioning(&bucket, true).unwrap();
     }
     for index in 0..objects {
         let stem = format!("prefix/{index:08}/");
@@ -33497,16 +33505,16 @@ fn measure_the_metadata_footprint() {
         }
         key.truncate(key_len.max(stem.len()));
         store
-            .put_object("bucket", &key, vec![b'x'; size], "application/octet-stream")
+            .put_object(&bucket, &key, vec![b'x'; size], "application/octet-stream")
             .unwrap();
         for _ in 0..versions {
             store
-                .put_object("bucket", &key, vec![b'y'; size], "application/octet-stream")
+                .put_object(&bucket, &key, vec![b'y'; size], "application/octet-stream")
                 .unwrap();
         }
     }
     let written = (objects * size * (1 + versions)) as u64;
-    println!("MEASURE objects={objects} size={size} key_len={key_len} versions={versions} written={written}");
+    println!("MEASURE objects={objects} size={size} key_len={key_len} bucket_len={bucket_len} versions={versions} written={written}");
     for (key, value) in store.footprint_audit() {
         if value != 0 {
             println!("MEASURE {key}={value}");
@@ -33981,6 +33989,53 @@ fn a_shared_allocation_is_charged_for_its_header() {
     );
 }
 
+#[test]
+fn every_object_in_a_bucket_names_it_through_one_allocation() {
+    // Each object named its bucket through an allocation of its own, so one
+    // bucket name was resident once per object -- its characters and a header
+    // every time. The registry already holds the name, so a new object can
+    // name it through that.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    const BUCKET: &str = "a-bucket-named-the-way-deployments-name-them";
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket(BUCKET).unwrap();
+    const OBJECTS: usize = 8;
+    for index in 0..OBJECTS {
+        store
+            .put_object(BUCKET, &format!("k{index}"), vec![b'v'; 8], "text/plain")
+            .unwrap();
+    }
+
+    let identities: Vec<_> = store.objects.keys().collect();
+    assert_eq!(identities.len(), OBJECTS);
+    let first = identities[0];
+    for other in &identities[1..] {
+        assert!(
+            first.bucket.shares_with(&other.bucket),
+            "two objects in one bucket must name it through one allocation"
+        );
+    }
+
+    // And the audit says so: one bucket name, one header, plus each key.
+    let header = 2 * std::mem::size_of::<usize>() as u64;
+    let keys: u64 = (0..OBJECTS)
+        .map(|index| format!("k{index}").len() as u64 + header)
+        .sum();
+    assert_eq!(
+        audit_value(&store, "objects.mapkey_heap"),
+        BUCKET.len() as u64 + header + keys,
+        "the bucket name is charged once for the whole bucket, not once per \
+         object"
+    );
+}
 #[test]
 fn a_metadata_change_log_nobody_checkpointed_is_bounded() {
     // The metadata changefeed compaction drops only the prefix every registered

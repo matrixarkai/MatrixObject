@@ -19,7 +19,7 @@ impl MatrixObjectStore {
                 bucket
             )));
         }
-        if !self.buckets.contains(&bucket) {
+        if !self.buckets.contains(bucket.as_str()) {
             return Err(ObjectError::NotFound(format!(
                 "bucket not found: {}",
                 bucket

@@ -13,9 +13,9 @@ impl MatrixObjectStore {
             limit: limit as u64,
             ..BucketInventoryPage::default()
         };
-        let iter: Box<dyn Iterator<Item = &String> + '_> = if let Some(marker) = marker {
-            Box::new(self.buckets.range((
-                std::ops::Bound::Excluded(marker.to_string()),
+        let iter: Box<dyn Iterator<Item = &SharedText> + '_> = if let Some(marker) = marker {
+            Box::new(self.buckets.range::<str, _>((
+                std::ops::Bound::Excluded(marker),
                 std::ops::Bound::Unbounded,
             )))
         } else {
@@ -27,8 +27,8 @@ impl MatrixObjectStore {
                 page.has_more = true;
                 break;
             }
-            page.next_marker = Some(bucket.clone());
-            page.buckets.push(bucket.clone());
+            page.next_marker = Some(bucket.to_string());
+            page.buckets.push(bucket.to_string());
         }
         page.returned_count = page.buckets.len() as u64;
         if page.buckets.is_empty() {

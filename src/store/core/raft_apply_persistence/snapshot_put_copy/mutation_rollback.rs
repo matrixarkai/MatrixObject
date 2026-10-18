@@ -105,7 +105,7 @@ impl MatrixObjectStore {
         match rollback.put_targeted.take() {
             Some(targeted) => {
                 if !targeted.bucket_existed {
-                    self.buckets.remove(&targeted.bucket);
+                    self.buckets.remove(targeted.bucket.as_str());
                 }
                 match targeted.previous_object {
                     Some(mut previous) => {

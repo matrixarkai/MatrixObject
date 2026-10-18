@@ -7,7 +7,7 @@ impl MatrixObjectStore {
     ) -> Result<ObjectMetadata, ObjectError> {
         validate_bucket(&bucket)?;
         validate_bucket_policy_document(&policy)?;
-        self.buckets.insert(bucket.clone());
+        self.buckets.insert(bucket.clone().into());
         if policy.disabled() {
             self.bucket_policy_documents.remove(&bucket);
         } else {
@@ -84,7 +84,7 @@ impl MatrixObjectStore {
     ) -> Result<ObjectMetadata, ObjectError> {
         validate_bucket(&bucket)?;
         validate_tags(&tag_set.tags)?;
-        self.buckets.insert(bucket.clone());
+        self.buckets.insert(bucket.clone().into());
         if tag_set.disabled() {
             self.bucket_tags.remove(&bucket);
         } else {
@@ -161,7 +161,7 @@ impl MatrixObjectStore {
         validate_bucket(&bucket)?;
         policy.canonicalize();
         validate_cors_policy(&policy)?;
-        self.buckets.insert(bucket.clone());
+        self.buckets.insert(bucket.clone().into());
         if policy.disabled() {
             self.bucket_cors.remove(&bucket);
         } else {

@@ -37,7 +37,7 @@ pub struct MatrixObjectStore {
     pub(crate) options: StoreOptions,
     persistent_snapshot_path: String,
     persistent_journal_path: String,
-    pub(crate) buckets: BTreeSet<String>,
+    pub(crate) buckets: BTreeSet<SharedText>,
     bucket_versioning: BTreeSet<String>,
     pub(crate) objects: BTreeMap<ObjectId, ObjectMetadata>,
     pub(crate) versions: BTreeMap<ObjectId, Vec<ObjectMetadata>>,
@@ -107,7 +107,7 @@ pub(crate) struct ObjectMutationRollback {
     /// Present only for the put path, where the three containers below are
     /// undone by hand and so are captured empty.
     put_targeted: Option<PutTargetedUndo>,
-    buckets: BTreeSet<String>,
+    buckets: BTreeSet<SharedText>,
     bucket_versioning: BTreeSet<String>,
     bucket_retention: BTreeMap<String, u64>,
     bucket_quotas: BTreeMap<String, BucketQuota>,

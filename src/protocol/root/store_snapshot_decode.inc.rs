@@ -120,7 +120,11 @@ impl StoreSnapshot {
         let physical_written_bytes = cursor.read_u64()?;
         let last_applied_index = cursor.read_u64()?;
         let last_applied_term = cursor.read_u64()?;
-        let buckets = read_string_set(&mut cursor, "store snapshot bucket count")?;
+        let buckets: BTreeSet<SharedText> =
+            read_string_set(&mut cursor, "store snapshot bucket count")?
+                .into_iter()
+                .map(SharedText::from)
+                .collect();
         let bucket_versioning =
             read_string_set(&mut cursor, "store snapshot versioning bucket count")?;
         let mut bucket_retention = BTreeMap::new();

@@ -60,7 +60,7 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        self.buckets.insert(bucket.to_string());
+        self.buckets.insert(bucket.to_string().into());
         let key = meta_bucket_key(bucket);
         let expected_version = self
             .meta_service

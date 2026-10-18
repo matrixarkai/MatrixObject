@@ -54,7 +54,7 @@ impl MatrixObjectStore {
         validate_upload_id(&upload_id)?;
         validate_bucket(&bucket)?;
         validate_key(&key)?;
-        self.buckets.insert(bucket.clone());
+        self.buckets.insert(bucket.clone().into());
         let object_id = ObjectId::new(bucket.clone(), key.clone());
         let meta_key = meta_object_key(&object_id);
         self.meta_service.check_shard_fence(&meta_key)?;
