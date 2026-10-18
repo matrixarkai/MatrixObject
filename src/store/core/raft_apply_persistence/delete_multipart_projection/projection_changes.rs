@@ -30,6 +30,7 @@ impl MatrixObjectStore {
             .object_changes
             .last()
             .map_or(0, |change| change.sequence);
+        self.bound_unconsumed_object_changes();
         self.object_changes.push(ObjectChangeRecord {
             sequence,
             previous_sequence,
@@ -41,6 +42,34 @@ impl MatrixObjectStore {
             deleted: metadata.deleted,
             event_time_ms: metadata.update_time_ms,
         });
+    }
+
+    /// Trim the feed when nothing is subscribed to it.
+    ///
+    /// Called before the push rather than after, so the vector never doubles
+    /// past the bound and its capacity settles at the bound instead of twice
+    /// it. `last()` is what `previous_sequence` reads and trimming the front
+    /// does not move it.
+    fn bound_unconsumed_object_changes(&mut self) {
+        if !self.object_change_cursors.is_empty() {
+            return;
+        }
+        let len = self.object_changes.len();
+        if len < UNCONSUMED_OBJECT_CHANGE_RETENTION {
+            return;
+        }
+        // Room for the record about to be pushed, so the length afterwards is
+        // the bound exactly.
+        let overflow = len + 1 - UNCONSUMED_OBJECT_CHANGE_RETENTION;
+        self.object_changes.drain(0..overflow);
+        if overflow > 1 {
+            // Steady state drops exactly one record per append, so this is
+            // reached only once: by a feed loaded from a snapshot taken before
+            // the bound existed, which converges in a single step. Shrinking
+            // on every append would instead make each push reallocate.
+            self.object_changes
+                .shrink_to(UNCONSUMED_OBJECT_CHANGE_RETENTION);
+        }
     }
 
     fn replace_last_object_change_metadata(&mut self, operation: &str, metadata: &ObjectMetadata) {

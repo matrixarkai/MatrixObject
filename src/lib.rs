@@ -69,6 +69,23 @@ const DEFAULT_STORAGE_RECEIPT_RETENTION: usize = 100_000;
 const MAX_STORAGE_RECEIPT_RETENTION: usize = 1_000_000;
 const DEFAULT_META_RETENTION_LIMIT: usize = 1_000_000;
 const MAX_META_RETENTION_LIMIT: usize = 10_000_000;
+/// A change feed exists so a consumer can catch up, and the cursor-driven
+/// compaction drops only the prefix every registered consumer has already
+/// passed. With no cursor registered at all there is no such position, so that
+/// compaction declines to drop anything -- which left a store nobody subscribes
+/// to retaining its entire feed for the life of the process.
+///
+/// This bounds that case. It is a constant rather than a setting because the
+/// feed is replicated state covered by the snapshot checksum: a limit that
+/// differed between replicas would diverge them, and a limit carried in the
+/// snapshot would be a durable format change. Derived from already-replicated
+/// state and a constant, every replica trims identically.
+///
+/// A consumer that registers later and asks for a trimmed prefix is told to
+/// resync -- `cursor_compacted`, `resync_required` and `resync_from_sequence`
+/// on the page -- which is the read path's existing contract and what it
+/// answers after any compaction.
+const UNCONSUMED_OBJECT_CHANGE_RETENTION: usize = 1_024;
 const DEFAULT_META_MAX_BATCH_MUTATIONS: usize = 10_000;
 const DEFAULT_META_MAX_BATCH_VALUE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_META_MAX_OPEN_TRANSACTIONS: usize = 1_000_000;

@@ -33363,3 +33363,96 @@ fn the_audit_counts_bytes_held_by_an_unfinished_multipart_upload() {
         "an aborted upload holds nothing"
     );
 }
+
+#[test]
+fn a_changefeed_nobody_subscribes_to_is_bounded() {
+    // The cursor-driven compaction drops only what every registered consumer
+    // has passed, so with no consumer it declines to drop anything and the feed
+    // grew for the life of the process. A store nobody subscribes to now keeps
+    // a bounded window instead.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    let bound = crate::UNCONSUMED_OBJECT_CHANGE_RETENTION as u64;
+    let overshoot = 128u64;
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..(bound + overshoot) {
+        store
+            .put_object("bucket", &format!("k{index}"), b"v".to_vec(), "text/plain")
+            .unwrap();
+    }
+
+    // The newest sequence the feed holds is also the newest ever issued, since
+    // only the front is trimmed. Not vacuous: strictly more changes were taken
+    // than are retained, so the bound was reached rather than never approached.
+    let retained = store
+        .list_object_changes_after(0, bound as usize * 4)
+        .unwrap();
+    let taken = retained
+        .last()
+        .expect("the feed should not be empty")
+        .sequence;
+    assert!(
+        taken > bound,
+        "this run never reached the bound, so it cannot test it: {taken} changes taken, bound {bound}"
+    );
+
+    let len = audit_value(&store, "object_changes.len");
+    assert_eq!(
+        len, bound,
+        "a feed with no consumer should settle at the bound, not {len}"
+    );
+    // Trimming happens before the push, so the vector never doubles past the
+    // bound. Were it trimmed afterwards this would be 2 * bound.
+    let capacity = audit_value(&store, "object_changes.capacity");
+    assert_eq!(
+        capacity, bound,
+        "the capacity should settle at the bound, not {capacity}"
+    );
+
+    // The window kept is the newest records, not the oldest.
+    assert_eq!(retained.len(), bound as usize);
+    assert_eq!(
+        retained[retained.len() - 1].sequence,
+        taken,
+        "the newest change should still be in the feed"
+    );
+    assert_eq!(
+        retained[0].sequence,
+        taken - bound + 1,
+        "the retained window should be the newest {bound} changes"
+    );
+
+    // A consumer arriving now is told to resync rather than silently handed a
+    // feed with a hole in it. That is the read path's own contract.
+    let page = store.list_object_changes_page_after(0, 16, 0).unwrap();
+    assert!(
+        page.cursor_compacted && page.resync_required,
+        "a trimmed prefix should report cursor_compacted and resync_required"
+    );
+    assert_eq!(page.resync_from_sequence, taken - bound);
+
+    // Once a consumer exists the bound stops governing: its cursor decides what
+    // is safe to drop, and this trim must not pre-empt that.
+    store
+        .commit_object_change_cursor("replicator", taken, 1)
+        .unwrap();
+    for index in 0..64u64 {
+        store
+            .put_object("bucket", &format!("later{index}"), b"v".to_vec(), "text/plain")
+            .unwrap();
+    }
+    let len_with_consumer = audit_value(&store, "object_changes.len");
+    assert!(
+        len_with_consumer > bound,
+        "with a consumer registered the feed should grow past the bound and wait \
+         for the cursor, but it held at {len_with_consumer}"
+    );
+}
