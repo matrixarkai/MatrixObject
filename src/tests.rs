@@ -33751,3 +33751,90 @@ fn the_holders_that_name_one_object_share_its_key_characters() {
         );
     }
 }
+
+#[test]
+fn a_rolled_back_mutation_leaves_no_change_behind_it() {
+    // The targeted undo dropped the tail of the change feed by length, which was
+    // exact while a mutation only ever appended to it. Bounding an unconsumed
+    // feed means a mutation can also trim the front, and a trim plus an append
+    // leaves the length unchanged -- so the undo became a no-op that kept the
+    // rolled back mutation's change record.
+    //
+    // A retained change at or above `next_object_change_sequence` is what
+    // `validate_changefeed_state` calls corruption, so this is not cosmetic.
+    //
+    // The capture and restore are driven directly because the only failure that
+    // lands between them is `end_mutation_batch`, which a single-threaded test
+    // cannot provoke through the public API.
+    let bound = crate::UNCONSUMED_OBJECT_CHANGE_RETENTION as u64;
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..(bound + 16) {
+        store
+            .put_object("bucket", &format!("k{index}"), b"v".to_vec(), "text/plain")
+            .unwrap();
+    }
+
+    let before = store
+        .list_object_changes_after(0, bound as usize * 4)
+        .unwrap();
+    assert_eq!(
+        before.len(),
+        bound as usize,
+        "the feed should be at the bound, or this test is not exercising a trim"
+    );
+    let highest_before = before.last().unwrap().sequence;
+
+    // Exactly what a failure at `end_mutation_batch` does: capture, let the
+    // mutation apply, then put it back.
+    let rollback = store.capture_targeted_mutation_rollback("bucket", "rolled-back");
+    store
+        .put_object("bucket", "rolled-back", b"v".to_vec(), "text/plain")
+        .unwrap();
+    let during = store
+        .list_object_changes_after(0, bound as usize * 4)
+        .unwrap();
+    assert!(
+        during.last().unwrap().sequence > highest_before,
+        "the mutation should have appended a change for the undo to remove"
+    );
+    assert_eq!(
+        during.len(),
+        bound as usize,
+        "and the length should be unchanged, which is exactly why a length is \
+         not enough to undo it"
+    );
+    store.restore_object_mutation_rollback(rollback);
+
+    let after = store
+        .list_object_changes_after(0, bound as usize * 4)
+        .unwrap();
+    assert!(
+        after.iter().all(|change| change.sequence <= highest_before),
+        "the rolled back mutation left its change behind: highest retained {} \
+         against {highest_before} before the mutation",
+        after.last().map_or(0, |change| change.sequence)
+    );
+    assert!(
+        store.head_object("bucket", "rolled-back").is_err(),
+        "the object itself should be gone too"
+    );
+
+    // The feed is still internally consistent: strictly increasing, and every
+    // retained sequence below the next one to be issued, which is what the
+    // snapshot validator requires.
+    let mut previous = 0u64;
+    for change in &after {
+        assert!(
+            change.sequence > previous,
+            "the retained feed is not strictly ordered at {}",
+            change.sequence
+        );
+        previous = change.sequence;
+    }
+    let page = store.list_object_changes_page_after(0, 4, 0).unwrap();
+    assert!(
+        page.cursor_compacted && page.resync_required,
+        "a trimmed prefix should still report cursor_compacted and resync_required"
+    );
+}
