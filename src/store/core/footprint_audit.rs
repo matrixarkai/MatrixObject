@@ -646,6 +646,117 @@ impl MatrixObjectStore {
             .unwrap_or(0)
             .saturating_add(self.snapshot_assembler.footprint_bytes());
         push("store.export_caches.bytes", store_export_caches);
+
+        // ---- the store's own small, long-lived strings -----------------------
+        //
+        // None of these is large and none grows with what is stored, which is
+        // exactly why they were in no leg: the audit grew by chasing the big
+        // structures. But "not weighed" and "weighs nothing" are different
+        // claims, and only one of them is checkable -- so these are weighed,
+        // and the coverage guard beside this audit can then require that EVERY
+        // heap-owning field of the long-lived state appears in the accounting,
+        // with nothing excused.
+        let mut store_identity = (self.persistent_snapshot_path.capacity()
+            + self.persistent_journal_path.capacity()
+            + self.consensus_read_last_status.borrow().capacity())
+            as u64;
+        for node_id in &self.raft_voter_node_ids {
+            store_identity = store_identity
+                .saturating_add(std::mem::size_of::<String>() as u64)
+                .saturating_add(node_id.capacity() as u64);
+        }
+        if let Some(stamp) = self.persistent_snapshot_durable_stamp.borrow().as_ref() {
+            store_identity = store_identity
+                .saturating_add(std::mem::size_of::<PersistentSnapshotDurableStamp>() as u64)
+                .saturating_add(stamp.state_stamp.capacity() as u64);
+        }
+        push("store.identity.bytes", store_identity);
+
+        // ---- four maps the coverage guard caught -----------------------------
+        //
+        // Found by `every_heap_owning_field_of_the_long_lived_state_is_named_in_
+        // the_footprint` rather than by reading, and two of the four are intern
+        // tables this audit's own earlier work added: a figure that measures
+        // sharing can introduce a structure of its own and not notice.
+        //
+        // Each is charged for what it OWNS. The shared routes and the shared
+        // checksums are charged where the cache entries name them, so only the
+        // keys and the handles are charged here -- the checksum text goes
+        // through the same pass ledger, which returns zero for an allocation
+        // already charged.
+        let mut cursor_bytes = 0u64;
+        for (consumer, cursor) in self.object_change_cursors.iter() {
+            cursor_bytes = cursor_bytes
+                .saturating_add(
+                    (std::mem::size_of::<String>() + std::mem::size_of::<ObjectChangeCursor>())
+                        as u64,
+                )
+                .saturating_add(audit_string_heap(consumer))
+                .saturating_add(audit_string_heap(&cursor.consumer_id));
+        }
+        push("store.change_cursors.entries", self.object_change_cursors.len() as u64);
+        push("store.change_cursors.bytes", cursor_bytes);
+
+        let mut shared_route_table_bytes = 0u64;
+        for shard_id in self.metadata_route_shared.keys() {
+            shared_route_table_bytes = shared_route_table_bytes
+                .saturating_add(
+                    (std::mem::size_of::<String>()
+                        + std::mem::size_of::<std::sync::Arc<MetadataShardRoute>>())
+                        as u64,
+                )
+                .saturating_add(audit_string_heap(shard_id));
+        }
+        for (text, checksum) in self.metadata_route_checksums.iter() {
+            shared_route_table_bytes = shared_route_table_bytes
+                .saturating_add(
+                    (std::mem::size_of::<String>() + std::mem::size_of::<SharedText>()) as u64,
+                )
+                .saturating_add(audit_string_heap(text))
+                .saturating_add(ledger.charge(checksum));
+        }
+        push(
+            "metadata_route_cache.intern_tables.bytes",
+            shared_route_table_bytes,
+        );
+
+        // Bounded by `raft_membership_receipt_retention_limit` rather than by
+        // anything the data implies, which is the same shape as every other
+        // receipt map and belongs in the same part of the report.
+        let mut membership_receipt_bytes = 0u64;
+        for (key, receipt) in self.raft_membership_receipts.iter() {
+            membership_receipt_bytes = membership_receipt_bytes
+                .saturating_add(
+                    (std::mem::size_of::<String>()
+                        + std::mem::size_of::<RaftMembershipReceipt>()) as u64,
+                )
+                .saturating_add(audit_string_heap(key))
+                .saturating_add(audit_string_heap(&receipt.mutation_id))
+                .saturating_add(audit_string_heap(&receipt.target_voter_checksum))
+                .saturating_add(audit_string_heap(&receipt.command_checksum));
+            for node_id in &receipt.target_voter_node_ids {
+                membership_receipt_bytes = membership_receipt_bytes
+                    .saturating_add(std::mem::size_of::<String>() as u64)
+                    .saturating_add(audit_string_heap(node_id));
+            }
+        }
+        push(
+            "raft_membership_receipts.entries",
+            self.raft_membership_receipts.len() as u64,
+        );
+        push("raft_membership_receipts.bytes", membership_receipt_bytes);
+
+        // The content types a caller has named, interned once each and shared
+        // with the metadata that names them -- so the characters are charged
+        // through the same ledger as everything else and only the set's own
+        // entries are charged here.
+        let mut content_type_bytes = (self.content_types.len() as u64)
+            .saturating_mul(std::mem::size_of::<SharedText>() as u64);
+        for content_type in self.content_types.iter() {
+            content_type_bytes = content_type_bytes.saturating_add(ledger.charge(content_type));
+        }
+        push("store.content_types.entries", self.content_types.len() as u64);
+        push("store.content_types.bytes", content_type_bytes);
         let accounted = payload_cap
             .saturating_add(data_cap)
             .saturating_add(shard_cap)
@@ -658,6 +769,11 @@ impl MatrixObjectStore {
             accounted
                 .saturating_add(metadata_bytes)
                 .saturating_add(multipart_payload_bytes)
+                .saturating_add(store_identity)
+                .saturating_add(content_type_bytes)
+                .saturating_add(cursor_bytes)
+                .saturating_add(shared_route_table_bytes)
+                .saturating_add(membership_receipt_bytes)
                 // What an open mutation batch holds, and zero when none is
                 // open. A figure that excluded it was a figure for a store
                 // between mutations.

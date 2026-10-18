@@ -36533,6 +36533,18 @@ fn measure_what_the_retained_receipts_cost() {
             .delete_object("bucket", &format!("prefix/{index:08}/kkkkkkkkkk"))
             .unwrap();
     }
+    for leg in [
+        "block.alloc_receipts",
+        "block.batch_alloc_receipts",
+        "block.release_receipts",
+        "block.write_receipts",
+        "block.batch_write_receipts",
+        "block.discard_receipts",
+        "block.batch_discard_receipts",
+        "replica.receipts",
+    ] {
+        println!("RECEIPTS-AFTER-DELETES   {leg}={}", read(&store, leg));
+    }
     let deleted_entries = counted(&store);
     let deleted_bytes = read(&store, "block.receipts.bytes");
     let duplicate = read(&store, "block.receipts.duplicate_key_bytes");
@@ -36632,6 +36644,102 @@ fn measure_what_a_filled_metadata_route_cache_costs() {
         "ROUTECACHE metadata_total={} store_total={}",
         read(&store, "ACCOUNTED.metadata_bytes"),
         read(&store, "ACCOUNTED.total_bytes")
+    );
+}
+
+#[test]
+fn every_heap_owning_field_of_the_long_lived_state_is_named_in_the_footprint() {
+    // The same finding kept recurring: a structure the audit COUNTED but never
+    // WEIGHED, or never mentioned at all. The metadata route cache was 598
+    // bytes an entry and reported as a count; the receipt maps were one number
+    // for eighteen maps; what an open mutation batch holds was in no total at
+    // all. Each was found by reading the state structs against the accounting
+    // by hand, which works exactly once per reading.
+    //
+    // This is that reading, enforced. Every field of the long-lived state whose
+    // type can own heap must be NAMED somewhere in the footprint accounting.
+    //
+    // It is a coverage check and not a correctness proof: naming a field does
+    // not prove the bytes are right, and a field whose name appears
+    // coincidentally would pass. What it does catch is the common case -- a new
+    // map added to a service with nothing in the audit that mentions it -- and
+    // that is the case that produced every finding above.
+    const STATE: [(&str, &str); 4] = [
+        ("the store", include_str!("store/core.rs")),
+        (
+            "the page service",
+            include_str!("services/page/service_state.inc.rs"),
+        ),
+        (
+            "the chunk service",
+            include_str!("services/chunk/service_state.inc.rs"),
+        ),
+        (
+            "the meta service",
+            include_str!("services/meta/service_state.inc.rs"),
+        ),
+    ];
+    const ACCOUNTING: [&str; 5] = [
+        include_str!("store/core/footprint_audit.rs"),
+        include_str!("services/page/footprint.rs"),
+        include_str!("services/chunk/footprint.rs"),
+        include_str!("services/meta/footprint.rs"),
+        include_str!("services/meta/maintenance_persistence/mutation_preflight.rs"),
+    ];
+    const OWNS_HEAP: [&str; 9] = [
+        "BTreeMap", "HashMap", "BTreeSet", "HashSet", "Vec<", "VecDeque", "String", "Box<", "Arc<",
+    ];
+
+    let accounting: String = ACCOUNTING.concat();
+    let mut unnamed: Vec<(String, String, String)> = Vec::new();
+    let mut checked = 0usize;
+    for (label, source) in STATE {
+        for line in source.lines() {
+            let trimmed = line.trim();
+            // Field declarations only: `name: Type,` at a struct's indent, not
+            // a doc comment, a function argument or a match arm.
+            if trimmed.starts_with("//") || !trimmed.ends_with(',') {
+                continue;
+            }
+            let without_vis = trimmed
+                .strip_prefix("pub(crate) ")
+                .or_else(|| trimmed.strip_prefix("pub "))
+                .unwrap_or(trimmed);
+            let Some((name, ty)) = without_vis.split_once(": ") else {
+                continue;
+            };
+            if name.is_empty()
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                continue;
+            }
+            let ty = ty.trim_end_matches(',');
+            if !OWNS_HEAP.iter().any(|token| ty.contains(token)) {
+                continue;
+            }
+            checked += 1;
+            if !accounting.contains(name) {
+                unnamed.push((label.to_string(), name.to_string(), ty.to_string()));
+            }
+        }
+    }
+
+    println!("FOOTPRINTCOVERAGE heap_owning_fields={checked} unnamed={}", unnamed.len());
+    assert!(
+        checked > 30,
+        "this guard must actually find the fields it checks, and found {checked}"
+    );
+    assert!(
+        unnamed.is_empty(),
+        "every heap-owning field of the long-lived state must be named in the \
+         footprint accounting, and these are not:\n{}",
+        unnamed
+            .iter()
+            .map(|(label, name, ty)| format!("  {label}: {name}: {ty}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
