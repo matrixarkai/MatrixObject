@@ -1,6 +1,10 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataRouteCacheEntry {
-    pub route: MetadataShardRoute,
+    /// Shared, because every key resolving to one shard resolves to the same
+    /// route: the shard's four strings, the owner session's three, the
+    /// preferred endpoint and the fallbacks. One allocation per distinct route
+    /// rather than one per cached key.
+    pub route: std::sync::Arc<MetadataShardRoute>,
     pub topology_epoch: u64,
     pub topology_checksum: String,
     pub shard_topology_checksum: String,

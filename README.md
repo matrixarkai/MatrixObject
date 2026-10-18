@@ -160,6 +160,38 @@ shared between holders is charged once per allocation — the characters and the
 two counts in front of them — so `mapkey_capacity` against `mapkey_len` is that
 header rather than slack.
 
+### What is bounded by a setting rather than by your data
+
+Every figure above scales with what you store. Several structures do not: they
+are bounded by a configured limit, so they are the same size whether the store
+holds a thousand objects or a million, and a deployment has to provision for
+them separately.
+
+| structure | setting | default | at that default |
+|---|---|---:|---:|
+| metadata route cache | `metadata_route_cache_entries` | 100,000 | **16.8 MB** |
+| idempotency receipts | `receipt_retention` | 100,000 | ~82 MB across three replicas |
+| raft apply receipts | `k_max_raft_apply_receipts()` | 4,096 | ~1.4 MB |
+| object change feed | `UNCONSUMED_OBJECT_CHANGE_RETENTION` | 1,024 | included in the figures above |
+| metadata change log | `UNCHECKPOINTED_METADATA_CHANGE_RETENTION` | 1,024 | included in the figures above |
+
+For scale, the metadata for 2,000 objects of 1 KiB is about 1.5 MB. A full route
+cache is ten times that, and the receipt maps at their default are considerably
+more.
+
+The route cache is the one most likely to surprise, because it is keyed by
+**metadata key** — one entry per object key resolved, not one per shard — so it
+fills with the number of distinct objects a deployment serves rather than with
+its topology. It was 598 bytes an entry until the entries for one shard were
+made to share a single route; it is 168 now, which is the key text and the
+entry's own fields. Its TTL (`metadata_route_cache_ttl_ms`, default 1000) makes
+an entry stale after a second but does not free it: a burst of distinct keys
+leaves the cache resident behind it.
+
+```
+cargo test --release --lib measure_what_a_filled_metadata_route_cache_costs -- --ignored --nocapture
+```
+
 ### What a mutation holds while it runs
 
 Every figure above is the store **at rest**. A mutation also holds a copy of what
