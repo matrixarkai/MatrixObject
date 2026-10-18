@@ -35532,6 +35532,99 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
 }
 
 #[test]
+fn the_audit_reports_what_an_open_mutation_batch_holds() {
+    // `begin_mutation_batch` boxes a whole page-service snapshot and holds it
+    // until the mutation commits or aborts. Until now `Store::footprint_audit`
+    // reported no part of it, so every total it produced was a total for a store
+    // with no mutation in flight -- the one moment the number is least needed.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..8u32 {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:04}"),
+                vec![b'x'; 256 * 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let read = |store: &MatrixObjectStore, wanted: &str| -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value)
+            .unwrap_or(0)
+    };
+
+    let quiet_total = read(&store, "ACCOUNTED.total_bytes");
+    assert_eq!(
+        read(&store, "open_batch.COPIED_bytes"),
+        0,
+        "with no batch open there is nothing to report"
+    );
+
+    store
+        .page_service
+        .begin_mutation_batch("batch-the-audit-can-see")
+        .unwrap();
+    let held = read(&store, "open_batch.COPIED_bytes");
+    let open_total = read(&store, "ACCOUNTED.total_bytes");
+    println!("OPENBATCH quiet_total={quiet_total} held={held} open_total={open_total}");
+    assert!(
+        held > 0,
+        "an open batch holds a page-service snapshot, and the audit reported none"
+    );
+    assert_eq!(
+        open_total,
+        quiet_total + held,
+        "the total must grow by exactly what the open batch holds"
+    );
+    assert!(
+        read(&store, "open_batch.replica_chunks.entries") > 0,
+        "the open batch names the replicas' chunks, and reported none"
+    );
+
+    store
+        .page_service
+        .abort_mutation_batch("batch-the-audit-can-see")
+        .unwrap();
+    assert_eq!(
+        read(&store, "open_batch.COPIED_bytes"),
+        0,
+        "aborting the batch releases the snapshot, and the audit still names it"
+    );
+
+    // The total comes back to within a few bytes of where it started, not to
+    // exactly where it started, and the difference is not a leak: the abort
+    // restores the service by installing the snapshot, and a clone allocates
+    // exactly, so capacity slack the live maps had accumulated is gone
+    // afterwards. Measured at 33 bytes here.
+    //
+    // So this asserts the direction and a bound rather than equality. An
+    // equality assertion on any capacity figure can fire on that effect alone,
+    // which is a false failure that teaches nothing -- and it did fire, on the
+    // first version of this test.
+    let after_abort = read(&store, "ACCOUNTED.total_bytes");
+    assert!(
+        after_abort <= quiet_total,
+        "the abort must not leave the store larger than it was: {quiet_total} \
+         before, {after_abort} after"
+    );
+    assert!(
+        quiet_total - after_abort < held,
+        "whatever the abort gave back must be slack rather than the {held} \
+         bytes the batch held: {quiet_total} before, {after_abort} after"
+    );
+    println!("OPENBATCH after_abort={after_abort} slack_released={}", quiet_total - after_abort);
+}
+
+#[test]
 fn a_write_while_a_snapshot_is_held_copies_only_the_chunk_it_touches() {
     // A chunk's state sits behind an `Arc`, so a snapshot of a replica clones
     // handles rather than states. A write then takes `Arc::make_mut`, which

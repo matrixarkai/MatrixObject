@@ -617,6 +617,27 @@ impl MatrixObjectStore {
             "block.receipts.matching_key_entries",
             page.receipt_matching_keys,
         );
+
+        // ---- what an OPEN mutation batch holds -------------------------------
+        //
+        // `begin_mutation_batch` boxes a whole page-service snapshot and holds it
+        // until the mutation commits or aborts. Nothing here reported any part of
+        // it, so every total this audit produced was a total for a store with no
+        // mutation in flight -- which is the one moment a deployment does not need
+        // the number for.
+        //
+        // Zero when no batch is open, which is how a store looks between
+        // mutations and why these legs leave every existing total unmoved there.
+        let mut open_batch_copied = 0u64;
+        for (leg, value) in self.page_service.open_mutation_batch_footprint_audit() {
+            if leg == "batch.COPIED_bytes" {
+                open_batch_copied = value;
+            }
+            push(
+                &format!("open_{leg}"),
+                value,
+            );
+        }
         let store_export_caches = self
             .snapshot_export_cache
             .borrow()
@@ -636,7 +657,11 @@ impl MatrixObjectStore {
             "ACCOUNTED.total_bytes",
             accounted
                 .saturating_add(metadata_bytes)
-                .saturating_add(multipart_payload_bytes),
+                .saturating_add(multipart_payload_bytes)
+                // What an open mutation batch holds, and zero when none is
+                // open. A figure that excluded it was a figure for a store
+                // between mutations.
+                .saturating_add(open_batch_copied),
         );
         push("logical.written", self.logical_written_bytes);
         push("physical.written", self.physical_written_bytes);
