@@ -35470,3 +35470,139 @@ fn a_copy_that_fails_after_mutating_leaves_the_store_unchanged() {
          proved nothing"
     );
 }
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_a_mutation_batch_snapshot_costs() {
+    // The store's undo stopped copying the page service because
+    // `begin_mutation_batch` owns that job: it boxes a whole
+    // `export_snapshot_unsealed()` and holds it for the mutation. This measures
+    // what that snapshot costs, which nothing did.
+    //
+    // Reported at several store sizes, and again after every object is deleted,
+    // because the two things that can make it grow are the chunks stored and the
+    // receipts retained.
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let series: Vec<usize> = std::env::var("MEASURE_SERIES")
+        .ok()
+        .map(|raw| raw.split(',').filter_map(|one| one.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![250, 500, 1000]);
+    let size = env_usize("MEASURE_SIZE", 1024);
+    for objects in series {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        let keys: Vec<String> = (0..objects)
+            .map(|index| format!("prefix/{index:08}/kkkkkkkkkk"))
+            .collect();
+        for key in keys.iter() {
+            store
+                .put_object("bucket", key, vec![b'x'; size], "application/octet-stream")
+                .unwrap();
+        }
+        for (key, value) in store.page_service.export_snapshot_unsealed().footprint_audit() {
+            if value != 0 {
+                println!("BATCH objects={objects} {key}={value}");
+            }
+        }
+        // What the whole store holds, for the share.
+        let store_total = store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == "ACCOUNTED.total_bytes")
+            .map(|(_, value)| value)
+            .unwrap_or(0);
+        println!("BATCH objects={objects} store.total_bytes={store_total}");
+
+        for key in keys.iter() {
+            store.delete_object("bucket", key).unwrap();
+        }
+        for (key, value) in store.page_service.export_snapshot_unsealed().footprint_audit() {
+            if value != 0 {
+                println!("BATCH-AFTER-DELETES objects={objects} {key}={value}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_snapshot_a_mutation_holds_shares_payload_rather_than_copying_it() {
+    // `begin_mutation_batch` boxes a whole page-service snapshot and holds it
+    // for the mutation. A chunk's payload is an `Arc<Vec<u8>>`, so that snapshot
+    // names the stored bytes rather than duplicating them -- and this is the
+    // test that says so, because the difference between naming and duplicating
+    // is the difference between a 2,941-byte snapshot and a 3 MB one.
+    //
+    // Doubling what is stored must double what the snapshot *names* and leave
+    // what it *copies* alone.
+    fn batch_at(objects: usize) -> std::collections::BTreeMap<String, u64> {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("prefix/{index:08}/k"),
+                    vec![b'x'; 1024],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        store
+            .page_service
+            .export_snapshot_unsealed()
+            .footprint_audit()
+            .into_iter()
+            .collect()
+    }
+    let get = |audit: &std::collections::BTreeMap<String, u64>, key: &str| -> u64 {
+        audit.get(key).copied().unwrap_or(0)
+    };
+    let small = batch_at(40);
+    let large = batch_at(80);
+
+    let small_shared = get(&small, "batch.replica_chunks.shared_payload_bytes");
+    let large_shared = get(&large, "batch.replica_chunks.shared_payload_bytes");
+    assert!(
+        small_shared > 0,
+        "the snapshot must name the stored payload, and it named nothing"
+    );
+    assert!(
+        large_shared > small_shared,
+        "doubling the stored objects must increase what the snapshot names: \
+         {small_shared} and {large_shared}"
+    );
+    assert_eq!(
+        get(&small, "batch.COPIED_bytes"),
+        get(&large, "batch.COPIED_bytes"),
+        "what a mutation's snapshot copies must not depend on how much is \
+         stored, and doubling the store moved it"
+    );
+
+    // And the breakdown accounts for every byte of what it says it copies, so a
+    // leg added later cannot fall out of the headline.
+    for audit in [&small, &large] {
+        let legs = get(audit, "batch.page_receipts.inline_and_key_bytes")
+            + get(audit, "batch.page_other.bytes")
+            + get(audit, "batch.replica_receipts.inline_and_key_bytes")
+            + get(audit, "batch.replica_other.bytes")
+            + get(audit, "batch.replica_chunks.copied_bytes");
+        assert_eq!(
+            legs,
+            get(audit, "batch.COPIED_bytes"),
+            "the copied legs must add up to the copied total"
+        );
+    }
+}
