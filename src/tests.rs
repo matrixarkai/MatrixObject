@@ -34837,10 +34837,18 @@ fn measure_what_a_mutation_undo_costs() {
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_what_the_payload_index_retains() {
-    // There is no `payloads.remove` in the tree. A delete marks the object's
-    // extents stale, and the index entry that names them is not mentioned. This
-    // asks what that costs: write a run of objects, delete every one, and read
-    // the index back.
+    // A delete marks the object's extents stale, and `mark_extents_stale`
+    // removes the payload entry naming each one. This comment first said there
+    // was no `payloads.remove` in the tree: the call is a method chain broken
+    // over two lines, so a grep for `payloads.remove` finds nothing and reports
+    // a map that nothing removes from. Deciding a container is never written by
+    // searching for its name and an operator on one line is how that reads, and
+    // it is wrong twice over here -- the entry is removed, and the removal is
+    // the reason the figure below falls to zero.
+    //
+    // So this measures what a delete gives back and what it leaves instead:
+    // write a run of objects, delete every one, and read the index and the
+    // receipt maps back.
     fn env_usize(name: &str, fallback: usize) -> usize {
         std::env::var(name)
             .ok()
