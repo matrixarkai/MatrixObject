@@ -1,6 +1,6 @@
-include!("segment_lifecycle/object_writes.rs");
-include!("segment_lifecycle/object_lifecycle.rs");
-include!("segment_lifecycle/segment_maintenance.rs");
+include!("slab_lifecycle/object_writes.rs");
+include!("slab_lifecycle/object_lifecycle.rs");
+include!("slab_lifecycle/slab_maintenance.rs");
 
 impl MatrixObjectStore {
     fn apply_slab_lifecycle_command(

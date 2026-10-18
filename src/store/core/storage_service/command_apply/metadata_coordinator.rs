@@ -1,4 +1,4 @@
-include!("metadata_coordinator/block_storage.rs");
+include!("metadata_coordinator/page_storage.rs");
 include!("metadata_coordinator/root_placement.rs");
 include!("metadata_coordinator/coordinator.rs");
 include!("metadata_coordinator/transactions.rs");

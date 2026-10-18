@@ -1,4 +1,4 @@
-include!("maintenance_root_proofs/block_repair.rs");
+include!("maintenance_root_proofs/page_repair.rs");
 include!("maintenance_root_proofs/storage_maintenance.rs");
 include!("maintenance_root_proofs/chunk_batch_read.rs");
 include!("maintenance_root_proofs/root_types.rs");

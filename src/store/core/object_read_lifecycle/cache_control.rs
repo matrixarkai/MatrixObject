@@ -4,4 +4,4 @@ include!("cache_batch_prewarm.rs");
 include!("cache_invalidation.rs");
 include!("cache_batch_invalidation.rs");
 include!("cache_batch_execution.rs");
-include!("block_cache_administration.rs");
+include!("page_cache_administration.rs");

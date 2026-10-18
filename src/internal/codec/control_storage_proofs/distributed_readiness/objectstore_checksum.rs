@@ -1,9 +1,9 @@
 include!("objectstore_checksum/identity.rs");
 include!("objectstore_checksum/metadata.rs");
 include!("objectstore_checksum/metadata_control_proof.rs");
-include!("objectstore_checksum/block.rs");
+include!("objectstore_checksum/page.rs");
 include!("objectstore_checksum/control_plane.rs");
-include!("objectstore_checksum/root_blockserver.rs");
+include!("objectstore_checksum/root_pageserver.rs");
 include!("objectstore_checksum/root_chunkserver.rs");
 include!("objectstore_checksum/root_metadata.rs");
 include!("objectstore_checksum/storage.rs");

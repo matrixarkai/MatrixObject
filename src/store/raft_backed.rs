@@ -8,7 +8,7 @@ pub struct RaftBackedObjectStore<R: RustRaftLog> {
 include!("raft_backed/bootstrap_catalog.inc.rs");
 include!("raft_backed/object_bucket_mutations.inc.rs");
 include!("raft_backed/object_lifecycle_reads.inc.rs");
-include!("raft_backed/chunk_block_control.inc.rs");
+include!("raft_backed/chunk_page_control.inc.rs");
 include!("raft_backed/snapshot_repair.inc.rs");
 include!("raft_backed/storage_metadata_maintenance.inc.rs");
 include!("raft_backed/metadata_raft_control.inc.rs");

@@ -2,7 +2,7 @@
 include!("raft_membership_queries.rs");
 include!("allocation_receipts.rs");
 include!("allocation_commands.rs");
-include!("direct_block_io.rs");
+include!("direct_page_io.rs");
 include!("prepared_allocation.rs");
 include!("prepared_batch_allocation.rs");
 include!("prepared_allocation_release.rs");

@@ -191,7 +191,7 @@ use chunk_service::{
     verify_storage_receipt_page_invariants,
 };
 
-#[path = "services/block.rs"]
+#[path = "services/page.rs"]
 mod page_service;
 pub use page_service::*;
 use page_service::{
