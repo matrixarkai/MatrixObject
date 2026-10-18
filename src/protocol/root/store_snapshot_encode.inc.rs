@@ -189,13 +189,14 @@ impl StoreSnapshot {
     fn encoded_size_hint(&self, meta_snapshot_bytes: usize, root_snapshot_bytes: usize) -> usize {
         const FIXED_HEADER_BYTES: usize = 512;
         const U64: usize = std::mem::size_of::<u64>();
-        fn strings_size<'a, I>(values: I) -> usize
+        fn strings_size<'a, I, S>(values: I) -> usize
         where
-            I: IntoIterator<Item = &'a String>,
+            I: IntoIterator<Item = &'a S>,
+            S: AsRef<str> + 'a,
         {
-            values
-                .into_iter()
-                .fold(0usize, |total, value| total.saturating_add(8 + value.len()))
+            values.into_iter().fold(0usize, |total, value| {
+                total.saturating_add(8 + value.as_ref().len())
+            })
         }
         fn string_map_size(values: &BTreeMap<String, String>) -> usize {
             U64.saturating_add(values.iter().fold(0usize, |total, (key, value)| {

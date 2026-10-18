@@ -54,10 +54,10 @@ pub(crate) fn snapshot_proof_material_capacity(
         .min(SNAPSHOT_PROOF_MATERIAL_RESERVE_CAP)
 }
 
-pub(crate) fn append_string_set(out: &mut Vec<u8>, values: &BTreeSet<String>) {
+pub(crate) fn append_string_set<S: AsRef<str>>(out: &mut Vec<u8>, values: &BTreeSet<S>) {
     append_u64(out, values.len() as u64);
     for value in values {
-        append_string(out, value);
+        append_string(out, value.as_ref());
     }
 }
 

@@ -60,7 +60,7 @@ impl MatrixObjectStore {
             .clone()
             .unwrap_or_else(|| k_standard_storage_class().to_string());
         validate_storage_class(&storage_class)?;
-        self.buckets.insert(bucket.clone());
+        self.buckets.insert(bucket.clone().into());
         let object_id = ObjectId::new(bucket, key);
         let meta_key = meta_object_key(&object_id);
         self.meta_service.check_shard_fence(&meta_key)?;

@@ -6,7 +6,7 @@ impl MatrixObjectStore {
         update_time_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
         validate_bucket(&bucket)?;
-        self.buckets.insert(bucket.clone());
+        self.buckets.insert(bucket.clone().into());
         if enabled {
             self.bucket_versioning.insert(bucket.clone());
         } else {
@@ -81,7 +81,7 @@ impl MatrixObjectStore {
     ) -> Result<ObjectMetadata, ObjectError> {
         validate_bucket(&bucket)?;
         validate_lifecycle_policy(&policy)?;
-        self.buckets.insert(bucket.clone());
+        self.buckets.insert(bucket.clone().into());
         if policy.disabled() {
             self.bucket_lifecycle.remove(&bucket);
         } else {

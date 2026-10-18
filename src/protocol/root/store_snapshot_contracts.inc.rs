@@ -1,7 +1,7 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoreSnapshot {
     pub options: StoreOptions,
-    pub buckets: BTreeSet<String>,
+    pub buckets: BTreeSet<SharedText>,
     pub bucket_versioning: BTreeSet<String>,
     pub bucket_retention: BTreeMap<String, u64>,
     pub bucket_quotas: BTreeMap<String, BucketQuota>,

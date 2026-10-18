@@ -43,7 +43,7 @@ impl MatrixObjectStore {
         update_time_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
         validate_bucket(&bucket)?;
-        self.buckets.insert(bucket.clone());
+        self.buckets.insert(bucket.clone().into());
         if retain_for_ms == 0 {
             self.bucket_retention.remove(&bucket);
         } else {
@@ -83,7 +83,7 @@ impl MatrixObjectStore {
         update_time_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
         validate_bucket(&bucket)?;
-        self.buckets.insert(bucket.clone());
+        self.buckets.insert(bucket.clone().into());
         if quota.disabled() {
             self.bucket_quotas.remove(&bucket);
         } else {

@@ -6,17 +6,27 @@ impl MatrixObjectStore {
     /// the map key and everything the mutation builds in two allocations of
     /// the same characters.
     pub(crate) fn filed_object_key(&self, object_id: ObjectId) -> ObjectId {
-        self.objects
-            .get_key_value(&object_id)
-            .map(|(existing, _)| existing.clone())
-            .unwrap_or(object_id)
+        if let Some((existing, _)) = self.objects.get_key_value(&object_id) {
+            return existing.clone();
+        }
+        // A new object: its key is new, but its bucket is not. Every object
+        // named its bucket through an allocation of its own, so one bucket name
+        // was resident once per object -- characters and header each time.
+        let mut object_id = object_id;
+        if let Some(bucket) = self.buckets.get(object_id.bucket.as_str()) {
+            object_id.bucket = bucket.clone();
+        }
+        object_id
     }
 
     /// File an object, making the stored value name it through the key the map
     /// keeps rather than through the mutation's own copy.
     pub(crate) fn file_object(&mut self, object_id: ObjectId, metadata: &mut ObjectMetadata) {
-        if let Some((existing, _)) = self.objects.get_key_value(&object_id) {
-            metadata.object_id = existing.clone();
+        let object_id = self.filed_object_key(object_id);
+        // Equal characters by construction; the assignment only collapses the
+        // two into one allocation.
+        if metadata.object_id == object_id {
+            metadata.object_id = object_id.clone();
         }
         self.objects.insert(object_id, metadata.clone());
     }
@@ -82,7 +92,7 @@ impl MatrixObjectStore {
             .clone()
             .unwrap_or_else(|| k_standard_storage_class().to_string());
         validate_storage_class(&storage_class)?;
-        self.buckets.insert(bucket.clone());
+        self.buckets.insert(bucket.clone().into());
         let object_id = ObjectId::new(bucket, key);
         let meta_key = meta_object_key(&object_id);
         self.meta_service.check_shard_fence(&meta_key)?;
