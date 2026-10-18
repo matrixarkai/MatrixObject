@@ -16,7 +16,7 @@ pub(crate) fn apply_metadata_maintenance_payload_budget(
             budget_marker = if idx == 0 {
                 String::new()
             } else {
-                prepared.compacted_tombstones[idx - 1].key.clone()
+                prepared.compacted_tombstones[idx - 1].key.to_string()
             };
             tombstone_keep = idx;
             break;

@@ -19,7 +19,7 @@ impl MatrixMetaService {
             .records
             .iter()
             .filter(|(key, record)| key.starts_with(prefix) && !record.deleted)
-            .map(|(key, _)| key.clone())
+            .map(|(key, _)| key.to_string())
             .take(max_records)
             .collect();
         if keys.is_empty() {
@@ -28,9 +28,12 @@ impl MatrixMetaService {
         let mutations: Vec<MetadataMutation> = keys
             .iter()
             .map(|key| MetadataMutation {
-                key: key.clone(),
+                key: key.clone().into(),
                 value: String::new(),
-                expected_version: self.records.get(key).map_or(0, |record| record.version),
+                expected_version: self
+                        .records
+                        .get(key.as_str())
+                        .map_or(0, |record| record.version),
                 delete: true,
             })
             .collect();
@@ -65,15 +68,18 @@ impl MatrixMetaService {
             .records
             .iter()
             .filter(|(key, record)| key.starts_with(prefix) && !record.deleted)
-            .map(|(key, _)| key.clone())
+            .map(|(key, _)| key.to_string())
             .take(max_records)
             .collect();
         let mutations: Vec<MetadataMutation> = keys
             .iter()
             .map(|key| MetadataMutation {
-                key: key.clone(),
+                key: key.clone().into(),
                 value: String::new(),
-                expected_version: self.records.get(key).map_or(0, |record| record.version),
+                expected_version: self
+                        .records
+                        .get(key.as_str())
+                        .map_or(0, |record| record.version),
                 delete: true,
             })
             .collect();

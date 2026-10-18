@@ -37,7 +37,10 @@ impl MatrixMetaService {
         let mut remove_keys = Vec::new();
         let start = after_key.unwrap_or(prefix).to_string();
         let mut last_selected_key: Option<String> = None;
-        for (key, record) in self.records.range(start..) {
+        for (key, record) in self.records.range::<str, _>((
+                std::ops::Bound::Included(start.as_str()),
+                std::ops::Bound::Unbounded,
+            )) {
             if !key.starts_with(prefix) {
                 break;
             }
@@ -69,9 +72,9 @@ impl MatrixMetaService {
             report.compactable_records = report.compactable_records.saturating_add(1);
             report.compacted_records = report.compacted_records.saturating_add(1);
             report.compacted_bytes = report.compacted_bytes.saturating_add(tombstone_bytes);
-            last_selected_key = Some(key.clone());
+            last_selected_key = Some(key.to_string());
             if collect_keys {
-                remove_keys.push(key.clone());
+                remove_keys.push(key.to_string());
             }
         }
         Ok((report, remove_keys))

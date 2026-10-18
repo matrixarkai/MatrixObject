@@ -77,7 +77,7 @@ impl MatrixObjectStore {
                 let mut mutations = Vec::new();
                 for _ in 0..cursor.read_count("persistent journal transaction mutation count")? {
                     mutations.push(MetadataMutation {
-                        key: cursor.read_string()?,
+                        key: cursor.read_string()?.into(),
                         value: cursor.read_string()?,
                         expected_version: cursor.read_u64()?,
                         delete: cursor.read_bool()?,

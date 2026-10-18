@@ -120,13 +120,13 @@ impl MatrixObjectStore {
         };
         let mutations = vec![
             MetadataMutation {
-                key: current_key.to_string(),
+                key: current_key.to_string().into(),
                 value: current_value.to_string(),
                 expected_version: expected_current_version,
                 delete: false,
             },
             MetadataMutation {
-                key: object_record_key.clone(),
+                key: object_record_key.clone().into(),
                 value: object_mutation_value.clone(),
                 expected_version: expected_object_version,
                 delete: delete_object,

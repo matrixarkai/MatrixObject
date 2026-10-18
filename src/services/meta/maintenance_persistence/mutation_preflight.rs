@@ -33,7 +33,7 @@ impl MatrixMetaService {
                 .get(&mutation.key)
                 .map_or(0, |record| record.version);
             read_versions
-                .entry(mutation.key.clone())
+                .entry(mutation.key.to_string())
                 .or_insert(base_version);
             let current_version = projected_versions
                 .get(&mutation.key)
@@ -148,7 +148,7 @@ impl MatrixMetaService {
                 .get(&mutation.key)
                 .map_or(0, |record| record.version);
             read_versions
-                .entry(mutation.key.clone())
+                .entry(mutation.key.to_string())
                 .or_insert(base_version);
             let current_version = projected_versions
                 .get(&mutation.key)
@@ -169,7 +169,7 @@ impl MatrixMetaService {
         transaction: &MetadataTransaction,
     ) -> Result<(), ObjectError> {
         for mutation in &transaction.mutations {
-            if !transaction.read_versions.contains_key(&mutation.key) {
+            if !transaction.read_versions.contains_key(mutation.key.as_str()) {
                 return Err(ObjectError::PreconditionFailed(
                     "metadata transaction read set is incomplete".to_string(),
                 ));
@@ -178,7 +178,10 @@ impl MatrixMetaService {
         for (key, expected_version) in &transaction.read_versions {
             validate_meta_key(key)?;
             self.check_shard_fence(key)?;
-            let current_version = self.records.get(key).map_or(0, |record| record.version);
+            let current_version = self
+                    .records
+                    .get(key.as_str())
+                    .map_or(0, |record| record.version);
             if current_version != *expected_version {
                 return Err(ObjectError::PreconditionFailed(
                     "metadata transaction read set changed".to_string(),
@@ -203,10 +206,10 @@ impl MatrixMetaService {
     pub(crate) fn restore_record_undo(&mut self, undo: MetaRecordUndo) {
         match undo.previous_record {
             Some(record) => {
-                self.records.insert(undo.key, record);
+                self.records.insert(undo.key.into(), record);
             }
             None => {
-                self.records.remove(&undo.key);
+                self.records.remove(undo.key.as_str());
             }
         }
         // `apply_mutation` only appends here.

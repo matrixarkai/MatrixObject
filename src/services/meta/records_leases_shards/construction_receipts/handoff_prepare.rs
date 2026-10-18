@@ -52,7 +52,10 @@ impl MatrixMetaService {
         let mut payload_bytes = 0u64;
         let mut truncated = false;
         let mut next_marker = None;
-        for (key, record) in self.records.range(shard.start_key.clone()..) {
+        for (key, record) in self.records.range::<str, _>((
+                std::ops::Bound::Included(shard.start_key.as_str()),
+                std::ops::Bound::Unbounded,
+            )) {
             if !metadata_shard_contains_key(&shard, key) {
                 break;
             }
@@ -65,7 +68,7 @@ impl MatrixMetaService {
             }
             if records.len() >= limit {
                 truncated = true;
-                next_marker = Some(key.clone());
+                next_marker = Some(key.to_string());
                 break;
             }
             let record_payload_bytes = metadata_record_payload_bytes(record);
@@ -78,11 +81,11 @@ impl MatrixMetaService {
                     ));
                 }
                 truncated = true;
-                next_marker = Some(key.clone());
+                next_marker = Some(key.to_string());
                 break;
             }
             payload_bytes = payload_bytes.saturating_add(record_payload_bytes);
-            next_marker = Some(key.clone());
+            next_marker = Some(key.to_string());
             records.push(record.clone());
         }
         if records.is_empty() {

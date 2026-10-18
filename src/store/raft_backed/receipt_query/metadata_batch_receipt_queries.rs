@@ -147,7 +147,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let record_keys = page
             .receipts
             .iter()
-            .flat_map(|receipt| receipt.records.iter().map(|record| record.key.clone()))
+            .flat_map(|receipt| receipt.records.iter().map(|record| record.key.to_string()))
             .collect::<Vec<_>>();
         self.verify_metadata_record_keys_shard_owner(
             "metadata batch receipt page shard-fenced read",

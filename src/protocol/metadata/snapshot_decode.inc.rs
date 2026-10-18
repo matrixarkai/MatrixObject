@@ -95,7 +95,10 @@ impl MetaSnapshot {
         }
         let mut records = BTreeMap::new();
         for _ in 0..cursor.read_count("metadata snapshot record count")? {
-            let key = cursor.read_string()?;
+            // A snapshot states the key once; the map files the record under
+            // it and the record names it again, and both now do so through one
+            // allocation. Building each separately would rebuild the copy.
+            let key: SharedText = cursor.read_string()?.into();
             let record = MetadataRecord {
                 key: key.clone(),
                 value: cursor.read_string()?,
@@ -191,7 +194,7 @@ impl MetaSnapshot {
             let mut mutations = Vec::new();
             for _ in 0..cursor.read_count("metadata snapshot transaction mutation count")? {
                 mutations.push(MetadataMutation {
-                    key: cursor.read_string()?,
+                    key: cursor.read_string()?.into(),
                     value: cursor.read_string()?,
                     expected_version: cursor.read_u64()?,
                     delete: cursor.read_bool()?,
@@ -243,10 +246,19 @@ impl MetaSnapshot {
         }
         let mut changes = Vec::new();
         for _ in 0..cursor.read_count("metadata snapshot change count")? {
+            // Read in wire order, so the key can be taken from the record it
+            // names before the rest of the fields are read.
+            let sequence = cursor.read_u64()?;
+            let commit_index = cursor.read_u64()?;
+            let key_text = cursor.read_string()?;
+            let key = records
+                .get_key_value(key_text.as_str())
+                .map(|(shared, _)| shared.clone())
+                .unwrap_or_else(|| key_text.into());
             changes.push(MetadataChange {
-                sequence: cursor.read_u64()?,
-                commit_index: cursor.read_u64()?,
-                key: cursor.read_string()?,
+                sequence,
+                commit_index,
+                key,
                 version: cursor.read_u64()?,
                 deleted: cursor.read_bool()?,
                 update_time_ms: cursor.read_u64()?,

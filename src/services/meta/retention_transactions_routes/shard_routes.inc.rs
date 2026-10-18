@@ -69,8 +69,11 @@ impl MatrixMetaService {
 
     fn metadata_shard_record_stats(&self, shard: &MetadataShard) -> MetadataShardRecordStats {
         let mut stats = MetadataShardRecordStats::default();
-        for (key, record) in self.records.range(shard.start_key.clone()..) {
-            if !shard.end_key.is_empty() && key >= &shard.end_key {
+        for (key, record) in self.records.range::<str, _>((
+                std::ops::Bound::Included(shard.start_key.as_str()),
+                std::ops::Bound::Unbounded,
+            )) {
+            if !shard.end_key.is_empty() && key.as_str() >= shard.end_key.as_str() {
                 break;
             }
             let payload_bytes = metadata_record_payload_bytes(record);

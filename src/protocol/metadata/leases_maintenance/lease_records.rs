@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataRecord {
-    pub key: String,
+    pub key: SharedText,
     pub value: String,
     pub version: u64,
     pub update_time_ms: u64,
@@ -12,14 +12,14 @@ pub struct MetadataRecord {
 impl MetadataRecord {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
-        fields.insert(format!("{field_prefix}key"), self.key.clone());
-        fields.insert(format!("{field_prefix}value"), self.value.clone());
-        fields.insert(format!("{field_prefix}version"), self.version.to_string());
+        fields.insert(format!("{field_prefix}key"), self.key.to_string());
+        fields.insert(format!("{field_prefix}value"), self.value.clone().into());
+        fields.insert(format!("{field_prefix}version"), self.version.to_string().into());
         fields.insert(
             format!("{field_prefix}update_time_ms"),
-            self.update_time_ms.to_string(),
+            self.update_time_ms.to_string().into(),
         );
-        fields.insert(format!("{field_prefix}deleted"), self.deleted.to_string());
+        fields.insert(format!("{field_prefix}deleted"), self.deleted.to_string().into());
         fields
     }
 }
