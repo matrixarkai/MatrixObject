@@ -22,6 +22,8 @@ pub(crate) struct ChunkServiceFootprint {
     pub(crate) page_validation: u64,
     /// A whole encoded service, cached, plus one being received.
     pub(crate) export_caches: u64,
+    /// The seven receipt maps, each bounded by `receipt_retention`.
+    pub(crate) receipts: u64,
 }
 
 impl MatrixChunkService {
@@ -80,6 +82,7 @@ impl MatrixChunkService {
             read_cache_overhead,
             page_validation,
             export_caches,
+            receipts: self.receipt_bytes(),
         }
     }
 }
@@ -89,5 +92,97 @@ impl ChunkSnapshotExportCache {
         (self.bytes.len() as u64)
             .saturating_add(self.stamp.capacity() as u64)
             .saturating_add(self.checksum.capacity() as u64)
+    }
+}
+// What a chunk service's receipt maps hold.
+//
+// There are seven, each bounded by `receipt_retention`, which defaults to
+// 100,000 -- so a service can hold 700,000 receipts, and a page service with
+// three replicas three times that. The audit reported the entry counts and
+// none of the bytes, which is the same shape of omission as the metadata
+// exclusion: a figure that names what it counts, counting less than it should.
+//
+// Every receipt is a few short strings and a run of counters, so the cost is
+// dominated by the inline struct and the idempotency key it is filed under.
+
+/// Inline plus heap for a receipt map: the key handle and the value per entry,
+/// the key's own characters, and whatever the value owns.
+fn chunk_receipt_map_bytes<V, F>(map: &BTreeMap<String, V>, value_heap: F) -> u64
+where
+    F: Fn(&V) -> u64,
+{
+    let inline = (map.len() as u64)
+        .saturating_mul((std::mem::size_of::<String>() + std::mem::size_of::<V>()) as u64);
+    map.iter().fold(inline, |total, (key, value)| {
+        total
+            .saturating_add(key.capacity() as u64)
+            .saturating_add(value_heap(value))
+    })
+}
+
+pub(crate) fn route_control_proof_bytes(proof: &PageRouteControlProof) -> u64 {
+    (proof.state_format.capacity() + proof.state_checksum.capacity()) as u64
+}
+
+pub(crate) fn chunk_repair_report_bytes(report: &ChunkRepairReport) -> u64 {
+    (report
+        .first_error
+        .as_ref()
+        .map(|error| error.capacity())
+        .unwrap_or(0)
+        + report.expected_route_control_checksum.capacity()) as u64
+        + route_control_proof_bytes(&report.route_control_proof)
+}
+
+impl MatrixChunkService {
+    /// The seven receipt maps, in bytes rather than entries.
+    pub(crate) fn receipt_bytes(&self) -> u64 {
+        chunk_receipt_map_bytes(&self.write_request_receipts, |receipt| {
+            (receipt.request_checksum.capacity()
+                + receipt.payload_checksum.capacity()
+                + receipt.idempotency_key.capacity()) as u64
+        })
+        .saturating_add(chunk_receipt_map_bytes(
+            &self.discard_request_receipts,
+            |receipt| {
+                (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+            },
+        ))
+        .saturating_add(chunk_receipt_map_bytes(
+            &self.batch_write_request_receipts,
+            |receipt| {
+                (receipt.request_checksum.capacity()
+                    + receipt.payload_checksum.capacity()
+                    + receipt.idempotency_key.capacity()) as u64
+            },
+        ))
+        .saturating_add(chunk_receipt_map_bytes(
+            &self.batch_discard_request_receipts,
+            |receipt| {
+                (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+            },
+        ))
+        .saturating_add(chunk_receipt_map_bytes(
+            &self.state_install_request_receipts,
+            |receipt| {
+                (receipt.request_checksum.capacity()
+                    + receipt.payload_checksum.capacity()
+                    + receipt.state_checksum.capacity()
+                    + receipt.idempotency_key.capacity()) as u64
+            },
+        ))
+        .saturating_add(chunk_receipt_map_bytes(
+            &self.reclaim_request_receipts,
+            |receipt| {
+                (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+            },
+        ))
+        .saturating_add(chunk_receipt_map_bytes(
+            &self.repair_request_receipts,
+            |receipt| {
+                (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+                    + chunk_repair_report_bytes(&receipt.report)
+            },
+        ))
     }
 }

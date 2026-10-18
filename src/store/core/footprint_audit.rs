@@ -479,6 +479,7 @@ impl MatrixObjectStore {
         push("replica.read_cache.overhead_bytes", page.read_cache_overhead);
         push("replica.page_validation.bytes", page.page_validation);
         push("block.export_caches.bytes", page.export_caches);
+        push("block.receipts.bytes", page.receipts);
         let store_export_caches = self
             .snapshot_export_cache
             .borrow()

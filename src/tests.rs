@@ -32987,9 +32987,20 @@ fn a_put_that_fails_after_mutating_leaves_the_store_unchanged() {
     // conservative and correct -- a cache may hold bytes the aborted write
     // produced -- so those keys are allowed to fall and required never to rise.
     // Everything else must be identical.
-    fn is_cache(key: &str) -> bool {
-        key.contains("read_cache") || key.contains("page_validation")
+    //
+    // The receipt bytes may fall for a different reason, and it is worth being
+    // precise about it. The rollback restores the receipt maps by cloning the
+    // pre-batch snapshot, and a clone allocates exactly, so a restored receipt
+    // holds the same text in a tighter allocation than the original had. Probed
+    // when this first fired: every receipt map has the same length before and
+    // after, and only the capacities differ -- 144 bytes to 111 with no receipt
+    // lost. A footprint audit counts capacity because the slack is resident,
+    // which is why the figure moves at all.
+    fn may_fall(key: &str) -> bool {
+        key.contains("read_cache")
+            || key.contains("page_validation")
             || key.contains("export_caches")
+            || key.contains("receipts.bytes")
             || key == "ACCOUNTED.byte_buffers"
             || key == "ACCOUNTED.total_bytes"
     }
@@ -32997,10 +33008,11 @@ fn a_put_that_fails_after_mutating_leaves_the_store_unchanged() {
     let mut moved = Vec::new();
     for (before, after) in before_audit.iter().zip(after_audit.iter()) {
         assert_eq!(before.0, after.0, "the audit changed which keys it reports");
-        if is_cache(&before.0) {
+        if may_fall(&before.0) {
             assert!(
                 after.1 <= before.1,
-                "a refused put may drop a cache and must never fill one: {} {} -> {}",
+                "a refused put may drop a cache or tighten a clone, and must \
+                 never grow either: {} {} -> {}",
                 before.0,
                 before.1,
                 after.1
@@ -34708,3 +34720,61 @@ fn the_read_cache_is_in_the_byte_headline() {
         "and the headline grew by at least the bytes the cache took on"
     );
 }
+
+#[test]
+fn the_receipt_maps_are_counted_in_bytes() {
+    // Eighteen receipt maps -- eleven on the page service and seven in each of
+    // its replicas -- were reported as entry counts and never as bytes. Each is
+    // bounded by `receipt_retention`, which defaults to 100,000, so three
+    // replicas can hold millions of receipts whose size nothing reported.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "plain", vec![b'v'; 64], "text/plain")
+        .unwrap();
+
+    // A plain put leaves no receipt: they are written by the idempotent paths.
+    let before = audit_value(&store, "block.receipts.bytes");
+
+    // An allocation with an idempotency key does leave one, in the page
+    // service's own maps.
+    let allocated = store
+        .page_service
+        .allocate_page_range_idempotent(4096, 1_000, "alloc-one")
+        .expect("the allocation should succeed");
+    assert!(allocated.allocation.length >= 4096);
+    let after = audit_value(&store, "block.receipts.bytes");
+    assert!(
+        after > before,
+        "an allocation receipt is bytes, so the figure must have grown past \
+         {before}, not stayed at {after}"
+    );
+
+    // And the audit reports what the services themselves report, rather than
+    // forming a second opinion about the same maps.
+    let counted = store.page_service.receipt_bytes()
+        + store
+            .page_service
+            .replicas
+            .iter()
+            .map(|replica| replica.receipt_bytes())
+            .sum::<u64>();
+    assert_eq!(
+        after, counted,
+        "the audit sums the page service and its replicas, and nothing else"
+    );
+    assert!(
+        audit_value(&store, "ACCOUNTED.byte_buffers") >= after,
+        "and the receipt bytes are inside the headline"
+    );
+}
+
