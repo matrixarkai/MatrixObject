@@ -28,6 +28,9 @@ impl MatrixObjectStore {
         if metadata.object_id == object_id {
             metadata.object_id = object_id.clone();
         }
+        // Whichever path built this metadata, its storage class is one of four
+        // names, and this is where every mutation's object becomes resident.
+        metadata.storage_class = interned_storage_class(&metadata.storage_class);
         self.objects.insert(object_id, metadata.clone());
     }
 
@@ -145,7 +148,7 @@ impl MatrixObjectStore {
             etag: object_etag,
             content_type,
             user_metadata: options.user_metadata.clone().into(),
-            storage_class,
+            storage_class: storage_class.into(),
             restore_until_ms: 0,
             tags: options.tags.clone().into(),
             legal_hold: false,

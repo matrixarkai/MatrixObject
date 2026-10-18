@@ -131,7 +131,7 @@ impl MatrixObjectStore {
             ).into(),
             storage_class: previous
                 .as_ref()
-                .map_or(storage_class, |metadata| metadata.storage_class.clone()),
+                .map_or(storage_class.into(), |metadata| metadata.storage_class.clone()),
             restore_until_ms: 0,
             tags: previous
                 .as_ref()

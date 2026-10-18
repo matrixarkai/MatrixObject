@@ -43,7 +43,7 @@ pub(crate) fn read_metadata(
         etag,
         content_type,
         user_metadata: user_metadata.into(),
-        storage_class,
+        storage_class: interned_storage_class(&storage_class),
         restore_until_ms,
         tags: tags.into(),
         legal_hold,

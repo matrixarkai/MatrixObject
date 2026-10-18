@@ -58,7 +58,7 @@ impl MatrixObjectStore {
         let mut options = PutOptions::default();
         options.user_metadata = source.user_metadata.clone().into();
         options.tags = source.tags.clone().into();
-        options.storage_class = Some(source.storage_class.clone());
+        options.storage_class = Some(source.storage_class.to_string());
         self.apply_put_storage_batched(
             object_id.bucket.to_string(),
             object_id.key.to_string(),
@@ -84,7 +84,7 @@ impl MatrixObjectStore {
         let mut options = PutOptions::default();
         options.user_metadata = source.user_metadata.clone().into();
         options.tags = source.tags.clone().into();
-        options.storage_class = Some(source.storage_class.clone());
+        options.storage_class = Some(source.storage_class.to_string());
         self.apply_put_with_root_placement(
             object_id.bucket.to_string(),
             object_id.key.to_string(),

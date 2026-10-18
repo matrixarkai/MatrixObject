@@ -13,7 +13,7 @@ pub struct ObjectMetadata {
     pub etag: String,
     pub content_type: String,
     pub user_metadata: ObjectAttributes,
-    pub storage_class: String,
+    pub storage_class: SharedText,
     pub restore_until_ms: u64,
     pub tags: ObjectAttributes,
     pub legal_hold: bool,
