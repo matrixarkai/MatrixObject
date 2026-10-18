@@ -241,3 +241,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: A stale range holds no payload entry
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_stale_range_holds_no_payload_entry -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }

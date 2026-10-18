@@ -79,7 +79,10 @@ pub struct MatrixObjectStore {
     metadata_route_cache_capacity_evictions: u64,
     metadata_route_cache_sequence: u64,
     pub(crate) slabs: BTreeMap<SlabId, SlabInfo>,
-    payloads: BTreeMap<(SlabId, u64), StoredPayload>,
+    // Visible to the crate as `slabs` is, so that the invariant the targeted
+    // undo derives from -- a stale range holds no payload entry -- can be
+    // asserted from a test rather than argued for in a comment.
+    pub(crate) payloads: BTreeMap<(SlabId, u64), StoredPayload>,
     pub(crate) page_service: MatrixPageService,
     next_slab_id: u64,
     next_upload_sequence: u64,
@@ -116,6 +119,15 @@ pub(crate) struct PutTargetedUndo {
     bucket_existed: bool,
     object_id: ObjectId,
     previous_object: Option<ObjectMetadata>,
+    /// The payload entries naming the previous object's extents.
+    ///
+    /// A put that replaces an object marks the old extents stale, and
+    /// `mark_extents_stale` removes the payload entry for each one -- so these
+    /// are the entries the mutation destroys, and they are not derivable
+    /// afterwards: the entry holds a length and a digest, and the store keeps
+    /// the bytes nowhere. One object's worth, so this does not grow with the
+    /// store the way copying the whole index did.
+    previous_payloads: Vec<((SlabId, u64), StoredPayload)>,
 }
 
 pub(crate) struct ObjectMutationRollback {
