@@ -95,16 +95,15 @@ pub struct MatrixObjectStore {
 /// A put inserts one `buckets` entry, writes one `objects` key and appends one
 /// `object_changes` record, so each can be undone exactly. Copying those three
 /// maps instead is 83.7% of the allocations a put makes.
-struct PutTargetedUndo {
+pub(crate) struct PutTargetedUndo {
     meta: MetaRecordUndo,
     bucket: String,
     bucket_existed: bool,
     object_id: ObjectId,
     previous_object: Option<ObjectMetadata>,
-    object_changes_len: usize,
 }
 
-struct ObjectMutationRollback {
+pub(crate) struct ObjectMutationRollback {
     /// Present only for the put path, where the three containers below are
     /// undone by hand and so are captured empty.
     put_targeted: Option<PutTargetedUndo>,

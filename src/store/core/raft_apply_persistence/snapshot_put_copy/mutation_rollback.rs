@@ -85,7 +85,7 @@ impl MatrixObjectStore {
     /// metadata record and one appended change -- where a put also inserts a
     /// bucket, allocates extents and moves `logical_written_bytes`. So an undo
     /// sufficient for a put is sufficient for a delete.
-    fn capture_targeted_mutation_rollback(
+    pub(crate) fn capture_targeted_mutation_rollback(
         &self,
         bucket: &str,
         key: &str,
@@ -97,12 +97,11 @@ impl MatrixObjectStore {
             bucket: bucket.to_string(),
             previous_object: self.objects.get(&object_id).cloned(),
             object_id,
-            object_changes_len: self.object_changes.len(),
         };
         self.capture_object_mutation_rollback_inner(Some(targeted))
     }
 
-    fn restore_object_mutation_rollback(&mut self, mut rollback: ObjectMutationRollback) {
+    pub(crate) fn restore_object_mutation_rollback(&mut self, mut rollback: ObjectMutationRollback) {
         match rollback.put_targeted.take() {
             Some(targeted) => {
                 if !targeted.bucket_existed {
@@ -116,8 +115,28 @@ impl MatrixObjectStore {
                         self.objects.remove(&targeted.object_id);
                     }
                 }
-                // A put only appends here, so dropping the tail is exact.
-                self.object_changes.truncate(targeted.object_changes_len);
+                // Dropping the tail by length was exact while a mutation only
+                // ever appended here. It no longer only appends: the feed is
+                // also trimmed from the front once it reaches
+                // `UNCONSUMED_OBJECT_CHANGE_RETENTION` with no consumer
+                // registered, and a trim plus an append leaves the length
+                // unchanged -- so `truncate` became a no-op that kept the
+                // appended record and had already lost the oldest one.
+                //
+                // A sequence does not move when the front is trimmed, and the
+                // undo already carries the one this mutation started from, so
+                // drop by sequence instead. Everything this mutation appended
+                // is at or above it, and nothing else is.
+                //
+                // The record the trim dropped is not recoverable, so a rolled
+                // back mutation can leave the retained floor one record higher
+                // than it found it. That is within what the feed already
+                // promises a late consumer -- `cursor_compacted` and
+                // `resync_required` -- whereas a retained change at or above
+                // `next_object_change_sequence` is what the snapshot validator
+                // calls corruption.
+                self.object_changes
+                    .retain(|change| change.sequence < rollback.next_object_change_sequence);
                 self.meta_service.restore_record_undo(targeted.meta);
             }
             None => {
