@@ -21,8 +21,8 @@ impl MatrixObjectStore {
             .ok_or_else(|| {
                 ObjectError::NotFound(format!("{}/{}", object_id.bucket, object_id.key))
             })?;
-        metadata.legal_hold = enabled;
-        metadata.legal_hold_update_time_ms = update_time_ms;
+        metadata.lock.legal_hold = enabled;
+        metadata.lock.legal_hold_update_time_ms = update_time_ms;
         metadata.update_time_ms = update_time_ms;
         self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
@@ -58,14 +58,14 @@ impl MatrixObjectStore {
             .ok_or_else(|| {
                 ObjectError::NotFound(format!("{}/{}", object_id.bucket, object_id.key))
             })?;
-        if metadata.retention_until_ms > update_time_ms
-            && retention_until_ms < metadata.retention_until_ms
+        if metadata.lock.retention_until_ms > update_time_ms
+            && retention_until_ms < metadata.lock.retention_until_ms
         {
             return Err(ObjectError::PreconditionFailed(
                 "cannot shorten active object retention".to_string(),
             ));
         }
-        metadata.retention_until_ms = retention_until_ms;
+        metadata.lock.retention_until_ms = retention_until_ms;
         metadata.update_time_ms = update_time_ms;
         self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
@@ -113,7 +113,7 @@ impl MatrixObjectStore {
         }
         metadata.storage_class = storage_class.into();
         if !is_cold_storage_class(&metadata.storage_class) {
-            metadata.restore_until_ms = 0;
+            metadata.lock.restore_until_ms = 0;
         }
         metadata.update_time_ms = update_time_ms;
         self.file_object(object_id, &mut metadata);
@@ -209,7 +209,7 @@ impl MatrixObjectStore {
 
         let mut metadata = current.clone();
         metadata.storage_class = storage_class.into();
-        metadata.restore_until_ms = 0;
+        metadata.lock.restore_until_ms = 0;
         metadata.update_time_ms = update_time_ms;
         metadata.extents = new_extents.into();
         self.logical_written_bytes = saturating_add(self.logical_written_bytes, metadata.length);

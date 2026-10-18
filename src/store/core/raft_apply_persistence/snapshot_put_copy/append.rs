@@ -132,19 +132,14 @@ impl MatrixObjectStore {
             storage_class: previous
                 .as_ref()
                 .map_or(storage_class.into(), |metadata| metadata.storage_class.clone()),
-            restore_until_ms: 0,
             tags: previous
                 .as_ref()
                 .map_or_else(|| options.tags.clone(), |metadata| metadata.tags.clone().into()).into(),
-            legal_hold: previous
+            // An append inherits whatever hold or retention the object was
+            // already under, and never puts it under a new one.
+            lock: previous
                 .as_ref()
-                .map_or(false, |metadata| metadata.legal_hold),
-            legal_hold_update_time_ms: previous
-                .as_ref()
-                .map_or(0, |metadata| metadata.legal_hold_update_time_ms),
-            retention_until_ms: previous
-                .as_ref()
-                .map_or(0, |metadata| metadata.retention_until_ms),
+                .map_or_else(ObjectLock::default, |metadata| metadata.lock.clone()),
             update_time_ms,
             extents: extents.into(),
             deleted: false,

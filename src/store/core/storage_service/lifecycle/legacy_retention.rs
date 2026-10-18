@@ -61,7 +61,7 @@ impl MatrixObjectStore {
                     let mut retained = Vec::new();
                     for metadata in candidates {
                         if metadata.deleted
-                            || (!metadata.legal_hold
+                            || (!metadata.lock.legal_hold
                                 && !retention_active(&self.bucket_retention, &metadata, now_ms))
                         {
                             expired = expired.saturating_add(1);

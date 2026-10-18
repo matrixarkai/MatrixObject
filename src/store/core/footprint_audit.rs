@@ -49,6 +49,18 @@ impl SharedTextLedger {
 /// An object carrying none owes nothing, because there is no map. One carrying
 /// any owes the map's own inline size, which has moved to the heap, as well as
 /// its entries.
+/// What an object's restore, hold and retention state costs beyond the
+/// eight-byte pointer inside the metadata.
+///
+/// An object under none of the three owes nothing: there is no state. One under
+/// any of them owes the state's own size, which has moved to the heap.
+pub(crate) fn audit_object_lock_bytes(lock: &ObjectLock) -> u64 {
+    if !lock.is_allocated() {
+        return 0;
+    }
+    std::mem::size_of::<ObjectLockState>() as u64
+}
+
 pub(crate) fn audit_object_attributes_bytes(attributes: &ObjectAttributes) -> u64 {
     if !attributes.is_allocated() {
         return 0;
@@ -102,7 +114,8 @@ pub(crate) fn audit_object_id_heap(ledger: &mut SharedTextLedger, object_id: &Ob
 
 /// Everything one `ObjectMetadata` owns beyond its own inline size.
 fn audit_object_metadata_heap(ledger: &mut SharedTextLedger, metadata: &ObjectMetadata) -> u64 {
-    audit_object_id_heap(ledger, &metadata.object_id)
+    audit_object_lock_bytes(&metadata.lock)
+        .saturating_add(audit_object_id_heap(ledger, &metadata.object_id))
         .saturating_add(audit_boxed_str_heap(&metadata.etag))
         .saturating_add(audit_boxed_str_heap(&metadata.content_type))
         .saturating_add(ledger.charge(&metadata.storage_class))
@@ -294,6 +307,7 @@ impl MatrixObjectStore {
             let mut extents_bytes = 0u64;
             let mut extents_len = 0u64;
             let mut extents_capacity = 0u64;
+            let mut lock_bytes = 0u64;
             let mut id_text_duplicated = 0u64;
             let mut id_text_shared = 0u64;
             // The breakdown's own ledger, so each part is what that part costs
@@ -312,6 +326,7 @@ impl MatrixObjectStore {
                 {
                     id_text_shared = id_text_shared.saturating_add(1);
                 }
+                lock_bytes = lock_bytes.saturating_add(audit_object_lock_bytes(&metadata.lock));
                 etag_heap = etag_heap.saturating_add(audit_boxed_str_heap(&metadata.etag));
                 content_type_heap =
                     content_type_heap.saturating_add(audit_boxed_str_heap(&metadata.content_type));
@@ -337,6 +352,7 @@ impl MatrixObjectStore {
             push("objects.inner_id_heap", inner_id_heap);
             push("objects.id_text_duplicated", id_text_duplicated);
             push("objects.id_text_shared", id_text_shared);
+            push("objects.lock_bytes", lock_bytes);
             push("objects.etag_heap", etag_heap);
             push("objects.content_type_heap", content_type_heap);
             push("objects.storage_class_heap", storage_class_heap);

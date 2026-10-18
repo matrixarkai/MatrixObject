@@ -62,7 +62,7 @@ impl MatrixObjectStore {
         if metadata.deleted {
             return Ok(());
         }
-        if metadata.legal_hold {
+        if metadata.lock.legal_hold {
             return Err(ObjectError::PreconditionFailed(format!(
                 "object legal hold blocks {operation}"
             )));

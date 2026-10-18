@@ -155,7 +155,7 @@ pub(crate) fn check_payload_read_allowed(
     metadata: &ObjectMetadata,
     now_ms: u64,
 ) -> Result<(), ObjectError> {
-    if is_cold_storage_class(&metadata.storage_class) && metadata.restore_until_ms <= now_ms {
+    if is_cold_storage_class(&metadata.storage_class) && metadata.lock.restore_until_ms <= now_ms {
         return Err(ObjectError::PreconditionFailed(format!(
             "object in {} requires restore before payload read",
             metadata.storage_class

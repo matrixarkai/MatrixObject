@@ -42,7 +42,7 @@ impl MatrixObjectStore {
                             now_ms,
                         );
                     let protected = !metadata.deleted
-                        && (metadata.legal_hold
+                        && (metadata.lock.legal_hold
                             || retention_active(&bucket_retention, &metadata, now_ms));
                     if beyond_keep
                         && old_enough
