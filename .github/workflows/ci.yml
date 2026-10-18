@@ -178,3 +178,21 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: One content type, one allocation
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::objects_of_one_content_type_name_it_through_one_allocation -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: Past the bound an object owns its content type
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::past_the_bound_an_object_owns_its_content_type -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }

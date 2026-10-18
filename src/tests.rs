@@ -8553,7 +8553,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
     assert_eq!(objectstore_registration_proven.raft_receipts.len(), 1);
     assert_eq!(
         objectstore_registration_proven.raft_receipts[0].content_type,
-        "root/node".into()
+        "root/node"
     );
     assert_eq!(
         objectstore_registration_proven.raft_receipt_sequence(),
@@ -8618,7 +8618,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
             .last_receipt()
             .unwrap()
             .content_type,
-        "root/node-heartbeat".into()
+        "root/node-heartbeat"
     );
     let objectstore_heartbeat = objectstore_heartbeat_proven.registration;
     assert_eq!(objectstore_heartbeat.node.used_bytes, 512);
@@ -8653,11 +8653,11 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
     assert_eq!(page_heartbeat_proven.raft_receipts.len(), 2);
     assert_eq!(
         page_heartbeat_proven.raft_receipts[0].content_type,
-        "root/node-heartbeat".into()
+        "root/node-heartbeat"
     );
     assert_eq!(
         page_heartbeat_proven.raft_receipts[1].content_type,
-        "root/block-health-heartbeat".into()
+        "root/block-health-heartbeat"
     );
     assert_eq!(
         page_heartbeat_proven.raft_receipt_sequence(),
@@ -8738,7 +8738,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
             .last_receipt()
             .unwrap()
             .content_type,
-        "root/node-heartbeat".into()
+        "root/node-heartbeat"
     );
     let objectstore_offline = objectstore_offline_proven.registration;
     assert!(!objectstore_offline.node.online);
@@ -8757,7 +8757,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
     assert_eq!(page_offline_proven.raft_receipts.len(), 2);
     assert_eq!(
         page_offline_proven.last_receipt().unwrap().content_type,
-        "root/block-health-heartbeat".into()
+        "root/block-health-heartbeat"
     );
     let page_offline = page_offline_proven.registration;
     assert!(!page_offline.node.online);
@@ -8776,7 +8776,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
     assert_eq!(chunk_offline_proven.raft_receipts.len(), 2);
     assert_eq!(
         chunk_offline_proven.last_receipt().unwrap().content_type,
-        "root/chunk-health-heartbeat".into()
+        "root/chunk-health-heartbeat"
     );
     let chunk_offline_fields = chunk_offline_proven.to_control_fields();
     assert_eq!(
@@ -8963,7 +8963,7 @@ fn raft_backed_store_replays_root_health_heartbeats() {
     let generic_receipt = replicated
         .propose_heartbeat_root_node("chunk-a", 12, 100, false, true, 20)
         .unwrap();
-    assert_eq!(generic_receipt.content_type, "root/node-heartbeat".into());
+    assert_eq!(generic_receipt.content_type, "root/node-heartbeat");
     assert_eq!(generic_receipt.version, 20);
     assert_eq!(generic_receipt.length, 100);
     let generic_node = replicated
@@ -9004,7 +9004,7 @@ fn raft_backed_store_replays_root_health_heartbeats() {
     let page_receipt = replicated
         .propose_heartbeat_root_page_health("block-a", page_health.clone(), 21)
         .unwrap();
-    assert_eq!(page_receipt.content_type, "root/block-health-heartbeat".into());
+    assert_eq!(page_receipt.content_type, "root/block-health-heartbeat");
     assert_eq!(
         replicated
             .store()
@@ -9038,7 +9038,7 @@ fn raft_backed_store_replays_root_health_heartbeats() {
     let chunk_receipt = replicated
         .propose_heartbeat_root_chunk_health("chunk-a", chunk_health.clone(), 22)
         .unwrap();
-    assert_eq!(chunk_receipt.content_type, "root/chunk-health-heartbeat".into());
+    assert_eq!(chunk_receipt.content_type, "root/chunk-health-heartbeat");
     let page_coverage = replicated
         .store()
         .meta_service
@@ -9093,7 +9093,7 @@ fn raft_backed_store_replays_root_heartbeat_expiry() {
     let no_expiry = replicated
         .propose_expire_root_node_heartbeats(10, 20)
         .unwrap();
-    assert_eq!(no_expiry.content_type, "root/node-heartbeat-expiry".into());
+    assert_eq!(no_expiry.content_type, "root/node-heartbeat-expiry");
     assert_eq!(no_expiry.length, 0);
     assert!(no_expiry.deleted);
     assert_eq!(replicated.raft_commit_index(), 5);
@@ -9158,7 +9158,7 @@ fn raft_backed_store_replays_root_node_removal() {
     let forced = replicated
         .propose_remove_root_node("chunk-a", true, 12)
         .unwrap();
-    assert_eq!(forced.content_type, "root/node-remove".into());
+    assert_eq!(forced.content_type, "root/node-remove");
     assert_eq!(forced.length, 11);
     assert!(forced.deleted);
     assert_eq!(replicated.raft_commit_index(), 5);
@@ -11980,7 +11980,7 @@ fn copy_object_uses_put_semantics_and_stale_accounting() {
         .unwrap();
     assert_eq!(copy.length, source.length);
     assert_eq!(copy.etag, source.etag);
-    assert_eq!(copy.content_type, "text/plain".into());
+    assert_eq!(copy.content_type, "text/plain");
     assert_eq!(copy.tags.get("team").map(String::as_str), Some("storage"));
     assert_eq!(
         store.get_object("bucket", "copy").unwrap().data,
@@ -12002,7 +12002,7 @@ fn copy_object_uses_put_semantics_and_stale_accounting() {
         )
         .unwrap();
     assert_eq!(overwritten.version, copy.version + 1);
-    assert_eq!(overwritten.content_type, "application/octet-stream".into());
+    assert_eq!(overwritten.content_type, "application/octet-stream");
     assert_eq!(
         store.get_object_tags("bucket", "copy").unwrap(),
         tags(&[("team", "database")])
@@ -13029,7 +13029,7 @@ fn raft_backed_store_replays_copy_object_commands() {
     replicated.replay_into(&mut follower).unwrap();
     let copied = follower.get_object("bucket", "dest").unwrap();
     assert_eq!(copied.data, b"raft-copy".to_vec());
-    assert_eq!(copied.metadata.content_type, "application/copied".into());
+    assert_eq!(copied.metadata.content_type, "application/copied");
     assert_eq!(follower.last_applied_index(), 2);
 }
 
@@ -13136,7 +13136,7 @@ fn raft_backed_store_replays_batch_copy_object_commands() {
         )
         .unwrap();
 
-    assert_eq!(metadata.content_type, "objectstore/batch-copy".into());
+    assert_eq!(metadata.content_type, "objectstore/batch-copy");
     assert_eq!(metadata.version, 2);
     assert_eq!(metadata.length, 1);
     assert_eq!(metadata.update_time_ms, 10);
@@ -13146,7 +13146,7 @@ fn raft_backed_store_replays_batch_copy_object_commands() {
     replicated.replay_into(&mut follower).unwrap();
     let copy_a = follower.get_object("copy", "source-a").unwrap();
     assert_eq!(copy_a.data, b"alpha".to_vec());
-    assert_eq!(copy_a.metadata.content_type, "application/copied".into());
+    assert_eq!(copy_a.metadata.content_type, "application/copied");
     assert_eq!(
         follower.get_object("copy", "source-b").unwrap().data,
         b"bravo".to_vec()
@@ -13180,7 +13180,7 @@ fn raft_backed_store_replays_object_changefeed_cursors() {
     let cursor_meta = replicated
         .propose_commit_object_change_cursor("mirror-a", changes[1].sequence, 3)
         .unwrap();
-    assert_eq!(cursor_meta.content_type, "objectstore/change-cursor".into());
+    assert_eq!(cursor_meta.content_type, "objectstore/change-cursor");
     assert_eq!(replicated.raft_commit_index(), 3);
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
@@ -13257,7 +13257,7 @@ fn raft_backed_store_replays_metaserver_shards_and_leases() {
     let shard_receipt = replicated
         .propose_configure_meta_shard(shard.clone())
         .unwrap();
-    assert_eq!(shard_receipt.content_type, "metaserver/shard-serving".into());
+    assert_eq!(shard_receipt.content_type, "metaserver/shard-serving");
     let lease = replicated
         .propose_acquire_metadata_lease("object/bucket/", "writer-a", 100, 10)
         .unwrap();
@@ -13282,7 +13282,7 @@ fn raft_backed_store_replays_metaserver_shards_and_leases() {
     let released = replicated
         .propose_release_metadata_lease("object/bucket/", "writer-a", 1)
         .unwrap();
-    assert_eq!(released.content_type, "metaserver/lease-release".into());
+    assert_eq!(released.content_type, "metaserver/lease-release");
     assert_eq!(replicated.raft_commit_index(), 5);
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
@@ -13349,7 +13349,7 @@ fn raft_backed_store_applies_prepared_metaserver_leases() {
     let acquire = replicated
         .propose_prepared_metadata_lease(prepared_acquire)
         .unwrap();
-    assert_eq!(acquire.content_type, "metaserver/prepared-lease".into());
+    assert_eq!(acquire.content_type, "metaserver/prepared-lease");
     assert_eq!(acquire.version, 1);
 
     let prepared_renew = replicated
@@ -13371,7 +13371,7 @@ fn raft_backed_store_applies_prepared_metaserver_leases() {
     let release = replicated
         .propose_release_metadata_lease_prepared("object/bucket/", "writer-a", 1)
         .unwrap();
-    assert_eq!(release.content_type, "metaserver/prepared-lease".into());
+    assert_eq!(release.content_type, "metaserver/prepared-lease");
     assert_eq!(replicated.raft_commit_index(), 3);
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
@@ -13400,7 +13400,7 @@ fn raft_backed_store_dedupes_metaserver_lease_receipts_across_snapshots() {
             "meta-lease-acquire-a",
         )
         .unwrap();
-    assert_eq!(acquire.content_type, "metaserver/lease-acquire-idempotent".into());
+    assert_eq!(acquire.content_type, "metaserver/lease-acquire-idempotent");
     assert_eq!(acquire.version, 1);
     assert_eq!(acquire.update_time_ms, 10);
     let acquire_retry = replicated
@@ -13435,7 +13435,7 @@ fn raft_backed_store_dedupes_metaserver_lease_receipts_across_snapshots() {
             "meta-lease-renew-a",
         )
         .unwrap();
-    assert_eq!(renew.content_type, "metaserver/lease-renew-idempotent".into());
+    assert_eq!(renew.content_type, "metaserver/lease-renew-idempotent");
     assert_eq!(renew.update_time_ms, 20);
     let renew_retry = replicated
         .propose_renew_metadata_lease_idempotent(
@@ -13468,7 +13468,7 @@ fn raft_backed_store_dedupes_metaserver_lease_receipts_across_snapshots() {
             "meta-lease-release-a",
         )
         .unwrap();
-    assert_eq!(release.content_type, "metaserver/lease-release-idempotent".into());
+    assert_eq!(release.content_type, "metaserver/lease-release-idempotent");
     assert_eq!(release.version, 1);
     assert!(release.deleted);
     let release_retry = replicated
@@ -13574,7 +13574,7 @@ fn raft_backed_store_applies_prepared_metaserver_lease_expiry() {
     let applied = replicated
         .propose_prepared_metadata_lease_expiry(prepared.clone())
         .unwrap();
-    assert_eq!(applied.content_type, "metaserver/prepared-lease-expire".into());
+    assert_eq!(applied.content_type, "metaserver/prepared-lease-expire");
     assert_eq!(applied.version, 1);
     assert_eq!(replicated.raft_commit_index(), 4);
     let leader_snapshot = replicated.store().export_snapshot().unwrap();
@@ -13625,7 +13625,7 @@ fn raft_backed_store_dedupes_metaserver_session_receipts_across_snapshots() {
             "meta-session-register-a",
         )
         .unwrap();
-    assert_eq!(register.content_type, "metaserver/session-idempotent".into());
+    assert_eq!(register.content_type, "metaserver/session-idempotent");
     assert_eq!(register.version, 1);
     assert_eq!(register.update_time_ms, 10);
     let register_retry = replicated
@@ -13662,7 +13662,7 @@ fn raft_backed_store_dedupes_metaserver_session_receipts_across_snapshots() {
             "meta-session-renew-a",
         )
         .unwrap();
-    assert_eq!(renew.content_type, "metaserver/session-renew-idempotent".into());
+    assert_eq!(renew.content_type, "metaserver/session-renew-idempotent");
     assert_eq!(renew.version, 1);
     assert_eq!(renew.update_time_ms, 20);
     let renew_retry = replicated
@@ -13698,7 +13698,7 @@ fn raft_backed_store_dedupes_metaserver_session_receipts_across_snapshots() {
         .unwrap();
     assert_eq!(
         release.content_type,
-        "metaserver/session-release-idempotent".into()
+        "metaserver/session-release-idempotent"
     );
     assert_eq!(release.version, 1);
     assert_eq!(release.update_time_ms, 20);
@@ -13842,7 +13842,7 @@ fn raft_backed_store_applies_prepared_metaserver_session_expiry() {
     let applied = replicated
         .propose_prepared_meta_coordinator_session_expiry(prepared.clone())
         .unwrap();
-    assert_eq!(applied.content_type, "metaserver/prepared-session-expire".into());
+    assert_eq!(applied.content_type, "metaserver/prepared-session-expire");
     assert_eq!(applied.version, 1);
     assert_eq!(replicated.raft_commit_index(), 3);
     assert!(replicated
@@ -13882,7 +13882,7 @@ fn raft_backed_store_replays_metaserver_lease_expiry() {
     let first = replicated
         .propose_expire_metadata_leases("object/bucket/", 200, 1)
         .unwrap();
-    assert_eq!(first.content_type, "metaserver/lease-expire".into());
+    assert_eq!(first.content_type, "metaserver/lease-expire");
     assert_eq!(first.version, 1);
     assert!(replicated
         .store()
@@ -14223,7 +14223,7 @@ fn raft_backed_store_replays_bounded_metaserver_maintenance() {
             &maintenance_plan.plan_checksum,
         )
         .unwrap();
-    assert_eq!(maintenance.content_type, "metaserver/maintenance".into());
+    assert_eq!(maintenance.content_type, "metaserver/maintenance");
     assert_eq!(maintenance.version, 4);
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
@@ -14379,7 +14379,7 @@ fn raft_backed_store_runs_integrity_fenced_metaserver_maintenance() {
         )
         .unwrap();
     assert_eq!(receipt.object_id.bucket, "_metaintegrity");
-    assert_eq!(receipt.content_type, "metaserver/integrity-maintenance".into());
+    assert_eq!(receipt.content_type, "metaserver/integrity-maintenance");
     assert_eq!(receipt.length, 4);
     assert_eq!(replicated.store().metadata_route_cache_status().entries, 0);
 
@@ -14438,7 +14438,7 @@ fn raft_backed_store_replays_metaserver_read_set_checks() {
             2,
         )
         .unwrap();
-    assert_eq!(checked.content_type, "metaserver/readset-check".into());
+    assert_eq!(checked.content_type, "metaserver/readset-check");
     assert_eq!(checked.version, 1);
     assert_eq!(replicated.raft_commit_index(), 2);
     replicated
@@ -14487,7 +14487,7 @@ fn raft_backed_store_replays_metaserver_admission_policy() {
     let configured = replicated
         .propose_configure_meta_admission_policy(policy.clone())
         .unwrap();
-    assert_eq!(configured.content_type, "metaserver/admission-policy".into());
+    assert_eq!(configured.content_type, "metaserver/admission-policy");
     assert_eq!(replicated.store().metadata_admission_policy(), policy);
     assert_eq!(
         replicated
@@ -14510,7 +14510,7 @@ fn raft_backed_store_replays_metaserver_admission_policy() {
             "meta-admission-ok",
         )
         .unwrap();
-    assert_eq!(ok.content_type, "metaserver/idempotent-batch".into());
+    assert_eq!(ok.content_type, "metaserver/idempotent-batch");
     let readiness = replicated.metadata_raft_readiness(0, 10);
     assert_eq!(readiness.remaining_open_transactions, 1);
     assert_eq!(readiness.remaining_namespace_leases, 1);
@@ -14578,7 +14578,7 @@ fn raft_backed_store_replays_metaserver_qos_config() {
     let configured = replicated
         .propose_configure_meta_qos(config.clone())
         .unwrap();
-    assert_eq!(configured.content_type, "metaserver/qos-config".into());
+    assert_eq!(configured.content_type, "metaserver/qos-config");
     assert_eq!(replicated.store().metadata_qos_config(), config);
     assert_eq!(
         replicated.metadata_raft_readiness(0, 10).qos_window_ms,
@@ -14599,7 +14599,7 @@ fn raft_backed_store_replays_metaserver_qos_config() {
             "meta-qos-ok",
         )
         .unwrap();
-    assert_eq!(first.content_type, "metaserver/idempotent-batch".into());
+    assert_eq!(first.content_type, "metaserver/idempotent-batch");
     assert_eq!(
         replicated.store().metadata_qos_state().write_ops_in_window,
         1
@@ -14683,7 +14683,7 @@ fn raft_backed_store_applies_prepared_metaserver_qos_config() {
     let applied = replicated
         .propose_prepared_meta_qos_config(prepared)
         .unwrap();
-    assert_eq!(applied.content_type, "metaserver/prepared-qos-config".into());
+    assert_eq!(applied.content_type, "metaserver/prepared-qos-config");
     assert_eq!(applied.version, 30_000);
     assert_eq!(applied.length, 2);
     assert_eq!(applied.update_time_ms, 2048);
@@ -14763,7 +14763,7 @@ fn raft_backed_store_replays_owner_fenced_metaserver_writes() {
             20,
         )
         .unwrap();
-    assert_eq!(receipt.content_type, "metaserver/owner-fenced-batch".into());
+    assert_eq!(receipt.content_type, "metaserver/owner-fenced-batch");
     assert!(matches!(
         replicated.propose_commit_owner_fenced_metadata_batch(
             vec![MetadataMutation {
@@ -15354,7 +15354,7 @@ fn raft_backed_store_replays_idempotent_generic_metaserver_batches() {
             "raft-meta-batch-a",
         )
         .unwrap();
-    assert_eq!(first.content_type, "metaserver/idempotent-batch".into());
+    assert_eq!(first.content_type, "metaserver/idempotent-batch");
     assert_eq!(first.version, 2);
     assert_eq!(first.length, 0);
     let retry = replicated
@@ -15366,7 +15366,7 @@ fn raft_backed_store_replays_idempotent_generic_metaserver_batches() {
             "raft-meta-batch-a",
         )
         .unwrap();
-    assert_eq!(retry.content_type, "metaserver/idempotent-batch".into());
+    assert_eq!(retry.content_type, "metaserver/idempotent-batch");
     assert_eq!(retry.version, 2);
     assert_eq!(retry.length, 1);
     assert!(matches!(
@@ -15472,7 +15472,7 @@ fn raft_backed_store_applies_prepared_metaserver_batches() {
     let applied = replicated
         .propose_prepared_metadata_batch(prepared.clone())
         .unwrap();
-    assert_eq!(applied.content_type, "metaserver/prepared-batch".into());
+    assert_eq!(applied.content_type, "metaserver/prepared-batch");
     assert_eq!(applied.version, 1);
     assert_eq!(replicated.raft_commit_index(), 1);
     assert_eq!(
@@ -15504,7 +15504,7 @@ fn raft_backed_store_applies_prepared_metaserver_batches() {
     let deduped = replicated
         .propose_commit_metadata_batch_prepared(mutations, None, None, 10, "prepared-meta-batch-a")
         .unwrap();
-    assert_eq!(deduped.content_type, "metaserver/prepared-batch".into());
+    assert_eq!(deduped.content_type, "metaserver/prepared-batch");
     assert_eq!(deduped.length, 1);
     assert_eq!(replicated.raft_commit_index(), 2);
 }
@@ -15564,7 +15564,7 @@ fn raft_backed_store_prepares_object_metadata_commits() {
     let applied = replicated
         .propose_prepared_object_metadata_commit(prepared.clone())
         .unwrap();
-    assert_eq!(applied.content_type, "metaserver/prepared-batch".into());
+    assert_eq!(applied.content_type, "metaserver/prepared-batch");
     assert_eq!(replicated.raft_commit_index(), 1);
     assert_eq!(
         replicated
@@ -15610,7 +15610,7 @@ fn raft_backed_store_prepares_object_metadata_commits() {
             "prepared-object-meta-a",
         )
         .unwrap();
-    assert_eq!(deduped.content_type, "metaserver/prepared-batch".into());
+    assert_eq!(deduped.content_type, "metaserver/prepared-batch");
     assert_eq!(deduped.length, 1);
     assert_eq!(replicated.raft_commit_index(), 2);
 }
@@ -15683,7 +15683,7 @@ fn raft_backed_store_applies_prepared_metaserver_change_checkpoints() {
         .unwrap();
     assert_eq!(
         applied.content_type,
-        "metaserver/prepared-change-checkpoint".into()
+        "metaserver/prepared-change-checkpoint"
     );
     assert_eq!(applied.version, checkpoint.after_commit_index);
     assert_eq!(replicated.raft_commit_index(), 2);
@@ -15787,7 +15787,7 @@ fn raft_backed_store_applies_prepared_metaserver_changefeed_compaction() {
         .unwrap();
     assert_eq!(
         applied.content_type,
-        "metaserver/prepared-changefeed-compact".into()
+        "metaserver/prepared-changefeed-compact"
     );
     assert_eq!(applied.length, 1);
     assert_eq!(replicated.raft_commit_index(), 3);
@@ -15875,7 +15875,7 @@ fn raft_backed_store_applies_prepared_metaserver_transactions() {
         .unwrap();
     assert_eq!(
         applied_begin.content_type,
-        "metaserver/prepared-transaction".into()
+        "metaserver/prepared-transaction"
     );
     assert_eq!(replicated.raft_commit_index(), 1);
     assert_eq!(
@@ -15897,7 +15897,7 @@ fn raft_backed_store_applies_prepared_metaserver_transactions() {
         .unwrap();
     assert_eq!(
         applied_commit.content_type,
-        "metaserver/prepared-transaction".into()
+        "metaserver/prepared-transaction"
     );
     assert_eq!(applied_commit.version, 2);
     assert_eq!(
@@ -16015,7 +16015,7 @@ fn raft_backed_store_applies_prepared_metaserver_transactions() {
         .unwrap();
     assert_eq!(
         deduped.content_type,
-        "metaserver/prepared-transaction-deduped".into()
+        "metaserver/prepared-transaction-deduped"
     );
     assert_eq!(deduped.length, 1);
     assert_eq!(replicated.raft_commit_index(), 3);
@@ -16258,7 +16258,7 @@ fn raft_backed_store_applies_prepared_chunk_batches() {
         .unwrap();
     assert_eq!(
         applied_write.content_type,
-        "chunkserver/prepared-batch-write".into()
+        "chunkserver/prepared-batch-write"
     );
     assert_eq!(replicated.raft_commit_index(), 2);
 
@@ -16492,7 +16492,7 @@ fn raft_backed_store_applies_prepared_chunk_batches() {
     assert!(!applied_discard.deduped);
     assert_eq!(
         applied_discard.metadata.content_type,
-        "chunkserver/prepared-batch-discard".into()
+        "chunkserver/prepared-batch-discard"
     );
     assert_eq!(
         applied_discard
@@ -16554,7 +16554,7 @@ fn raft_backed_store_applies_prepared_chunk_batches() {
     assert!(deduped.deduped);
     assert_eq!(
         deduped.metadata.content_type,
-        "chunkserver/prepared-batch-write-deduped".into()
+        "chunkserver/prepared-batch-write-deduped"
     );
     assert_eq!(
         deduped
@@ -16648,7 +16648,7 @@ fn raft_backed_store_replays_metaserver_snapshot_compaction_floor() {
     assert_eq!(pre_compact_snapshot.coordinator_session_receipts.len(), 2);
 
     let compacted = replicated.propose_compact_meta_snapshot(6, 0, 0).unwrap();
-    assert_eq!(compacted.content_type, "metaserver/snapshot-compact".into());
+    assert_eq!(compacted.content_type, "metaserver/snapshot-compact");
     assert_eq!(compacted.version, 6);
     assert_eq!(compacted.length, 8);
     assert_eq!(replicated.raft_commit_index(), 7);
@@ -16814,7 +16814,7 @@ fn raft_backed_store_applies_prepared_metaserver_snapshot_compaction() {
         .unwrap();
     assert_eq!(
         compacted.content_type,
-        "metaserver/prepared-snapshot-compact".into()
+        "metaserver/prepared-snapshot-compact"
     );
     assert_eq!(compacted.version, 6);
     assert_eq!(compacted.length, 8);
@@ -17002,7 +17002,7 @@ fn raft_backed_store_applies_prepared_metaserver_shard_record_handoff() {
     let applied = apply_report.metadata.clone();
     assert_eq!(
         applied.content_type,
-        "metaserver/prepared-shard-record-handoff".into()
+        "metaserver/prepared-shard-record-handoff"
     );
     assert_eq!(applied.version, 2);
     assert_eq!(applied.length, 4);
@@ -17146,7 +17146,7 @@ fn raft_backed_store_applies_prepared_metaserver_retention_config() {
     let applied = replicated
         .propose_prepared_meta_retention_config(prepared.clone())
         .unwrap();
-    assert_eq!(applied.content_type, "metaserver/prepared-retention-config".into());
+    assert_eq!(applied.content_type, "metaserver/prepared-retention-config");
     assert_eq!(applied.version, 1);
     assert_eq!(applied.length, 1);
     assert_eq!(applied.update_time_ms, 2);
@@ -17220,7 +17220,7 @@ fn raft_backed_store_applies_prepared_metaserver_admission_policy() {
     let applied = replicated
         .propose_prepared_meta_admission_policy(prepared)
         .unwrap();
-    assert_eq!(applied.content_type, "metaserver/prepared-admission-policy".into());
+    assert_eq!(applied.content_type, "metaserver/prepared-admission-policy");
     assert_eq!(applied.version, 7);
     assert_eq!(applied.length, 4096);
     assert_eq!(applied.update_time_ms, 3);
@@ -17273,7 +17273,7 @@ fn raft_backed_store_replays_idempotent_owner_fenced_metaserver_writes() {
         .unwrap();
     assert_eq!(
         first.content_type,
-        "metaserver/idempotent-owner-fenced-batch".into()
+        "metaserver/idempotent-owner-fenced-batch"
     );
     assert_eq!(first.version, 1);
     assert_eq!(first.length, 0);
@@ -17290,7 +17290,7 @@ fn raft_backed_store_replays_idempotent_owner_fenced_metaserver_writes() {
         .unwrap();
     assert_eq!(
         retry.content_type,
-        "metaserver/idempotent-owner-fenced-batch".into()
+        "metaserver/idempotent-owner-fenced-batch"
     );
     assert_eq!(retry.version, 1);
     assert_eq!(retry.length, 1);
@@ -17383,7 +17383,7 @@ fn raft_backed_store_replays_metaserver_tombstone_compaction() {
     let compacted = replicated
         .propose_compact_metadata_tombstones("object/raft-tombstone/", None, 10, 0)
         .unwrap();
-    assert_eq!(compacted.content_type, "metaserver/tombstone-compact".into());
+    assert_eq!(compacted.content_type, "metaserver/tombstone-compact");
     assert_eq!(compacted.version, 1);
     assert_eq!(replicated.raft_commit_index(), 5);
     assert!(replicated.store().metadata_record(&meta_key).is_err());
@@ -17477,7 +17477,7 @@ fn raft_backed_store_applies_prepared_metaserver_tombstone_compaction() {
         .unwrap();
     assert_eq!(
         compacted.content_type,
-        "metaserver/prepared-tombstone-compact".into()
+        "metaserver/prepared-tombstone-compact"
     );
     assert_eq!(compacted.version, 1);
     assert_eq!(replicated.raft_commit_index(), 5);
@@ -17528,7 +17528,7 @@ fn raft_backed_store_replays_metaserver_shard_split_merge() {
             20,
         )
         .unwrap();
-    assert_eq!(split.content_type, "metaserver/shard-split".into());
+    assert_eq!(split.content_type, "metaserver/shard-split");
     assert_eq!(split.version, 2);
     assert_eq!(split.length, 2);
     let merged = replicated
@@ -17542,7 +17542,7 @@ fn raft_backed_store_replays_metaserver_shard_split_merge() {
             30,
         )
         .unwrap();
-    assert_eq!(merged.content_type, "metaserver/shard-merge".into());
+    assert_eq!(merged.content_type, "metaserver/shard-merge");
     assert_eq!(merged.version, 3);
     assert_eq!(merged.length, 1);
     assert_eq!(replicated.raft_commit_index(), 5);
@@ -17609,7 +17609,7 @@ fn raft_backed_store_dedupes_metaserver_shard_topology_retries() {
         .unwrap();
     assert_eq!(
         configure_retry.content_type,
-        "metaserver/shard-configure-idempotent-deduped".into()
+        "metaserver/shard-configure-idempotent-deduped"
     );
     let before_conflict = replicated.raft_commit_index();
     assert!(matches!(
@@ -17660,7 +17660,7 @@ fn raft_backed_store_dedupes_metaserver_shard_topology_retries() {
         .unwrap();
     assert_eq!(
         split_retry.content_type,
-        "metaserver/shard-split-idempotent-deduped".into()
+        "metaserver/shard-split-idempotent-deduped"
     );
 
     replicated
@@ -17689,7 +17689,7 @@ fn raft_backed_store_dedupes_metaserver_shard_topology_retries() {
         .unwrap();
     assert_eq!(
         merge_retry.content_type,
-        "metaserver/shard-merge-idempotent-deduped".into()
+        "metaserver/shard-merge-idempotent-deduped"
     );
 
     replicated
@@ -17716,7 +17716,7 @@ fn raft_backed_store_dedupes_metaserver_shard_topology_retries() {
         .unwrap();
     assert_eq!(
         migrate_retry.content_type,
-        "metaserver/shard-migrate-idempotent-deduped".into()
+        "metaserver/shard-migrate-idempotent-deduped"
     );
     let snapshot = replicated.store().export_snapshot().unwrap();
     assert_eq!(snapshot.meta_snapshot.shard_receipts.len(), 4);
@@ -17751,7 +17751,7 @@ fn raft_backed_store_dedupes_metaserver_shard_topology_retries() {
     let compacted = replicated
         .propose_compact_meta_snapshot(meta_snapshot_floor, 0, 16)
         .unwrap();
-    assert_eq!(compacted.content_type, "metaserver/snapshot-compact".into());
+    assert_eq!(compacted.content_type, "metaserver/snapshot-compact");
     let compacted_snapshot = replicated.store().export_snapshot().unwrap();
     assert!(compacted_snapshot.meta_snapshot.shard_receipts.is_empty());
     assert!(
@@ -17800,7 +17800,7 @@ fn raft_backed_store_replays_metaserver_auto_shard_splits() {
     let split = replicated
         .propose_split_oversized_meta_shards(3, 0, 2, 30)
         .unwrap();
-    assert_eq!(split.content_type, "metaserver/shard-autosplit".into());
+    assert_eq!(split.content_type, "metaserver/shard-autosplit");
     assert_eq!(split.version, 1);
     assert_eq!(split.length, 1);
     assert_eq!(replicated.store().metadata_shards().len(), 2);
@@ -17845,7 +17845,7 @@ fn raft_backed_store_replays_metaserver_auto_shard_splits() {
         .unwrap();
     assert_eq!(
         all_receipt.content_type,
-        "chunkserver/prepared-all-eligible-service-mode".into()
+        "chunkserver/prepared-all-eligible-service-mode"
     );
     assert_eq!(all_receipt.object_id.key, "all_eligible");
     assert_eq!(all_receipt.length, 3);
@@ -17876,13 +17876,13 @@ fn raft_backed_store_replays_metaserver_shard_migration() {
     let migrated = replicated
         .propose_migrate_meta_shard("objects-a", "meta-b", 1, 2, false, 20)
         .unwrap();
-    assert_eq!(migrated.content_type, "metaserver/shard-migrate".into());
+    assert_eq!(migrated.content_type, "metaserver/shard-migrate");
     assert_eq!(migrated.version, 2);
     assert_eq!(migrated.length, 1);
     let draining = replicated
         .propose_migrate_meta_shard("objects-a", "meta-a", 2, 3, true, 30)
         .unwrap();
-    assert_eq!(draining.content_type, "metaserver/shard-migrate-draining".into());
+    assert_eq!(draining.content_type, "metaserver/shard-migrate-draining");
     assert_eq!(draining.version, 3);
     assert!(matches!(
         replicated.prepare_meta_shard_migration_raft_entry(
@@ -17912,7 +17912,7 @@ fn raft_backed_store_replays_metaserver_shard_migration() {
         .unwrap();
     assert_eq!(
         prepared_migrated.content_type,
-        "metaserver/prepared-shard-migration".into()
+        "metaserver/prepared-shard-migration"
     );
     assert_eq!(prepared_migrated.version, 4);
     assert_eq!(replicated.raft_commit_index(), 6);
@@ -17956,13 +17956,13 @@ fn raft_backed_store_replays_metaserver_shard_failover_rebalance() {
     let failover = replicated
         .propose_failover_meta_shards("meta-a", "meta-b", 1, 20)
         .unwrap();
-    assert_eq!(failover.content_type, "metaserver/shard-failover".into());
+    assert_eq!(failover.content_type, "metaserver/shard-failover");
     assert_eq!(failover.version, 1);
     assert_eq!(failover.length, 1);
     let rebalance = replicated
         .propose_rebalance_meta_shards("meta-b", "meta-a", 1, 30)
         .unwrap();
-    assert_eq!(rebalance.content_type, "metaserver/shard-rebalance".into());
+    assert_eq!(rebalance.content_type, "metaserver/shard-rebalance");
     assert_eq!(rebalance.version, 1);
     assert_eq!(replicated.raft_commit_index(), 6);
 
@@ -17995,7 +17995,7 @@ fn raft_backed_store_replays_page_replica_quarantine() {
     let receipt = replicated
         .propose_set_page_replica_quarantine(0, true)
         .unwrap();
-    assert_eq!(receipt.content_type, "blockserver/replica-quarantine".into());
+    assert_eq!(receipt.content_type, "blockserver/replica-quarantine");
     replicated
         .propose(ObjectCommand::PutObject {
             bucket: "bucket".to_string(),
@@ -18072,7 +18072,7 @@ fn raft_backed_store_applies_prepared_page_batches() {
         .unwrap();
     assert_eq!(
         bounded_status.metadata.content_type,
-        "blockserver/prepared-batch-write".into()
+        "blockserver/prepared-batch-write"
     );
     assert_eq!(
         bounded_replicated
@@ -18101,7 +18101,7 @@ fn raft_backed_store_applies_prepared_page_batches() {
         .unwrap();
     assert_eq!(
         bounded_resume_status.metadata.content_type,
-        "blockserver/prepared-batch-write".into()
+        "blockserver/prepared-batch-write"
     );
     assert_eq!(
         bounded_replicated
@@ -18151,7 +18151,7 @@ fn raft_backed_store_applies_prepared_page_batches() {
         .unwrap();
     assert_eq!(
         applied_write.content_type,
-        "blockserver/prepared-batch-write".into()
+        "blockserver/prepared-batch-write"
     );
     assert_eq!(replicated.raft_commit_index(), 1);
     assert_eq!(
@@ -18202,7 +18202,7 @@ fn raft_backed_store_applies_prepared_page_batches() {
     assert!(!applied_discard.deduped);
     assert_eq!(
         applied_discard.metadata.content_type,
-        "blockserver/prepared-batch-discard".into()
+        "blockserver/prepared-batch-discard"
     );
     assert_eq!(
         applied_discard
@@ -18267,7 +18267,7 @@ fn raft_backed_store_applies_prepared_page_batches() {
     assert!(deduped.deduped);
     assert_eq!(
         deduped.metadata.content_type,
-        "blockserver/prepared-batch-write-deduped".into()
+        "blockserver/prepared-batch-write-deduped"
     );
     assert_eq!(
         deduped
@@ -18296,7 +18296,7 @@ fn raft_backed_store_replays_chunk_replica_freeze() {
     let frozen = replicated
         .propose_set_page_replica_frozen(0, true)
         .unwrap();
-    assert_eq!(frozen.content_type, "chunkserver/replica-freeze".into());
+    assert_eq!(frozen.content_type, "chunkserver/replica-freeze");
     assert_eq!(frozen.version, 1);
     assert_eq!(replicated.store().frozen_page_replicas(), vec![0]);
     replicated
@@ -18312,7 +18312,7 @@ fn raft_backed_store_replays_chunk_replica_freeze() {
     let thawed = replicated
         .propose_set_page_replica_frozen(0, false)
         .unwrap();
-    assert_eq!(thawed.content_type, "chunkserver/replica-thaw".into());
+    assert_eq!(thawed.content_type, "chunkserver/replica-thaw");
     replicated.propose_scrub_page_replicas(true).unwrap();
     assert_eq!(replicated.raft_commit_index(), 5);
 
@@ -18415,7 +18415,7 @@ fn raft_backed_store_replays_chunk_replica_capacity() {
         .unwrap();
     assert_eq!(
         receipt.content_type,
-        "chunkserver/prepared-replica-capacity".into()
+        "chunkserver/prepared-replica-capacity"
     );
     assert_eq!(receipt.object_id.key, "0");
     replicated
@@ -18435,7 +18435,7 @@ fn raft_backed_store_replays_chunk_replica_capacity() {
         .unwrap();
     assert_eq!(
         prepared_reset.content_type,
-        "chunkserver/prepared-replica-capacity".into()
+        "chunkserver/prepared-replica-capacity"
     );
     assert_eq!(replicated.store().chunk_replica_capacity_bytes()[0], 0);
     assert_eq!(replicated.raft_commit_index(), 4);
@@ -18474,7 +18474,7 @@ fn raft_backed_store_replays_chunk_replica_capacity() {
         .unwrap();
     assert_eq!(
         all_receipt.content_type,
-        "chunkserver/prepared-all-eligible-capacity".into()
+        "chunkserver/prepared-all-eligible-capacity"
     );
     assert_eq!(all_receipt.object_id.key, "all_eligible");
     assert_eq!(all_receipt.version, 64);
@@ -18575,7 +18575,7 @@ fn raft_backed_store_replays_prepared_page_allocation_reservations() {
     let allocated = allocated_status.metadata.clone();
     assert_eq!(
         allocated.content_type,
-        "blockserver/prepared-allocation-reservation".into()
+        "blockserver/prepared-allocation-reservation"
     );
     assert_eq!(
         allocated_status.mutation_id,
@@ -18643,7 +18643,7 @@ fn raft_backed_store_replays_direct_page_batch_allocations() {
         .unwrap();
     assert_eq!(
         allocated.content_type,
-        "blockserver/batch-allocation-idempotent".into()
+        "blockserver/batch-allocation-idempotent"
     );
     assert_eq!(allocated.version, 12);
     assert_eq!(allocated.length, 2);
@@ -18663,7 +18663,7 @@ fn raft_backed_store_replays_direct_page_batch_allocations() {
         .unwrap();
     assert_eq!(
         retry.content_type,
-        "blockserver/batch-allocation-idempotent-deduped".into()
+        "blockserver/batch-allocation-idempotent-deduped"
     );
     assert_eq!(replicated.raft_commit_index(), 2);
     let receipt_read = replicated
@@ -18812,7 +18812,7 @@ fn raft_backed_store_replays_prepared_page_batch_allocation_reservations() {
     let allocated = allocated_status.metadata.clone();
     assert_eq!(
         allocated.content_type,
-        "blockserver/prepared-batch-allocation-reservation".into()
+        "blockserver/prepared-batch-allocation-reservation"
     );
     assert_eq!(allocated.version, 12);
     assert_eq!(allocated.length, 2);
@@ -18987,7 +18987,7 @@ fn raft_backed_store_replays_page_allocation_release_receipts() {
     let released = released_status.metadata.clone();
     assert_eq!(
         released.content_type,
-        "blockserver/prepared-allocation-release".into()
+        "blockserver/prepared-allocation-release"
     );
     assert_eq!(released_status.mutation_id, "raft-release-allocation-a");
     assert_eq!(
@@ -19022,7 +19022,7 @@ fn raft_backed_store_replays_page_allocation_release_receipts() {
         .unwrap();
     assert_eq!(
         released_retry.content_type,
-        "blockserver/allocation-release-idempotent-deduped".into()
+        "blockserver/allocation-release-idempotent-deduped"
     );
     assert_eq!(
         replicated
@@ -19161,7 +19161,7 @@ fn raft_backed_store_replays_chunk_replica_service_mode() {
         .unwrap();
     assert_eq!(
         receipt.content_type,
-        "chunkserver/prepared-replica-service-mode".into()
+        "chunkserver/prepared-replica-service-mode"
     );
     assert_eq!(receipt.object_id.key, "0");
     assert_eq!(replicated.raft_commit_index(), 2);
@@ -19278,7 +19278,7 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
         .unwrap();
     assert_eq!(
         capacity_receipt.content_type,
-        "chunkserver/prepared-replica-capacity".into()
+        "chunkserver/prepared-replica-capacity"
     );
     assert_eq!(capacity_receipt.version, 64);
 
@@ -19337,7 +19337,7 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
         .unwrap();
     assert_eq!(
         mode_receipt.content_type,
-        "chunkserver/prepared-replica-service-mode".into()
+        "chunkserver/prepared-replica-service-mode"
     );
     assert_eq!(mode_receipt.version, 0);
     assert_eq!(mode_receipt.length, 1);
@@ -19383,7 +19383,7 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
     let trim_receipt = replicated
         .propose_prepared_chunk_trim_flow_linearizable_fenced(trim, Some(&proof.state_checksum))
         .unwrap();
-    assert_eq!(trim_receipt.content_type, "chunkserver/prepared-trim-flow".into());
+    assert_eq!(trim_receipt.content_type, "chunkserver/prepared-trim-flow");
     assert_eq!(trim_receipt.version, 7);
     assert_eq!(trim_receipt.length, 21);
 
@@ -19445,7 +19445,7 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
         .unwrap();
     assert_eq!(
         qos_receipt.content_type,
-        "chunkserver/prepared-mutation-qos-config".into()
+        "chunkserver/prepared-mutation-qos-config"
     );
     assert_eq!(qos_receipt.version, 8);
     assert_eq!(qos_receipt.length, 12_288);
@@ -19511,7 +19511,7 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
         .unwrap();
     assert_eq!(
         cache_receipt.content_type,
-        "chunkserver/prepared-read-cache-config".into()
+        "chunkserver/prepared-read-cache-config"
     );
     assert_eq!(cache_receipt.version, 32);
 
@@ -19675,7 +19675,7 @@ fn raft_backed_store_replays_page_quorum_configuration() {
     assert_eq!(configured.object_id.bucket, "_blockquorum");
     assert_eq!(
         configured.content_type,
-        "blockserver/prepared-quorum-config".into()
+        "blockserver/prepared-quorum-config"
     );
     assert_eq!(configured.version, 2);
     assert_eq!(configured.length, 1);
@@ -19703,7 +19703,7 @@ fn raft_backed_store_replays_page_quorum_configuration() {
     let restored = replicated
         .propose_configure_page_quorum_prepared_linearizable(1, 1)
         .unwrap();
-    assert_eq!(restored.content_type, "blockserver/prepared-quorum-config".into());
+    assert_eq!(restored.content_type, "blockserver/prepared-quorum-config");
     assert_eq!(replicated.store().page_write_quorum(), 1);
     assert_eq!(replicated.store().page_read_quorum(), 1);
     assert_eq!(replicated.raft_commit_index(), 4);
@@ -19795,7 +19795,7 @@ fn raft_backed_store_replays_storage_receipt_retention_configuration() {
         .unwrap();
     assert_eq!(
         chunk_config.content_type,
-        "chunkserver/receipt-retention-config".into()
+        "chunkserver/receipt-retention-config"
     );
     assert_eq!(chunk_config.version, 1);
     assert_eq!(chunk_config.length, 1);
@@ -19804,7 +19804,7 @@ fn raft_backed_store_replays_storage_receipt_retention_configuration() {
         .unwrap();
     assert_eq!(
         all_chunk_config.content_type,
-        "chunkserver/all-replica-receipt-retention-config".into()
+        "chunkserver/all-replica-receipt-retention-config"
     );
     assert_eq!(all_chunk_config.object_id.key, "all_replicas");
     assert_eq!(all_chunk_config.version, 1);
@@ -19814,7 +19814,7 @@ fn raft_backed_store_replays_storage_receipt_retention_configuration() {
         .unwrap();
     assert_eq!(
         page_config.content_type,
-        "blockserver/receipt-retention-config".into()
+        "blockserver/receipt-retention-config"
     );
     assert_eq!(page_config.version, 1);
     assert_eq!(page_config.length, 1);
@@ -19930,7 +19930,7 @@ fn raft_backed_store_replays_storage_receipt_retention_configuration() {
         .unwrap();
     assert_eq!(
         prepared_chunk_config.content_type,
-        "chunkserver/prepared-receipt-retention-config".into()
+        "chunkserver/prepared-receipt-retention-config"
     );
     assert_eq!(prepared_chunk_config.version, 2);
     assert_eq!(prepared_chunk_config.length, 0);
@@ -20006,7 +20006,7 @@ fn raft_backed_store_replays_storage_receipt_retention_configuration() {
         .unwrap();
     assert_eq!(
         prepared_config.content_type,
-        "blockserver/prepared-receipt-retention-config".into()
+        "blockserver/prepared-receipt-retention-config"
     );
     assert_eq!(prepared_config.version, 2);
     assert_eq!(prepared_config.length, 0);
@@ -20141,7 +20141,7 @@ fn raft_backed_store_replays_page_route_qos() {
     let configured = replicated
         .propose_configure_page_route_qos(config.clone())
         .unwrap();
-    assert_eq!(configured.content_type, "blockserver/route-qos-config".into());
+    assert_eq!(configured.content_type, "blockserver/route-qos-config");
     assert_eq!(replicated.store().page_route_qos_config(), config);
     let proof = replicated.store().page_service.route_control_proof();
     assert_eq!(proof.state_format, "MOSRSBLOCKROUTE10");
@@ -20162,7 +20162,7 @@ fn raft_backed_store_replays_page_route_qos() {
             "raft-block-qos-write-a",
         )
         .unwrap();
-    assert_eq!(first.content_type, "blockserver/idempotent-write".into());
+    assert_eq!(first.content_type, "blockserver/idempotent-write");
     assert_eq!(
         replicated
             .store()
@@ -20361,7 +20361,7 @@ fn raft_backed_store_applies_prepared_page_route_qos() {
         .unwrap();
     assert_eq!(
         applied.content_type,
-        "blockserver/prepared-route-qos-config".into()
+        "blockserver/prepared-route-qos-config"
     );
     assert_eq!(applied.version, 45_000);
     assert_eq!(applied.length, 2);
@@ -20469,7 +20469,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
             Some(&current_route_checksum),
         )
         .unwrap();
-    assert_eq!(write.content_type, "blockserver/idempotent-write".into());
+    assert_eq!(write.content_type, "blockserver/idempotent-write");
     assert_eq!(replicated.raft_commit_index(), 2);
     let deduped = replicated
         .propose_write_page_range_idempotent_fenced(
@@ -20480,7 +20480,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
             Some(&stale_route_checksum),
         )
         .unwrap();
-    assert_eq!(deduped.content_type, "blockserver/idempotent-write".into());
+    assert_eq!(deduped.content_type, "blockserver/idempotent-write");
     assert_eq!(deduped.version, 1);
 
     let post_write_route_checksum = replicated
@@ -20614,7 +20614,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
         .unwrap();
     assert_eq!(
         prepared_write_receipt.content_type,
-        "blockserver/prepared-batch-write".into()
+        "blockserver/prepared-batch-write"
     );
     let post_prepared_write_route_checksum = replicated
         .store()
@@ -20665,7 +20665,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
             Some(&post_prepared_write_route_checksum),
         )
         .unwrap();
-    assert_eq!(discard.content_type, "blockserver/idempotent-discard".into());
+    assert_eq!(discard.content_type, "blockserver/idempotent-discard");
     let post_discard_route_checksum = replicated
         .store()
         .page_service
@@ -20799,7 +20799,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
         .unwrap();
     assert_eq!(
         prepared_discard_receipt.content_type,
-        "blockserver/prepared-batch-discard".into()
+        "blockserver/prepared-batch-discard"
     );
 }
 
@@ -20996,7 +20996,7 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
         )
         .unwrap();
     let committed = apply_report.metadata.clone();
-    assert_eq!(committed.content_type, "segment/prepared-compaction".into());
+    assert_eq!(committed.content_type, "segment/prepared-compaction");
     assert_eq!(committed.version, 0);
     assert_eq!(committed.update_time_ms, 3);
     assert_eq!(apply_report.mutation_id, prepared.raft_entry_checksum);
@@ -21168,7 +21168,7 @@ fn raft_backed_store_fences_full_compaction_with_gc_proof() {
             &plan_checksum,
         )
         .unwrap();
-    assert_eq!(committed.content_type, "segment/full-compaction".into());
+    assert_eq!(committed.content_type, "segment/full-compaction");
     assert!(committed.length > 0);
     let compact_entry = replicated
         .raft
@@ -21380,7 +21380,7 @@ fn raft_backed_store_replays_chunk_mutation_qos() {
     let configured = replicated
         .propose_configure_chunk_mutation_qos(config.clone())
         .unwrap();
-    assert_eq!(configured.content_type, "chunkserver/mutation-qos-config".into());
+    assert_eq!(configured.content_type, "chunkserver/mutation-qos-config");
     assert_eq!(configured.object_id.bucket, "_chunkqos");
     assert_eq!(configured.object_id.key, "all_replicas");
     assert_eq!(configured.length, 3);
@@ -21402,7 +21402,7 @@ fn raft_backed_store_replays_chunk_mutation_qos() {
             "raft-chunk-qos-write-a",
         )
         .unwrap();
-    assert_eq!(first.content_type, "blockserver/idempotent-write".into());
+    assert_eq!(first.content_type, "blockserver/idempotent-write");
     let readiness = replicated.store().page_storage_readiness(0, 0, 10);
     assert!(readiness
         .replica_readiness
@@ -21430,7 +21430,7 @@ fn raft_backed_store_replays_chunk_mutation_qos() {
             "raft-chunk-qos-discard-a",
         )
         .unwrap();
-    assert_eq!(discard.content_type, "blockserver/idempotent-discard".into());
+    assert_eq!(discard.content_type, "blockserver/idempotent-discard");
     assert!(matches!(
         replicated.propose_discard_page_range_idempotent(
             slab_id.clone(),
@@ -21519,7 +21519,7 @@ fn raft_backed_store_replays_targeted_chunk_mutation_qos() {
         .unwrap();
     assert_eq!(
         configured.content_type,
-        "chunkserver/replica-mutation-qos-config".into()
+        "chunkserver/replica-mutation-qos-config"
     );
     assert_eq!(configured.object_id.bucket, "_chunkqos");
     assert_eq!(configured.object_id.key, "1");
@@ -21653,7 +21653,7 @@ fn raft_backed_store_applies_prepared_chunk_mutation_qos() {
         .unwrap();
     assert_eq!(
         applied.content_type,
-        "chunkserver/prepared-mutation-qos-config".into()
+        "chunkserver/prepared-mutation-qos-config"
     );
     assert_eq!(applied.object_id.key, "all_replicas");
     assert_eq!(applied.version, 3);
@@ -21711,7 +21711,7 @@ fn raft_backed_store_replays_idempotent_page_writes() {
         )
         .unwrap();
     assert_eq!(first.object_id.bucket, "_blockwrite");
-    assert_eq!(first.content_type, "blockserver/idempotent-write".into());
+    assert_eq!(first.content_type, "blockserver/idempotent-write");
     assert_eq!(first.version, 0);
     assert_eq!(first.length, 8);
     let retry = replicated
@@ -21802,7 +21802,7 @@ fn raft_backed_store_replays_idempotent_batch_page_writes() {
         .propose_write_page_ranges_idempotent(batch.clone(), "raft-block-batch-write-a")
         .unwrap();
     assert_eq!(first.object_id.bucket, "_blockwrite");
-    assert_eq!(first.content_type, "blockserver/idempotent-batch-write".into());
+    assert_eq!(first.content_type, "blockserver/idempotent-batch-write");
     assert_eq!(first.version, 0);
     assert_eq!(first.length, 12);
     let retry = replicated
@@ -21872,7 +21872,7 @@ fn raft_backed_store_replays_idempotent_page_discards() {
         .propose_discard_page_range_idempotent(slab_id.clone(), 2, 4, "raft-block-discard-a")
         .unwrap();
     assert_eq!(first.object_id.bucket, "_blockdiscard");
-    assert_eq!(first.content_type, "blockserver/idempotent-discard".into());
+    assert_eq!(first.content_type, "blockserver/idempotent-discard");
     assert_eq!(first.version, 0);
     assert_eq!(first.length, 4);
     let retry = replicated
@@ -22031,7 +22031,7 @@ fn raft_backed_store_replays_idempotent_batch_page_discards() {
         .propose_discard_page_ranges_idempotent(requests.clone(), "raft-block-batch-discard-a")
         .unwrap();
     assert_eq!(first.object_id.bucket, "_blockdiscard");
-    assert_eq!(first.content_type, "blockserver/idempotent-batch-discard".into());
+    assert_eq!(first.content_type, "blockserver/idempotent-batch-discard");
     assert_eq!(first.version, 0);
     assert!(first.length > 0);
     let retry = replicated
@@ -22079,7 +22079,7 @@ fn raft_backed_store_replays_page_replica_scrub() {
         .unwrap();
     let receipt = replicated.propose_scrub_page_replicas(true).unwrap();
     assert_eq!(receipt.object_id.bucket, "_blockscrub");
-    assert_eq!(receipt.content_type, "blockserver/replica-scrub-repair".into());
+    assert_eq!(receipt.content_type, "blockserver/replica-scrub-repair");
     assert!(receipt.version > 0);
     assert_eq!(replicated.raft_commit_index(), 2);
 
@@ -22142,7 +22142,7 @@ fn raft_backed_store_replays_bounded_page_repair() {
             &route_proof.state_checksum,
         )
         .unwrap();
-    assert_eq!(first.content_type, "blockserver/bounded-repair-more".into());
+    assert_eq!(first.content_type, "blockserver/bounded-repair-more");
     assert_eq!(first.version, 1);
     assert_eq!(first.length, 1);
     let second = replicated
@@ -22154,7 +22154,7 @@ fn raft_backed_store_replays_bounded_page_repair() {
             first.update_time_ms,
         )
         .unwrap();
-    assert_eq!(second.content_type, "blockserver/bounded-repair".into());
+    assert_eq!(second.content_type, "blockserver/bounded-repair");
     assert_eq!(second.version, 2);
     assert_eq!(replicated.raft_commit_index(), 3);
     let healthy = replicated
@@ -22246,7 +22246,7 @@ fn raft_backed_store_replays_exact_page_chunk_repair() {
         )
         .unwrap();
     assert_eq!(receipt.object_id.bucket, "_blockrepair");
-    assert_eq!(receipt.content_type, "blockserver/exact-chunk-repair".into());
+    assert_eq!(receipt.content_type, "blockserver/exact-chunk-repair");
     assert_eq!(receipt.length, 1);
     assert_eq!(receipt.update_time_ms, chunk_id.chunk_index);
     assert_eq!(replicated.raft_commit_index(), 2);
@@ -22408,7 +22408,7 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
     let first = first_status.metadata.clone();
     assert_eq!(
         first.content_type,
-        "blockserver/prepared-bounded-repair-more".into()
+        "blockserver/prepared-bounded-repair-more"
     );
     assert_eq!(first.version, 1);
     assert_eq!(first_status.mutation_id, prepared.value.raft_entry_checksum);
@@ -22580,7 +22580,7 @@ fn raft_backed_store_replays_prepared_exact_page_chunk_repair() {
     assert_eq!(receipt.object_id.bucket, "_blockrepair");
     assert_eq!(
         receipt.content_type,
-        "blockserver/prepared-exact-chunk-repair".into()
+        "blockserver/prepared-exact-chunk-repair"
     );
     assert_eq!(chunk_status.mutation_id, prepared.value.raft_entry_checksum);
     assert_eq!(
@@ -22791,7 +22791,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
         .unwrap();
     let receipt = apply_report.metadata.clone();
     assert_eq!(receipt.object_id.bucket, "_chunkhandoff");
-    assert_eq!(receipt.content_type, "chunkserver/state-handoff".into());
+    assert_eq!(receipt.content_type, "chunkserver/state-handoff");
     assert_eq!(receipt.version, 3);
     assert_eq!(receipt.length, 2);
     assert_eq!(
@@ -22886,13 +22886,13 @@ fn raft_backed_store_replays_audit_driven_page_repair() {
     let first = replicated
         .propose_repair_audited_page_replicas(None, 1, 0)
         .unwrap();
-    assert_eq!(first.content_type, "blockserver/audit-repair-more".into());
+    assert_eq!(first.content_type, "blockserver/audit-repair-more");
     assert_eq!(first.version, 1);
     assert_eq!(first.length, 1);
     let second = replicated
         .propose_repair_audited_page_replicas(Some(chunks[0].chunk_id.clone()), 10, 0)
         .unwrap();
-    assert_eq!(second.content_type, "blockserver/audit-repair".into());
+    assert_eq!(second.content_type, "blockserver/audit-repair");
     assert_eq!(second.version, 1);
     assert_eq!(second.length, 1);
     assert_eq!(replicated.raft_commit_index(), 3);
@@ -23153,7 +23153,7 @@ fn raft_backed_store_replays_prepared_page_audit_repair_with_compact_fences() {
     assert_eq!(receipt.object_id.bucket, "_blockauditrepair");
     assert_eq!(
         receipt.content_type,
-        "blockserver/prepared-audit-repair-more".into()
+        "blockserver/prepared-audit-repair-more"
     );
     assert_eq!(receipt.version, 1);
     assert_eq!(receipt.length, 0);
@@ -23221,7 +23221,7 @@ fn raft_backed_store_replays_chunk_partial_reclaim() {
         .unwrap();
     let receipt = replicated.propose_reclaim_chunk_replicas(1, 4, 1).unwrap();
     assert_eq!(receipt.object_id.bucket, "_chunkreclaim");
-    assert_eq!(receipt.content_type, "chunkserver/partial-reclaim-more".into());
+    assert_eq!(receipt.content_type, "chunkserver/partial-reclaim-more");
     assert_eq!(receipt.version, 3);
     assert_eq!(receipt.length, 12);
     assert_eq!(receipt.update_time_ms, 12);
@@ -23369,7 +23369,7 @@ fn raft_backed_store_replays_prepared_page_reclaim_with_route_fence() {
         .unwrap();
     let receipt = apply_report.metadata.clone();
     assert_eq!(receipt.object_id.bucket, "_blockreclaim");
-    assert_eq!(receipt.content_type, "blockserver/prepared-reclaim-more".into());
+    assert_eq!(receipt.content_type, "blockserver/prepared-reclaim-more");
     assert_eq!(receipt.version, 1);
     assert_eq!(receipt.length, prepared.report.reclaimed_discard_bytes);
     assert_eq!(apply_report.mutation_id, prepared.raft_entry_checksum);
@@ -23495,7 +23495,7 @@ fn raft_backed_store_replays_targeted_chunk_reclaim() {
         .propose_reclaim_chunk_replicas_with_limits(10, 6, 1, 200_000, 2, 2)
         .unwrap();
     assert_eq!(receipt.object_id.bucket, "_chunkreclaim");
-    assert_eq!(receipt.content_type, "chunkserver/targeted-reclaim-more".into());
+    assert_eq!(receipt.content_type, "chunkserver/targeted-reclaim-more");
     assert_eq!(receipt.version, 3);
     assert_eq!(receipt.length, 12);
     assert_eq!(receipt.update_time_ms, 6);
@@ -23706,7 +23706,7 @@ fn raft_backed_store_replays_prepared_chunk_reclaim_with_compact_fences() {
         .unwrap();
     let receipt = apply_report.metadata.clone();
     assert_eq!(receipt.object_id.bucket, "_chunkreclaim");
-    assert_eq!(receipt.content_type, "chunkserver/prepared-reclaim".into());
+    assert_eq!(receipt.content_type, "chunkserver/prepared-reclaim");
     assert_eq!(receipt.version, 2);
     assert_eq!(receipt.length, 8);
     assert_eq!(apply_report.mutation_id, prepared.raft_entry_checksum);
@@ -23883,7 +23883,7 @@ fn raft_backed_store_replays_storage_maintenance() {
         )
         .unwrap();
     assert_eq!(receipt.object_id.bucket, "_storagemaintenance");
-    assert_eq!(receipt.content_type, "storage/maintenance-reclaim".into());
+    assert_eq!(receipt.content_type, "storage/maintenance-reclaim");
     assert!(receipt.version > 0);
     assert!(receipt.length > 0);
     assert_eq!(replicated.raft_commit_index(), 3);
@@ -23937,7 +23937,7 @@ fn raft_backed_storage_maintenance_repairs_degraded_chunks() {
         .propose_run_storage_maintenance(4, 0, 0, 4, 1024, 1, 1, 4, 1024, 2)
         .unwrap();
     assert_eq!(receipt.object_id.bucket, "_storagemaintenance");
-    assert_eq!(receipt.content_type, "storage/maintenance-repair".into());
+    assert_eq!(receipt.content_type, "storage/maintenance-repair");
     assert_eq!(receipt.version, 1);
     assert_eq!(receipt.length, 1);
     assert_eq!(replicated.raft_commit_index(), 2);
@@ -23986,7 +23986,7 @@ fn raft_backed_store_replays_chunk_trim_flow_throttling() {
     let configured = replicated
         .propose_configure_chunk_trim_flow(1, 2, 1_000)
         .unwrap();
-    assert_eq!(configured.content_type, "chunkserver/trim-flow".into());
+    assert_eq!(configured.content_type, "chunkserver/trim-flow");
     assert_eq!(configured.object_id.bucket, "_chunktrimflow");
     assert_eq!(configured.object_id.key, "all_replicas");
     assert_eq!(configured.length, 3);
@@ -24003,7 +24003,7 @@ fn raft_backed_store_replays_chunk_trim_flow_throttling() {
         .unwrap();
     assert_eq!(
         receipt.content_type,
-        "chunkserver/targeted-reclaim-throttled".into()
+        "chunkserver/targeted-reclaim-throttled"
     );
     assert_eq!(replicated.raft_commit_index(), 4);
 
@@ -24040,7 +24040,7 @@ fn raft_backed_store_replays_targeted_chunk_trim_flow() {
     let configured = replicated
         .propose_configure_chunk_replica_trim_flow(2, 11, 22, 33)
         .unwrap();
-    assert_eq!(configured.content_type, "chunkserver/replica-trim-flow".into());
+    assert_eq!(configured.content_type, "chunkserver/replica-trim-flow");
     assert_eq!(configured.object_id.bucket, "_chunktrimflow");
     assert_eq!(configured.object_id.key, "2");
     assert_eq!(configured.length, 1);
@@ -24169,7 +24169,7 @@ fn raft_backed_store_applies_prepared_chunk_trim_flow_control() {
             Some(&current_route_checksum),
         )
         .unwrap();
-    assert_eq!(applied.content_type, "chunkserver/prepared-trim-flow".into());
+    assert_eq!(applied.content_type, "chunkserver/prepared-trim-flow");
     assert_eq!(applied.object_id.key, "all_replicas");
     assert_eq!(applied.version, 7);
     assert_eq!(applied.length, 3);
@@ -24211,7 +24211,7 @@ fn raft_backed_store_replays_chunk_read_cache_configuration() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     let configured = replicated.propose_configure_chunk_read_cache(4).unwrap();
-    assert_eq!(configured.content_type, "chunkserver/read-cache-config".into());
+    assert_eq!(configured.content_type, "chunkserver/read-cache-config");
     assert_eq!(
         replicated.store().chunk_read_cache_max_bytes_per_replica(),
         4
@@ -24352,7 +24352,7 @@ fn raft_backed_store_replays_targeted_chunk_read_cache_configuration() {
         .unwrap();
     assert_eq!(
         configured.content_type,
-        "chunkserver/replica-read-cache-config".into()
+        "chunkserver/replica-read-cache-config"
     );
     assert_eq!(configured.object_id.bucket, "_chunkcache");
     assert_eq!(configured.object_id.key, "1");
@@ -24502,7 +24502,7 @@ fn raft_backed_store_applies_prepared_chunk_read_cache_configuration() {
         .unwrap();
     assert_eq!(
         applied.content_type,
-        "chunkserver/prepared-read-cache-config".into()
+        "chunkserver/prepared-read-cache-config"
     );
     assert_eq!(applied.object_id.key, "all_replicas");
     assert_eq!(applied.version, 8);
@@ -24546,7 +24546,7 @@ fn raft_backed_store_replays_page_chunk_endpoint_topology() {
             2,
         )
         .unwrap();
-    assert_eq!(configured.content_type, "blockserver/chunk-endpoints".into());
+    assert_eq!(configured.content_type, "blockserver/chunk-endpoints");
     assert_eq!(configured.version, 3);
     assert_eq!(configured.length, 1);
     let ready = replicated.store().page_storage_readiness(0, 0, 1);
@@ -24677,7 +24677,7 @@ fn raft_backed_store_replays_metaserver_transactions() {
     let committed = replicated
         .propose_commit_meta_transaction("txn/commit", "owner-a", 11)
         .unwrap();
-    assert_eq!(committed.content_type, "metaserver/transaction-commit".into());
+    assert_eq!(committed.content_type, "metaserver/transaction-commit");
     replicated
         .propose_begin_meta_transaction(
             "txn/abort",
@@ -24781,7 +24781,7 @@ fn raft_backed_store_dedupes_metaserver_transaction_receipts_across_snapshots() 
         .unwrap();
     assert_eq!(
         begin.content_type,
-        "metaserver/transaction-begin-idempotent".into()
+        "metaserver/transaction-begin-idempotent"
     );
     let begin_retry = replicated
         .propose_begin_meta_transaction_idempotent(
@@ -24795,21 +24795,21 @@ fn raft_backed_store_dedupes_metaserver_transaction_receipts_across_snapshots() 
         .unwrap();
     assert_eq!(
         begin_retry.content_type,
-        "metaserver/transaction-begin-idempotent-deduped".into()
+        "metaserver/transaction-begin-idempotent-deduped"
     );
     let renew = replicated
         .propose_renew_meta_transaction_idempotent("txn/receipt", "owner-a", 200, 11, "txn-renew-a")
         .unwrap();
     assert_eq!(
         renew.content_type,
-        "metaserver/transaction-renew-idempotent".into()
+        "metaserver/transaction-renew-idempotent"
     );
     let renew_retry = replicated
         .propose_renew_meta_transaction_idempotent("txn/receipt", "owner-a", 200, 11, "txn-renew-a")
         .unwrap();
     assert_eq!(
         renew_retry.content_type,
-        "metaserver/transaction-renew-idempotent-deduped".into()
+        "metaserver/transaction-renew-idempotent-deduped"
     );
     assert!(matches!(
         replicated.propose_renew_meta_transaction_idempotent(
@@ -24848,14 +24848,14 @@ fn raft_backed_store_dedupes_metaserver_transaction_receipts_across_snapshots() 
         .unwrap();
     assert_eq!(
         commit.content_type,
-        "metaserver/transaction-commit-idempotent".into()
+        "metaserver/transaction-commit-idempotent"
     );
     let commit_retry = replicated
         .propose_commit_meta_transaction_idempotent("txn/receipt", "owner-a", 12, "txn-commit-a")
         .unwrap();
     assert_eq!(
         commit_retry.content_type,
-        "metaserver/transaction-commit-idempotent-deduped".into()
+        "metaserver/transaction-commit-idempotent-deduped"
     );
 
     replicated
@@ -24883,7 +24883,7 @@ fn raft_backed_store_dedupes_metaserver_transaction_receipts_across_snapshots() 
         .unwrap();
     assert_eq!(
         abort.content_type,
-        "metaserver/transaction-abort-idempotent".into()
+        "metaserver/transaction-abort-idempotent"
     );
     let abort_retry = replicated
         .propose_abort_meta_transaction_idempotent(
@@ -24895,7 +24895,7 @@ fn raft_backed_store_dedupes_metaserver_transaction_receipts_across_snapshots() 
         .unwrap();
     assert_eq!(
         abort_retry.content_type,
-        "metaserver/transaction-abort-idempotent-deduped".into()
+        "metaserver/transaction-abort-idempotent-deduped"
     );
     assert_eq!(replicated.raft_commit_index(), 9);
     assert_eq!(
@@ -25015,7 +25015,7 @@ fn raft_backed_store_replays_metaserver_transaction_gc() {
         .unwrap();
 
     let first_gc = replicated.propose_gc_meta_transactions(20, 1, 0).unwrap();
-    assert_eq!(first_gc.content_type, "metaserver/transaction-gc".into());
+    assert_eq!(first_gc.content_type, "metaserver/transaction-gc");
     assert_eq!(first_gc.version, 1);
     assert_eq!(first_gc.length, 1);
     let second_gc = replicated.propose_gc_meta_transactions(20, 10, 0).unwrap();
@@ -25260,7 +25260,7 @@ fn raft_backed_store_replays_metaserver_raft_membership() {
             2,
         )
         .unwrap();
-    assert_eq!(receipt.content_type, "metaserver/raft-membership".into());
+    assert_eq!(receipt.content_type, "metaserver/raft-membership");
     assert_eq!(receipt.version, 2);
     assert_eq!(receipt.length, 2);
     assert_eq!(replicated.raft_commit_index(), 1);
@@ -25347,7 +25347,7 @@ fn raft_backed_store_replays_metaserver_raft_membership() {
     );
 
     let peer_health = replicated.propose_update_raft_peer_health(1).unwrap();
-    assert_eq!(peer_health.content_type, "metaserver/raft-peer-health".into());
+    assert_eq!(peer_health.content_type, "metaserver/raft-peer-health");
     assert_eq!(peer_health.version, 1);
     assert_eq!(peer_health.length, 2);
     assert_eq!(replicated.raft_commit_index(), 2);
@@ -25451,7 +25451,7 @@ fn raft_backed_store_applies_prepared_metaserver_raft_membership() {
     let receipt = replicated
         .propose_prepared_raft_membership(prepared.clone())
         .unwrap();
-    assert_eq!(receipt.content_type, "metaserver/raft-membership-prepared".into());
+    assert_eq!(receipt.content_type, "metaserver/raft-membership-prepared");
     assert_eq!(receipt.version, 2);
     assert_eq!(receipt.length, 2);
     assert_eq!(replicated.raft_commit_index(), 1);
@@ -25472,7 +25472,7 @@ fn raft_backed_store_applies_prepared_metaserver_raft_membership() {
         .unwrap();
     assert_eq!(
         duplicate_receipt.content_type,
-        "metaserver/raft-membership-prepared".into()
+        "metaserver/raft-membership-prepared"
     );
     assert_eq!(replicated.raft_commit_index(), 2);
     assert_eq!(replicated.store().raft_membership_epoch(), 3);
@@ -25666,7 +25666,7 @@ fn raft_backed_store_replays_metaserver_prefix_delete_and_checkpoints() {
     let deleted = replicated
         .propose_delete_meta_by_prefix("object/gc/", 10, None, None, 22)
         .unwrap();
-    assert_eq!(deleted.content_type, "metaserver/prefix-delete".into());
+    assert_eq!(deleted.content_type, "metaserver/prefix-delete");
     assert_eq!(deleted.length, 2);
     let changes = replicated.store().metadata_changes_after(0, 10);
     let checkpoint = MetadataChangeCheckpoint {
@@ -25684,7 +25684,7 @@ fn raft_backed_store_replays_metaserver_prefix_delete_and_checkpoints() {
     let compacted = replicated
         .propose_compact_meta_changefeed("object/gc/", 10)
         .unwrap();
-    assert_eq!(compacted.content_type, "metaserver/changefeed-compact".into());
+    assert_eq!(compacted.content_type, "metaserver/changefeed-compact");
     assert_eq!(compacted.version, 4);
     assert_eq!(compacted.length, 1);
     assert_eq!(compacted.update_time_ms, checkpoint.after_change_sequence);
@@ -25967,7 +25967,7 @@ fn raft_backed_store_replays_idempotent_bucket_versioning() {
         )
         .unwrap();
     assert!(receipt.value.enabled);
-    assert_eq!(receipt.value.metadata.content_type, "bucket/versioning".into());
+    assert_eq!(receipt.value.metadata.content_type, "bucket/versioning");
     let retry = replicated
         .propose_set_bucket_versioning_idempotent("bucket", true, 12, "bucket-versioning-a")
         .unwrap();
@@ -27543,7 +27543,7 @@ fn raft_backed_store_replays_root_leader_lease() {
     let campaign = replicated
         .propose_campaign_root_leader("root-a", 100, 10)
         .unwrap();
-    assert_eq!(campaign.content_type, "rootserver/leader-campaign".into());
+    assert_eq!(campaign.content_type, "rootserver/leader-campaign");
     assert_eq!(campaign.version, 1);
     replicated
         .propose_renew_root_leader("root-a", 1, 120, 50)
@@ -27553,7 +27553,7 @@ fn raft_backed_store_replays_root_leader_lease() {
         .unwrap();
     assert_eq!(
         campaign_retry.content_type,
-        "rootserver/leader-campaign-idempotent".into()
+        "rootserver/leader-campaign-idempotent"
     );
     let campaign_retry_again = replicated
         .propose_campaign_root_leader_idempotent("root-a", 120, 171, "raft-root-campaign-a")
@@ -27564,7 +27564,7 @@ fn raft_backed_store_replays_root_leader_lease() {
         .unwrap();
     assert_eq!(
         renew_retry.content_type,
-        "rootserver/leader-renew-idempotent".into()
+        "rootserver/leader-renew-idempotent"
     );
     replicated
         .propose_renew_root_leader_idempotent("root-a", 2, 140, 180, "raft-root-renew-a")
@@ -27743,7 +27743,7 @@ fn raft_backed_store_gates_prepared_root_actions() {
         .unwrap();
     assert_eq!(
         capacity_receipt.content_type,
-        "root/prepared-placement-capacity-rebalance".into()
+        "root/prepared-placement-capacity-rebalance"
     );
     assert_eq!(capacity_receipt.version, 1);
     assert_eq!(capacity_receipt.length, 1);
@@ -27799,7 +27799,7 @@ fn raft_backed_store_gates_prepared_root_actions() {
         .unwrap();
     assert_eq!(
         migration.metadata.content_type,
-        "root/prepared-placement-migration".into()
+        "root/prepared-placement-migration"
     );
     assert_eq!(migration.metadata.length, 32);
     assert_eq!(
@@ -27898,7 +27898,7 @@ fn raft_backed_store_replays_batch_delete_with_root_release() {
             12,
         )
         .unwrap();
-    assert_eq!(receipt.content_type, "objectstore/batch-delete".into());
+    assert_eq!(receipt.content_type, "objectstore/batch-delete");
     assert_eq!(receipt.version, 1);
     assert_eq!(receipt.length, 2);
     assert_eq!(receipt.update_time_ms, 5);
@@ -27998,7 +27998,7 @@ fn raft_backed_store_replays_batch_put() {
             42,
         )
         .unwrap();
-    assert_eq!(receipt.content_type, "objectstore/batch-put".into());
+    assert_eq!(receipt.content_type, "objectstore/batch-put");
     assert_eq!(receipt.version, 2);
     assert_eq!(receipt.length, 1);
     assert_eq!(receipt.update_time_ms, 17);
@@ -28055,7 +28055,7 @@ fn raft_backed_store_replays_prefix_delete_with_root_release() {
     let receipt = replicated
         .propose_delete_objects_by_prefix("bucket", "logs/", None, 10, true, 30)
         .unwrap();
-    assert_eq!(receipt.content_type, "objectstore/prefix-delete".into());
+    assert_eq!(receipt.content_type, "objectstore/prefix-delete");
     assert_eq!(receipt.version, 2);
     assert_eq!(receipt.length, 0);
     assert_eq!(replicated.raft_commit_index(), 7);
@@ -28158,7 +28158,7 @@ fn raft_backed_store_replays_root_draining_repairs() {
         .unwrap();
     assert_eq!(
         receipt.content_type,
-        "root/prepared-placement-draining-repair".into()
+        "root/prepared-placement-draining-repair"
     );
     assert_eq!(receipt.version, 1);
     assert_eq!(receipt.length, 1);
@@ -28271,7 +28271,7 @@ fn raft_backed_store_replays_prepared_root_health_repairs() {
         .unwrap();
     assert_eq!(
         receipt.content_type,
-        "root/prepared-placement-health-repair".into()
+        "root/prepared-placement-health-repair"
     );
     assert_eq!(receipt.version, 1);
     assert_eq!(receipt.length, 1);
@@ -29007,7 +29007,7 @@ fn raft_backed_store_replays_root_capacity_rebalance() {
         .propose_register_root_node(root_node("chunk-c", "rack-c", 128))
         .unwrap();
     let receipt = replicated.propose_rebalance_root_capacity(1, 40).unwrap();
-    assert_eq!(receipt.content_type, "root/placement-capacity-rebalance".into());
+    assert_eq!(receipt.content_type, "root/placement-capacity-rebalance");
     assert_eq!(receipt.version, 1);
     assert_eq!(receipt.length, 32);
     assert_eq!(replicated.raft_commit_index(), 5);
@@ -30519,7 +30519,7 @@ fn raft_backed_store_applies_prepared_metaserver_route_cache_config() {
         .unwrap();
     assert_eq!(
         metadata.content_type,
-        "metaserver/prepared-route-cache-config".into()
+        "metaserver/prepared-route-cache-config"
     );
     assert_eq!(metadata.version, 2);
     assert_eq!(metadata.length, 25);
@@ -30705,7 +30705,7 @@ fn raft_backed_store_gates_prepared_metaserver_control_configs() {
         .unwrap();
     assert_eq!(
         retention_receipt.content_type,
-        "metaserver/prepared-retention-config".into()
+        "metaserver/prepared-retention-config"
     );
     assert_eq!(retention_receipt.version, 32);
     assert_eq!(retention_receipt.length, 24);
@@ -30728,7 +30728,7 @@ fn raft_backed_store_gates_prepared_metaserver_control_configs() {
         .unwrap();
     assert_eq!(
         admission_receipt.content_type,
-        "metaserver/prepared-admission-policy".into()
+        "metaserver/prepared-admission-policy"
     );
     assert_eq!(admission_receipt.version, 64);
     assert_eq!(admission_receipt.length, 1024 * 1024);
@@ -30746,7 +30746,7 @@ fn raft_backed_store_gates_prepared_metaserver_control_configs() {
     let qos_receipt = replicated
         .propose_prepared_meta_qos_config_linearizable(qos_prepared, 102)
         .unwrap();
-    assert_eq!(qos_receipt.content_type, "metaserver/prepared-qos-config".into());
+    assert_eq!(qos_receipt.content_type, "metaserver/prepared-qos-config");
     assert_eq!(qos_receipt.version, 1_000);
     assert_eq!(qos_receipt.length, 128);
 
@@ -30780,7 +30780,7 @@ fn raft_backed_store_gates_prepared_metaserver_control_configs() {
         .unwrap();
     assert_eq!(
         route_receipt.content_type,
-        "metaserver/prepared-route-cache-config".into()
+        "metaserver/prepared-route-cache-config"
     );
     assert_eq!(route_receipt.version, 8);
     assert_eq!(route_receipt.length, 250);
@@ -31314,7 +31314,7 @@ fn metaserver_fails_over_expired_shard_owners_through_prepared_raft() {
     let receipt = replicated
         .propose_prepared_meta_shard_migration_plan(prepared)
         .unwrap();
-    assert_eq!(receipt.content_type, "metaserver/prepared-shard-migration".into());
+    assert_eq!(receipt.content_type, "metaserver/prepared-shard-migration");
     let follower = replicated.store();
     let shard = follower.metadata_shard("objects-expired-a").unwrap();
     assert_eq!(shard.owner_node_id, "meta-b");
@@ -32770,7 +32770,7 @@ fn metaserver_watch_changes_reports_compacted_cursors_via_raft() {
     let compacted = replicated
         .propose_compact_meta_changefeed("object/watch/", 1)
         .unwrap();
-    assert_eq!(compacted.content_type, "metaserver/changefeed-compact".into());
+    assert_eq!(compacted.content_type, "metaserver/changefeed-compact");
 
     let (lagging_watch, readiness) = replicated
         .watch_metadata_changes_linearizable("object/watch/", 0, 10, 0, 50)
@@ -34499,5 +34499,132 @@ fn an_object_under_no_lock_pays_one_pointer_for_it() {
     assert_eq!(
         audit_value(&restored, "objects.lock_bytes"),
         std::mem::size_of::<ObjectLockState>() as u64
+    );
+}
+
+#[test]
+fn objects_of_one_content_type_name_it_through_one_allocation() {
+    // Every object carried its own copy of its content type, so a store holding
+    // a million objects of one type held a million copies of the same string.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    const TYPE: &str = "application/octet-stream";
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    const OBJECTS: usize = 8;
+    for index in 0..OBJECTS {
+        store
+            .put_object("bucket", &format!("k{index}"), vec![b'v'; 8], TYPE)
+            .unwrap();
+    }
+
+    let types: Vec<_> = store
+        .objects
+        .values()
+        .map(|metadata| metadata.content_type.clone())
+        .collect();
+    assert_eq!(types.len(), OBJECTS);
+    for other in &types[1..] {
+        assert!(
+            types[0].shares_with(other),
+            "two objects of one content type must name it through one allocation"
+        );
+    }
+    let header = 2 * std::mem::size_of::<usize>() as u64;
+    assert_eq!(
+        audit_value(&store, "objects.content_type_heap"),
+        TYPE.len() as u64 + header,
+        "eight objects, one content type, one allocation"
+    );
+
+    // A second type gets its own, and both are shared within their own objects.
+    store
+        .put_object("bucket", "other", vec![b'v'; 8], "text/plain")
+        .unwrap();
+    assert_eq!(
+        audit_value(&store, "objects.content_type_heap"),
+        TYPE.len() as u64 + header + "text/plain".len() as u64 + header,
+        "two types, two allocations"
+    );
+
+    // And the sharing survives a reload, where the pool is rebuilt rather than
+    // carried in the snapshot.
+    let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    let mut restored = MatrixObjectStore::new(test_options()).unwrap();
+    restored.install_snapshot_bytes(&bytes).unwrap();
+    assert_eq!(
+        audit_value(&restored, "objects.content_type_heap"),
+        TYPE.len() as u64 + header + "text/plain".len() as u64 + header,
+        "a store loaded from a snapshot shares on the same terms"
+    );
+    assert_eq!(
+        restored
+            .head_object("bucket", "other")
+            .unwrap()
+            .content_type
+            .as_str(),
+        "text/plain",
+        "and the types still read back"
+    );
+}
+
+#[test]
+fn past_the_bound_an_object_owns_its_content_type() {
+    // The set of content types is open, so the pool is bounded: past the bound
+    // an object owns its own string, which is what every object did before.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    let bound = crate::MAX_SHARED_CONTENT_TYPES;
+    for index in 0..bound {
+        store
+            .put_object(
+                "bucket",
+                &format!("k{index}"),
+                vec![b'v'; 4],
+                format!("application/x-{index}"),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store.content_types.len(),
+        bound,
+        "the pool fills to the bound and no further"
+    );
+
+    // One more distinct type is not refused; it simply is not shared.
+    let past = store
+        .put_object("bucket", "past", vec![b'v'; 4], "application/x-past")
+        .unwrap();
+    assert_eq!(past.content_type.as_str(), "application/x-past");
+    assert_eq!(
+        store.content_types.len(),
+        bound,
+        "and the pool has not grown past it"
+    );
+    assert!(
+        !store.content_types.contains("application/x-past"),
+        "the type past the bound is not interned"
+    );
+
+    // A type already in the pool still shares, so filling it does not stop the
+    // sharing for everything that got in.
+    let repeat = store
+        .put_object("bucket", "repeat", vec![b'v'; 4], "application/x-0")
+        .unwrap();
+    let first = store
+        .objects
+        .values()
+        .find(|metadata| metadata.content_type.as_str() == "application/x-0")
+        .expect("the first object is still there");
+    assert!(
+        repeat.content_type.shares_with(&first.content_type),
+        "a type inside the bound still shares after the pool is full"
     );
 }
