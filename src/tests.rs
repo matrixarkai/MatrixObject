@@ -35824,6 +35824,61 @@ fn applying_an_entry_reports_the_codec_the_log_format_would_need() {
 }
 
 #[test]
+fn keys_on_one_shard_share_three_cached_checksums() {
+    // Each entry names a store-wide topology digest, a shard-topology digest
+    // and a session digest. They were three `String`s per entry; they are now
+    // three shared handles, so the characters exist once however many keys are
+    // cached.
+    //
+    // Counted by allocation identity, which is the only thing that can tell a
+    // share from a copy: the values are equal by construction either way, so
+    // comparing them proves nothing, and a byte figure can fall because
+    // something was dropped rather than shared.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store
+        .register_meta_coordinator_session("session-a", "meta-a", "127.0.0.1:9200", 10_000, 10)
+        .unwrap();
+    store
+        .configure_metadata_shard(MetadataShard {
+            shard_id: "objects-a".to_string(),
+            start_key: "object/bucket/".to_string(),
+            end_key: "object/bucket0".to_string(),
+            owner_node_id: "meta-a".to_string(),
+            epoch: 1,
+            draining: false,
+        })
+        .unwrap();
+    for index in 0..24u32 {
+        store
+            .resolve_metadata_route_cached(&format!("object/bucket/key-{index:04}"), 10)
+            .expect("the shard covers this key");
+    }
+    let read = |wanted: &str| {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value)
+            .unwrap_or(0)
+    };
+    assert_eq!(read("metadata_route_cache.entries"), 24, "24 keys cached");
+    println!(
+        "CHECKSUMSHARE entries={} checksum_allocations={}",
+        read("metadata_route_cache.entries"),
+        read("metadata_route_cache.checksum_allocations")
+    );
+    assert_eq!(
+        read("metadata_route_cache.checksum_allocations"),
+        3,
+        "24 entries on one shard must name three checksum allocations, not 72"
+    );
+}
+
+#[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_what_a_filled_metadata_route_cache_costs() {
     // The route cache is keyed by metadata key -- one entry per object key a
@@ -35875,6 +35930,11 @@ fn measure_what_a_filled_metadata_route_cache_costs() {
     let entries = read(&store, "metadata_route_cache.entries");
     let bytes = read(&store, "metadata_route_cache.bytes");
     println!("ROUTECACHE requested={routes} entries={entries} before={before} bytes={bytes}");
+    println!(
+        "ROUTECACHE route_allocations={} checksum_allocations={}",
+        read(&store, "metadata_route_cache.route_allocations"),
+        read(&store, "metadata_route_cache.checksum_allocations")
+    );
     if entries > 0 {
         let per = bytes / entries;
         println!("ROUTECACHE per_entry={per}");

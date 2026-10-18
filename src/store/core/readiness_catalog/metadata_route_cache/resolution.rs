@@ -89,6 +89,20 @@ impl MatrixObjectStore {
         )
     }
 
+    /// One allocation per distinct checksum, however many entries name it.
+    ///
+    /// Bounded by how often the topology or the coordinator sessions change
+    /// rather than by the number of cached keys, and cleared with the cache it
+    /// serves.
+    fn shared_route_checksum(&mut self, text: String) -> SharedText {
+        if let Some(existing) = self.metadata_route_checksums.get(&text) {
+            return existing.clone();
+        }
+        let shared = SharedText::from(text.as_str());
+        self.metadata_route_checksums.insert(text, shared.clone());
+        shared
+    }
+
     pub fn resolve_metadata_route_cached(
         &mut self,
         key: &str,
@@ -118,6 +132,9 @@ impl MatrixObjectStore {
         // Reuse the route already held for this shard when the one just
         // resolved is equal to it, so the entries for a shard's keys share one
         // allocation instead of each carrying a copy.
+        let topology_checksum = self.shared_route_checksum(topology_checksum);
+        let shard_topology_checksum = self.shared_route_checksum(shard_topology_checksum);
+        let session_checksum = self.shared_route_checksum(session_checksum);
         let shard_id = route.shard.shard_id.clone();
         let shared = match self.metadata_route_shared.get(&shard_id) {
             Some(existing) if **existing == route => std::sync::Arc::clone(existing),

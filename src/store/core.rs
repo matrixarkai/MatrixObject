@@ -76,6 +76,10 @@ pub struct MatrixObjectStore {
     /// rather than each holding a copy. Derived and bounded by the shard count,
     /// and cleared wherever the cache it serves is cleared.
     metadata_route_shared: BTreeMap<String, std::sync::Arc<MetadataShardRoute>>,
+    /// One allocation per distinct checksum the cache entries name. A
+    /// generation uses three; this holds the few in play and is cleared with
+    /// the cache.
+    metadata_route_checksums: BTreeMap<String, SharedText>,
     metadata_route_cache_hits: u64,
     metadata_route_cache_misses: u64,
     metadata_route_cache_invalidations: u64,

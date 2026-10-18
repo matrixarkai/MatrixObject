@@ -166,6 +166,7 @@ impl MatrixObjectStore {
             meta_service: MatrixMetaService::new(),
             metadata_route_cache: BTreeMap::new(),
             metadata_route_shared: BTreeMap::new(),
+            metadata_route_checksums: BTreeMap::new(),
             metadata_route_cache_hits: 0,
             metadata_route_cache_misses: 0,
             metadata_route_cache_invalidations: 0,
