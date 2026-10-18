@@ -547,6 +547,15 @@ impl ObjectMutationRollback {
                     (std::mem::size_of::<ObjectMetadata>() as u64)
                         .saturating_add(audit_object_metadata_heap(&mut ledger, previous))
                 }))
+                // The payload entries the mutation will remove. One object's
+                // worth, where the undo used to copy the whole index -- and
+                // counted at capacity, because a `Vec` that was grown holds its
+                // slack as long as the undo lives.
+                .saturating_add(
+                    (targeted.previous_payloads.capacity() as u64).saturating_mul(
+                        std::mem::size_of::<((SlabId, u64), StoredPayload)>() as u64,
+                    ),
+                )
         });
 
         let mut buckets_bytes = 0u64;

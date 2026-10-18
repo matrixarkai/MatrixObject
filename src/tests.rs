@@ -34985,25 +34985,77 @@ fn what_a_put_undoes_by_hand_does_not_grow_with_the_store() {
     let large = undo_at(80);
     for (key, small_value) in small.iter() {
         let large_value = large.get(key).copied().unwrap_or(0);
-        if key == "undo.payloads.bytes" || key == "undo.total_bytes" {
-            continue;
-        }
         assert_eq!(
             *small_value, large_value,
             "{key} must not depend on how much is stored, but it moved from \
              {small_value} to {large_value} when the store doubled"
         );
     }
-    // And the one leg that does move, moves with the stored objects rather than
-    // with anything else -- stated as a ratio so the figure can change without
-    // the test having to be rewritten.
-    let small_payloads = small.get("undo.payloads.bytes").copied().unwrap_or(0);
-    let large_payloads = large.get("undo.payloads.bytes").copied().unwrap_or(0);
+    // Including the total, and including the payload index, which was the one
+    // leg that did scale until it stopped being copied.
     assert_eq!(
-        small_payloads * 2,
-        large_payloads,
-        "the payload index is copied in full, so doubling the store should \
-         double this leg: {small_payloads} and {large_payloads}"
+        small.get("undo.payloads.bytes").copied().unwrap_or(0),
+        0,
+        "a targeted undo does not copy the payload index at all"
+    );
+    assert!(
+        small.get("undo.total_bytes").copied().unwrap_or(0) > 0,
+        "a put's undo cannot be free"
+    );
+}
+
+#[test]
+fn a_stale_range_holds_no_payload_entry() {
+    // The invariant a targeted undo's payload arithmetic rests on. It
+    // identifies what a mutation inserted as "in a slab the undo never heard
+    // of, or at or past the write cursor as it was, or inside a range that was
+    // stale" -- and the last of those is only sound because a stale range
+    // holds no entry. `mark_extents_stale` removes the entry for each extent
+    // it stales, which is what makes that true, and which is also why an
+    // insert into a reclaimed range can never overwrite an entry the undo
+    // would then have to put back.
+    //
+    // If this ever stops holding, a refused put leaves an entry behind that
+    // names a range the page service will not serve.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    for round in 0..4 {
+        for index in 0..4 {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("k{index}"),
+                    vec![b'a' + round; 96],
+                    "text/plain",
+                )
+                .unwrap();
+        }
+    }
+    store.delete_object("bucket", "k1").unwrap();
+    let mut stale_ranges_seen = 0usize;
+    for (slab_id, slab) in store.slabs.iter() {
+        for range in slab.stale_ranges.iter() {
+            stale_ranges_seen += 1;
+            for (key, _) in store.payloads.iter() {
+                if key.0 != *slab_id {
+                    continue;
+                }
+                assert!(
+                    key.1 < range.offset || key.1 >= range.offset + range.length,
+                    "a payload entry at offset {} falls inside the stale range \
+                     {}..{} of {slab_id:?}, so a reclaimed range could overwrite \
+                     an entry a refused put would have to restore",
+                    key.1,
+                    range.offset,
+                    range.offset + range.length
+                );
+            }
+        }
+    }
+    assert!(
+        stale_ranges_seen > 0,
+        "the workload must leave at least one stale range for this to mean \
+         anything, and it left none"
     );
 }
 

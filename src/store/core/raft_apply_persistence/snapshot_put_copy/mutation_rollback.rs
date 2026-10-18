@@ -49,7 +49,11 @@ impl MatrixObjectStore {
                 Some(self.meta_service.clone())
             },
             slabs: self.slabs.clone(),
-            payloads: self.payloads.clone(),
+            payloads: if targeted {
+                Default::default()
+            } else {
+                self.payloads.clone()
+            },
             page_service: if targeted {
                 None
             } else {
@@ -91,17 +95,84 @@ impl MatrixObjectStore {
         key: &str,
     ) -> ObjectMutationRollback {
         let object_id = ObjectId::new(bucket.to_string(), key.to_string());
+        let previous_object = self.objects.get(&object_id).cloned();
+        // Sized to the extents it may hold rather than collected, because a
+        // `Vec` grown from an iterator whose lower bound is zero takes four
+        // slots to hold one entry -- 160 bytes where 40 will do, resident for
+        // as long as the undo is. The same arithmetic that oversized the keys
+        // in the previous change, in the fix for this one.
+        let previous_payloads = previous_object
+            .as_ref()
+            .map(|previous| {
+                let mut captured = Vec::with_capacity(previous.extents.len());
+                for extent in previous.extents.iter() {
+                    let key = (extent.slab_id.clone(), extent.offset);
+                    if let Some(payload) = self.payloads.get(&key) {
+                        captured.push((key, payload.clone()));
+                    }
+                }
+                captured
+            })
+            .unwrap_or_default();
         let targeted = PutTargetedUndo {
             meta: self.meta_service.capture_record_undo(&meta_object_key(&object_id)),
             bucket_existed: self.buckets.contains(bucket),
             bucket: bucket.to_string(),
-            previous_object: self.objects.get(&object_id).cloned(),
+            previous_object,
+            previous_payloads,
             object_id,
         };
         self.capture_object_mutation_rollback_inner(Some(targeted))
     }
 
+    /// Undoes a targeted mutation's changes to the payload index without having
+    /// copied it.
+    ///
+    /// The index was copied in full by every mutation -- 40 bytes per stored
+    /// object, to protect one object's worth of change -- and it was the last
+    /// container on the put path still doing that. What makes it unnecessary is
+    /// that an entry this mutation inserted is identifiable from the slab
+    /// records, which the undo already carries and which cost 120 bytes:
+    ///
+    /// * an entry in a slab the undo has never heard of is new, because the
+    ///   mutation created the slab;
+    /// * an entry at or past the slab's write cursor as it was is new, because
+    ///   that is where a fresh allocation goes;
+    /// * an entry inside a range that was stale is new, because
+    ///   `mark_extents_stale` removes the payload entry when a range goes
+    ///   stale, so a reclaimed range holds none -- which is also why an insert
+    ///   can never overwrite an entry and why there is nothing else to restore.
+    ///
+    /// Everything else was there before and is left alone. The scan is linear
+    /// in the index, but it runs only when a mutation is refused, where copying
+    /// the index ran on every mutation that succeeded.
+    fn restore_targeted_payloads(
+        &mut self,
+        slabs_before: &BTreeMap<SlabId, SlabInfo>,
+        previous_payloads: Vec<((SlabId, u64), StoredPayload)>,
+    ) {
+        self.payloads.retain(|(slab_id, offset), _| {
+            let Some(before) = slabs_before.get(slab_id) else {
+                return false;
+            };
+            if *offset >= before.next_offset {
+                return false;
+            }
+            !before.stale_ranges.iter().any(|range| {
+                *offset >= range.offset
+                    && *offset < range.offset.saturating_add(range.length)
+            })
+        });
+        // What the mutation removed. A put that replaces an object stales the
+        // old extents, and the digest in the entry it dropped is not derivable
+        // from anything the store still holds.
+        for (key, payload) in previous_payloads {
+            self.payloads.insert(key, payload);
+        }
+    }
+
     pub(crate) fn restore_object_mutation_rollback(&mut self, mut rollback: ObjectMutationRollback) {
+        let was_targeted = rollback.put_targeted.is_some();
         match rollback.put_targeted.take() {
             Some(targeted) => {
                 if !targeted.bucket_existed {
@@ -138,6 +209,7 @@ impl MatrixObjectStore {
                 self.object_changes
                     .retain(|change| change.sequence < rollback.next_object_change_sequence);
                 self.meta_service.restore_record_undo(targeted.meta);
+                self.restore_targeted_payloads(&rollback.slabs, targeted.previous_payloads);
             }
             None => {
                 self.buckets = rollback.buckets;
@@ -164,7 +236,9 @@ impl MatrixObjectStore {
             self.meta_service = meta_service;
         }
         self.slabs = rollback.slabs;
-        self.payloads = rollback.payloads;
+        if !was_targeted {
+            self.payloads = rollback.payloads;
+        }
         if let Some(page_service) = rollback.page_service {
             self.page_service = page_service;
         }
