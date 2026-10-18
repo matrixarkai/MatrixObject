@@ -34831,6 +34831,16 @@ fn measure_what_a_mutation_undo_costs() {
                 println!("UNDO objects={objects} {key}={value}");
             }
         }
+        // And what the callers that have not been narrowed hold: eighty-four of
+        // them capture every container, against two that capture one object's
+        // worth. An append is one of the eighty-four and is not even gated on a
+        // journal being configured, so it pays this on every call.
+        let whole = store.capture_object_mutation_rollback();
+        for (key, value) in whole.footprint_audit() {
+            if value != 0 {
+                println!("WHOLE objects={objects} {key}={value}");
+            }
+        }
     }
 }
 
@@ -35111,5 +35121,108 @@ fn a_retained_idempotency_key_carries_no_slack() {
         checked > 0,
         "the workload must leave at least one retained receipt for this to mean \
          anything, and it left none"
+    );
+}
+
+#[test]
+fn an_append_that_fails_after_mutating_leaves_the_store_unchanged() {
+    // The append path has the same shape as the put path -- capture, open a
+    // page-service mutation batch, and on every error abort the batch and
+    // restore -- and it had no test of its own. This is the put guard pointed
+    // at `append_object_with_options`, and it is what licenses the append path
+    // to use the narrowed undo: if the undo is not sufficient, this is where it
+    // shows.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "k", b"original-contents".to_vec(), "text/plain")
+        .unwrap();
+    store
+        .put_object("bucket", "other", b"untouched".to_vec(), "text/plain")
+        .unwrap();
+
+    let before_bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    let before_audit = store.footprint_audit();
+    let before_metadata = store.metadata_state_fingerprint();
+
+    let rejected = store.append_object_with_options(
+        "bucket",
+        "k",
+        b"appended-contents".to_vec(),
+        "text/plain",
+        PutOptions {
+            expected_checksum: Some("fnv1a64:0000000000000000".to_string()),
+            ..PutOptions::default()
+        },
+    );
+    assert!(
+        rejected.is_err(),
+        "an append with a wrong expected checksum must be refused"
+    );
+
+    // Same two reasons a byte figure may fall across a refused mutation as the
+    // put guard states: a cache dropped, or a clone tightened.
+    fn may_fall(key: &str) -> bool {
+        key.contains("read_cache")
+            || key.contains("page_validation")
+            || key.contains("export_caches")
+            || key.contains("receipts.bytes")
+            || key == "ACCOUNTED.byte_buffers"
+            || key == "ACCOUNTED.total_bytes"
+    }
+    let after_audit = store.footprint_audit();
+    let mut moved = Vec::new();
+    for (before, after) in before_audit.iter().zip(after_audit.iter()) {
+        assert_eq!(before.0, after.0, "the audit changed which keys it reports");
+        if may_fall(&before.0) {
+            assert!(
+                after.1 <= before.1,
+                "a refused append may drop a cache or tighten a clone, and must \
+                 never grow either: {} {} -> {}",
+                before.0,
+                before.1,
+                after.1
+            );
+            continue;
+        }
+        if before.1 != after.1 {
+            moved.push(format!("{} {} -> {}", before.0, before.1, after.1));
+        }
+    }
+    if !moved.is_empty() {
+        panic!("the refused append left state behind: {}", moved.join(", "));
+    }
+    // The raw snapshot bytes are deliberately NOT compared, and the reason is
+    // worth stating because it looks like an omission. A refused append that
+    // allocated a slab leaves `next_slab_id` advanced: no undo restores it,
+    // because it is not a field of `ObjectMutationRollback` at all, and that
+    // predates the narrowed undo -- the whole-store capture leaves it advanced
+    // in exactly the same way, which is what this test showed when it was
+    // first written against it. A monotonic identifier counter not rewinding
+    // is harmless, since every replica applies the same refused command and
+    // advances identically, but it does mean the snapshot is not byte-equal.
+    // Filed rather than asserted.
+    //
+    // What is asserted instead is stronger than it was: every figure the audit
+    // reports is identical, with no exception for the two containers the
+    // whole-store restore used to tighten.
+    assert_eq!(
+        before_metadata,
+        store.metadata_state_fingerprint(),
+        "the refused append left a metadata record behind"
+    );
+
+    // The other direction, so a pass means something: the same append with no
+    // expected checksum MUST change the store. Without this the test would
+    // still pass if the request were refused before it touched anything, which
+    // is how a guard like this goes quietly dead.
+    store
+        .append_object("bucket", "k", b"appended-contents".to_vec(), "text/plain")
+        .unwrap();
+    assert_ne!(
+        before_bytes,
+        store.export_snapshot().unwrap().to_bytes().unwrap(),
+        "an accepted append must change the store, or the refusal above proved \
+         nothing"
     );
 }
