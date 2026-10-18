@@ -34778,3 +34778,223 @@ fn the_receipt_maps_are_counted_in_bytes() {
     );
 }
 
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_a_mutation_undo_costs() {
+    // Reports at several store sizes in one run, because the question is not
+    // what the undo costs but whether what it costs depends on how much is
+    // stored. A single size cannot answer that.
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let series: Vec<usize> = std::env::var("MEASURE_SERIES")
+        .ok()
+        .map(|raw| raw.split(',').filter_map(|one| one.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![250, 500, 1000, 2000]);
+    let size = env_usize("MEASURE_SIZE", 1024);
+    let key_len = env_usize("MEASURE_KEYLEN", 26);
+    for objects in series {
+        // The shipped geometry, as in `measure_the_metadata_footprint`:
+        // `test_options` would make every per-object figure a property of its
+        // four-byte extents.
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            let stem = format!("prefix/{index:08}/");
+            let mut key = stem.clone();
+            while key.len() < key_len {
+                key.push('k');
+            }
+            key.truncate(key_len.max(stem.len()));
+            store
+                .put_object("bucket", &key, vec![b'x'; size], "application/octet-stream")
+                .unwrap();
+        }
+        // The undo the next put would take, before it takes it.
+        let undo = store.capture_targeted_mutation_rollback("bucket", "prefix/00000000/kkkkkkkkkk");
+        let store_total = store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == "ACCOUNTED.total_bytes")
+            .map(|(_, value)| value)
+            .unwrap_or(0);
+        println!("UNDO objects={objects} store.total_bytes={store_total}");
+        for (key, value) in undo.footprint_audit() {
+            if value != 0 {
+                println!("UNDO objects={objects} {key}={value}");
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_the_payload_index_retains() {
+    // There is no `payloads.remove` in the tree. A delete marks the object's
+    // extents stale, and the index entry that names them is not mentioned. This
+    // asks what that costs: write a run of objects, delete every one, and read
+    // the index back.
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let objects = env_usize("MEASURE_OBJECTS", 500);
+    let size = env_usize("MEASURE_SIZE", 1024);
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    let keys: Vec<String> = (0..objects).map(|index| format!("prefix/{index:08}/kkkkkkkkkk")).collect();
+    for key in keys.iter() {
+        store
+            .put_object("bucket", key, vec![b'x'; size], "application/octet-stream")
+            .unwrap();
+    }
+    fn read(store: &MatrixObjectStore, wanted: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value)
+            .unwrap_or(0)
+    }
+    let before: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let filled_entries = read(&store, "payloads.entries");
+    let filled_objects = read(&store, "objects.entries");
+    let filled_total = read(&store, "ACCOUNTED.total_bytes");
+    for key in keys.iter() {
+        store.delete_object("bucket", key).unwrap();
+    }
+    println!("RETAIN objects={objects} size={size}");
+    println!(
+        "RETAIN filled objects.entries={filled_objects} payloads.entries={filled_entries} total_bytes={filled_total}"
+    );
+    println!(
+        "RETAIN emptied objects.entries={} payloads.entries={} total_bytes={}",
+        read(&store, "objects.entries"),
+        read(&store, "payloads.entries"),
+        read(&store, "ACCOUNTED.total_bytes")
+    );
+    // Per key, because the headline moving the wrong way is only interesting
+    // once you can say which structure moved it.
+    let after: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    for (key, before) in before.iter() {
+        let now = after.get(key).copied().unwrap_or(0);
+        if *before != now {
+            println!("RETAIN delta {key} {before} -> {now}");
+        }
+    }
+    for (key, now) in after.iter() {
+        if !before.contains_key(key) && *now != 0 {
+            println!("RETAIN new {key}={now}");
+        }
+    }
+    // And what the next mutation's undo would copy, with nothing stored.
+    let undo = store.capture_targeted_mutation_rollback("bucket", &keys[0]);
+    for (key, value) in undo.footprint_audit() {
+        if value != 0 {
+            println!("RETAIN emptied {key}={value}");
+        }
+    }
+}
+
+#[test]
+fn the_undo_a_mutation_holds_is_accounted_to_the_byte() {
+    // The same contract the store's own audit is held to: a leg counted in one
+    // place and not the other fails this, so a field added to the undo cannot
+    // quietly fall out of its total.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "k", vec![b'v'; 64], "text/plain")
+        .unwrap();
+    let undo = store.capture_targeted_mutation_rollback("bucket", "k");
+    let audit: Vec<(String, u64)> = undo.footprint_audit();
+    let total = audit
+        .iter()
+        .find(|(key, _)| key == "undo.total_bytes")
+        .map(|(_, value)| *value)
+        .expect("the undo audit reports a total");
+    let legs: u64 = audit
+        .iter()
+        .filter(|(key, _)| key.ends_with(".bytes") && key != "undo.total_bytes")
+        .map(|(_, value)| *value)
+        .sum();
+    assert_eq!(
+        total, legs,
+        "the undo's legs must add up to its total, but {legs} of {total} are accounted for"
+    );
+    assert!(total > 0, "a put's undo cannot be free");
+}
+
+#[test]
+fn what_a_put_undoes_by_hand_does_not_grow_with_the_store() {
+    // What the targeted undo exists for. Everything it undoes by hand is one
+    // bucket, one object key, one metadata record and one change record, so its
+    // cost is a property of the mutation and not of how much is already stored.
+    //
+    // The payload index is the exception and is deliberately not asserted flat
+    // here: it is still copied in full, which is what issue 18 is about. The
+    // assertion is that it is the *only* leg that moves, so a second one
+    // appearing is a regression this names rather than hides.
+    fn undo_at(objects: usize) -> std::collections::BTreeMap<String, u64> {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("prefix/{index:08}/k"),
+                    vec![b'x'; 1024],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        store
+            .capture_targeted_mutation_rollback("bucket", "prefix/00000000/k")
+            .footprint_audit()
+            .into_iter()
+            .collect()
+    }
+    let small = undo_at(40);
+    let large = undo_at(80);
+    for (key, small_value) in small.iter() {
+        let large_value = large.get(key).copied().unwrap_or(0);
+        if key == "undo.payloads.bytes" || key == "undo.total_bytes" {
+            continue;
+        }
+        assert_eq!(
+            *small_value, large_value,
+            "{key} must not depend on how much is stored, but it moved from \
+             {small_value} to {large_value} when the store doubled"
+        );
+    }
+    // And the one leg that does move, moves with the stored objects rather than
+    // with anything else -- stated as a ratio so the figure can change without
+    // the test having to be rewritten.
+    let small_payloads = small.get("undo.payloads.bytes").copied().unwrap_or(0);
+    let large_payloads = large.get("undo.payloads.bytes").copied().unwrap_or(0);
+    assert_eq!(
+        small_payloads * 2,
+        large_payloads,
+        "the payload index is copied in full, so doubling the store should \
+         double this leg: {small_payloads} and {large_payloads}"
+    );
+}
