@@ -2,7 +2,7 @@
 pub struct MetadataChange {
     pub sequence: u64,
     pub commit_index: u64,
-    pub key: String,
+    pub key: SharedText,
     pub version: u64,
     pub deleted: bool,
     pub update_time_ms: u64,
@@ -16,7 +16,7 @@ impl MetadataChange {
             format!("{field_prefix}commit_index"),
             self.commit_index.to_string(),
         );
-        fields.insert(format!("{field_prefix}key"), self.key.clone());
+        fields.insert(format!("{field_prefix}key"), self.key.to_string());
         fields.insert(format!("{field_prefix}version"), self.version.to_string());
         fields.insert(format!("{field_prefix}deleted"), self.deleted.to_string());
         fields.insert(

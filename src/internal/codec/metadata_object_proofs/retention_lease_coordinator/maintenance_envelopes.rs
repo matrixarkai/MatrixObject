@@ -181,7 +181,7 @@ pub(crate) fn prepared_metadata_maintenance_envelope(
             .compacted_tombstones
             .first()
             .map(|record| record.key.clone())
-            .unwrap_or_default(),
+            .unwrap_or_default().to_string(),
         request_checksum: prepared.request_checksum.clone(),
         expected_previous_commit_index: prepared.expected_previous_commit_index,
         prepared_commit_index: prepared.prepared_commit_index,

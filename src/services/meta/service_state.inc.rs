@@ -29,7 +29,7 @@ pub struct MatrixMetaService {
     pub(crate) placement_commit_index: u64,
     placement_snapshot_export_cache: RefCell<Option<RootSnapshotExportCache>>,
     root_state_fingerprint_cache: RefCell<Option<String>>,
-    pub(crate) records: BTreeMap<String, MetadataRecord>,
+    pub(crate) records: BTreeMap<SharedText, MetadataRecord>,
     pub(crate) leases: BTreeMap<String, MetadataLease>,
     lease_receipts: BTreeMap<String, MetadataLeaseReceipt>,
     pub(crate) coordinator_config: MetadataCoordinatorConfig,

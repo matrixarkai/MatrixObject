@@ -332,7 +332,8 @@ impl MatrixObjectStore {
             push(
                 "meta.records.struct_inline",
                 n.saturating_mul(
-                    (std::mem::size_of::<String>() + std::mem::size_of::<MetadataRecord>()) as u64,
+                    (std::mem::size_of::<SharedText>() + std::mem::size_of::<MetadataRecord>())
+                        as u64,
                 ),
             );
             push("meta.records.record_size", std::mem::size_of::<MetadataRecord>() as u64);
@@ -342,21 +343,32 @@ impl MatrixObjectStore {
             let mut value_len = 0u64;
             let mut value_capacity = 0u64;
             let mut key_text_duplicated = 0u64;
+            let mut key_text_shared = 0u64;
+            let mut detail_record_ledger = SharedTextLedger::default();
             for (key, record) in records.iter() {
                 mapkey_len = mapkey_len.saturating_add(key.len() as u64);
-                mapkey_capacity = mapkey_capacity.saturating_add(key.capacity() as u64);
-                record_key_capacity =
-                    record_key_capacity.saturating_add(record.key.capacity() as u64);
+                // Shared text has no spare capacity, and the record's own
+                // naming of the key is the map key's allocation, so it adds
+                // nothing -- charged in holder order by one ledger, as the
+                // objects breakdown above is.
+                mapkey_capacity =
+                    mapkey_capacity.saturating_add(detail_record_ledger.charge(key));
+                record_key_capacity = record_key_capacity
+                    .saturating_add(detail_record_ledger.charge(&record.key));
                 value_len = value_len.saturating_add(record.value.len() as u64);
                 value_capacity = value_capacity.saturating_add(record.value.capacity() as u64);
                 if key.as_str() == record.key.as_str() {
                     key_text_duplicated = key_text_duplicated.saturating_add(1);
+                }
+                if key.shares_with(&record.key) {
+                    key_text_shared = key_text_shared.saturating_add(1);
                 }
             }
             push("meta.records.mapkey_len", mapkey_len);
             push("meta.records.mapkey_capacity", mapkey_capacity);
             push("meta.records.record_key_capacity", record_key_capacity);
             push("meta.records.key_text_duplicated", key_text_duplicated);
+            push("meta.records.key_text_shared", key_text_shared);
             push("meta.records.value_len", value_len);
             push("meta.records.value_capacity", value_capacity);
         }

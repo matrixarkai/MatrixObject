@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetaSnapshot {
-    pub records: BTreeMap<String, MetadataRecord>,
+    pub records: BTreeMap<SharedText, MetadataRecord>,
     pub leases: BTreeMap<String, MetadataLease>,
     pub lease_receipts: BTreeMap<String, MetadataLeaseReceipt>,
     pub coordinator_config: MetadataCoordinatorConfig,

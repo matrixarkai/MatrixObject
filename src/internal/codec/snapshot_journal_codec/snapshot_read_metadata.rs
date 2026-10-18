@@ -2,7 +2,7 @@ pub(crate) fn read_metadata_record(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<MetadataRecord, ObjectError> {
     Ok(MetadataRecord {
-        key: cursor.read_string()?,
+        key: cursor.read_string()?.into(),
         value: cursor.read_string()?,
         version: cursor.read_u64()?,
         update_time_ms: cursor.read_u64()?,
@@ -160,7 +160,7 @@ pub(crate) fn read_metadata_transaction(
     let mut mutations = Vec::with_capacity(mutation_count);
     for _ in 0..mutation_count {
         mutations.push(MetadataMutation {
-            key: cursor.read_string()?,
+            key: cursor.read_string()?.into(),
             value: cursor.read_string()?,
             expected_version: cursor.read_u64()?,
             delete: cursor.read_bool()?,

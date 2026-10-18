@@ -28,7 +28,7 @@ impl MatrixMetaService {
             return Ok(report);
         }
         for key in remove_keys {
-            self.records.remove(&key);
+            self.records.remove(key.as_str());
         }
         self.next_commit_index = self.next_commit_index.saturating_add(1);
         report.compacted_tombstone_count = self
@@ -64,7 +64,7 @@ impl MatrixMetaService {
         )?;
         let compacted: Vec<MetadataRecord> = remove_keys
             .iter()
-            .filter_map(|key| self.records.get(key).cloned())
+            .filter_map(|key| self.records.get(key.as_str()).cloned())
             .collect();
         if compacted.len() != remove_keys.len() {
             return Err(ObjectError::Corruption(

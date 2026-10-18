@@ -13,7 +13,7 @@ impl MatrixMetaService {
         self.check_lease_fence(key, lease_owner, lease_epoch, now_ms)?;
         self.apply_mutation(
             MetadataMutation {
-                key: key.to_string(),
+                key: key.to_string().into(),
                 value,
                 expected_version,
                 delete: false,
@@ -35,7 +35,7 @@ impl MatrixMetaService {
         self.check_lease_fence(key, lease_owner, lease_epoch, now_ms)?;
         self.apply_mutation(
             MetadataMutation {
-                key: key.to_string(),
+                key: key.to_string().into(),
                 value: String::new(),
                 expected_version,
                 delete: true,
@@ -70,7 +70,10 @@ impl MatrixMetaService {
         }
         let mut page = MetadataRecordPage::default();
         let mut next_key = None;
-        for (key, record) in self.records.range(prefix.to_string()..) {
+        for (key, record) in self.records.range::<str, _>((
+                std::ops::Bound::Included(prefix),
+                std::ops::Bound::Unbounded,
+            )) {
             if !key.starts_with(prefix) {
                 break;
             }
@@ -94,7 +97,7 @@ impl MatrixMetaService {
                 break;
             }
             page.payload_bytes = page.payload_bytes.saturating_add(record_payload);
-            page.next_key_marker = Some(key.clone());
+            page.next_key_marker = Some(key.to_string());
             page.records.push(record.clone());
         }
         page.has_more = next_key.is_some();
@@ -126,7 +129,7 @@ impl MatrixMetaService {
             }
             self.check_shard_fence(&condition.key)?;
             report.checked_records = report.checked_records.saturating_add(1);
-            let current = self.records.get(&condition.key);
+            let current = self.records.get(condition.key.as_str());
             let current_version = current.map_or(0, |record| record.version);
             if current_version != condition.expected_version {
                 return Err(ObjectError::PreconditionFailed(

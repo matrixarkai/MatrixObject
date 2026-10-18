@@ -76,7 +76,7 @@ pub(crate) fn metadata_maintenance_work_actions_from_prepared(
                 "metadata_tombstone_compaction_needed".to_string()
             },
             priority: 70,
-            key: record.key.clone(),
+            key: record.key.to_string(),
             marker: prepared
                 .tombstone_report
                 .next_key_marker

@@ -68,8 +68,11 @@ impl MatrixMetaService {
             report.scanned_shards = report.scanned_shards.saturating_add(1);
             let mut keys = Vec::new();
             let mut payload_bytes = 0u64;
-            for (key, record) in self.records.range(shard.start_key.clone()..) {
-                if !shard.end_key.is_empty() && key >= &shard.end_key {
+            for (key, record) in self.records.range::<str, _>((
+                std::ops::Bound::Included(shard.start_key.as_str()),
+                std::ops::Bound::Unbounded,
+            )) {
+                if !shard.end_key.is_empty() && key.as_str() >= shard.end_key.as_str() {
                     break;
                 }
                 report.scanned_records = report.scanned_records.saturating_add(1);
@@ -97,8 +100,9 @@ impl MatrixMetaService {
             }
             let mut split_index = record_count / 2;
             while split_index < record_count
-                && (keys[split_index] <= shard.start_key
-                    || (!shard.end_key.is_empty() && keys[split_index] >= shard.end_key))
+                && (keys[split_index].as_str() <= shard.start_key.as_str()
+                    || (!shard.end_key.is_empty()
+                        && keys[split_index].as_str() >= shard.end_key.as_str()))
             {
                 split_index = split_index.saturating_add(1);
             }
@@ -117,7 +121,7 @@ impl MatrixMetaService {
             .to_string();
             report.actions.push(MetadataShardSplitAction {
                 source_shard_id: shard.shard_id.clone(),
-                split_key,
+                split_key: split_key.to_string(),
                 left_shard_id: format!("{}:s{}l", shard.shard_id, new_epoch),
                 right_shard_id: format!("{}:s{}r", shard.shard_id, new_epoch),
                 owner_node_id: shard.owner_node_id.clone(),

@@ -107,7 +107,13 @@ impl MatrixObjectStore {
             Ok(())
         };
 
-        for (record_key, projection) in self.meta_service.records.range(projection_prefix.clone()..)
+        for (record_key, projection) in self
+                .meta_service
+                .records
+                .range::<str, _>((
+                std::ops::Bound::Included(projection_prefix.as_str()),
+                std::ops::Bound::Unbounded,
+            ))
         {
             if !record_key.starts_with(&meta_prefix) {
                 break;
@@ -178,7 +184,11 @@ impl MatrixObjectStore {
             }
             audit.audited_objects = audit.audited_objects.saturating_add(1);
             let projection_key = meta_object_key(object_id);
-            let projection = self.meta_service.records.get(&projection_key).cloned();
+            let projection = self
+                .meta_service
+                .records
+                .get(projection_key.as_str())
+                .cloned();
             if projection.as_ref().map_or(true, |record| record.deleted) {
                 audit.missing_projection_count = audit.missing_projection_count.saturating_add(1);
                 emit_issue(

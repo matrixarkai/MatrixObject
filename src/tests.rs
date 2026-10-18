@@ -900,7 +900,7 @@ fn persistent_journal_replays_metadata_transactions() {
                 "writer-a",
                 100,
                 vec![MetadataMutation {
-                    key: "object/txn/live".to_string(),
+                    key: "object/txn/live".to_string().into(),
                     value: "pending".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -917,7 +917,7 @@ fn persistent_journal_replays_metadata_transactions() {
                 "writer-b",
                 100,
                 vec![MetadataMutation {
-                    key: "object/txn/commit".to_string(),
+                    key: "object/txn/commit".to_string().into(),
                     value: "committed".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -935,7 +935,7 @@ fn persistent_journal_replays_metadata_transactions() {
                 "writer-c",
                 100,
                 vec![MetadataMutation {
-                    key: "object/txn/abort".to_string(),
+                    key: "object/txn/abort".to_string().into(),
                     value: "aborted".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -952,7 +952,7 @@ fn persistent_journal_replays_metadata_transactions() {
                 "writer-d",
                 10,
                 vec![MetadataMutation {
-                    key: "object/txn/expire".to_string(),
+                    key: "object/txn/expire".to_string().into(),
                     value: "expired".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -13958,7 +13958,7 @@ fn raft_backed_store_replays_bounded_metaserver_maintenance() {
             "writer-a",
             10,
             vec![MetadataMutation {
-                key: "object/bucket/txn-expired".to_string(),
+                key: "object/bucket/txn-expired".to_string().into(),
                 value: "pending".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -13972,7 +13972,7 @@ fn raft_backed_store_replays_bounded_metaserver_maintenance() {
             "writer-b",
             1000,
             vec![MetadataMutation {
-                key: "object/bucket/txn-live".to_string(),
+                key: "object/bucket/txn-live".to_string().into(),
                 value: "pending".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -13986,7 +13986,7 @@ fn raft_backed_store_replays_bounded_metaserver_maintenance() {
             "writer-a",
             10,
             vec![MetadataMutation {
-                key: "object/bucket/tombstone".to_string(),
+                key: "object/bucket/tombstone".to_string().into(),
                 value: "deleted-soon".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -14247,7 +14247,11 @@ fn raft_backed_store_replays_bounded_metaserver_maintenance() {
         .meta_snapshot
         .coordinator_sessions
         .contains_key("session-live"));
-    assert!(snapshot.meta_snapshot.records.get(&tombstone_key).is_none());
+    assert!(snapshot
+        .meta_snapshot
+        .records
+        .get(tombstone_key.as_str())
+        .is_none());
     assert_eq!(snapshot.meta_snapshot.compacted_tombstone_count, 1);
     assert_eq!(
         snapshot
@@ -14317,7 +14321,7 @@ fn raft_backed_store_runs_integrity_fenced_metaserver_maintenance() {
             "writer-a",
             10,
             vec![MetadataMutation {
-                key: "object/integrity-maint/txn-key".to_string(),
+                key: "object/integrity-maint/txn-key".to_string().into(),
                 value: "pending".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -14495,7 +14499,7 @@ fn raft_backed_store_replays_metaserver_admission_policy() {
     let ok = replicated
         .propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/admission/a".to_string(),
+                key: "object/admission/a".to_string().into(),
                 value: "ok".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -14531,13 +14535,13 @@ fn raft_backed_store_replays_metaserver_admission_policy() {
         replicated.propose_commit_metadata_batch_idempotent(
             vec![
                 MetadataMutation {
-                    key: "object/admission/b".to_string(),
+                    key: "object/admission/b".to_string().into(),
                     value: "b".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/admission/c".to_string(),
+                    key: "object/admission/c".to_string().into(),
                     value: "c".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -14584,7 +14588,7 @@ fn raft_backed_store_replays_metaserver_qos_config() {
     let first = replicated
         .propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/qos/a".to_string(),
+                key: "object/qos/a".to_string().into(),
                 value: "ok".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -14605,7 +14609,7 @@ fn raft_backed_store_replays_metaserver_qos_config() {
     assert!(matches!(
         replicated.propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/qos/b".to_string(),
+                key: "object/qos/b".to_string().into(),
                 value: "no".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -14640,7 +14644,7 @@ fn raft_backed_store_applies_prepared_metaserver_qos_config() {
     replicated
         .propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/prepared-qos/a".to_string(),
+                key: "object/prepared-qos/a".to_string().into(),
                 value: "ok".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -14747,7 +14751,7 @@ fn raft_backed_store_replays_owner_fenced_metaserver_writes() {
     let receipt = replicated
         .propose_commit_owner_fenced_metadata_batch(
             vec![MetadataMutation {
-                key: "object/ownerfence/item".to_string(),
+                key: "object/ownerfence/item".to_string().into(),
                 value: "etag=owner-fenced length=1".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -14763,7 +14767,7 @@ fn raft_backed_store_replays_owner_fenced_metaserver_writes() {
     assert!(matches!(
         replicated.propose_commit_owner_fenced_metadata_batch(
             vec![MetadataMutation {
-                key: "object/ownerfence/stale".to_string(),
+                key: "object/ownerfence/stale".to_string().into(),
                 value: "no".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -15329,13 +15333,13 @@ fn raft_backed_store_replays_idempotent_generic_metaserver_batches() {
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     let mutations = vec![
         MetadataMutation {
-            key: "object/raft-meta-generic/a".to_string(),
+            key: "object/raft-meta-generic/a".to_string().into(),
             value: "etag=a length=1".to_string(),
             expected_version: 0,
             delete: false,
         },
         MetadataMutation {
-            key: "object/raft-meta-generic/b".to_string(),
+            key: "object/raft-meta-generic/b".to_string().into(),
             value: "etag=b length=2".to_string(),
             expected_version: 0,
             delete: false,
@@ -15368,7 +15372,7 @@ fn raft_backed_store_replays_idempotent_generic_metaserver_batches() {
     assert!(matches!(
         replicated.propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/raft-meta-generic/a".to_string(),
+                key: "object/raft-meta-generic/a".to_string().into(),
                 value: "changed".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -15410,7 +15414,7 @@ fn raft_backed_store_applies_prepared_metaserver_batches() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     let mutations = vec![MetadataMutation {
-        key: "object/prepared-meta/a".to_string(),
+        key: "object/prepared-meta/a".to_string().into(),
         value: "etag=prepared length=1".to_string(),
         expected_version: 0,
         delete: false,
@@ -15619,7 +15623,7 @@ fn raft_backed_store_applies_prepared_metaserver_change_checkpoints() {
     replicated
         .propose_commit_metadata_batch_prepared(
             vec![MetadataMutation {
-                key: "object/prepared-checkpoint/a".to_string(),
+                key: "object/prepared-checkpoint/a".to_string().into(),
                 value: "etag=prepared-checkpoint length=1".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -15713,13 +15717,13 @@ fn raft_backed_store_applies_prepared_metaserver_changefeed_compaction() {
         .propose_commit_metadata_batch_prepared(
             vec![
                 MetadataMutation {
-                    key: "object/prepared-changefeed/a".to_string(),
+                    key: "object/prepared-changefeed/a".to_string().into(),
                     value: "etag=prepared-changefeed-a length=1".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/prepared-changefeed/b".to_string(),
+                    key: "object/prepared-changefeed/b".to_string().into(),
                     value: "etag=prepared-changefeed-b length=1".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -15770,7 +15774,7 @@ fn raft_backed_store_applies_prepared_metaserver_changefeed_compaction() {
     assert!(!prepared.raft_entry_checksum.is_empty());
 
     let mut tampered = prepared.clone();
-    tampered.compacted[0].key = "object/prepared-changefeed/tampered".to_string();
+    tampered.compacted[0].key = "object/prepared-changefeed/tampered".to_string().into();
     assert!(matches!(
         replicated.store().clone().apply_command(
             ObjectCommand::ApplyPreparedMetaChangefeedCompaction { prepared: tampered }
@@ -15809,7 +15813,7 @@ fn raft_backed_store_applies_prepared_metaserver_transactions() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     let mutations = vec![MetadataMutation {
-        key: "object/prepared-txn/a".to_string(),
+        key: "object/prepared-txn/a".to_string().into(),
         value: "etag=prepared-txn length=1".to_string(),
         expected_version: 0,
         delete: false,
@@ -16567,7 +16571,7 @@ fn raft_backed_store_replays_metaserver_snapshot_compaction_floor() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     let first_mutations = vec![MetadataMutation {
-        key: "object/snapshot-floor/a".to_string(),
+        key: "object/snapshot-floor/a".to_string().into(),
         value: "etag=a length=1".to_string(),
         expected_version: 0,
         delete: false,
@@ -16584,7 +16588,7 @@ fn raft_backed_store_replays_metaserver_snapshot_compaction_floor() {
     replicated
         .propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/snapshot-floor/b".to_string(),
+                key: "object/snapshot-floor/b".to_string().into(),
                 value: "etag=b length=2".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -16714,7 +16718,7 @@ fn raft_backed_store_applies_prepared_metaserver_snapshot_compaction() {
     replicated
         .propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/prepared-snapshot/a".to_string(),
+                key: "object/prepared-snapshot/a".to_string().into(),
                 value: "etag=a length=1".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -16728,7 +16732,7 @@ fn raft_backed_store_applies_prepared_metaserver_snapshot_compaction() {
     replicated
         .propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/prepared-snapshot/b".to_string(),
+                key: "object/prepared-snapshot/b".to_string().into(),
                 value: "etag=b length=2".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -16879,13 +16883,13 @@ fn raft_backed_store_applies_prepared_metaserver_shard_record_handoff() {
         .propose_commit_metadata_batch_idempotent(
             vec![
                 MetadataMutation {
-                    key: "object/handoff/a".to_string(),
+                    key: "object/handoff/a".to_string().into(),
                     value: "etag=a length=1".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/handoff/b".to_string(),
+                    key: "object/handoff/b".to_string().into(),
                     value: "etag=b length=2".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -17080,7 +17084,7 @@ fn raft_backed_store_applies_prepared_metaserver_retention_config() {
     replicated
         .propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/prepared-retention/a".to_string(),
+                key: "object/prepared-retention/a".to_string().into(),
                 value: "etag=a length=1".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -17094,7 +17098,7 @@ fn raft_backed_store_applies_prepared_metaserver_retention_config() {
     replicated
         .propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/prepared-retention/b".to_string(),
+                key: "object/prepared-retention/b".to_string().into(),
                 value: "etag=b length=2".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -17173,7 +17177,7 @@ fn raft_backed_store_applies_prepared_metaserver_admission_policy() {
     replicated
         .propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/prepared-admission/a".to_string(),
+                key: "object/prepared-admission/a".to_string().into(),
                 value: "etag=a length=1".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -17251,7 +17255,7 @@ fn raft_backed_store_replays_idempotent_owner_fenced_metaserver_writes() {
         })
         .unwrap();
     let mutations = vec![MetadataMutation {
-        key: "object/owner-idem/item".to_string(),
+        key: "object/owner-idem/item".to_string().into(),
         value: "etag=owner-idem length=1".to_string(),
         expected_version: 0,
         delete: false,
@@ -17293,7 +17297,7 @@ fn raft_backed_store_replays_idempotent_owner_fenced_metaserver_writes() {
     assert!(matches!(
         replicated.propose_commit_owner_fenced_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/owner-idem/item".to_string(),
+                key: "object/owner-idem/item".to_string().into(),
                 value: "changed".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -17344,7 +17348,7 @@ fn raft_backed_store_replays_metaserver_tombstone_compaction() {
             "writer-a",
             100,
             vec![MetadataMutation {
-                key: "object/raft-tombstone/gone".to_string(),
+                key: "object/raft-tombstone/gone".to_string().into(),
                 value: "gone".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -17405,7 +17409,7 @@ fn raft_backed_store_applies_prepared_metaserver_tombstone_compaction() {
             "writer-a",
             100,
             vec![MetadataMutation {
-                key: "object/prepared-tombstone/gone".to_string(),
+                key: "object/prepared-tombstone/gone".to_string().into(),
                 value: "gone".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -17784,7 +17788,7 @@ fn raft_backed_store_replays_metaserver_auto_shard_splits() {
         .unwrap();
     let mutations: Vec<MetadataMutation> = (0..6)
         .map(|index| MetadataMutation {
-            key: format!("object/bucket/{index:02}"),
+            key: format!("object/bucket/{index:02}").into(),
             value: format!("segment={index} offset={} length=4096", index * 4096),
             expected_version: 0,
             delete: false,
@@ -24662,7 +24666,7 @@ fn raft_backed_store_replays_metaserver_transactions() {
             "owner-a",
             100,
             vec![MetadataMutation {
-                key: "object/meta/a".to_string(),
+                key: "object/meta/a".to_string().into(),
                 value: "value-a".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -24680,7 +24684,7 @@ fn raft_backed_store_replays_metaserver_transactions() {
             "owner-b",
             100,
             vec![MetadataMutation {
-                key: "object/meta/b".to_string(),
+                key: "object/meta/b".to_string().into(),
                 value: "value-b".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -24697,7 +24701,7 @@ fn raft_backed_store_replays_metaserver_transactions() {
             "owner-c",
             1,
             vec![MetadataMutation {
-                key: "object/meta/c".to_string(),
+                key: "object/meta/c".to_string().into(),
                 value: "value-c".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -24760,7 +24764,7 @@ fn raft_backed_store_dedupes_metaserver_transaction_receipts_across_snapshots() 
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     let mutations = vec![MetadataMutation {
-        key: "object/meta/txn-receipt".to_string(),
+        key: "object/meta/txn-receipt".to_string().into(),
         value: "value-a".to_string(),
         expected_version: 0,
         delete: false,
@@ -24860,7 +24864,7 @@ fn raft_backed_store_dedupes_metaserver_transaction_receipts_across_snapshots() 
             "owner-b",
             100,
             vec![MetadataMutation {
-                key: "object/meta/txn-abort".to_string(),
+                key: "object/meta/txn-abort".to_string().into(),
                 value: "value-b".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -24967,7 +24971,7 @@ fn raft_backed_store_replays_metaserver_transaction_gc() {
             "owner-a",
             100,
             vec![MetadataMutation {
-                key: "object/meta/a".to_string(),
+                key: "object/meta/a".to_string().into(),
                 value: "value-a".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -24984,7 +24988,7 @@ fn raft_backed_store_replays_metaserver_transaction_gc() {
             "owner-b",
             100,
             vec![MetadataMutation {
-                key: "object/meta/b".to_string(),
+                key: "object/meta/b".to_string().into(),
                 value: "value-b".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -25001,7 +25005,7 @@ fn raft_backed_store_replays_metaserver_transaction_gc() {
             "owner-c",
             100,
             vec![MetadataMutation {
-                key: "object/meta/c".to_string(),
+                key: "object/meta/c".to_string().into(),
                 value: "value-c".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -25055,7 +25059,7 @@ fn metaserver_pages_metadata_transactions_with_filters() {
             "owner-a",
             100,
             vec![MetadataMutation {
-                key: "object/meta/list-a".to_string(),
+                key: "object/meta/list-a".to_string().into(),
                 value: "value-a".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -25069,7 +25073,7 @@ fn metaserver_pages_metadata_transactions_with_filters() {
             "owner-b",
             100,
             vec![MetadataMutation {
-                key: "object/meta/list-b".to_string(),
+                key: "object/meta/list-b".to_string().into(),
                 value: "value-b".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -25086,7 +25090,7 @@ fn metaserver_pages_metadata_transactions_with_filters() {
             "owner-c",
             1,
             vec![MetadataMutation {
-                key: "object/meta/list-c".to_string(),
+                key: "object/meta/list-c".to_string().into(),
                 value: "value-c".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -25635,19 +25639,19 @@ fn raft_backed_store_replays_metaserver_prefix_delete_and_checkpoints() {
             100,
             vec![
                 MetadataMutation {
-                    key: "object/gc/a".to_string(),
+                    key: "object/gc/a".to_string().into(),
                     value: "value-a".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/gc/b".to_string(),
+                    key: "object/gc/b".to_string().into(),
                     value: "value-b".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/live/c".to_string(),
+                    key: "object/live/c".to_string().into(),
                     value: "value-c".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -29642,7 +29646,7 @@ fn metaserver_projects_object_metadata_and_enforces_leases() {
     store
         .meta_service
         .records
-        .get_mut(&meta_object_key(&metadata.object_id))
+        .get_mut(meta_object_key(&metadata.object_id).as_str())
         .unwrap()
         .value = "stale-projection".to_string();
     let stale_audit = store
@@ -29854,7 +29858,7 @@ fn metaserver_auto_splits_oversized_metadata_shards() {
         .unwrap();
     let mutations: Vec<MetadataMutation> = (0..6)
         .map(|index| MetadataMutation {
-            key: format!("object/bucket/{index:02}"),
+            key: format!("object/bucket/{index:02}").into(),
             value: format!("segment={index} offset={} length=4096", index * 4096),
             expected_version: 0,
             delete: false,
@@ -29942,19 +29946,19 @@ fn metaserver_pages_shard_inventory_with_record_pressure() {
         .commit_metadata_batch(
             vec![
                 MetadataMutation {
-                    key: "object/inventory/a".to_string(),
+                    key: "object/inventory/a".to_string().into(),
                     value: "left-live".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/inventory/b".to_string(),
+                    key: "object/inventory/b".to_string().into(),
                     value: "left-delete".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/inventory/z".to_string(),
+                    key: "object/inventory/z".to_string().into(),
                     value: "right-live".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -31479,7 +31483,7 @@ fn metaserver_owner_fenced_writes_require_live_shard_owner() {
     let records = store
         .commit_owner_fenced_metadata_batch(
             vec![MetadataMutation {
-                key: "object/ownerfence/item".to_string(),
+                key: "object/ownerfence/item".to_string().into(),
                 value: "etag=a length=1".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -31495,7 +31499,7 @@ fn metaserver_owner_fenced_writes_require_live_shard_owner() {
     assert!(matches!(
         store.commit_owner_fenced_metadata_batch(
             vec![MetadataMutation {
-                key: "object/ownerfence/wrong-owner".to_string(),
+                key: "object/ownerfence/wrong-owner".to_string().into(),
                 value: "no".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -31511,7 +31515,7 @@ fn metaserver_owner_fenced_writes_require_live_shard_owner() {
     assert!(matches!(
         store.commit_owner_fenced_metadata_batch(
             vec![MetadataMutation {
-                key: "object/ownerfence/wrong-epoch".to_string(),
+                key: "object/ownerfence/wrong-epoch".to_string().into(),
                 value: "no".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -31527,7 +31531,7 @@ fn metaserver_owner_fenced_writes_require_live_shard_owner() {
     assert!(matches!(
         store.commit_owner_fenced_metadata_batch(
             vec![MetadataMutation {
-                key: "object/ownerfence/expired".to_string(),
+                key: "object/ownerfence/expired".to_string().into(),
                 value: "no".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -31548,7 +31552,7 @@ fn metaserver_owner_fenced_writes_require_live_shard_owner() {
     assert!(matches!(
         store.commit_owner_fenced_metadata_batch(
             vec![MetadataMutation {
-                key: "object/ownerfence/draining".to_string(),
+                key: "object/ownerfence/draining".to_string().into(),
                 value: "no".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -31568,13 +31572,13 @@ fn metaserver_dedupes_idempotent_metadata_batches_across_snapshots() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     let mutations = vec![
         MetadataMutation {
-            key: "object/idempotent/a".to_string(),
+            key: "object/idempotent/a".to_string().into(),
             value: "etag=a length=1".to_string(),
             expected_version: 0,
             delete: false,
         },
         MetadataMutation {
-            key: "object/idempotent/b".to_string(),
+            key: "object/idempotent/b".to_string().into(),
             value: "etag=b length=2".to_string(),
             expected_version: 0,
             delete: false,
@@ -31594,7 +31598,7 @@ fn metaserver_dedupes_idempotent_metadata_batches_across_snapshots() {
     assert!(matches!(
         store.commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/idempotent/a".to_string(),
+                key: "object/idempotent/a".to_string().into(),
                 value: "changed".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -31621,7 +31625,7 @@ fn metaserver_dedupes_idempotent_metadata_batches_across_snapshots() {
         })
         .unwrap();
     let owner_mutations = vec![MetadataMutation {
-        key: "object/owner-idempotent/a".to_string(),
+        key: "object/owner-idempotent/a".to_string().into(),
         value: "etag=owner length=1".to_string(),
         expected_version: 0,
         delete: false,
@@ -31693,13 +31697,13 @@ fn metaserver_validates_read_sets_for_cached_metadata_clients() {
         .commit_metadata_batch(
             vec![
                 MetadataMutation {
-                    key: "object/readset/a".to_string(),
+                    key: "object/readset/a".to_string().into(),
                     value: "etag=a length=1".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/readset/b".to_string(),
+                    key: "object/readset/b".to_string().into(),
                     value: "etag=b length=1".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -31734,7 +31738,7 @@ fn metaserver_validates_read_sets_for_cached_metadata_clients() {
     store
         .commit_metadata_batch(
             vec![MetadataMutation {
-                key: "object/readset/a".to_string(),
+                key: "object/readset/a".to_string().into(),
                 value: "etag=a2 length=2".to_string(),
                 expected_version: 1,
                 delete: false,
@@ -31757,7 +31761,7 @@ fn metaserver_validates_read_sets_for_cached_metadata_clients() {
     store
         .commit_metadata_batch(
             vec![MetadataMutation {
-                key: "object/readset/b".to_string(),
+                key: "object/readset/b".to_string().into(),
                 value: String::new(),
                 expected_version: 1,
                 delete: true,
@@ -31793,13 +31797,13 @@ fn metaserver_batches_transactions_and_changefeed_are_snapshot_safe() {
     let now = now_millis();
     let batch = vec![
         MetadataMutation {
-            key: "object/batch/a".to_string(),
+            key: "object/batch/a".to_string().into(),
             value: "etag=a length=1".to_string(),
             expected_version: 0,
             delete: false,
         },
         MetadataMutation {
-            key: "object/batch/b".to_string(),
+            key: "object/batch/b".to_string().into(),
             value: "etag=b length=1".to_string(),
             expected_version: 0,
             delete: false,
@@ -31814,13 +31818,13 @@ fn metaserver_batches_transactions_and_changefeed_are_snapshot_safe() {
     let rejected = store.commit_metadata_batch(
         vec![
             MetadataMutation {
-                key: "object/batch/a".to_string(),
+                key: "object/batch/a".to_string().into(),
                 value: "new-a".to_string(),
                 expected_version: 1,
                 delete: false,
             },
             MetadataMutation {
-                key: "object/batch/b".to_string(),
+                key: "object/batch/b".to_string().into(),
                 value: "bad-b".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -31842,7 +31846,7 @@ fn metaserver_batches_transactions_and_changefeed_are_snapshot_safe() {
             "writer-a",
             10_000,
             vec![MetadataMutation {
-                key: "object/batch/a".to_string(),
+                key: "object/batch/a".to_string().into(),
                 value: "etag=a2 length=2".to_string(),
                 expected_version: 1,
                 delete: false,
@@ -31861,7 +31865,7 @@ fn metaserver_batches_transactions_and_changefeed_are_snapshot_safe() {
             "writer-a",
             10_000,
             vec![MetadataMutation {
-                key: "object/batch/b".to_string(),
+                key: "object/batch/b".to_string().into(),
                 value: "etag=b-from-txn".to_string(),
                 expected_version: 1,
                 delete: false,
@@ -31873,7 +31877,7 @@ fn metaserver_batches_transactions_and_changefeed_are_snapshot_safe() {
     store
         .commit_metadata_batch(
             vec![MetadataMutation {
-                key: "object/batch/b".to_string(),
+                key: "object/batch/b".to_string().into(),
                 value: "etag=b-direct".to_string(),
                 expected_version: 1,
                 delete: false,
@@ -31894,7 +31898,7 @@ fn metaserver_batches_transactions_and_changefeed_are_snapshot_safe() {
             "writer-a",
             1,
             vec![MetadataMutation {
-                key: "object/batch/c".to_string(),
+                key: "object/batch/c".to_string().into(),
                 value: "late".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -31977,19 +31981,19 @@ fn metaserver_compacts_checkpointed_tombstones_with_bounds() {
         .commit_metadata_batch(
             vec![
                 MetadataMutation {
-                    key: "object/tombstone/a".to_string(),
+                    key: "object/tombstone/a".to_string().into(),
                     value: "dead-a".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/tombstone/b".to_string(),
+                    key: "object/tombstone/b".to_string().into(),
                     value: "dead-b".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/tombstone/live".to_string(),
+                    key: "object/tombstone/live".to_string().into(),
                     value: "live".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -32151,7 +32155,7 @@ fn metaserver_plans_integrity_actions_linearizably() {
             "meta-integrity-owner-a",
             10,
             vec![MetadataMutation {
-                key: "object/integrity/tx".to_string(),
+                key: "object/integrity/tx".to_string().into(),
                 value: "pending".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -32163,7 +32167,7 @@ fn metaserver_plans_integrity_actions_linearizably() {
     replicated
         .propose_commit_metadata_batch_idempotent(
             vec![MetadataMutation {
-                key: "object/integrity/object-a".to_string(),
+                key: "object/integrity/object-a".to_string().into(),
                 value: "payload-a".to_string(),
                 expected_version: 0,
                 delete: false,
@@ -32246,7 +32250,7 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
     let now = now_millis();
     let mutations: Vec<MetadataMutation> = (0..12)
         .map(|index| MetadataMutation {
-            key: format!("object/snapshot/{:02}", index),
+            key: format!("object/snapshot/{:02}", index).into(),
             value: format!("segment={} offset={} length=16", index, index * 16),
             expected_version: 0,
             delete: false,
@@ -32540,7 +32544,7 @@ fn metaserver_pages_changefeed_and_checkpoints_via_raft() {
                 "writer-a",
                 100,
                 vec![MetadataMutation {
-                    key: prefix.to_string(),
+                    key: prefix.to_string().into(),
                     value: format!("payload-{index}"),
                     expected_version: 0,
                     delete: false,
@@ -32734,7 +32738,7 @@ fn metaserver_watch_changes_reports_compacted_cursors_via_raft() {
         replicated
             .propose_commit_metadata_batch_idempotent(
                 vec![MetadataMutation {
-                    key: format!("object/watch/{index}"),
+                    key: format!("object/watch/{index}").into(),
                     value: format!("watch-payload-{index}"),
                     expected_version: 0,
                     delete: false,
@@ -32837,19 +32841,19 @@ fn metaserver_prefix_delete_and_change_checkpoints_are_durable() {
         .commit_metadata_batch(
             vec![
                 MetadataMutation {
-                    key: "object/gc/a".to_string(),
+                    key: "object/gc/a".to_string().into(),
                     value: "live-a".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/gc/b".to_string(),
+                    key: "object/gc/b".to_string().into(),
                     value: "live-b".to_string(),
                     expected_version: 0,
                     delete: false,
                 },
                 MetadataMutation {
-                    key: "object/keep/c".to_string(),
+                    key: "object/keep/c".to_string().into(),
                     value: "live-c".to_string(),
                     expected_version: 0,
                     delete: false,
@@ -33752,6 +33756,71 @@ fn the_holders_that_name_one_object_share_its_key_characters() {
     }
 }
 
+#[test]
+fn the_metadata_record_key_is_one_allocation_across_its_holders() {
+    // The projection key was resident three times: as the record map's key, as
+    // the record's own `key` field, and in the metadata change log. All three
+    // come from one value on the mutation path, so sharing the type shares the
+    // characters.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+    fn store_with_keys_of_length(key_len: usize) -> MatrixObjectStore {
+        let mut store = MatrixObjectStore::new(test_options()).unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..4 {
+            let mut key = format!("object-{index}-");
+            while key.len() < key_len {
+                key.push('k');
+            }
+            store
+                .put_object("bucket", &key, vec![b'v'; 32], "text/plain")
+                .unwrap();
+        }
+        store
+    }
+
+    let store = store_with_keys_of_length(64);
+    let (map_key, record) = store
+        .meta_service
+        .records
+        .iter()
+        .find(|(key, _)| key.starts_with("object/"))
+        .expect("a put writes a projection record");
+    assert_eq!(map_key.as_str(), record.key.as_str());
+    assert!(
+        map_key.shares_with(&record.key),
+        "the map files the record under a key the record states again, so the \
+         two must be one allocation"
+    );
+    assert_eq!(
+        audit_value(&store, "meta.records.key_text_shared"),
+        audit_value(&store, "meta.records"),
+        "every record shares its key with the map it is filed under"
+    );
+    assert_eq!(
+        audit_value(&store, "meta.records.record_key_capacity"),
+        0,
+        "the record's own naming of the key costs nothing beyond the map key's"
+    );
+
+    // The change log names each key through the same allocation, so its cost
+    // does not depend on how long the keys are. If it kept its own copy, 300
+    // characters would cost 300 bytes per change more than 8 would.
+    let short = audit_value(&store_with_keys_of_length(8), "meta.change_log.bytes");
+    let long = audit_value(&store_with_keys_of_length(300), "meta.change_log.bytes");
+    assert_eq!(
+        short, long,
+        "the change log holds no characters of its own, so {short} and {long} \
+         must be equal across a 37-fold difference in key length"
+    );
+    assert!(short > 0, "the four mutations did append changes");
+}
 #[test]
 fn a_rolled_back_mutation_leaves_no_change_behind_it() {
     // The targeted undo dropped the tail of the change feed by length, which was

@@ -212,7 +212,7 @@ impl MatrixMetaService {
                 record_keys: receipt
                     .records
                     .iter()
-                    .map(|record| record.key.clone())
+                    .map(|record| record.key.to_string())
                     .collect(),
             });
         }
@@ -239,7 +239,7 @@ impl MatrixMetaService {
                 record_keys: receipt
                     .records
                     .iter()
-                    .map(|record| record.key.clone())
+                    .map(|record| record.key.to_string())
                     .collect(),
             });
         }
