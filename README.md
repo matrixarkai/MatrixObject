@@ -154,6 +154,28 @@ Two invariants worth knowing before you start:
   to say what they are per: per put, per live byte, per stored object. "Faster"
   without one is not a result.
 
+## Continuous integration
+
+Every push and pull request runs two jobs: a build of all targets with warnings
+denied plus a documentation build, and the two guards that protect properties
+nothing else protects -- that the durable format constants have not changed, and
+that a mutation which fails after it has already mutated leaves the store
+byte-identical.
+
+Two things CI deliberately does **not** run, because a check that is red on
+arrival teaches people to ignore the ones that matter:
+
+- **The full test suite.** 21 tests fail on `main`, and have done since the
+  first commit. They are not regressions and they are not masked: the local gate
+  compares failures by name against that baseline and refuses anything new.
+  Run `cargo test` and expect `249 passed; 21 failed`.
+- **`cargo fmt --check`.** The tree has never been rustfmt-clean; there were 93
+  diff hunks at the first commit. Reformatting 33,000 lines of tests to turn one
+  check green is a change nobody asked for, and it would bury real history.
+
+If you fix one of the 21, or format the tree, add the corresponding check here
+in the same change.
+
 ## Licence
 
 Apache License 2.0. See [LICENSE](LICENSE).

@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build & docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Warnings are denied because the tree is already clean under it.
+      - name: Build everything, warnings denied
+        run: cargo build --all-targets --locked
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      - name: Docs
+        run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  guards:
+    name: format and rollback guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Each guard is asserted to have actually RUN. `cargo test` reports
+      # success when a filter matches nothing, so a step that only checks the
+      # exit status passes while testing nothing -- and the name has to be the
+      # full `tests::` path for `--exact` to match it at all.
+      - name: Durable format constants are unchanged
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::every_durable_format_constant_is_accounted_for -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
+
+      - name: A refused mutation leaves the store unchanged
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_put_that_fails_after_mutating_leaves_the_store_unchanged -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the guard did not run"; exit 1; }
