@@ -32982,16 +32982,37 @@ fn a_put_that_fails_after_mutating_leaves_the_store_unchanged() {
 
     // The audit first, because it names which container moved; the snapshot
     // bytes then catch anything the audit does not count.
+    //
+    // A cache is not state. The rollback invalidates the read caches, which is
+    // conservative and correct -- a cache may hold bytes the aborted write
+    // produced -- so those keys are allowed to fall and required never to rise.
+    // Everything else must be identical.
+    fn is_cache(key: &str) -> bool {
+        key.contains("read_cache") || key.contains("page_validation")
+            || key.contains("export_caches")
+            || key == "ACCOUNTED.byte_buffers"
+            || key == "ACCOUNTED.total_bytes"
+    }
     let after_audit = store.footprint_audit();
-    if before_audit != after_audit {
-        let moved = before_audit
-            .iter()
-            .zip(after_audit.iter())
-            .filter(|(before, after)| before != after)
-            .map(|(before, after)| format!("{} {} -> {}", before.0, before.1, after.1))
-            .collect::<Vec<_>>()
-            .join(", ");
-        panic!("the refused put left state behind: {moved}");
+    let mut moved = Vec::new();
+    for (before, after) in before_audit.iter().zip(after_audit.iter()) {
+        assert_eq!(before.0, after.0, "the audit changed which keys it reports");
+        if is_cache(&before.0) {
+            assert!(
+                after.1 <= before.1,
+                "a refused put may drop a cache and must never fill one: {} {} -> {}",
+                before.0,
+                before.1,
+                after.1
+            );
+            continue;
+        }
+        if before.1 != after.1 {
+            moved.push(format!("{} {} -> {}", before.0, before.1, after.1));
+        }
+    }
+    if !moved.is_empty() {
+        panic!("the refused put left state behind: {}", moved.join(", "));
     }
     let after_bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
     assert_eq!(
@@ -34626,5 +34647,64 @@ fn past_the_bound_an_object_owns_its_content_type() {
     assert!(
         repeat.content_type.shares_with(&first.content_type),
         "a type inside the bound still shares after the pool is full"
+    );
+}
+
+#[test]
+fn the_read_cache_is_in_the_byte_headline() {
+    // `ACCOUNTED.byte_buffers` says it is the bytes the store can name, and a
+    // read cache holds chunk payload -- bounded by a configured size per
+    // replica rather than by anything the data implies, so a deployment serving
+    // reads can hold as much there as it holds data. It was in no total.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "cached", vec![b'v'; 4096], "text/plain")
+        .unwrap();
+
+    // A put fills no cache, so the figure starts at nothing.
+    assert_eq!(audit_value(&store, "replica.read_cache.payload_bytes"), 0);
+    let before = audit_value(&store, "ACCOUNTED.byte_buffers");
+
+    // Reading does. Read the object several times so the cache is populated
+    // whatever the fill path decides to keep.
+    for _ in 0..4 {
+        assert_eq!(
+            store.get_object("bucket", "cached").unwrap().data.len(),
+            4096
+        );
+    }
+
+    let payload = audit_value(&store, "replica.read_cache.payload_bytes");
+    assert!(
+        payload > 0,
+        "reading an object populated the read cache, so the audit must report it"
+    );
+
+    // The service counts these bytes itself, to enforce the bound. The audit
+    // must report the same number rather than a second opinion.
+    let counted: u64 = store
+        .page_service
+        .replicas
+        .iter()
+        .map(|replica| replica.footprint_bytes().read_cache_payload)
+        .sum();
+    assert_eq!(
+        payload, counted,
+        "the audit reports what the cache enforces its bound on"
+    );
+
+    assert!(
+        audit_value(&store, "ACCOUNTED.byte_buffers") >= before + payload,
+        "and the headline grew by at least the bytes the cache took on"
     );
 }

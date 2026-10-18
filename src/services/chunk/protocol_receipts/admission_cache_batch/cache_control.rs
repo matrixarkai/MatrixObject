@@ -8,6 +8,14 @@ pub(crate) struct ChunkReadCacheEntry {
     last_access_sequence: u64,
 }
 
+impl ChunkReadCacheEntry {
+    /// The checksum string beside each cached range. Private to this module,
+    /// so the footprint audit asks for it rather than reaching in.
+    pub(crate) fn range_checksum_capacity(&self) -> u64 {
+        self.range_checksum.capacity() as u64
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CacheControlStats {
     pub requested_ranges: u64,

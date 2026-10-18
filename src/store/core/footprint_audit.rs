@@ -466,10 +466,33 @@ impl MatrixObjectStore {
         push("ACCOUNTED.metadata_bytes", metadata_bytes);
 
         // ---- the headline: bytes we can actually name ------------------------
+        //
+        // The read caches belong here and were in no total. A read cache holds
+        // chunk payload and is bounded by a configured size per replica rather
+        // than by anything the data implies, so a deployment serving reads can
+        // hold as much there as it holds data. The same for the per-page
+        // validation hashes beside each cache, and for a cached encoded
+        // snapshot, of which the store, the page service and every replica keep
+        // one.
+        let page = self.page_service.footprint_bytes();
+        push("replica.read_cache.payload_bytes", page.read_cache_payload);
+        push("replica.read_cache.overhead_bytes", page.read_cache_overhead);
+        push("replica.page_validation.bytes", page.page_validation);
+        push("block.export_caches.bytes", page.export_caches);
+        let store_export_caches = self
+            .snapshot_export_cache
+            .borrow()
+            .as_ref()
+            .map(|cache| cache.footprint_bytes())
+            .unwrap_or(0)
+            .saturating_add(self.snapshot_assembler.footprint_bytes());
+        push("store.export_caches.bytes", store_export_caches);
         let accounted = payload_cap
             .saturating_add(data_cap)
             .saturating_add(shard_cap)
-            .saturating_add(checksum_bytes);
+            .saturating_add(checksum_bytes)
+            .saturating_add(page.total())
+            .saturating_add(store_export_caches);
         push("ACCOUNTED.byte_buffers", accounted);
         push(
             "ACCOUNTED.total_bytes",

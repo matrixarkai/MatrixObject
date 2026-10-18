@@ -64,6 +64,19 @@ pub struct StoreSnapshotChunkAssembler {
     buffer: Vec<u8>,
 }
 
+impl StoreSnapshotChunkAssembler {
+    /// What a partly received store snapshot holds. Its fields are private to
+    /// this module, which is why the accounting lives here.
+    pub(crate) fn footprint_bytes(&self) -> u64 {
+        (self.buffer.capacity() as u64).saturating_add(
+            self.expected_full_checksum
+                .as_ref()
+                .map(|checksum| checksum.capacity() as u64)
+                .unwrap_or(0),
+        )
+    }
+}
+
 pub(crate) struct StoreSnapshotAssembledImage {
     pub bytes: Vec<u8>,
     pub full_checksum: String,

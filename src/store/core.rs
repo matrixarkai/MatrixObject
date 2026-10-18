@@ -7,6 +7,15 @@ pub(crate) struct StoreSnapshotExportCache {
     checksum: String,
 }
 
+impl StoreSnapshotExportCache {
+    /// A whole encoded store, cached. Its fields are private to this module.
+    pub(crate) fn footprint_bytes(&self) -> u64 {
+        (self.bytes.len() as u64)
+            .saturating_add(self.stamp.capacity() as u64)
+            .saturating_add(self.checksum.capacity() as u64)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PersistentSnapshotDurableStamp {
     state_stamp: String,
