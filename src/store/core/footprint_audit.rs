@@ -598,6 +598,25 @@ impl MatrixObjectStore {
         push("replica.page_validation.bytes", page.page_validation);
         push("block.export_caches.bytes", page.export_caches);
         push("block.receipts.bytes", page.receipts);
+        // Of those bytes, the characters of the second copy: every one of these
+        // maps is keyed by an idempotency key, and the receipt it stores carries
+        // that same text again in its own field.
+        //
+        // This is the DUPLICATE, not the saving. The field is in the receipt's
+        // proof, so dropping it is a migration; sharing the allocation instead
+        // replaces two owned copies with one `Arc<str>`, which costs two words
+        // of reference count. So what sharing recovers is these characters less
+        // 16 bytes for every receipt -- see the issue linked from this leg's
+        // measurement. Reporting the characters alone would read as a saving a
+        // third larger than the one available.
+        push(
+            "block.receipts.duplicate_key_bytes",
+            page.receipt_duplicate_keys,
+        );
+        push(
+            "block.receipts.matching_key_entries",
+            page.receipt_matching_keys,
+        );
         let store_export_caches = self
             .snapshot_export_cache
             .borrow()
