@@ -35822,3 +35822,152 @@ fn applying_an_entry_reports_the_codec_the_log_format_would_need() {
         other => panic!("expected the codec refusal, got {other:?}"),
     }
 }
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_a_filled_metadata_route_cache_costs() {
+    // The route cache is keyed by metadata key -- one entry per object key a
+    // caller resolves -- and bounded by `metadata_route_cache_entries`, which
+    // defaults to 100,000. It was reported as an entry count and never as
+    // bytes, so nothing said what reaching that bound costs.
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let routes = env_usize("MEASURE_ROUTES", 500);
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store
+        .register_meta_coordinator_session("session-a", "meta-a", "127.0.0.1:9200", 100, 10)
+        .unwrap();
+    store
+        .configure_metadata_shard(MetadataShard {
+            shard_id: "objects-a".to_string(),
+            start_key: "object/bucket/".to_string(),
+            end_key: "object/bucket0".to_string(),
+            owner_node_id: "meta-a".to_string(),
+            epoch: 1,
+            draining: false,
+        })
+        .unwrap();
+
+    fn read(store: &MatrixObjectStore, wanted: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value)
+            .unwrap_or(0)
+    }
+    let before = read(&store, "metadata_route_cache.bytes");
+    for index in 0..routes {
+        // A distinct key per object, which is how a serving store fills it.
+        let key = format!("object/bucket/prefix/{index:08}/kkkkkkkkkk");
+        store
+            .resolve_metadata_route_cached(&key, 10)
+            .expect("the shard covers this key");
+    }
+    let entries = read(&store, "metadata_route_cache.entries");
+    let bytes = read(&store, "metadata_route_cache.bytes");
+    println!("ROUTECACHE requested={routes} entries={entries} before={before} bytes={bytes}");
+    if entries > 0 {
+        let per = bytes / entries;
+        println!("ROUTECACHE per_entry={per}");
+        println!(
+            "ROUTECACHE at_the_default_bound_of_100000={}",
+            per.saturating_mul(100_000)
+        );
+    }
+    println!(
+        "ROUTECACHE metadata_total={} store_total={}",
+        read(&store, "ACCOUNTED.metadata_bytes"),
+        read(&store, "ACCOUNTED.total_bytes")
+    );
+}
+
+#[test]
+fn the_metadata_total_is_the_sum_of_the_legs_it_names() {
+    // `ACCOUNTED.metadata_bytes` is the figure every per-object number in the
+    // README divides. A structure can be left out of it in total silence: it
+    // simply is not added, and every existing test still passes, which is how
+    // `applied_raft_receipts`, `metadata_route_cache` and the slab map sat
+    // outside it while being reported as entry counts.
+    //
+    // So the total is asserted to BE its legs, not merely to be large. A new
+    // structure added to one and not the other fails here.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..4 {
+        store
+            .put_object(
+                "bucket",
+                &format!("k{index}"),
+                vec![b'v'; 32],
+                "text/plain",
+            )
+            .unwrap();
+    }
+    store.delete_object("bucket", "k0").unwrap();
+    // Fill the route cache too, so its leg is not zero while being asserted.
+    store
+        .register_meta_coordinator_session("session-a", "meta-a", "127.0.0.1:9200", 100, 10)
+        .unwrap();
+    store
+        .configure_metadata_shard(MetadataShard {
+            shard_id: "objects-a".to_string(),
+            start_key: "object/bucket/".to_string(),
+            end_key: "object/bucket0".to_string(),
+            owner_node_id: "meta-a".to_string(),
+            epoch: 1,
+            draining: false,
+        })
+        .unwrap();
+    store
+        .resolve_metadata_route_cached("object/bucket/k1", 10)
+        .unwrap();
+
+    let audit: BTreeMap<String, u64> = store.footprint_audit().into_iter().collect();
+    let at = |key: &str| -> u64 {
+        *audit
+            .get(key)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    };
+
+    let legs = [
+        "objects.bytes",
+        "versions.bytes",
+        "object_changes.bytes",
+        "meta.records.bytes",
+        "meta.change_log.bytes",
+        "meta.receipts.bytes",
+        "meta.entities.bytes",
+        "meta.export_caches.bytes",
+        "payloads.key_bytes",
+        "multipart.metadata_bytes",
+        "applied_raft_receipts.bytes",
+        "metadata_route_cache.bytes",
+        "segments.bytes",
+    ];
+    let summed: u64 = legs.iter().map(|key| at(key)).sum();
+    assert_eq!(
+        summed,
+        at("ACCOUNTED.metadata_bytes"),
+        "the metadata total must be the legs it names; legs summed to {summed}"
+    );
+
+    // And the three that were missing must not read zero here, or this would
+    // pass while still being blind to them.
+    assert!(
+        at("metadata_route_cache.bytes") > 0,
+        "the route cache leg must be exercised, or it is asserted vacuously"
+    );
+    assert!(
+        at("segments.bytes") > 0,
+        "the slab leg must be exercised, or it is asserted vacuously"
+    );
+}
