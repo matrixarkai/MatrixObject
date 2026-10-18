@@ -33311,3 +33311,55 @@ fn compacting_the_changefeed_returns_the_capacity_it_drained() {
         "the drained capacity was not returned: capacity {capacity_before} ->          {capacity_after} with {len_after} records left"
     );
 }
+
+#[test]
+fn the_audit_counts_bytes_held_by_an_unfinished_multipart_upload() {
+    // An upload in progress keeps every part in memory until it completes or is
+    // aborted, so a multi-gigabyte upload is the largest single thing in the
+    // store. The audit used to report only how many uploads existed, which made
+    // those bytes invisible to any footprint figure derived from it.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    let before = audit_value(&store, "multipart.payload_bytes");
+    let total_before = audit_value(&store, "ACCOUNTED.total_bytes");
+    assert_eq!(before, 0, "nothing is uploading yet");
+
+    let upload = store
+        .create_multipart_upload("bucket", "big", "text/plain", PutOptions::default())
+        .unwrap();
+    const PART: usize = 4096;
+    store.upload_part(&upload.upload_id, 1, vec![b'a'; PART]).unwrap();
+    store.upload_part(&upload.upload_id, 2, vec![b'b'; PART]).unwrap();
+
+    let held = audit_value(&store, "multipart.payload_bytes");
+    assert!(
+        held >= (2 * PART) as u64,
+        "the two parts are resident, so the audit must account for at least          {} bytes, not {held}",
+        2 * PART
+    );
+    assert!(
+        audit_value(&store, "multipart.metadata_bytes") > 0,
+        "the upload itself has a key, a bucket and a part table"
+    );
+    assert!(
+        audit_value(&store, "ACCOUNTED.total_bytes") >= total_before + held,
+        "the total must include the bytes the upload is holding"
+    );
+
+    // And they stop being counted once the upload is no longer holding them.
+    store.abort_multipart_upload(&upload.upload_id).unwrap();
+    assert_eq!(
+        audit_value(&store, "multipart.payload_bytes"),
+        0,
+        "an aborted upload holds nothing"
+    );
+}
