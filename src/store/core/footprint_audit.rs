@@ -506,3 +506,169 @@ impl MatrixObjectStore {
         out
     }
 }
+
+/// Bytes a `BTreeMap<String, V>` costs for one entry: the key handle, the value
+/// struct, and the key's own characters.
+///
+/// Heap a value owns below its inline size is not counted, so this is exact for
+/// values that are plain structs and a floor for the few that own a `Vec`. Said
+/// here rather than left to be inferred, because the undo audit below reports
+/// nine of these maps as a single leg.
+fn audit_bucket_keyed_inline_bytes<V>(map: &BTreeMap<String, V>) -> u64 {
+    map.keys().fold(0u64, |total, key| {
+        total
+            .saturating_add((std::mem::size_of::<String>() + std::mem::size_of::<V>()) as u64)
+            .saturating_add(audit_string_heap(key))
+    })
+}
+
+impl ObjectMutationRollback {
+    /// What this undo costs for as long as the mutation it protects is running.
+    ///
+    /// Every footprint figure recorded for this store has been the store at
+    /// rest, and a copy taken at the top of a mutation and dropped at the bottom
+    /// is invisible to all of them. It is resident for the whole mutation, so
+    /// peak resident is the store plus this -- and a leg of it that grows with
+    /// the number of stored objects is a leg that makes every mutation more
+    /// expensive the fuller the store gets.
+    ///
+    /// Reported per field because that is the only form in which the question
+    /// can be answered. A targeted undo leaves most of these empty by
+    /// construction; what is worth knowing is which of the rest still scale.
+    pub(crate) fn footprint_audit(&self) -> Vec<(String, u64)> {
+        let mut ledger = SharedTextLedger::default();
+
+        let targeted_bytes = self.put_targeted.as_ref().map_or(0u64, |targeted| {
+            (std::mem::size_of::<PutTargetedUndo>() as u64)
+                .saturating_add(targeted.meta.footprint_bytes(&mut ledger))
+                .saturating_add(audit_string_heap(&targeted.bucket))
+                .saturating_add(audit_object_id_heap(&mut ledger, &targeted.object_id))
+                .saturating_add(targeted.previous_object.as_ref().map_or(0u64, |previous| {
+                    (std::mem::size_of::<ObjectMetadata>() as u64)
+                        .saturating_add(audit_object_metadata_heap(&mut ledger, previous))
+                }))
+        });
+
+        let mut buckets_bytes = 0u64;
+        for bucket in self.buckets.iter() {
+            buckets_bytes = buckets_bytes
+                .saturating_add(std::mem::size_of::<SharedText>() as u64)
+                .saturating_add(ledger.charge(bucket));
+        }
+
+        let mut bucket_maps_bytes = 0u64;
+        for name in self.bucket_versioning.iter() {
+            bucket_maps_bytes = bucket_maps_bytes
+                .saturating_add(std::mem::size_of::<String>() as u64)
+                .saturating_add(audit_string_heap(name));
+        }
+        bucket_maps_bytes = bucket_maps_bytes
+            .saturating_add(audit_bucket_keyed_inline_bytes(&self.bucket_retention))
+            .saturating_add(audit_bucket_keyed_inline_bytes(&self.bucket_quotas))
+            .saturating_add(audit_bucket_keyed_inline_bytes(&self.bucket_lifecycle))
+            .saturating_add(audit_bucket_keyed_inline_bytes(&self.bucket_policy_documents))
+            .saturating_add(audit_bucket_keyed_inline_bytes(&self.bucket_tags))
+            .saturating_add(audit_bucket_keyed_inline_bytes(&self.bucket_cors))
+            .saturating_add(audit_bucket_keyed_inline_bytes(&self.bucket_policy_receipts))
+            .saturating_add(audit_bucket_keyed_inline_bytes(&self.bucket_cors_receipts));
+
+        let mut objects_bytes = 0u64;
+        for (object_id, metadata) in self.objects.iter() {
+            objects_bytes = objects_bytes
+                .saturating_add(std::mem::size_of::<ObjectId>() as u64)
+                .saturating_add(std::mem::size_of::<ObjectMetadata>() as u64)
+                .saturating_add(audit_object_id_heap(&mut ledger, object_id))
+                .saturating_add(audit_object_metadata_heap(&mut ledger, metadata));
+        }
+
+        let mut versions_bytes = 0u64;
+        for (object_id, rows) in self.versions.iter() {
+            let mut row_bytes = (rows.capacity() as u64)
+                .saturating_mul(std::mem::size_of::<ObjectMetadata>() as u64);
+            for metadata in rows.iter() {
+                row_bytes =
+                    row_bytes.saturating_add(audit_object_metadata_heap(&mut ledger, metadata));
+            }
+            versions_bytes = versions_bytes
+                .saturating_add(std::mem::size_of::<ObjectId>() as u64)
+                .saturating_add(audit_object_id_heap(&mut ledger, object_id))
+                .saturating_add(row_bytes);
+        }
+
+        let mut changes_bytes = (self.object_changes.capacity() as u64)
+            .saturating_mul(std::mem::size_of::<ObjectChangeRecord>() as u64);
+        for change in self.object_changes.iter() {
+            changes_bytes = changes_bytes
+                .saturating_add(audit_string_heap(&change.operation))
+                .saturating_add(audit_object_id_heap(&mut ledger, &change.object_id))
+                .saturating_add(audit_string_heap(&change.etag));
+        }
+
+        let mut multipart_bytes = audit_bucket_keyed_inline_bytes(&self.multipart_complete_receipts)
+            .saturating_add(audit_bucket_keyed_inline_bytes(&self.multipart_abort_receipts));
+        for (upload_id, upload) in self.multipart_uploads.iter() {
+            let (metadata, payload) = audit_multipart_bytes(upload);
+            multipart_bytes = multipart_bytes
+                .saturating_add(std::mem::size_of::<String>() as u64)
+                .saturating_add(audit_string_heap(upload_id))
+                .saturating_add(metadata)
+                .saturating_add(payload);
+        }
+
+        let meta_service_bytes = self
+            .meta_service
+            .as_ref()
+            .map_or(0u64, |service| service.footprint_bytes(&mut ledger).total());
+        let page_service_bytes = self
+            .page_service
+            .as_ref()
+            .map_or(0u64, |service| service.footprint_bytes().total());
+
+        let mut slabs_bytes = 0u64;
+        for slab in self.slabs.values() {
+            slabs_bytes = slabs_bytes
+                .saturating_add(
+                    (std::mem::size_of::<SlabId>() + std::mem::size_of::<SlabInfo>()) as u64,
+                )
+                .saturating_add(
+                    ((slab.stale_ranges.capacity() + slab.discarded_ranges.capacity()) as u64)
+                        .saturating_mul(std::mem::size_of::<DataRange>() as u64),
+                );
+        }
+
+        // One entry per written payload, so this is the leg that grows with the
+        // stored objects. The key is a slab and an offset and the value is a
+        // length and a digest; neither owns anything below itself, which is why
+        // the whole leg is arithmetic rather than a walk.
+        let payloads_bytes = (self.payloads.len() as u64).saturating_mul(
+            (std::mem::size_of::<(SlabId, u64)>() + std::mem::size_of::<StoredPayload>()) as u64,
+        );
+
+        let legs: [(&str, u64); 11] = [
+            ("undo.put_targeted.bytes", targeted_bytes),
+            ("undo.buckets.bytes", buckets_bytes),
+            ("undo.bucket_maps.bytes", bucket_maps_bytes),
+            ("undo.objects.bytes", objects_bytes),
+            ("undo.versions.bytes", versions_bytes),
+            ("undo.object_changes.bytes", changes_bytes),
+            ("undo.multipart.bytes", multipart_bytes),
+            ("undo.meta_service.bytes", meta_service_bytes),
+            ("undo.page_service.bytes", page_service_bytes),
+            ("undo.slabs.bytes", slabs_bytes),
+            ("undo.payloads.bytes", payloads_bytes),
+        ];
+        let mut out: Vec<(String, u64)> = legs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), *value))
+            .collect();
+        let total = legs
+            .iter()
+            .fold(0u64, |total, (_, value)| total.saturating_add(*value));
+        out.push((
+            "undo.targeted".to_string(),
+            u64::from(self.put_targeted.is_some()),
+        ));
+        out.push(("undo.total_bytes".to_string(), total));
+        out
+    }
+}

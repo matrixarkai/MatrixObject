@@ -7,6 +7,26 @@ pub(crate) struct MetaRecordUndo {
     next_change_sequence: u64,
 }
 
+impl MetaRecordUndo {
+    /// Heap this undo owns beyond its inline size: the key it names and the
+    /// record it will put back.
+    ///
+    /// Charged through the audit's ledger because the record names the same
+    /// characters the store's own copy of that key does, and counting them at
+    /// both would report a copy that is not there. The service accounts for
+    /// itself here for the same reason the rest of its footprint does: these
+    /// fields are private to this module.
+    pub(crate) fn footprint_bytes(&self, ledger: &mut SharedTextLedger) -> u64 {
+        let record = self.previous_record.as_ref().map_or(0u64, |record| {
+            ledger
+                .charge(&record.key)
+                .saturating_add(record.value.len() as u64)
+        });
+        audit_string_heap(&self.key).saturating_add(record)
+    }
+}
+
+
 impl MatrixMetaService {
     /// The allocation the record map already names this key through.
     ///
