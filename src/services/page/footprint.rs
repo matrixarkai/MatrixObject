@@ -133,6 +133,88 @@ where
     })
 }
 
+fn page_batch_allocation_heap(allocations: &[PageAllocation]) -> u64 {
+    allocations.iter().fold(
+        (allocations.len() as u64).saturating_mul(std::mem::size_of::<PageAllocation>() as u64),
+        |total, allocation| total.saturating_add(page_allocation_bytes(allocation)),
+    )
+}
+
+fn page_write_receipt_heap(receipt: &PageWriteReceipt) -> u64 {
+    (receipt.request_checksum.capacity()
+        + receipt.payload_checksum.capacity()
+        + receipt.idempotency_key.capacity()) as u64
+}
+
+fn page_batch_write_receipt_heap(receipt: &PageBatchWriteReceipt) -> u64 {
+    (receipt.request_checksum.capacity()
+        + receipt.payload_checksum.capacity()
+        + receipt.idempotency_key.capacity()) as u64
+}
+
+fn page_discard_receipt_heap(receipt: &PageDiscardReceipt) -> u64 {
+    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+}
+
+fn page_batch_discard_receipt_heap(receipt: &PageBatchDiscardReceipt) -> u64 {
+    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+}
+
+fn page_range_repair_receipt_heap(receipt: &PageRangeRepairReceipt) -> u64 {
+    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+        + bounded_repair_report_bytes(&receipt.report)
+}
+
+fn page_audit_repair_receipt_heap(receipt: &PageAuditRepairReceipt) -> u64 {
+    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
+        + audit_repair_report_bytes(&receipt.report)
+}
+
+/// The eleven receipt maps of a page service, live or snapshotted.
+///
+/// A snapshot holds the same eleven with the same types, and it is a clone, so
+/// it costs the same. One function, so the two cannot drift.
+#[allow(clippy::too_many_arguments)]
+fn page_receipt_maps_bytes(
+    pending: &BTreeMap<String, PageAllocation>,
+    allocation: &BTreeMap<String, PageAllocation>,
+    batch_allocation: &BTreeMap<String, Vec<PageAllocation>>,
+    release: &BTreeMap<String, PageAllocation>,
+    write: &BTreeMap<String, PageWriteReceipt>,
+    batch_write: &BTreeMap<String, PageBatchWriteReceipt>,
+    discard: &BTreeMap<String, PageDiscardReceipt>,
+    batch_discard: &BTreeMap<String, PageBatchDiscardReceipt>,
+    repair: &BTreeMap<String, ChunkRepairReceipt>,
+    range_repair: &BTreeMap<String, PageRangeRepairReceipt>,
+    audit_repair: &BTreeMap<String, PageAuditRepairReceipt>,
+) -> u64 {
+    page_receipt_map_bytes(pending, page_allocation_bytes)
+        .saturating_add(page_receipt_map_bytes(allocation, page_allocation_bytes))
+        .saturating_add(page_receipt_map_bytes(batch_allocation, |allocations| {
+            page_batch_allocation_heap(allocations)
+        }))
+        .saturating_add(page_receipt_map_bytes(release, page_allocation_bytes))
+        .saturating_add(page_receipt_map_bytes(write, page_write_receipt_heap))
+        .saturating_add(page_receipt_map_bytes(
+            batch_write,
+            page_batch_write_receipt_heap,
+        ))
+        .saturating_add(page_receipt_map_bytes(discard, page_discard_receipt_heap))
+        .saturating_add(page_receipt_map_bytes(
+            batch_discard,
+            page_batch_discard_receipt_heap,
+        ))
+        .saturating_add(page_receipt_map_bytes(repair, chunk_repair_receipt_heap))
+        .saturating_add(page_receipt_map_bytes(
+            range_repair,
+            page_range_repair_receipt_heap,
+        ))
+        .saturating_add(page_receipt_map_bytes(
+            audit_repair,
+            page_audit_repair_receipt_heap,
+        ))
+}
+
 fn page_allocation_bytes(allocation: &PageAllocation) -> u64 {
     allocation.allocation_id.capacity() as u64
 }
@@ -160,6 +242,35 @@ impl MatrixPageService {
     /// The eleven receipt maps, in bytes rather than entries. The pending
     /// allocations are counted here too: they are the same shape and the same
     /// growth, differing only in that a commit removes them.
+    ///
+    /// The endpoints and the sealed slabs ride along because they grow with the
+    /// same configuration rather than with the data.
+    pub(crate) fn receipt_bytes(&self) -> u64 {
+        page_receipt_maps_bytes(
+            &self.pending_allocations,
+            &self.allocation_request_receipts,
+            &self.batch_allocation_request_receipts,
+            &self.release_allocation_request_receipts,
+            &self.write_request_receipts,
+            &self.batch_write_request_receipts,
+            &self.discard_request_receipts,
+            &self.batch_discard_request_receipts,
+            &self.repair_request_receipts,
+            &self.range_repair_request_receipts,
+            &self.audit_repair_request_receipts,
+        )
+        .saturating_add(
+            self.chunk_endpoints.iter().fold(
+                (self.chunk_endpoints.capacity() as u64)
+                    .saturating_mul(std::mem::size_of::<String>() as u64),
+                |total, endpoint| total.saturating_add(endpoint.capacity() as u64),
+            ),
+        )
+        .saturating_add(
+            (self.sealed_slabs.len() as u64).saturating_mul(std::mem::size_of::<SlabId>() as u64),
+        )
+    }
+
     /// Of `receipt_bytes`, the part that is one receipt holding its own map key
     /// twice. Measured across the maps whose receipts carry the field.
     pub(crate) fn receipt_duplicate_key_bytes(&self) -> u64 {
@@ -218,94 +329,6 @@ impl MatrixPageService {
             ))
     }
 
-    pub(crate) fn receipt_bytes(&self) -> u64 {
-        page_receipt_map_bytes(&self.pending_allocations, page_allocation_bytes)
-            .saturating_add(page_receipt_map_bytes(
-                &self.allocation_request_receipts,
-                page_allocation_bytes,
-            ))
-            .saturating_add(page_receipt_map_bytes(
-                &self.batch_allocation_request_receipts,
-                |allocations| {
-                    allocations.iter().fold(
-                        (allocations.capacity() as u64)
-                            .saturating_mul(std::mem::size_of::<PageAllocation>() as u64),
-                        |total, allocation| {
-                            total.saturating_add(page_allocation_bytes(allocation))
-                        },
-                    )
-                },
-            ))
-            .saturating_add(page_receipt_map_bytes(
-                &self.release_allocation_request_receipts,
-                page_allocation_bytes,
-            ))
-            .saturating_add(page_receipt_map_bytes(
-                &self.write_request_receipts,
-                |receipt| {
-                    (receipt.request_checksum.capacity()
-                        + receipt.payload_checksum.capacity()
-                        + receipt.idempotency_key.capacity()) as u64
-                },
-            ))
-            .saturating_add(page_receipt_map_bytes(
-                &self.batch_write_request_receipts,
-                |receipt| {
-                    (receipt.request_checksum.capacity()
-                        + receipt.payload_checksum.capacity()
-                        + receipt.idempotency_key.capacity()) as u64
-                },
-            ))
-            .saturating_add(page_receipt_map_bytes(
-                &self.discard_request_receipts,
-                |receipt| {
-                    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity())
-                        as u64
-                },
-            ))
-            .saturating_add(page_receipt_map_bytes(
-                &self.batch_discard_request_receipts,
-                |receipt| {
-                    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity())
-                        as u64
-                },
-            ))
-            .saturating_add(page_receipt_map_bytes(
-                &self.repair_request_receipts,
-                |receipt| {
-                    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity())
-                        as u64
-                        + chunk_repair_report_bytes(&receipt.report)
-                },
-            ))
-            .saturating_add(page_receipt_map_bytes(
-                &self.range_repair_request_receipts,
-                |receipt| {
-                    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity())
-                        as u64
-                        + bounded_repair_report_bytes(&receipt.report)
-                },
-            ))
-            .saturating_add(page_receipt_map_bytes(
-                &self.audit_repair_request_receipts,
-                |receipt| {
-                    (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity())
-                        as u64
-                        + audit_repair_report_bytes(&receipt.report)
-                },
-            ))
-            .saturating_add(
-                self.chunk_endpoints.iter().fold(
-                    (self.chunk_endpoints.capacity() as u64)
-                        .saturating_mul(std::mem::size_of::<String>() as u64),
-                    |total, endpoint| total.saturating_add(endpoint.capacity() as u64),
-                ),
-            )
-            .saturating_add(
-                (self.sealed_slabs.len() as u64)
-                    .saturating_mul(std::mem::size_of::<SlabId>() as u64),
-            )
-    }
 }
 
 // What the snapshot a mutation batch holds costs.
@@ -327,18 +350,6 @@ impl MatrixPageService {
 // from 128 bytes a chunk to the identity and the handle, because the state the
 // handle points at is no longer duplicated.
 
-/// A `BTreeMap<String, V>` at its inline size plus its key characters.
-///
-/// Heap a value owns below its inline size is not counted, which is what the
-/// `inline_and_key` in these key names says. B-tree node slack is excluded, as
-/// it is everywhere in this audit.
-fn snapshot_map_inline_and_key_bytes<V>(map: &BTreeMap<String, V>) -> u64 {
-    map.keys().fold(0u64, |total, key| {
-        total
-            .saturating_add((std::mem::size_of::<String>() + std::mem::size_of::<V>()) as u64)
-            .saturating_add(key.capacity() as u64)
-    })
-}
 
 /// Charges an `Arc<Vec<u8>>` once per allocation, however many holders name it.
 ///
@@ -408,29 +419,19 @@ impl PageServiceSnapshot {
     /// reports what an open batch holds. Every total that audit reported before
     /// excluded all of it.
     pub(crate) fn footprint_audit(&self) -> Vec<(String, u64)> {
-        let page_receipts = snapshot_map_inline_and_key_bytes(&self.pending_allocations)
-            .saturating_add(snapshot_map_inline_and_key_bytes(&self.allocation_request_receipts))
-            .saturating_add(snapshot_map_inline_and_key_bytes(
-                &self.batch_allocation_request_receipts,
-            ))
-            .saturating_add(snapshot_map_inline_and_key_bytes(
-                &self.release_allocation_request_receipts,
-            ))
-            .saturating_add(snapshot_map_inline_and_key_bytes(&self.write_request_receipts))
-            .saturating_add(snapshot_map_inline_and_key_bytes(
-                &self.batch_write_request_receipts,
-            ))
-            .saturating_add(snapshot_map_inline_and_key_bytes(&self.discard_request_receipts))
-            .saturating_add(snapshot_map_inline_and_key_bytes(
-                &self.batch_discard_request_receipts,
-            ))
-            .saturating_add(snapshot_map_inline_and_key_bytes(&self.repair_request_receipts))
-            .saturating_add(snapshot_map_inline_and_key_bytes(
-                &self.range_repair_request_receipts,
-            ))
-            .saturating_add(snapshot_map_inline_and_key_bytes(
-                &self.audit_repair_request_receipts,
-            ));
+        let page_receipts = page_receipt_maps_bytes(
+            &self.pending_allocations,
+            &self.allocation_request_receipts,
+            &self.batch_allocation_request_receipts,
+            &self.release_allocation_request_receipts,
+            &self.write_request_receipts,
+            &self.batch_write_request_receipts,
+            &self.discard_request_receipts,
+            &self.batch_discard_request_receipts,
+            &self.repair_request_receipts,
+            &self.range_repair_request_receipts,
+            &self.audit_repair_request_receipts,
+        );
 
         let mut page_other = (std::mem::size_of::<PageServiceSnapshot>() as u64)
             .saturating_add(self.checksum.capacity() as u64)
@@ -461,26 +462,15 @@ impl PageServiceSnapshot {
         let mut replica_other = 0u64;
         let mut chunk_count = 0u64;
         for replica in &self.replicas {
-            replica_receipts = replica_receipts
-                .saturating_add(snapshot_map_inline_and_key_bytes(&replica.write_request_receipts))
-                .saturating_add(snapshot_map_inline_and_key_bytes(
-                    &replica.discard_request_receipts,
-                ))
-                .saturating_add(snapshot_map_inline_and_key_bytes(
-                    &replica.batch_write_request_receipts,
-                ))
-                .saturating_add(snapshot_map_inline_and_key_bytes(
-                    &replica.batch_discard_request_receipts,
-                ))
-                .saturating_add(snapshot_map_inline_and_key_bytes(
-                    &replica.state_install_request_receipts,
-                ))
-                .saturating_add(snapshot_map_inline_and_key_bytes(
-                    &replica.reclaim_request_receipts,
-                ))
-                .saturating_add(snapshot_map_inline_and_key_bytes(
-                    &replica.repair_request_receipts,
-                ));
+            replica_receipts = replica_receipts.saturating_add(chunk_receipt_maps_bytes(
+                &replica.write_request_receipts,
+                &replica.discard_request_receipts,
+                &replica.batch_write_request_receipts,
+                &replica.batch_discard_request_receipts,
+                &replica.state_install_request_receipts,
+                &replica.reclaim_request_receipts,
+                &replica.repair_request_receipts,
+            ));
             replica_other = replica_other
                 .saturating_add(std::mem::size_of::<ChunkServiceSnapshot>() as u64)
                 .saturating_add(replica.checksum.capacity() as u64)
@@ -507,10 +497,10 @@ impl PageServiceSnapshot {
             .saturating_add(replica_other)
             .saturating_add(chunks_copied);
         vec![
-            ("batch.page_receipts.inline_and_key_bytes".to_string(), page_receipts),
+            ("batch.page_receipts.bytes".to_string(), page_receipts),
             ("batch.page_other.bytes".to_string(), page_other),
             (
-                "batch.replica_receipts.inline_and_key_bytes".to_string(),
+                "batch.replica_receipts.bytes".to_string(),
                 replica_receipts,
             ),
             ("batch.replica_other.bytes".to_string(), replica_other),
