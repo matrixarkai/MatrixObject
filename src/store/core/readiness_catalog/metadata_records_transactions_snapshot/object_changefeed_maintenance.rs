@@ -35,6 +35,12 @@ impl MatrixObjectStore {
         }
         if compact_count > 0 {
             self.object_changes.drain(0..compact_count);
+            // `drain` moves the tail down and keeps the allocation, so without
+            // this the feed holds its high-water mark for the life of the
+            // process. Shrinking here costs one copy per compaction, not one
+            // per append, which is why it is done on this path rather than by
+            // growing the vector exactly.
+            self.object_changes.shrink_to_fit();
         }
         for change in &self.object_changes {
             report.retained_records = report.retained_records.saturating_add(1);

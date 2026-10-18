@@ -33253,3 +33253,61 @@ fn every_durable_format_constant_is_accounted_for() {
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
+
+#[test]
+fn compacting_the_changefeed_returns_the_capacity_it_drained() {
+    // `Vec::drain` moves the tail down and keeps the allocation, so a change
+    // feed that reached a high-water mark would hold those slots for the life of
+    // the process. The records are gone; the room they occupied should go too.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..64 {
+        store
+            .put_object("bucket", &format!("k{index}"), b"v".to_vec(), "text/plain")
+            .unwrap();
+    }
+    let changes = store.list_object_changes_after(0, 128).unwrap();
+    assert!(
+        changes.len() >= 32,
+        "expected the puts in the feed, saw {}",
+        changes.len()
+    );
+    // A cursor is what makes a prefix safe to drop; with no consumer the
+    // compaction declines to drop anything at all.
+    let safe_to = changes[changes.len() - 2].sequence;
+    store
+        .commit_object_change_cursor("replicator", safe_to, 1)
+        .unwrap();
+
+    let len_before = audit_value(&store, "object_changes.len");
+    let capacity_before = audit_value(&store, "object_changes.capacity");
+    let report = store.compact_object_changefeed(0).unwrap();
+    assert!(
+        report.compacted_records > 0,
+        "nothing was compacted, so this test is not exercising the drain"
+    );
+    let len_after = audit_value(&store, "object_changes.len");
+    let capacity_after = audit_value(&store, "object_changes.capacity");
+
+    assert!(
+        len_after < len_before,
+        "compaction should have removed records: {len_before} -> {len_after}"
+    );
+    assert!(
+        capacity_before > len_after,
+        "this run has no slack to return, so it cannot test the shrink:          capacity {capacity_before}, remaining {len_after}"
+    );
+    assert_eq!(
+        capacity_after, len_after,
+        "the drained capacity was not returned: capacity {capacity_before} ->          {capacity_after} with {len_after} records left"
+    );
+}
