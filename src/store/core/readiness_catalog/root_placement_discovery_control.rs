@@ -1,6 +1,10 @@
-include!("root_placement_discovery_control/readiness_and_placement.rs");
-include!("root_placement_discovery_control/coordinator_and_leader.rs");
-include!("root_placement_discovery_control/migration_and_rebalance.rs");
+include!("root_placement_discovery_control/node_readiness.rs");
+include!("root_placement_discovery_control/object_placement.rs");
+include!("root_placement_discovery_control/coordinator_config.rs");
+include!("root_placement_discovery_control/leader_lease.rs");
+include!("root_placement_discovery_control/placement_migration.rs");
+include!("root_placement_discovery_control/placement_repair.rs");
+include!("root_placement_discovery_control/capacity_rebalance.rs");
 include!("root_placement_discovery_control/root_status.rs");
 include!("root_placement_discovery_control/metaserver_discovery.rs");
 include!("root_placement_discovery_control/pageserver_discovery.rs");
