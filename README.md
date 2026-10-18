@@ -91,41 +91,80 @@ whole point:
 - **`total_bytes`** adds the metadata the store keeps to describe that data, and
   is the one to divide by `logical.written`.
 
-Measured at three replicas, with the metadata counted:
+Measured at three replicas, 26-character keys, with the metadata counted:
 
-| object size | amplification | data-only figure |
-|---:|---:|---:|
-| 64 KiB | **3.01x** | 3.00x |
-| 4 KiB | **3.26x** | 3.00x |
-| 1 KiB | **4.04x** | 3.01x |
+| object size | objects | amplification | data-only figure |
+|---:|---:|---:|---:|
+| 64 KiB | 1,000 | **3.02x** | 3.00x |
+| 4 KiB | 4,000 | **3.20x** | 3.00x |
+| 1 KiB | 8,000 | **3.77x** | 3.02x |
 
-Metadata costs about **1,150 bytes per object almost regardless of object
-size**, so it disappears at 64 KiB and is 25.4% of the real footprint at 1 KiB
--- where a data-only headline understates the store by 34%. It splits into three
-near-equal parts per object: `ObjectMetadata` and its strings 411 B, the
-metadata projection 368 B, the change feed 351 B.
+Reproduce any row with the measurement harness:
+
+```
+MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib \
+  measure_the_metadata_footprint -- --ignored --nocapture
+```
+
+### Metadata is per object, and the per-object figure depends on how many there are
+
+At a fixed object count the metadata total is **identical** whatever the objects
+contain: 3,219,454 bytes for 4,000 objects at both 1 KiB and 4 KiB. So it
+disappears into a large object and dominates a small one, which is the whole
+reason the two totals are reported separately.
+
+The per-object figure falls as the store grows, because two of the structures
+are bounded rather than per object:
+
+| objects | 100 | 1,000 | 4,000 | 8,000 |
+|---:|---:|---:|---:|---:|
+| metadata per object | 1,021 B | 972 B | 805 B | **777 B** |
+
+Both change feeds cap at 1,024 records, so together they are 26.4% of metadata
+at a hundred objects and 3.6% at eight thousand. Everything else is exactly
+linear, which gives an asymptote of **749 bytes per object** plus 223,232 bytes
+of capped feeds spread across however many objects there are.
+
+That 749 splits almost exactly in half:
+
+| | per object | share |
+|---|---:|---:|
+| `meta.records` — the metadata projection record | 363 B | 48.5% |
+| `objects` — the structured metadata | 362 B | 48.3% |
+| payload index keys | 24 B | 3.2% |
+
+The largest single item inside either half is the projection record's **value**,
+at 227 bytes per object, of which 151 bytes are field names that nothing parses.
+Issue #40 has the measurement and what closing it would require.
 
 So if you store small objects, three replicas do not cost 3x. Any amplification
-figure published for this store before the metadata was counted was the data-only
-column, including in this file.
+figure published for this store before the metadata was counted was the
+data-only column, including in this file; and any per-object figure quoted
+without its object count was measured at a hundred objects, where the bounded
+feeds have not yet amortised.
 
 Neither total includes B-tree node slack or allocator overhead, which is what
 the remainder against process RSS is. Capacity is counted rather than length,
-because the slack is resident and showing slack is what the audit is for.
+because the slack is resident and showing slack is what the audit is for. Text
+shared between holders is charged once per allocation — the characters and the
+two counts in front of them — so `mapkey_capacity` against `mapkey_len` is that
+header rather than slack.
 
-### The change feed used to keep its high-water mark
+### The change feeds used to grow without bound
 
 `Vec::drain` moves the tail down and keeps the allocation, so a change feed that
-once reached a peak held those slots for the life of the process -- the audit
+once reached a peak held those slots for the life of the process — the audit
 caught 4,600 records sitting in a capacity of 8,192, and compacting the front
 away returned none of it. Compaction now shrinks, which costs one copy per
 compaction rather than one per append.
 
-The slack was a doubling sawtooth, so no single byte figure describes it: between
-4,097 and 8,192 records the capacity is 8,192 and the waste runs from about half
-the term down to nothing. What was not a sawtooth is that compaction never gave
-any of it back.
-
+Compaction only helps a feed somebody reads, though: it drops the prefix every
+registered consumer has passed, so with no consumer at all it declined to drop
+anything and the feed grew for the life of the process. Both feeds now bound
+that case at 1,024 records — the object change feed when no cursor is
+registered, the metadata change log when no checkpoint is. A consumer that
+registers later and asks for a trimmed prefix is told to resync, which is the
+read path's existing contract after any compaction.
 ## Building
 
 ```
