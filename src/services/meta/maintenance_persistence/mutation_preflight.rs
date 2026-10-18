@@ -3,7 +3,6 @@
 pub(crate) struct MetaRecordUndo {
     key: String,
     previous_record: Option<MetadataRecord>,
-    changes_len: usize,
     next_commit_index: u64,
     next_change_sequence: u64,
 }
@@ -221,7 +220,6 @@ impl MatrixMetaService {
         MetaRecordUndo {
             previous_record: self.records.get(key).cloned(),
             key: key.to_string(),
-            changes_len: self.changes.len(),
             next_commit_index: self.next_commit_index,
             next_change_sequence: self.next_change_sequence,
         }
@@ -236,10 +234,43 @@ impl MatrixMetaService {
                 self.records.remove(undo.key.as_str());
             }
         }
-        // `apply_mutation` only appends here.
-        self.changes.truncate(undo.changes_len);
+        // `apply_mutation` no longer only appends here: the log is also trimmed
+        // from the front once it reaches
+        // `UNCHECKPOINTED_METADATA_CHANGE_RETENTION` with nothing checkpointing
+        // it, and a trim plus an append leaves the length unchanged -- so a
+        // `truncate` would keep the appended record and had already lost the
+        // oldest one. A sequence does not move when the front is trimmed, and
+        // the undo already carries the one this mutation started from.
+        self.changes
+            .retain(|change| change.sequence < undo.next_change_sequence);
         self.next_commit_index = undo.next_commit_index;
         self.next_change_sequence = undo.next_change_sequence;
+    }
+
+    /// Append to the change log, bounding it when nothing has checkpointed it.
+    ///
+    /// Trimming before the push rather than after keeps the vector from
+    /// doubling past the bound, so its capacity settles at the bound instead of
+    /// twice it. The front trim is why `restore_record_undo` above drops by
+    /// sequence rather than by length -- the two have to be read together.
+    pub(crate) fn append_metadata_change(&mut self, change: MetadataChange) {
+        if self.change_checkpoints.is_empty() {
+            let len = self.changes.len();
+            if len >= UNCHECKPOINTED_METADATA_CHANGE_RETENTION {
+                // Room for the record about to be pushed, so the length
+                // afterwards is the bound exactly.
+                let overflow = len + 1 - UNCHECKPOINTED_METADATA_CHANGE_RETENTION;
+                self.changes.drain(0..overflow);
+                if overflow > 1 {
+                    // Steady state drops exactly one per append, so this is
+                    // reached only once: by a log loaded from a snapshot taken
+                    // before the bound existed, which converges in one step.
+                    self.changes
+                        .shrink_to(UNCHECKPOINTED_METADATA_CHANGE_RETENTION);
+                }
+            }
+        }
+        self.changes.push(change);
     }
 
     fn apply_mutation(
@@ -268,7 +299,7 @@ impl MatrixMetaService {
         };
         self.next_commit_index = self.next_commit_index.saturating_add(1);
         self.records.insert(key.clone(), record.clone());
-        self.changes.push(MetadataChange {
+        self.append_metadata_change(MetadataChange {
             sequence: self.next_change_sequence,
             commit_index: self.next_commit_index.saturating_sub(1),
             key,

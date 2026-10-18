@@ -383,6 +383,8 @@ impl MatrixObjectStore {
         }
 
         push("meta.change_log.bytes", meta.change_log);
+        push("meta.change_log.len", meta.change_log_len);
+        push("meta.change_log.capacity", meta.change_log_capacity);
         push("meta.receipts.bytes", meta.receipts);
         push("meta.entities.bytes", meta.entities);
         push("meta.export_caches.bytes", meta.export_caches);

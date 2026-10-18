@@ -148,7 +148,7 @@ impl MatrixMetaService {
                 }
                 for record in &prepared.receipt.records {
                     self.file_record(record.key.clone(), record.clone());
-                    self.changes.push(MetadataChange {
+                    self.append_metadata_change(MetadataChange {
                         sequence: self.next_change_sequence,
                         commit_index: prepared.prepared_commit_index,
                         key: record.key.clone(),
