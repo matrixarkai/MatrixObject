@@ -33909,6 +33909,139 @@ fn measure_where_the_per_object_metadata_goes() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_how_much_of_the_metadata_projection_is_recomputable() {
+    // `meta.records` is the largest single metadata leg, and its value is a
+    // formatted restatement of fields `objects` already holds structured:
+    //
+    //   version=1 length=1024 etag=... content_type=... metadata_count=0
+    //   storage_class=STANDARD restore_until_ms=0 deleted=false extent_count=1
+    //   tag_count=0 legal_hold=false retention_until_ms=0
+    //
+    // Three proofs hash that text, so its FORMAT is a migration. Whether it has
+    // to be RESIDENT is a different question, and the answer is whatever share
+    // of it `metadata_projection_value(objects[id])` reproduces byte for byte.
+    //
+    // The share is not 100% by construction: a delete leaves a projection with
+    // no object to recompute from, which is exactly what the listing audit calls
+    // `missing_object`. So the recoverable figure has to be measured against a
+    // store that has had deletes, not one that has only had puts.
+    let objects: u64 = std::env::var("MEASURE_OBJECTS")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(200);
+    let deleted_every: u64 = std::env::var("MEASURE_DELETE_EVERY")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(10);
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..objects {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let mut deletes = 0u64;
+    for index in 0..objects {
+        if deleted_every > 0 && index % deleted_every == 0 {
+            store
+                .delete_object("bucket", &format!("prefix/{index:08}/kkkkkkkkkk"))
+                .unwrap();
+            deletes += 1;
+        }
+    }
+
+    // Four classes, charged by the bytes of the stored value, because that is
+    // the part a recomputation would stop holding. The key is a SharedText and
+    // is already one allocation across its holders.
+    let mut exact = (0u64, 0u64);
+    let mut drifted = (0u64, 0u64);
+    let mut no_object = (0u64, 0u64);
+    let mut not_an_object_key = (0u64, 0u64);
+    for (key, record) in store.meta_service.records.iter() {
+        let text: &str = key.as_str();
+        let bytes = record.value.len() as u64;
+        let Some(rest) = text.strip_prefix("object/") else {
+            not_an_object_key.0 += 1;
+            not_an_object_key.1 += bytes;
+            continue;
+        };
+        let Some((bucket, object_key)) = rest.split_once('/') else {
+            not_an_object_key.0 += 1;
+            not_an_object_key.1 += bytes;
+            continue;
+        };
+        let id = ObjectId::new(bucket, object_key);
+        match store.objects.get(&id) {
+            Some(metadata) if !metadata.deleted => {
+                if record.value.as_ref() == metadata_projection_value(metadata).as_str() {
+                    exact.0 += 1;
+                    exact.1 += bytes;
+                } else {
+                    drifted.0 += 1;
+                    drifted.1 += bytes;
+                }
+            }
+            _ => {
+                no_object.0 += 1;
+                no_object.1 += bytes;
+            }
+        }
+    }
+
+    let classes = [
+        ("exact_recompute", exact),
+        ("drifted", drifted),
+        ("no_live_object", no_object),
+        ("not_an_object_key", not_an_object_key),
+    ];
+    let total_records: u64 = classes.iter().map(|(_, c)| c.0).sum();
+    let total_value_bytes: u64 = classes.iter().map(|(_, c)| c.1).sum();
+    for (name, (count, bytes)) in classes {
+        println!(
+            "PROJECTION {name} records={count} value_bytes={bytes} mean_value={}",
+            if count == 0 { 0 } else { bytes / count }
+        );
+    }
+    println!(
+        "PROJECTION objects={objects} deletes={deletes} records={total_records} \
+         value_bytes={total_value_bytes}"
+    );
+
+    let audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let get = |k: &str| -> u64 {
+        *audit
+            .get(k)
+            .unwrap_or_else(|| panic!("the audit should report {k}"))
+    };
+    let leg = get("meta.records.bytes");
+    let metadata = get("ACCOUNTED.metadata_bytes");
+    // What a recomputing projection would stop holding, against the two
+    // denominators that matter: its own leg, and all metadata.
+    println!(
+        "PROJECTION recoverable={} of_leg={:.1}% of_all_metadata={:.1}% per_object={}",
+        exact.1,
+        100.0 * exact.1 as f64 / leg as f64,
+        100.0 * exact.1 as f64 / metadata as f64,
+        exact.1 / objects
+    );
+    println!(
+        "PROJECTION leg={leg} all_metadata={metadata} value_share_of_leg={:.1}%",
+        100.0 * total_value_bytes as f64 / leg as f64
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_how_many_places_hold_one_object_key() {
     // An object key's characters were once resident six times over. Several
     // holders have been given shared handles since, and the only honest way to
