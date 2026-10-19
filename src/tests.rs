@@ -33902,6 +33902,47 @@ fn measure_what_an_object_change_record_holds() {
     let slack = get("object_changes.capacity").saturating_sub(get("object_changes.len"))
         * std::mem::size_of::<ObjectChangeRecord>() as u64;
     println!("CHANGEFEED vector_slack_bytes={slack} per_record={}", slack / records);
+
+    // WHETHER SHARING A STRING CAN PAY IS ARITHMETIC, AND THIS IS THE
+    // ARITHMETIC. `object_id` costs zero in this feed because it is a
+    // SharedText, so the etag beside it looks like the same move. It is not,
+    // and the difference is holders per allocation.
+    //
+    // An etag is content-derived and unique per object, so there is nothing to
+    // share ACROSS objects -- only the feed's own copy of an object the store
+    // still holds has a second holder. `Arc<str>` charges two counts
+    // per allocation where `Box<str>` charges none, so converting pays the
+    // header on every object to save a copy on the fraction the feed retains.
+    //
+    // Measured by converting both fields and re-running the totals: a win of
+    // 4,000 bytes at 500 objects and a LOSS of 7,424 at 2,000, break-even near
+    // 1,536. Below the bound the feed holds one record per object, so the
+    // saving is 24 bytes an object against a 16-byte header -- 8 bytes an
+    // object. At the bound the saving stops growing and the header does not.
+    let etag_chars = get("object_changes.etag_bytes") / records.max(1);
+    let shareable = records.min(objects as u64);
+    let would_save = shareable.saturating_mul(etag_chars);
+    let header = 2 * std::mem::size_of::<usize>() as u64;
+    let would_cost = (objects as u64).saturating_mul(header);
+    println!(
+        "SHARING etag_chars={etag_chars} feed_records={records} objects={objects} \
+         holders_per_allocation={:.2}",
+        1.0 + shareable as f64 / (objects as f64)
+    );
+    println!(
+        "SHARING would_save={would_save} would_cost={would_cost} net={}{}",
+        if would_save >= would_cost { "-" } else { "+" },
+        would_save.abs_diff(would_cost)
+    );
+    // Break-even is where the saving stops growing and the cost does not:
+    // the feed's retained records times the characters each copies, over the
+    // header charged per object. Below the bound the saving is per object too,
+    // so the figure sits above the object count and the conversion wins;
+    // at the bound it stops moving and the object count overtakes it.
+    println!(
+        "SHARING break_even_objects={} (a conversion pays only below this)",
+        records.saturating_mul(etag_chars) / header.max(1)
+    );
 }
 
 #[test]
@@ -35143,7 +35184,7 @@ fn a_shared_allocation_is_charged_for_its_header() {
         .unwrap();
 
     // One object, one bucket name and one key, each its own allocation: the
-    // characters plus two reference counts apiece.
+    // characters plus two counts apiece.
     let header = 2 * std::mem::size_of::<usize>() as u64;
     let characters = ("bucket".len() + KEY.len()) as u64;
     assert_eq!(
@@ -38930,7 +38971,7 @@ fn measure_what_the_retained_receipts_cost() {
             duplicate.saturating_mul(100) / deleted_bytes.max(1)
         );
         // Sharing the allocation does not recover the characters -- it replaces
-        // two owned copies with one `Arc<str>`, whose two reference counts sit
+        // two owned copies with one `Arc<str>`, whose two counts sit
         // in front of the characters. So the recoverable part is the duplicate
         // less two words per receipt, and quoting the duplicate as the saving
         // would overstate it by a third.
