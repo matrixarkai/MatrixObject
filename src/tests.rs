@@ -33812,6 +33812,80 @@ fn measure_where_the_per_object_metadata_goes() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_how_many_places_hold_one_object_key() {
+    // An object key's characters were once resident six times over. Several
+    // holders have been given shared handles since, and the only honest way to
+    // say how many remain is to count ALLOCATIONS by pointer -- a holder that
+    // shares costs nothing, and two holders of equal text look identical to
+    // every other check.
+    let objects = 200u64;
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..objects {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+
+    // Every holder of a key's characters that a test can reach.
+    let mut map_key: std::collections::BTreeSet<usize> = Default::default();
+    let mut metadata_id: std::collections::BTreeSet<usize> = Default::default();
+    for (object_id, metadata) in store.objects.iter() {
+        map_key.insert(object_id.key.allocation_id());
+        metadata_id.insert(metadata.object_id.key.allocation_id());
+    }
+    let mut record_map_key: std::collections::BTreeSet<usize> = Default::default();
+    let mut record_own_key: std::collections::BTreeSet<usize> = Default::default();
+    for (key, record) in store.meta_service.records.iter() {
+        record_map_key.insert(key.allocation_id());
+        record_own_key.insert(record.key.allocation_id());
+    }
+    // The meta service's change log is private to its module, so its key is
+    // not reachable from here. It is charged through the same ledger in the
+    // audit, which reports it as costing nothing again.
+    let holders: [(&str, &std::collections::BTreeSet<usize>); 4] = [
+        ("objects map key", &map_key),
+        ("metadata.object_id.key", &metadata_id),
+        ("meta record map key", &record_map_key),
+        ("meta record .key", &record_own_key),
+    ];
+    for (name, set) in holders {
+        println!("KEYHOLDERS {name}: {} distinct allocation(s)", set.len());
+    }
+
+    // The union is the number of allocations that exist; the sum is how many
+    // would exist if nothing shared. The ratio is how much sharing is in place.
+    let mut union: std::collections::BTreeSet<usize> = Default::default();
+    let mut sum = 0usize;
+    for (_, set) in holders {
+        sum += set.len();
+        for id in set.iter() {
+            union.insert(*id);
+        }
+    }
+    println!(
+        "KEYHOLDERS objects={objects} holders_sum={sum} distinct_allocations={} \
+         copies_per_key={:.2}",
+        union.len(),
+        union.len() as f64 / objects as f64
+    );
+    println!(
+        "KEYHOLDERS without_sharing_would_be={:.2} per key",
+        sum as f64 / objects as f64
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_space_amplification() {
     // What a stored byte costs in resident bytes, at several object sizes.
     //
