@@ -45,7 +45,7 @@ impl MatrixChunkService {
         for write in writes {
             if self.is_chunk_sealed(&write.chunk_id) {
                 return Err(ObjectError::PreconditionFailed(
-                    "block segment is sealed".to_string(),
+                    "page chunk is sealed".to_string(),
                 ));
             }
             validate_pipeline_range("block batch write", write.offset, write.data.len() as u64)?;
@@ -55,7 +55,7 @@ impl MatrixChunkService {
                 .checked_add(write.data.len() as u64)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch write payload byte count overflows".to_string(),
+                        "page batch write payload byte count overflows".to_string(),
                     )
                 })?;
             let mapped_chunk_ranges =
@@ -65,7 +65,7 @@ impl MatrixChunkService {
                 .checked_add(mapped_chunk_ranges)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch write chunk fanout overflows".to_string(),
+                        "page batch write chunk fanout overflows".to_string(),
                     )
                 })?;
             let locations =
@@ -74,17 +74,17 @@ impl MatrixChunkService {
             for loc in locations {
                 let loc_length = usize::try_from(loc.length).map_err(|_| {
                     ObjectError::InvalidArgument(
-                        "block batch write chunk length exceeds memory size".to_string(),
+                        "page batch write chunk length exceeds memory size".to_string(),
                     )
                 })?;
                 let next = cursor.checked_add(loc_length).ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch write chunk cursor overflows".to_string(),
+                        "page batch write chunk cursor overflows".to_string(),
                     )
                 })?;
                 if next > write.data.len() {
                     return Err(ObjectError::Corruption(
-                        "block batch write chunk mapping exceeds payload".to_string(),
+                        "page batch write chunk mapping exceeds payload".to_string(),
                     ));
                 }
                 grouped
@@ -145,7 +145,7 @@ impl MatrixChunkService {
             }
             if ok < self.write_quorum {
                 return Err(first_error.unwrap_or_else(|| {
-                    ObjectError::Corruption("block write quorum was not met".to_string())
+                    ObjectError::Corruption("page write quorum was not met".to_string())
                 }));
             }
             if ok < accepted_replicas.len() {
@@ -182,13 +182,13 @@ impl MatrixChunkService {
         validate_idempotency_key(idempotency_key)?;
         if writes.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block idempotent batch write must contain at least one range".to_string(),
+                "page idempotent batch write must contain at least one range".to_string(),
             ));
         }
         for write in writes {
             if write.data.is_empty() {
                 return Err(ObjectError::InvalidArgument(
-                    "block idempotent batch write length must be positive".to_string(),
+                    "page idempotent batch write length must be positive".to_string(),
                 ));
             }
         }
@@ -199,14 +199,14 @@ impl MatrixChunkService {
                 .checked_add(write.data.len() as u64)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block idempotent batch write range overflows".to_string(),
+                        "page idempotent batch write range overflows".to_string(),
                     )
                 })?;
             _payload_bytes = _payload_bytes
                 .checked_add(write.data.len() as u64)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block idempotent batch write payload byte count overflows".to_string(),
+                        "page idempotent batch write payload byte count overflows".to_string(),
                     )
                 })?;
         }
@@ -217,7 +217,7 @@ impl MatrixChunkService {
                 || existing.payload_checksum != payload_checksum
             {
                 return Err(ObjectError::PreconditionFailed(
-                    "block batch write idempotency key reused with different request".to_string(),
+                    "page batch write idempotency key reused with different request".to_string(),
                 ));
             }
             let mut receipt = existing.clone();

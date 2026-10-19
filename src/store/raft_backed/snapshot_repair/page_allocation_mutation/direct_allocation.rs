@@ -57,7 +57,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .cloned()
             .ok_or_else(|| {
                 ObjectError::Corruption(
-                    "raft idempotent block allocation release receipt missing after apply"
+                    "raft idempotent page allocation release receipt missing after apply"
                         .to_string(),
                 )
             })?;
@@ -211,7 +211,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             })
             .ok_or_else(|| {
                 ObjectError::Corruption(
-                    "raft idempotent block batch allocation receipt missing after apply"
+                    "raft idempotent page batch allocation receipt missing after apply"
                         .to_string(),
                 )
             })?;

@@ -171,7 +171,7 @@ impl MatrixChunkService {
                 .checked_add(request.length)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch read payload byte count overflows".to_string(),
+                        "page batch read payload byte count overflows".to_string(),
                     )
                 })?;
             if max_payload_bytes > 0 && admission.payload_bytes > max_payload_bytes {
@@ -187,7 +187,7 @@ impl MatrixChunkService {
                 .checked_add(mapped_chunk_ranges)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch read chunk fanout overflows".to_string(),
+                        "page batch read chunk fanout overflows".to_string(),
                     )
                 })?;
             if max_chunk_read_count > 0 && admission.mapped_chunk_ranges > max_chunk_read_count {
@@ -240,7 +240,7 @@ impl MatrixChunkService {
                                 ready = ready.saturating_add(1);
                             } else if first_error.is_none() {
                                 first_error = Some(ObjectError::Corruption(
-                                    "block batch read range is unavailable on chunk replica"
+                                    "page batch read range is unavailable on chunk replica"
                                         .to_string(),
                                 ));
                             }

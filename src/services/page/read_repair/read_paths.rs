@@ -28,14 +28,14 @@ impl MatrixChunkService {
     ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         if max_payload_bytes > 0 && length > max_payload_bytes {
             return Err(ObjectError::PreconditionFailed(
-                "block read payload budget exceeded".to_string(),
+                "page read payload budget exceeded".to_string(),
             ));
         }
         if max_chunk_read_count > 0 {
             let mapped_chunk_ranges = self.mapped_chunk_count(offset, length)?;
             if mapped_chunk_ranges > max_chunk_read_count {
                 return Err(ObjectError::PreconditionFailed(
-                    "block read chunk fanout exceeds max_chunk_read_count".to_string(),
+                    "page read chunk fanout exceeds max_chunk_read_count".to_string(),
                 ));
             }
         }
@@ -65,7 +65,7 @@ impl MatrixChunkService {
             },
         );
         let capacity = usize::try_from(length).map_err(|_| {
-            ObjectError::InvalidArgument("block read range exceeds memory size".to_string())
+            ObjectError::InvalidArgument("page read range exceeds memory size".to_string())
         })?;
         let mut out = Vec::with_capacity(capacity);
         for loc in locations {
@@ -180,7 +180,7 @@ impl MatrixChunkService {
         }
         if successful.len() < self.read_quorum {
             return Err(first_error.unwrap_or_else(|| {
-                ObjectError::Corruption("block read quorum was not met".to_string())
+                ObjectError::Corruption("page read quorum was not met".to_string())
             }));
         }
         stats.chunk_reads = 1;
@@ -188,7 +188,7 @@ impl MatrixChunkService {
         stats.replica_fallback_reads = attempted.saturating_sub(successful.len()) as u64;
         if selected_count < self.read_quorum {
             return Err(ObjectError::Corruption(
-                "block read quorum returned divergent chunk data".to_string(),
+                "page read quorum returned divergent chunk data".to_string(),
             ));
         }
         if failed_before_quorum > 0
@@ -199,7 +199,7 @@ impl MatrixChunkService {
         }
         stats.quorum_verified_chunks = 1;
         let selected_index = selected_index.ok_or_else(|| {
-            ObjectError::Corruption("block read quorum selection failed".to_string())
+            ObjectError::Corruption("page read quorum selection failed".to_string())
         })?;
         let selected = successful.swap_remove(selected_index);
         Ok((selected, stats))

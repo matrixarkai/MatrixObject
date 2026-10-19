@@ -8,18 +8,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment compaction requires expected route control checksum".to_string(),
+                "proven chunk compaction requires expected route control checksum".to_string(),
             ));
         }
         if proven_prepared.proof.control_checksum != expected_page_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven segment compaction route checksum mismatch: expected {} actual {}",
+                "proven chunk compaction route checksum mismatch: expected {} actual {}",
                 expected_page_route_control_checksum, proven_prepared.proof.control_checksum
             )));
         }
         if self.store.last_applied_index() < proven_prepared.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven segment compaction storage proof is not applied: applied={} required={}",
+                "proven chunk compaction storage proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_prepared.proof.storage_applied_index
             )));
@@ -27,7 +27,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment compaction requires expected raft entry checksum".to_string(),
+                "proven chunk compaction requires expected raft entry checksum".to_string(),
             ));
         }
         proven_prepared
@@ -37,7 +37,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             != expected_page_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment compaction prepared route checksum does not match caller fence"
+                "proven chunk compaction prepared route checksum does not match caller fence"
                     .to_string(),
             ));
         }
@@ -57,7 +57,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment compaction envelope requires expected route control checksum"
+                "proven chunk compaction envelope requires expected route control checksum"
                     .to_string(),
             ));
         }
@@ -68,12 +68,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 != expected_page_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment compaction envelope route checksum mismatch".to_string(),
+                "proven chunk compaction envelope route checksum mismatch".to_string(),
             ));
         }
         if self.store.last_applied_index() < proven_envelope.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven segment compaction envelope storage proof is not applied: applied={} required={}",
+                "proven chunk compaction envelope storage proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_envelope.proof.storage_applied_index
             )));
@@ -83,7 +83,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.value.envelope_checksum != expected_envelope_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment compaction envelope checksum mismatch".to_string(),
+                "proven chunk compaction envelope checksum mismatch".to_string(),
             ));
         }
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
@@ -91,7 +91,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.value.raft_entry_checksum != expected_raft_entry_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment compaction envelope raft entry checksum mismatch".to_string(),
+                "proven chunk compaction envelope raft entry checksum mismatch".to_string(),
             ));
         }
         let prepared = if proven_envelope
@@ -119,7 +119,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let actual_envelope = make_prepared_chunk_compaction_envelope(&prepared);
         if actual_envelope != proven_envelope.value {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment compaction envelope changed before proposal".to_string(),
+                "proven chunk compaction envelope changed before proposal".to_string(),
             ));
         }
         if proven_envelope

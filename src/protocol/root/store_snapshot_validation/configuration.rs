@@ -34,7 +34,7 @@ impl StoreSnapshot {
         }
         if self.next_chunk_id == 0 {
             return Err(ObjectError::Corruption(
-                "snapshot next segment id is invalid".to_string(),
+                "snapshot next chunk id is invalid".to_string(),
             ));
         }
         if self.next_upload_sequence == 0 {
@@ -56,7 +56,7 @@ impl StoreSnapshot {
         )
         .map_err(|err| {
             ObjectError::Corruption(format!(
-                "snapshot block endpoint topology is invalid: {err}"
+                "snapshot page endpoint topology is invalid: {err}"
             ))
         })?;
         Ok(())

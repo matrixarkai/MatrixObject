@@ -159,12 +159,12 @@ pub(crate) fn validate_page_route_qos_config(
         || config.max_discard_bytes_per_window > 0;
     if enabled && config.window_ms == 0 {
         return Err(ObjectError::InvalidArgument(
-            "block route qos window_ms must be positive when limits are enabled".to_string(),
+            "page route qos window_ms must be positive when limits are enabled".to_string(),
         ));
     }
     if config.window_ms > MAX_PAGE_ROUTE_QOS_WINDOW_MS {
         return Err(ObjectError::InvalidArgument(format!(
-            "block route qos window_ms must be <= {MAX_PAGE_ROUTE_QOS_WINDOW_MS}"
+            "page route qos window_ms must be <= {MAX_PAGE_ROUTE_QOS_WINDOW_MS}"
         )));
     }
     Ok(())

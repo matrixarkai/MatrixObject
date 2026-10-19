@@ -58,7 +58,7 @@ impl MatrixChunkService {
     ) -> Result<(), ObjectError> {
         if self.is_chunk_sealed(chunk_id) {
             return Err(ObjectError::PreconditionFailed(
-                "block segment is sealed".to_string(),
+                "page chunk is sealed".to_string(),
             ));
         }
         self.admit_page_route_qos(0, 0, 1, data.len() as u64, 0, 0, now_millis())?;
@@ -68,14 +68,14 @@ impl MatrixChunkService {
         let mut cursor = 0usize;
         for loc in locations {
             let loc_length = usize::try_from(loc.length).map_err(|_| {
-                ObjectError::InvalidArgument("block write chunk length exceeds memory size".to_string())
+                ObjectError::InvalidArgument("page write chunk length exceeds memory size".to_string())
             })?;
             let next = cursor.checked_add(loc_length).ok_or_else(|| {
-                ObjectError::InvalidArgument("block write chunk cursor overflows".to_string())
+                ObjectError::InvalidArgument("page write chunk cursor overflows".to_string())
             })?;
             if next > data.len() {
                 return Err(ObjectError::Corruption(
-                    "block write chunk mapping exceeds payload".to_string(),
+                    "page write chunk mapping exceeds payload".to_string(),
                 ));
             }
             let slice = &data[cursor..next];
@@ -112,7 +112,7 @@ impl MatrixChunkService {
             }
             if ok < self.write_quorum {
                 return Err(first_error.unwrap_or_else(|| {
-                    ObjectError::Corruption("block write quorum was not met".to_string())
+                    ObjectError::Corruption("page write quorum was not met".to_string())
                 }));
             }
             if ok < accepted_replicas.len() {
@@ -136,7 +136,7 @@ impl MatrixChunkService {
         let length = data.len() as u64;
         if length == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block idempotent write length must be positive".to_string(),
+                "page idempotent write length must be positive".to_string(),
             ));
         }
         let request_checksum = page_write_request_checksum(chunk_id, offset, data);
@@ -149,7 +149,7 @@ impl MatrixChunkService {
                 || existing.payload_checksum != payload_checksum
             {
                 return Err(ObjectError::PreconditionFailed(
-                    "block write idempotency key reused with different request".to_string(),
+                    "page write idempotency key reused with different request".to_string(),
                 ));
             }
             let mut receipt = existing.clone();

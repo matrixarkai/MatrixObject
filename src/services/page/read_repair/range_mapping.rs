@@ -8,10 +8,10 @@ impl MatrixChunkService {
             .pending_allocations
             .get(allocation_id)
             .cloned()
-            .ok_or_else(|| ObjectError::NotFound("block allocation missing".to_string()))?;
+            .ok_or_else(|| ObjectError::NotFound("page allocation missing".to_string()))?;
         if data.len() as u64 != allocation.length {
             return Err(ObjectError::InvalidArgument(
-                "block allocation write length mismatch".to_string(),
+                "page allocation write length mismatch".to_string(),
             ));
         }
         self.write_chunk_range(&allocation.chunk_id, allocation.offset, data)?;
@@ -27,7 +27,7 @@ impl MatrixChunkService {
     ) -> Result<Vec<ChunkLocation>, ObjectError> {
         validate_pipeline_range("block range", offset, length)?;
         let capacity = usize::try_from(self.mapped_chunk_count(offset, length)?).map_err(|_| {
-            ObjectError::InvalidArgument("block range maps too many chunks".to_string())
+            ObjectError::InvalidArgument("page range maps too many chunks".to_string())
         })?;
         let mut out = Vec::with_capacity(capacity);
         let mut cursor = 0u64;

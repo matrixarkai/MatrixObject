@@ -94,7 +94,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectMetadata, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block receipt retention requires raft/store commit alignment".to_string(),
+                "prepared page receipt retention requires raft/store commit alignment".to_string(),
             ));
         }
         self.store
@@ -107,7 +107,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .append(ObjectCommand::ApplyPreparedPageReceiptRetention { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block receipt retention raft index is not contiguous".to_string(),
+                "prepared page receipt retention raft index is not contiguous".to_string(),
             ));
         }
         self.store.apply_raft_entry(&entry)
@@ -122,7 +122,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .filter(|checksum| !checksum.is_empty())
             .ok_or_else(|| {
                 ObjectError::PreconditionFailed(
-                    "prepared block receipt retention requires expected route control checksum"
+                    "prepared page receipt retention requires expected route control checksum"
                         .to_string(),
                 )
             })?;
@@ -132,13 +132,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block receipt retention requires prepared route control checksum"
+                "prepared page receipt retention requires prepared route control checksum"
                     .to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != expected_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block receipt retention route checksum does not match caller fence"
+                "prepared page receipt retention route checksum does not match caller fence"
                     .to_string(),
             ));
         }
@@ -154,20 +154,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_route_control_checksum = expected_route_control_checksum.as_ref();
         if expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block receipt retention requires expected route control checksum"
+                "proven page receipt retention requires expected route control checksum"
                     .to_string(),
             ));
         }
         if proven_prepared.proof.control_checksum != expected_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block receipt retention route checksum mismatch: expected {} actual {}",
+                "proven page receipt retention route checksum mismatch: expected {} actual {}",
                 expected_route_control_checksum, proven_prepared.proof.control_checksum
             )));
         }
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block receipt retention requires expected raft entry checksum".to_string(),
+                "proven page receipt retention requires expected raft entry checksum".to_string(),
             ));
         }
         proven_prepared
@@ -175,7 +175,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .verify_expected_raft_entry_checksum(expected_raft_entry_checksum)?;
         if self.store.last_applied_index() < proven_prepared.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block receipt retention storage proof is not applied: applied={} required={}",
+                "proven page receipt retention storage proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_prepared.proof.storage_applied_index
             )));

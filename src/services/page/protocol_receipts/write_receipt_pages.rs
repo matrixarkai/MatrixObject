@@ -45,21 +45,21 @@ impl PageWriteReceiptPage {
                 .any(|receipt| &receipt.chunk_id != chunk_id)
             {
                 return Err(ObjectError::Corruption(
-                    "block write receipt page contains receipt outside segment filter".to_string(),
+                    "page write receipt page contains receipt outside chunk filter".to_string(),
                 ));
             }
         }
         if let Some(page_index) = self.page_index {
             let page_size = self.page_size.ok_or_else(|| {
                 ObjectError::Corruption(
-                    "block write receipt page chunk filter is missing chunk size".to_string(),
+                    "page write receipt page chunk filter is missing chunk size".to_string(),
                 )
             })?;
             if self.receipts.iter().any(|receipt| {
                 !page_range_overlaps_chunk(receipt.offset, receipt.length, page_index, page_size)
             }) {
                 return Err(ObjectError::Corruption(
-                    "block write receipt page contains receipt outside chunk filter".to_string(),
+                    "page write receipt page contains receipt outside chunk filter".to_string(),
                 ));
             }
         }
@@ -71,7 +71,7 @@ impl PageWriteReceiptPage {
         let actual = self.proof_checksum();
         if actual != expected_page_write_receipt_page_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block write receipt page proof checksum mismatch: expected {} got {}",
+                "page write receipt page proof checksum mismatch: expected {} got {}",
                 expected_page_write_receipt_page_proof_checksum, actual
             )));
         }
@@ -155,7 +155,7 @@ impl PageBatchWriteReceiptPage {
         let actual = self.proof_checksum();
         if actual != expected_page_batch_write_receipt_page_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block batch write receipt page proof checksum mismatch: expected {} got {}",
+                "page batch write receipt page proof checksum mismatch: expected {} got {}",
                 expected_page_batch_write_receipt_page_proof_checksum, actual
             )));
         }

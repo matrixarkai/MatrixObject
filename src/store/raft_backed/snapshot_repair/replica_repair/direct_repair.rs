@@ -74,7 +74,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let entry = self.raft.append(command)?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "bounded block repair raft index is not contiguous".to_string(),
+                "bounded page repair raft index is not contiguous".to_string(),
             ));
         }
         self.store.apply_raft_entry(&entry)
@@ -121,7 +121,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let entry = self.raft.append(command)?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "exact block chunk repair raft index is not contiguous".to_string(),
+                "exact page chunk repair raft index is not contiguous".to_string(),
             ));
         }
         self.store.apply_raft_entry(&entry)

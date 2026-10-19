@@ -52,7 +52,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         if expected_object_gc_report_proof_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "segment compaction requires expected object GC report proof checksum".to_string(),
+                "chunk compaction requires expected object GC report proof checksum".to_string(),
             ));
         }
         self.store.prepare_chunk_compaction_raft_entry_fenced(

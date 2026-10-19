@@ -7,11 +7,11 @@ impl ChunkServiceSnapshot {
             .and_then(|suffix| suffix.parse::<u64>().ok())
             .filter(|version| (1..=23).contains(version))
             .ok_or_else(|| {
-                ObjectError::Corruption("block service snapshot byte magic mismatch".to_string())
+                ObjectError::Corruption("page service snapshot byte magic mismatch".to_string())
             })?;
         if magic != format!("MOSRSBLOCK{version}") {
             return Err(ObjectError::Corruption(
-                "block service snapshot byte magic mismatch".to_string(),
+                "page service snapshot byte magic mismatch".to_string(),
             ));
         }
         let has_quarantine = version >= 2;
@@ -298,12 +298,12 @@ impl ChunkServiceSnapshot {
         let envelope_checksum = cursor.read_string()?;
         if cursor.position() != data.len() {
             return Err(ObjectError::Corruption(
-                "block service snapshot byte payload has trailing data".to_string(),
+                "page service snapshot byte payload has trailing data".to_string(),
             ));
         }
         if !etag_matches(&data[..checksum_end], &envelope_checksum) {
             return Err(ObjectError::Corruption(
-                "block service snapshot byte envelope checksum mismatch".to_string(),
+                "page service snapshot byte envelope checksum mismatch".to_string(),
             ));
         }
         let mut snapshot = Self {

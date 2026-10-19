@@ -12,7 +12,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectMetadata, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction requires raft/store commit alignment".to_string(),
+                "prepared chunk compaction requires raft/store commit alignment".to_string(),
             ));
         }
         self.store
@@ -25,7 +25,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .append(ObjectCommand::ApplyPreparedChunkCompaction { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction raft index is not contiguous".to_string(),
+                "prepared chunk compaction raft index is not contiguous".to_string(),
             ));
         }
         self.store.apply_raft_entry(&entry)
@@ -89,17 +89,17 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction requires expected route control checksum".to_string(),
+                "prepared chunk compaction requires expected route control checksum".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction requires prepared route control checksum".to_string(),
+                "prepared chunk compaction requires prepared route control checksum".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != expected_page_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction route checksum does not match caller fence"
+                "prepared chunk compaction route checksum does not match caller fence"
                     .to_string(),
             ));
         }
@@ -118,17 +118,17 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction requires expected route control checksum".to_string(),
+                "prepared chunk compaction requires expected route control checksum".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction requires prepared route control checksum".to_string(),
+                "prepared chunk compaction requires prepared route control checksum".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != expected_page_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction route checksum does not match caller fence"
+                "prepared chunk compaction route checksum does not match caller fence"
                     .to_string(),
             ));
         }
@@ -146,7 +146,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_object_gc_report_proof_checksum.as_ref();
         if expected_object_gc_report_proof_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction requires expected object GC report proof checksum"
+                "prepared chunk compaction requires expected object GC report proof checksum"
                     .to_string(),
             ));
         }
@@ -154,7 +154,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             != expected_object_gc_report_proof_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction GC proof checksum does not match caller fence"
+                "prepared chunk compaction GC proof checksum does not match caller fence"
                     .to_string(),
             ));
         }
@@ -181,7 +181,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_object_gc_report_proof_checksum.as_ref();
         if expected_object_gc_report_proof_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction requires expected object GC report proof checksum"
+                "prepared chunk compaction requires expected object GC report proof checksum"
                     .to_string(),
             ));
         }
@@ -189,7 +189,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             != expected_object_gc_report_proof_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction GC proof checksum does not match caller fence"
+                "prepared chunk compaction GC proof checksum does not match caller fence"
                     .to_string(),
             ));
         }

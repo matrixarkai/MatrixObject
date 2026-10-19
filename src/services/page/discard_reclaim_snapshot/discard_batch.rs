@@ -75,7 +75,7 @@ impl MatrixChunkService {
                     .checked_add(request.length)
                     .ok_or_else(|| {
                         ObjectError::InvalidArgument(
-                            "block batch discard byte count overflows".to_string(),
+                            "page batch discard byte count overflows".to_string(),
                         )
                     })?;
             let locations = self.map_range(&request.chunk_id, request.offset, request.length)?;
@@ -144,7 +144,7 @@ impl MatrixChunkService {
             }
             if ok < self.write_quorum {
                 return Err(first_error.unwrap_or_else(|| {
-                    ObjectError::Corruption("block discard quorum was not met".to_string())
+                    ObjectError::Corruption("page discard quorum was not met".to_string())
                 }));
             }
             if ok < accepted_replicas.len() {

@@ -29,7 +29,7 @@ impl ChunkDiscardReceipt {
         let actual = self.proof_checksum();
         if actual != expected_page_discard_receipt_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block discard receipt proof checksum mismatch: expected {} got {}",
+                "page discard receipt proof checksum mismatch: expected {} got {}",
                 expected_page_discard_receipt_proof_checksum, actual
             )));
         }
@@ -100,7 +100,7 @@ impl ChunkBatchDiscardReceipt {
         let actual = self.proof_checksum();
         if actual != expected_page_discard_batch_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block discard batch proof checksum mismatch: expected {} got {}",
+                "page discard batch proof checksum mismatch: expected {} got {}",
                 expected_page_discard_batch_proof_checksum, actual
             )));
         }

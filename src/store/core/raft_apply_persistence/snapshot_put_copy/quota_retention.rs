@@ -64,12 +64,12 @@ impl MatrixObjectStore {
         }
         if metadata.lock.legal_hold {
             return Err(ObjectError::PreconditionFailed(format!(
-                "object legal hold blocks {operation}"
+                "object legal hold pages {operation}"
             )));
         }
         if retention_active(&self.bucket_retention, metadata, now_ms) {
             return Err(ObjectError::PreconditionFailed(format!(
-                "object retention blocks {operation}"
+                "object retention pages {operation}"
             )));
         }
         Ok(())

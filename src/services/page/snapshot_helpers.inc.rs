@@ -11,16 +11,16 @@ fn export_page_service_snapshot_chunk_slice_with_checksum(
     }
     if offset > snapshot_bytes.len() as u64 {
         return Err(ObjectError::InvalidArgument(
-            "block service snapshot offset exceeds payload".to_string(),
+            "page service snapshot offset exceeds payload".to_string(),
         ));
     }
     let start = usize::try_from(offset).map_err(|_| {
-        ObjectError::InvalidArgument("block service snapshot offset exceeds memory size".to_string())
+        ObjectError::InvalidArgument("page service snapshot offset exceeds memory size".to_string())
     })?;
     let remaining = snapshot_bytes.len().saturating_sub(start);
     let emit = remaining.min(max_payload_bytes);
     let end = start.checked_add(emit).ok_or_else(|| {
-        ObjectError::InvalidArgument("block service snapshot chunk range overflows".to_string())
+        ObjectError::InvalidArgument("page service snapshot chunk range overflows".to_string())
     })?;
     let payload_slice = &snapshot_bytes[start..end];
     let total_bytes = snapshot_bytes.len() as u64;

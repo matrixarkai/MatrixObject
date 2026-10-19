@@ -42,7 +42,7 @@ impl PageRangeRepairReceiptPage {
                 .any(|receipt| &receipt.chunk_id != chunk_id)
             {
                 return Err(ObjectError::Corruption(
-                    "block range repair receipt page contains receipt outside segment filter"
+                    "page range repair receipt page contains receipt outside chunk filter"
                         .to_string(),
                 ));
             }
@@ -55,7 +55,7 @@ impl PageRangeRepairReceiptPage {
         let actual = self.proof_checksum();
         if actual != expected_page_range_repair_receipt_page_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block range repair receipt page proof checksum mismatch: expected {} got {}",
+                "page range repair receipt page proof checksum mismatch: expected {} got {}",
                 expected_page_range_repair_receipt_page_proof_checksum, actual
             )));
         }
@@ -133,7 +133,7 @@ impl PageAuditRepairReceiptPage {
                 .any(|receipt| receipt.after_chunk_id.as_ref() != Some(after_chunk_id))
             {
                 return Err(ObjectError::Corruption(
-                    "block audit repair receipt page contains receipt outside after-chunk filter"
+                    "page audit repair receipt page contains receipt outside after-chunk filter"
                         .to_string(),
                 ));
             }
@@ -146,7 +146,7 @@ impl PageAuditRepairReceiptPage {
         let actual = self.proof_checksum();
         if actual != expected_page_audit_repair_receipt_page_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block audit repair receipt page proof checksum mismatch: expected {} got {}",
+                "page audit repair receipt page proof checksum mismatch: expected {} got {}",
                 expected_page_audit_repair_receipt_page_proof_checksum, actual
             )));
         }

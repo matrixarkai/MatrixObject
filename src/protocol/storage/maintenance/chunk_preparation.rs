@@ -35,7 +35,7 @@ impl PreparedChunkDiscard {
         }
         if self.raft_entry_checksum != expected_raft_entry_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "prepared segment discard raft entry checksum mismatch: expected {} got {}",
+                "prepared chunk discard raft entry checksum mismatch: expected {} got {}",
                 expected_raft_entry_checksum, self.raft_entry_checksum
             )));
         }
@@ -186,7 +186,7 @@ impl PreparedChunkCompaction {
         }
         if self.raft_entry_checksum != expected_raft_entry_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "prepared segment compaction raft entry checksum mismatch: expected {} got {}",
+                "prepared chunk compaction raft entry checksum mismatch: expected {} got {}",
                 expected_raft_entry_checksum, self.raft_entry_checksum
             )));
         }

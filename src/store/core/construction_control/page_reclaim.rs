@@ -15,7 +15,7 @@ impl MatrixObjectStore {
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared reclaim previous commit fence mismatch".to_string(),
+                "page prepared reclaim previous commit fence mismatch".to_string(),
             ));
         }
         let before_page_service_fingerprint =
@@ -74,24 +74,24 @@ impl MatrixObjectStore {
         });
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "block prepared reclaim raft entry checksum mismatch".to_string(),
+                "page prepared reclaim raft entry checksum mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared reclaim route fence is required".to_string(),
+                "page prepared reclaim route fence is required".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared reclaim route proof checksum mismatch".to_string(),
+                "page prepared reclaim route proof checksum mismatch".to_string(),
             ));
         }
         if prepared.prepared_commit_index
             != prepared.expected_previous_commit_index.saturating_add(1)
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared reclaim commit index must be adjacent".to_string(),
+                "page prepared reclaim commit index must be adjacent".to_string(),
             ));
         }
         let current_fingerprint = page_batch_mutation_image_fingerprint(&self.chunk_service);
@@ -100,7 +100,7 @@ impl MatrixObjectStore {
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared reclaim previous commit fence mismatch".to_string(),
+                "page prepared reclaim previous commit fence mismatch".to_string(),
             ));
         }
         self.chunk_service
@@ -110,7 +110,7 @@ impl MatrixObjectStore {
             )?;
         if current_fingerprint != prepared.before_page_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared reclaim source fingerprint mismatch".to_string(),
+                "page prepared reclaim source fingerprint mismatch".to_string(),
             ));
         }
         let mut current = self.prepare_page_reclaim_raft_entry_fenced(
@@ -131,7 +131,7 @@ impl MatrixObjectStore {
             || current.raft_entry_checksum != prepared.raft_entry_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared reclaim no longer matches current state".to_string(),
+                "page prepared reclaim no longer matches current state".to_string(),
             ));
         }
         let report = self.chunk_service.reclaim_chunk_replicas_with_limits_at(
@@ -148,7 +148,7 @@ impl MatrixObjectStore {
                 != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(
-                "block prepared reclaim deterministic apply mismatch".to_string(),
+                "page prepared reclaim deterministic apply mismatch".to_string(),
             ));
         }
         Ok(prepared.report)

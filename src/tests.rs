@@ -230,11 +230,11 @@ fn append_object_extends_existing_blob_without_staling_old_extents() {
         store.get_object("bucket", "wal").unwrap().data,
         b"abcdefghi"
     );
-    let first_slab = store
+    let first_chunk = store
         .chunks
         .get(&first.extents[0].chunk_id)
-        .expect("first append segment remains present");
-    assert_eq!(first_slab.stale_bytes, 0);
+        .expect("first append chunk remains present");
+    assert_eq!(first_chunk.stale_bytes, 0);
 }
 
 #[test]
@@ -29597,7 +29597,7 @@ fn snapshot_round_trips_validated_versioned_state() {
     assert!(matches!(
         corrupt_payload_range.validate(),
         Err(ObjectError::Corruption(message))
-            if message.contains("payload exceeds segment length")
+            if message.contains("payload exceeds chunk length")
     ));
 }
 

@@ -64,7 +64,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .cloned()
             .ok_or_else(|| {
                 ObjectError::Corruption(
-                    "raft idempotent block write receipt missing after apply".to_string(),
+                    "raft idempotent page write receipt missing after apply".to_string(),
                 )
             })?;
         let stats = ChunkBatchStats {

@@ -45,7 +45,7 @@ impl PageDiscardReceiptPage {
                 .any(|receipt| &receipt.chunk_id != chunk_id)
             {
                 return Err(ObjectError::Corruption(
-                    "block discard receipt page contains receipt outside segment filter"
+                    "page discard receipt page contains receipt outside chunk filter"
                         .to_string(),
                 ));
             }
@@ -53,14 +53,14 @@ impl PageDiscardReceiptPage {
         if let Some(page_index) = self.page_index {
             let page_size = self.page_size.ok_or_else(|| {
                 ObjectError::Corruption(
-                    "block discard receipt page chunk filter is missing chunk size".to_string(),
+                    "page discard receipt page chunk filter is missing chunk size".to_string(),
                 )
             })?;
             if self.receipts.iter().any(|receipt| {
                 !page_range_overlaps_chunk(receipt.offset, receipt.length, page_index, page_size)
             }) {
                 return Err(ObjectError::Corruption(
-                    "block discard receipt page contains receipt outside chunk filter".to_string(),
+                    "page discard receipt page contains receipt outside chunk filter".to_string(),
                 ));
             }
         }
@@ -72,7 +72,7 @@ impl PageDiscardReceiptPage {
         let actual = self.proof_checksum();
         if actual != expected_page_discard_receipt_page_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block discard receipt page proof checksum mismatch: expected {} got {}",
+                "page discard receipt page proof checksum mismatch: expected {} got {}",
                 expected_page_discard_receipt_page_proof_checksum, actual
             )));
         }
@@ -156,7 +156,7 @@ impl PageBatchDiscardReceiptPage {
         let actual = self.proof_checksum();
         if actual != expected_page_batch_discard_receipt_page_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block batch discard receipt page proof checksum mismatch: expected {} got {}",
+                "page batch discard receipt page proof checksum mismatch: expected {} got {}",
                 expected_page_batch_discard_receipt_page_proof_checksum, actual
             )));
         }

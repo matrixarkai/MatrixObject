@@ -8,7 +8,7 @@ impl MatrixObjectStore {
     ) -> Result<PreparedPageAuditRepair, ObjectError> {
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair previous commit fence mismatch".to_string(),
+                "page prepared audit repair previous commit fence mismatch".to_string(),
             ));
         }
         let before_page_service_fingerprint =
@@ -47,12 +47,12 @@ impl MatrixObjectStore {
     ) -> Result<PreparedPageAuditRepair, ObjectError> {
         if max_chunks == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block prepared audit repair max_chunks must be positive".to_string(),
+                "page prepared audit repair max_chunks must be positive".to_string(),
             ));
         }
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block prepared audit repair max_payload_bytes must be positive".to_string(),
+                "page prepared audit repair max_payload_bytes must be positive".to_string(),
             ));
         }
         self.prepare_page_audit_repair_raft_entry(
@@ -73,43 +73,43 @@ impl MatrixObjectStore {
         });
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "block prepared audit repair raft entry checksum mismatch".to_string(),
+                "page prepared audit repair raft entry checksum mismatch".to_string(),
             ));
         }
         if prepared.route_control_proof != prepared.report.route_control_proof {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair route proof/report mismatch".to_string(),
+                "page prepared audit repair route proof/report mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum
             != prepared.report.expected_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair route checksum/report mismatch".to_string(),
+                "page prepared audit repair route checksum/report mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair route fence is required".to_string(),
+                "page prepared audit repair route fence is required".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair route proof checksum mismatch".to_string(),
+                "page prepared audit repair route proof checksum mismatch".to_string(),
             ));
         }
         if prepared.chunk_control_proof.proof_count == 0
             || prepared.chunk_control_proof.proof_checksum.is_empty()
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair chunk control proof is required".to_string(),
+                "page prepared audit repair chunk control proof is required".to_string(),
             ));
         }
         if prepared.prepared_commit_index
             != prepared.expected_previous_commit_index.saturating_add(1)
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair commit index must be adjacent".to_string(),
+                "page prepared audit repair commit index must be adjacent".to_string(),
             ));
         }
         let request_checksum = page_audit_repair_request_checksum(
@@ -133,7 +133,7 @@ impl MatrixObjectStore {
                 return Ok((receipt.report.clone(), receipt));
             }
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair idempotency key conflict".to_string(),
+                "page prepared audit repair idempotency key conflict".to_string(),
             ));
         }
         let current_fingerprint = page_audit_repair_image_fingerprint(&self.chunk_service);
@@ -155,7 +155,7 @@ impl MatrixObjectStore {
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair previous commit fence mismatch".to_string(),
+                "page prepared audit repair previous commit fence mismatch".to_string(),
             ));
         }
         self.chunk_service
@@ -170,7 +170,7 @@ impl MatrixObjectStore {
             )?;
         if current_fingerprint != prepared.before_page_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair source fingerprint mismatch".to_string(),
+                "page prepared audit repair source fingerprint mismatch".to_string(),
             ));
         }
         let mut current = self.prepare_page_audit_repair_raft_entry(
@@ -190,7 +190,7 @@ impl MatrixObjectStore {
             || current.raft_entry_checksum != prepared.raft_entry_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared audit repair no longer matches current state".to_string(),
+                "page prepared audit repair no longer matches current state".to_string(),
             ));
         }
         let mut report = self.chunk_service.repair_audited_chunk_replicas(
@@ -205,7 +205,7 @@ impl MatrixObjectStore {
                 != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(
-                "block prepared audit repair deterministic apply mismatch".to_string(),
+                "page prepared audit repair deterministic apply mismatch".to_string(),
             ));
         }
         let receipt = ChunkAuditRepairReceipt {

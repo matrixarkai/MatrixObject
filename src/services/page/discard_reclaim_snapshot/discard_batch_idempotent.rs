@@ -15,13 +15,13 @@ impl MatrixChunkService {
         validate_idempotency_key(idempotency_key)?;
         if requests.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block idempotent batch discard must contain at least one range".to_string(),
+                "page idempotent batch discard must contain at least one range".to_string(),
             ));
         }
         for request in requests {
             if request.length == 0 {
                 return Err(ObjectError::InvalidArgument(
-                    "block idempotent batch discard length must be positive".to_string(),
+                    "page idempotent batch discard length must be positive".to_string(),
                 ));
             }
         }
@@ -32,7 +32,7 @@ impl MatrixChunkService {
                 .checked_add(request.length)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block idempotent batch discard byte count overflows".to_string(),
+                        "page idempotent batch discard byte count overflows".to_string(),
                     )
                 })?;
         }
@@ -40,7 +40,7 @@ impl MatrixChunkService {
         if let Some(existing) = self.batch_discard_request_receipts.get(idempotency_key) {
             if existing.request_checksum != request_checksum {
                 return Err(ObjectError::PreconditionFailed(
-                    "block batch discard idempotency key reused with different request".to_string(),
+                    "page batch discard idempotency key reused with different request".to_string(),
                 ));
             }
             let mut receipt = existing.clone();
@@ -85,7 +85,7 @@ impl MatrixChunkService {
         let (stats, receipt) = self.discard_slab_ranges_idempotent(selected, idempotency_key)?;
         if stats.payload_bytes != admission.selected_discard_bytes {
             return Err(ObjectError::Corruption(
-                "block idempotent bounded discard stats do not match admission".to_string(),
+                "page idempotent bounded discard stats do not match admission".to_string(),
             ));
         }
         Ok((stats, receipt, admission))

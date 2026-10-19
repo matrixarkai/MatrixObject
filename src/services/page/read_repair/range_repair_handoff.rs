@@ -8,7 +8,7 @@ impl MatrixChunkService {
         self.admit_page_route_qos(1, length, 0, 0, 0, 0, now_millis())?;
         let locations = self.map_range(chunk_id, offset, length)?;
         let capacity = usize::try_from(length).map_err(|_| {
-            ObjectError::InvalidArgument("block repair read range exceeds memory size".to_string())
+            ObjectError::InvalidArgument("page repair read range exceeds memory size".to_string())
         })?;
         let mut out = Vec::with_capacity(capacity);
         let page_ids = locations

@@ -84,21 +84,21 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .max(min_commit_index);
         if self.raft.commit_index() < min_commit_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block cache invalidation requires raft commit index at least {} but raft is at {}",
+                "page cache invalidation requires raft commit index at least {} but raft is at {}",
                 min_commit_index,
                 self.raft.commit_index()
             )));
         }
         if self.raft.commit_index() < min_read_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block cache invalidation requires raft commit index at least {} but raft is at {}",
+                "page cache invalidation requires raft commit index at least {} but raft is at {}",
                 min_read_index,
                 self.raft.commit_index()
             )));
         }
         if self.store.last_applied_index() < requested_read_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block cache invalidation requires applied commit index {} but store is at {}",
+                "page cache invalidation requires applied commit index {} but store is at {}",
                 requested_read_index,
                 self.store.last_applied_index()
             )));

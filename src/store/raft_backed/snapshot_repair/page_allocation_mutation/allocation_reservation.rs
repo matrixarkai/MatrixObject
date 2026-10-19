@@ -21,7 +21,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<PreparedPageAllocationReservationEnvelope, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block allocation reservation prepare read index is not satisfied".to_string(),
+                "page allocation reservation prepare read index is not satisfied".to_string(),
             ));
         }
         let prepared =
@@ -61,7 +61,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<(ObjectMetadata, ChunkAllocationReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block allocation reservation requires raft/store commit alignment"
+                "prepared page allocation reservation requires raft/store commit alignment"
                     .to_string(),
             ));
         }
@@ -74,7 +74,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .append(ObjectCommand::ApplyPreparedPageAllocationReservation { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block allocation reservation raft index is not contiguous".to_string(),
+                "prepared page allocation reservation raft index is not contiguous".to_string(),
             ));
         }
         let metadata = self.store.apply_raft_entry(&entry)?;
@@ -112,7 +112,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block allocation reservation requires expected raft entry checksum".to_string(),
+                "page allocation reservation requires expected raft entry checksum".to_string(),
             ));
         }
         prepared.verify_expected_raft_entry_checksum(expected_raft_entry_checksum)?;
@@ -129,7 +129,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_route_control_checksum = expected_route_control_checksum.as_ref();
         if expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block allocation reservation requires expected route control checksum"
+                "proven page allocation reservation requires expected route control checksum"
                     .to_string(),
             ));
         }
@@ -138,12 +138,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 != expected_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block allocation reservation route checksum mismatch".to_string(),
+                "proven page allocation reservation route checksum mismatch".to_string(),
             ));
         }
         if self.store.last_applied_index() < proven_envelope.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block allocation reservation proof is not applied: applied={} required={}",
+                "proven page allocation reservation proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_envelope.proof.storage_applied_index
             )));
@@ -153,7 +153,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.envelope.envelope_checksum != expected_envelope_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block allocation reservation envelope checksum mismatch".to_string(),
+                "proven page allocation reservation envelope checksum mismatch".to_string(),
             ));
         }
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
@@ -161,7 +161,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.envelope.raft_entry_checksum != expected_raft_entry_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block allocation reservation raft entry checksum mismatch".to_string(),
+                "proven page allocation reservation raft entry checksum mismatch".to_string(),
             ));
         }
         let prepared = self.prepare_page_allocation_reservation_raft_entry(
@@ -172,7 +172,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let actual_envelope = make_prepared_page_allocation_reservation_envelope(&prepared);
         if actual_envelope.envelope_checksum != proven_envelope.envelope.envelope_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "proven block allocation reservation prepared envelope changed".to_string(),
+                "proven page allocation reservation prepared envelope changed".to_string(),
             ));
         }
         self.propose_prepared_page_allocation_reservation_fenced(
@@ -204,7 +204,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<PreparedPageBatchAllocationReservationEnvelope, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block batch allocation reservation prepare read index is not satisfied"
+                "page batch allocation reservation prepare read index is not satisfied"
                     .to_string(),
             ));
         }
@@ -248,7 +248,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<(ObjectMetadata, ChunkBatchAllocationReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block batch allocation reservation requires raft/store commit alignment"
+                "prepared page batch allocation reservation requires raft/store commit alignment"
                     .to_string(),
             ));
         }
@@ -261,7 +261,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .append(ObjectCommand::ApplyPreparedPageBatchAllocationReservation { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block batch allocation reservation raft index is not contiguous"
+                "prepared page batch allocation reservation raft index is not contiguous"
                     .to_string(),
             ));
         }
@@ -300,7 +300,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block batch allocation reservation requires expected raft entry checksum"
+                "page batch allocation reservation requires expected raft entry checksum"
                     .to_string(),
             ));
         }
@@ -318,7 +318,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_route_control_checksum = expected_route_control_checksum.as_ref();
         if expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block batch allocation reservation requires expected route control checksum"
+                "proven page batch allocation reservation requires expected route control checksum"
                     .to_string(),
             ));
         }
@@ -327,12 +327,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 != expected_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block batch allocation reservation route checksum mismatch".to_string(),
+                "proven page batch allocation reservation route checksum mismatch".to_string(),
             ));
         }
         if self.store.last_applied_index() < proven_envelope.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block batch allocation reservation proof is not applied: applied={} required={}",
+                "proven page batch allocation reservation proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_envelope.proof.storage_applied_index
             )));
@@ -342,7 +342,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.envelope.envelope_checksum != expected_envelope_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block batch allocation reservation envelope checksum mismatch".to_string(),
+                "proven page batch allocation reservation envelope checksum mismatch".to_string(),
             ));
         }
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
@@ -350,7 +350,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.envelope.raft_entry_checksum != expected_raft_entry_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block batch allocation reservation raft entry checksum mismatch"
+                "proven page batch allocation reservation raft entry checksum mismatch"
                     .to_string(),
             ));
         }
@@ -362,7 +362,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let actual_envelope = make_prepared_page_batch_allocation_reservation_envelope(&prepared);
         if actual_envelope.envelope_checksum != proven_envelope.envelope.envelope_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "proven block batch allocation reservation prepared envelope changed".to_string(),
+                "proven page batch allocation reservation prepared envelope changed".to_string(),
             ));
         }
         self.propose_prepared_page_batch_allocation_reservation_fenced(

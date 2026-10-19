@@ -173,13 +173,13 @@ impl MatrixChunkService {
         };
         if expected_checksum.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block route control checksum expectation is empty".to_string(),
+                "page route control checksum expectation is empty".to_string(),
             ));
         }
         let actual_checksum = self.route_control_proof().state_checksum;
         if expected_checksum != actual_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block route control checksum mismatch: expected {} got {}",
+                "page route control checksum mismatch: expected {} got {}",
                 expected_checksum, actual_checksum
             )));
         }

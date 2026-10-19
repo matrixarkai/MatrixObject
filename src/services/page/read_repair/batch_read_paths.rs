@@ -76,12 +76,12 @@ impl MatrixChunkService {
                     .checked_add(request.length)
                     .ok_or_else(|| {
                         ObjectError::InvalidArgument(
-                            "block batch read payload byte count overflows".to_string(),
+                            "page batch read payload byte count overflows".to_string(),
                         )
                     })?;
             if max_payload_bytes > 0 && next_payload > max_payload_bytes {
                 return Err(ObjectError::PreconditionFailed(
-                    "block batch read payload budget exceeded".to_string(),
+                    "page batch read payload budget exceeded".to_string(),
                 ));
             }
             stats.payload_bytes = next_payload;
@@ -91,12 +91,12 @@ impl MatrixChunkService {
                 .checked_add(locations.len() as u64)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch read chunk fanout overflows".to_string(),
+                        "page batch read chunk fanout overflows".to_string(),
                     )
                 })?;
             if max_chunk_read_count > 0 && stats.mapped_chunk_ranges > max_chunk_read_count {
                 return Err(ObjectError::PreconditionFailed(
-                    "block batch read chunk fanout exceeds max_chunk_read_count".to_string(),
+                    "page batch read chunk fanout exceeds max_chunk_read_count".to_string(),
                 ));
             }
             for loc in &locations {
@@ -225,17 +225,17 @@ impl MatrixChunkService {
                         let start =
                             usize::try_from(loc.page_offset - merged.offset).map_err(|_| {
                                 ObjectError::InvalidArgument(
-                                    "block batch read chunk offset exceeds memory size".to_string(),
+                                    "page batch read chunk offset exceeds memory size".to_string(),
                                 )
                             })?;
                         let length = usize::try_from(loc.length).map_err(|_| {
                             ObjectError::InvalidArgument(
-                                "block batch read chunk length exceeds memory size".to_string(),
+                                "page batch read chunk length exceeds memory size".to_string(),
                             )
                         })?;
                         let end = start.checked_add(length).ok_or_else(|| {
                             ObjectError::InvalidArgument(
-                                "block batch read chunk slice overflows".to_string(),
+                                "page batch read chunk slice overflows".to_string(),
                             )
                         })?;
                         let payload_len = merged
@@ -243,14 +243,14 @@ impl MatrixChunkService {
                             .as_ref()
                             .ok_or_else(|| {
                                 ObjectError::Corruption(
-                                    "block batch read coalesced payload was already consumed"
+                                    "page batch read coalesced payload was already consumed"
                                         .to_string(),
                                 )
                             })?
                             .len();
                         if end > payload_len {
                             return Err(ObjectError::Corruption(
-                                "block batch read chunk payload is shorter than mapping"
+                                "page batch read chunk payload is shorter than mapping"
                                     .to_string(),
                             ));
                         }
@@ -260,7 +260,7 @@ impl MatrixChunkService {
                         if exact_single_use {
                             let mut payload = merged.payload.take().ok_or_else(|| {
                                 ObjectError::Corruption(
-                                    "block batch read coalesced payload was already consumed"
+                                    "page batch read coalesced payload was already consumed"
                                         .to_string(),
                                 )
                             })?;
@@ -270,7 +270,7 @@ impl MatrixChunkService {
                                 if !data_reserved {
                                     let capacity = usize::try_from(request.length).map_err(|_| {
                                         ObjectError::InvalidArgument(
-                                            "block batch read range exceeds memory size".to_string(),
+                                            "page batch read range exceeds memory size".to_string(),
                                         )
                                     })?;
                                     data.reserve_exact(capacity);
@@ -281,14 +281,14 @@ impl MatrixChunkService {
                         } else {
                             let payload = merged.payload.as_ref().ok_or_else(|| {
                                 ObjectError::Corruption(
-                                    "block batch read coalesced payload was already consumed"
+                                    "page batch read coalesced payload was already consumed"
                                     .to_string(),
                                 )
                             })?;
                             if !data_reserved {
                                 let capacity = usize::try_from(request.length).map_err(|_| {
                                     ObjectError::InvalidArgument(
-                                        "block batch read range exceeds memory size".to_string(),
+                                        "page batch read range exceeds memory size".to_string(),
                                     )
                                 })?;
                                 data.reserve_exact(capacity);

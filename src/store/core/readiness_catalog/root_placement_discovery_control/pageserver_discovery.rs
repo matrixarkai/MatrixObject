@@ -41,7 +41,7 @@ impl MatrixObjectStore {
                 ))
         {
             return Err(ObjectError::Corruption(format!(
-                "catalog block allocator shards are not safe for discovery: {} {}/{}",
+                "catalog page allocator shards are not safe for discovery: {} {}/{}",
                 coverage.status, coverage.covered_shards, coverage.shard_count
             )));
         }

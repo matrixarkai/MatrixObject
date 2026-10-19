@@ -147,7 +147,7 @@ impl MatrixChunkService {
         };
         if write_start_range_index > admission.input_ranges {
             return Err(ObjectError::InvalidArgument(format!(
-                "block batch write start range index {} exceeds {} non-empty ranges",
+                "page batch write start range index {} exceeds {} non-empty ranges",
                 write_start_range_index, admission.input_ranges
             )));
         }
@@ -174,14 +174,14 @@ impl MatrixChunkService {
                 .checked_add(write_payload_bytes)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch write selected payload byte count overflows".to_string(),
+                        "page batch write selected payload byte count overflows".to_string(),
                     )
                 })?;
             let next_mapped_chunk_ranges = selected_mapped_chunk_ranges
                 .checked_add(mapped_chunk_ranges)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch write selected chunk fanout overflows".to_string(),
+                        "page batch write selected chunk fanout overflows".to_string(),
                     )
                 })?;
             write_byte_budget_limited = max_write_bytes > 0 && next_payload_bytes > max_write_bytes;
@@ -213,7 +213,7 @@ impl MatrixChunkService {
                 .checked_add(write.data.len() as u64)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch write payload byte count overflows".to_string(),
+                        "page batch write payload byte count overflows".to_string(),
                     )
                 })?;
             let mapped_chunk_ranges =
@@ -223,7 +223,7 @@ impl MatrixChunkService {
                 .checked_add(mapped_chunk_ranges)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch write chunk fanout overflows".to_string(),
+                        "page batch write chunk fanout overflows".to_string(),
                     )
                 })?;
             let locations =
