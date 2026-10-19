@@ -33639,6 +33639,85 @@ fn measure_how_much_of_a_record_value_is_scaffolding() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_inlining_a_single_extent_would_save() {
+    // Every stored object holds its extent list as a `Box<[ObjectExtent]>`:
+    // 16 bytes of pointer and length inline, plus a separate heap allocation.
+    // Measured, `objects.extents_bytes` is 32 bytes an object with an intercept
+    // of zero, and `extents_capacity` equals the object count at every size
+    // tried -- including 2 MiB objects, twice the page size. So the list is one
+    // element, always, and each one is its own allocation.
+    //
+    // The alternative is to carry the single extent inline and box only the
+    // many-extent case. What that saves is a struct-size question, so it is
+    // measured here rather than reasoned about: a mirror of `ObjectMetadata`
+    // built from the same field types, validated against the real struct's
+    // size, and then the same mirror with the extents field replaced.
+    #[allow(dead_code)]
+    struct MirrorToday {
+        object_id: ObjectId,
+        version: u64,
+        length: u64,
+        etag: Box<str>,
+        content_type: SharedText,
+        user_metadata: ObjectAttributes,
+        storage_class: SharedText,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: Box<[ObjectExtent]>,
+        deleted: bool,
+    }
+
+    #[allow(dead_code)]
+    enum InlineExtents {
+        One(ObjectExtent),
+        Many(Box<[ObjectExtent]>),
+    }
+
+    #[allow(dead_code)]
+    struct MirrorInlined {
+        object_id: ObjectId,
+        version: u64,
+        length: u64,
+        etag: Box<str>,
+        content_type: SharedText,
+        user_metadata: ObjectAttributes,
+        storage_class: SharedText,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: InlineExtents,
+        deleted: bool,
+    }
+
+    let real = std::mem::size_of::<ObjectMetadata>();
+    let mirror = std::mem::size_of::<MirrorToday>();
+    // The mirror is only evidence if it matches the struct it mirrors.
+    assert_eq!(
+        real, mirror,
+        "the mirror must have the same size as ObjectMetadata, or it is not \
+         measuring the same thing: {real} against {mirror}"
+    );
+
+    let inlined = std::mem::size_of::<MirrorInlined>();
+    let heap_today = std::mem::size_of::<ObjectExtent>();
+    println!(
+        "EXTENTINLINE size_of_ObjectMetadata={real} inlined={inlined} \
+         heap_per_object_today={heap_today}"
+    );
+    println!(
+        "EXTENTINLINE inline_delta={} heap_delta=-{heap_today} net={}",
+        inlined as i64 - real as i64,
+        (inlined as i64 - real as i64) - heap_today as i64
+    );
+    println!(
+        "EXTENTINLINE one_fewer_allocation_per_object, and allocator overhead \
+         is NOT counted by the audit so the resident saving exceeds the net"
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_what_the_object_metadata_struct_is_made_of() {
     // `objects.bytes` is 282 bytes an object at 1 KiB, and 152 of those are the
     // INLINE size of `ObjectMetadata` -- paid for every object whether or not
