@@ -33782,6 +33782,63 @@ fn measure_what_the_object_metadata_struct_is_made_of() {
         "OBJMETA objects={objects} with_user_metadata={with_user_metadata} \
          with_tags={with_tags} with_more_than_one_extent={with_extents_over_one}"
     );
+
+    // The struct's own size is 152 bytes, and the audit charges 282 an object,
+    // so a third of the leg is heap the layout does not show. These are the
+    // legs the audit names for it, each against the same denominator.
+    //
+    // 200 objects is enough here, unlike for metadata as a whole: `objects` has
+    // no capped component, and its 282 B/object at this count is the same 282
+    // that appears in the 661 B/object metadata slope measured at 8,000.
+    let audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let get = |k: &str| -> u64 {
+        *audit
+            .get(k)
+            .unwrap_or_else(|| panic!("the audit should report {k}"))
+    };
+    // Charged legs only: entries, the two id_text counts and the *_size and
+    // *_len keys are counts and shapes, not bytes, and adding them to a byte
+    // total would be a category error that still sums to something plausible.
+    let charged = [
+        "objects.metadata_inline",
+        "objects.mapkey_inline",
+        "objects.mapkey_heap",
+        "objects.inner_id_heap",
+        "objects.etag_heap",
+        "objects.content_type_heap",
+        "objects.storage_class_heap",
+        "objects.user_metadata_bytes",
+        "objects.tags_bytes",
+        "objects.lock_bytes",
+        "objects.extents_bytes",
+    ];
+    let total = get("objects.bytes");
+    let mut named = 0u64;
+    for key in charged {
+        let value = get(key);
+        named += value;
+        println!(
+            "OBJLEGS {key}={value} per_object={} share={:.1}%",
+            value / objects,
+            100.0 * value as f64 / total as f64
+        );
+    }
+    println!(
+        "OBJLEGS named={named} objects.bytes={total} per_object={} unnamed={}",
+        total / objects,
+        total.saturating_sub(named)
+    );
+    // The id text is held twice -- once as the map key and once inside the
+    // metadata -- and whether that is two allocations or one shared one is
+    // what these two counts distinguish. A count equal to the object count on
+    // the shared line is one allocation per key; on the duplicated line it is
+    // two.
+    println!(
+        "OBJLEGS id_text_shared={} id_text_duplicated={} of objects={objects}",
+        get("objects.id_text_shared"),
+        get("objects.id_text_duplicated")
+    );
 }
 
 #[test]
