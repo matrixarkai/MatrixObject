@@ -36723,6 +36723,73 @@ fn an_open_batch_makes_every_write_copy_the_whole_page() {
 }
 
 #[test]
+fn the_documented_way_to_set_receipt_retention_works() {
+    // The README tells a reader to set `receipt_retention` rather than leave it
+    // at 100,000, because a mutation's rollback copies the receipts being held.
+    // It is NOT a `StoreOptions` field, so "set it" is not something a reader
+    // can act on from the options table -- it is configured on a live store.
+    //
+    // Naming the call in the README is only useful if the call keeps working,
+    // so this exercises exactly the snippet that section now carries. It
+    // compiles the method name, which is what a documented API most needs, and
+    // checks the receipts it bounds actually fall.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..60u32 {
+        let key = format!("prefix/{index:08}/kkkkkkkkkk");
+        store
+            .put_object("bucket", &key, vec![b'x'; 1024], "application/octet-stream")
+            .unwrap();
+        store.delete_object("bucket", &key).unwrap();
+    }
+
+    let read = |store: &MatrixObjectStore, key: &str| -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or(0)
+    };
+    let retained_before = read(&store, "replica.receipts");
+    let bytes_before = read(&store, "block.receipts.bytes");
+    assert!(
+        retained_before > 8,
+        "the writes and deletes should leave more than 8 receipts, and they left \
+         {retained_before}"
+    );
+
+    // The snippet the README now shows.
+    let (chunk_commit_index, page_commit_index) =
+        store.configure_chunk_receipt_retention(8).unwrap();
+
+    let retained_after = read(&store, "replica.receipts");
+    let bytes_after = read(&store, "block.receipts.bytes");
+    println!(
+        "RETENTION receipts {retained_before} -> {retained_after}  bytes \
+         {bytes_before} -> {bytes_after}  commit_index \
+         chunk={chunk_commit_index} page={page_commit_index}"
+    );
+
+    assert!(
+        retained_after <= 8 * read(&store, "block.replicas").max(1),
+        "after setting the bound to 8 per replica the store should hold at most \
+         that many, and it holds {retained_after} across \
+         {} replicas",
+        read(&store, "block.replicas")
+    );
+    assert!(
+        bytes_after < bytes_before,
+        "lowering the bound should lower what the receipts cost: {bytes_before} \
+         against {bytes_after}"
+    );
+}
+
+#[test]
 fn a_rejection_names_the_setting_it_rejected() {
     // The storage tiers are a chunk of 64 MiB holding pages of 1 MiB. There is
     // no tier above the chunk, and `StoreOptions` names the two correctly.
