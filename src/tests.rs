@@ -36549,6 +36549,78 @@ fn every_option_in_the_table_is_a_field_with_that_default() {
 }
 
 #[test]
+fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
+    // The undo a batch holds is a whole-service snapshot, which is why every
+    // write inside a batch copies its page. The obvious cheaper undo is to
+    // record the page's LENGTH and put it back -- an append needs nothing more
+    // than that, and a put is an append.
+    //
+    // It is not enough, and this is what says so. An in-place write changes
+    // bytes without changing the length, so a length-based undo restores
+    // nothing. And a page's length can move underneath a batch for reasons of
+    // its own: reclaim calls `truncate` then `shrink_to_fit` on a trimmed page,
+    // and nothing gates reclaim on an open batch -- `ensure_writable` checks
+    // only `accepting_writes` and `draining`.
+    //
+    // This project has already had the length-based version of this bug, where
+    // a front trim made a `truncate(captured_len)` undo a no-op and a rolled
+    // back mutation left its record behind. So the restore semantics are pinned
+    // here, and any cheaper undo has to keep them.
+    let page = PageId {
+        chunk_id: ChunkId {
+            volume_id: 0,
+            id: 11,
+        },
+        page_index: 0,
+    };
+
+    let mut service = MatrixReplicaService::new();
+    service.write_chunk(page.clone(), 0, &[b'a'; 4096]).unwrap();
+    let original: Vec<u8> = service.chunks.get(&page).unwrap().data.as_ref().clone();
+    assert_eq!(original.len(), 4096);
+
+    // An in-place overwrite: the length never moves, so only the bytes can say
+    // whether the undo worked.
+    service.begin_mutation_batch("batch-overwrite").unwrap();
+    service.write_chunk(page.clone(), 0, &[b'b'; 1024]).unwrap();
+    assert_eq!(
+        service.chunks.get(&page).unwrap().data[0],
+        b'b',
+        "the write should have taken effect before the abort"
+    );
+    service.abort_mutation_batch("batch-overwrite").unwrap();
+    let after_overwrite: Vec<u8> = service.chunks.get(&page).unwrap().data.as_ref().clone();
+    println!(
+        "ABORTRESTORE overwrite len={} first={} restored={}",
+        after_overwrite.len(),
+        after_overwrite[0] as char,
+        after_overwrite == original
+    );
+    assert_eq!(
+        after_overwrite, original,
+        "aborting must put back the bytes the write replaced, which a length is \
+         not enough to do: the length never changed"
+    );
+
+    // And an append, where a length would be enough -- pinned so the two cases
+    // are not confused for each other.
+    service.begin_mutation_batch("batch-append").unwrap();
+    service.write_chunk(page.clone(), 4096, &[b'c'; 2048]).unwrap();
+    assert_eq!(service.chunks.get(&page).unwrap().data.len(), 6144);
+    service.abort_mutation_batch("batch-append").unwrap();
+    let after_append: Vec<u8> = service.chunks.get(&page).unwrap().data.as_ref().clone();
+    println!(
+        "ABORTRESTORE append len={} restored={}",
+        after_append.len(),
+        after_append == original
+    );
+    assert_eq!(
+        after_append, original,
+        "aborting an append must put the page back to what it held"
+    );
+}
+
+#[test]
 fn an_open_batch_makes_every_write_copy_the_whole_page() {
     // A write takes the page state mutably through `Arc::make_mut`, and the
     // comment there accounts for copying `PageState`. But `PageState.data` is
