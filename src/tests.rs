@@ -33957,6 +33957,81 @@ fn measure_what_the_read_cache_costs_beside_the_bytes_it_caches() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_an_applied_raft_receipt_costs() {
+    // The last of the structures the README calls bounded by a setting rather
+    // than by the data. The audit's comment says a raft apply receipt "carries
+    // the object metadata of the mutation it applied", and the bound is
+    // `k_max_raft_apply_receipts()`.
+    //
+    // A plain put files none of these -- the map fills only when entries come
+    // through the raft apply path -- so this drives that path.
+    //
+    // `StoreOptions::default()` rather than `test_options()`: the test fixture
+    // uses a four-byte geometry, which makes every per-object figure an
+    // artefact of the fixture.
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let entries_to_apply = env_usize("MEASURE_ENTRIES", 200);
+    let size = env_usize("MEASURE_SIZE", 1024);
+    let mut raft = InMemoryRustRaft::new(7).unwrap();
+    let mut follower = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    follower.create_bucket("bucket").unwrap();
+    let read = |store: &MatrixObjectStore, wanted: &str| -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value)
+            .unwrap_or(0)
+    };
+
+    for index in 0..entries_to_apply {
+        let entry = raft
+            .append(ObjectCommand::PutObject {
+                bucket: "bucket".to_string(),
+                key: format!("prefix/{index:08}/kkkkkkkkkk"),
+                data: vec![b'x'; size],
+                content_type: "application/octet-stream".to_string(),
+                update_time_ms: 1 + index as u64,
+                options: PutOptions::default(),
+            })
+            .unwrap();
+        follower.apply_raft_entry(&entry).unwrap();
+    }
+
+    let count = read(&follower, "applied_raft_receipts.entries");
+    let bytes = read(&follower, "applied_raft_receipts.bytes");
+    println!("RAFTRECEIPT applied={entries_to_apply} entries={count} bytes={bytes}");
+    println!(
+        "RAFTRECEIPT ObjectMetadata_inline={}",
+        std::mem::size_of::<ObjectMetadata>()
+    );
+    if count > 0 {
+        let per = bytes / count;
+        println!("RAFTRECEIPT per_receipt={per}");
+        for bound in [4096u64] {
+            println!("RAFTRECEIPT at_a_bound_of_{bound}={}", per.saturating_mul(bound));
+        }
+        // What the rest of the store holds, for the share.
+        println!(
+            "RAFTRECEIPT metadata_total={} share_of_metadata={:.1}%",
+            read(&follower, "ACCOUNTED.metadata_bytes"),
+            bytes as f64 * 100.0
+                / read(&follower, "ACCOUNTED.metadata_bytes").max(1) as f64
+        );
+    }
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_space_amplification() {
     // What a stored byte costs in resident bytes, at several object sizes.
     //
