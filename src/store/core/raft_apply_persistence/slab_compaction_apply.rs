@@ -3,7 +3,7 @@ impl MatrixObjectStore {
         &self,
         chunk_id: &ChunkId,
     ) -> Result<Vec<ObjectId>, ObjectError> {
-        if !self.slabs.contains_key(chunk_id) {
+        if !self.chunks.contains_key(chunk_id) {
             return Err(ObjectError::NotFound(format!("chunk {:?}", chunk_id)));
         }
         let mut live_objects = Vec::new();
@@ -40,7 +40,7 @@ impl MatrixObjectStore {
                 "compact_segment_put",
             )?;
         }
-        if let Some(slab) = self.slabs.get_mut(chunk_id) {
+        if let Some(slab) = self.chunks.get_mut(chunk_id) {
             slab.stale_ranges.push(DataRange {
                 offset: 0,
                 length: slab.next_offset,
@@ -62,7 +62,7 @@ impl MatrixObjectStore {
         update_time_ms: u64,
     ) -> Result<u64, ObjectError> {
         let mut candidates = self
-            .slabs
+            .chunks
             .iter()
             .filter_map(|(chunk_id, slab)| {
                 if slab.stale_bytes >= min_stale_bytes && slab.next_offset > 0 {
@@ -108,7 +108,7 @@ impl MatrixObjectStore {
         let mut candidate_stale_bytes = 0u64;
         let mut candidate_live_bytes = 0u64;
         let mut candidate_logical_bytes = 0u64;
-        for (chunk_id, slab) in &self.slabs {
+        for (chunk_id, slab) in &self.chunks {
             if slab.stale_bytes >= min_stale_bytes && slab.next_offset > 0 {
                 candidate_chunk_ids.push(chunk_id.clone());
                 candidate_stale_bytes = saturating_add(candidate_stale_bytes, slab.stale_bytes);
@@ -179,7 +179,7 @@ impl MatrixObjectStore {
             )));
         }
         let slab = self
-            .slabs
+            .chunks
             .get(chunk_id)
             .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
         if slab.stale_bytes < min_stale_bytes {

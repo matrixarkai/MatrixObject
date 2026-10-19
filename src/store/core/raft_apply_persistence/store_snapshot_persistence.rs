@@ -125,7 +125,7 @@ impl MatrixObjectStore {
             object_changes: self.object_changes.clone(),
             object_change_cursors: self.object_change_cursors.clone(),
             next_object_change_sequence: self.next_object_change_sequence,
-            slabs: self.slabs.clone(),
+            chunks: self.chunks.clone(),
             payloads,
             meta_snapshot: self.meta_service.export_snapshot(),
             root_snapshot: self.meta_service.export_placement_snapshot(),
@@ -378,7 +378,7 @@ impl MatrixObjectStore {
                 append_metadata(&mut material, metadata);
             }
         }
-        for (chunk_id, slab) in &self.slabs {
+        for (chunk_id, slab) in &self.chunks {
             append_slab_id(&mut material, chunk_id);
             append_chunk_info(&mut material, slab);
         }
@@ -414,7 +414,7 @@ impl MatrixObjectStore {
             .saturating_add(self.buckets.len().saturating_mul(32))
             .saturating_add(self.objects.len().saturating_mul(160))
             .saturating_add(self.versions.len().saturating_mul(160))
-            .saturating_add(self.slabs.len().saturating_mul(96))
+            .saturating_add(self.chunks.len().saturating_mul(96))
             .saturating_add(self.multipart_uploads.len().saturating_mul(192))
             .saturating_add(self.object_changes.len().saturating_mul(96))
     }
@@ -649,7 +649,7 @@ impl MatrixObjectStore {
         self.next_object_change_sequence = snapshot.next_object_change_sequence;
         self.meta_service.install_snapshot(snapshot.meta_snapshot)?;
         self.meta_service.install_placement_snapshot(snapshot.root_snapshot)?;
-        self.slabs = snapshot.slabs;
+        self.chunks = snapshot.chunks;
         self.payloads = payload_index;
         self.chunk_service = chunk_service;
         self.next_chunk_id = snapshot.next_chunk_id;

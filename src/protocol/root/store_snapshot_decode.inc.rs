@@ -246,9 +246,9 @@ impl StoreSnapshot {
                 read_object_change_cursor(&mut cursor)?,
             );
         }
-        let mut slabs = BTreeMap::new();
+        let mut chunks = BTreeMap::new();
         for _ in 0..cursor.read_count("store snapshot segment count")? {
-            slabs.insert(
+            chunks.insert(
                 read_slab_id(&mut cursor)?,
                 read_chunk_info(&mut cursor)?,
             );
@@ -363,7 +363,7 @@ impl StoreSnapshot {
             object_changes,
             object_change_cursors,
             next_object_change_sequence,
-            slabs,
+            chunks,
             payloads,
             meta_snapshot,
             root_snapshot,

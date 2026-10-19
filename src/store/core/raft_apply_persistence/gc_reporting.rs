@@ -25,7 +25,7 @@ impl MatrixObjectStore {
         let mut compaction_candidate_bytes = 0u64;
         let mut compaction_candidate_range_count = 0u64;
         let mut discard_ranges = Vec::new();
-        for slab in self.slabs.values() {
+        for slab in self.chunks.values() {
             logical_bytes = saturating_add(logical_bytes, slab.logical_bytes);
             live_bytes = saturating_add(live_bytes, slab.live_bytes);
             stale_bytes = saturating_add(stale_bytes, slab.stale_bytes);
@@ -95,7 +95,7 @@ impl MatrixObjectStore {
             discard_candidates.push(ObjectGcDiscardCandidate { chunk_id, range });
         }
         GcReport {
-            chunk_count: self.slabs.len() as u64,
+            chunk_count: self.chunks.len() as u64,
             logical_bytes,
             live_bytes,
             stale_bytes,

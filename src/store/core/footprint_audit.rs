@@ -171,7 +171,7 @@ impl MatrixObjectStore {
         push("versions.rows", version_rows);
         push("object_changes.len", self.object_changes.len() as u64);
         push("object_changes.capacity", self.object_changes.capacity() as u64);
-        push("segments.entries", self.slabs.len() as u64);
+        push("segments.entries", self.chunks.len() as u64);
         push("applied_raft_receipts.entries", self.applied_raft_receipts.len() as u64);
         push("multipart_uploads.entries", self.multipart_uploads.len() as u64);
         push("metadata_route_cache.entries", self.metadata_route_cache.len() as u64);
@@ -588,7 +588,7 @@ impl MatrixObjectStore {
         // slab becomes, and both are merged on every extend, so this is what
         // fragmentation costs rather than what deletion does.
         let mut slab_bytes = 0u64;
-        for slab in self.slabs.values() {
+        for slab in self.chunks.values() {
             slab_bytes = slab_bytes
                 .saturating_add(
                     (std::mem::size_of::<ChunkId>() + std::mem::size_of::<ChunkInfo>()) as u64,
@@ -950,7 +950,7 @@ impl ObjectMutationRollback {
             .map_or(0u64, |service| service.footprint_bytes().total());
 
         let mut chunks_bytes = 0u64;
-        for slab in self.slabs.values() {
+        for slab in self.chunks.values() {
             chunks_bytes = chunks_bytes
                 .saturating_add(
                     (std::mem::size_of::<ChunkId>() + std::mem::size_of::<ChunkInfo>()) as u64,

@@ -1,7 +1,7 @@
 impl StoreSnapshot {
     fn validate_chunks(&self) -> Result<(), ObjectError> {
         let mut max_chunk_id = 0u64;
-        for (chunk_id, slab) in &self.slabs {
+        for (chunk_id, slab) in &self.chunks {
             if chunk_id != &slab.chunk_id {
                 return Err(ObjectError::Corruption(
                     "snapshot segment key does not match segment info".to_string(),

@@ -105,7 +105,7 @@ impl MatrixObjectStore {
         max_ranges_per_chunk: usize,
     ) -> Vec<DiscardPlan> {
         let mut plans = Vec::new();
-        for slab in self.slabs.values() {
+        for slab in self.chunks.values() {
             if slab.stale_bytes < min_stale_bytes {
                 continue;
             }
@@ -141,7 +141,7 @@ impl MatrixObjectStore {
     ) -> Result<(), ObjectError> {
         let merged = merge_range_slice(ranges);
         let slab = self
-            .slabs
+            .chunks
             .get_mut(chunk_id)
             .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
         for range in merged {
@@ -208,7 +208,7 @@ impl MatrixObjectStore {
             range.end()?;
         }
         let slab = self
-            .slabs
+            .chunks
             .get(chunk_id)
             .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
         let source_stale_ranges = merge_range_slice(&slab.stale_ranges);

@@ -25,7 +25,7 @@ impl MatrixObjectStore {
         }
         let chunk_id = self.ensure_writable_chunk(page_len as u64)?;
         let slab = self
-            .slabs
+            .chunks
             .get_mut(&chunk_id)
             .ok_or_else(|| ObjectError::NotFound("allocated segment missing".to_string()))?;
         let offset = slab.next_offset;
@@ -66,7 +66,7 @@ impl MatrixObjectStore {
             let page_len = remaining.min(max_extent);
             let chunk_id = self.ensure_writable_chunk(page_len as u64)?;
             let slab = self
-                .slabs
+                .chunks
                 .get_mut(&chunk_id)
                 .ok_or_else(|| ObjectError::NotFound("allocated segment missing".to_string()))?;
             let offset = slab.next_offset;
@@ -109,13 +109,13 @@ impl MatrixObjectStore {
         if !self.options.reuse_stale_chunk_space || length == 0 {
             return None;
         }
-        let (chunk_id, index) = self.slabs.iter().find_map(|(chunk_id, info)| {
+        let (chunk_id, index) = self.chunks.iter().find_map(|(chunk_id, info)| {
             info.stale_ranges
                 .iter()
                 .position(|range| range.length >= length)
                 .map(|index| (chunk_id.clone(), index))
         })?;
-        let info = self.slabs.get_mut(&chunk_id)?;
+        let info = self.chunks.get_mut(&chunk_id)?;
         let range = *info.stale_ranges.get(index)?;
         if range.length == length {
             info.stale_ranges.remove(index);
@@ -137,7 +137,7 @@ impl MatrixObjectStore {
             ));
         }
         if let Some((id, _)) = self
-            .slabs
+            .chunks
             .iter()
             .find(|(_, info)| info.next_offset + length <= self.options.chunk_size)
         {
@@ -152,7 +152,7 @@ impl MatrixObjectStore {
             volume_id: (id - 1) % self.options.volume_count,
             id,
         };
-        self.slabs.insert(
+        self.chunks.insert(
             chunk_id.clone(),
             ChunkInfo {
                 chunk_id: chunk_id.clone(),
@@ -175,7 +175,7 @@ impl MatrixObjectStore {
                 .offset
                 .checked_add(extent.length)
                 .ok_or_else(|| ObjectError::InvalidArgument("extent overflows".to_string()))?;
-            if !self.slabs.contains_key(&extent.chunk_id) {
+            if !self.chunks.contains_key(&extent.chunk_id) {
                 return Err(ObjectError::NotFound("extent segment missing".to_string()));
             }
             // The range is about to be discarded, so its payload entry goes too:
@@ -201,7 +201,7 @@ impl MatrixObjectStore {
                 continue;
             }
             let slab = self
-                .slabs
+                .chunks
                 .get_mut(&chunk_id)
                 .ok_or_else(|| ObjectError::NotFound("extent segment missing".to_string()))?;
             let stale_bytes = merged_ranges
