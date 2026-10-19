@@ -33639,6 +33639,74 @@ fn measure_how_much_of_a_record_value_is_scaffolding() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_the_object_metadata_struct_is_made_of() {
+    // `objects.bytes` is 282 bytes an object at 1 KiB, and 152 of those are the
+    // INLINE size of `ObjectMetadata` -- paid for every object whether or not
+    // the fields hold anything.
+    //
+    // This prints the inline cost of each field's type beside how many objects
+    // actually use it, because a field that is empty on every object still
+    // costs its inline size, and that is the part a different representation
+    // could remove.
+    fn size<T>() -> usize {
+        std::mem::size_of::<T>()
+    }
+    println!("OBJMETA total={}", size::<ObjectMetadata>());
+    println!("OBJMETA   object_id      {}", size::<ObjectId>());
+    println!("OBJMETA   version        {}", size::<u64>());
+    println!("OBJMETA   length         {}", size::<u64>());
+    println!("OBJMETA   etag           {}", size::<Box<str>>());
+    println!("OBJMETA   content_type   {}", size::<SharedText>());
+    println!("OBJMETA   user_metadata  {}", size::<ObjectAttributes>());
+    println!("OBJMETA   storage_class  {}", size::<SharedText>());
+    println!("OBJMETA   tags           {}", size::<ObjectAttributes>());
+    println!("OBJMETA   lock           {}", size::<ObjectLock>());
+    println!("OBJMETA   update_time_ms {}", size::<u64>());
+    println!("OBJMETA   extents        {}", size::<Box<[ObjectExtent]>>());
+    println!("OBJMETA   deleted        {}", size::<bool>());
+    println!("OBJMETA   ObjectExtent   {}", size::<ObjectExtent>());
+
+    // How many objects actually carry user metadata, tags or a lock.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..200u32 {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let mut with_user_metadata = 0u64;
+    let mut with_tags = 0u64;
+    let mut with_extents_over_one = 0u64;
+    let mut objects = 0u64;
+    for (_, metadata) in store.objects.iter() {
+        objects += 1;
+        if !metadata.user_metadata.is_empty() {
+            with_user_metadata += 1;
+        }
+        if !metadata.tags.is_empty() {
+            with_tags += 1;
+        }
+        if metadata.extents.len() > 1 {
+            with_extents_over_one += 1;
+        }
+    }
+    println!(
+        "OBJMETA objects={objects} with_user_metadata={with_user_metadata} \
+         with_tags={with_tags} with_more_than_one_extent={with_extents_over_one}"
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_space_amplification() {
     // What a stored byte costs in resident bytes, at several object sizes.
     //
