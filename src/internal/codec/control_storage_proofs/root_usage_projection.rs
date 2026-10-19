@@ -164,3 +164,83 @@ pub(crate) fn retention_active(
         })
 }
 
+/// The twelve values `metadata_projection_value` formats, held as values.
+///
+/// The projection is the largest single metadata leg at 355 bytes an object,
+/// and 227 of that is this text. Every field below is already in
+/// `ObjectMetadata`, and four of them are counts of collections it already
+/// holds, so the text is a restatement rather than a record of anything.
+///
+/// Three proofs hash that text -- the snapshot export fingerprint and the
+/// record handoff proof through `etag()`, and the snapshot validation checksum
+/// verbatim -- so its FORMAT cannot change. Holding the values and formatting
+/// on demand produces the same bytes, which is what makes this a
+/// representation change rather than a migration.
+///
+/// It owns NO heap: the etag is its digest, and the content type and storage
+/// class are `SharedText` handles on allocations the object already holds and
+/// shares across every object carrying the same one.
+// Only the round-trip test reaches this yet, and `-D warnings` makes dead
+// code an error, so it is gated until the storage is converted to use it.
+// `allow(dead_code)` would hide the same thing less honestly.
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ObjectProjection {
+    pub(crate) version: u64,
+    pub(crate) length: u64,
+    pub(crate) etag_fnv1a64: Option<u64>,
+    pub(crate) content_type: SharedText,
+    pub(crate) metadata_count: u32,
+    pub(crate) storage_class: SharedText,
+    pub(crate) restore_until_ms: u64,
+    pub(crate) deleted: bool,
+    pub(crate) extent_count: u32,
+    pub(crate) tag_count: u32,
+    pub(crate) legal_hold: bool,
+    pub(crate) retention_until_ms: u64,
+}
+
+#[cfg(test)]
+impl ObjectProjection {
+    pub(crate) fn from_metadata(metadata: &ObjectMetadata) -> Self {
+        Self {
+            version: metadata.version,
+            length: metadata.length,
+            etag_fnv1a64: change_etag_digest(&metadata.etag).unwrap_or(None),
+            content_type: metadata.content_type.clone(),
+            metadata_count: metadata.user_metadata.len() as u32,
+            storage_class: metadata.storage_class.clone(),
+            restore_until_ms: metadata.lock.restore_until_ms,
+            deleted: metadata.deleted,
+            extent_count: metadata.extents.len() as u32,
+            tag_count: metadata.tags.len() as u32,
+            legal_hold: metadata.lock.legal_hold,
+            retention_until_ms: metadata.lock.retention_until_ms,
+        }
+    }
+
+    /// The same bytes `metadata_projection_value` produces, which is the whole
+    /// requirement: `the_packed_projection_spells_the_same_text` asserts it
+    /// against a seeded store rather than against a reading of the format.
+    pub(crate) fn to_text(&self) -> String {
+        let mut etag = String::new();
+        if let Some(digest) = self.etag_fnv1a64 {
+            append_etag_of_digest(&mut etag, digest);
+        }
+        format!(
+            "version={} length={} etag={} content_type={} metadata_count={} storage_class={} restore_until_ms={} deleted={} extent_count={} tag_count={} legal_hold={} retention_until_ms={}",
+            self.version,
+            self.length,
+            etag,
+            self.content_type,
+            self.metadata_count,
+            self.storage_class,
+            self.restore_until_ms,
+            self.deleted,
+            self.extent_count,
+            self.tag_count,
+            self.legal_hold,
+            self.retention_until_ms
+        )
+    }
+}

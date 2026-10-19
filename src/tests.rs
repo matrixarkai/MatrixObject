@@ -35540,6 +35540,73 @@ fn the_interned_storage_classes_are_the_valid_ones() {
 }
 
 #[test]
+fn the_packed_projection_spells_the_same_text() {
+    // The projection's FORMAT is hashed into three proofs, so a packed form is
+    // only usable if it reproduces the text byte for byte. This asserts that
+    // against a real store rather than against a reading of the formatter, and
+    // it runs before any storage changes shape.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..60u32 {
+        let key = format!("prefix/{index:08}/kkkkkkkkkk");
+        store
+            .put_object("bucket", &key, vec![b'x'; 1024], "application/octet-stream")
+            .unwrap();
+        // Exercise the fields the plain path leaves at their defaults, because
+        // a round trip over twelve zeroes proves very little.
+        if index % 3 == 0 {
+            store
+                .set_object_tags("bucket", &key, [("k".to_string(), "v".to_string())].into())
+                .unwrap();
+        }
+        if index % 4 == 0 {
+            store.set_object_legal_hold("bucket", &key, true).unwrap();
+        }
+        // Not one that just took a legal hold: the store refuses that delete,
+        // correctly, and the first version of this test tripped over it.
+        if index % 5 == 0 && index % 4 != 0 {
+            store.delete_object("bucket", &key).unwrap();
+        }
+    }
+    let mut checked = 0u64;
+    let mut with_tags = 0u64;
+    let mut with_hold = 0u64;
+    let mut deleted = 0u64;
+    for (_, metadata) in store.objects.iter() {
+        let packed = ObjectProjection::from_metadata(metadata);
+        assert_eq!(
+            packed.to_text(),
+            metadata_projection_value(metadata),
+            "the packed projection must spell exactly what the formatter does"
+        );
+        checked += 1;
+        if !metadata.tags.is_empty() {
+            with_tags += 1;
+        }
+        if metadata.lock.legal_hold {
+            with_hold += 1;
+        }
+        if metadata.deleted {
+            deleted += 1;
+        }
+    }
+    println!(
+        "PACKED checked={checked} with_tags={with_tags} with_hold={with_hold} deleted={deleted} \
+         packed_inline={} text_inline_plus_heap={}",
+        std::mem::size_of::<ObjectProjection>(),
+        std::mem::size_of::<Box<str>>() + 227
+    );
+    // A run that exercised none of the optional state would pass vacuously.
+    assert!(checked >= 50, "only {checked} objects reached the comparison");
+    assert!(with_tags > 0 && with_hold > 0, "the optional fields were never set");
+    assert!(deleted > 0, "no delete marker was compared");
+}
+
+#[test]
 fn a_change_feed_etag_round_trips_through_its_digest() {
     // Three cases, and the middle one is the reason the field is an Option
     // rather than a u64: the empty etag is a real state that a delete marker
