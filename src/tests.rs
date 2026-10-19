@@ -33938,6 +33938,113 @@ fn measure_what_an_object_change_record_holds() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_sits_above_the_replication_floor_on_each_side() {
+    // "Data is at 3.0000x" is true of ONE leg -- replica.data.capacity -- and
+    // the payload side as a whole is not, at small objects. This splits both
+    // sides so the two figures stop being confused for each other, and names
+    // what the difference is.
+    let objects: u64 = std::env::var("MEASURE_OBJECTS")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(1000);
+    let size: usize = std::env::var("MEASURE_SIZE")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(1024);
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..objects {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; size],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let get = |k: &str| -> u64 {
+        *audit
+            .get(k)
+            .unwrap_or_else(|| panic!("the audit should report {k}"))
+    };
+    let logical = get("logical.written");
+    let replicas = get("page.replicas");
+    let floor = logical.saturating_mul(replicas);
+
+    // The payload side, leg by leg.
+    let data = get("replica.data.capacity");
+    let fragments = get("replica.ec_fragments.capacity");
+    let checksums = get("replica.checksum.capacity");
+    let index = get("payloads.index_capacity");
+    let buffers = get("ACCOUNTED.byte_buffers");
+    println!(
+        "FLOOR logical={logical} replicas={replicas} floor={floor} \
+         (the floor is what three-way replication alone costs)"
+    );
+    for (name, value) in [
+        ("replica.data.capacity", data),
+        ("replica.ec_fragments.capacity", fragments),
+        ("replica.checksum.capacity", checksums),
+        ("payloads.index_capacity", index),
+    ] {
+        println!(
+            "FLOOR   {name:<30} {value:>12}  per_object={:>6}  {:.4}x of logical",
+            value / objects.max(1),
+            value as f64 / logical as f64
+        );
+    }
+    println!(
+        "FLOOR payload_side={buffers} = {:.4}x, data leg alone = {:.4}x",
+        buffers as f64 / logical as f64,
+        data as f64 / logical as f64
+    );
+    println!(
+        "FLOOR above_the_floor={} per_object={}",
+        buffers.saturating_sub(floor),
+        buffers.saturating_sub(floor) / objects.max(1)
+    );
+    // The data leg IS the floor, exactly. Anything else would mean a copy.
+    assert_eq!(
+        data, floor,
+        "the data leg is three-way replication and nothing else"
+    );
+    // And the fragment is empty while every page has peers, which is what
+    // makes that exact.
+    assert_eq!(
+        fragments, 0,
+        "a page with peers carries no redundancy fragment"
+    );
+
+    // The metaserver side.
+    for name in [
+        "meta.records.bytes",
+        "meta.change_log.bytes",
+        "meta.receipts.bytes",
+        "meta.entities.bytes",
+        "meta.export_caches.bytes",
+    ] {
+        let value = get(name);
+        println!(
+            "METASERVER {name:<26} {value:>12}  per_object={}",
+            value / objects.max(1)
+        );
+    }
+    println!(
+        "METASERVER total_metadata={} per_object={}",
+        get("ACCOUNTED.metadata_bytes"),
+        get("ACCOUNTED.metadata_bytes") / objects.max(1)
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_where_the_per_object_metadata_goes() {
     // Metadata is the whole distance between 3.93x amplification at 1 KiB and
     // the 3.00x three-way replication allows. Each component has now been taken

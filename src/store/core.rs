@@ -29,9 +29,21 @@ struct PersistentSnapshotDurableStamp {
 /// The bytes live in the page service, which is where the read path already
 /// goes - `allocate_extents`/`read` paths all call `chunk_service` directly.
 /// Keeping a second copy here cost one extra copy of every byte written, about
-/// 1.00x of the store's resident footprint, and nothing ever looked this map up
-/// by key: its only consumers are the snapshot export, the state fingerprint and
-/// the audit, and each of those needs only the length and the hash.
+/// 1.00x of the store's resident footprint.
+///
+/// "Nothing ever looked this map up by key" was the other half of that
+/// justification and it is NO LONGER TRUE, so do not remove the map on the
+/// strength of it. Two sites look it up by `(chunk_id, offset)`:
+/// `capture_targeted_mutation_rollback` captures the previous payloads of the
+/// extents it may have to put back, and `validate_objects` fetches each
+/// extent's entry to check `payload.len() != extent.length`.
+///
+/// That second one is why `len` is here at all. It duplicates
+/// `ObjectExtent.length` deliberately, so a snapshot whose index and whose
+/// objects disagree is caught rather than loaded. The 16 bytes an entry are a
+/// durability check and a digest, which is what
+/// `measure_what_sits_above_the_replication_floor_on_each_side` reports as the
+/// only term above three-way replication on the payload side.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StoredPayload {
     pub(crate) len: u64,
