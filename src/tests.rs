@@ -36142,6 +36142,101 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
 }
 
 #[test]
+fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
+    // A figure in a document that nothing reads is a claim nobody re-checks.
+    // The README published the mutation batch's copy at 2,941 bytes; a change
+    // to what a snapshot copies for each chunk took it to 2,485, and nothing
+    // went red. The object change feed's per-record figure went out 21% high
+    // for the same reason -- measured once, published, never read again.
+    //
+    // So this test reads the README's OWN table rows and asserts they carry the
+    // numbers this tree produces. When a change improves one of them the test
+    // fails, which is the point: the figure is corrected in the change that
+    // moved it, not in a later audit that may not happen.
+    //
+    // It guards the two cells of the batch table that are measurements. The
+    // third claim that table makes -- that the copy is flat in the object count
+    // -- is held by `the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk`,
+    // so here the two rows are only required to AGREE with each other.
+    const PUBLISHED: &str = include_str!("../README.md");
+
+    fn batch_audit(objects: usize) -> std::collections::BTreeMap<String, u64> {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            let key = format!("prefix/{index:08}/kkkkkkkkkk");
+            store
+                .put_object("bucket", &key, vec![b'x'; 1024], "application/octet-stream")
+                .unwrap();
+        }
+        store
+            .chunk_service
+            .export_snapshot_unsealed()
+            .footprint_audit()
+            .into_iter()
+            .collect()
+    }
+
+    // The row whose first cell is this object count, in the three-column table.
+    // The undo table above it has two columns, so a column count identifies the
+    // table without depending on where either one sits in the file.
+    fn published_row(count: &str) -> Vec<u64> {
+        let rows: Vec<&str> = PUBLISHED
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                line.starts_with(&format!("| {count} |")) && line.matches('|').count() == 4
+            })
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one three-column row should begin with {count}, and {} do: {rows:?}",
+            rows.len()
+        );
+        rows[0]
+            .split('|')
+            .skip(2)
+            .filter(|cell| !cell.trim().is_empty())
+            .map(|cell| {
+                let digits: String = cell.chars().filter(char::is_ascii_digit).collect();
+                digits.parse::<u64>().unwrap_or_else(|_| {
+                    panic!("a published cell should carry a number, and this one is {cell:?}")
+                })
+            })
+            .collect()
+    }
+
+    let measured = batch_audit(250);
+    let get = |key: &str| -> u64 {
+        *measured
+            .get(key)
+            .unwrap_or_else(|| panic!("the batch audit should report {key}"))
+    };
+    let copied = get("batch.COPIED_bytes");
+    let named = get("batch.replica_chunks.shared_state_and_payload_bytes");
+
+    let row = published_row("250");
+    println!("PUBLISHED measured=({copied},{named}) published={row:?}");
+    assert_eq!(
+        row,
+        vec![copied, named],
+        "the README's 250-object row should read {copied} copied and {named} named,          and it reads {row:?} -- correct the README in the change that moved them"
+    );
+
+    let thousand = published_row("1,000");
+    assert_eq!(
+        thousand[0], copied,
+        "the two published rows should agree that the copy is flat in the object          count: {} against {copied}",
+        thousand[0]
+    );
+}
+
+#[test]
 fn a_write_reaches_every_replica_from_the_coordinator_in_one_hop() {
     // Two write topologies are possible for a replicated chunk. In one the
     // coordinator hands the payload to every replica itself -- one hop each,
