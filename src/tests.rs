@@ -36270,18 +36270,18 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
     // The row whose first cell is this object count, in the three-column table.
     // The undo table above it has two columns, so a column count identifies the
     // table without depending on where either one sits in the file.
-    fn published_row(count: &str) -> Vec<u64> {
+    fn published_row(label: &str, pipes: usize) -> Vec<u64> {
         let rows: Vec<&str> = PUBLISHED
             .lines()
             .map(str::trim)
             .filter(|line| {
-                line.starts_with(&format!("| {count} |")) && line.matches('|').count() == 4
+                line.starts_with(&format!("| {label} |")) && line.matches('|').count() == pipes
             })
             .collect();
         assert_eq!(
             rows.len(),
             1,
-            "exactly one three-column row should begin with {count}, and {} do: {rows:?}",
+            "exactly one {pipes}-pipe row should begin with {label:?}, and {} do: {rows:?}",
             rows.len()
         );
         rows[0]
@@ -36306,7 +36306,7 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
     let copied = get("batch.COPIED_bytes");
     let named = get("batch.replica_chunks.shared_state_and_payload_bytes");
 
-    let row = published_row("250");
+    let row = published_row("250", 4);
     println!("PUBLISHED measured=({copied},{named}) published={row:?}");
     assert_eq!(
         row,
@@ -36314,11 +36314,62 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
         "the README's 250-object row should read {copied} copied and {named} named,          and it reads {row:?} -- correct the README in the change that moved them"
     );
 
-    let thousand = published_row("1,000");
+    let thousand = published_row("1,000", 4);
     assert_eq!(
         thousand[0], copied,
         "the two published rows should agree that the copy is flat in the object          count: {} against {copied}",
         thousand[0]
+    );
+
+    // The delete trade, from the same document. Its two rows were stale as
+    // well -- by 8,023 and 16,095 bytes -- and the percentage printed above
+    // them is derived from the pair, so one stale row makes a stale claim too.
+    fn total_bytes(objects: usize, delete_them: bool) -> u64 {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        let keys: Vec<String> = (0..objects)
+            .map(|index| format!("prefix/{index:08}/kkkkkkkkkk"))
+            .collect();
+        for key in keys.iter() {
+            store
+                .put_object("bucket", key, vec![b'x'; 1024], "application/octet-stream")
+                .unwrap();
+        }
+        if delete_them {
+            for key in keys.iter() {
+                store.delete_object("bucket", key).unwrap();
+            }
+        }
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == "ACCOUNTED.total_bytes")
+            .map(|(_, value)| value)
+            .expect("the audit reports a total")
+    }
+
+    let holding = total_bytes(500, false);
+    let emptied = total_bytes(500, true);
+    let share = (emptied - holding) * 1000 / holding;
+    println!("PUBLISHED delete_trade holding={holding} emptied={emptied} permille={share}");
+    assert_eq!(
+        published_row("holding 500 objects", 3),
+        vec![holding],
+        "the published holding figure should be {holding}"
+    );
+    assert_eq!(
+        published_row("after deleting all 500", 3),
+        vec![emptied],
+        "the published emptied figure should be {emptied}"
+    );
+    let printed = format!("**{}.{}% larger**", share / 10, share % 10);
+    assert!(
+        PUBLISHED.contains(&printed),
+        "the share above that table is derived from the two figures and should read {printed}"
     );
 }
 
