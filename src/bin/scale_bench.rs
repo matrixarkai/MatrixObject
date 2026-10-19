@@ -69,6 +69,34 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static COUNTING_ALLOCATOR: CountingAllocator = CountingAllocator;
 
+/// The environment names that set the two storage tiers.
+///
+/// These are the single source for both the reader and `--help`, because the
+/// two disagreed: `--help` documented `*_SLAB_SIZE`, which nothing read, while
+/// the chunk was set by an undocumented `*_SEGMENT_SIZE` and `*_CHUNK_SIZE` set
+/// the PAGE. Measured: setting the documented name changed nothing, and setting
+/// `*_CHUNK_SIZE` changed a tier other than the one it names.
+///
+/// `*_CHUNK_SIZE` now sets the chunk, which is what its name and the help text
+/// always said. `*_SEGMENT_SIZE` stays accepted so a caller who found the
+/// working name is not broken, but it is not advertised: there is no tier above
+/// the chunk.
+const CHUNK_SIZE_ENV: [&str; 6] = [
+    "MATRIX_OBJECTSTORE_RUST_CHUNK_SIZE",
+    "MATRIX_OBJECTSTORE_CHUNK_SIZE",
+    "MATRIXOBJECTSTORE_RUST_CHUNK_SIZE",
+    "MATRIXOBJECTSTORE_CHUNK_SIZE",
+    "MATRIX_OBJECTSTORE_RUST_SEGMENT_SIZE",
+    "MATRIX_OBJECTSTORE_SEGMENT_SIZE",
+];
+
+const PAGE_SIZE_ENV: [&str; 4] = [
+    "MATRIX_OBJECTSTORE_RUST_PAGE_SIZE",
+    "MATRIX_OBJECTSTORE_PAGE_SIZE",
+    "MATRIXOBJECTSTORE_RUST_PAGE_SIZE",
+    "MATRIXOBJECTSTORE_PAGE_SIZE",
+];
+
 const DEFAULT_SCALE_READ_CACHE_MAX_BYTES_PER_REPLICA: u64 = 64 * 1024 * 1024;
 const DEFAULT_SCALE_READ_CACHE_MAX_CACHEABLE_READ_BYTES_PER_REPLICA: u64 = 4 * 1024 * 1024;
 
@@ -3418,9 +3446,7 @@ fn run() -> Result<(), ObjectError> {
         eprintln!(
             "usage: scale_bench [object_size] [object_count] [concurrency] [range_size]\n\
              env: MATRIX_OBJECTSTORE_RUST_OVERWRITE_PERCENT, MATRIX_OBJECTSTORE_RUST_DELETE_PERCENT,\n\
-                  MATRIX_OBJECTSTORE_RUST_SLAB_SIZE or MATRIX_OBJECTSTORE_SLAB_SIZE,\n\
                   MATRIX_OBJECTSTORE_RUST_MAX_EXTENT_BYTES or MATRIX_OBJECTSTORE_MAX_EXTENT_BYTES,\n\
-                  MATRIX_OBJECTSTORE_RUST_CHUNK_SIZE or MATRIX_OBJECTSTORE_CHUNK_SIZE,\n\
                   MATRIX_OBJECTSTORE_RUST_READ_CACHE_MAX_BYTES or MATRIX_OBJECTSTORE_READ_CACHE_MAX_BYTES,\n\
                   MATRIX_OBJECTSTORE_RUST_READ_CACHE_MAX_CACHEABLE_BYTES or MATRIX_OBJECTSTORE_READ_CACHE_MAX_CACHEABLE_BYTES,\n\
                   MATRIX_OBJECTSTORE_RUST_VOLUMES or MATRIX_OBJECTSTORE_VOLUMES,\n\
@@ -3454,6 +3480,11 @@ fn run() -> Result<(), ObjectError> {
                   MATRIX_OBJECTSTORE_RUST_SCALE_EVENT_LOG_OUT\n\
              compact aliases: MATRIXOBJECTSTORE_* equivalents are accepted for workload and storage knobs"
         );
+        // Printed from the same constants the reader uses, so a documented name
+        // that nothing reads cannot happen again.
+        eprintln!("storage tiers: a {} MiB chunk holding {} MiB pages", 64, 1);
+        eprintln!("  chunk size: {}", CHUNK_SIZE_ENV.join(", "));
+        eprintln!("  page size:  {}", PAGE_SIZE_ENV.join(", "));
         return Ok(());
     }
 
@@ -3490,15 +3521,7 @@ fn run() -> Result<(), ObjectError> {
             5,
         )
         .map_err(ObjectError::InvalidArgument)?,
-        chunk_size: env_u64_any(
-            &[
-                "MATRIX_OBJECTSTORE_RUST_SEGMENT_SIZE",
-                "MATRIX_OBJECTSTORE_SEGMENT_SIZE",
-                "MATRIXOBJECTSTORE_RUST_SEGMENT_SIZE",
-                "MATRIXOBJECTSTORE_SEGMENT_SIZE",
-            ],
-            64 * 1024 * 1024,
-        )
+        chunk_size: env_u64_any(&CHUNK_SIZE_ENV, 64 * 1024 * 1024)
         .map_err(ObjectError::InvalidArgument)?,
         max_extent_bytes: env_u64_any(
             &[
@@ -3510,15 +3533,7 @@ fn run() -> Result<(), ObjectError> {
             4 * 1024 * 1024,
         )
         .map_err(ObjectError::InvalidArgument)?,
-        page_size: env_u64_any(
-            &[
-                "MATRIX_OBJECTSTORE_RUST_CHUNK_SIZE",
-                "MATRIX_OBJECTSTORE_CHUNK_SIZE",
-                "MATRIXOBJECTSTORE_RUST_CHUNK_SIZE",
-                "MATRIXOBJECTSTORE_CHUNK_SIZE",
-            ],
-            1024 * 1024,
-        )
+        page_size: env_u64_any(&PAGE_SIZE_ENV, 1024 * 1024)
         .map_err(ObjectError::InvalidArgument)?,
         chunk_read_cache_max_bytes_per_replica: env_u64_any(
             &[
