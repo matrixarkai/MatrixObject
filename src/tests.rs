@@ -34022,7 +34022,7 @@ fn measure_what_the_read_cache_costs_beside_the_bytes_it_caches() {
             .into_iter()
             .find(|(key, _)| key == wanted)
             .map(|(_, value)| value)
-            .unwrap_or(0)
+            .expect("the audit should report the leg this test reads")
     };
     println!(
         "READCACHE after_writes payload={} overhead={}",
@@ -34087,7 +34087,7 @@ fn measure_what_an_applied_raft_receipt_costs() {
             .into_iter()
             .find(|(key, _)| key == wanted)
             .map(|(_, value)| value)
-            .unwrap_or(0)
+            .expect("the audit should report the leg this test reads")
     };
 
     for index in 0..entries_to_apply {
@@ -35611,7 +35611,7 @@ fn measure_what_a_mutation_undo_costs() {
             .into_iter()
             .find(|(key, _)| key == "ACCOUNTED.total_bytes")
             .map(|(_, value)| value)
-            .unwrap_or(0);
+            .expect("the audit should report the leg this test reads");
         println!("UNDO objects={objects} store.total_bytes={store_total}");
         for (key, value) in undo.footprint_audit() {
             if value != 0 {
@@ -35672,7 +35672,7 @@ fn measure_what_the_payload_index_retains() {
             .into_iter()
             .find(|(key, _)| key == wanted)
             .map(|(_, value)| value)
-            .unwrap_or(0)
+            .expect("the audit should report the leg this test reads")
     }
     let before: std::collections::BTreeMap<String, u64> =
         store.footprint_audit().into_iter().collect();
@@ -36039,7 +36039,7 @@ fn an_upload_in_flight_is_not_copied_by_an_unrelated_mutation() {
             .into_iter()
             .find(|(key, _)| key == wanted)
             .map(|(_, value)| value)
-            .unwrap_or(0)
+            .expect("the audit should report the leg this test reads")
     }
 
     let before = undo(&store, "undo.total_bytes");
@@ -36108,7 +36108,7 @@ fn a_refused_put_leaves_an_upload_in_flight_intact() {
         .into_iter()
         .find(|(key, _)| key == "multipart.payload_bytes")
         .map(|(_, value)| value)
-        .unwrap_or(0);
+        .expect("the audit should report the leg this test reads");
     assert!(before > 0, "the upload must have buffered something");
 
     let refused = store.put_object_with_options(
@@ -36129,7 +36129,7 @@ fn a_refused_put_leaves_an_upload_in_flight_intact() {
             .into_iter()
             .find(|(key, _)| key == "multipart.payload_bytes")
             .map(|(_, value)| value)
-            .unwrap_or(0),
+            .expect("the audit should report the leg this test reads"),
         before,
         "a refused put must not disturb the parts an upload has buffered"
     );
@@ -36310,7 +36310,7 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
             .into_iter()
             .find(|(key, _)| key == "ACCOUNTED.total_bytes")
             .map(|(_, value)| value)
-            .unwrap_or(0);
+            .expect("the audit should report the leg this test reads");
         println!("BATCH objects={objects} store.total_bytes={store_total}");
 
         for key in keys.iter() {
@@ -36847,7 +36847,7 @@ fn the_documented_way_to_set_receipt_retention_works() {
             .into_iter()
             .find(|(name, _)| name == key)
             .map(|(_, value)| value)
-            .unwrap_or(0)
+            .expect("the audit should report the leg this test reads")
     };
     let retained_before = read(&store, "replica.receipts");
     let bytes_before = read(&store, "block.receipts.bytes");
@@ -37475,6 +37475,12 @@ fn the_audit_reports_what_an_open_mutation_batch_holds() {
             )
             .unwrap();
     }
+    // Absence is MEANINGFUL here, so this reader defaults rather than failing.
+    // The `open_batch.*` legs are composed in only while a batch is open --
+    // `open_mutation_batch_footprint_audit()` contributes nothing otherwise --
+    // and the first assertion below is precisely that they read zero when none
+    // is open. Every other audit reader in this file fails on a missing key; this
+    // one cannot, and the reason is here so it is not "fixed" into a panic again.
     let read = |store: &MatrixObjectStore, wanted: &str| -> u64 {
         store
             .footprint_audit()
@@ -37990,7 +37996,7 @@ fn keys_on_one_shard_share_three_cached_checksums() {
             .into_iter()
             .find(|(key, _)| key == wanted)
             .map(|(_, value)| value)
-            .unwrap_or(0)
+            .expect("the audit should report the leg this test reads")
     };
     assert_eq!(read("metadata_route_cache.entries"), 24, "24 keys cached");
     println!(
@@ -38199,7 +38205,7 @@ fn measure_what_an_open_batch_holds_once_the_receipts_fill() {
             .into_iter()
             .find(|(key, _)| key == wanted)
             .map(|(_, value)| value)
-            .unwrap_or(0)
+            .expect("the audit should report the leg this test reads")
     };
     let report = |store: &mut MatrixObjectStore, label: &str| {
         store
@@ -38277,7 +38283,7 @@ fn measure_what_the_retained_receipts_cost() {
             .into_iter()
             .find(|(key, _)| key == wanted)
             .map(|(_, value)| value)
-            .unwrap_or(0)
+            .expect("the audit should report the leg this test reads")
     };
     let counted = |store: &MatrixObjectStore| -> u64 {
         [
@@ -38423,7 +38429,7 @@ fn measure_what_a_filled_metadata_route_cache_costs() {
             .into_iter()
             .find(|(key, _)| key == wanted)
             .map(|(_, value)| value)
-            .unwrap_or(0)
+            .expect("the audit should report the leg this test reads")
     }
     let before = read(&store, "metadata_route_cache.bytes");
     for index in 0..routes {
