@@ -101,24 +101,24 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<Vec<ProvenMetadataRead<StoreSnapshotChunk>>, ObjectError> {
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         self.export_snapshot_chunk_stream_with_read_proof_linearizable_committed_at(
             max_payload_bytes,
             now_ms,
             min_read_index,
             min_commit_index,
             |chunk| {
-                if chunks.is_empty() {
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                if pages.is_empty() {
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         chunk.value.total_bytes,
                         max_payload_bytes,
                     ));
                 }
-                chunks.push(chunk);
+                pages.push(chunk);
                 Ok(())
             },
         )?;
-        Ok(chunks)
+        Ok(pages)
     }
 
     pub fn export_snapshot_chunks_with_read_proof_report_linearizable(
@@ -153,7 +153,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ),
         ObjectError,
     > {
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         let mut material =
             Vec::with_capacity(encoded_string_len("MXOS-RUST-METADATA-SNAPSHOT-READ-PROOFS1"));
         append_string(&mut material, "MXOS-RUST-METADATA-SNAPSHOT-READ-PROOFS1");
@@ -184,7 +184,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         proven.proof.read_fence_applied_lag
                     )));
                 }
-                if chunks.is_empty() {
+                if pages.is_empty() {
                     let chunk_capacity =
                         snapshot_chunk_vec_capacity(proven.value.total_bytes, max_payload_bytes);
                     requested_read_index = proven.proof.requested_read_index;
@@ -194,7 +194,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     snapshot_term = proven.value.term;
                     full_snapshot_checksum = proven.value.full_checksum.clone();
                     first_offset = proven.value.offset;
-                    chunks.reserve(chunk_capacity);
+                    pages.reserve(chunk_capacity);
                     material.reserve(metadata_snapshot_proof_material_capacity(
                         proven.value.total_bytes,
                         max_payload_bytes,
@@ -222,18 +222,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     proven.value.term,
                     &proven.proof,
                 );
-                chunks.push(proven);
+                pages.push(proven);
                 Ok(())
             },
         )?;
-        if chunks.is_empty() {
+        if pages.is_empty() {
             return Err(ObjectError::InvalidArgument(
                 "metadata snapshot proof stream is empty".to_string(),
             ));
         }
         let report = finish_metadata_snapshot_proof_stream_report(
             material,
-            chunks.len() as u64,
+            pages.len() as u64,
             requested_read_index,
             consensus_read_index,
             metadata_commit_index,
@@ -244,6 +244,6 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             snapshot_term,
             full_snapshot_checksum,
         );
-        Ok((chunks, report))
+        Ok((pages, report))
     }
 }

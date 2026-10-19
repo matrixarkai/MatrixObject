@@ -8,7 +8,7 @@ impl MatrixReplicaService {
         self.ensure_writable()?;
         let end = validate_pipeline_range("chunk write", offset, data.len() as u64)?;
         let projected_len = self
-            .chunks
+            .pages
             .get(&page_id)
             .map_or(end, |state| state.data.len() as u64)
             .max(end);
@@ -24,7 +24,7 @@ impl MatrixReplicaService {
         // `make_mut` copies this one chunk's state if a snapshot still names
         // it, so the copy is per chunk WRITTEN rather than per chunk held.
         let chunk = std::sync::Arc::make_mut(
-            self.chunks
+            self.pages
                 .entry(page_id)
                 .or_insert_with(|| std::sync::Arc::new(PageState::empty())),
         );
@@ -224,7 +224,7 @@ impl MatrixReplicaService {
             coalesced.push((offset, std::borrow::Cow::Borrowed(data)));
         }
         let projected_len = coalesced.iter().try_fold(
-            self.chunks
+            self.pages
                 .get(&page_id)
                 .map_or(0u64, |state| state.data.len() as u64),
             |acc, (offset, data)| -> Result<u64, ObjectError> {
@@ -250,7 +250,7 @@ impl MatrixReplicaService {
         let cache_chunk_id = page_id.clone();
         {
             let chunk = std::sync::Arc::make_mut(
-                self.chunks
+                self.pages
                     .entry(page_id.clone())
                     .or_insert_with(|| std::sync::Arc::new(PageState::empty())),
             );

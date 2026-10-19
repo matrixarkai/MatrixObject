@@ -6,7 +6,7 @@ impl ReplicaServiceSnapshot {
             .saturating_add(encoded_string_len(&self.last_partial_reclaim_failure_status))
             .saturating_add(encoded_string_len(&self.checksum))
             .saturating_add(U64 * 8);
-        for state in self.chunks.values() {
+        for state in self.pages.values() {
             bytes = bytes
                 .saturating_add(U64 * 7)
                 .saturating_add(encoded_string_len(&state.checksum))
@@ -115,8 +115,8 @@ impl ReplicaServiceSnapshot {
         append_chunk_mutation_qos_config(&mut out, &self.mutation_qos_config);
         append_chunk_mutation_qos_state(&mut out, &self.mutation_qos_state);
         append_u64(&mut out, self.receipt_retention as u64);
-        append_u64(&mut out, self.chunks.len() as u64);
-        for (page_id, state) in &self.chunks {
+        append_u64(&mut out, self.pages.len() as u64);
+        for (page_id, state) in &self.pages {
             append_slab_id(&mut out, &page_id.chunk_id);
             append_u64(&mut out, page_id.page_index);
             append_u64(&mut out, state.logical_length);

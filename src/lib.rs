@@ -15,7 +15,7 @@ const CHUNK_EC_MIN_DATA_FRAGMENTS: usize = 2;
 /// again -- 6.25% of a chunk instead of 12.5%. Recovery still reconstructs a
 /// single damaged shard, it just tries up to sixteen hypotheses instead of
 /// eight, each one pass over the payload, and recovery is a rare path. The
-/// shard-size floor below still applies, so this only takes effect on chunks
+/// shard-size floor below still applies, so this only takes effect on pages
 /// large enough to keep shards above it: a ~1 MiB chunk reaches sixteen shards
 /// of 64 KiB, and a ~225 KiB chunk sixteen of ~14 KiB, both well above a page.
 const CHUNK_EC_MAX_DATA_FRAGMENTS: usize = 16;

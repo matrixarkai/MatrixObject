@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaServiceSnapshot {
-    pub chunks: BTreeMap<PageId, std::sync::Arc<PageState>>,
+    pub pages: BTreeMap<PageId, std::sync::Arc<PageState>>,
     pub receipt_retention: usize,
     pub write_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaWriteReceipt>>,
     pub discard_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaDiscardReceipt>>,

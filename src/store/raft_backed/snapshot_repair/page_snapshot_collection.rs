@@ -34,24 +34,24 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<Vec<ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>, ObjectError>
     {
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         self.export_page_snapshot_chunk_stream_with_route_proof_linearizable_fenced_committed_at(
             max_payload_bytes,
             expected_route_control_checksum,
             min_read_index,
             min_commit_index,
             |chunk| {
-                if chunks.is_empty() {
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                if pages.is_empty() {
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         chunk.value.total_bytes,
                         max_payload_bytes,
                     ));
                 }
-                chunks.push(chunk);
+                pages.push(chunk);
                 Ok(())
             },
         )?;
-        Ok(chunks)
+        Ok(pages)
     }
 
     pub fn export_page_snapshot_chunks_with_read_proof_linearizable_fenced_committed_at(
@@ -61,24 +61,24 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<Vec<ProvenStorageRead<ChunkServiceSnapshotChunk>>, ObjectError> {
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         self.export_page_snapshot_chunk_stream_with_read_proof_linearizable_fenced_committed_at(
             max_payload_bytes,
             expected_route_control_checksum,
             min_read_index,
             min_commit_index,
             |chunk| {
-                if chunks.is_empty() {
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                if pages.is_empty() {
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         chunk.value.total_bytes,
                         max_payload_bytes,
                     ));
                 }
-                chunks.push(chunk);
+                pages.push(chunk);
                 Ok(())
             },
         )?;
-        Ok(chunks)
+        Ok(pages)
     }
 
     pub fn export_page_snapshot_chunks_with_read_proof_report_linearizable_fenced(
@@ -133,7 +133,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ObjectError,
     > {
         let expected_checksum = expected_route_control_checksum.as_ref().to_string();
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         let mut material = Vec::with_capacity(
             encoded_string_len("MXOS-RUST-STORAGE-SNAPSHOT-READ-PROOFS1")
                 .saturating_add(encoded_string_len("block-route")),
@@ -158,13 +158,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         "block snapshot proof stream contains non block-route proof".to_string(),
                     ));
                 }
-                if chunks.is_empty() {
+                if pages.is_empty() {
                     source_control_checksum = proven.proof.control_checksum.clone();
                     source_read_index = proven.proof.requested_storage_read_index;
                     source_commit_index = proven.proof.requested_storage_commit_index;
                     full_snapshot_checksum = proven.value.full_checksum.clone();
                     first_offset = proven.value.offset;
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         proven.value.total_bytes,
                         max_payload_bytes,
                     ));
@@ -191,18 +191,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     &proven.value.page_checksum,
                     &proven.proof,
                 );
-                chunks.push(proven);
+                pages.push(proven);
                 Ok(())
             },
         )?;
-        if chunks.is_empty() {
+        if pages.is_empty() {
             return Err(ObjectError::InvalidArgument(
                 "block snapshot proof stream is empty".to_string(),
             ));
         }
         let report = finish_storage_snapshot_proof_stream_report(
             material,
-            chunks.len() as u64,
+            pages.len() as u64,
             "block-route".to_string(),
             source_control_checksum,
             source_read_index,
@@ -212,7 +212,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             last_end_offset,
             full_snapshot_checksum,
         );
-        Ok((chunks, report))
+        Ok((pages, report))
     }
 
     pub fn export_page_snapshot_chunks_with_read_proof_report_linearizable_fenced_committed_at(
@@ -228,7 +228,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ),
         ObjectError,
     > {
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         let mut material = Vec::with_capacity(
             encoded_string_len("MXOS-RUST-STORAGE-SNAPSHOT-READ-PROOFS1")
                 .saturating_add(encoded_string_len("block-route")),
@@ -253,13 +253,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         "block snapshot proof stream contains non block-route proof".to_string(),
                     ));
                 }
-                if chunks.is_empty() {
+                if pages.is_empty() {
                     source_control_checksum = proven.proof.control_checksum.clone();
                     source_read_index = proven.proof.requested_storage_read_index;
                     source_commit_index = proven.proof.requested_storage_commit_index;
                     full_snapshot_checksum = proven.value.full_checksum.clone();
                     first_offset = proven.value.offset;
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         proven.value.total_bytes,
                         max_payload_bytes,
                     ));
@@ -286,18 +286,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     &proven.value.page_checksum,
                     &proven.proof,
                 );
-                chunks.push(proven);
+                pages.push(proven);
                 Ok(())
             },
         )?;
-        if chunks.is_empty() {
+        if pages.is_empty() {
             return Err(ObjectError::InvalidArgument(
                 "block snapshot proof stream is empty".to_string(),
             ));
         }
         let report = finish_storage_snapshot_proof_stream_report(
             material,
-            chunks.len() as u64,
+            pages.len() as u64,
             "block-route".to_string(),
             source_control_checksum,
             source_read_index,
@@ -307,6 +307,6 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             last_end_offset,
             full_snapshot_checksum,
         );
-        Ok((chunks, report))
+        Ok((pages, report))
     }
 }

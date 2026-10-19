@@ -106,7 +106,7 @@ impl ReplicaServiceSnapshot {
                 "chunk service mutation control log watermark is invalid".to_string(),
             ));
         }
-        let physical_bytes = self.chunks.values().fold(0u64, |acc, state| {
+        let physical_bytes = self.pages.values().fold(0u64, |acc, state| {
             acc.saturating_add(state.data.len() as u64)
         });
         if self.capacity_bytes > 0 && physical_bytes > self.capacity_bytes {
@@ -114,7 +114,7 @@ impl ReplicaServiceSnapshot {
                 "chunk service snapshot exceeds configured capacity".to_string(),
             ));
         }
-        for (page_id, state) in &self.chunks {
+        for (page_id, state) in &self.pages {
             validate_chunk_state(state).map_err(|err| {
                 ObjectError::Corruption(format!(
                     "chunk service snapshot invalid chunk {:?}: {}",
@@ -125,7 +125,7 @@ impl ReplicaServiceSnapshot {
         // Deriving this walks every payload byte, so only do it when there is
         // something to compare it against.
         if (self.compressed_chunk_count != 0 || self.compression_saved_bytes != 0)
-            && chunk_map_compression_stats(&self.chunks)
+            && chunk_map_compression_stats(&self.pages)
                 != (self.compressed_chunk_count, self.compression_saved_bytes)
         {
             return Err(ObjectError::Corruption(

@@ -55,12 +55,12 @@ impl MatrixObjectStore {
 
     pub fn install_page_snapshot_chunks<I>(
         &mut self,
-        chunks: I,
+        pages: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
         I: IntoIterator<Item = ChunkServiceSnapshotChunk>,
     {
-        self.chunk_service.install_snapshot_chunks(chunks)
+        self.chunk_service.install_snapshot_chunks(pages)
     }
 
     pub fn chunk_snapshot_install_progress(&self) -> SnapshotInstallProgress {
@@ -113,13 +113,13 @@ impl MatrixObjectStore {
     pub fn install_chunk_replica_snapshot_chunks<I>(
         &mut self,
         replica_index: usize,
-        chunks: I,
+        pages: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
         I: IntoIterator<Item = ReplicaServiceSnapshotChunk>,
     {
         self.chunk_service
-            .install_chunk_replica_snapshot_chunks(replica_index, chunks)
+            .install_chunk_replica_snapshot_chunks(replica_index, pages)
     }
 
     pub fn chunk_replica_snapshot_install_progress(

@@ -4,13 +4,13 @@ impl MatrixReplicaService {
     }
 
     pub fn physical_bytes(&self) -> u64 {
-        self.chunks.values().fold(0u64, |acc, state| {
+        self.pages.values().fold(0u64, |acc, state| {
             acc.saturating_add(state.data.len() as u64)
         })
     }
 
     pub fn discarded_bytes(&self) -> u64 {
-        self.chunks.values().fold(0u64, |acc, state| {
+        self.pages.values().fold(0u64, |acc, state| {
             acc.saturating_add(discarded_range_bytes(&merge_range_slice(
                 &state.discarded_ranges,
             )))
@@ -26,7 +26,7 @@ impl MatrixReplicaService {
     }
 
     pub fn chunk_state_fingerprint(&self) -> String {
-        let chunk_bytes = self.chunks.values().fold(0usize, |sum, state| {
+        let chunk_bytes = self.pages.values().fold(0usize, |sum, state| {
             sum.saturating_add(encoded_string_len(&state.checksum))
                 .saturating_add(
                     state
@@ -42,7 +42,7 @@ impl MatrixReplicaService {
                 + chunk_bytes,
         );
         append_string(&mut material, "MOSRSCHUNK-FINGERPRINT4");
-        append_u64(&mut material, self.chunks.len() as u64);
+        append_u64(&mut material, self.pages.len() as u64);
         append_u64(&mut material, self.capacity_bytes);
         append_u64(&mut material, self.capacity_rejected_writes);
         append_u64(&mut material, self.service_mode_rejected_mutations);
@@ -102,7 +102,7 @@ impl MatrixReplicaService {
             &mut material,
             self.batch_discard_request_receipts.len() as u64,
         );
-        for (page_id, state) in &self.chunks {
+        for (page_id, state) in &self.pages {
             append_chunk_id(&mut material, page_id);
             append_u64(&mut material, state.logical_length);
             append_u64(&mut material, state.write_sequence);
@@ -126,7 +126,7 @@ impl MatrixReplicaService {
         let mut trailing_trim_bytes = 0u64;
         let mut fragmented_chunk_count = 0u64;
         let mut fragmented_discarded_bytes = 0u64;
-        for state in self.chunks.values() {
+        for state in self.pages.values() {
             let ranges = merge_range_slice(&state.discarded_ranges);
             discarded_range_count = discarded_range_count.saturating_add(ranges.len() as u64);
             let discarded = discarded_range_bytes(&ranges);
@@ -182,7 +182,7 @@ impl MatrixReplicaService {
             accepting_writes: self.accepting_writes,
             draining: self.draining,
             frozen: self.frozen,
-            page_count: self.chunks.len() as u64,
+            page_count: self.pages.len() as u64,
             physical_bytes,
             capacity_bytes: self.capacity_bytes,
             capacity_free_bytes,

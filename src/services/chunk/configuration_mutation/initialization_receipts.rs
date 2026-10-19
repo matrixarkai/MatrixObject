@@ -18,7 +18,7 @@ fn trim_shared_map_to_retention<V: Clone>(
 impl MatrixReplicaService {
     pub fn new() -> Self {
         Self {
-            chunks: BTreeMap::new(),
+            pages: BTreeMap::new(),
             // Alone until told otherwise: for a single replica the sidecar is the
             // only recovery there is.
             keep_ec_sidecar: true,

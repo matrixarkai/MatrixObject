@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn install_page_snapshot_chunks_with_read_proof<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         expected_source_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
@@ -12,7 +12,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let mut source_control_checksum: Option<String> = None;
         let mut progress = SnapshotInstallProgress::default();
         let mut saw_chunk = false;
-        for proven in chunks {
+        for proven in pages {
             let proof_status = Self::validate_storage_snapshot_install_proof(
                 &proven.proof,
                 "block-route",
@@ -63,7 +63,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn install_page_snapshot_chunks_with_read_proof_report<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         expected_report: &StorageSnapshotProofStreamReport,
         expected_source_route_control_checksum: Option<&str>,
         min_read_index: u64,
@@ -72,7 +72,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     where
         I: IntoIterator<Item = ProvenStorageRead<ChunkServiceSnapshotChunk>>,
     {
-        let chunks = chunks.into_iter();
+        let pages = pages.into_iter();
         let mut assembler = ChunkServiceSnapshotAssembler::default();
         let mut assembled_snapshot = None;
         let mut material = Vec::with_capacity(
@@ -89,7 +89,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let mut first_offset = 0u64;
         let mut last_end_offset = 0u64;
         let mut proof_count = 0u64;
-        for proven in chunks {
+        for proven in pages {
             Self::validate_storage_snapshot_install_proof(
                 &proven.proof,
                 "block-route",
@@ -189,7 +189,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn install_page_snapshot_chunks_with_read_proof_source_report<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         expected_report: &StorageSnapshotProofStreamReport,
         expected_source_proof: &StorageSnapshotInstallSourceProofReport,
         min_read_index: u64,
@@ -205,7 +205,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "block-route",
         )?;
         self.install_page_snapshot_chunks_with_read_proof_report(
-            chunks,
+            pages,
             expected_report,
             Some(&expected_source_proof.expected_source_control_checksum),
             min_read_index,
@@ -215,7 +215,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn install_page_snapshot_chunks_with_route_proof<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         expected_source_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
@@ -224,7 +224,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         I: IntoIterator<Item = ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>,
     {
         self.install_page_snapshot_chunks_with_read_proof(
-            chunks
+            pages
                 .into_iter()
                 .map(ProvenPageRouteFencedStorageRead::into_storage_read),
             expected_source_route_control_checksum,
@@ -235,7 +235,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn install_page_snapshot_chunks_with_route_proof_report<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         expected_report: &StorageSnapshotProofStreamReport,
         expected_source_route_control_checksum: Option<&str>,
         min_read_index: u64,
@@ -245,7 +245,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         I: IntoIterator<Item = ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>,
     {
         self.install_page_snapshot_chunks_with_read_proof_report(
-            chunks
+            pages
                 .into_iter()
                 .map(ProvenPageRouteFencedStorageRead::into_storage_read),
             expected_report,
@@ -257,7 +257,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn install_page_snapshot_chunks_with_route_proof_source_report<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         expected_report: &StorageSnapshotProofStreamReport,
         expected_source_proof: &StorageSnapshotInstallSourceProofReport,
         min_read_index: u64,
@@ -267,7 +267,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         I: IntoIterator<Item = ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>,
     {
         self.install_page_snapshot_chunks_with_read_proof_source_report(
-            chunks
+            pages
                 .into_iter()
                 .map(ProvenPageRouteFencedStorageRead::into_storage_read),
             expected_report,

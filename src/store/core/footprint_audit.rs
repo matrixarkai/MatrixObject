@@ -195,7 +195,7 @@ impl MatrixObjectStore {
         push("block.replicas", b.replicas.len() as u64);
 
         // ---- the replicas: where the bytes actually live ---------------------
-        let mut chunks = 0u64;
+        let mut pages = 0u64;
         let mut data_len = 0u64;
         let mut data_cap = 0u64;
         let mut fragment_len = 0u64;
@@ -205,15 +205,15 @@ impl MatrixObjectStore {
         let mut discard_rows = 0u64;
         let mut replica_receipts = 0u64;
         for replica in &b.replicas {
-            chunks = chunks.saturating_add(replica.chunks.len() as u64);
-            for state in replica.chunks.values() {
+            pages = pages.saturating_add(replica.pages.len() as u64);
+            for state in replica.pages.values() {
                 data_len = data_len.saturating_add(state.data.len() as u64);
                 data_cap = data_cap.saturating_add(state.data.capacity() as u64);
                 checksum_bytes = checksum_bytes.saturating_add(state.checksum.capacity() as u64);
                 discard_rows = discard_rows.saturating_add(state.discarded_ranges.len() as u64);
                 // Count the pages that actually CARRY a redundancy fragment. This
                 // incremented once per page regardless, which made it a second copy
-                // of `replica.chunks` and left no way to tell "no fragments stored"
+                // of `replica.pages` and left no way to tell "no fragments stored"
                 // from "one empty slot per page" -- the distinction that explains
                 // why the data term measures exactly 3.0000 at three replicas.
                 if !state.ec_parity_fragment.is_empty() {
@@ -229,7 +229,7 @@ impl MatrixObjectStore {
                 .saturating_add(replica.batch_write_request_receipts.len() as u64)
                 .saturating_add(replica.batch_discard_request_receipts.len() as u64);
         }
-        push("replica.chunks", chunks);
+        push("replica.chunks", pages);
         push("replica.data.len", data_len);
         push("replica.data.capacity", data_cap);
         push("replica.ec_fragments.count", fragment_count);

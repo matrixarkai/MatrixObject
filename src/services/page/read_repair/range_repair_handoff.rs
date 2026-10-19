@@ -249,16 +249,16 @@ impl MatrixChunkService {
         max_repair_chunks: usize,
         start_chunk_index: u64,
     ) -> Result<BoundedRepairReport, ObjectError> {
-        let mut chunks: BTreeMap<PageId, u64> = BTreeMap::new();
+        let mut pages: BTreeMap<PageId, u64> = BTreeMap::new();
         for loc in self.map_range(chunk_id, offset, length)? {
-            chunks
+            pages
                 .entry(loc.page_id.clone())
                 .and_modify(|bytes| *bytes = bytes.saturating_add(loc.length))
                 .or_insert(loc.length);
         }
         let mut report = BoundedRepairReport {
-            total_chunk_count: chunks.len() as u64,
-            candidate_repair_bytes: chunks
+            total_chunk_count: pages.len() as u64,
+            candidate_repair_bytes: pages
                 .values()
                 .fold(0u64, |total, bytes| total.saturating_add(*bytes)),
             start_chunk_index,
@@ -272,7 +272,7 @@ impl MatrixChunkService {
             max_repair_chunks
         };
         let mut selected = 0usize;
-        for (page_id, bytes) in chunks {
+        for (page_id, bytes) in pages {
             if page_id.page_index < start_chunk_index {
                 continue;
             }

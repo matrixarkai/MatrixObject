@@ -1,4 +1,4 @@
-// What a chunk service holds besides the chunks themselves.
+// What a chunk service holds besides the pages themselves.
 //
 // `ACCOUNTED.byte_buffers` says it is the bytes the store can name, and the
 // read cache is bytes: it holds chunk payload, it is bounded by a configured

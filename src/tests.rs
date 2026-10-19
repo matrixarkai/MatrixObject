@@ -2411,7 +2411,7 @@ fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
 
     let snapshot = chunk.export_snapshot();
     assert_eq!(
-        snapshot.chunks.get(&page_id).unwrap().ec_parity_fragment.len(),
+        snapshot.pages.get(&page_id).unwrap().ec_parity_fragment.len(),
         6
     );
     let restored_snapshot = ReplicaServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
@@ -2716,7 +2716,7 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
     assert!(page
         .replicas
         .iter()
-        .all(|replica| replica.chunks.is_empty()));
+        .all(|replica| replica.pages.is_empty()));
 
     page.replicas[0].set_capacity_bytes(8).unwrap();
     page.replicas[1].set_capacity_bytes(8).unwrap();
@@ -2736,7 +2736,7 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
     assert!(blocked
         .replicas
         .iter()
-        .all(|replica| replica.chunks.is_empty()));
+        .all(|replica| replica.pages.is_empty()));
 }
 
 #[test]
@@ -2772,7 +2772,7 @@ fn chunk_service_preflights_chunk_discard_admission_before_mutation() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     for replica in &page.replicas {
-        if let Some(chunk) = replica.chunks.get(&page_id) {
+        if let Some(chunk) = replica.pages.get(&page_id) {
             assert!(chunk.discarded_ranges.is_empty());
         }
     }
@@ -2786,7 +2786,7 @@ fn chunk_service_preflights_chunk_discard_admission_before_mutation() {
         .iter()
         .filter(|replica| {
             replica
-                .chunks
+                .pages
                 .get(&page_id)
                 .map_or(false, |chunk| !chunk.discarded_ranges.is_empty())
         })
@@ -3345,7 +3345,7 @@ fn chunk_service_scrubs_missing_and_corrupt_replicas() {
     page
         .remove_replica_chunk_for_repair(0, &first_chunk)
         .unwrap();
-    std::sync::Arc::make_mut(page.replicas[1].chunks.get_mut(&second_chunk).unwrap())
+    std::sync::Arc::make_mut(page.replicas[1].pages.get_mut(&second_chunk).unwrap())
         .checksum = "fnv1a64:0000000000000000".to_string();
 
     let plan = page.scrub_chunk_replicas(false).unwrap();
@@ -3525,7 +3525,7 @@ fn chunk_service_pages_replica_audit_for_repair_controllers() {
     page
         .remove_replica_chunk_for_repair(0, &first_chunk)
         .unwrap();
-    std::sync::Arc::make_mut(page.replicas[1].chunks.get_mut(&second_chunk).unwrap())
+    std::sync::Arc::make_mut(page.replicas[1].pages.get_mut(&second_chunk).unwrap())
         .checksum = "fnv1a64:0000000000000000".to_string();
     page.configure_quorums(1, 1).unwrap();
     page.set_replica_frozen(2, true).unwrap();
@@ -5716,7 +5716,7 @@ fn replica_service_snapshot_chunks_restore_replacement_nodes() {
         .unwrap();
 
     let mut assembler = ReplicaServiceSnapshotAssembler::default();
-    let mut chunks = Vec::new();
+    let mut pages = Vec::new();
     let mut offset = 0;
     loop {
         let chunk = source.export_snapshot_chunk(offset, 64).unwrap();
@@ -5731,14 +5731,14 @@ fn replica_service_snapshot_chunks_restore_replacement_nodes() {
         );
         offset = next_offset;
         let eof = chunk.eof;
-        chunks.push(chunk);
+        pages.push(chunk);
         if eof {
             break;
         }
     }
-    assert!(chunks.len() > 1);
+    assert!(pages.len() > 1);
     let streamed_chunks = source.export_snapshot_chunks(64).unwrap();
-    assert_eq!(streamed_chunks, chunks);
+    assert_eq!(streamed_chunks, pages);
     let mut callback_chunks = Vec::new();
     let export_progress = source
         .export_snapshot_chunk_stream(64, |chunk| {
@@ -5746,26 +5746,26 @@ fn replica_service_snapshot_chunks_restore_replacement_nodes() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(callback_chunks, chunks);
+    assert_eq!(callback_chunks, pages);
     assert_snapshot_progress(
         &export_progress,
         false,
-        chunks.last().unwrap().total_bytes,
-        chunks.last().unwrap().total_bytes,
-        &chunks.last().unwrap().full_checksum,
+        pages.last().unwrap().total_bytes,
+        pages.last().unwrap().total_bytes,
+        &pages.last().unwrap().full_checksum,
     );
     assert!(matches!(
-        ReplicaServiceSnapshotAssembler::default().push_chunk(chunks[1].clone()),
+        ReplicaServiceSnapshotAssembler::default().push_chunk(pages[1].clone()),
         Err(ObjectError::InvalidArgument(_))
     ));
     let mut retry_assembler = ReplicaServiceSnapshotAssembler::default();
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
     let progress_after_first = retry_assembler.install_progress();
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
     assert_eq!(retry_assembler.install_progress(), progress_after_first);
@@ -5793,16 +5793,16 @@ fn replica_service_snapshot_chunks_restore_replacement_nodes() {
     assert!(!abort_report.cleared_progress.stream_active);
     assert_eq!(abort_report.cleared_progress.next_offset, 0);
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
-    let mut retry_mismatch = chunks[0].clone();
+    let mut retry_mismatch = pages[0].clone();
     retry_mismatch.payload[0] ^= 0x7f;
     assert!(matches!(
         retry_assembler.push_chunk(retry_mismatch),
         Err(ObjectError::Corruption(_))
     ));
-    let mut corrupt = chunks[0].clone();
+    let mut corrupt = pages[0].clone();
     corrupt.payload[0] ^= 0x01;
     assert!(matches!(
         ReplicaServiceSnapshotAssembler::default().push_chunk(corrupt),
@@ -5810,7 +5810,7 @@ fn replica_service_snapshot_chunks_restore_replacement_nodes() {
     ));
 
     let mut assembled = None;
-    for chunk in chunks.clone() {
+    for chunk in pages.clone() {
         let expected_next = chunk.offset.saturating_add(chunk.payload.len() as u64);
         let expected_total = chunk.total_bytes;
         let expected_full = chunk.full_checksum.clone();
@@ -5826,13 +5826,13 @@ fn replica_service_snapshot_chunks_restore_replacement_nodes() {
     }
     let snapshot_bytes = assembled.expect("final chunk service snapshot");
     let snapshot = ReplicaServiceSnapshot::from_bytes(&snapshot_bytes).unwrap();
-    assert_eq!(snapshot.chunks.len(), 2);
+    assert_eq!(snapshot.pages.len(), 2);
 
     let mut replacement = MatrixReplicaService::new();
     replacement.install_snapshot_bytes(&snapshot_bytes).unwrap();
     let mut partial_replacement = MatrixReplicaService::new();
     let partial_progress = partial_replacement
-        .install_snapshot_chunks(vec![chunks[0].clone()])
+        .install_snapshot_chunks(vec![pages[0].clone()])
         .unwrap();
     assert!(partial_progress.stream_active);
     assert_eq!(
@@ -5840,7 +5840,7 @@ fn replica_service_snapshot_chunks_restore_replacement_nodes() {
         partial_progress
     );
     let resumed_progress = partial_replacement
-        .install_snapshot_chunks(chunks.iter().skip(1).cloned().collect::<Vec<_>>())
+        .install_snapshot_chunks(pages.iter().skip(1).cloned().collect::<Vec<_>>())
         .unwrap();
     assert_snapshot_progress(
         &resumed_progress,
@@ -5860,7 +5860,7 @@ fn replica_service_snapshot_chunks_restore_replacement_nodes() {
     );
     let mut streamed_replacement = MatrixReplicaService::new();
     let install_progress = streamed_replacement
-        .install_snapshot_chunks(chunks.clone())
+        .install_snapshot_chunks(pages.clone())
         .unwrap();
     assert_snapshot_progress(
         &install_progress,
@@ -5917,7 +5917,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
         .prewarm_chunk_range_cache(&chunk_id, 8, 4, 0)
         .unwrap();
 
-    let mut chunks = Vec::new();
+    let mut pages = Vec::new();
     let mut offset = 0;
     loop {
         let chunk = source.export_snapshot_chunk(offset, 96).unwrap();
@@ -5932,14 +5932,14 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
         );
         offset = next_offset;
         let eof = chunk.eof;
-        chunks.push(chunk);
+        pages.push(chunk);
         if eof {
             break;
         }
     }
-    assert!(chunks.len() > 1);
+    assert!(pages.len() > 1);
     let streamed_chunks = source.export_snapshot_chunks(96).unwrap();
-    assert_eq!(streamed_chunks, chunks);
+    assert_eq!(streamed_chunks, pages);
     let mut callback_chunks = Vec::new();
     let export_progress = source
         .export_snapshot_chunk_stream(96, |chunk| {
@@ -5947,26 +5947,26 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(callback_chunks, chunks);
+    assert_eq!(callback_chunks, pages);
     assert_snapshot_progress(
         &export_progress,
         false,
-        chunks.last().unwrap().total_bytes,
-        chunks.last().unwrap().total_bytes,
-        &chunks.last().unwrap().full_checksum,
+        pages.last().unwrap().total_bytes,
+        pages.last().unwrap().total_bytes,
+        &pages.last().unwrap().full_checksum,
     );
     assert!(matches!(
-        ChunkServiceSnapshotAssembler::default().push_chunk(chunks[1].clone()),
+        ChunkServiceSnapshotAssembler::default().push_chunk(pages[1].clone()),
         Err(ObjectError::Corruption(_))
     ));
     let mut retry_assembler = ChunkServiceSnapshotAssembler::default();
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
     let progress_after_first = retry_assembler.install_progress();
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
     assert_eq!(retry_assembler.install_progress(), progress_after_first);
@@ -5994,16 +5994,16 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
     assert!(!abort_report.cleared_progress.stream_active);
     assert_eq!(abort_report.cleared_progress.next_offset, 0);
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
-    let mut retry_mismatch = chunks[0].clone();
+    let mut retry_mismatch = pages[0].clone();
     retry_mismatch.payload[0] ^= 0x7f;
     assert!(matches!(
         retry_assembler.push_chunk(retry_mismatch),
         Err(ObjectError::Corruption(_))
     ));
-    let mut corrupt = chunks[0].clone();
+    let mut corrupt = pages[0].clone();
     corrupt.payload[0] ^= 0x33;
     assert!(matches!(
         ChunkServiceSnapshotAssembler::default().push_chunk(corrupt),
@@ -6012,7 +6012,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
 
     let mut assembler = ChunkServiceSnapshotAssembler::default();
     let mut assembled = None;
-    for chunk in chunks.clone() {
+    for chunk in pages.clone() {
         let expected_next = chunk.offset.saturating_add(chunk.payload.len() as u64);
         let expected_total = chunk.total_bytes;
         let expected_full = chunk.full_checksum.clone();
@@ -6046,7 +6046,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
     replacement.install_snapshot(snapshot).unwrap();
     let mut partial_replacement = MatrixChunkService::new(8, 1, 1).unwrap();
     let partial_progress = partial_replacement
-        .install_snapshot_chunks(vec![chunks[0].clone()])
+        .install_snapshot_chunks(vec![pages[0].clone()])
         .unwrap();
     assert!(partial_progress.stream_active);
     assert_eq!(
@@ -6054,7 +6054,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
         partial_progress
     );
     let resumed_progress = partial_replacement
-        .install_snapshot_chunks(chunks.iter().skip(1).cloned().collect::<Vec<_>>())
+        .install_snapshot_chunks(pages.iter().skip(1).cloned().collect::<Vec<_>>())
         .unwrap();
     assert_snapshot_progress(
         &resumed_progress,
@@ -6074,7 +6074,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
     assert_eq!(partial_tail, b"ijklmnop".to_vec());
     let mut streamed_replacement = MatrixChunkService::new(8, 1, 1).unwrap();
     let install_progress = streamed_replacement
-        .install_snapshot_chunks(chunks.clone())
+        .install_snapshot_chunks(pages.clone())
         .unwrap();
     assert_snapshot_progress(
         &install_progress,
@@ -6672,8 +6672,8 @@ fn page_and_object_repair_large_ranges_with_cursors() {
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
-    let chunks = page.map_range(&chunk_id, 0, 12).unwrap();
-    for loc in &chunks {
+    let pages = page.map_range(&chunk_id, 0, 12).unwrap();
+    for loc in &pages {
         page
             .remove_replica_chunk_for_repair(0, &loc.page_id)
             .unwrap();
@@ -7131,7 +7131,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
     })
     .unwrap();
 
-    let mut chunks = Vec::new();
+    let mut pages = Vec::new();
     let mut offset = 0;
     loop {
         let chunk = root.export_placement_snapshot_chunk(offset, 80).unwrap();
@@ -7146,24 +7146,24 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
         );
         offset = next_offset;
         let eof = chunk.eof;
-        chunks.push(chunk);
+        pages.push(chunk);
         if eof {
             break;
         }
     }
-    assert!(chunks.len() > 1);
+    assert!(pages.len() > 1);
     assert!(matches!(
-        RootSnapshotChunkAssembler::default().push_chunk(chunks[1].clone()),
+        RootSnapshotChunkAssembler::default().push_chunk(pages[1].clone()),
         Err(ObjectError::Corruption(_))
     ));
     let mut retry_assembler = RootSnapshotChunkAssembler::default();
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
     let progress_after_first = retry_assembler.install_progress();
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
     assert_eq!(retry_assembler.install_progress(), progress_after_first);
@@ -7191,16 +7191,16 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
     assert!(!abort_report.cleared_progress.stream_active);
     assert_eq!(abort_report.cleared_progress.last_applied_index, 0);
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
-    let mut retry_mismatch = chunks[0].clone();
+    let mut retry_mismatch = pages[0].clone();
     retry_mismatch.payload[0] ^= 0x7f;
     assert!(matches!(
         retry_assembler.push_chunk(retry_mismatch),
         Err(ObjectError::Corruption(_))
     ));
-    let mut corrupt = chunks[0].clone();
+    let mut corrupt = pages[0].clone();
     corrupt.payload[0] ^= 0x55;
     assert!(matches!(
         RootSnapshotChunkAssembler::default().push_chunk(corrupt),
@@ -7209,7 +7209,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
 
     let mut assembler = RootSnapshotChunkAssembler::default();
     let mut assembled = None;
-    for chunk in chunks {
+    for chunk in pages {
         let expected_next = chunk.offset.saturating_add(chunk.payload.len() as u64);
         let expected_total = chunk.total_bytes;
         let expected_full = chunk.full_checksum.clone();
@@ -22102,12 +22102,12 @@ fn raft_backed_store_replays_bounded_page_repair() {
         })
         .unwrap();
     let chunk_id = written.extents[0].chunk_id.clone();
-    let chunks = replicated
+    let pages = replicated
         .store()
         .chunk_service
         .map_range(&chunk_id, written.extents[0].offset, written.length)
         .unwrap();
-    for loc in &chunks {
+    for loc in &pages {
         replicated
             .store
             .chunk_service
@@ -22287,14 +22287,14 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
         })
         .unwrap();
     let chunk_id = written.extents[0].chunk_id.clone();
-    let chunks = replicated
+    let pages = replicated
         .store()
         .chunk_service
         .map_range(&chunk_id, written.extents[0].offset, written.length)
         .unwrap();
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
-    for loc in &chunks {
+    for loc in &pages {
         replicated
             .store
             .chunk_service
@@ -22655,14 +22655,14 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
         })
         .unwrap();
     let chunk_id = written.extents[0].chunk_id.clone();
-    let chunks = replicated
+    let pages = replicated
         .store()
         .chunk_service
         .map_range(&chunk_id, written.extents[0].offset, written.length)
         .unwrap();
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
-    for loc in chunks.iter().take(2) {
+    for loc in pages.iter().take(2) {
         replicated
             .store
             .chunk_service
@@ -22864,12 +22864,12 @@ fn raft_backed_store_replays_audit_driven_page_repair() {
         })
         .unwrap();
     let chunk_id = written.extents[0].chunk_id.clone();
-    let chunks = replicated
+    let pages = replicated
         .store()
         .chunk_service
         .map_range(&chunk_id, written.extents[0].offset, written.length)
         .unwrap();
-    for loc in chunks.iter().take(2) {
+    for loc in pages.iter().take(2) {
         replicated
             .store
             .chunk_service
@@ -22884,7 +22884,7 @@ fn raft_backed_store_replays_audit_driven_page_repair() {
     assert_eq!(first.version, 1);
     assert_eq!(first.length, 1);
     let second = replicated
-        .propose_repair_audited_page_replicas(Some(chunks[0].page_id.clone()), 10, 0)
+        .propose_repair_audited_page_replicas(Some(pages[0].page_id.clone()), 10, 0)
         .unwrap();
     assert_eq!(second.content_type, "blockserver/audit-repair");
     assert_eq!(second.version, 1);
@@ -29428,7 +29428,7 @@ fn snapshot_round_trips_validated_versioned_state() {
             .data,
         b"one".to_vec()
     );
-    let mut chunks = Vec::new();
+    let mut pages = Vec::new();
     let mut offset = 0;
     loop {
         let chunk = store.export_snapshot_chunk(offset, 80).unwrap();
@@ -29443,28 +29443,28 @@ fn snapshot_round_trips_validated_versioned_state() {
         );
         offset = next_offset;
         let eof = chunk.eof;
-        chunks.push(chunk);
+        pages.push(chunk);
         if eof {
             break;
         }
     }
-    assert!(chunks.len() > 1);
+    assert!(pages.len() > 1);
     assert!(matches!(
-        StoreSnapshotChunkAssembler::default().push_chunk(chunks[1].clone()),
+        StoreSnapshotChunkAssembler::default().push_chunk(pages[1].clone()),
         Err(ObjectError::InvalidArgument(_))
     ));
     let mut retry_assembler = StoreSnapshotChunkAssembler::default();
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
     let progress_after_first = retry_assembler.install_progress();
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
     assert_eq!(retry_assembler.install_progress(), progress_after_first);
-    let mut retry_mismatch = chunks[0].clone();
+    let mut retry_mismatch = pages[0].clone();
     retry_mismatch.payload[0] ^= 0x7f;
     assert!(matches!(
         retry_assembler.push_chunk(retry_mismatch),
@@ -29472,7 +29472,7 @@ fn snapshot_round_trips_validated_versioned_state() {
     ));
     let mut partial_chunk_restored = MatrixObjectStore::new(test_options()).unwrap();
     let partial_progress = partial_chunk_restored
-        .install_snapshot_chunks(vec![chunks[0].clone()])
+        .install_snapshot_chunks(vec![pages[0].clone()])
         .unwrap();
     assert!(partial_progress.stream_active);
     assert_eq!(
@@ -29480,7 +29480,7 @@ fn snapshot_round_trips_validated_versioned_state() {
         partial_progress
     );
     let resumed_progress = partial_chunk_restored
-        .install_snapshot_chunks(chunks.iter().skip(1).cloned().collect::<Vec<_>>())
+        .install_snapshot_chunks(pages.iter().skip(1).cloned().collect::<Vec<_>>())
         .unwrap();
     assert_snapshot_progress(
         &resumed_progress,
@@ -29503,7 +29503,7 @@ fn snapshot_round_trips_validated_versioned_state() {
     );
     let mut assembler = StoreSnapshotChunkAssembler::default();
     let mut assembled = None;
-    for chunk in chunks.clone() {
+    for chunk in pages.clone() {
         let expected_next = chunk.offset.saturating_add(chunk.payload.len() as u64);
         let expected_total = chunk.total_bytes;
         let expected_full = chunk.full_checksum.clone();
@@ -32257,7 +32257,7 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
 
     let mut assembler = MetaSnapshotChunkAssembler::default();
     let mut offset = 0;
-    let mut chunks = Vec::new();
+    let mut pages = Vec::new();
     loop {
         let chunk = source.export_metadata_snapshot_chunk(offset, 96).unwrap();
         assert_eq!(chunk.offset, offset);
@@ -32275,14 +32275,14 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
         );
         offset = next_offset;
         let eof = chunk.eof;
-        chunks.push(chunk);
+        pages.push(chunk);
         if eof {
             break;
         }
     }
-    assert!(chunks.len() > 1);
+    assert!(pages.len() > 1);
     let streamed_chunks = source.export_metadata_snapshot_chunks(96).unwrap();
-    assert_eq!(streamed_chunks, chunks);
+    assert_eq!(streamed_chunks, pages);
     let mut callback_chunks = Vec::new();
     let export_progress = source
         .export_metadata_snapshot_chunk_stream(96, |chunk| {
@@ -32290,28 +32290,28 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(callback_chunks, chunks);
+    assert_eq!(callback_chunks, pages);
     assert_snapshot_progress(
         &export_progress,
         false,
-        chunks.last().unwrap().total_bytes,
-        chunks.last().unwrap().total_bytes,
-        &chunks.last().unwrap().full_checksum,
+        pages.last().unwrap().total_bytes,
+        pages.last().unwrap().total_bytes,
+        &pages.last().unwrap().full_checksum,
     );
 
     let mut out_of_order = MetaSnapshotChunkAssembler::default();
     assert!(matches!(
-        out_of_order.push_chunk(chunks[1].clone()),
+        out_of_order.push_chunk(pages[1].clone()),
         Err(ObjectError::InvalidArgument(_))
     ));
     let mut retry_assembler = MetaSnapshotChunkAssembler::default();
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
     let progress_after_first = retry_assembler.install_progress();
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
     assert_eq!(retry_assembler.install_progress(), progress_after_first);
@@ -32340,17 +32340,17 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
     assert_eq!(abort_report.cleared_progress.next_offset, 0);
     assert_eq!(abort_report.cleared_progress.last_applied_index, 0);
     assert!(retry_assembler
-        .push_chunk(chunks[0].clone())
+        .push_chunk(pages[0].clone())
         .unwrap()
         .is_none());
-    let mut retry_mismatch = chunks[0].clone();
+    let mut retry_mismatch = pages[0].clone();
     retry_mismatch.payload[0] ^= 0x7f;
     assert!(matches!(
         retry_assembler.push_chunk(retry_mismatch),
         Err(ObjectError::Corruption(_))
     ));
 
-    let mut corrupt = chunks[0].clone();
+    let mut corrupt = pages[0].clone();
     corrupt.payload[0] ^= 0x01;
     assert!(matches!(
         MetaSnapshotChunkAssembler::default().push_chunk(corrupt),
@@ -32358,7 +32358,7 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
     ));
 
     let mut assembled = None;
-    for chunk in chunks.clone() {
+    for chunk in pages.clone() {
         let expected_next = chunk.offset.saturating_add(chunk.payload.len() as u64);
         let expected_total = chunk.total_bytes;
         let expected_full = chunk.full_checksum.clone();
@@ -32432,7 +32432,7 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
 
     let mut chunk_follower = MatrixObjectStore::new(test_options()).unwrap();
     let progress = chunk_follower
-        .install_raft_metadata_snapshot_chunks(chunks.clone(), last_change.commit_index)
+        .install_raft_metadata_snapshot_chunks(pages.clone(), last_change.commit_index)
         .unwrap();
     assert_snapshot_progress(
         &progress,
@@ -32452,7 +32452,7 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
     let mut partial_report_follower = MatrixObjectStore::new(test_options()).unwrap();
     let partial_report = partial_report_follower
         .install_raft_metadata_snapshot_chunks_report(
-            vec![chunks[0].clone()],
+            vec![pages[0].clone()],
             last_change.commit_index,
         )
         .unwrap();
@@ -32461,13 +32461,13 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
     assert!(partial_report.raft_snapshot_install);
     assert_eq!(
         partial_report.snapshot_bytes,
-        chunks[0].payload.len() as u64
+        pages[0].payload.len() as u64
     );
     assert_eq!(partial_report.last_applied_index, last_change.commit_index);
     assert!(partial_report.install_progress.stream_active);
     assert_eq!(
         partial_report.install_progress.next_offset,
-        chunks[0].payload.len() as u64
+        pages[0].payload.len() as u64
     );
     assert_eq!(
         partial_report_follower.metadata_snapshot_install_progress(),
@@ -32475,7 +32475,7 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
     );
     let resumed_report = partial_report_follower
         .install_raft_metadata_snapshot_chunks_report(
-            chunks.iter().skip(1).cloned().collect::<Vec<_>>(),
+            pages.iter().skip(1).cloned().collect::<Vec<_>>(),
             last_change.commit_index,
         )
         .unwrap();
@@ -32503,7 +32503,7 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
     );
     let mut chunk_report_follower = MatrixObjectStore::new(test_options()).unwrap();
     let chunk_report = chunk_report_follower
-        .install_raft_metadata_snapshot_chunks_report(chunks.clone(), last_change.commit_index)
+        .install_raft_metadata_snapshot_chunks_report(pages.clone(), last_change.commit_index)
         .unwrap();
     assert!(chunk_report.installed);
     assert!(chunk_report.validated);
@@ -32516,7 +32516,7 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
     assert!(matches!(
         MatrixObjectStore::new(test_options())
             .unwrap()
-            .install_raft_metadata_snapshot_chunks(chunks, last_change.commit_index + 1),
+            .install_raft_metadata_snapshot_chunks(pages, last_change.commit_index + 1),
         Err(ObjectError::PreconditionFailed(_))
     ));
 }
@@ -36267,7 +36267,7 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
     // what that snapshot costs, which nothing did.
     //
     // Reported at several store sizes, and again after every object is deleted,
-    // because the two things that can make it grow are the chunks stored and the
+    // because the two things that can make it grow are the pages stored and the
     // receipts retained.
     //
     // Vary MEASURE_SIZE, not only MEASURE_SERIES. The default series walks the
@@ -36594,7 +36594,7 @@ fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
 
     let mut service = MatrixReplicaService::new();
     service.write_chunk(page.clone(), 0, &[b'a'; 4096]).unwrap();
-    let original: Vec<u8> = service.chunks.get(&page).unwrap().data.as_ref().clone();
+    let original: Vec<u8> = service.pages.get(&page).unwrap().data.as_ref().clone();
     assert_eq!(original.len(), 4096);
 
     // An in-place overwrite: the length never moves, so only the bytes can say
@@ -36602,12 +36602,12 @@ fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
     service.begin_mutation_batch("batch-overwrite").unwrap();
     service.write_chunk(page.clone(), 0, &[b'b'; 1024]).unwrap();
     assert_eq!(
-        service.chunks.get(&page).unwrap().data[0],
+        service.pages.get(&page).unwrap().data[0],
         b'b',
         "the write should have taken effect before the abort"
     );
     service.abort_mutation_batch("batch-overwrite").unwrap();
-    let after_overwrite: Vec<u8> = service.chunks.get(&page).unwrap().data.as_ref().clone();
+    let after_overwrite: Vec<u8> = service.pages.get(&page).unwrap().data.as_ref().clone();
     println!(
         "ABORTRESTORE overwrite len={} first={} restored={}",
         after_overwrite.len(),
@@ -36624,9 +36624,9 @@ fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
     // are not confused for each other.
     service.begin_mutation_batch("batch-append").unwrap();
     service.write_chunk(page.clone(), 4096, &[b'c'; 2048]).unwrap();
-    assert_eq!(service.chunks.get(&page).unwrap().data.len(), 6144);
+    assert_eq!(service.pages.get(&page).unwrap().data.len(), 6144);
     service.abort_mutation_batch("batch-append").unwrap();
-    let after_append: Vec<u8> = service.chunks.get(&page).unwrap().data.as_ref().clone();
+    let after_append: Vec<u8> = service.pages.get(&page).unwrap().data.as_ref().clone();
     println!(
         "ABORTRESTORE append len={} restored={}",
         after_append.len(),
@@ -36654,7 +36654,7 @@ fn only_the_first_write_in_a_batch_should_copy_its_page() {
     // Pointer identity settles which, and the answer is a property worth
     // pinning either way.
     fn data_pointer(service: &MatrixReplicaService, page: &PageId) -> *const Vec<u8> {
-        std::sync::Arc::as_ptr(&service.chunks.get(page).expect("the page exists").data)
+        std::sync::Arc::as_ptr(&service.pages.get(page).expect("the page exists").data)
     }
 
     let page = PageId {
@@ -36706,7 +36706,7 @@ fn only_the_first_write_in_a_batch_should_copy_its_page() {
     // The batch must still restore everything when it aborts, whatever the
     // copies did.
     service.abort_mutation_batch("batch-two-writes").unwrap();
-    let restored = service.chunks.get(&page).unwrap();
+    let restored = service.pages.get(&page).unwrap();
     assert_eq!(restored.data.len(), 4096, "the abort restores the length");
     assert!(
         restored.data.iter().all(|byte| *byte == b'a'),
@@ -36736,7 +36736,7 @@ fn an_open_batch_makes_every_write_copy_the_whole_page() {
     fn data_pointer(service: &MatrixReplicaService, page: &PageId) -> *const Vec<u8> {
         std::sync::Arc::as_ptr(
             &service
-                .chunks
+                .pages
                 .get(page)
                 .expect("the page should exist after a write")
                 .data,
@@ -36761,7 +36761,7 @@ fn an_open_batch_makes_every_write_copy_the_whole_page() {
     println!(
         "PAGECOPY no_batch moved={} len={}",
         before_quiet != after_quiet,
-        quiet.chunks.get(&page).unwrap().data.len()
+        quiet.pages.get(&page).unwrap().data.len()
     );
     assert_eq!(
         before_quiet, after_quiet,
@@ -36782,7 +36782,7 @@ fn an_open_batch_makes_every_write_copy_the_whole_page() {
     println!(
         "PAGECOPY with_batch moved={} len={}",
         before_batched != after_batched,
-        batched.chunks.get(&page).unwrap().data.len()
+        batched.pages.get(&page).unwrap().data.len()
     );
     assert_ne!(
         before_batched, after_batched,
@@ -37222,7 +37222,7 @@ fn no_page_carries_a_redundancy_fragment_while_it_has_peers() {
     // replicas, and the reason is that a redundancy fragment is only kept for a
     // page with no peers. Nothing asserted it, and the audit could not show it:
     // `replica.ec_shards.count` incremented once per page whether or not a
-    // fragment existed, so it was a second copy of `replica.chunks` and read
+    // fragment existed, so it was a second copy of `replica.pages` and read
     // 189 where the fragments held no bytes at all.
     //
     // Now that the count counts pages carrying a fragment, the property is
@@ -37423,7 +37423,7 @@ fn a_write_reaches_every_replica_from_the_coordinator_in_one_hop() {
     let mut contents: Vec<Vec<(PageId, Vec<u8>)>> = Vec::new();
     for replica in store.chunk_service.replicas.iter() {
         let mut held: Vec<(PageId, Vec<u8>)> = replica
-            .chunks
+            .pages
             .iter()
             .map(|(id, state)| (id.clone(), state.data.as_ref().clone()))
             .collect();
@@ -37685,7 +37685,7 @@ fn a_write_while_a_snapshot_is_held_copies_only_the_chunk_it_touches() {
             .unwrap();
     }
     let snapshot = store.chunk_service.export_snapshot_unsealed();
-    // Of the chunks the snapshot holds, how many does the live replica still
+    // Of the pages the snapshot holds, how many does the live replica still
     // name by the very same allocation.
     let still_shared = |snapshot: &ChunkServiceSnapshot, store: &MatrixObjectStore| -> (u64, u64) {
         let mut shared = 0u64;
@@ -37694,9 +37694,9 @@ fn a_write_while_a_snapshot_is_held_copies_only_the_chunk_it_touches() {
             let Some(replica) = store.chunk_service.replicas.get(index) else {
                 continue;
             };
-            for (page_id, state) in taken.chunks.iter() {
+            for (page_id, state) in taken.pages.iter() {
                 held += 1;
-                if let Some(live) = replica.chunks.get(page_id) {
+                if let Some(live) = replica.pages.get(page_id) {
                     if std::sync::Arc::ptr_eq(live, state) {
                         shared += 1;
                     }
@@ -37751,7 +37751,7 @@ fn the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk() {
     //
     // This test used to assert that what the snapshot copies "must not depend on
     // how much is stored", comparing 40 objects against 80 at 1 KiB each. Both
-    // fit in three chunks, so the figure it pinned was its fixture's and not a
+    // fit in three pages, so the figure it pinned was its fixture's and not a
     // law. Varying the object SIZE moves the chunk count and the copy moves with
     // it, exactly in step.
     fn batch_at(objects: usize, size: usize) -> std::collections::BTreeMap<String, u64> {
@@ -37821,9 +37821,9 @@ fn the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk() {
     // The cost per chunk is the same in all three, which is the actual law and
     // the figure a deployment has to multiply by its own chunk count.
     let per_chunk = |audit: &std::collections::BTreeMap<String, u64>| -> u64 {
-        let chunks = get(audit, "batch.replica_chunks.entries");
-        assert!(chunks > 0, "a store with objects in it must hold chunks");
-        get(audit, "batch.replica_chunks.copied_bytes") / chunks
+        let pages = get(audit, "batch.replica_chunks.entries");
+        assert!(pages > 0, "a store with objects in it must hold chunks");
+        get(audit, "batch.replica_chunks.copied_bytes") / pages
     };
     let law = per_chunk(&few_objects);
     println!("BATCHPERCHUNK copied_bytes_per_chunk={law}");
@@ -38673,7 +38673,7 @@ fn a_per_unit_figure_is_a_slope_and_not_a_total_divided_by_a_count() {
     // with the size of the store it was measured on.
     //
     // `block.receipts.bytes` is such a leg -- it carries the page service's
-    // endpoints and sealed chunks beside the receipts. Dividing gives 275 at
+    // endpoints and sealed pages beside the receipts. Dividing gives 275 at
     // 120 receipts and 274 at 600, and neither is the cost of a receipt.
     //
     // The marginal cost is the slope between two sizes, and the intercept is

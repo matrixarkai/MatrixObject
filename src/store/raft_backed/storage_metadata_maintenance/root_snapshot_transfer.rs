@@ -103,23 +103,23 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<Vec<ProvenRootRead<RootSnapshotChunk>>, ObjectError> {
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         self.export_root_snapshot_chunk_stream_with_read_proof_linearizable_committed_at(
             max_payload_bytes,
             min_read_index,
             min_commit_index,
             |chunk| {
-                if chunks.is_empty() {
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                if pages.is_empty() {
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         chunk.value.total_bytes,
                         max_payload_bytes,
                     ));
                 }
-                chunks.push(chunk);
+                pages.push(chunk);
                 Ok(())
             },
         )?;
-        Ok(chunks)
+        Ok(pages)
     }
 
     pub fn export_root_snapshot_chunks_with_read_proof_report_linearizable(
@@ -151,7 +151,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ),
         ObjectError,
     > {
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         let mut material =
             Vec::with_capacity(encoded_string_len("MXOS-RUST-ROOT-SNAPSHOT-READ-PROOFS1"));
         append_string(&mut material, "MXOS-RUST-ROOT-SNAPSHOT-READ-PROOFS1");
@@ -181,7 +181,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         "root snapshot proof checksum mismatch".to_string(),
                     ));
                 }
-                if chunks.is_empty() {
+                if pages.is_empty() {
                     operation = proven.proof.operation.clone();
                     requested_root_read_index = proven.proof.requested_root_read_index;
                     requested_root_commit_index = proven.proof.requested_root_commit_index;
@@ -190,7 +190,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     root_state_fingerprint = proven.proof.root_state_fingerprint.clone();
                     full_snapshot_checksum = proven.value.full_checksum.clone();
                     first_offset = proven.value.offset;
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         proven.value.total_bytes,
                         max_payload_bytes,
                     ));
@@ -220,18 +220,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     &proven.value.page_checksum,
                     &proven.proof,
                 );
-                chunks.push(proven);
+                pages.push(proven);
                 Ok(())
             },
         )?;
-        if chunks.is_empty() {
+        if pages.is_empty() {
             return Err(ObjectError::InvalidArgument(
                 "root snapshot proof stream is empty".to_string(),
             ));
         }
         let report = finish_root_snapshot_proof_stream_report(
             material,
-            chunks.len() as u64,
+            pages.len() as u64,
             operation,
             requested_root_read_index,
             requested_root_commit_index,
@@ -243,12 +243,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             last_end_offset,
             full_snapshot_checksum,
         );
-        Ok((chunks, report))
+        Ok((pages, report))
     }
 
     pub fn install_root_snapshot_chunks_with_read_proof_report<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         expected_report: &RootSnapshotProofStreamReport,
         min_read_index: u64,
         min_commit_index: u64,
@@ -272,7 +272,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let mut proof_count = 0u64;
         let mut assembler = RootSnapshotChunkAssembler::default();
         let mut assembled_snapshot = None;
-        for proven in chunks {
+        for proven in pages {
             if proven.proof.root_read_index_lag != 0 {
                 return Err(ObjectError::PreconditionFailed(format!(
                     "root snapshot proof has read lag {}",
@@ -376,7 +376,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn install_root_snapshot_chunks_with_read_proof_source_report<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         expected_report: &RootSnapshotProofStreamReport,
         expected_source_proof: &ServiceSnapshotInstallSourceProofReport,
         min_read_index: u64,
@@ -392,7 +392,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             &actual_source_proof,
         )?;
         self.install_root_snapshot_chunks_with_read_proof_report(
-            chunks,
+            pages,
             expected_report,
             min_read_index,
             min_commit_index,

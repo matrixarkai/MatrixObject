@@ -154,7 +154,7 @@ impl ReplicaServiceSnapshot {
         } else {
             DEFAULT_STORAGE_RECEIPT_RETENTION
         };
-        let mut chunks = BTreeMap::new();
+        let mut pages = BTreeMap::new();
         for _ in 0..cursor.read_count("chunk service snapshot chunk count")? {
             let chunk_id = ChunkId {
                 volume_id: cursor.read_u64()?,
@@ -210,7 +210,7 @@ impl ReplicaServiceSnapshot {
                     length: cursor.read_u64()?,
                 });
             }
-            chunks.insert(
+            pages.insert(
                 page_id,
                 std::sync::Arc::new(PageState {
                     logical_length,
@@ -294,7 +294,7 @@ impl ReplicaServiceSnapshot {
             ));
         }
         let mut snapshot = Self {
-            chunks,
+            pages,
             receipt_retention,
             write_request_receipts: std::sync::Arc::new(write_request_receipts),
             discard_request_receipts: std::sync::Arc::new(discard_request_receipts),

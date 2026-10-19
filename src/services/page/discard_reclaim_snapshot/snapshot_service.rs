@@ -312,7 +312,7 @@ impl MatrixChunkService {
             ));
         }
         let image = self.export_snapshot_image()?;
-        let mut chunks = Vec::with_capacity(snapshot_chunk_vec_capacity(
+        let mut pages = Vec::with_capacity(snapshot_chunk_vec_capacity(
             image.bytes.len() as u64,
             max_payload_bytes,
         ));
@@ -331,7 +331,7 @@ impl MatrixChunkService {
                     "block service snapshot export made no progress".to_string(),
                 ));
             }
-            chunks.push(chunk);
+            pages.push(chunk);
             if eof {
                 let mut cache = self.snapshot_export_cache.borrow_mut();
                 if cache
@@ -344,7 +344,7 @@ impl MatrixChunkService {
                 break;
             }
         }
-        Ok(chunks)
+        Ok(pages)
     }
 
     pub fn install_snapshot(&mut self, snapshot: ChunkServiceSnapshot) -> Result<(), ObjectError> {
@@ -428,13 +428,13 @@ impl MatrixChunkService {
 
     pub fn install_snapshot_chunks<I>(
         &mut self,
-        chunks: I,
+        pages: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
         I: IntoIterator<Item = ChunkServiceSnapshotChunk>,
     {
         let mut progress = self.snapshot_assembler.install_progress();
-        for chunk in chunks {
+        for chunk in pages {
             if let Some(assembled) = self.snapshot_assembler.push_chunk_with_checksum(chunk)? {
                 self.install_snapshot_bytes_in_place(&assembled.bytes)?;
                 return Ok(snapshot_install_progress(
@@ -498,7 +498,7 @@ impl MatrixChunkService {
     pub fn install_chunk_replica_snapshot_chunks<I>(
         &mut self,
         replica_index: usize,
-        chunks: I,
+        pages: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
         I: IntoIterator<Item = ReplicaServiceSnapshotChunk>,
@@ -506,7 +506,7 @@ impl MatrixChunkService {
         self.replicas
             .get_mut(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
-            .install_snapshot_chunks(chunks)
+            .install_snapshot_chunks(pages)
     }
 
     pub fn snapshot_install_progress(&self) -> SnapshotInstallProgress {

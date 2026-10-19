@@ -111,7 +111,7 @@ impl MatrixMetaService {
             ));
         }
         let image = self.export_snapshot_image()?;
-        let mut chunks = Vec::with_capacity(snapshot_chunk_vec_capacity(
+        let mut pages = Vec::with_capacity(snapshot_chunk_vec_capacity(
             image.bytes.len() as u64,
             max_payload_bytes,
         ));
@@ -131,7 +131,7 @@ impl MatrixMetaService {
                     "metadata snapshot chunk export made no progress".to_string(),
                 ));
             }
-            chunks.push(chunk);
+            pages.push(chunk);
             if eof {
                 let mut cache = self.snapshot_export_cache.borrow_mut();
                 if cache
@@ -144,7 +144,7 @@ impl MatrixMetaService {
                 break;
             }
         }
-        Ok(chunks)
+        Ok(pages)
     }
 
 }

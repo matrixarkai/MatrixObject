@@ -302,7 +302,7 @@ impl MatrixObjectStore {
         replica.check_expected_control_checksum(Some(&current_control_proof.state_checksum))?;
         let projected_len = prepared.state.logical_length;
         replica
-            .chunks
+            .pages
             .insert(
                 prepared.receipt.page_id.clone(),
                 std::sync::Arc::new(prepared.state),

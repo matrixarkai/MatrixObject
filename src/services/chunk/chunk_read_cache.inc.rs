@@ -7,7 +7,7 @@ impl MatrixReplicaService {
     ) -> Result<(ReplicaReadResult, bool), ObjectError> {
         let end = validate_pipeline_range("chunk read", offset, length)?;
         let chunk = self
-            .chunks
+            .pages
             .get(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         if end > chunk.logical_length {
