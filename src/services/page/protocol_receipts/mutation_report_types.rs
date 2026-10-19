@@ -81,7 +81,7 @@ impl ChunkRangeRepairReceipt {
         let actual = self.proof_checksum();
         if actual != expected_page_range_repair_receipt_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block range repair receipt proof checksum mismatch: expected {} got {}",
+                "page range repair receipt proof checksum mismatch: expected {} got {}",
                 expected_page_range_repair_receipt_proof_checksum, actual
             )));
         }

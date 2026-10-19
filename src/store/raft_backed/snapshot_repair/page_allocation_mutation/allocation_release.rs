@@ -18,7 +18,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<PreparedPageAllocationReleaseEnvelope, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block allocation release prepare read index is not satisfied".to_string(),
+                "page allocation release prepare read index is not satisfied".to_string(),
             ));
         }
         let prepared =
@@ -54,7 +54,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<(ObjectMetadata, ChunkAllocationReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block allocation release requires raft/store commit alignment"
+                "prepared page allocation release requires raft/store commit alignment"
                     .to_string(),
             ));
         }
@@ -67,7 +67,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .append(ObjectCommand::ApplyPreparedPageAllocationRelease { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block allocation release raft index is not contiguous".to_string(),
+                "prepared page allocation release raft index is not contiguous".to_string(),
             ));
         }
         let metadata = self.store.apply_raft_entry(&entry)?;
@@ -104,7 +104,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block allocation release requires expected raft entry checksum".to_string(),
+                "page allocation release requires expected raft entry checksum".to_string(),
             ));
         }
         prepared.verify_expected_raft_entry_checksum(expected_raft_entry_checksum)?;
@@ -121,7 +121,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_route_control_checksum = expected_route_control_checksum.as_ref();
         if expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block allocation release requires expected route control checksum"
+                "proven page allocation release requires expected route control checksum"
                     .to_string(),
             ));
         }
@@ -130,12 +130,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 != expected_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block allocation release route checksum mismatch".to_string(),
+                "proven page allocation release route checksum mismatch".to_string(),
             ));
         }
         if self.store.last_applied_index() < proven_envelope.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block allocation release proof is not applied: applied={} required={}",
+                "proven page allocation release proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_envelope.proof.storage_applied_index
             )));
@@ -145,7 +145,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.envelope.envelope_checksum != expected_envelope_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block allocation release envelope checksum mismatch".to_string(),
+                "proven page allocation release envelope checksum mismatch".to_string(),
             ));
         }
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
@@ -153,7 +153,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.envelope.raft_entry_checksum != expected_raft_entry_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block allocation release raft entry checksum mismatch".to_string(),
+                "proven page allocation release raft entry checksum mismatch".to_string(),
             ));
         }
         let prepared = self.prepare_page_allocation_release_raft_entry(
@@ -163,7 +163,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let actual_envelope = make_prepared_page_allocation_release_envelope(&prepared);
         if actual_envelope.envelope_checksum != proven_envelope.envelope.envelope_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "proven block allocation release prepared envelope changed".to_string(),
+                "proven page allocation release prepared envelope changed".to_string(),
             ));
         }
         self.propose_prepared_page_allocation_release_fenced(

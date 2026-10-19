@@ -58,12 +58,12 @@ impl MatrixChunkService {
             .count();
         if write_quorum > writable_replicas {
             return Err(ObjectError::PreconditionFailed(
-                "block write quorum exceeds writable replica count".to_string(),
+                "page write quorum exceeds writable replica count".to_string(),
             ));
         }
         if read_quorum > active_replicas {
             return Err(ObjectError::PreconditionFailed(
-                "block quorum exceeds active replica count".to_string(),
+                "page quorum exceeds active replica count".to_string(),
             ));
         }
         Ok(())
@@ -102,7 +102,7 @@ impl MatrixChunkService {
                 .count();
             if writable_after < self.write_quorum {
                 return Err(ObjectError::PreconditionFailed(
-                    "replica freeze would violate block write quorum".to_string(),
+                    "replica freeze would violate page write quorum".to_string(),
                 ));
             }
         }
@@ -133,7 +133,7 @@ impl MatrixChunkService {
                 });
             if active_after < self.write_quorum || active_after < self.read_quorum {
                 return Err(ObjectError::PreconditionFailed(
-                    "replica quarantine would violate block quorum".to_string(),
+                    "replica quarantine would violate page quorum".to_string(),
                 ));
             }
             let writable_after = self
@@ -146,7 +146,7 @@ impl MatrixChunkService {
                 .count();
             if writable_after < self.write_quorum {
                 return Err(ObjectError::PreconditionFailed(
-                    "replica quarantine would violate block write quorum".to_string(),
+                    "replica quarantine would violate page write quorum".to_string(),
                 ));
             }
             self.quarantined_replicas.insert(replica_index);

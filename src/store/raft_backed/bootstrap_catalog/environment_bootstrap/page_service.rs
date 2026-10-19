@@ -9,7 +9,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         };
         if target_commit_index == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block route-control bootstrap commit index must be positive".to_string(),
+                "page route-control bootstrap commit index must be positive".to_string(),
             ));
         }
         let max_steps = first_non_empty_env_u64(
@@ -19,7 +19,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let before_proof = self.store.chunk_service.route_control_proof();
         if before_proof.chunk_route_control_commit_index > target_commit_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block route-control bootstrap target is behind local state: target={} local={}",
+                "page route-control bootstrap target is behind local state: target={} local={}",
                 target_commit_index, before_proof.chunk_route_control_commit_index
             )));
         }
@@ -34,20 +34,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         {
             if applied_steps >= max_steps {
                 return Err(ObjectError::PreconditionFailed(
-                    "block route-control bootstrap exceeded max steps before target commit index"
+                    "page route-control bootstrap exceeded max steps before target commit index"
                         .to_string(),
                 ));
             }
             if self.raft.commit_index() != self.store.last_applied_index() {
                 return Err(ObjectError::PreconditionFailed(
-                    "block route-control bootstrap requires raft/store commit alignment"
+                    "page route-control bootstrap requires raft/store commit alignment"
                         .to_string(),
                 ));
             }
             let next_commit_index = self.store.last_applied_index().saturating_add(1);
             if next_commit_index > target_commit_index {
                 return Err(ObjectError::PreconditionFailed(format!(
-                    "block route-control bootstrap would overshoot target: next={} target={}",
+                    "page route-control bootstrap would overshoot target: next={} target={}",
                     next_commit_index, target_commit_index
                 )));
             }

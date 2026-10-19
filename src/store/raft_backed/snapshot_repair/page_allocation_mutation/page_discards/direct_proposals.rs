@@ -64,7 +64,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .cloned()
             .ok_or_else(|| {
                 ObjectError::Corruption(
-                    "raft idempotent block discard receipt missing after apply".to_string(),
+                    "raft idempotent page discard receipt missing after apply".to_string(),
                 )
             })?;
         let stats = ChunkBatchStats {
@@ -137,7 +137,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .cloned()
             .ok_or_else(|| {
                 ObjectError::Corruption(
-                    "raft idempotent block batch discard receipt missing after apply".to_string(),
+                    "raft idempotent page batch discard receipt missing after apply".to_string(),
                 )
             })?;
         let report = ChunkIdempotentBatchDiscardReport {

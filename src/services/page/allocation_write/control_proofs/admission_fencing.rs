@@ -8,18 +8,18 @@ impl MatrixChunkService {
         };
         if expected_checksum.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block chunk control proof checksum expectation is empty".to_string(),
+                "page chunk control proof checksum expectation is empty".to_string(),
             ));
         }
         let actual_proof = self.chunk_control_proof();
         if actual_proof.proof_count == 0 || actual_proof.proof_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block chunk control proof is unavailable".to_string(),
+                "page chunk control proof is unavailable".to_string(),
             ));
         }
         if expected_checksum != actual_proof.proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block chunk control proof checksum mismatch: expected {} got {}",
+                "page chunk control proof checksum mismatch: expected {} got {}",
                 expected_checksum, actual_proof.proof_checksum
             )));
         }

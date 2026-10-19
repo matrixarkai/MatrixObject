@@ -25,7 +25,7 @@ impl MatrixObjectStore {
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch discard previous commit fence mismatch".to_string(),
+                "page prepared batch discard previous commit fence mismatch".to_string(),
             ));
         }
         let before_page_service_fingerprint =
@@ -83,7 +83,7 @@ impl MatrixObjectStore {
         }
         if selected.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block prepared batch discard must contain at least one range".to_string(),
+                "page prepared batch discard must contain at least one range".to_string(),
             ));
         }
         let admission = self.chunk_service.can_accept_slab_discards_from_borrowed(
@@ -136,7 +136,7 @@ impl MatrixObjectStore {
         }
         if selected.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block prepared batch discard must contain at least one range".to_string(),
+                "page prepared batch discard must contain at least one range".to_string(),
             ));
         }
         let admission = self
@@ -167,31 +167,31 @@ impl MatrixObjectStore {
         });
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "block prepared batch discard raft entry checksum mismatch".to_string(),
+                "page prepared batch discard raft entry checksum mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch discard requires route proof checksum".to_string(),
+                "page prepared batch discard requires route proof checksum".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch discard route proof checksum mismatch".to_string(),
+                "page prepared batch discard route proof checksum mismatch".to_string(),
             ));
         }
         if prepared.receipt.request_checksum
             != page_batch_discard_request_checksum(&prepared.requests)
         {
             return Err(ObjectError::Corruption(
-                "block prepared batch discard request checksum mismatch".to_string(),
+                "page prepared batch discard request checksum mismatch".to_string(),
             ));
         }
         if prepared.prepared_commit_index
             != prepared.expected_previous_commit_index.saturating_add(1)
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch discard commit index must be adjacent".to_string(),
+                "page prepared batch discard commit index must be adjacent".to_string(),
             ));
         }
         if let Some(existing) = self
@@ -201,7 +201,7 @@ impl MatrixObjectStore {
         {
             if existing.request_checksum != prepared.receipt.request_checksum {
                 return Err(ObjectError::PreconditionFailed(
-                    "block prepared batch discard idempotency key reused with different request"
+                    "page prepared batch discard idempotency key reused with different request"
                         .to_string(),
                 ));
             }
@@ -215,7 +215,7 @@ impl MatrixObjectStore {
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch discard previous commit fence mismatch".to_string(),
+                "page prepared batch discard previous commit fence mismatch".to_string(),
             ));
         }
         let current_route_proof = self.chunk_service.route_control_proof();
@@ -230,14 +230,14 @@ impl MatrixObjectStore {
                 != current_route_proof.chunk_route_control_next_log_index
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch discard route proof cursor mismatch".to_string(),
+                "page prepared batch discard route proof cursor mismatch".to_string(),
             ));
         }
         self.chunk_service
             .check_expected_route_control_checksum(Some(&current_route_proof.state_checksum))?;
         if current_fingerprint != prepared.before_page_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch discard source fingerprint mismatch".to_string(),
+                "page prepared batch discard source fingerprint mismatch".to_string(),
             ));
         }
         let (_stats, receipt) = self.chunk_service.discard_slab_ranges_idempotent_borrowed(
@@ -249,7 +249,7 @@ impl MatrixObjectStore {
                 != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(
-                "block prepared batch discard deterministic apply mismatch".to_string(),
+                "page prepared batch discard deterministic apply mismatch".to_string(),
             ));
         }
         Ok(prepared.receipt)

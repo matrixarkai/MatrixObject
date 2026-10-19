@@ -234,7 +234,7 @@ impl MatrixChunkService {
     ) -> Result<ChunkServiceSnapshotChunk, ObjectError> {
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block service snapshot chunk budget must be positive".to_string(),
+                "page service snapshot chunk budget must be positive".to_string(),
             ));
         }
         let image = self.export_snapshot_image()?;
@@ -267,7 +267,7 @@ impl MatrixChunkService {
     {
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block service snapshot chunk budget must be positive".to_string(),
+                "page service snapshot chunk budget must be positive".to_string(),
             ));
         }
         let image = self.export_snapshot_image()?;
@@ -284,7 +284,7 @@ impl MatrixChunkService {
             let progress = chunk.install_progress();
             if !eof && chunk.payload.is_empty() {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot export made no progress".to_string(),
+                    "page service snapshot export made no progress".to_string(),
                 ));
             }
             emit(chunk)?;
@@ -308,7 +308,7 @@ impl MatrixChunkService {
     ) -> Result<Vec<ChunkServiceSnapshotChunk>, ObjectError> {
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block service snapshot chunk budget must be positive".to_string(),
+                "page service snapshot chunk budget must be positive".to_string(),
             ));
         }
         let image = self.export_snapshot_image()?;
@@ -328,7 +328,7 @@ impl MatrixChunkService {
             let eof = chunk.eof;
             if !eof && chunk.payload.is_empty() {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot export made no progress".to_string(),
+                    "page service snapshot export made no progress".to_string(),
                 ));
             }
             pages.push(chunk);
@@ -453,7 +453,7 @@ impl MatrixChunkService {
             return Ok(progress);
         }
         Err(ObjectError::InvalidArgument(
-            "block service snapshot chunk stream is empty".to_string(),
+            "page service snapshot chunk stream is empty".to_string(),
         ))
     }
 

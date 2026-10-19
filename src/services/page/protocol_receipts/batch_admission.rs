@@ -194,7 +194,7 @@ impl ChunkRangeAdmission {
             return Ok(());
         }
         Err(ObjectError::PreconditionFailed(format!(
-            "block admission proof format mismatch: expected {} got {}",
+            "page admission proof format mismatch: expected {} got {}",
             STORAGE_ADMISSION_PROOF_FORMAT, self.admission_proof_format
         )))
     }
@@ -211,7 +211,7 @@ impl ChunkRangeAdmission {
             return Ok(());
         }
         Err(ObjectError::PreconditionFailed(format!(
-            "block admission proof checksum mismatch: expected {} got {}",
+            "page admission proof checksum mismatch: expected {} got {}",
             expected_admission_proof_checksum, self.admission_proof_checksum
         )))
     }
@@ -223,12 +223,12 @@ pub(crate) fn select_admitted_page_discard_requests(
 ) -> Result<Vec<ChunkRangeRequest>, ObjectError> {
     if !admission.can_accept {
         return Err(ObjectError::PreconditionFailed(
-            "block batch discard admission rejected".to_string(),
+            "page batch discard admission rejected".to_string(),
         ));
     }
     if admission.next_discard_range_index < admission.discard_start_range_index {
         return Err(ObjectError::Corruption(
-            "block batch discard admission cursor moved backwards".to_string(),
+            "page batch discard admission cursor moved backwards".to_string(),
         ));
     }
     let request_count = requests.len() as u64;
@@ -236,7 +236,7 @@ pub(crate) fn select_admitted_page_discard_requests(
         || admission.next_discard_range_index > request_count
     {
         return Err(ObjectError::Corruption(
-            "block batch discard admission cursor exceeds request count".to_string(),
+            "page batch discard admission cursor exceeds request count".to_string(),
         ));
     }
     let selected_capacity = usize::try_from(
@@ -260,19 +260,19 @@ pub(crate) fn select_admitted_page_discard_requests(
         }
         selected_bytes = selected_bytes.checked_add(request.length).ok_or_else(|| {
             ObjectError::InvalidArgument(
-                "block batch discard selected byte count overflows".to_string(),
+                "page batch discard selected byte count overflows".to_string(),
             )
         })?;
         selected.push(request);
     }
     if selected.is_empty() {
         return Err(ObjectError::PreconditionFailed(
-            "block batch discard selected no ranges within max_discard_bytes".to_string(),
+            "page batch discard selected no ranges within max_discard_bytes".to_string(),
         ));
     }
     if selected_bytes != admission.selected_discard_bytes {
         return Err(ObjectError::Corruption(
-            "block batch discard selected bytes do not match admission".to_string(),
+            "page batch discard selected bytes do not match admission".to_string(),
         ));
     }
     Ok(selected)

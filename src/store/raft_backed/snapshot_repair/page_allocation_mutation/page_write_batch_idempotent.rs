@@ -49,7 +49,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .cloned()
             .ok_or_else(|| {
                 ObjectError::Corruption(
-                    "raft idempotent block batch write receipt missing after apply".to_string(),
+                    "raft idempotent page batch write receipt missing after apply".to_string(),
                 )
             })?;
         let report = ChunkIdempotentBatchWriteReport {

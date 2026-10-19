@@ -31,7 +31,7 @@ impl ChunkAllocationReceipt {
         let actual = self.proof_checksum();
         if actual != expected_page_allocation_receipt_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block allocation receipt proof checksum mismatch: expected {} got {}",
+                "page allocation receipt proof checksum mismatch: expected {} got {}",
                 expected_page_allocation_receipt_proof_checksum, actual
             )));
         }
@@ -90,7 +90,7 @@ impl ChunkBatchAllocationReceipt {
         let actual = self.proof_checksum();
         if actual != expected_page_batch_allocation_receipt_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block batch allocation receipt proof checksum mismatch: expected {} got {}",
+                "page batch allocation receipt proof checksum mismatch: expected {} got {}",
                 expected_page_batch_allocation_receipt_proof_checksum, actual
             )));
         }

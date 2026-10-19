@@ -117,7 +117,7 @@ impl ChunkRouteControlBootstrapReport {
             return Ok(());
         }
         Err(ObjectError::PreconditionFailed(format!(
-            "block route-control bootstrap report checksum mismatch: expected {} got {}",
+            "page route-control bootstrap report checksum mismatch: expected {} got {}",
             expected_report_checksum,
             self.report_checksum()
         )))

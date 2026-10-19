@@ -4,7 +4,7 @@ impl StoreSnapshot {
         for (chunk_id, chunk) in &self.chunks {
             if chunk_id != &chunk.chunk_id {
                 return Err(ObjectError::Corruption(
-                    "snapshot segment key does not match segment info".to_string(),
+                    "snapshot chunk key does not match chunk info".to_string(),
                 ));
             }
             max_chunk_id = max_chunk_id.max(chunk_id.id);
@@ -13,7 +13,7 @@ impl StoreSnapshot {
                 || chunk.discarded_bytes > chunk.stale_bytes
             {
                 return Err(ObjectError::Corruption(
-                    "snapshot segment accounting is invalid".to_string(),
+                    "snapshot chunk accounting is invalid".to_string(),
                 ));
             }
             for range in chunk
@@ -23,14 +23,14 @@ impl StoreSnapshot {
             {
                 if range.end()? > chunk.next_offset {
                     return Err(ObjectError::Corruption(
-                        "snapshot segment range exceeds segment length".to_string(),
+                        "snapshot chunk range exceeds chunk length".to_string(),
                     ));
                 }
             }
         }
         if max_chunk_id >= self.next_chunk_id {
             return Err(ObjectError::Corruption(
-                "snapshot next segment id is behind retained segments".to_string(),
+                "snapshot next chunk id is behind retained chunks".to_string(),
             ));
         }
         Ok(())

@@ -29,7 +29,7 @@ impl MatrixObjectStore {
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared route qos previous commit fence mismatch".to_string(),
+                "page prepared route qos previous commit fence mismatch".to_string(),
             ));
         }
         let before_page_service_fingerprint =
@@ -66,24 +66,24 @@ impl MatrixObjectStore {
             });
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "block prepared route qos raft entry checksum mismatch".to_string(),
+                "page prepared route qos raft entry checksum mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared route qos route fence is required".to_string(),
+                "page prepared route qos route fence is required".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared route qos route proof checksum mismatch".to_string(),
+                "page prepared route qos route proof checksum mismatch".to_string(),
             ));
         }
         if prepared.prepared_commit_index
             != prepared.expected_previous_commit_index.saturating_add(1)
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared route qos commit index must be adjacent".to_string(),
+                "page prepared route qos commit index must be adjacent".to_string(),
             ));
         }
         let current_fingerprint = chunk_route_control_image_fingerprint(&self.chunk_service);
@@ -92,7 +92,7 @@ impl MatrixObjectStore {
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared route qos previous commit fence mismatch".to_string(),
+                "page prepared route qos previous commit fence mismatch".to_string(),
             ));
         }
         self.chunk_service
@@ -102,7 +102,7 @@ impl MatrixObjectStore {
             )?;
         if current_fingerprint != prepared.before_page_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared route qos source fingerprint mismatch".to_string(),
+                "page prepared route qos source fingerprint mismatch".to_string(),
             ));
         }
         let applied_config = self.chunk_service.configure_route_qos_at_commit(
@@ -114,7 +114,7 @@ impl MatrixObjectStore {
                 != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(
-                "block prepared route qos deterministic apply mismatch".to_string(),
+                "page prepared route qos deterministic apply mismatch".to_string(),
             ));
         }
         Ok(prepared.config)

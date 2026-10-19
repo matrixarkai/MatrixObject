@@ -174,7 +174,7 @@ impl MatrixObjectStore {
         }
         if expected_previous_commit_index != self.last_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "segment compaction expected previous commit {} does not match applied {}",
+                "chunk compaction expected previous commit {} does not match applied {}",
                 expected_previous_commit_index, self.last_applied_index
             )));
         }
@@ -184,7 +184,7 @@ impl MatrixObjectStore {
             .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
         if chunk.stale_bytes < min_stale_bytes {
             return Err(ObjectError::PreconditionFailed(format!(
-                "segment stale bytes {} below compaction threshold {}",
+                "chunk stale bytes {} below compaction threshold {}",
                 chunk.stale_bytes, min_stale_bytes
             )));
         }
@@ -230,7 +230,7 @@ impl MatrixObjectStore {
         });
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "prepared segment compaction checksum mismatch".to_string(),
+                "prepared chunk compaction checksum mismatch".to_string(),
             ));
         }
         if prepared.request_checksum
@@ -241,27 +241,27 @@ impl MatrixObjectStore {
             )
         {
             return Err(ObjectError::Corruption(
-                "prepared segment compaction request checksum mismatch".to_string(),
+                "prepared chunk compaction request checksum mismatch".to_string(),
             ));
         }
         if prepared.expected_previous_commit_index != self.last_applied_index {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction previous commit fence mismatch".to_string(),
+                "prepared chunk compaction previous commit fence mismatch".to_string(),
             ));
         }
         if prepared.before_state_fingerprint != self.state_fingerprint_without_payload_clones() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction source state changed".to_string(),
+                "prepared chunk compaction source state changed".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction route fence is required".to_string(),
+                "prepared chunk compaction route fence is required".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction route proof checksum mismatch".to_string(),
+                "prepared chunk compaction route proof checksum mismatch".to_string(),
             ));
         }
         self.chunk_service
@@ -288,13 +288,13 @@ impl MatrixObjectStore {
             || current.route_control_proof != prepared.route_control_proof
         {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment compaction no longer matches current state".to_string(),
+                "prepared chunk compaction no longer matches current state".to_string(),
             ));
         }
         self.compact_chunk_at(&prepared.chunk_id, prepared.update_time_ms)?;
         if self.state_fingerprint_without_payload_clones() != prepared.after_state_fingerprint {
             return Err(ObjectError::Corruption(
-                "prepared segment compaction post-state checksum mismatch".to_string(),
+                "prepared chunk compaction post-state checksum mismatch".to_string(),
             ));
         }
         Ok(())

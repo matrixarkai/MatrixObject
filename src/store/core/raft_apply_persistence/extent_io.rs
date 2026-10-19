@@ -27,12 +27,12 @@ impl MatrixObjectStore {
         let chunk = self
             .chunks
             .get_mut(&chunk_id)
-            .ok_or_else(|| ObjectError::NotFound("allocated segment missing".to_string()))?;
+            .ok_or_else(|| ObjectError::NotFound("allocated chunk missing".to_string()))?;
         let offset = chunk.next_offset;
         chunk.next_offset = chunk
             .next_offset
             .checked_add(page_len as u64)
-            .ok_or_else(|| ObjectError::InvalidArgument("segment offset overflow".to_string()))?;
+            .ok_or_else(|| ObjectError::InvalidArgument("chunk offset overflow".to_string()))?;
         chunk.logical_bytes = chunk.next_offset;
         chunk.live_bytes = saturating_add(chunk.live_bytes, page_len as u64);
         self.chunk_service
@@ -68,13 +68,13 @@ impl MatrixObjectStore {
             let chunk = self
                 .chunks
                 .get_mut(&chunk_id)
-                .ok_or_else(|| ObjectError::NotFound("allocated segment missing".to_string()))?;
+                .ok_or_else(|| ObjectError::NotFound("allocated chunk missing".to_string()))?;
             let offset = chunk.next_offset;
             chunk.next_offset = chunk
                 .next_offset
                 .checked_add(page_len as u64)
                 .ok_or_else(|| {
-                    ObjectError::InvalidArgument("segment offset overflow".to_string())
+                    ObjectError::InvalidArgument("chunk offset overflow".to_string())
                 })?;
             chunk.logical_bytes = chunk.next_offset;
             chunk.live_bytes = saturating_add(chunk.live_bytes, page_len as u64);
@@ -147,7 +147,7 @@ impl MatrixObjectStore {
         self.next_chunk_id = self
             .next_chunk_id
             .checked_add(1)
-            .ok_or_else(|| ObjectError::InvalidArgument("segment id overflow".to_string()))?;
+            .ok_or_else(|| ObjectError::InvalidArgument("chunk id overflow".to_string()))?;
         let chunk_id = ChunkId {
             volume_id: (id - 1) % self.options.volume_count,
             id,
@@ -176,7 +176,7 @@ impl MatrixObjectStore {
                 .checked_add(extent.length)
                 .ok_or_else(|| ObjectError::InvalidArgument("extent overflows".to_string()))?;
             if !self.chunks.contains_key(&extent.chunk_id) {
-                return Err(ObjectError::NotFound("extent segment missing".to_string()));
+                return Err(ObjectError::NotFound("extent chunk missing".to_string()));
             }
             // The range is about to be discarded, so its payload entry goes too:
             // nothing references an extent marked stale (when versioning is on the
@@ -203,7 +203,7 @@ impl MatrixObjectStore {
             let chunk = self
                 .chunks
                 .get_mut(&chunk_id)
-                .ok_or_else(|| ObjectError::NotFound("extent segment missing".to_string()))?;
+                .ok_or_else(|| ObjectError::NotFound("extent chunk missing".to_string()))?;
             let stale_bytes = merged_ranges
                 .iter()
                 .fold(0u64, |acc, range| saturating_add(acc, range.length));

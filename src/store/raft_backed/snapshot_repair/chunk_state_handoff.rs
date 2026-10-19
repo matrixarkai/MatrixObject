@@ -135,7 +135,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "chunk state handoff requires a block route control checksum".to_string(),
+                "chunk state handoff requires a page route control checksum".to_string(),
             ));
         }
         let command = ObjectCommand::ApplyChunkStateHandoffs {
@@ -205,7 +205,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "proven chunk state handoff requires a block route control checksum".to_string(),
+                "proven chunk state handoff requires a page route control checksum".to_string(),
             ));
         }
         if proven_handoffs.proof.control_checksum != expected_page_route_control_checksum {
@@ -239,7 +239,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "proven chunk state handoff envelope requires a block route control checksum"
+                "proven chunk state handoff envelope requires a page route control checksum"
                     .to_string(),
             ));
         }

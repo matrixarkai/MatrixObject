@@ -6,7 +6,7 @@ impl MatrixObjectStore {
     ) -> Result<PreparedPageChunkRepair, ObjectError> {
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared chunk repair previous commit fence mismatch".to_string(),
+                "page prepared chunk repair previous commit fence mismatch".to_string(),
             ));
         }
         let before_page_service_fingerprint =
@@ -40,43 +40,43 @@ impl MatrixObjectStore {
         });
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "block prepared chunk repair raft entry checksum mismatch".to_string(),
+                "page prepared chunk repair raft entry checksum mismatch".to_string(),
             ));
         }
         if prepared.route_control_proof != prepared.report.route_control_proof {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared chunk repair route proof/report mismatch".to_string(),
+                "page prepared chunk repair route proof/report mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum
             != prepared.report.expected_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared chunk repair route checksum/report mismatch".to_string(),
+                "page prepared chunk repair route checksum/report mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared chunk repair route fence is required".to_string(),
+                "page prepared chunk repair route fence is required".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared chunk repair route proof checksum mismatch".to_string(),
+                "page prepared chunk repair route proof checksum mismatch".to_string(),
             ));
         }
         if prepared.chunk_control_proof.proof_count == 0
             || prepared.chunk_control_proof.proof_checksum.is_empty()
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared chunk repair chunk control proof is required".to_string(),
+                "page prepared chunk repair chunk control proof is required".to_string(),
             ));
         }
         if prepared.prepared_commit_index
             != prepared.expected_previous_commit_index.saturating_add(1)
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared chunk repair commit index must be adjacent".to_string(),
+                "page prepared chunk repair commit index must be adjacent".to_string(),
             ));
         }
         if let Some(existing) = self
@@ -86,7 +86,7 @@ impl MatrixObjectStore {
         {
             if existing.page_id != prepared.page_id || existing.report != prepared.report {
                 return Err(ObjectError::PreconditionFailed(
-                    "block prepared chunk repair receipt image mismatch".to_string(),
+                    "page prepared chunk repair receipt image mismatch".to_string(),
                 ));
             }
             let mut receipt = existing.clone();
@@ -110,7 +110,7 @@ impl MatrixObjectStore {
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared chunk repair previous commit fence mismatch".to_string(),
+                "page prepared chunk repair previous commit fence mismatch".to_string(),
             ));
         }
         self.chunk_service
@@ -125,7 +125,7 @@ impl MatrixObjectStore {
             )?;
         if current_fingerprint != prepared.before_page_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared chunk repair source fingerprint mismatch".to_string(),
+                "page prepared chunk repair source fingerprint mismatch".to_string(),
             ));
         }
         let mut current = self.prepare_page_chunk_repair_raft_entry(
@@ -143,7 +143,7 @@ impl MatrixObjectStore {
             || current.raft_entry_checksum != prepared.raft_entry_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared chunk repair no longer matches current state".to_string(),
+                "page prepared chunk repair no longer matches current state".to_string(),
             ));
         }
         let mut report = self
@@ -156,7 +156,7 @@ impl MatrixObjectStore {
                 != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(
-                "block prepared chunk repair deterministic apply mismatch".to_string(),
+                "page prepared chunk repair deterministic apply mismatch".to_string(),
             ));
         }
         let receipt = ReplicaRepairReceipt {

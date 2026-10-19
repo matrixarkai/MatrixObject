@@ -6,7 +6,7 @@ impl MatrixChunkService {
         let allocation = self
             .pending_allocations
             .remove(allocation_id)
-            .ok_or_else(|| ObjectError::NotFound("block allocation missing".to_string()))?;
+            .ok_or_else(|| ObjectError::NotFound("page allocation missing".to_string()))?;
         self.released_allocation_count = self.released_allocation_count.saturating_add(1);
         Ok(allocation)
     }
@@ -24,7 +24,7 @@ impl MatrixChunkService {
         {
             if existing.allocation_id != allocation_id {
                 return Err(ObjectError::PreconditionFailed(
-                    "block allocation release idempotency key allocation mismatch".to_string(),
+                    "page allocation release idempotency key allocation mismatch".to_string(),
                 ));
             }
             return Ok(ChunkAllocationReceipt {

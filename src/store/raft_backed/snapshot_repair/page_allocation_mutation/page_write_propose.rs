@@ -13,7 +13,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<(ObjectMetadata, ChunkBatchWriteReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block batch write requires raft/store commit alignment".to_string(),
+                "prepared page batch write requires raft/store commit alignment".to_string(),
             ));
         }
         let receipt = self
@@ -25,7 +25,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .append(ObjectCommand::ApplyPreparedPageBatchWrite { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block batch write raft index is not contiguous".to_string(),
+                "prepared page batch write raft index is not contiguous".to_string(),
             ));
         }
         let metadata = self.store.apply_raft_entry(&entry)?;
@@ -62,7 +62,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectMetadata, ObjectError> {
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block batch write requires expected raft entry checksum".to_string(),
+                "prepared page batch write requires expected raft entry checksum".to_string(),
             ));
         }
         prepared.verify_expected_raft_entry_checksum(expected_raft_entry_checksum)?;
@@ -76,12 +76,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block batch write requires prepared route checksum".to_string(),
+                "prepared page batch write requires prepared route checksum".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != expected_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block batch write route checksum does not match caller fence".to_string(),
+                "prepared page batch write route checksum does not match caller fence".to_string(),
             ));
         }
         self.propose_prepared_page_batch_write(prepared)
@@ -96,18 +96,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_route_control_checksum = expected_route_control_checksum.as_ref();
         if expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block batch write requires expected route control checksum".to_string(),
+                "proven page batch write requires expected route control checksum".to_string(),
             ));
         }
         if proven_prepared.proof.control_checksum != expected_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block batch write route checksum mismatch: expected {} actual {}",
+                "proven page batch write route checksum mismatch: expected {} actual {}",
                 expected_route_control_checksum, proven_prepared.proof.control_checksum
             )));
         }
         if self.store.last_applied_index() < proven_prepared.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block batch write storage proof is not applied: applied={} required={}",
+                "proven page batch write storage proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_prepared.proof.storage_applied_index
             )));

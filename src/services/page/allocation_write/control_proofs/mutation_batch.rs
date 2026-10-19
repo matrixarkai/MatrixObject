@@ -12,7 +12,7 @@ impl MatrixChunkService {
                 return Ok(self.mutation_batch_status());
             }
             return Err(ObjectError::PreconditionFailed(
-                "block mutation batch already active".to_string(),
+                "page mutation batch already active".to_string(),
             ));
         }
         let snapshot = self.export_snapshot_unsealed();
@@ -25,7 +25,7 @@ impl MatrixChunkService {
         }
         if replica_indices.len() < self.write_quorum {
             return Err(ObjectError::PreconditionFailed(
-                "block mutation batch requires writable replica quorum".to_string(),
+                "page mutation batch requires writable replica quorum".to_string(),
             ));
         }
         for index in &replica_indices {
@@ -59,13 +59,13 @@ impl MatrixChunkService {
     ) -> Result<ChunkMutationBatchStatus, ObjectError> {
         let Some(active) = self.active_mutation_batch.as_ref() else {
             return Err(ObjectError::PreconditionFailed(
-                "block mutation batch is not active".to_string(),
+                "page mutation batch is not active".to_string(),
             ));
         };
         let expected = batch_id.as_ref();
         if !expected.is_empty() && active.batch_id != expected {
             return Err(ObjectError::PreconditionFailed(
-                "block mutation batch id mismatch".to_string(),
+                "page mutation batch id mismatch".to_string(),
             ));
         }
         let batch_id = active.batch_id.clone();
@@ -88,13 +88,13 @@ impl MatrixChunkService {
         batch_id: impl AsRef<str>,
     ) -> Result<ChunkMutationBatchStatus, ObjectError> {
         let active = self.active_mutation_batch.take().ok_or_else(|| {
-            ObjectError::PreconditionFailed("block mutation batch is not active".to_string())
+            ObjectError::PreconditionFailed("page mutation batch is not active".to_string())
         })?;
         let expected = batch_id.as_ref();
         if !expected.is_empty() && active.batch_id != expected {
             self.active_mutation_batch = Some(active);
             return Err(ObjectError::PreconditionFailed(
-                "block mutation batch id mismatch".to_string(),
+                "page mutation batch id mismatch".to_string(),
             ));
         }
         let batch_id = active.batch_id;

@@ -9,7 +9,7 @@ impl MatrixChunkService {
         validate_idempotency_key(idempotency_key)?;
         if length == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block idempotent discard length must be positive".to_string(),
+                "page idempotent discard length must be positive".to_string(),
             ));
         }
         let request_checksum = page_discard_request_checksum(chunk_id, offset, length);
@@ -20,7 +20,7 @@ impl MatrixChunkService {
                 || existing.request_checksum != request_checksum
             {
                 return Err(ObjectError::PreconditionFailed(
-                    "block discard idempotency key reused with different request".to_string(),
+                    "page discard idempotency key reused with different request".to_string(),
                 ));
             }
             let mut receipt = existing.clone();

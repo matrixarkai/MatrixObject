@@ -76,7 +76,7 @@ impl ChunkDiscardRunReport {
         let actual = self.proof_checksum();
         if actual != expected_chunk_discard_run_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "segment discard run proof checksum mismatch: expected {} got {}",
+                "chunk discard run proof checksum mismatch: expected {} got {}",
                 expected_chunk_discard_run_proof_checksum, actual
             )));
         }

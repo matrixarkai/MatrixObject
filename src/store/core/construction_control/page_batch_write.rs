@@ -25,7 +25,7 @@ impl MatrixObjectStore {
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch write previous commit fence mismatch".to_string(),
+                "page prepared batch write previous commit fence mismatch".to_string(),
             ));
         }
         let before_page_service_fingerprint =
@@ -86,7 +86,7 @@ impl MatrixObjectStore {
         )?;
         if selected.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block prepared batch write must contain at least one range".to_string(),
+                "page prepared batch write must contain at least one range".to_string(),
             ));
         }
         let admission = self.chunk_service.can_accept_slab_writes_borrowed(
@@ -151,7 +151,7 @@ impl MatrixObjectStore {
         )?;
         if selected.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block prepared batch write must contain at least one range".to_string(),
+                "page prepared batch write must contain at least one range".to_string(),
             ));
         }
         let admission = self.chunk_service.can_accept_chunk_writes_fenced_from_borrowed(
@@ -206,7 +206,7 @@ impl MatrixObjectStore {
                 .checked_add(write.data.len() as u64)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block prepared batch write selected byte count overflows".to_string(),
+                        "page prepared batch write selected byte count overflows".to_string(),
                     )
                 })?;
             let mapped_chunk_ranges = self
@@ -216,7 +216,7 @@ impl MatrixObjectStore {
                 .checked_add(mapped_chunk_ranges)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block prepared batch write selected chunk fanout overflows".to_string(),
+                        "page prepared batch write selected chunk fanout overflows".to_string(),
                     )
                 })?;
             if (max_write_bytes > 0 && next_bytes > max_write_bytes)
@@ -230,13 +230,13 @@ impl MatrixObjectStore {
         }
         if selected.is_empty() && requested_start > non_empty_index {
             return Err(ObjectError::InvalidArgument(format!(
-                "block prepared batch write start range index {} exceeds {} non-empty ranges",
+                "page prepared batch write start range index {} exceeds {} non-empty ranges",
                 write_start_range_index, non_empty_index
             )));
         }
         if selected.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch write selected no ranges within admission budget".to_string(),
+                "page prepared batch write selected no ranges within admission budget".to_string(),
             ));
         }
         Ok(selected)
@@ -250,17 +250,17 @@ impl MatrixObjectStore {
         let expected_checksum = prepared_page_batch_write_checksum(&prepared);
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "block prepared batch write raft entry checksum mismatch".to_string(),
+                "page prepared batch write raft entry checksum mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch write requires route proof checksum".to_string(),
+                "page prepared batch write requires route proof checksum".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch write route proof checksum mismatch".to_string(),
+                "page prepared batch write route proof checksum mismatch".to_string(),
             ));
         }
         if prepared.receipt.request_checksum != page_batch_write_request_checksum(&prepared.writes)
@@ -268,14 +268,14 @@ impl MatrixObjectStore {
                 != page_batch_write_payload_checksum(&prepared.writes)
         {
             return Err(ObjectError::Corruption(
-                "block prepared batch write request checksum mismatch".to_string(),
+                "page prepared batch write request checksum mismatch".to_string(),
             ));
         }
         if prepared.prepared_commit_index
             != prepared.expected_previous_commit_index.saturating_add(1)
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch write commit index must be adjacent".to_string(),
+                "page prepared batch write commit index must be adjacent".to_string(),
             ));
         }
         if let Some(existing) = self
@@ -287,7 +287,7 @@ impl MatrixObjectStore {
                 || existing.payload_checksum != prepared.receipt.payload_checksum
             {
                 return Err(ObjectError::PreconditionFailed(
-                    "block prepared batch write idempotency key reused with different request"
+                    "page prepared batch write idempotency key reused with different request"
                         .to_string(),
                 ));
             }
@@ -301,7 +301,7 @@ impl MatrixObjectStore {
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch write previous commit fence mismatch".to_string(),
+                "page prepared batch write previous commit fence mismatch".to_string(),
             ));
         }
         let current_route_proof = self.chunk_service.route_control_proof();
@@ -316,14 +316,14 @@ impl MatrixObjectStore {
                 != current_route_proof.chunk_route_control_next_log_index
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch write route proof cursor mismatch".to_string(),
+                "page prepared batch write route proof cursor mismatch".to_string(),
             ));
         }
         self.chunk_service
             .check_expected_route_control_checksum(Some(&current_route_proof.state_checksum))?;
         if current_fingerprint != prepared.before_page_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch write source fingerprint mismatch".to_string(),
+                "page prepared batch write source fingerprint mismatch".to_string(),
             ));
         }
         let (_stats, receipt) = self.chunk_service.write_slab_ranges_idempotent_borrowed(
@@ -335,7 +335,7 @@ impl MatrixObjectStore {
                 != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(
-                "block prepared batch write deterministic apply mismatch".to_string(),
+                "page prepared batch write deterministic apply mismatch".to_string(),
             ));
         }
         Ok(prepared.receipt)

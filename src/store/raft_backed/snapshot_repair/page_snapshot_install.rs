@@ -32,7 +32,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         let _ = self.store.abort_page_snapshot_install(None);
                     }
                     return Err(ObjectError::PreconditionFailed(
-                        "block snapshot proof stream mixes route-control images".to_string(),
+                        "page snapshot proof stream mixes route-control images".to_string(),
                     ));
                 }
             } else {
@@ -55,7 +55,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         if !saw_chunk {
             return Err(ObjectError::InvalidArgument(
-                "block snapshot proof stream is empty".to_string(),
+                "page snapshot proof stream is empty".to_string(),
             ));
         }
         Ok(progress)
@@ -99,7 +99,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             )?;
             if proven.proof.control_kind != "block-route" {
                 return Err(ObjectError::PreconditionFailed(
-                    "block snapshot proof stream contains non block-route proof".to_string(),
+                    "page snapshot proof stream contains non page-route proof".to_string(),
                 ));
             }
             if proof_count == 0 {
@@ -119,7 +119,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 || full_snapshot_checksum != proven.value.full_checksum
             {
                 return Err(ObjectError::PreconditionFailed(
-                    "block snapshot proof stream source image changed".to_string(),
+                    "page snapshot proof stream source image changed".to_string(),
                 ));
             }
             let payload_len = proven.value.payload.len() as u64;
@@ -135,19 +135,19 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             proof_count = proof_count.saturating_add(1);
             if assembled_snapshot.is_some() {
                 return Err(ObjectError::InvalidArgument(
-                    "block snapshot proof stream has chunks after eof".to_string(),
+                    "page snapshot proof stream has chunks after eof".to_string(),
                 ));
             }
             assembled_snapshot = assembler.push_chunk_with_checksum(proven.value)?;
         }
         if proof_count == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block snapshot proof stream is empty".to_string(),
+                "page snapshot proof stream is empty".to_string(),
             ));
         }
         let assembled_snapshot = assembled_snapshot.ok_or_else(|| {
             ObjectError::InvalidArgument(
-                "block snapshot proof stream did not complete snapshot image".to_string(),
+                "page snapshot proof stream did not complete snapshot image".to_string(),
             )
         })?;
         let actual_report = finish_storage_snapshot_proof_stream_report(

@@ -30,7 +30,7 @@ impl ChunkWriteReceipt {
         let actual = self.proof_checksum();
         if actual != expected_page_write_receipt_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block write receipt proof checksum mismatch: expected {} got {}",
+                "page write receipt proof checksum mismatch: expected {} got {}",
                 expected_page_write_receipt_proof_checksum, actual
             )));
         }
@@ -106,7 +106,7 @@ impl ChunkBatchWriteReceipt {
         let actual = self.proof_checksum();
         if actual != expected_page_write_batch_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block write batch proof checksum mismatch: expected {} got {}",
+                "page write batch proof checksum mismatch: expected {} got {}",
                 expected_page_write_batch_proof_checksum, actual
             )));
         }

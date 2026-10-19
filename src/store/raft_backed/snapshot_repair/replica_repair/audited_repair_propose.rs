@@ -20,7 +20,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     > {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block audit repair requires raft/store commit alignment".to_string(),
+                "prepared page audit repair requires raft/store commit alignment".to_string(),
             ));
         }
         let (report, receipt) = self
@@ -32,7 +32,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .append(ObjectCommand::ApplyPreparedPageAuditRepair { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block audit repair raft index is not contiguous".to_string(),
+                "prepared page audit repair raft index is not contiguous".to_string(),
             ));
         }
         let metadata = self.store.apply_raft_entry(&entry)?;
@@ -108,7 +108,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block audit repair requires expected raft entry checksum".to_string(),
+                "page audit repair requires expected raft entry checksum".to_string(),
             ));
         }
         prepared.verify_expected_raft_entry_checksum(expected_raft_entry_checksum)?;
@@ -132,7 +132,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block audit repair requires expected raft entry checksum".to_string(),
+                "page audit repair requires expected raft entry checksum".to_string(),
             ));
         }
         prepared.verify_expected_raft_entry_checksum(expected_raft_entry_checksum)?;
@@ -148,18 +148,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block audit repair requires expected route control checksum".to_string(),
+                "proven page audit repair requires expected route control checksum".to_string(),
             ));
         }
         if proven_prepared.proof.control_checksum != expected_page_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block audit repair route checksum mismatch: expected {} actual {}",
+                "proven page audit repair route checksum mismatch: expected {} actual {}",
                 expected_page_route_control_checksum, proven_prepared.proof.control_checksum
             )));
         }
         if self.store.last_applied_index() < proven_prepared.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block audit repair storage proof is not applied: applied={} required={}",
+                "proven page audit repair storage proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_prepared.proof.storage_applied_index
             )));
@@ -167,7 +167,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block audit repair requires expected raft entry checksum".to_string(),
+                "proven page audit repair requires expected raft entry checksum".to_string(),
             ));
         }
         proven_prepared
@@ -177,7 +177,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             != expected_page_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block audit repair prepared route checksum does not match caller fence"
+                "proven page audit repair prepared route checksum does not match caller fence"
                     .to_string(),
             ));
         }
@@ -194,7 +194,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block audit repair envelope requires expected route control checksum"
+                "proven page audit repair envelope requires expected route control checksum"
                     .to_string(),
             ));
         }
@@ -205,12 +205,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 != expected_page_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block audit repair envelope route checksum mismatch".to_string(),
+                "proven page audit repair envelope route checksum mismatch".to_string(),
             ));
         }
         if self.store.last_applied_index() < proven_envelope.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block audit repair envelope storage proof is not applied: applied={} required={}",
+                "proven page audit repair envelope storage proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_envelope.proof.storage_applied_index
             )));
@@ -220,7 +220,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.envelope.envelope_checksum != expected_envelope_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block audit repair envelope checksum mismatch".to_string(),
+                "proven page audit repair envelope checksum mismatch".to_string(),
             ));
         }
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
@@ -228,7 +228,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.envelope.raft_entry_checksum != expected_raft_entry_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven block audit repair envelope raft entry checksum mismatch".to_string(),
+                "proven page audit repair envelope raft entry checksum mismatch".to_string(),
             ));
         }
         let prepared = self.prepare_repair_audited_page_replicas_raft_entry_linearizable_fenced(
@@ -240,7 +240,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let actual_envelope = make_prepared_page_audit_repair_envelope(&prepared);
         if actual_envelope != proven_envelope.envelope {
             return Err(ObjectError::PreconditionFailed(
-                "proven block audit repair envelope changed before proposal".to_string(),
+                "proven page audit repair envelope changed before proposal".to_string(),
             ));
         }
         self.propose_prepared_repair_audited_page_replicas(prepared)

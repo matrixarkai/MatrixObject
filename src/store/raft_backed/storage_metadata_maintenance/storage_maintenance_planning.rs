@@ -162,7 +162,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 != plan.readiness.route_control_proof.state_checksum
         {
             return Err(ObjectError::PreconditionFailed(format!(
-                "storage maintenance block route control checksum mismatch: expected {} actual {}",
+                "storage maintenance page route control checksum mismatch: expected {} actual {}",
                 expected_page_route_control_checksum,
                 plan.readiness.route_control_proof.state_checksum
             )));

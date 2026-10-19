@@ -11,7 +11,7 @@ macro_rules! impl_prepared_page_raft_entry_checksum_guard {
                 }
                 if self.raft_entry_checksum != expected_raft_entry_checksum {
                     return Err(ObjectError::PreconditionFailed(format!(
-                        "prepared block {} raft entry checksum mismatch: expected {} got {}",
+                        "prepared page {} raft entry checksum mismatch: expected {} got {}",
                         $label, expected_raft_entry_checksum, self.raft_entry_checksum
                     )));
                 }

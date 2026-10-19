@@ -89,7 +89,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectMetadata, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block route qos requires raft/store commit alignment".to_string(),
+                "prepared page route qos requires raft/store commit alignment".to_string(),
             ));
         }
         self.store
@@ -102,7 +102,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .append(ObjectCommand::ApplyPreparedPageRouteQos { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block route qos raft index is not contiguous".to_string(),
+                "prepared page route qos raft index is not contiguous".to_string(),
             ));
         }
         self.store.apply_raft_entry(&entry)
@@ -117,7 +117,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .filter(|checksum| !checksum.is_empty())
             .ok_or_else(|| {
                 ObjectError::PreconditionFailed(
-                    "prepared block route qos requires expected route control checksum".to_string(),
+                    "prepared page route qos requires expected route control checksum".to_string(),
                 )
             })?;
         self.ensure_storage_control_read_index(
@@ -126,12 +126,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block route qos requires prepared route control checksum".to_string(),
+                "prepared page route qos requires prepared route control checksum".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != expected_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "prepared block route qos route checksum does not match caller fence".to_string(),
+                "prepared page route qos route checksum does not match caller fence".to_string(),
             ));
         }
         self.propose_prepared_page_route_qos(prepared)
@@ -146,19 +146,19 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_route_control_checksum = expected_route_control_checksum.as_ref();
         if expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block route qos requires expected route control checksum".to_string(),
+                "proven page route qos requires expected route control checksum".to_string(),
             ));
         }
         if proven_prepared.proof.control_checksum != expected_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block route qos route checksum mismatch: expected {} actual {}",
+                "proven page route qos route checksum mismatch: expected {} actual {}",
                 expected_route_control_checksum, proven_prepared.proof.control_checksum
             )));
         }
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven block route qos requires expected raft entry checksum".to_string(),
+                "proven page route qos requires expected raft entry checksum".to_string(),
             ));
         }
         proven_prepared
@@ -166,7 +166,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .verify_expected_raft_entry_checksum(expected_raft_entry_checksum)?;
         if self.store.last_applied_index() < proven_prepared.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven block route qos storage proof is not applied: applied={} required={}",
+                "proven page route qos storage proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_prepared.proof.storage_applied_index
             )));

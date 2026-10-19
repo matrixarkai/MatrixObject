@@ -288,7 +288,7 @@ impl MatrixChunkService {
         )?;
         if !expected_plan_checksum.is_empty() && plan.plan_checksum != expected_plan_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block storage maintenance plan checksum mismatch: expected {} actual {}",
+                "page storage maintenance plan checksum mismatch: expected {} actual {}",
                 expected_plan_checksum, plan.plan_checksum
             )));
         }
@@ -296,7 +296,7 @@ impl MatrixChunkService {
             && expected_route_control_checksum != plan.readiness.route_control_proof.state_checksum
         {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block storage maintenance route checksum mismatch: expected {} actual {}",
+                "page storage maintenance route checksum mismatch: expected {} actual {}",
                 expected_route_control_checksum, plan.readiness.route_control_proof.state_checksum
             )));
         }

@@ -194,14 +194,14 @@ impl MatrixObjectStore {
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "segment discard expected previous commit {} does not match applied {}",
+                "chunk discard expected previous commit {} does not match applied {}",
                 expected_previous_commit_index, self.last_applied_index
             )));
         }
         let ranges = merge_range_slice(ranges);
         if ranges.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "segment discard requires at least one range".to_string(),
+                "chunk discard requires at least one range".to_string(),
             ));
         }
         for range in &ranges {
@@ -214,7 +214,7 @@ impl MatrixObjectStore {
         let source_stale_ranges = merge_range_slice(&chunk.stale_ranges);
         if !ranges_covered_by(&ranges, &source_stale_ranges) {
             return Err(ObjectError::PreconditionFailed(
-                "segment discard ranges must be covered by stale ranges".to_string(),
+                "chunk discard ranges must be covered by stale ranges".to_string(),
             ));
         }
         let source_discarded_ranges = merge_range_slice(&chunk.discarded_ranges);
@@ -252,34 +252,34 @@ impl MatrixObjectStore {
         let expected_checksum = prepared_chunk_discard_checksum(&prepared);
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "prepared segment discard checksum mismatch".to_string(),
+                "prepared chunk discard checksum mismatch".to_string(),
             ));
         }
         if prepared.request_checksum
             != slab_discard_request_checksum(&prepared.chunk_id, &prepared.ranges)
         {
             return Err(ObjectError::Corruption(
-                "prepared segment discard request checksum mismatch".to_string(),
+                "prepared chunk discard request checksum mismatch".to_string(),
             ));
         }
         if prepared.expected_previous_commit_index != self.last_applied_index {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment discard previous commit fence mismatch".to_string(),
+                "prepared chunk discard previous commit fence mismatch".to_string(),
             ));
         }
         if prepared.before_state_fingerprint != self.state_fingerprint_without_payload_clones() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment discard source state changed".to_string(),
+                "prepared chunk discard source state changed".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment discard route fence is required".to_string(),
+                "prepared chunk discard route fence is required".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment discard route proof checksum mismatch".to_string(),
+                "prepared chunk discard route proof checksum mismatch".to_string(),
             ));
         }
         self.chunk_service
@@ -300,13 +300,13 @@ impl MatrixObjectStore {
             || current.discard_bytes != prepared.discard_bytes
         {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment discard no longer matches current state".to_string(),
+                "prepared chunk discard no longer matches current state".to_string(),
             ));
         }
         self.apply_discard_borrowed(&prepared.chunk_id, &prepared.ranges)?;
         if self.state_fingerprint_without_payload_clones() != prepared.after_state_fingerprint {
             return Err(ObjectError::Corruption(
-                "prepared segment discard post-state checksum mismatch".to_string(),
+                "prepared chunk discard post-state checksum mismatch".to_string(),
             ));
         }
         Ok(())

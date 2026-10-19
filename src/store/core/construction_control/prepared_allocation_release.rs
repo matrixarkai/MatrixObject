@@ -8,12 +8,12 @@ impl MatrixObjectStore {
         validate_idempotency_key(idempotency_key)?;
         if allocation_id.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block allocation release allocation_id is required".to_string(),
+                "page allocation release allocation_id is required".to_string(),
             ));
         }
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation release previous commit fence mismatch".to_string(),
+                "page prepared allocation release previous commit fence mismatch".to_string(),
             ));
         }
         let before_page_service_fingerprint =
@@ -55,7 +55,7 @@ impl MatrixObjectStore {
         validate_idempotency_key(&prepared.idempotency_key)?;
         if prepared.allocation_id.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block prepared allocation release allocation_id is required".to_string(),
+                "page prepared allocation release allocation_id is required".to_string(),
             ));
         }
         if prepared.request_checksum
@@ -65,7 +65,7 @@ impl MatrixObjectStore {
             )
         {
             return Err(ObjectError::Corruption(
-                "block prepared allocation release request checksum mismatch".to_string(),
+                "page prepared allocation release request checksum mismatch".to_string(),
             ));
         }
         let expected_checksum =
@@ -75,24 +75,24 @@ impl MatrixObjectStore {
             });
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "block prepared allocation release raft entry checksum mismatch".to_string(),
+                "page prepared allocation release raft entry checksum mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation release route fence is required".to_string(),
+                "page prepared allocation release route fence is required".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation release route proof checksum mismatch".to_string(),
+                "page prepared allocation release route proof checksum mismatch".to_string(),
             ));
         }
         if prepared.prepared_commit_index
             != prepared.expected_previous_commit_index.saturating_add(1)
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation release commit index must be adjacent".to_string(),
+                "page prepared allocation release commit index must be adjacent".to_string(),
             ));
         }
         if prepared.receipt.allocation.allocation_id != prepared.allocation_id
@@ -100,7 +100,7 @@ impl MatrixObjectStore {
             || !prepared.receipt.released
         {
             return Err(ObjectError::Corruption(
-                "block prepared allocation release receipt mismatch".to_string(),
+                "page prepared allocation release receipt mismatch".to_string(),
             ));
         }
         if let Some(existing) = self
@@ -110,13 +110,13 @@ impl MatrixObjectStore {
         {
             if existing.allocation_id != prepared.allocation_id {
                 return Err(ObjectError::PreconditionFailed(
-                    "block prepared allocation release idempotency key reused with different allocation"
+                    "page prepared allocation release idempotency key reused with different allocation"
                         .to_string(),
                 ));
             }
             if *existing != prepared.receipt.allocation {
                 return Err(ObjectError::PreconditionFailed(
-                    "block prepared allocation release receipt image mismatch".to_string(),
+                    "page prepared allocation release receipt image mismatch".to_string(),
                 ));
             }
             return Ok(ChunkAllocationReceipt {
@@ -132,7 +132,7 @@ impl MatrixObjectStore {
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation release previous commit fence mismatch".to_string(),
+                "page prepared allocation release previous commit fence mismatch".to_string(),
             ));
         }
         self.chunk_service
@@ -142,7 +142,7 @@ impl MatrixObjectStore {
             )?;
         if current_fingerprint != prepared.before_page_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation release source fingerprint mismatch".to_string(),
+                "page prepared allocation release source fingerprint mismatch".to_string(),
             ));
         }
         let receipt = self.chunk_service.release_page_allocation_idempotent(
@@ -158,7 +158,7 @@ impl MatrixObjectStore {
                 != prepared.release_receipt_count_after
         {
             return Err(ObjectError::Corruption(
-                "block prepared allocation release deterministic apply mismatch".to_string(),
+                "page prepared allocation release deterministic apply mismatch".to_string(),
             ));
         }
         Ok(receipt)

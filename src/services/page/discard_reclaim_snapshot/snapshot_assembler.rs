@@ -26,18 +26,18 @@ impl ChunkServiceSnapshotAssembler {
     ) -> Result<Option<ChunkServiceSnapshotAssembledImage>, ObjectError> {
         if chunk.total_bytes == 0 {
             return Err(ObjectError::Corruption(
-                "block service snapshot chunk has zero total bytes".to_string(),
+                "page service snapshot chunk has zero total bytes".to_string(),
             ));
         }
         if !etag_matches(&chunk.payload, &chunk.page_checksum) {
             return Err(ObjectError::Corruption(
-                "block service snapshot chunk checksum mismatch".to_string(),
+                "page service snapshot chunk checksum mismatch".to_string(),
             ));
         }
         if let Some(expected_total) = self.expected_total_bytes {
             if expected_total != chunk.total_bytes {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot total bytes changed".to_string(),
+                    "page service snapshot total bytes changed".to_string(),
                 ));
             }
         } else {
@@ -46,7 +46,7 @@ impl ChunkServiceSnapshotAssembler {
         if let Some(expected_full) = &self.expected_full_checksum {
             if expected_full != &chunk.full_checksum {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot full checksum changed".to_string(),
+                    "page service snapshot full checksum changed".to_string(),
                 ));
             }
         } else {
@@ -56,39 +56,39 @@ impl ChunkServiceSnapshotAssembler {
             .offset
             .checked_add(chunk.payload.len() as u64)
             .ok_or_else(|| {
-                ObjectError::Corruption("block service snapshot chunk offset overflow".to_string())
+                ObjectError::Corruption("page service snapshot chunk offset overflow".to_string())
             })?;
         if chunk.offset < self.buffer.len() as u64 {
             if end > self.buffer.len() as u64 {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot chunk overlaps committed stream tail".to_string(),
+                    "page service snapshot chunk overlaps committed stream tail".to_string(),
                 ));
             }
             let start = usize::try_from(chunk.offset).map_err(|_| {
                 ObjectError::Corruption(
-                    "block service snapshot chunk offset exceeds memory size".to_string(),
+                    "page service snapshot chunk offset exceeds memory size".to_string(),
                 )
             })?;
             let end_index = usize::try_from(end).map_err(|_| {
                 ObjectError::Corruption(
-                    "block service snapshot chunk end exceeds memory size".to_string(),
+                    "page service snapshot chunk end exceeds memory size".to_string(),
                 )
             })?;
             if self.buffer[start..end_index] != chunk.payload {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot retry payload mismatch".to_string(),
+                    "page service snapshot retry payload mismatch".to_string(),
                 ));
             }
             return Ok(None);
         }
         if chunk.offset != self.buffer.len() as u64 {
             return Err(ObjectError::Corruption(
-                "block service snapshot chunk offset is not contiguous".to_string(),
+                "page service snapshot chunk offset is not contiguous".to_string(),
             ));
         }
         if end > chunk.total_bytes {
             return Err(ObjectError::Corruption(
-                "block service snapshot chunk exceeds total bytes".to_string(),
+                "page service snapshot chunk exceeds total bytes".to_string(),
             ));
         }
         if self.buffer.is_empty()
@@ -98,7 +98,7 @@ impl ChunkServiceSnapshotAssembler {
         {
             if !etag_matches(&chunk.payload, &chunk.full_checksum) {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot full checksum mismatch".to_string(),
+                    "page service snapshot full checksum mismatch".to_string(),
                 ));
             }
             let full_checksum = chunk.full_checksum;
@@ -121,12 +121,12 @@ impl ChunkServiceSnapshotAssembler {
         if chunk.eof {
             if self.buffer.len() as u64 != chunk.total_bytes {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot eof before total bytes".to_string(),
+                    "page service snapshot eof before total bytes".to_string(),
                 ));
             }
             if !etag_matches(&self.buffer, &chunk.full_checksum) {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot full checksum mismatch".to_string(),
+                    "page service snapshot full checksum mismatch".to_string(),
                 ));
             }
             let full_checksum = chunk.full_checksum;

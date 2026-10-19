@@ -110,7 +110,7 @@ impl MatrixChunkService {
         }
         if accepted.len() < self.write_quorum {
             return Err(first_error.unwrap_or_else(|| {
-                ObjectError::Corruption("block write quorum was not met".to_string())
+                ObjectError::Corruption("page write quorum was not met".to_string())
             }));
         }
         Ok(accepted)
@@ -177,7 +177,7 @@ impl MatrixChunkService {
         }
         if accepted.len() < self.write_quorum {
             return Err(first_error.unwrap_or_else(|| {
-                ObjectError::Corruption("block discard quorum was not met".to_string())
+                ObjectError::Corruption("page discard quorum was not met".to_string())
             }));
         }
         Ok(accepted)

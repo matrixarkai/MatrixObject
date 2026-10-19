@@ -38,12 +38,12 @@ impl MatrixChunkService {
         validate_page_route_qos_config(&config)?;
         if commit_index == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block route control commit index must be positive".to_string(),
+                "page route control commit index must be positive".to_string(),
             ));
         }
         if commit_index <= self.chunk_route_control_commit_index {
             return Err(ObjectError::PreconditionFailed(
-                "block route control commit index is stale".to_string(),
+                "page route control commit index is stale".to_string(),
             ));
         }
         self.route_qos_config = config.clone();
@@ -134,37 +134,37 @@ impl MatrixChunkService {
             .read_ops_in_window
             .checked_add(read_ops)
             .ok_or_else(|| {
-                ObjectError::InvalidArgument("block route qos op overflow".to_string())
+                ObjectError::InvalidArgument("page route qos op overflow".to_string())
             })?;
         let next_read_bytes = state
             .read_bytes_in_window
             .checked_add(read_bytes)
             .ok_or_else(|| {
-                ObjectError::InvalidArgument("block route qos byte overflow".to_string())
+                ObjectError::InvalidArgument("page route qos byte overflow".to_string())
             })?;
         let next_write_ops = state
             .write_ops_in_window
             .checked_add(write_ops)
             .ok_or_else(|| {
-                ObjectError::InvalidArgument("block route qos op overflow".to_string())
+                ObjectError::InvalidArgument("page route qos op overflow".to_string())
             })?;
         let next_write_bytes = state
             .write_bytes_in_window
             .checked_add(write_bytes)
             .ok_or_else(|| {
-                ObjectError::InvalidArgument("block route qos byte overflow".to_string())
+                ObjectError::InvalidArgument("page route qos byte overflow".to_string())
             })?;
         let next_discard_ops = state
             .discard_ops_in_window
             .checked_add(discard_ops)
             .ok_or_else(|| {
-                ObjectError::InvalidArgument("block route qos op overflow".to_string())
+                ObjectError::InvalidArgument("page route qos op overflow".to_string())
             })?;
         let next_discard_bytes = state
             .discard_bytes_in_window
             .checked_add(discard_bytes)
             .ok_or_else(|| {
-                ObjectError::InvalidArgument("block route qos byte overflow".to_string())
+                ObjectError::InvalidArgument("page route qos byte overflow".to_string())
             })?;
         if (self.route_qos_config.max_read_ops_per_window > 0
             && next_read_ops > self.route_qos_config.max_read_ops_per_window)
@@ -179,7 +179,7 @@ impl MatrixChunkService {
                     .saturating_add(discard_ops),
             );
             return Err(ObjectError::PreconditionFailed(
-                "block route qos throttled: operation window exceeded".to_string(),
+                "page route qos throttled: operation window exceeded".to_string(),
             ));
         }
         if (self.route_qos_config.max_read_bytes_per_window > 0
@@ -195,7 +195,7 @@ impl MatrixChunkService {
                     .saturating_add(discard_bytes),
             );
             return Err(ObjectError::PreconditionFailed(
-                "block route qos throttled: byte window exceeded".to_string(),
+                "page route qos throttled: byte window exceeded".to_string(),
             ));
         }
         state.read_ops_in_window = next_read_ops;

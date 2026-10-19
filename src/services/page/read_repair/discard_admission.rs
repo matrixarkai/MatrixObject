@@ -147,7 +147,7 @@ impl MatrixChunkService {
                 .checked_add(request.length)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument(
-                        "block batch discard payload byte count overflows".to_string(),
+                        "page batch discard payload byte count overflows".to_string(),
                     )
                 })?;
             if (request_index as u64) < discard_start_range_index {

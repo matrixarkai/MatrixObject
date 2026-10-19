@@ -155,7 +155,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             |proven| {
                 if proven.proof.control_kind != "block-route" {
                     return Err(ObjectError::PreconditionFailed(
-                        "block snapshot proof stream contains non block-route proof".to_string(),
+                        "page snapshot proof stream contains non page-route proof".to_string(),
                     ));
                 }
                 if pages.is_empty() {
@@ -178,7 +178,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     || full_snapshot_checksum != proven.value.full_checksum
                 {
                     return Err(ObjectError::PreconditionFailed(
-                        "block snapshot proof stream source image changed".to_string(),
+                        "page snapshot proof stream source image changed".to_string(),
                     ));
                 }
                 let payload_len = proven.value.payload.len() as u64;
@@ -197,7 +197,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         if pages.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block snapshot proof stream is empty".to_string(),
+                "page snapshot proof stream is empty".to_string(),
             ));
         }
         let report = finish_storage_snapshot_proof_stream_report(
@@ -250,7 +250,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             |proven| {
                 if proven.proof.control_kind != "block-route" {
                     return Err(ObjectError::PreconditionFailed(
-                        "block snapshot proof stream contains non block-route proof".to_string(),
+                        "page snapshot proof stream contains non page-route proof".to_string(),
                     ));
                 }
                 if pages.is_empty() {
@@ -273,7 +273,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     || full_snapshot_checksum != proven.value.full_checksum
                 {
                     return Err(ObjectError::PreconditionFailed(
-                        "block snapshot proof stream source image changed".to_string(),
+                        "page snapshot proof stream source image changed".to_string(),
                     ));
                 }
                 let payload_len = proven.value.payload.len() as u64;
@@ -292,7 +292,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         if pages.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "block snapshot proof stream is empty".to_string(),
+                "page snapshot proof stream is empty".to_string(),
             ));
         }
         let report = finish_storage_snapshot_proof_stream_report(

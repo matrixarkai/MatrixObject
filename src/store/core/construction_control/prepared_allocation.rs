@@ -9,7 +9,7 @@ impl MatrixObjectStore {
         validate_idempotency_key(idempotency_key)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation reservation previous commit fence mismatch".to_string(),
+                "page prepared allocation reservation previous commit fence mismatch".to_string(),
             ));
         }
         let before_page_service_fingerprint =
@@ -54,7 +54,7 @@ impl MatrixObjectStore {
             )
         {
             return Err(ObjectError::Corruption(
-                "block prepared allocation reservation request checksum mismatch".to_string(),
+                "page prepared allocation reservation request checksum mismatch".to_string(),
             ));
         }
         let expected_checksum =
@@ -64,24 +64,24 @@ impl MatrixObjectStore {
             });
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "block prepared allocation reservation raft entry checksum mismatch".to_string(),
+                "page prepared allocation reservation raft entry checksum mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation reservation route fence is required".to_string(),
+                "page prepared allocation reservation route fence is required".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation reservation route proof checksum mismatch".to_string(),
+                "page prepared allocation reservation route proof checksum mismatch".to_string(),
             ));
         }
         if prepared.prepared_commit_index
             != prepared.expected_previous_commit_index.saturating_add(1)
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation reservation commit index must be adjacent".to_string(),
+                "page prepared allocation reservation commit index must be adjacent".to_string(),
             ));
         }
         if prepared.receipt.allocation.length != prepared.length
@@ -89,7 +89,7 @@ impl MatrixObjectStore {
             || prepared.receipt.released
         {
             return Err(ObjectError::Corruption(
-                "block prepared allocation reservation receipt mismatch".to_string(),
+                "page prepared allocation reservation receipt mismatch".to_string(),
             ));
         }
         if let Some(existing) = self
@@ -99,7 +99,7 @@ impl MatrixObjectStore {
         {
             if existing.length != prepared.length || *existing != prepared.receipt.allocation {
                 return Err(ObjectError::PreconditionFailed(
-                    "block prepared allocation reservation idempotency image mismatch".to_string(),
+                    "page prepared allocation reservation idempotency image mismatch".to_string(),
                 ));
             }
             return Ok(ChunkAllocationReceipt {
@@ -115,7 +115,7 @@ impl MatrixObjectStore {
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation reservation previous commit fence mismatch".to_string(),
+                "page prepared allocation reservation previous commit fence mismatch".to_string(),
             ));
         }
         self.chunk_service
@@ -125,7 +125,7 @@ impl MatrixObjectStore {
             )?;
         if current_fingerprint != prepared.before_page_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared allocation reservation source fingerprint mismatch".to_string(),
+                "page prepared allocation reservation source fingerprint mismatch".to_string(),
             ));
         }
         let receipt = self.chunk_service.allocate_page_range_idempotent(
@@ -142,7 +142,7 @@ impl MatrixObjectStore {
                 != prepared.allocation_receipt_count_after
         {
             return Err(ObjectError::Corruption(
-                "block prepared allocation reservation deterministic apply mismatch".to_string(),
+                "page prepared allocation reservation deterministic apply mismatch".to_string(),
             ));
         }
         Ok(receipt)

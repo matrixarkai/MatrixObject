@@ -10,7 +10,7 @@ impl MatrixObjectStore {
     ) -> Result<PreparedPageRangeRepair, ObjectError> {
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared range repair previous commit fence mismatch".to_string(),
+                "page prepared range repair previous commit fence mismatch".to_string(),
             ));
         }
         let before_page_service_fingerprint =
@@ -54,43 +54,43 @@ impl MatrixObjectStore {
         });
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "block prepared range repair raft entry checksum mismatch".to_string(),
+                "page prepared range repair raft entry checksum mismatch".to_string(),
             ));
         }
         if prepared.route_control_proof != prepared.report.route_control_proof {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared range repair route proof/report mismatch".to_string(),
+                "page prepared range repair route proof/report mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum
             != prepared.report.expected_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared range repair route checksum/report mismatch".to_string(),
+                "page prepared range repair route checksum/report mismatch".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared range repair route fence is required".to_string(),
+                "page prepared range repair route fence is required".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared range repair route proof checksum mismatch".to_string(),
+                "page prepared range repair route proof checksum mismatch".to_string(),
             ));
         }
         if prepared.chunk_control_proof.proof_count == 0
             || prepared.chunk_control_proof.proof_checksum.is_empty()
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared range repair chunk control proof is required".to_string(),
+                "page prepared range repair chunk control proof is required".to_string(),
             ));
         }
         if prepared.prepared_commit_index
             != prepared.expected_previous_commit_index.saturating_add(1)
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared range repair commit index must be adjacent".to_string(),
+                "page prepared range repair commit index must be adjacent".to_string(),
             ));
         }
         if let Some(existing) = self
@@ -106,7 +106,7 @@ impl MatrixObjectStore {
                 || existing.report != prepared.report
             {
                 return Err(ObjectError::PreconditionFailed(
-                    "block prepared range repair receipt image mismatch".to_string(),
+                    "page prepared range repair receipt image mismatch".to_string(),
                 ));
             }
             let mut receipt = existing.clone();
@@ -140,7 +140,7 @@ impl MatrixObjectStore {
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared range repair previous commit fence mismatch".to_string(),
+                "page prepared range repair previous commit fence mismatch".to_string(),
             ));
         }
         self.chunk_service
@@ -155,7 +155,7 @@ impl MatrixObjectStore {
             )?;
         if current_fingerprint != prepared.before_page_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared range repair source fingerprint mismatch".to_string(),
+                "page prepared range repair source fingerprint mismatch".to_string(),
             ));
         }
         let mut current = self.prepare_page_range_repair_raft_entry(
@@ -177,7 +177,7 @@ impl MatrixObjectStore {
             || current.raft_entry_checksum != prepared.raft_entry_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared range repair no longer matches current state".to_string(),
+                "page prepared range repair no longer matches current state".to_string(),
             ));
         }
         let mut report = self.chunk_service.repair_chunk_range_bounded(
@@ -194,7 +194,7 @@ impl MatrixObjectStore {
                 != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(
-                "block prepared range repair deterministic apply mismatch".to_string(),
+                "page prepared range repair deterministic apply mismatch".to_string(),
             ));
         }
         let receipt = ChunkRangeRepairReceipt {

@@ -22,7 +22,7 @@ impl PreparedPageBatchWrite {
         }
         if self.raft_entry_checksum != expected_raft_entry_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "prepared block batch write raft entry checksum mismatch: expected {} got {}",
+                "prepared page batch write raft entry checksum mismatch: expected {} got {}",
                 expected_raft_entry_checksum, self.raft_entry_checksum
             )));
         }
@@ -107,7 +107,7 @@ impl PreparedPageBatchDiscard {
         }
         if self.raft_entry_checksum != expected_raft_entry_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "prepared block batch discard raft entry checksum mismatch: expected {} got {}",
+                "prepared page batch discard raft entry checksum mismatch: expected {} got {}",
                 expected_raft_entry_checksum, self.raft_entry_checksum
             )));
         }

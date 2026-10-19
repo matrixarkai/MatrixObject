@@ -3,22 +3,22 @@ impl ChunkServiceSnapshot {
         validate_storage_receipt_retention(self.receipt_retention)?;
         if self.page_size == 0 {
             return Err(ObjectError::Corruption(
-                "block service snapshot has zero chunk size".to_string(),
+                "page service snapshot has zero chunk size".to_string(),
             ));
         }
         if self.replicas.is_empty() {
             return Err(ObjectError::Corruption(
-                "block service snapshot has no replicas".to_string(),
+                "page service snapshot has no replicas".to_string(),
             ));
         }
         if self.write_quorum == 0 || self.write_quorum > self.replicas.len() {
             return Err(ObjectError::Corruption(
-                "block service snapshot write quorum is invalid".to_string(),
+                "page service snapshot write quorum is invalid".to_string(),
             ));
         }
         if self.read_quorum == 0 || self.read_quorum > self.replicas.len() {
             return Err(ObjectError::Corruption(
-                "block service snapshot read quorum is invalid".to_string(),
+                "page service snapshot read quorum is invalid".to_string(),
             ));
         }
         validate_page_chunk_endpoint_topology(
@@ -29,14 +29,14 @@ impl ChunkServiceSnapshot {
             self.replicas.len(),
         )
         .map_err(|err| {
-            ObjectError::Corruption(format!("block service endpoint topology is invalid: {err}"))
+            ObjectError::Corruption(format!("page service endpoint topology is invalid: {err}"))
         })?;
         validate_page_route_qos_config(&self.route_qos_config).map_err(|err| {
-            ObjectError::Corruption(format!("block service route qos is invalid: {err}"))
+            ObjectError::Corruption(format!("page service route qos is invalid: {err}"))
         })?;
         if self.chunk_route_control_next_log_index <= self.chunk_route_control_commit_index {
             return Err(ObjectError::Corruption(
-                "block service route control log watermark is invalid".to_string(),
+                "page service route control log watermark is invalid".to_string(),
             ));
         }
         if self.allocator_chunk_size == 0
@@ -45,7 +45,7 @@ impl ChunkServiceSnapshot {
             || self.allocator_next_offset > self.allocator_chunk_size
         {
             return Err(ObjectError::Corruption(
-                "block service snapshot allocator cursor is invalid".to_string(),
+                "page service snapshot allocator cursor is invalid".to_string(),
             ));
         }
         for (allocation_id, allocation) in &self.pending_allocations {
@@ -56,7 +56,7 @@ impl ChunkServiceSnapshot {
                 || allocation.offset.saturating_add(allocation.length) > self.allocator_chunk_size
             {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot pending allocation is invalid".to_string(),
+                    "page service snapshot pending allocation is invalid".to_string(),
                 ));
             }
         }
@@ -68,7 +68,7 @@ impl ChunkServiceSnapshot {
                 || allocation.offset.saturating_add(allocation.length) > self.allocator_chunk_size
             {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot allocation receipt is invalid".to_string(),
+                    "page service snapshot allocation receipt is invalid".to_string(),
                 ));
             }
         }
@@ -76,7 +76,7 @@ impl ChunkServiceSnapshot {
             validate_idempotency_key(idempotency_key)?;
             if allocations.is_empty() || allocations.len() > 100_000 {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot batch allocation receipt count is invalid".to_string(),
+                    "page service snapshot batch allocation receipt count is invalid".to_string(),
                 ));
             }
             for allocation in allocations {
@@ -87,7 +87,7 @@ impl ChunkServiceSnapshot {
                         > self.allocator_chunk_size
                 {
                     return Err(ObjectError::Corruption(
-                        "block service snapshot batch allocation receipt is invalid".to_string(),
+                        "page service snapshot batch allocation receipt is invalid".to_string(),
                     ));
                 }
             }
@@ -100,7 +100,7 @@ impl ChunkServiceSnapshot {
                 || allocation.offset.saturating_add(allocation.length) > self.allocator_chunk_size
             {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot release allocation receipt is invalid".to_string(),
+                    "page service snapshot release allocation receipt is invalid".to_string(),
                 ));
             }
         }
@@ -120,7 +120,7 @@ impl ChunkServiceSnapshot {
                 || receipt.payload_checksum.is_empty()
             {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot write receipt is invalid".to_string(),
+                    "page service snapshot write receipt is invalid".to_string(),
                 ));
             }
         }
@@ -133,7 +133,7 @@ impl ChunkServiceSnapshot {
                 || receipt.stats.payload_bytes == 0
             {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot batch write receipt is invalid".to_string(),
+                    "page service snapshot batch write receipt is invalid".to_string(),
                 ));
             }
         }
@@ -151,7 +151,7 @@ impl ChunkServiceSnapshot {
                     )
             {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot discard receipt is invalid".to_string(),
+                    "page service snapshot discard receipt is invalid".to_string(),
                 ));
             }
         }
@@ -162,7 +162,7 @@ impl ChunkServiceSnapshot {
                 || receipt.stats.input_ranges == 0
             {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot batch discard receipt is invalid".to_string(),
+                    "page service snapshot batch discard receipt is invalid".to_string(),
                 ));
             }
         }
@@ -174,7 +174,7 @@ impl ChunkServiceSnapshot {
                 || receipt.report.page_id.as_ref() != Some(&receipt.page_id)
             {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot repair receipt is invalid".to_string(),
+                    "page service snapshot repair receipt is invalid".to_string(),
                 ));
             }
         }
@@ -192,7 +192,7 @@ impl ChunkServiceSnapshot {
                     )
             {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot range repair receipt is invalid".to_string(),
+                    "page service snapshot range repair receipt is invalid".to_string(),
                 ));
             }
         }
@@ -208,14 +208,14 @@ impl ChunkServiceSnapshot {
                     )
             {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot audit repair receipt is invalid".to_string(),
+                    "page service snapshot audit repair receipt is invalid".to_string(),
                 ));
             }
         }
         for index in &self.quarantined_replicas {
             if *index >= self.replicas.len() {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot quarantine index is invalid".to_string(),
+                    "page service snapshot quarantine index is invalid".to_string(),
                 ));
             }
         }
@@ -225,7 +225,7 @@ impl ChunkServiceSnapshot {
             .saturating_sub(self.quarantined_replicas.len());
         if active_replicas < self.write_quorum || active_replicas < self.read_quorum {
             return Err(ObjectError::Corruption(
-                "block service snapshot quarantine violates quorum".to_string(),
+                "page service snapshot quarantine violates quorum".to_string(),
             ));
         }
         let writable_replicas = self
@@ -240,7 +240,7 @@ impl ChunkServiceSnapshot {
             .count();
         if writable_replicas < self.write_quorum {
             return Err(ObjectError::Corruption(
-                "block service snapshot frozen replicas violate write quorum".to_string(),
+                "page service snapshot frozen replicas violate write quorum".to_string(),
             ));
         }
         for replica in &self.replicas {
@@ -249,7 +249,7 @@ impl ChunkServiceSnapshot {
         for chunk in &self.sealed_chunks {
             if chunk.volume_id != 0 || chunk.id == 0 {
                 return Err(ObjectError::Corruption(
-                    "block service snapshot sealed segment is invalid".to_string(),
+                    "page service snapshot sealed chunk is invalid".to_string(),
                 ));
             }
         }
@@ -261,7 +261,7 @@ impl ChunkServiceSnapshot {
             && self.allocator_next_offset < self.allocator_chunk_size
         {
             return Err(ObjectError::Corruption(
-                "block service snapshot allocator cursor points into sealed segment".to_string(),
+                "page service snapshot allocator cursor points into sealed chunk".to_string(),
             ));
         }
         if self.checksum != self.checksum_material_hash()
@@ -270,7 +270,7 @@ impl ChunkServiceSnapshot {
             && self.checksum != self.legacy_receipt_checksum_material_hash()
         {
             return Err(ObjectError::Corruption(
-                "block service snapshot checksum mismatch".to_string(),
+                "page service snapshot checksum mismatch".to_string(),
             ));
         }
         Ok(())

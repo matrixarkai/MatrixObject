@@ -7,7 +7,7 @@ impl MatrixChunkService {
         }
         if !self.pending_allocations.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block allocator cannot be reconfigured with pending allocations".to_string(),
+                "page allocator cannot be reconfigured with pending allocations".to_string(),
             ));
         }
         self.allocator_chunk_size = chunk_size;
@@ -24,7 +24,7 @@ impl MatrixChunkService {
             allocation.chunk_id == chunk_id && allocation.offset < self.allocator_chunk_size
         }) {
             return Err(ObjectError::PreconditionFailed(
-                "block segment has pending allocations".to_string(),
+                "page chunk has pending allocations".to_string(),
             ));
         }
         let inserted = self.sealed_chunks.insert(chunk_id.clone());
@@ -62,7 +62,7 @@ impl MatrixChunkService {
     ) -> Result<SealedChunkPage, ObjectError> {
         if limit == 0 {
             return Err(ObjectError::InvalidArgument(
-                "sealed segment list limit must be positive".to_string(),
+                "sealed chunk list limit must be positive".to_string(),
             ));
         }
         let mut chunks = Vec::new();
@@ -91,12 +91,12 @@ impl MatrixChunkService {
     fn validate_page_chunk_id(&self, chunk_id: &ChunkId) -> Result<(), ObjectError> {
         if chunk_id.volume_id != 0 {
             return Err(ObjectError::InvalidArgument(
-                "block segment volume_id must be zero".to_string(),
+                "page chunk volume_id must be zero".to_string(),
             ));
         }
         if chunk_id.id == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block segment id must be positive".to_string(),
+                "page chunk id must be positive".to_string(),
             ));
         }
         Ok(())
@@ -106,7 +106,7 @@ impl MatrixChunkService {
         let mut next_id = self.allocator_next_chunk_id;
         loop {
             next_id = next_id.checked_add(1).ok_or_else(|| {
-                ObjectError::InvalidArgument("block allocator segment id overflow".to_string())
+                ObjectError::InvalidArgument("page allocator chunk id overflow".to_string())
             })?;
             let candidate = ChunkId {
                 volume_id: 0,
@@ -127,12 +127,12 @@ impl MatrixChunkService {
     ) -> Result<ChunkAllocation, ObjectError> {
         if length == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block allocation length must be positive".to_string(),
+                "page allocation length must be positive".to_string(),
             ));
         }
         if length > self.allocator_chunk_size {
             return Err(ObjectError::InvalidArgument(
-                "block allocation length exceeds allocator segment size".to_string(),
+                "page allocation length exceeds allocator chunk size".to_string(),
             ));
         }
         if self.allocator_active_chunk_sealed() {
@@ -141,13 +141,13 @@ impl MatrixChunkService {
         let next_end = self
             .allocator_next_offset
             .checked_add(length)
-            .ok_or_else(|| ObjectError::InvalidArgument("block allocation overflow".to_string()))?;
+            .ok_or_else(|| ObjectError::InvalidArgument("page allocation overflow".to_string()))?;
         if next_end > self.allocator_chunk_size {
             self.allocator_next_chunk_id = self
                 .allocator_next_chunk_id
                 .checked_add(1)
                 .ok_or_else(|| {
-                    ObjectError::InvalidArgument("block allocator segment id overflow".to_string())
+                    ObjectError::InvalidArgument("page allocator chunk id overflow".to_string())
                 })?;
             self.allocator_next_offset = 0;
             if self.allocator_active_chunk_sealed() {
@@ -162,14 +162,14 @@ impl MatrixChunkService {
         self.allocator_next_offset = self
             .allocator_next_offset
             .checked_add(length)
-            .ok_or_else(|| ObjectError::InvalidArgument("block allocation overflow".to_string()))?;
+            .ok_or_else(|| ObjectError::InvalidArgument("page allocation overflow".to_string()))?;
         let allocation_id = format!(
             "{}:{}:{}:{}",
             chunk_id.volume_id, chunk_id.id, offset, length
         );
         if self.pending_allocations.contains_key(&allocation_id) {
             return Err(ObjectError::Corruption(
-                "block allocation id collision".to_string(),
+                "page allocation id collision".to_string(),
             ));
         }
         let allocation = ChunkAllocation {
@@ -194,7 +194,7 @@ impl MatrixChunkService {
         if let Some(existing) = self.allocation_request_receipts.get(idempotency_key) {
             if existing.length != length {
                 return Err(ObjectError::PreconditionFailed(
-                    "block allocation idempotency key length mismatch".to_string(),
+                    "page allocation idempotency key length mismatch".to_string(),
                 ));
             }
             return Ok(ChunkAllocationReceipt {
@@ -232,7 +232,7 @@ impl MatrixChunkService {
                     .any(|(allocation, length)| allocation.length != *length)
             {
                 return Err(ObjectError::PreconditionFailed(
-                    "block batch allocation idempotency key image mismatch".to_string(),
+                    "page batch allocation idempotency key image mismatch".to_string(),
                 ));
             }
             return Ok(ChunkBatchAllocationReceipt {

@@ -49,7 +49,7 @@ impl PageAllocationReceiptPage {
                 .any(|receipt| &receipt.allocation.chunk_id != chunk_id)
             {
                 return Err(ObjectError::Corruption(
-                    "block allocation receipt page contains receipt outside segment filter"
+                    "page allocation receipt page contains receipt outside chunk filter"
                         .to_string(),
                 ));
             }
@@ -57,14 +57,14 @@ impl PageAllocationReceiptPage {
         if let Some(page_index) = self.page_index {
             let page_size = self.page_size.ok_or_else(|| {
                 ObjectError::Corruption(
-                    "block allocation receipt page chunk filter is missing chunk size".to_string(),
+                    "page allocation receipt page chunk filter is missing chunk size".to_string(),
                 )
             })?;
             if self.receipts.iter().any(|receipt| {
                 !allocation_overlaps_chunk(&receipt.allocation, page_index, page_size)
             }) {
                 return Err(ObjectError::Corruption(
-                    "block allocation receipt page contains receipt outside chunk filter"
+                    "page allocation receipt page contains receipt outside chunk filter"
                         .to_string(),
                 ));
             }
@@ -77,7 +77,7 @@ impl PageAllocationReceiptPage {
         let actual = self.proof_checksum();
         if actual != expected_page_allocation_receipt_page_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block allocation receipt page proof checksum mismatch: expected {} got {}",
+                "page allocation receipt page proof checksum mismatch: expected {} got {}",
                 expected_page_allocation_receipt_page_proof_checksum, actual
             )));
         }
@@ -168,7 +168,7 @@ impl PageBatchAllocationReceiptPage {
                     .any(|allocation| &allocation.chunk_id != chunk_id)
             }) {
                 return Err(ObjectError::Corruption(
-                    "block batch allocation receipt page contains receipt outside segment filter"
+                    "page batch allocation receipt page contains receipt outside chunk filter"
                         .to_string(),
                 ));
             }
@@ -176,7 +176,7 @@ impl PageBatchAllocationReceiptPage {
         if let Some(page_index) = self.page_index {
             let page_size = self.page_size.ok_or_else(|| {
                 ObjectError::Corruption(
-                    "block batch allocation receipt page chunk filter is missing chunk size"
+                    "page batch allocation receipt page chunk filter is missing chunk size"
                         .to_string(),
                 )
             })?;
@@ -186,7 +186,7 @@ impl PageBatchAllocationReceiptPage {
                 })
             }) {
                 return Err(ObjectError::Corruption(
-                    "block batch allocation receipt page contains receipt outside chunk filter"
+                    "page batch allocation receipt page contains receipt outside chunk filter"
                         .to_string(),
                 ));
             }
@@ -199,7 +199,7 @@ impl PageBatchAllocationReceiptPage {
         let actual = self.proof_checksum();
         if actual != expected_page_batch_allocation_receipt_page_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "block batch allocation receipt page proof checksum mismatch: expected {} got {}",
+                "page batch allocation receipt page proof checksum mismatch: expected {} got {}",
                 expected_page_batch_allocation_receipt_page_proof_checksum, actual
             )));
         }

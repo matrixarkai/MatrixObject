@@ -13,7 +13,7 @@ impl MatrixObjectStore {
         )?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch allocation reservation previous commit fence mismatch"
+                "page prepared batch allocation reservation previous commit fence mismatch"
                     .to_string(),
             ));
         }
@@ -31,7 +31,7 @@ impl MatrixObjectStore {
                     .any(|(allocation, length)| allocation.length != *length)
             {
                 return Err(ObjectError::PreconditionFailed(
-                    "block batch allocation idempotency key image mismatch".to_string(),
+                    "page batch allocation idempotency key image mismatch".to_string(),
                 ));
             }
             (existing.clone(), true)
@@ -94,7 +94,7 @@ impl MatrixObjectStore {
             )
         {
             return Err(ObjectError::Corruption(
-                "block prepared batch allocation reservation request checksum mismatch".to_string(),
+                "page prepared batch allocation reservation request checksum mismatch".to_string(),
             ));
         }
         let expected_checksum = prepared_page_batch_allocation_reservation_checksum(
@@ -105,18 +105,18 @@ impl MatrixObjectStore {
         );
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
-                "block prepared batch allocation reservation raft entry checksum mismatch"
+                "page prepared batch allocation reservation raft entry checksum mismatch"
                     .to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch allocation reservation route fence is required".to_string(),
+                "page prepared batch allocation reservation route fence is required".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != prepared.route_control_proof.state_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch allocation reservation route proof checksum mismatch"
+                "page prepared batch allocation reservation route proof checksum mismatch"
                     .to_string(),
             ));
         }
@@ -124,7 +124,7 @@ impl MatrixObjectStore {
             != prepared.expected_previous_commit_index.saturating_add(1)
         {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch allocation reservation commit index must be adjacent"
+                "page prepared batch allocation reservation commit index must be adjacent"
                     .to_string(),
             ));
         }
@@ -132,13 +132,13 @@ impl MatrixObjectStore {
             || prepared.receipt.allocations.len() != prepared.lengths.len()
         {
             return Err(ObjectError::Corruption(
-                "block prepared batch allocation reservation receipt mismatch".to_string(),
+                "page prepared batch allocation reservation receipt mismatch".to_string(),
             ));
         }
         for (allocation, length) in prepared.receipt.allocations.iter().zip(&prepared.lengths) {
             if allocation.length != *length {
                 return Err(ObjectError::Corruption(
-                    "block prepared batch allocation reservation range length mismatch".to_string(),
+                    "page prepared batch allocation reservation range length mismatch".to_string(),
                 ));
             }
         }
@@ -149,7 +149,7 @@ impl MatrixObjectStore {
         {
             if existing != &prepared.receipt.allocations {
                 return Err(ObjectError::PreconditionFailed(
-                    "block prepared batch allocation reservation idempotency image mismatch"
+                    "page prepared batch allocation reservation idempotency image mismatch"
                         .to_string(),
                 ));
             }
@@ -165,7 +165,7 @@ impl MatrixObjectStore {
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch allocation reservation previous commit fence mismatch"
+                "page prepared batch allocation reservation previous commit fence mismatch"
                     .to_string(),
             ));
         }
@@ -176,7 +176,7 @@ impl MatrixObjectStore {
             )?;
         if current_fingerprint != prepared.before_page_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
-                "block prepared batch allocation reservation source fingerprint mismatch"
+                "page prepared batch allocation reservation source fingerprint mismatch"
                     .to_string(),
             ));
         }
@@ -205,7 +205,7 @@ impl MatrixObjectStore {
                 != prepared.allocation_receipt_count_after
         {
             return Err(ObjectError::Corruption(
-                "block prepared batch allocation reservation deterministic apply mismatch"
+                "page prepared batch allocation reservation deterministic apply mismatch"
                     .to_string(),
             ));
         }

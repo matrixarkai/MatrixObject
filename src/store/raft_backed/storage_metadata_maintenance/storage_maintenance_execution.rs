@@ -26,7 +26,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven storage maintenance requires expected block route control checksum"
+                "proven storage maintenance requires expected page route control checksum"
                     .to_string(),
             ));
         }

@@ -5,7 +5,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectMetadata, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment discard requires raft/store commit alignment".to_string(),
+                "prepared chunk discard requires raft/store commit alignment".to_string(),
             ));
         }
         self.store
@@ -18,7 +18,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .append(ObjectCommand::ApplyPreparedChunkDiscard { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment discard raft index is not contiguous".to_string(),
+                "prepared chunk discard raft index is not contiguous".to_string(),
             ));
         }
         self.store.apply_raft_entry(&entry)
@@ -36,17 +36,17 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment discard requires expected route control checksum".to_string(),
+                "prepared chunk discard requires expected route control checksum".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment discard requires prepared route control checksum".to_string(),
+                "prepared chunk discard requires prepared route control checksum".to_string(),
             ));
         }
         if prepared.expected_route_control_checksum != expected_page_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(
-                "prepared segment discard route checksum does not match caller fence".to_string(),
+                "prepared chunk discard route checksum does not match caller fence".to_string(),
             ));
         }
         self.propose_prepared_chunk_discard(prepared)
@@ -61,18 +61,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment discard requires expected route control checksum".to_string(),
+                "proven chunk discard requires expected route control checksum".to_string(),
             ));
         }
         if proven_prepared.proof.control_checksum != expected_page_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven segment discard route checksum mismatch: expected {} actual {}",
+                "proven chunk discard route checksum mismatch: expected {} actual {}",
                 expected_page_route_control_checksum, proven_prepared.proof.control_checksum
             )));
         }
         if self.store.last_applied_index() < proven_prepared.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven segment discard storage proof is not applied: applied={} required={}",
+                "proven chunk discard storage proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_prepared.proof.storage_applied_index
             )));
@@ -80,7 +80,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment discard requires expected raft entry checksum".to_string(),
+                "proven chunk discard requires expected raft entry checksum".to_string(),
             ));
         }
         proven_prepared
@@ -90,7 +90,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             != expected_page_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment discard prepared route checksum does not match caller fence"
+                "proven chunk discard prepared route checksum does not match caller fence"
                     .to_string(),
             ));
         }
@@ -111,7 +111,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         if expected_page_route_control_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment discard envelope requires expected route control checksum"
+                "proven chunk discard envelope requires expected route control checksum"
                     .to_string(),
             ));
         }
@@ -122,12 +122,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 != expected_page_route_control_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment discard envelope route checksum mismatch".to_string(),
+                "proven chunk discard envelope route checksum mismatch".to_string(),
             ));
         }
         if self.store.last_applied_index() < proven_envelope.proof.storage_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
-                "proven segment discard envelope storage proof is not applied: applied={} required={}",
+                "proven chunk discard envelope storage proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
                 proven_envelope.proof.storage_applied_index
             )));
@@ -137,7 +137,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.value.envelope_checksum != expected_envelope_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment discard envelope checksum mismatch".to_string(),
+                "proven chunk discard envelope checksum mismatch".to_string(),
             ));
         }
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
@@ -145,7 +145,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             || proven_envelope.value.raft_entry_checksum != expected_raft_entry_checksum
         {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment discard envelope raft entry checksum mismatch".to_string(),
+                "proven chunk discard envelope raft entry checksum mismatch".to_string(),
             ));
         }
         let prepared = self.prepare_chunk_discard_raft_entry_linearizable_fenced(
@@ -156,7 +156,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let actual_envelope = make_prepared_chunk_discard_envelope(&prepared);
         if actual_envelope != proven_envelope.value {
             return Err(ObjectError::PreconditionFailed(
-                "proven segment discard envelope changed before proposal".to_string(),
+                "proven chunk discard envelope changed before proposal".to_string(),
             ));
         }
         self.propose_prepared_chunk_discard_linearizable_fenced(
@@ -201,7 +201,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.ensure_page_route_control_ready("segment discard run", &route_checksum)?;
         if route_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
-                "segment discard run requires block route control checksum".to_string(),
+                "chunk discard run requires page route control checksum".to_string(),
             ));
         }
         let plans = self

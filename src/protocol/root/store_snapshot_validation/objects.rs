@@ -23,14 +23,14 @@ impl StoreSnapshot {
         }
         for ((chunk_id, offset), payload) in &self.payloads {
             let chunk = self.chunks.get(chunk_id).ok_or_else(|| {
-                ObjectError::Corruption("snapshot payload references missing segment".to_string())
+                ObjectError::Corruption("snapshot payload references missing chunk".to_string())
             })?;
             let payload_end = offset.checked_add(payload.len() as u64).ok_or_else(|| {
                 ObjectError::Corruption("snapshot payload address overflows".to_string())
             })?;
             if payload_end > chunk.next_offset {
                 return Err(ObjectError::Corruption(
-                    "snapshot payload exceeds segment length".to_string(),
+                    "snapshot payload exceeds chunk length".to_string(),
                 ));
             }
         }
@@ -74,12 +74,12 @@ impl StoreSnapshot {
                     })?;
                     let chunk = self.chunks.get(&extent.chunk_id).ok_or_else(|| {
                         ObjectError::Corruption(
-                            "snapshot object references missing segment".to_string(),
+                            "snapshot object references missing chunk".to_string(),
                         )
                     })?;
                     if extent.offset + extent.length > chunk.next_offset {
                         return Err(ObjectError::Corruption(
-                            "snapshot object extent exceeds segment length".to_string(),
+                            "snapshot object extent exceeds chunk length".to_string(),
                         ));
                     }
                     let payload = self

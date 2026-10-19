@@ -100,7 +100,7 @@ impl MatrixMetaService {
             .ok_or_else(|| ObjectError::NotFound("root blockserver node missing".to_string()))?;
         if node.service_kind != "blockserver" {
             return Err(ObjectError::PreconditionFailed(
-                "root block health heartbeat requires blockserver node".to_string(),
+                "root page health heartbeat requires blockserver node".to_string(),
             ));
         }
         Self::reject_stale_node_heartbeat(node, now_ms, "block health heartbeat")?;

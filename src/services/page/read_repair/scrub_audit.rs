@@ -121,7 +121,7 @@ impl MatrixChunkService {
         if let Some(existing) = self.repair_request_receipts.get(idempotency_key) {
             if existing.request_checksum != request_checksum || existing.page_id != *page_id {
                 return Err(ObjectError::PreconditionFailed(
-                    "block chunk repair idempotency key reused with different request".to_string(),
+                    "page chunk repair idempotency key reused with different request".to_string(),
                 ));
             }
             let mut receipt = existing.clone();
@@ -150,7 +150,7 @@ impl MatrixChunkService {
     ) -> Result<ChunkReplicaAuditChunk, ObjectError> {
         if max_chunks == 0 {
             return Err(ObjectError::InvalidArgument(
-                "block replica audit max_chunks must be positive".to_string(),
+                "page replica audit max_chunks must be positive".to_string(),
             ));
         }
         let mut page_ids = BTreeSet::new();
@@ -286,7 +286,7 @@ impl MatrixChunkService {
                 page.has_more = true;
                 if page.items.is_empty() {
                     return Err(ObjectError::PreconditionFailed(
-                        "block replica audit item exceeds payload budget".to_string(),
+                        "page replica audit item exceeds payload budget".to_string(),
                     ));
                 }
                 break;
