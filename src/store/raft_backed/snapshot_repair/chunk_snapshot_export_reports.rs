@@ -56,7 +56,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ObjectError,
     > {
         let expected_checksum = expected_control_checksum.as_ref().to_string();
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         let mut material = Vec::with_capacity(
             encoded_string_len("MXOS-RUST-STORAGE-SNAPSHOT-READ-PROOFS1")
                 .saturating_add(encoded_string_len("chunk-service")),
@@ -82,13 +82,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         "chunk snapshot proof stream contains non chunk-service proof".to_string(),
                     ));
                 }
-                if chunks.is_empty() {
+                if pages.is_empty() {
                     source_control_checksum = proven.proof.control_checksum.clone();
                     source_read_index = proven.proof.requested_storage_read_index;
                     source_commit_index = proven.proof.requested_storage_commit_index;
                     full_snapshot_checksum = proven.value.full_checksum.clone();
                     first_offset = proven.value.offset;
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         proven.value.total_bytes,
                         max_payload_bytes,
                     ));
@@ -115,18 +115,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     &proven.value.page_checksum,
                     &proven.proof,
                 );
-                chunks.push(proven);
+                pages.push(proven);
                 Ok(())
             },
         )?;
-        if chunks.is_empty() {
+        if pages.is_empty() {
             return Err(ObjectError::InvalidArgument(
                 "chunk snapshot proof stream is empty".to_string(),
             ));
         }
         let report = finish_storage_snapshot_proof_stream_report(
             material,
-            chunks.len() as u64,
+            pages.len() as u64,
             "chunk-service".to_string(),
             source_control_checksum,
             source_read_index,
@@ -136,7 +136,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             last_end_offset,
             full_snapshot_checksum,
         );
-        Ok((chunks, report))
+        Ok((pages, report))
     }
 
     pub fn export_chunk_replica_snapshot_chunks_with_read_proof_report_linearizable_fenced_committed_at(
@@ -153,7 +153,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ),
         ObjectError,
     > {
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         let mut material = Vec::with_capacity(
             encoded_string_len("MXOS-RUST-STORAGE-SNAPSHOT-READ-PROOFS1")
                 .saturating_add(encoded_string_len("chunk-service")),
@@ -179,13 +179,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         "chunk snapshot proof stream contains non chunk-service proof".to_string(),
                     ));
                 }
-                if chunks.is_empty() {
+                if pages.is_empty() {
                     source_control_checksum = proven.proof.control_checksum.clone();
                     source_read_index = proven.proof.requested_storage_read_index;
                     source_commit_index = proven.proof.requested_storage_commit_index;
                     full_snapshot_checksum = proven.value.full_checksum.clone();
                     first_offset = proven.value.offset;
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         proven.value.total_bytes,
                         max_payload_bytes,
                     ));
@@ -212,18 +212,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     &proven.value.page_checksum,
                     &proven.proof,
                 );
-                chunks.push(proven);
+                pages.push(proven);
                 Ok(())
             },
         )?;
-        if chunks.is_empty() {
+        if pages.is_empty() {
             return Err(ObjectError::InvalidArgument(
                 "chunk snapshot proof stream is empty".to_string(),
             ));
         }
         let report = finish_storage_snapshot_proof_stream_report(
             material,
-            chunks.len() as u64,
+            pages.len() as u64,
             "chunk-service".to_string(),
             source_control_checksum,
             source_read_index,
@@ -233,6 +233,6 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             last_end_offset,
             full_snapshot_checksum,
         );
-        Ok((chunks, report))
+        Ok((pages, report))
     }
 }

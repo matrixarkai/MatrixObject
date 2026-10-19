@@ -29,7 +29,7 @@ const MATRIXRAFT_SNAPSHOT_CHUNK_BYTES: usize = 64 * 1024;
 /// A metadata service a MatrixRaft node can drive.
 pub struct MetadataStateMachine {
     store: MatrixObjectStore,
-    /// Bytes accumulated across the chunks of one incoming snapshot.
+    /// Bytes accumulated across the pages of one incoming snapshot.
     installing: Vec<u8>,
     /// The commit index an installed snapshot must reach, as
     /// `install_raft_metadata_snapshot_bytes` requires.
@@ -88,14 +88,14 @@ impl StateMachine for MetadataStateMachine {
     }
 
     fn snapshot(&self) -> Result<SnapshotChunk, RaftError> {
-        let chunks = self
+        let pages = self
             .store
             .export_metadata_snapshot_chunks(MATRIXRAFT_SNAPSHOT_CHUNK_BYTES)
             .map_err(|err| RaftError::Storage(format!("metadata snapshot export failed: {err}")))?;
-        let last_applied_index = chunks.last().map_or(0, |chunk| chunk.last_applied_index);
-        let total_bytes = chunks.last().map_or(0, |chunk| chunk.total_bytes);
+        let last_applied_index = pages.last().map_or(0, |chunk| chunk.last_applied_index);
+        let total_bytes = pages.last().map_or(0, |chunk| chunk.total_bytes);
         let mut data = Vec::with_capacity(total_bytes as usize);
-        for chunk in &chunks {
+        for chunk in &pages {
             data.extend_from_slice(&chunk.payload);
         }
         Ok(SnapshotChunk {

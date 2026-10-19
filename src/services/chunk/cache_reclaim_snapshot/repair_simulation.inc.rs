@@ -1,7 +1,7 @@
 impl MatrixReplicaService {
     pub fn remove_chunk_for_repair(&mut self, page_id: &PageId) -> bool {
         self.invalidate_chunk_cache(page_id, 0, u64::MAX);
-        self.chunks.remove(page_id).is_some()
+        self.pages.remove(page_id).is_some()
     }
 
     pub fn corrupt_chunk_payload_for_repair(
@@ -9,7 +9,7 @@ impl MatrixReplicaService {
         page_id: &PageId,
     ) -> Result<(), ObjectError> {
         let chunk = self
-            .chunks
+            .pages
             .get_mut(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         let chunk = std::sync::Arc::make_mut(chunk);

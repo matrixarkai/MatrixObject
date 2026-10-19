@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn install_raft_metadata_snapshot_chunks_with_read_proof<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
@@ -12,7 +12,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let mut source_commit_index: Option<u64> = None;
         let mut progress = SnapshotInstallProgress::default();
         let mut saw_chunk = false;
-        for proven in chunks {
+        for proven in pages {
             let proof_status = validate_metadata_snapshot_install_read_proof(
                 &proven.proof,
                 "metaserver snapshot",
@@ -66,7 +66,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn install_raft_metadata_snapshot_chunks_with_read_proof_report<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         expected_report: &MetaServerSnapshotProofStreamReport,
         min_read_index: u64,
         min_commit_index: u64,
@@ -74,7 +74,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     where
         I: IntoIterator<Item = ProvenMetadataRead<MetaSnapshotChunk>>,
     {
-        let chunks = chunks.into_iter();
+        let pages = pages.into_iter();
         let mut assembler = MetaSnapshotChunkAssembler::default();
         let mut assembled_snapshot = None;
         let mut material = Vec::new();
@@ -91,7 +91,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let mut first_offset = 0u64;
         let mut last_end_offset = 0u64;
         let mut proof_count = 0u64;
-        for proven in chunks {
+        for proven in pages {
             if proven.proof.read_fence_read_index_lag != 0 {
                 return Err(ObjectError::PreconditionFailed(format!(
                     "metaserver snapshot proof has read-index lag {}",
@@ -179,7 +179,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn install_raft_metadata_snapshot_chunks_with_read_proof_source_report<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         expected_report: &MetaServerSnapshotProofStreamReport,
         expected_source_proof: &ServiceSnapshotInstallSourceProofReport,
         min_read_index: u64,
@@ -194,7 +194,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             &actual_source_proof,
         )?;
         self.install_raft_metadata_snapshot_chunks_with_read_proof_report(
-            chunks,
+            pages,
             expected_report,
             min_read_index,
             min_commit_index,

@@ -1,6 +1,6 @@
 impl MatrixReplicaService {
     pub fn read_chunk_state(&self, page_id: &PageId) -> Result<PageState, ObjectError> {
-        self.chunks
+        self.pages
             .get(page_id)
             .map(|state| state.as_ref().clone())
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))
@@ -8,7 +8,7 @@ impl MatrixReplicaService {
 
     pub fn head_chunk(&self, page_id: &PageId) -> Result<ReplicaHead, ObjectError> {
         let state = self
-            .chunks
+            .pages
             .get(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         Ok(ReplicaHead {
@@ -96,7 +96,7 @@ impl MatrixReplicaService {
             ..ReplicaHeadBatchStats::default()
         };
         for page_id in page_ids {
-            self.chunks
+            self.pages
                 .get(page_id)
                 .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
             stats.physical_heads = stats.physical_heads.saturating_add(1);
@@ -115,6 +115,6 @@ impl MatrixReplicaService {
     }
 
     pub fn page_ids(&self) -> Vec<PageId> {
-        self.chunks.keys().cloned().collect()
+        self.pages.keys().cloned().collect()
     }
 }

@@ -39,7 +39,7 @@ impl MatrixChunkService {
         let mut projected_physical = replica.physical_bytes();
         for (page_id, new_len) in projected_lengths {
             let current_len = replica
-                .chunks
+                .pages
                 .get(page_id)
                 .map_or(0u64, |state| state.data.len() as u64);
             projected_physical = projected_physical

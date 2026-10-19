@@ -49,7 +49,7 @@ impl MatrixReplicaService {
         new_len: u64,
     ) -> Result<u64, ObjectError> {
         let current_len = self
-            .chunks
+            .pages
             .get(page_id)
             .map_or(0u64, |state| state.data.len() as u64);
         self.physical_bytes()
@@ -85,7 +85,7 @@ impl MatrixReplicaService {
     ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let end = validate_pipeline_range("chunk write", offset, length)?;
         let projected_len = self
-            .chunks
+            .pages
             .get(page_id)
             .map_or(end, |state| state.data.len() as u64)
             .max(end);
@@ -238,7 +238,7 @@ impl MatrixReplicaService {
             coalesced.push((offset, std::borrow::Cow::Borrowed(data)));
         }
         let projected_len = coalesced.iter().try_fold(
-            self.chunks
+            self.pages
                 .get(page_id)
                 .map_or(0u64, |state| state.data.len() as u64),
             |acc, (offset, data)| -> Result<u64, ObjectError> {

@@ -15,7 +15,7 @@ impl MatrixReplicaService {
         validate_chunk_state(&state)?;
         self.ensure_capacity_for_chunk_len(&page_id, state.data.len() as u64)?;
         self.invalidate_chunk_cache(&page_id, 0, state.logical_length);
-        self.chunks.insert(page_id, std::sync::Arc::new(state));
+        self.pages.insert(page_id, std::sync::Arc::new(state));
         Ok(())
     }
 
@@ -82,7 +82,7 @@ impl MatrixReplicaService {
     ) -> Result<bool, ObjectError> {
         self.ensure_writable()?;
         let chunk = self
-            .chunks
+            .pages
             .get_mut(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         let chunk = std::sync::Arc::make_mut(chunk);

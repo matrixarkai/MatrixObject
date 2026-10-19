@@ -7,18 +7,22 @@ pub(crate) struct ReplicaSnapshotExportCache {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatrixReplicaService {
-    /// Each chunk's state behind a shared handle, so a snapshot of this
-    /// service clones handles rather than states. A write takes
-    /// `Arc::make_mut`, which copies the one chunk it touches if a snapshot
-    /// still names it -- so the copy is per chunk WRITTEN rather than per chunk
-    /// held.
-    pub(crate) chunks: BTreeMap<PageId, std::sync::Arc<PageState>>,
-    /// Whether this replica keeps the XOR sidecar for its chunks.
+    /// Each PAGE's state behind a shared handle, so a snapshot of this service
+    /// clones handles rather than states. A write takes `Arc::make_mut`, which
+    /// copies the one page it touches if a snapshot still names it -- so the
+    /// copy is per page WRITTEN rather than per page held.
+    ///
+    /// Keyed by `PageId` and holding `PageState`: a replica is made of pages,
+    /// and the chunk is the container above the replica, which
+    /// `MatrixChunkService` owns. This field was called `chunks` while holding
+    /// neither.
+    pub(crate) pages: BTreeMap<PageId, std::sync::Arc<PageState>>,
+    /// Whether this replica keeps the XOR sidecar for its pages.
     ///
     /// True only when this replica is the only copy. Above one replica a damaged
-    /// chunk is recovered from its peers: reads vote across replicas and the repair
+    /// page is recovered from its peers: reads vote across replicas and the repair
     /// path writes the winning state back. Must be uniform across the replica set --
-    /// `repair_chunk_from_quorum` compares whole chunk states to find agreement, so
+    /// `repair_chunk_from_quorum` compares whole page states to find agreement, so
     /// replicas disagreeing about whether a sidecar exists would never agree.
     pub(crate) keep_ec_sidecar: bool,
     pub(crate) receipt_retention: usize,
@@ -71,7 +75,7 @@ pub struct MatrixReplicaService {
     mutation_qos_config: ReplicaMutationQosConfig,
     mutation_qos_state: ReplicaMutationQosState,
     pub(crate) read_cache: RefCell<HashMap<ReplicaReadCacheKey, ReplicaReadCacheEntry>>,
-    /// Runtime-only: (write_sequence, checksum, per-page fnv1a64) for chunks whose
+    /// Runtime-only: (write_sequence, checksum, per-page fnv1a64) for pages whose
     /// payload has been fully validated once, so later reads verify only their own
     /// pages instead of re-hashing the whole chunk. Never persisted.
     page_validation: RefCell<HashMap<PageId, (u64, String, Vec<u64>)>>,

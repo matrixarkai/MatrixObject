@@ -74,26 +74,26 @@ impl MatrixMetaService {
 
     pub fn install_raft_snapshot_chunks<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
         I: IntoIterator<Item = MetaSnapshotChunk>,
     {
-        self.install_raft_snapshot_chunks_report(chunks, min_commit_index)
+        self.install_raft_snapshot_chunks_report(pages, min_commit_index)
             .map(|report| report.install_progress)
     }
 
     pub fn install_raft_snapshot_chunks_report<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         min_commit_index: u64,
     ) -> Result<MetadataSnapshotInstallReport, ObjectError>
     where
         I: IntoIterator<Item = MetaSnapshotChunk>,
     {
         let mut progress = self.metadata_snapshot_assembler.install_progress();
-        for chunk in chunks {
+        for chunk in pages {
             if let Some(assembled) = self
                 .metadata_snapshot_assembler
                 .push_chunk_with_checksum(chunk)?

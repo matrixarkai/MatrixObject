@@ -125,7 +125,7 @@ impl MatrixReplicaService {
         if current_capacity < target_entries {
             cache.reserve(target_entries - current_capacity);
         }
-        let chunk_index_target_entries = self.chunks.len().max(1);
+        let chunk_index_target_entries = self.pages.len().max(1);
         let mut by_chunk = self.read_cache_by_chunk.borrow_mut();
         let chunk_index_capacity = by_chunk.capacity();
         if chunk_index_capacity < chunk_index_target_entries {

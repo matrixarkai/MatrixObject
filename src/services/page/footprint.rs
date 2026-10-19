@@ -1,4 +1,4 @@
-// What a page service holds besides its replicas' chunks: its own cached
+// What a page service holds besides its replicas' pages: its own cached
 // snapshot and one being received, and the sum of what its replicas hold.
 //
 // The replicas' read caches are the part that matters: `byte_buffers` claims to
@@ -542,7 +542,7 @@ impl ChunkServiceSnapshot {
                 .saturating_add(std::mem::size_of::<ReplicaServiceSnapshot>() as u64)
                 .saturating_add(replica.checksum.capacity() as u64)
                 .saturating_add(replica.last_partial_reclaim_failure_status.capacity() as u64);
-            for (_, state) in replica.chunks.iter() {
+            for (_, state) in replica.pages.iter() {
                 page_count = page_count.saturating_add(1);
                 // The chunk identity and one handle. The state behind the
                 // handle is named rather than copied, so it is charged below

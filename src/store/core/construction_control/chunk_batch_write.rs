@@ -317,7 +317,7 @@ impl MatrixObjectStore {
             ));
         }
         replica
-            .chunks
+            .pages
             .insert(
                 prepared.receipt.page_id.clone(),
                 std::sync::Arc::new(prepared.state),

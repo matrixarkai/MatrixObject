@@ -1,13 +1,13 @@
 impl MatrixObjectStore {
     pub fn install_snapshot_chunks<I>(
         &mut self,
-        chunks: I,
+        pages: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
         I: IntoIterator<Item = StoreSnapshotChunk>,
     {
         let mut progress = self.snapshot_assembler.install_progress();
-        for chunk in chunks {
+        for chunk in pages {
             if let Some(assembled) = self.snapshot_assembler.push_chunk_with_checksum(chunk)? {
                 let snapshot_bytes = assembled.bytes.len() as u64;
                 let full_checksum = assembled.full_checksum;

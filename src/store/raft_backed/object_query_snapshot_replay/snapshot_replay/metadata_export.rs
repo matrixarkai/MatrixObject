@@ -108,24 +108,24 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<Vec<ProvenMetadataRead<MetaSnapshotChunk>>, ObjectError> {
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         self.export_metadata_snapshot_chunk_stream_with_read_proof_linearizable_committed_at(
             max_payload_bytes,
             now_ms,
             min_read_index,
             min_commit_index,
             |chunk| {
-                if chunks.is_empty() {
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                if pages.is_empty() {
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         chunk.value.total_bytes,
                         max_payload_bytes,
                     ));
                 }
-                chunks.push(chunk);
+                pages.push(chunk);
                 Ok(())
             },
         )?;
-        Ok(chunks)
+        Ok(pages)
     }
 
     pub fn export_metadata_snapshot_chunks_with_read_proof_report_linearizable(
@@ -160,7 +160,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ),
         ObjectError,
     > {
-        let mut chunks = Vec::new();
+        let mut pages = Vec::new();
         let mut material = Vec::with_capacity(encoded_string_len(
             "MXOS-RUST-METASERVER-SNAPSHOT-READ-PROOFS1",
         ));
@@ -194,14 +194,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         proven.proof.read_fence_applied_lag
                     )));
                 }
-                if chunks.is_empty() {
+                if pages.is_empty() {
                     requested_read_index = proven.proof.requested_read_index;
                     consensus_read_index = proven.proof.consensus_read_index;
                     metadata_commit_index = proven.proof.metadata_commit_index;
                     snapshot_last_applied_index = proven.value.last_applied_index;
                     full_snapshot_checksum = proven.value.full_checksum.clone();
                     first_offset = proven.value.offset;
-                    chunks.reserve(snapshot_chunk_vec_capacity(
+                    pages.reserve(snapshot_chunk_vec_capacity(
                         proven.value.total_bytes,
                         max_payload_bytes,
                     ));
@@ -230,18 +230,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     proven.value.last_applied_index,
                     &proven.proof,
                 );
-                chunks.push(proven);
+                pages.push(proven);
                 Ok(())
             },
         )?;
-        if chunks.is_empty() {
+        if pages.is_empty() {
             return Err(ObjectError::InvalidArgument(
                 "metaserver snapshot proof stream is empty".to_string(),
             ));
         }
         let report = finish_metaserver_snapshot_proof_stream_report(
             material,
-            chunks.len() as u64,
+            pages.len() as u64,
             requested_read_index,
             consensus_read_index,
             metadata_commit_index,
@@ -251,6 +251,6 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             snapshot_last_applied_index,
             full_snapshot_checksum,
         );
-        Ok((chunks, report))
+        Ok((pages, report))
     }
 }

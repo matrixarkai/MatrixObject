@@ -31,7 +31,7 @@ impl MatrixReplicaService {
             ..ReplicaReclaimPlan::default()
         };
         let mut budget_left = max_rewrite_bytes;
-        for (page_id, state) in &self.chunks {
+        for (page_id, state) in &self.pages {
             if marker.map_or(false, |marker| page_id <= marker) {
                 continue;
             }

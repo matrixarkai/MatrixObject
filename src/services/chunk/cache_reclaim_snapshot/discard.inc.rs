@@ -46,7 +46,7 @@ impl MatrixReplicaService {
         }
         let end = validate_pipeline_range("chunk discard", offset, length)?;
         let logical_length = self
-            .chunks
+            .pages
             .get(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?
             .logical_length;
@@ -57,7 +57,7 @@ impl MatrixReplicaService {
         }
         self.admit_mutation_qos(0, 0, 1, length, now_millis())?;
         let chunk = self
-            .chunks
+            .pages
             .get_mut(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         let chunk = std::sync::Arc::make_mut(chunk);
@@ -205,7 +205,7 @@ impl MatrixReplicaService {
             admission.selected_discard_bytes,
             now_millis(),
         );
-        let Some(chunk) = self.chunks.get(page_id) else {
+        let Some(chunk) = self.pages.get(page_id) else {
             admission.missing_chunk = true;
             admission.can_accept = false;
             return Ok(admission);
@@ -302,7 +302,7 @@ impl MatrixReplicaService {
     ) -> Result<ReplicaDiscardBatchStats, ObjectError> {
         self.ensure_writable()?;
         let logical_length = self
-            .chunks
+            .pages
             .get(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?
             .logical_length;
@@ -329,7 +329,7 @@ impl MatrixReplicaService {
         let merged = merge_range_slice(ranges);
         self.admit_mutation_qos(0, 0, merged.len() as u64, stats.input_bytes, now_millis())?;
         let chunk = self
-            .chunks
+            .pages
             .get_mut(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         let chunk = std::sync::Arc::make_mut(chunk);

@@ -3,13 +3,13 @@ impl MatrixObjectStore {
         &self,
         metadata: &ObjectMetadata,
     ) -> Result<(u64, u64), ObjectError> {
-        let mut chunks: BTreeMap<PageId, u64> = BTreeMap::new();
+        let mut pages: BTreeMap<PageId, u64> = BTreeMap::new();
         for extent in &metadata.extents {
             for loc in
                 self.chunk_service
                     .map_range(&extent.chunk_id, extent.offset, extent.length)?
             {
-                chunks
+                pages
                     .entry(loc.page_id)
                     .and_modify(|bytes| *bytes = bytes.saturating_add(loc.length))
                     .or_insert(loc.length);
@@ -17,7 +17,7 @@ impl MatrixObjectStore {
         }
         let mut degraded_chunks = 0u64;
         let mut degraded_bytes = 0u64;
-        for (page_id, bytes) in chunks {
+        for (page_id, bytes) in pages {
             let repair = self.chunk_service.plan_repair_chunk_replicas(&page_id)?;
             if repair.degraded_chunks > 0 {
                 degraded_chunks = degraded_chunks.saturating_add(1);

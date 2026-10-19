@@ -87,7 +87,7 @@ impl MatrixReplicaService {
             stamp.push_str("|rp:");
             stamp.push_str(key);
         }
-        for (page_id, state) in &self.chunks {
+        for (page_id, state) in &self.pages {
             let _ = write!(
                 stamp,
                 "|c:{}/{}:{}:{}:{}:{}:{}:{}",
@@ -126,7 +126,7 @@ impl MatrixReplicaService {
             .chain(self.reclaim_request_receipts.keys())
             .chain(self.repair_request_receipts.keys())
             .fold(0usize, |total, key| total.saturating_add(key.len() + 8));
-        let chunk_bytes = self.chunks.values().fold(0usize, |total, state| {
+        let chunk_bytes = self.pages.values().fold(0usize, |total, state| {
             total
                 .saturating_add(96)
                 .saturating_add(state.checksum.len())
@@ -170,7 +170,7 @@ impl MatrixReplicaService {
     /// take this and call `seal_checksum` on the rare path that installs it.
     pub fn export_snapshot_unsealed(&self) -> ReplicaServiceSnapshot {
         ReplicaServiceSnapshot {
-            chunks: self.chunks.clone(),
+            pages: self.pages.clone(),
             receipt_retention: self.receipt_retention,
             write_request_receipts: self.write_request_receipts.clone(),
             discard_request_receipts: self.discard_request_receipts.clone(),
@@ -309,7 +309,7 @@ impl MatrixReplicaService {
             ));
         }
         let image = self.export_snapshot_image()?;
-        let mut chunks = Vec::with_capacity(snapshot_chunk_vec_capacity(
+        let mut pages = Vec::with_capacity(snapshot_chunk_vec_capacity(
             image.bytes.len() as u64,
             max_payload_bytes,
         ));
@@ -328,7 +328,7 @@ impl MatrixReplicaService {
                     "chunk service snapshot export made no progress".to_string(),
                 ));
             }
-            chunks.push(chunk);
+            pages.push(chunk);
             if eof {
                 let mut cache = self.snapshot_export_cache.borrow_mut();
                 if cache
@@ -341,14 +341,14 @@ impl MatrixReplicaService {
                 break;
             }
         }
-        Ok(chunks)
+        Ok(pages)
     }
 
     pub fn install_snapshot(&mut self, snapshot: ReplicaServiceSnapshot) -> Result<(), ObjectError> {
         snapshot.validate()?;
         self.snapshot_assembler.reset();
         if snapshot.capacity_bytes > 0 {
-            let snapshot_bytes = snapshot.chunks.values().fold(0u64, |acc, state| {
+            let snapshot_bytes = snapshot.pages.values().fold(0u64, |acc, state| {
                 acc.saturating_add(state.data.len() as u64)
             });
             if snapshot_bytes > snapshot.capacity_bytes {
@@ -357,7 +357,7 @@ impl MatrixReplicaService {
                 ));
             }
         }
-        self.chunks = snapshot.chunks;
+        self.pages = snapshot.pages;
         self.receipt_retention = snapshot.receipt_retention;
         self.write_request_receipts = snapshot.write_request_receipts;
         self.discard_request_receipts = snapshot.discard_request_receipts;
@@ -425,13 +425,13 @@ impl MatrixReplicaService {
 
     pub fn install_snapshot_chunks<I>(
         &mut self,
-        chunks: I,
+        pages: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
         I: IntoIterator<Item = ReplicaServiceSnapshotChunk>,
     {
         let mut progress = self.snapshot_assembler.install_progress();
-        for chunk in chunks {
+        for chunk in pages {
             if let Some(assembled) = self.snapshot_assembler.push_chunk_with_checksum(chunk)? {
                 self.install_snapshot_bytes_in_place(&assembled.bytes)?;
                 return Ok(snapshot_install_progress(

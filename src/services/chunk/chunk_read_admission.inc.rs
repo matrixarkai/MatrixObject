@@ -38,7 +38,7 @@ impl MatrixReplicaService {
         }
         admission.stats.budget_limited =
             max_payload_bytes > 0 && admission.stats.payload_bytes > max_payload_bytes;
-        let Some(chunk) = self.chunks.get(page_id) else {
+        let Some(chunk) = self.pages.get(page_id) else {
             admission.missing_chunk = true;
             admission.partial_status = "chunk is missing".to_string();
             return Ok(admission);

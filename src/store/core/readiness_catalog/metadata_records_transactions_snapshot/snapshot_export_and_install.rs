@@ -47,26 +47,26 @@ impl MatrixObjectStore {
 
     pub fn install_raft_metadata_snapshot_chunks<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
         I: IntoIterator<Item = MetaSnapshotChunk>,
     {
         self.meta_service
-            .install_raft_snapshot_chunks(chunks, min_commit_index)
+            .install_raft_snapshot_chunks(pages, min_commit_index)
     }
 
     pub fn install_raft_metadata_snapshot_chunks_report<I>(
         &mut self,
-        chunks: I,
+        pages: I,
         min_commit_index: u64,
     ) -> Result<MetadataSnapshotInstallReport, ObjectError>
     where
         I: IntoIterator<Item = MetaSnapshotChunk>,
     {
         self.meta_service
-            .install_raft_snapshot_chunks_report(chunks, min_commit_index)
+            .install_raft_snapshot_chunks_report(pages, min_commit_index)
     }
 
     pub fn metadata_snapshot_install_progress(&self) -> SnapshotInstallProgress {

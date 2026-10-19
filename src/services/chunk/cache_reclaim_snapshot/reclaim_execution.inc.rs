@@ -159,7 +159,7 @@ impl MatrixReplicaService {
         }
         let consumed_trim_ops = plan.scheduled_trim_ops;
         for candidate in plan.candidates {
-            let Some(state) = self.chunks.get_mut(&candidate.page_id) else {
+            let Some(state) = self.pages.get_mut(&candidate.page_id) else {
                 continue;
             };
             let state = std::sync::Arc::make_mut(state);

@@ -108,7 +108,7 @@ impl MatrixReplicaService {
     }
 
     pub fn compression_stats(&self) -> (u64, u64) {
-        chunk_map_compression_stats(&self.chunks)
+        chunk_map_compression_stats(&self.pages)
     }
 
     pub fn compressed_chunk_count(&self) -> u64 {

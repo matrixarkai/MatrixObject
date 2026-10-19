@@ -532,7 +532,7 @@ impl MatrixObjectStore {
             ));
         }
         let image = self.export_snapshot_image()?;
-        let mut chunks = Vec::with_capacity(snapshot_chunk_vec_capacity(
+        let mut pages = Vec::with_capacity(snapshot_chunk_vec_capacity(
             image.bytes.len() as u64,
             max_payload_bytes,
         ));
@@ -548,7 +548,7 @@ impl MatrixObjectStore {
             )?;
             let eof = chunk.eof;
             let payload_len = chunk.payload.len() as u64;
-            chunks.push(chunk);
+            pages.push(chunk);
             if eof {
                 let mut cache = self.snapshot_export_cache.borrow_mut();
                 if cache
@@ -567,7 +567,7 @@ impl MatrixObjectStore {
             }
             offset = offset.saturating_add(payload_len);
         }
-        Ok(chunks)
+        Ok(pages)
     }
 
     pub fn install_snapshot(&mut self, snapshot: StoreSnapshot) -> Result<(), ObjectError> {
