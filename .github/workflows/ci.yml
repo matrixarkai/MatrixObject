@@ -287,11 +287,22 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
 
-      - name: The snapshot a mutation holds shares payload rather than copying it
+      # RENAMED WITH ITS TEST, AND THE NAME MATTERS AS MUCH AS THE FILTER. This step asked for
+      # `the_snapshot_a_mutation_holds_shares_payload_rather_than_copying_it`, which #87 renamed
+      # when it found the old claim was its fixture's rather than a law -- and #87 did not update
+      # this guard, so every run since has failed with "the guard did not run" and main has been
+      # red on this job. Repointing the filter alone would have left a step whose NAME asserts the
+      # claim that was refuted, which is worse than a red: a green step carrying the old sentence
+      # reads as passing evidence for it.
+      #
+      # What the test actually pins, in both halves: a chunk's payload is an `Arc<Vec<u8>>`, so the
+      # snapshot NAMES the stored bytes rather than duplicating them; and what it copies is the
+      # structure around them, per CHUNK, at a cost per chunk the test asserts is constant.
+      - name: The snapshot a mutation holds names the payload and copies a constant per chunk
         run: |
           set -o pipefail
           cargo test --locked --lib \
-            tests::the_snapshot_a_mutation_holds_shares_payload_rather_than_copying_it -- --exact \
+            tests::the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
