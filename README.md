@@ -330,16 +330,16 @@ cargo test --release --lib measure_what_a_mutation_batch_snapshot_costs -- --ign
 #### A delete does not reclaim, it trades
 
 Writing 500 objects of 1 KiB and then deleting every one leaves the store
-**21.7% larger** than when it held them:
+**21.4% larger** than when it held them:
 
 | | bytes |
 |---|---:|
-| holding 500 objects | 1,978,179 |
-| after deleting all 500 | 2,407,791 |
+| holding 500 objects | 1,973,205 |
+| after deleting all 500 | 2,396,346 |
 
 The payload index is given back in full. What replaces it is **822 bytes of
 idempotency receipt per delete** across three replicas, bounded only by
-`receipt_retention`, which defaults to 100,000; plus 144 bytes of change feed and
+`receipt_retention`, which defaults to 100,000; plus 114 bytes of change feed and
 57 of metadata change log per delete, both bounded by their retention constants.
 The object's own entry does not go away either — a delete files a delete marker,
 so 226 of the 282 bytes an object cost stay, which is what the change feed and

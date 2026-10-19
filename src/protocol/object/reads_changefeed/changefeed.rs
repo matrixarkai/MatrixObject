@@ -3,16 +3,24 @@
 pub struct ObjectChangeRecord {
     pub sequence: u64,
     pub previous_sequence: u64,
-    /// One of a fixed set of twelve operation names, and a `Box<str>` rather
-    /// than a `String` because it is written once and never grown: a `String`
-    /// carries a capacity word the feed has no use for.
+    /// One of a closed set of SEVENTEEN operation names -- the doc comment here
+    /// said twelve, and the call sites say otherwise: ten reach
+    /// `append_object_change` as literals and seven more arrive through the put
+    /// paths. `interned_change_operation` holds the list.
+    ///
+    /// A `SharedText` rather than a `Box<str>`: the set is closed and small, so
+    /// every record naming the same operation names it through the same
+    /// allocation. As a `Box<str>` each record carried its own copy, which
+    /// measured 10,240 bytes across the 1,024 records the feed retains at its
+    /// bound -- for seventeen distinct words.
     ///
     /// An enum would be smaller still -- one byte against sixteen -- but the
     /// snapshot stores this as text, so an enum would have to decide what a
     /// decode does with a name it does not know. That is a compatibility
     /// decision rather than a representation one, and it is in the issue
-    /// rather than here.
-    pub operation: Box<str>,
+    /// rather than here. Interning needs no such decision: an unknown name
+    /// still works, it just gets its own allocation.
+    pub operation: SharedText,
     pub object_id: ObjectId,
     pub version: u64,
     pub length: u64,
@@ -163,3 +171,39 @@ impl ObjectChangePage {
     }
 }
 
+/// Every operation name a change record may carry, one allocation each.
+///
+/// The set is closed by the call sites rather than by a validator, so
+/// `the_interned_change_operations_cover_every_operation_recorded` pins this
+/// list against what a run actually produces. A name outside the set still
+/// works and simply gets its own allocation -- this is only about which
+/// allocation the characters live in.
+pub(crate) fn interned_change_operation(operation: &str) -> SharedText {
+    static OPERATIONS: std::sync::OnceLock<[SharedText; 17]> = std::sync::OnceLock::new();
+    OPERATIONS
+        .get_or_init(|| {
+            [
+                SharedText::from("append_object"),
+                SharedText::from("batch_put_object"),
+                SharedText::from("compact_segment_put"),
+                SharedText::from("complete_multipart_put"),
+                SharedText::from("copy_object"),
+                SharedText::from("delete_object"),
+                SharedText::from("delete_object_version"),
+                SharedText::from("put_object"),
+                SharedText::from("put_object_with_root_placement"),
+                SharedText::from("refresh_object_root_placement"),
+                SharedText::from("restore_object"),
+                SharedText::from("restore_object_version"),
+                SharedText::from("set_object_legal_hold"),
+                SharedText::from("set_object_retention"),
+                SharedText::from("set_object_tags"),
+                SharedText::from("transition_object"),
+                SharedText::from("transition_object_with_root_placement"),
+            ]
+        })
+        .iter()
+        .find(|known| known.as_str() == operation)
+        .cloned()
+        .unwrap_or_else(|| SharedText::from(operation))
+}

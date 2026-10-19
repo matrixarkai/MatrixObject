@@ -34,7 +34,7 @@ impl MatrixObjectStore {
         self.object_changes.push(ObjectChangeRecord {
             sequence,
             previous_sequence,
-            operation: operation.into(),
+            operation: interned_change_operation(operation),
             object_id: metadata.object_id.clone(),
             version: metadata.version,
             length: metadata.length,
