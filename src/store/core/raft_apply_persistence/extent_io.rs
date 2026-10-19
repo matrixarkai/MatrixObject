@@ -133,7 +133,7 @@ impl MatrixObjectStore {
     fn ensure_writable_chunk(&mut self, length: u64) -> Result<ChunkId, ObjectError> {
         if length > self.options.chunk_size {
             return Err(ObjectError::InvalidArgument(
-                "extent length exceeds segment_size".to_string(),
+                "extent length exceeds chunk_size".to_string(),
             ));
         }
         if let Some((id, _)) = self

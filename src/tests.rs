@@ -36453,6 +36453,70 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
 }
 
 #[test]
+fn a_rejection_names_the_setting_it_rejected() {
+    // The storage tiers are a chunk of 64 MiB holding pages of 1 MiB. There is
+    // no tier above the chunk, and `StoreOptions` names the two correctly.
+    //
+    // The REJECTION MESSAGES did not. `page_size` out of range reported
+    // "chunk_size must be 1..segment_size" -- the wrong field, and a tier that
+    // does not exist. A caller fixing `chunk_size` on that advice would have
+    // changed the wrong number and seen the same error again.
+    //
+    // Nothing caught it because the fields were right and only the strings were
+    // stale, so this drives each validation and reads the message back.
+    fn rejection(options: StoreOptions) -> String {
+        match MatrixObjectStore::new(options) {
+            Err(ObjectError::InvalidArgument(message)) => message,
+            Err(other) => panic!("expected an InvalidArgument rejection, got {other:?}"),
+            Ok(_) => panic!("these options should have been rejected"),
+        }
+    }
+
+    let chunk_zero = rejection(StoreOptions {
+        chunk_size: 0,
+        ..StoreOptions::default()
+    });
+    let page_too_large = rejection(StoreOptions {
+        page_size: StoreOptions::default().chunk_size + 1,
+        ..StoreOptions::default()
+    });
+    let extent_too_large = rejection(StoreOptions {
+        max_extent_bytes: StoreOptions::default().chunk_size + 1,
+        ..StoreOptions::default()
+    });
+    println!("REJECTION chunk_zero={chunk_zero:?}");
+    println!("REJECTION page_too_large={page_too_large:?}");
+    println!("REJECTION extent_too_large={extent_too_large:?}");
+
+    // Each message must name the setting whose value was wrong.
+    assert!(
+        chunk_zero.contains("chunk_size"),
+        "a rejected chunk_size should say so, and it says {chunk_zero:?}"
+    );
+    assert!(
+        page_too_large.contains("page_size"),
+        "a rejected page_size should say so, and it says {page_too_large:?}"
+    );
+    assert!(
+        extent_too_large.contains("max_extent_bytes"),
+        "a rejected max_extent_bytes should say so, and it says {extent_too_large:?}"
+    );
+
+    // And none of them may name a tier this store does not have. `segment` and
+    // `slab` were both tried as a name for a container above the chunk; there
+    // is no such container, so a message mentioning one sends the reader
+    // looking for a setting that was never there.
+    for message in [&chunk_zero, &page_too_large, &extent_too_large] {
+        for absent in ["segment", "slab"] {
+            assert!(
+                !message.contains(absent),
+                "no rejection should name a {absent}, and this one does: {message:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_write_reaches_every_replica_from_the_coordinator_in_one_hop() {
     // Two write topologies are possible for a replicated chunk. In one the
     // coordinator hands the payload to every replica itself -- one hop each,

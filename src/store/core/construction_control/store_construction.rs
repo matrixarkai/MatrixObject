@@ -2,12 +2,12 @@ impl MatrixObjectStore {
     pub fn new(options: StoreOptions) -> Result<Self, ObjectError> {
         if options.chunk_size == 0 {
             return Err(ObjectError::InvalidArgument(
-                "segment_size must be positive".to_string(),
+                "chunk_size must be positive".to_string(),
             ));
         }
         if options.max_extent_bytes == 0 || options.max_extent_bytes > options.chunk_size {
             return Err(ObjectError::InvalidArgument(
-                "max_extent_bytes must be 1..segment_size".to_string(),
+                "max_extent_bytes must be 1..chunk_size".to_string(),
             ));
         }
         if options.volume_count == 0 {
@@ -17,7 +17,7 @@ impl MatrixObjectStore {
         }
         if options.page_size == 0 || options.page_size > options.chunk_size {
             return Err(ObjectError::InvalidArgument(
-                "chunk_size must be 1..segment_size".to_string(),
+                "page_size must be 1..chunk_size".to_string(),
             ));
         }
         if options.replica_count == 0

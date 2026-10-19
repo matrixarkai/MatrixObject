@@ -2,7 +2,7 @@ impl MatrixChunkService {
     pub fn configure_allocator(&mut self, chunk_size: u64) -> Result<(), ObjectError> {
         if chunk_size == 0 || chunk_size < self.page_size {
             return Err(ObjectError::InvalidArgument(
-                "block allocator segment_size must be >= chunk_size".to_string(),
+                "chunk allocator chunk_size must be >= page_size".to_string(),
             ));
         }
         if !self.pending_allocations.is_empty() {
