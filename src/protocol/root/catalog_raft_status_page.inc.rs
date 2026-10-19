@@ -74,7 +74,7 @@ fn root_raft_status_page_fields(
         ),
         (
             "root_blockserver_total_chunk_service_mode_rejected_mutations",
-            status.root_pageserver_total_chunk_service_mode_rejected_mutations,
+            status.root_pageserver_total_replica_service_mode_rejected_mutations,
         ),
         (
             "root_blockserver_total_chunk_physical_write_count",

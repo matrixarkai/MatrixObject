@@ -193,7 +193,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_batch_write_prepared(
         &mut self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         idempotency_key: &str,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -209,7 +209,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_batch_write_prepared_bounded(
         &mut self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         idempotency_key: &str,
@@ -227,7 +227,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_batch_write_prepared_bounded_fenced(
         &mut self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         idempotency_key: &str,

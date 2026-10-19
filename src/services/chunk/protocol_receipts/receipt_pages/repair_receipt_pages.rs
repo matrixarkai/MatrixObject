@@ -7,7 +7,7 @@ pub struct ChunkRepairReceiptPage {
     pub limit: u64,
     pub truncated: bool,
     pub next_marker: Option<String>,
-    pub chunk_id: Option<ChunkId>,
+    pub chunk_id: Option<PageId>,
     pub skipped_chunk_count: u64,
 }
 
@@ -139,7 +139,7 @@ macro_rules! impl_chunk_storage_receipt_page_source {
                 self.next_marker.as_deref()
             }
 
-            fn storage_receipt_page_chunk_id_filter(&self) -> Option<&ChunkId> {
+            fn storage_receipt_page_chunk_id_filter(&self) -> Option<&PageId> {
                 self.chunk_id.as_ref()
             }
 
@@ -167,7 +167,7 @@ fn chunk_receipt_page_common_control_fields(
     limit: u64,
     truncated: bool,
     next_marker: &Option<String>,
-    chunk_id: &Option<ChunkId>,
+    chunk_id: &Option<PageId>,
     skipped_chunk_count: u64,
     field_prefix: &str,
 ) -> BTreeMap<String, String> {

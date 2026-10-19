@@ -86,8 +86,8 @@ where
         &mut material,
         page.storage_receipt_page_chunk_filter().is_some() as u64,
     );
-    if let Some(chunk_index) = page.storage_receipt_page_chunk_filter() {
-        append_u64(&mut material, chunk_index);
+    if let Some(page_index) = page.storage_receipt_page_chunk_filter() {
+        append_u64(&mut material, page_index);
         append_u64(
             &mut material,
             page.storage_receipt_page_chunk_size().unwrap_or(0),

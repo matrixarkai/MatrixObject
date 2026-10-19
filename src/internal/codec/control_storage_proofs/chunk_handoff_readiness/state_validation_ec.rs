@@ -1,4 +1,4 @@
-pub(crate) fn validate_chunk_state(state: &ChunkState) -> Result<(), ObjectError> {
+pub(crate) fn validate_chunk_state(state: &PageState) -> Result<(), ObjectError> {
     if state.logical_length as usize > state.data.len() {
         return Err(ObjectError::Corruption(
             "chunk state logical length exceeds payload".to_string(),
@@ -92,7 +92,7 @@ pub(crate) fn chunk_ec_parity_from_data(data: &[u8]) -> Vec<u8> {
 }
 
 /// Drop the sidecar, for a replica that keeps none.
-pub(crate) fn clear_chunk_ec_sidecars(state: &mut ChunkState) {
+pub(crate) fn clear_chunk_ec_sidecars(state: &mut PageState) {
     if !state.ec_parity_fragment.is_empty() {
         state.ec_parity_fragment = std::sync::Arc::new(Vec::new());
     }
@@ -104,11 +104,11 @@ pub(crate) fn clear_chunk_ec_sidecars(state: &mut ChunkState) {
 /// lets the free functions here tell "not kept" from "wrong" without reaching for
 /// the service's policy. A payload that is itself empty legitimately has an empty
 /// sidecar, hence the second arm.
-pub(crate) fn chunk_keeps_ec_sidecar(state: &ChunkState) -> bool {
+pub(crate) fn chunk_keeps_ec_sidecar(state: &PageState) -> bool {
     !state.ec_parity_fragment.is_empty() || state.data.is_empty()
 }
 
-pub(crate) fn validate_chunk_ec_sidecars(state: &ChunkState) -> Result<(), ObjectError> {
+pub(crate) fn validate_chunk_ec_sidecars(state: &PageState) -> Result<(), ObjectError> {
     if !chunk_keeps_ec_sidecar(state) {
         return Ok(());
     }
@@ -171,6 +171,6 @@ pub(crate) fn chunk_ec_recover_data(
     ))
 }
 
-pub(crate) fn refresh_chunk_ec_sidecars(state: &mut ChunkState) {
+pub(crate) fn refresh_chunk_ec_sidecars(state: &mut PageState) {
     state.ec_parity_fragment = std::sync::Arc::new(chunk_ec_parity_from_data(&state.data));
 }

@@ -2,7 +2,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_batch_write(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
     ) -> Result<ChunkWriteAdmission, ObjectError> {
@@ -17,7 +17,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_batch_write_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -35,7 +35,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_write(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_write_bytes: u64,
@@ -57,7 +57,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_write_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_write_bytes: u64,
@@ -77,7 +77,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_batch_discard(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
     ) -> Result<ChunkDiscardAdmission, ObjectError> {
@@ -92,7 +92,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_batch_discard_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -110,7 +110,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_discard(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_discard_bytes: u64,
@@ -132,7 +132,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_discard_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_discard_bytes: u64,
@@ -152,7 +152,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_batch_read(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
     ) -> Result<ChunkReadAdmission, ObjectError> {
@@ -167,7 +167,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_batch_read_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -185,7 +185,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_read(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -207,7 +207,7 @@ impl MatrixObjectStore {
     pub fn can_accept_chunk_read_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,

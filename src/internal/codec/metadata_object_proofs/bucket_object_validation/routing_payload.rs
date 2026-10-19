@@ -16,7 +16,7 @@ pub(crate) fn page_replica_audit_item_payload_bytes(item: &PageReplicaAuditItem)
         .to_string()
         .len()
         .saturating_add(item.chunk_id.slab_id.id.to_string().len())
-        .saturating_add(item.chunk_id.chunk_index.to_string().len())
+        .saturating_add(item.chunk_id.page_index.to_string().len())
         .saturating_add(item.status.len())
         .saturating_add(item.checksum.len())
         .saturating_add(72) as u64

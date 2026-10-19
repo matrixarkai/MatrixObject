@@ -5,21 +5,21 @@ impl MatrixObjectStore {
 
     pub fn plan_repair_page_chunk(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<ChunkRepairReport, ObjectError> {
         self.page_service.plan_repair_chunk_replicas(chunk_id)
     }
 
     pub fn repair_page_chunk(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<ChunkRepairReport, ObjectError> {
         self.page_service.repair_chunk_replicas(chunk_id)
     }
 
     pub fn repair_page_chunk_fenced(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRepairReport, ObjectError> {
         self.page_service
@@ -33,7 +33,7 @@ impl MatrixObjectStore {
 
     pub fn audit_page_replicas(
         &self,
-        after_chunk_id: Option<&ChunkId>,
+        after_chunk_id: Option<&PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
     ) -> Result<PageReplicaAuditPage, ObjectError> {
@@ -43,7 +43,7 @@ impl MatrixObjectStore {
 
     pub fn repair_audited_page_replicas(
         &mut self,
-        after_chunk_id: Option<&ChunkId>,
+        after_chunk_id: Option<&PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
     ) -> Result<PageReplicaAuditRepairReport, ObjectError> {
@@ -56,7 +56,7 @@ impl MatrixObjectStore {
 
     pub fn repair_audited_page_replicas_fenced(
         &mut self,
-        after_chunk_id: Option<&ChunkId>,
+        after_chunk_id: Option<&PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
@@ -89,7 +89,7 @@ impl MatrixObjectStore {
 
     pub fn plan_chunk_replica_reclaim(
         &self,
-        marker: Option<&ChunkId>,
+        marker: Option<&PageId>,
         max_chunks: usize,
         max_rewrite_bytes: u64,
         min_discarded_bytes: u64,

@@ -41,7 +41,7 @@ pub struct PreparedStorageMaintenanceEnvelope {
     pub first_action: String,
     pub first_action_reason: String,
     pub first_replica_index: Option<usize>,
-    pub first_chunk_id: Option<ChunkId>,
+    pub first_chunk_id: Option<PageId>,
     pub first_estimated_bytes: u64,
     pub envelope_checksum: String,
 }

@@ -1,10 +1,10 @@
-impl ChunkServiceSnapshot {
+impl ReplicaServiceSnapshot {
     fn legacy_checksum_material_hash(&self) -> String {
         let mut material = Vec::with_capacity(self.legacy_checksum_material_size_hint());
         append_u64(&mut material, self.chunks.len() as u64);
         for (chunk_id, state) in &self.chunks {
             append_slab_id(&mut material, &chunk_id.slab_id);
-            append_u64(&mut material, chunk_id.chunk_index);
+            append_u64(&mut material, chunk_id.page_index);
             append_u64(&mut material, state.logical_length);
             append_u64(&mut material, state.write_sequence);
             append_string(&mut material, &state.checksum);

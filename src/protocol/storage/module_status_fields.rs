@@ -48,11 +48,11 @@ impl ObjectStoreModuleStatus {
         );
         fields.insert(
             "root_chunkserver_read_ready".to_string(),
-            self.root_chunkserver_read_ready.to_string(),
+            self.root_replicaserver_read_ready.to_string(),
         );
         fields.insert(
             "root_chunkserver_write_ready".to_string(),
-            self.root_chunkserver_write_ready.to_string(),
+            self.root_replicaserver_write_ready.to_string(),
         );
         fields.insert(
             "root_readiness_gate_read_ready".to_string(),

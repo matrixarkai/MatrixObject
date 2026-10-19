@@ -1,7 +1,7 @@
 impl PageServiceSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
         validate_storage_receipt_retention(self.receipt_retention)?;
-        if self.chunk_size == 0 {
+        if self.page_size == 0 {
             return Err(ObjectError::Corruption(
                 "block service snapshot has zero chunk size".to_string(),
             ));
@@ -40,7 +40,7 @@ impl PageServiceSnapshot {
             ));
         }
         if self.allocator_slab_size == 0
-            || self.allocator_slab_size < self.chunk_size
+            || self.allocator_slab_size < self.page_size
             || self.allocator_next_slab_id == 0
             || self.allocator_next_offset > self.allocator_slab_size
         {

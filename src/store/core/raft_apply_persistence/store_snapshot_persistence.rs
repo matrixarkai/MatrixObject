@@ -230,7 +230,7 @@ impl MatrixObjectStore {
         let mut material = Vec::with_capacity(self.compact_metadata_checksum_size_hint());
         append_u64(&mut material, self.options.slab_size);
         append_u64(&mut material, self.options.max_extent_bytes);
-        append_u64(&mut material, self.options.chunk_size);
+        append_u64(&mut material, self.options.page_size);
         append_u64(&mut material, self.options.volume_count);
         append_u64(&mut material, self.options.replica_count as u64);
         append_u64(&mut material, self.options.write_quorum as u64);
@@ -577,7 +577,7 @@ impl MatrixObjectStore {
         *self.persistent_snapshot_durable_stamp.borrow_mut() = None;
         self.snapshot_assembler.reset();
         let mut page_service = MatrixPageService::new_with_parallelism(
-            snapshot.options.chunk_size,
+            snapshot.options.page_size,
             snapshot.options.replica_count,
             snapshot.page_write_quorum,
             snapshot.options.page_read_parallelism,

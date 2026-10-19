@@ -17,7 +17,7 @@ impl MatrixObjectStore {
                         .audit
                         .next_marker
                         .as_ref()
-                        .map_or(0, |chunk_id| chunk_id.chunk_index),
+                        .map_or(0, |chunk_id| chunk_id.page_index),
                 ))
             }
             ObjectCommand::ApplyPreparedPageRangeRepair { prepared } => {
@@ -50,7 +50,7 @@ impl MatrixObjectStore {
                     report
                         .chunk_id
                         .as_ref()
-                        .map_or(0, |chunk_id| chunk_id.chunk_index),
+                        .map_or(0, |chunk_id| chunk_id.page_index),
                 ))
             }
             ObjectCommand::ScrubPageReplicas { repair } => {
@@ -114,7 +114,7 @@ impl MatrixObjectStore {
                     "_blockrepair",
                     &format!(
                         "{}:{}:{}",
-                        chunk_id.slab_id.volume_id, chunk_id.slab_id.id, chunk_id.chunk_index
+                        chunk_id.slab_id.volume_id, chunk_id.slab_id.id, chunk_id.page_index
                     ),
                     report.checked_chunks,
                     report.repaired_replicas,
@@ -123,7 +123,7 @@ impl MatrixObjectStore {
                     } else {
                         "blockserver/exact-chunk-repair"
                     },
-                    chunk_id.chunk_index,
+                    chunk_id.page_index,
                 ))
             }
             ObjectCommand::RepairAuditedPageReplicas {
@@ -150,7 +150,7 @@ impl MatrixObjectStore {
                         .audit
                         .next_marker
                         .as_ref()
-                        .map_or(0, |marker| marker.chunk_index),
+                        .map_or(0, |marker| marker.page_index),
                 ))
             }
             ObjectCommand::ApplyChunkStateHandoffs {

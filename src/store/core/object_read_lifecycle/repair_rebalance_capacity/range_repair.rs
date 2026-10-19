@@ -97,7 +97,7 @@ impl MatrixObjectStore {
             });
             let extent_start_chunk_index = extent_locations
                 .first()
-                .map(|location| location.chunk_id.chunk_index)
+                .map(|location| location.chunk_id.page_index)
                 .unwrap_or(0);
             if start_chunk_index >= object_chunk_cursor.saturating_add(extent_chunk_count) {
                 object_chunk_cursor = object_chunk_cursor.saturating_add(extent_chunk_count);

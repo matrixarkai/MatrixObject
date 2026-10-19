@@ -60,11 +60,11 @@ impl PreparedChunkReclaimEnvelope {
             ("plan_checksum", &self.plan_checksum),
             (
                 "before_chunk_service_fingerprint",
-                &self.before_chunk_service_fingerprint,
+                &self.before_replica_service_fingerprint,
             ),
             (
                 "after_chunk_service_fingerprint",
-                &self.after_chunk_service_fingerprint,
+                &self.after_replica_service_fingerprint,
             ),
             (
                 "route_control_proof_format",

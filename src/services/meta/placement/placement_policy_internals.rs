@@ -77,7 +77,7 @@ impl MatrixMetaService {
             && (node.service_kind == "chunkserver" || node.service_kind == "blockserver")
     }
 
-    fn chunk_service_pages_new_placement(node: &RootNode) -> bool {
+    fn replica_service_pages_new_placement(node: &RootNode) -> bool {
         node.service_kind == "chunkserver"
             && (node.chunk_health.frozen
                 || !node.chunk_health.accepting_writes
@@ -90,7 +90,7 @@ impl MatrixMetaService {
         Self::is_data_service_node(node)
             && node.online
             && !node.draining
-            && !Self::chunk_service_pages_new_placement(node)
+            && !Self::replica_service_pages_new_placement(node)
     }
 
     pub(crate) fn node_effective_free_bytes(node: &RootNode) -> u64 {

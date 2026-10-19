@@ -19,21 +19,25 @@ let object = store.get_object("photos", "cat.jpg")?;
 | tier | default size | what it is |
 |---|---|---|
 | **slab** | 64 MiB | the append-only container objects are allocated from |
-| **chunk** | 1 MiB | the replicated unit: what a quorum votes on and what repair rebuilds |
-| **fragment** | derived | the pieces an erasure code splits one chunk into, plus its redundancy piece |
+| **page** | 1 MiB | the replicated unit: what a quorum votes on and what repair rebuilds |
+| **fragment** | derived | the pieces an erasure code splits one page into, plus its redundancy piece |
 
 An object becomes one or more **extents** — a `(slab, offset, length)` range,
-each at most `max_extent_bytes` — and an extent maps onto the chunks covering
-it by `chunk_index = absolute_offset / chunk_size`. So a ranged read fetches
-only the chunks it needs instead of scanning a slab, and a repair rebuilds one
-chunk rather than a whole container.
+each at most `max_extent_bytes` — and an extent maps onto the pages covering
+it by `page_index = absolute_offset / page_size`. So a ranged read fetches
+only the pages it needs instead of scanning a slab, and a repair rebuilds one
+page rather than a whole container.
 
 Two words are used deliberately narrowly:
 
 - **shard** means the distributed sense only: metadata partitioned by key range
-  across services. The pieces inside a single chunk are **fragments**, because
-  they never leave the chunk they came from.
-- **page** names the service that coordinates replicas, not a unit of storage.
+  across services. The pieces inside a single page are **fragments**, because
+  they never leave the page they came from.
+- **page** is the replicated unit of storage: `PageId`, `PageState`, `page_size`.
+  It is 1 MiB by default and it is what a quorum votes on and what repair
+  rebuilds. The service that coordinates one page's replicas is still spelled
+  `page_service` while a rename is in progress; the service that holds a single
+  replica is the **replica service**.
 
 The file tree now matches those types: `src/services/page`, `chunk_page`,
 `SlabId`, `slab_size`. What is still spelled the old way is spelled that way

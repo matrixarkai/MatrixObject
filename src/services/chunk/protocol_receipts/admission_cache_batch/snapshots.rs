@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkServiceSnapshot {
-    pub chunks: BTreeMap<ChunkId, std::sync::Arc<ChunkState>>,
+pub struct ReplicaServiceSnapshot {
+    pub chunks: BTreeMap<PageId, std::sync::Arc<PageState>>,
     pub receipt_retention: usize,
     pub write_request_receipts: std::sync::Arc<BTreeMap<String, ChunkWriteReceipt>>,
     pub discard_request_receipts: std::sync::Arc<BTreeMap<String, ChunkDiscardReceipt>>,
@@ -50,7 +50,7 @@ pub struct ChunkServiceSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkServiceSnapshotChunk {
+pub struct ReplicaServiceSnapshotChunk {
     pub offset: u64,
     pub total_bytes: u64,
     pub chunk_checksum: String,
@@ -60,13 +60,13 @@ pub struct ChunkServiceSnapshotChunk {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkServiceSnapshotAssembler {
+pub struct ReplicaServiceSnapshotAssembler {
     expected_total_bytes: Option<u64>,
     expected_full_checksum: Option<String>,
     buffer: Vec<u8>,
 }
 
-impl ChunkServiceSnapshotAssembler {
+impl ReplicaServiceSnapshotAssembler {
     /// What a partly received snapshot holds. Its fields are private to this
     /// module, which is why the accounting lives here.
     pub(crate) fn footprint_bytes(&self) -> u64 {
@@ -79,12 +79,12 @@ impl ChunkServiceSnapshotAssembler {
     }
 }
 
-pub(crate) struct ChunkServiceSnapshotAssembledImage {
+pub(crate) struct ReplicaServiceSnapshotAssembledImage {
     pub bytes: Vec<u8>,
     pub full_checksum: String,
 }
 
-impl ChunkServiceSnapshotChunk {
+impl ReplicaServiceSnapshotChunk {
     pub fn install_progress(&self) -> SnapshotInstallProgress {
         snapshot_install_progress(
             true,

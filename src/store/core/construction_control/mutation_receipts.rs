@@ -14,10 +14,10 @@ impl MatrixObjectStore {
         marker: Option<&str>,
         limit: usize,
         slab_id: Option<&SlabId>,
-        chunk_index: Option<u64>,
+        page_index: Option<u64>,
     ) -> Result<PageWriteReceiptPage, ObjectError> {
         self.page_service
-            .list_write_receipts_for_chunk(marker, limit, slab_id, chunk_index)
+            .list_write_receipts_for_chunk(marker, limit, slab_id, page_index)
     }
 
     pub fn list_page_batch_write_receipts(
@@ -43,10 +43,10 @@ impl MatrixObjectStore {
         marker: Option<&str>,
         limit: usize,
         slab_id: Option<&SlabId>,
-        chunk_index: Option<u64>,
+        page_index: Option<u64>,
     ) -> Result<PageDiscardReceiptPage, ObjectError> {
         self.page_service
-            .list_discard_receipts_for_chunk(marker, limit, slab_id, chunk_index)
+            .list_discard_receipts_for_chunk(marker, limit, slab_id, page_index)
     }
 
     pub fn list_page_batch_discard_receipts(
@@ -72,7 +72,7 @@ impl MatrixObjectStore {
         &self,
         marker: Option<&str>,
         limit: usize,
-        after_chunk_id: Option<&ChunkId>,
+        after_chunk_id: Option<&PageId>,
     ) -> Result<PageAuditRepairReceiptPage, ObjectError> {
         self.page_service
             .list_audit_repair_receipts(marker, limit, after_chunk_id)
@@ -82,7 +82,7 @@ impl MatrixObjectStore {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkRepairReceiptPage, ObjectError> {
         self.page_service
             .list_repair_receipts(marker, limit, chunk_id)

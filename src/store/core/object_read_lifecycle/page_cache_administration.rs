@@ -21,7 +21,7 @@ impl MatrixObjectStore {
 
     pub fn prewarm_chunk_read_cache_control(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -41,7 +41,7 @@ impl MatrixObjectStore {
 
     pub fn invalidate_chunk_read_cache_control(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,

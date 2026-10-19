@@ -1,7 +1,7 @@
 impl MatrixObjectStore {
     pub fn prepare_page_audit_repair_raft_entry(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_previous_commit_index: u64,
@@ -40,7 +40,7 @@ impl MatrixObjectStore {
 
     pub fn prepare_page_audit_repair_raft_entry_bounded(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_previous_commit_index: u64,

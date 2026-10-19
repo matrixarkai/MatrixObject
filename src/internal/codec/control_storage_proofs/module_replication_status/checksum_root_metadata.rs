@@ -131,18 +131,18 @@ fn append_root_metadata_status(mut material: &mut Vec<u8>, status: &ObjectStoreM
         &mut material,
         &status.root_pageserver_route_control_proof_checksum,
     );
-    append_u64(&mut material, status.root_chunkserver_control_proof_count);
+    append_u64(&mut material, status.root_replicaserver_control_proof_count);
     append_u64(
         &mut material,
-        status.root_chunkserver_control_read_ready_count,
+        status.root_replicaserver_control_read_ready_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_control_write_ready_count,
+        status.root_replicaserver_control_write_ready_count,
     );
     append_string(
         &mut material,
-        &status.root_chunkserver_control_proof_checksum,
+        &status.root_replicaserver_control_proof_checksum,
     );
     append_u64(
         &mut material,
@@ -182,7 +182,7 @@ fn append_root_metadata_status(mut material: &mut Vec<u8>, status: &ObjectStoreM
     );
     append_u64(
         &mut material,
-        status.root_pageserver_total_chunk_service_mode_rejected_mutations,
+        status.root_pageserver_total_replica_service_mode_rejected_mutations,
     );
     append_u64(
         &mut material,
@@ -246,33 +246,33 @@ fn append_root_metadata_status(mut material: &mut Vec<u8>, status: &ObjectStoreM
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_control_min_raft_commit_index,
+        status.root_replicaserver_control_min_raft_commit_index,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_control_max_raft_commit_index,
+        status.root_replicaserver_control_max_raft_commit_index,
     );
-    append_u64(&mut material, status.root_chunkserver_health_ok_count);
+    append_u64(&mut material, status.root_replicaserver_health_ok_count);
     append_u64(
         &mut material,
-        status.root_chunkserver_health_degraded_count,
-    );
-    append_u64(
-        &mut material,
-        status.root_chunkserver_health_unavailable_count,
-    );
-    append_u64(&mut material, status.root_chunkserver_health_unknown_count);
-    append_u64(
-        &mut material,
-        status.root_chunkserver_not_fault_tolerant_count,
+        status.root_replicaserver_health_degraded_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_health_reason_count,
+        status.root_replicaserver_health_unavailable_count,
+    );
+    append_u64(&mut material, status.root_replicaserver_health_unknown_count);
+    append_u64(
+        &mut material,
+        status.root_replicaserver_not_fault_tolerant_count,
+    );
+    append_u64(
+        &mut material,
+        status.root_replicaserver_total_health_reason_count,
     );
     append_string(
         &mut material,
-        &status.root_chunkserver_first_health_reasons,
+        &status.root_replicaserver_first_health_reasons,
     );
     append_u64(
         &mut material,

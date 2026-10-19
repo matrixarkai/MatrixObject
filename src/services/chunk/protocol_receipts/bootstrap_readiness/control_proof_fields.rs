@@ -1,4 +1,4 @@
-impl ChunkServiceControlProof {
+impl ReplicaServiceControlProof {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [

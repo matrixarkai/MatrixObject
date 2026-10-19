@@ -2,7 +2,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry(
         &self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
         expected_previous_commit_index: u64,
@@ -20,7 +20,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry_fenced(
         &self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
         expected_previous_commit_index: u64,
@@ -80,7 +80,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded(
         &self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         idempotency_key: &str,
@@ -100,7 +100,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_from(
         &self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -150,7 +150,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_fenced(
         &self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         idempotency_key: &str,
@@ -172,7 +172,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_fenced_from(
         &self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,

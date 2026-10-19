@@ -7,7 +7,7 @@ pub(crate) struct PageSnapshotExportCache {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatrixPageService {
-    chunk_size: u64,
+    page_size: u64,
     pub(crate) write_quorum: usize,
     pub(crate) read_quorum: usize,
     pub(crate) allocator_slab_size: u64,
@@ -62,5 +62,5 @@ pub struct MatrixPageService {
     snapshot_export_cache: RefCell<Option<PageSnapshotExportCache>>,
     snapshot_assembler: PageServiceSnapshotAssembler,
     active_mutation_batch: Option<PageMutationBatch>,
-    pub(crate) replicas: Vec<MatrixChunkService>,
+    pub(crate) replicas: Vec<MatrixReplicaService>,
 }

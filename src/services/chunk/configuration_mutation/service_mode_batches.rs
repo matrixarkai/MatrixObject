@@ -1,4 +1,4 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn configure_service_mode(
         &mut self,
         accepting_writes: Option<bool>,

@@ -27,14 +27,14 @@ pub(crate) fn append_page_receipt_page_common(
 
 pub(crate) fn append_page_receipt_page_chunk_filter(
     material: &mut Vec<u8>,
-    chunk_index: Option<u64>,
-    chunk_size: Option<u64>,
+    page_index: Option<u64>,
+    page_size: Option<u64>,
     skipped_chunk_count: u64,
 ) {
-    append_u64(material, chunk_index.is_some() as u64);
-    if let Some(chunk_index) = chunk_index {
-        append_u64(material, chunk_index);
-        append_u64(material, chunk_size.unwrap_or(0));
+    append_u64(material, page_index.is_some() as u64);
+    if let Some(page_index) = page_index {
+        append_u64(material, page_index);
+        append_u64(material, page_size.unwrap_or(0));
     }
     append_u64(material, skipped_chunk_count);
 }
@@ -63,7 +63,7 @@ fn receipt_page_proof_capacity(
 fn chunk_receipt_page_proof_capacity(
     proof_format: &str,
     next_marker: &Option<String>,
-    chunk_id: &Option<ChunkId>,
+    chunk_id: &Option<PageId>,
     receipt_count: usize,
 ) -> usize {
     encoded_string_len(proof_format)
@@ -103,8 +103,8 @@ pub(crate) fn page_write_receipt_page_proof_checksum(page: &PageWriteReceiptPage
     );
     append_page_receipt_page_chunk_filter(
         &mut material,
-        page.chunk_index,
-        page.chunk_size,
+        page.page_index,
+        page.page_size,
         page.skipped_chunk_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);
@@ -167,8 +167,8 @@ pub(crate) fn page_discard_receipt_page_proof_checksum(page: &PageDiscardReceipt
     );
     append_page_receipt_page_chunk_filter(
         &mut material,
-        page.chunk_index,
-        page.chunk_size,
+        page.page_index,
+        page.page_size,
         page.skipped_chunk_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);

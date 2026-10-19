@@ -8,7 +8,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenStorageRead<ChunkServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenStorageRead<ReplicaServiceSnapshotChunk>>,
     {
         let mut source_control_checksum: Option<String> = None;
         let mut progress = SnapshotInstallProgress::default();
@@ -78,10 +78,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenStorageRead<ChunkServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenStorageRead<ReplicaServiceSnapshotChunk>>,
     {
         let chunks = chunks.into_iter();
-        let mut assembler = ChunkServiceSnapshotAssembler::default();
+        let mut assembler = ReplicaServiceSnapshotAssembler::default();
         let mut assembled_snapshot = None;
         let mut material = Vec::with_capacity(
             encoded_string_len("MXOS-RUST-STORAGE-SNAPSHOT-READ-PROOFS1")
@@ -208,7 +208,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenStorageRead<ChunkServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenStorageRead<ReplicaServiceSnapshotChunk>>,
     {
         let actual_source_proof = storage_snapshot_install_source_proof_report(expected_report);
         verify_storage_snapshot_install_source_proof_report(
@@ -235,7 +235,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>>,
     {
         self.install_chunk_replica_snapshot_chunks_with_read_proof(
             replica_index,
@@ -258,7 +258,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>>,
     {
         self.install_chunk_replica_snapshot_chunks_with_read_proof_report(
             replica_index,
@@ -282,7 +282,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>>,
     {
         self.install_chunk_replica_snapshot_chunks_with_read_proof_source_report(
             replica_index,

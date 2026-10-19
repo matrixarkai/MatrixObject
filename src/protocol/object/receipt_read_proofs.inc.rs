@@ -79,7 +79,7 @@ pub trait StorageReceiptPageProofSource {
     fn storage_receipt_page_chunk_filter(&self) -> Option<u64> {
         None
     }
-    fn storage_receipt_page_chunk_id_filter(&self) -> Option<&ChunkId> {
+    fn storage_receipt_page_chunk_id_filter(&self) -> Option<&PageId> {
         None
     }
     fn storage_receipt_page_chunk_size(&self) -> Option<u64> {

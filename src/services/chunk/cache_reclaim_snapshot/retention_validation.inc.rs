@@ -1,4 +1,4 @@
-impl Default for MatrixChunkService {
+impl Default for MatrixReplicaService {
     fn default() -> Self {
         Self::new()
     }
@@ -31,7 +31,7 @@ fn chunk_rle_encoded_len(data: &[u8]) -> usize {
     encoded_len.saturating_add(9)
 }
 
-fn chunk_compression_stats(state: &ChunkState) -> (u64, u64) {
+fn chunk_compression_stats(state: &PageState) -> (u64, u64) {
     let raw_len = state.data.len();
     if raw_len == 0 {
         return (0, 0);
@@ -45,7 +45,7 @@ fn chunk_compression_stats(state: &ChunkState) -> (u64, u64) {
 }
 
 fn chunk_map_compression_stats(
-    chunks: &BTreeMap<ChunkId, std::sync::Arc<ChunkState>>,
+    chunks: &BTreeMap<PageId, std::sync::Arc<PageState>>,
 ) -> (u64, u64) {
     chunks.values().fold((0u64, 0u64), |(count, bytes), state| {
         let (chunk_count, saved_bytes) = chunk_compression_stats(state);

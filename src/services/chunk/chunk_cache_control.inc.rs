@@ -1,7 +1,7 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn prewarm_chunk_ranges(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_bytes: u64,
     ) -> Result<CacheControlStats, ObjectError> {
@@ -10,7 +10,7 @@ impl MatrixChunkService {
 
     pub fn prewarm_chunk_ranges_borrowed(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: &[DataRange],
         max_bytes: u64,
     ) -> Result<CacheControlStats, ObjectError> {
@@ -103,7 +103,7 @@ impl MatrixChunkService {
 
     pub fn invalidate_chunk_cache(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
     ) -> CacheControlStats {
@@ -112,7 +112,7 @@ impl MatrixChunkService {
 
     pub fn invalidate_chunk_cache_bounded(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,

@@ -110,9 +110,9 @@ impl MatrixObjectStore {
             root_pageserver_service_coverage,
             root_pageserver_service_ready,
             root_pageserver_route_control_ready,
-            root_chunkserver_coverage,
-            root_chunkserver_ready,
-            root_chunkserver_control_ready,
+            root_replicaserver_coverage,
+            root_replicaserver_ready,
+            root_replicaserver_control_ready,
             root_leader_node_id,
             root_lease_epoch,
             root_lease_expire_time_ms,
@@ -123,8 +123,8 @@ impl MatrixObjectStore {
             root_metadata_write_ready,
             root_pageserver_read_ready,
             root_pageserver_write_ready,
-            root_chunkserver_read_ready,
-            root_chunkserver_write_ready,
+            root_replicaserver_read_ready,
+            root_replicaserver_write_ready,
             root_readiness_gate_read_ready,
             root_readiness_gate_write_ready,
             root_leader_ready,
@@ -242,9 +242,9 @@ impl MatrixObjectStore {
             root_pageserver_service_coverage: &root_pageserver_service_coverage,
             root_pageserver_service_ready,
             root_pageserver_route_control_ready,
-            root_chunkserver_coverage: &root_chunkserver_coverage,
-            root_chunkserver_ready,
-            root_chunkserver_control_ready,
+            root_replicaserver_coverage: &root_replicaserver_coverage,
+            root_replicaserver_ready,
+            root_replicaserver_control_ready,
             rootserver_required,
             root_ready,
             root_leader_node_id: &root_leader_node_id,
@@ -287,16 +287,16 @@ impl MatrixObjectStore {
         if root_pageserver_service_coverage.health_unavailable_count != 0 {
             root_service_health_reasons.push("blockserver_health_unavailable");
         }
-        if !root_chunkserver_ready {
+        if !root_replicaserver_ready {
             root_service_health_reasons.push("chunkserver_coverage_not_ready");
         }
-        if !root_chunkserver_control_ready {
+        if !root_replicaserver_control_ready {
             root_service_health_reasons.push("chunkserver_control_not_ready");
         }
-        if root_chunkserver_coverage.not_fault_tolerant_count != 0 {
+        if root_replicaserver_coverage.not_fault_tolerant_count != 0 {
             root_service_health_reasons.push("chunkserver_not_fault_tolerant");
         }
-        if root_chunkserver_coverage.health_unavailable_count != 0 {
+        if root_replicaserver_coverage.health_unavailable_count != 0 {
             root_service_health_reasons.push("chunkserver_health_unavailable");
         }
         let root_service_health_reason_count = root_service_health_reasons.len() as u64;
@@ -307,12 +307,12 @@ impl MatrixObjectStore {
             && (!root_read_ready
                 || root_metadata_coverage.active_metaserver_count == 0
                 || root_pageserver_service_coverage.active_pageserver_count == 0
-                || root_chunkserver_coverage.active_chunkserver_count == 0
+                || root_replicaserver_coverage.active_replicaserver_count == 0
                 || !root_metadata_read_ready
                 || !root_pageserver_read_ready
-                || !root_chunkserver_read_ready
+                || !root_replicaserver_read_ready
                 || root_pageserver_service_coverage.health_unavailable_count != 0
-                || root_chunkserver_coverage.health_unavailable_count != 0);
+                || root_replicaserver_coverage.health_unavailable_count != 0);
         let root_service_health = if root_service_hard_unavailable {
             "unavailable"
         } else if root_service_health_has_reasons {
@@ -327,8 +327,8 @@ impl MatrixObjectStore {
             && root_snapshot_fault_count == 0
             && root_pageserver_service_coverage.not_fault_tolerant_count == 0
             && root_pageserver_service_coverage.health_unavailable_count == 0
-            && root_chunkserver_coverage.not_fault_tolerant_count == 0
-            && root_chunkserver_coverage.health_unavailable_count == 0;
+            && root_replicaserver_coverage.not_fault_tolerant_count == 0
+            && root_replicaserver_coverage.health_unavailable_count == 0;
         let mut report = ObjectStoreDistributedReadiness {
             ready,
             reason,
@@ -359,8 +359,8 @@ impl MatrixObjectStore {
             root_metadata_write_ready,
             root_pageserver_read_ready,
             root_pageserver_write_ready,
-            root_chunkserver_read_ready,
-            root_chunkserver_write_ready,
+            root_replicaserver_read_ready,
+            root_replicaserver_write_ready,
             root_readiness_gate_read_ready,
             root_readiness_gate_write_ready,
             page_state_fingerprint,
@@ -495,8 +495,8 @@ impl MatrixObjectStore {
                 root_pageserver_service_coverage.total_deferred_metadata_checkpoint_runs,
             root_pageserver_total_chunk_capacity_rejected_writes:
                 root_pageserver_service_coverage.total_chunk_capacity_rejected_writes,
-            root_pageserver_total_chunk_service_mode_rejected_mutations:
-                root_pageserver_service_coverage.total_chunk_service_mode_rejected_mutations,
+            root_pageserver_total_replica_service_mode_rejected_mutations:
+                root_pageserver_service_coverage.total_replica_service_mode_rejected_mutations,
             root_pageserver_total_chunk_physical_write_count: root_pageserver_service_coverage
                 .total_chunk_physical_write_count,
             root_pageserver_total_chunk_physical_write_bytes: root_pageserver_service_coverage
@@ -565,44 +565,44 @@ impl MatrixObjectStore {
             root_pageserver_route_control_max_commit_index: root_pageserver_service_coverage
                 .route_control_max_commit_index,
             root_pageserver_service_coverage_status: root_pageserver_service_coverage.status,
-            root_active_chunkserver_count: root_chunkserver_coverage.active_chunkserver_count,
-            root_writable_chunkserver_count: root_chunkserver_coverage.writable_chunkserver_count,
-            root_placement_eligible_chunkserver_count: root_chunkserver_coverage
-                .placement_eligible_chunkserver_count,
-            root_placement_ineligible_chunkserver_count: root_chunkserver_coverage
-                .placement_ineligible_chunkserver_count,
-            root_draining_chunkserver_count: root_chunkserver_coverage.draining_chunkserver_count,
-            root_capacity_floor_blocked_chunkserver_count: root_chunkserver_coverage
-                .capacity_floor_blocked_chunkserver_count,
-            root_frozen_chunkserver_count: root_chunkserver_coverage.frozen_chunkserver_count,
-            root_read_only_chunkserver_count: root_chunkserver_coverage.read_only_chunkserver_count,
-            root_raft_unwritable_chunkserver_count: root_chunkserver_coverage
-                .raft_unwritable_chunkserver_count,
-            root_chunkserver_total_reported_free_bytes: root_chunkserver_coverage
+            root_active_replicaserver_count: root_replicaserver_coverage.active_replicaserver_count,
+            root_writable_replicaserver_count: root_replicaserver_coverage.writable_replicaserver_count,
+            root_placement_eligible_replicaserver_count: root_replicaserver_coverage
+                .placement_eligible_replicaserver_count,
+            root_placement_ineligible_replicaserver_count: root_replicaserver_coverage
+                .placement_ineligible_replicaserver_count,
+            root_draining_replicaserver_count: root_replicaserver_coverage.draining_replicaserver_count,
+            root_capacity_floor_blocked_replicaserver_count: root_replicaserver_coverage
+                .capacity_floor_blocked_replicaserver_count,
+            root_frozen_replicaserver_count: root_replicaserver_coverage.frozen_replicaserver_count,
+            root_read_only_replicaserver_count: root_replicaserver_coverage.read_only_replicaserver_count,
+            root_raft_unwritable_replicaserver_count: root_replicaserver_coverage
+                .raft_unwritable_replicaserver_count,
+            root_replicaserver_total_reported_free_bytes: root_replicaserver_coverage
                 .total_reported_free_bytes,
-            root_chunkserver_min_free_bytes: root_chunkserver_coverage.min_free_bytes,
-            root_chunkserver_control_proof_count: root_chunkserver_coverage.control_proof_count,
-            root_chunkserver_control_read_ready_count: root_chunkserver_coverage
+            root_replicaserver_min_free_bytes: root_replicaserver_coverage.min_free_bytes,
+            root_replicaserver_control_proof_count: root_replicaserver_coverage.control_proof_count,
+            root_replicaserver_control_read_ready_count: root_replicaserver_coverage
                 .control_read_ready_count,
-            root_chunkserver_control_write_ready_count: root_chunkserver_coverage
+            root_replicaserver_control_write_ready_count: root_replicaserver_coverage
                 .control_write_ready_count,
-            root_chunkserver_control_proof_checksum: root_chunkserver_coverage
+            root_replicaserver_control_proof_checksum: root_replicaserver_coverage
                 .control_proof_checksum,
-            root_chunkserver_control_min_raft_commit_index: root_chunkserver_coverage
+            root_replicaserver_control_min_raft_commit_index: root_replicaserver_coverage
                 .control_min_raft_commit_index,
-            root_chunkserver_control_max_raft_commit_index: root_chunkserver_coverage
+            root_replicaserver_control_max_raft_commit_index: root_replicaserver_coverage
                 .control_max_raft_commit_index,
-            root_chunkserver_coverage_status: root_chunkserver_coverage.status,
-            root_chunkserver_health_ok_count: root_chunkserver_coverage.health_ok_count,
-            root_chunkserver_health_degraded_count: root_chunkserver_coverage.health_degraded_count,
-            root_chunkserver_health_unavailable_count: root_chunkserver_coverage
+            root_replicaserver_coverage_status: root_replicaserver_coverage.status,
+            root_replicaserver_health_ok_count: root_replicaserver_coverage.health_ok_count,
+            root_replicaserver_health_degraded_count: root_replicaserver_coverage.health_degraded_count,
+            root_replicaserver_health_unavailable_count: root_replicaserver_coverage
                 .health_unavailable_count,
-            root_chunkserver_health_unknown_count: root_chunkserver_coverage.health_unknown_count,
-            root_chunkserver_not_fault_tolerant_count: root_chunkserver_coverage
+            root_replicaserver_health_unknown_count: root_replicaserver_coverage.health_unknown_count,
+            root_replicaserver_not_fault_tolerant_count: root_replicaserver_coverage
                 .not_fault_tolerant_count,
-            root_chunkserver_total_health_reason_count: root_chunkserver_coverage
+            root_replicaserver_total_health_reason_count: root_replicaserver_coverage
                 .total_health_reason_count,
-            root_chunkserver_first_health_reasons: root_chunkserver_coverage.first_health_reasons,
+            root_replicaserver_first_health_reasons: root_replicaserver_coverage.first_health_reasons,
             root_active_metaserver_count: root_metadata_coverage.active_metaserver_count,
             root_metadata_value_bytes: root_metadata_coverage.metadata_value_bytes,
             root_metadata_readable_metaserver_count: root_metadata_coverage

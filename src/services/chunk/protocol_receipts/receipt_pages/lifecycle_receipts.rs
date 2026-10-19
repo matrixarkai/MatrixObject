@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkStateInstallReceipt {
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub request_checksum: String,
     pub payload_checksum: String,
     pub state_checksum: String,
@@ -46,7 +46,7 @@ impl ChunkStateInstallReceipt {
         for (name, value) in [
             ("volume_id", self.chunk_id.slab_id.volume_id),
             ("segment_id", self.chunk_id.slab_id.id),
-            ("chunk_index", self.chunk_id.chunk_index),
+            ("chunk_index", self.chunk_id.page_index),
             ("logical_length", self.logical_length),
             ("write_sequence", self.write_sequence),
             ("discard_range_count", self.discard_range_count),
@@ -155,7 +155,7 @@ impl ChunkReclaimReceipt {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkRepairReceipt {
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub request_checksum: String,
     pub idempotency_key: String,
     pub report: ChunkRepairReport,
@@ -204,7 +204,7 @@ impl ChunkRepairReceipt {
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_id.chunk_index.to_string(),
+            self.chunk_id.page_index.to_string(),
         );
         fields.insert(
             format!("{field_prefix}request_checksum"),

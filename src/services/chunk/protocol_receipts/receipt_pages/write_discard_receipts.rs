@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkWriteReceipt {
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub offset: u64,
     pub length: u64,
     pub request_checksum: String,
@@ -51,7 +51,7 @@ impl ChunkWriteReceipt {
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_id.chunk_index.to_string(),
+            self.chunk_id.page_index.to_string(),
         );
         fields.insert(format!("{field_prefix}offset"), self.offset.to_string());
         fields.insert(format!("{field_prefix}length"), self.length.to_string());
@@ -82,7 +82,7 @@ impl ChunkWriteReceipt {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkDiscardReceipt {
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub offset: u64,
     pub length: u64,
     pub request_checksum: String,
@@ -132,7 +132,7 @@ impl ChunkDiscardReceipt {
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_id.chunk_index.to_string(),
+            self.chunk_id.page_index.to_string(),
         );
         fields.insert(format!("{field_prefix}offset"), self.offset.to_string());
         fields.insert(format!("{field_prefix}length"), self.length.to_string());
@@ -159,7 +159,7 @@ impl ChunkDiscardReceipt {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkBatchWriteReceipt {
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub request_checksum: String,
     pub payload_checksum: String,
     pub idempotency_key: String,
@@ -209,7 +209,7 @@ impl ChunkBatchWriteReceipt {
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_id.chunk_index.to_string(),
+            self.chunk_id.page_index.to_string(),
         );
         fields.insert(
             format!("{field_prefix}request_checksum"),
@@ -242,7 +242,7 @@ impl ChunkBatchWriteReceipt {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkBatchDiscardReceipt {
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub request_checksum: String,
     pub idempotency_key: String,
     pub stats: ChunkDiscardBatchStats,
@@ -291,7 +291,7 @@ impl ChunkBatchDiscardReceipt {
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_id.chunk_index.to_string(),
+            self.chunk_id.page_index.to_string(),
         );
         fields.insert(
             format!("{field_prefix}request_checksum"),

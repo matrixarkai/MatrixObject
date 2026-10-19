@@ -22,7 +22,7 @@ pub(crate) fn append_chunk_partial_reclaim_report(
     append_string(out, &report.last_partial_reclaim_failure_status);
 }
 
-pub(crate) fn append_chunk_service_fingerprint(out: &mut Vec<u8>, service: &MatrixChunkService) {
+pub(crate) fn append_replica_service_fingerprint(out: &mut Vec<u8>, service: &MatrixReplicaService) {
     let readiness = service.storage_readiness(0, 0, 0);
     append_string(out, &readiness.chunk_state_fingerprint);
     append_u64(out, readiness.physical_bytes);
@@ -38,13 +38,13 @@ pub(crate) fn append_chunk_service_fingerprint(out: &mut Vec<u8>, service: &Matr
     append_string(out, &readiness.control_proof.state_checksum);
 }
 
-pub(crate) fn chunk_service_fingerprint(service: &MatrixChunkService) -> String {
+pub(crate) fn replica_service_fingerprint(service: &MatrixReplicaService) -> String {
     let mut material = Vec::new();
-    append_chunk_service_fingerprint(&mut material, service);
+    append_replica_service_fingerprint(&mut material, service);
     etag(&material)
 }
 
-pub(crate) fn append_chunk_state(out: &mut Vec<u8>, state: &ChunkState) {
+pub(crate) fn append_chunk_state(out: &mut Vec<u8>, state: &PageState) {
     append_u64(out, state.logical_length);
     append_u64(out, state.write_sequence);
     append_string(out, &state.checksum);

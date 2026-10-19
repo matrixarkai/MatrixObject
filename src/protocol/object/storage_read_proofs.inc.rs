@@ -89,7 +89,7 @@ impl<T> ProvenPageRouteFencedStorageRead<T> {
 pub struct ProvenChunkControlFencedStorageRead<T> {
     pub value: T,
     pub proof: StorageReadProof,
-    pub control_proof: ChunkServiceControlProof,
+    pub control_proof: ReplicaServiceControlProof,
     pub expected_control_checksum: String,
 }
 

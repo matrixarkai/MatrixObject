@@ -21,7 +21,7 @@ impl MatrixPageService {
 
     pub fn plan_chunk_replica_reclaim(
         &self,
-        marker: Option<&ChunkId>,
+        marker: Option<&PageId>,
         max_chunks: usize,
         max_rewrite_bytes: u64,
         min_discarded_bytes: u64,

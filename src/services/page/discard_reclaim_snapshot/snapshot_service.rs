@@ -51,7 +51,7 @@ impl MatrixPageService {
         let _ = write!(
             stamp,
             "block:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-            self.chunk_size,
+            self.page_size,
             self.write_quorum,
             self.read_quorum,
             self.allocator_slab_size,
@@ -175,10 +175,10 @@ impl MatrixPageService {
     }
 
     /// Builds the snapshot without computing any checksum, its replicas'
-    /// included. See `MatrixChunkService::export_snapshot_unsealed`.
+    /// included. See `MatrixReplicaService::export_snapshot_unsealed`.
     pub fn export_snapshot_unsealed(&self) -> PageServiceSnapshot {
         PageServiceSnapshot {
-            chunk_size: self.chunk_size,
+            page_size: self.page_size,
             write_quorum: self.write_quorum,
             read_quorum: self.read_quorum,
             allocator_slab_size: self.allocator_slab_size,
@@ -221,7 +221,7 @@ impl MatrixPageService {
             replicas: self
                 .replicas
                 .iter()
-                .map(MatrixChunkService::export_snapshot_unsealed)
+                .map(MatrixReplicaService::export_snapshot_unsealed)
                 .collect(),
             checksum: String::new(),
         }
@@ -353,7 +353,7 @@ impl MatrixPageService {
         let restored_replica_count = snapshot.replicas.len();
         let mut replicas = Vec::with_capacity(restored_replica_count);
         for replica_snapshot in snapshot.replicas {
-            let mut replica = MatrixChunkService::new();
+            let mut replica = MatrixReplicaService::new();
             replica.install_snapshot(replica_snapshot)?;
             // The sidecar policy has to match what construction decides, or a restored
             // replica keeps sidecars its peers do not and never agrees with them again --
@@ -362,7 +362,7 @@ impl MatrixPageService {
             replica.keep_ec_sidecar = restored_replica_count <= 1;
             replicas.push(replica);
         }
-        self.chunk_size = snapshot.chunk_size;
+        self.page_size = snapshot.page_size;
         self.write_quorum = snapshot.write_quorum;
         self.read_quorum = snapshot.read_quorum;
         self.allocator_slab_size = snapshot.allocator_slab_size;
@@ -462,7 +462,7 @@ impl MatrixPageService {
         replica_index: usize,
         offset: u64,
         max_payload_bytes: usize,
-    ) -> Result<ChunkServiceSnapshotChunk, ObjectError> {
+    ) -> Result<ReplicaServiceSnapshotChunk, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
@@ -476,7 +476,7 @@ impl MatrixPageService {
         emit: F,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        F: FnMut(ChunkServiceSnapshotChunk) -> Result<(), ObjectError>,
+        F: FnMut(ReplicaServiceSnapshotChunk) -> Result<(), ObjectError>,
     {
         self.replicas
             .get(replica_index)
@@ -488,7 +488,7 @@ impl MatrixPageService {
         &self,
         replica_index: usize,
         max_payload_bytes: usize,
-    ) -> Result<Vec<ChunkServiceSnapshotChunk>, ObjectError> {
+    ) -> Result<Vec<ReplicaServiceSnapshotChunk>, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
@@ -501,7 +501,7 @@ impl MatrixPageService {
         chunks: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ChunkServiceSnapshotChunk>,
+        I: IntoIterator<Item = ReplicaServiceSnapshotChunk>,
     {
         self.replicas
             .get_mut(replica_index)

@@ -36,7 +36,7 @@ pub struct ChunkReadCacheStats {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkServiceControlProof {
+pub struct ReplicaServiceControlProof {
     pub control_receipt: bool,
     pub state_format: String,
     pub state_bytes: u64,

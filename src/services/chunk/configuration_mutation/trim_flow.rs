@@ -1,4 +1,4 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn configure_trim_flow(
         &mut self,
         rate_bytes_per_sec: u64,

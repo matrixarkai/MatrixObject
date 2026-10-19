@@ -29,7 +29,7 @@ struct RootSnapshotDecodeFeatures {
     has_root_chunk_fragmented_discarded_bytes: bool,
     has_root_chunk_health: bool,
     has_root_chunk_control_health: bool,
-    has_root_chunk_service_health: bool,
+    has_root_replica_service_health: bool,
 }
 
 impl RootSnapshotDecodeFeatures {
@@ -64,7 +64,7 @@ impl RootSnapshotDecodeFeatures {
             has_root_chunk_fragmented_discarded_bytes: version >= 29,
             has_root_chunk_health: version >= 12,
             has_root_chunk_control_health: version >= 17,
-            has_root_chunk_service_health: version >= 32,
+            has_root_replica_service_health: version >= 32,
         }
     }
 }
@@ -100,7 +100,7 @@ fn read_root_snapshot_nodes(
         has_root_chunk_fragmented_discarded_bytes,
         has_root_chunk_health,
         has_root_chunk_control_health,
-        has_root_chunk_service_health,
+        has_root_replica_service_health,
         ..
     } = features;
     let mut nodes = BTreeMap::new();
@@ -241,7 +241,7 @@ fn read_root_snapshot_nodes(
                     } else {
                         0
                     },
-                    chunk_service_mode_rejected_mutations: if has_root_page_extended_service_health
+                    replica_service_mode_rejected_mutations: if has_root_page_extended_service_health
                     {
                         cursor.read_u64()?
                     } else {
@@ -332,7 +332,7 @@ fn read_root_snapshot_nodes(
                     has_root_chunk_control_health,
                     has_root_chunk_reclaim_health,
                     has_root_chunk_fragmented_discarded_bytes,
-                    has_root_chunk_service_health,
+                    has_root_replica_service_health,
                 )?
             } else {
                 RootChunkHealth::default()

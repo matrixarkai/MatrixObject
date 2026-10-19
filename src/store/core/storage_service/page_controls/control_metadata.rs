@@ -95,14 +95,14 @@ impl MatrixObjectStore {
         )
     }
 
-    fn chunk_service_mode_control_metadata(
+    fn replica_service_mode_control_metadata(
         &self,
         replica_index: usize,
         prepared_replica_count: Option<u64>,
         content_type: &str,
         update_time_ms: u64,
     ) -> ObjectMetadata {
-        if replica_index == PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
+        if replica_index == PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
             let accepting_count = self
                 .chunk_replica_accepting_writes()
                 .into_iter()

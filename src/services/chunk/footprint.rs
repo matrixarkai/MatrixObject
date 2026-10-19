@@ -10,7 +10,7 @@
 // cache is a whole encoded service.
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ChunkServiceFootprint {
+pub(crate) struct ReplicaServiceFootprint {
     /// Chunk payload held in the read cache. The service counts this itself,
     /// so the audit reports the same number the cache enforces its bound on.
     pub(crate) read_cache_payload: u64,
@@ -31,8 +31,8 @@ pub(crate) struct ChunkServiceFootprint {
     pub(crate) receipt_matching_keys: u64,
 }
 
-impl MatrixChunkService {
-    pub(crate) fn footprint_bytes(&self) -> ChunkServiceFootprint {
+impl MatrixReplicaService {
+    pub(crate) fn footprint_bytes(&self) -> ReplicaServiceFootprint {
         let read_cache = self.read_cache.borrow();
         let mut read_cache_overhead = (read_cache.len() as u64).saturating_mul(
             (std::mem::size_of::<ChunkReadCacheKey>()
@@ -45,7 +45,7 @@ impl MatrixChunkService {
         let by_chunk = self.read_cache_by_chunk.borrow();
         read_cache_overhead = read_cache_overhead.saturating_add(
             (by_chunk.len() as u64).saturating_mul(
-                (std::mem::size_of::<ChunkId>()
+                (std::mem::size_of::<PageId>()
                     + std::mem::size_of::<HashSet<ChunkReadCacheRangeKey>>()) as u64,
             ),
         );
@@ -63,7 +63,7 @@ impl MatrixChunkService {
 
         let validation = self.page_validation.borrow();
         let mut page_validation = (validation.len() as u64).saturating_mul(
-            (std::mem::size_of::<ChunkId>() + std::mem::size_of::<(u64, String, Vec<u64>)>())
+            (std::mem::size_of::<PageId>() + std::mem::size_of::<(u64, String, Vec<u64>)>())
                 as u64,
         );
         for (_, checksum, pages) in validation.values() {
@@ -82,7 +82,7 @@ impl MatrixChunkService {
             .unwrap_or(0)
             .saturating_add(self.snapshot_assembler.footprint_bytes());
 
-        ChunkServiceFootprint {
+        ReplicaServiceFootprint {
             read_cache_payload: self.read_cache_bytes.get(),
             read_cache_overhead,
             page_validation,
@@ -256,7 +256,7 @@ pub(crate) fn chunk_receipt_maps_bytes(
         .saturating_add(chunk_receipt_map_bytes(repair, chunk_repair_receipt_heap))
 }
 
-impl MatrixChunkService {
+impl MatrixReplicaService {
     /// Of `receipt_bytes`, the part that is one receipt holding its own map key
     /// twice, across all seven maps.
     pub(crate) fn receipt_duplicate_key_bytes(&self) -> u64 {

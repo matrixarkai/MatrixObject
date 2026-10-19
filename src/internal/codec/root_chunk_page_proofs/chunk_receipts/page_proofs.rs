@@ -6,7 +6,7 @@ pub(crate) fn append_chunk_receipt_page_common(
     limit: u64,
     truncated: bool,
     next_marker: &Option<String>,
-    chunk_id: &Option<ChunkId>,
+    chunk_id: &Option<PageId>,
     skipped_chunk_count: u64,
 ) {
     append_u64(material, receipt_count);
@@ -28,7 +28,7 @@ pub(crate) fn append_chunk_receipt_page_common(
 fn root_chunk_receipt_page_proof_capacity(
     proof_format: &str,
     next_marker: &Option<String>,
-    chunk_id: &Option<ChunkId>,
+    chunk_id: &Option<PageId>,
     receipt_count: usize,
 ) -> usize {
     encoded_string_len(proof_format)

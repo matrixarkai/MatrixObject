@@ -3,8 +3,8 @@ impl StoreSnapshot {
         if self.options.slab_size == 0
             || self.options.max_extent_bytes == 0
             || self.options.max_extent_bytes > self.options.slab_size
-            || self.options.chunk_size == 0
-            || self.options.chunk_size > self.options.slab_size
+            || self.options.page_size == 0
+            || self.options.page_size > self.options.slab_size
             || self.options.volume_count == 0
             || self.options.replica_count == 0
             || self.options.write_quorum == 0

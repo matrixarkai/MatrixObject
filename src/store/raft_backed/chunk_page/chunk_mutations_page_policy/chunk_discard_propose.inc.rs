@@ -193,7 +193,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_batch_discard_prepared(
         &mut self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -209,7 +209,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_batch_discard_prepared_bounded(
         &mut self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         idempotency_key: &str,
@@ -227,7 +227,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_batch_discard_prepared_bounded_fenced(
         &mut self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         idempotency_key: &str,

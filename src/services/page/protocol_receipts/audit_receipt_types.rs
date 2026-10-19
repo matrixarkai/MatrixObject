@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PageAuditRepairReceipt {
-    pub after_chunk_id: Option<ChunkId>,
+    pub after_chunk_id: Option<PageId>,
     pub max_chunks: u64,
     pub max_payload_bytes: u64,
     pub request_checksum: String,

@@ -1,7 +1,7 @@
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PageLocation {
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub chunk_offset: u64,
     pub length: u64,
 }
@@ -77,25 +77,25 @@ impl PageAllocation {
 
 fn allocation_overlaps_chunk(
     allocation: &PageAllocation,
-    chunk_index: u64,
-    chunk_size: u64,
+    page_index: u64,
+    page_size: u64,
 ) -> bool {
     page_range_overlaps_chunk(
         allocation.offset,
         allocation.length,
-        chunk_index,
-        chunk_size,
+        page_index,
+        page_size,
     )
 }
 
-fn page_range_overlaps_chunk(offset: u64, length: u64, chunk_index: u64, chunk_size: u64) -> bool {
-    if length == 0 || chunk_size == 0 {
+fn page_range_overlaps_chunk(offset: u64, length: u64, page_index: u64, page_size: u64) -> bool {
+    if length == 0 || page_size == 0 {
         return false;
     }
-    let Some(start) = chunk_index.checked_mul(chunk_size) else {
+    let Some(start) = page_index.checked_mul(page_size) else {
         return false;
     };
-    let Some(end) = start.checked_add(chunk_size) else {
+    let Some(end) = start.checked_add(page_size) else {
         return false;
     };
     let Some(range_end) = offset.checked_add(length) else {

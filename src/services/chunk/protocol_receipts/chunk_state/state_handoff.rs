@@ -1,7 +1,7 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkStateHandoff {
-    pub chunk_id: ChunkId,
-    pub state: ChunkState,
+    pub chunk_id: PageId,
+    pub state: PageState,
     pub payload_checksum: String,
     pub state_checksum: String,
     pub handoff_token: String,
@@ -12,7 +12,7 @@ pub struct ChunkStateHandoff {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedChunkLocalStateHandoffEnvelope {
     pub envelope_format: String,
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub max_payload_bytes: u64,
     pub request_checksum: String,
     pub payload_bytes: u64,
@@ -52,7 +52,7 @@ pub struct PreparedChunkStateHandoffEnvelope {
     pub route_control_proof_bytes: u64,
     pub route_control_commit_index: u64,
     pub route_control_next_log_index: u64,
-    pub first_handoff_chunk_id: Option<ChunkId>,
+    pub first_handoff_chunk_id: Option<PageId>,
     pub first_handoff_state_checksum: String,
     pub first_handoff_payload_bytes: u64,
     pub handoff_state_checksums: Vec<String>,

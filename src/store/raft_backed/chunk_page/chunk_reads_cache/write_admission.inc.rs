@@ -2,7 +2,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn can_accept_chunk_batch_write_linearizable(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
     ) -> Result<ChunkWriteAdmission, ObjectError> {
@@ -19,7 +19,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn can_accept_chunk_batch_write_linearizable_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         min_read_index: u64,
@@ -39,7 +39,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn can_accept_chunk_batch_write_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -58,7 +58,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn can_accept_chunk_batch_write_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -106,7 +106,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn can_accept_chunk_batch_write_with_read_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -125,7 +125,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn can_accept_chunk_batch_write_with_control_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
@@ -144,7 +144,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn can_accept_chunk_batch_write_with_control_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
@@ -182,7 +182,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn can_accept_chunk_batch_write_with_read_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,

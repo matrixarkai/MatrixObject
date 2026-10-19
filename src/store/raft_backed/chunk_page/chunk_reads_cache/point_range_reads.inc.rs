@@ -2,7 +2,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_with_read_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -23,7 +23,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_with_control_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -44,7 +44,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_with_control_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -83,7 +83,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_with_read_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -125,7 +125,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_with_read_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -145,7 +145,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_with_control_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
@@ -167,7 +167,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_with_control_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
@@ -207,7 +207,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_with_read_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,

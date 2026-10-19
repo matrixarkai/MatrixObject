@@ -155,8 +155,8 @@ pub(crate) fn page_allocation_receipt_page_proof_checksum(
     );
     append_page_receipt_page_chunk_filter(
         &mut material,
-        page.chunk_index,
-        page.chunk_size,
+        page.page_index,
+        page.page_size,
         page.skipped_chunk_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);

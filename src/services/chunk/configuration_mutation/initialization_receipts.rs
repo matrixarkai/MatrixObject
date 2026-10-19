@@ -15,7 +15,7 @@ fn trim_shared_map_to_retention<V: Clone>(
     trim_btree_map_to_retention(std::sync::Arc::make_mut(map), retention)
 }
 
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn new() -> Self {
         Self {
             chunks: BTreeMap::new(),
@@ -93,7 +93,7 @@ impl MatrixChunkService {
             read_cache_uncacheable_read_bytes: Cell::new(0),
             read_cache_access_sequence: Cell::new(0),
             snapshot_export_cache: RefCell::new(None),
-            snapshot_assembler: ChunkServiceSnapshotAssembler::default(),
+            snapshot_assembler: ReplicaServiceSnapshotAssembler::default(),
             active_mutation_batch: None,
         }
     }

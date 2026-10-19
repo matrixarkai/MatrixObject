@@ -6,13 +6,13 @@ pub(crate) struct ChunkSnapshotExportCache {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MatrixChunkService {
+pub struct MatrixReplicaService {
     /// Each chunk's state behind a shared handle, so a snapshot of this
     /// service clones handles rather than states. A write takes
     /// `Arc::make_mut`, which copies the one chunk it touches if a snapshot
     /// still names it -- so the copy is per chunk WRITTEN rather than per chunk
     /// held.
-    pub(crate) chunks: BTreeMap<ChunkId, std::sync::Arc<ChunkState>>,
+    pub(crate) chunks: BTreeMap<PageId, std::sync::Arc<PageState>>,
     /// Whether this replica keeps the XOR sidecar for its chunks.
     ///
     /// True only when this replica is the only copy. Above one replica a damaged
@@ -74,8 +74,8 @@ pub struct MatrixChunkService {
     /// Runtime-only: (write_sequence, checksum, per-page fnv1a64) for chunks whose
     /// payload has been fully validated once, so later reads verify only their own
     /// pages instead of re-hashing the whole chunk. Never persisted.
-    page_validation: RefCell<HashMap<ChunkId, (u64, String, Vec<u64>)>>,
-    read_cache_by_chunk: RefCell<HashMap<ChunkId, HashSet<ChunkReadCacheRangeKey>>>,
+    page_validation: RefCell<HashMap<PageId, (u64, String, Vec<u64>)>>,
+    read_cache_by_chunk: RefCell<HashMap<PageId, HashSet<ChunkReadCacheRangeKey>>>,
     read_cache_lru: RefCell<VecDeque<(u64, ChunkReadCacheKey)>>,
     read_cache_bytes: Cell<u64>,
     max_read_cache_bytes: Cell<u64>,
@@ -101,6 +101,6 @@ pub struct MatrixChunkService {
     read_cache_uncacheable_read_bytes: Cell<u64>,
     read_cache_access_sequence: Cell<u64>,
     snapshot_export_cache: RefCell<Option<ChunkSnapshotExportCache>>,
-    snapshot_assembler: ChunkServiceSnapshotAssembler,
+    snapshot_assembler: ReplicaServiceSnapshotAssembler,
     active_mutation_batch: Option<ChunkMutationBatch>,
 }

@@ -11,12 +11,12 @@ pub struct SlabInfo {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct ChunkId {
+pub struct PageId {
     pub slab_id: SlabId,
-    pub chunk_index: u64,
+    pub page_index: u64,
 }
 
-impl ChunkId {
+impl PageId {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .slab_id
@@ -31,14 +31,14 @@ impl ChunkId {
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_index.to_string(),
+            self.page_index.to_string(),
         );
         fields
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkState {
+pub struct PageState {
     pub logical_length: u64,
     pub write_sequence: u64,
     pub checksum: String,
@@ -47,7 +47,7 @@ pub struct ChunkState {
     pub discarded_ranges: Vec<DataRange>,
 }
 
-impl ChunkState {
+impl PageState {
     /// A chunk that exists and holds nothing.
     ///
     /// Both write paths built this same literal inline. Moving the state behind

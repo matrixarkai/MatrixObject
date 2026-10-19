@@ -1,4 +1,4 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub(crate) fn snapshot_cache_stamp_material(&self) -> String {
         use std::fmt::Write as _;
 
@@ -93,7 +93,7 @@ impl MatrixChunkService {
                 "|c:{}/{}:{}:{}:{}:{}:{}:{}",
                 chunk_id.slab_id.volume_id,
                 chunk_id.slab_id.id,
-                chunk_id.chunk_index,
+                chunk_id.page_index,
                 state.logical_length,
                 state.write_sequence,
                 state.checksum,
@@ -153,7 +153,7 @@ impl MatrixChunkService {
         Ok(cache)
     }
 
-    pub fn export_snapshot(&self) -> ChunkServiceSnapshot {
+    pub fn export_snapshot(&self) -> ReplicaServiceSnapshot {
         let mut snapshot = self.export_snapshot_unsealed();
         let (compressed_chunk_count, compression_saved_bytes) = self.compression_stats();
         snapshot.compressed_chunk_count = compressed_chunk_count;
@@ -168,8 +168,8 @@ impl MatrixChunkService {
     /// before hashing it, so it costs O(resident bytes) per call. Callers that
     /// only keep the snapshot in memory -- the mutation-batch rollback copy --
     /// take this and call `seal_checksum` on the rare path that installs it.
-    pub fn export_snapshot_unsealed(&self) -> ChunkServiceSnapshot {
-        ChunkServiceSnapshot {
+    pub fn export_snapshot_unsealed(&self) -> ReplicaServiceSnapshot {
+        ReplicaServiceSnapshot {
             chunks: self.chunks.clone(),
             receipt_retention: self.receipt_retention,
             write_request_receipts: self.write_request_receipts.clone(),
@@ -228,14 +228,14 @@ impl MatrixChunkService {
         &self,
         offset: u64,
         max_payload_bytes: usize,
-    ) -> Result<ChunkServiceSnapshotChunk, ObjectError> {
+    ) -> Result<ReplicaServiceSnapshotChunk, ObjectError> {
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
                 "chunk service snapshot chunk budget must be positive".to_string(),
             ));
         }
         let image = self.export_snapshot_image()?;
-        let chunk = export_chunk_service_snapshot_chunk_slice_with_checksum(
+        let chunk = export_replica_service_snapshot_chunk_slice_with_checksum(
             image.bytes.as_ref(),
             &image.checksum,
             offset,
@@ -260,7 +260,7 @@ impl MatrixChunkService {
         mut emit: F,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        F: FnMut(ChunkServiceSnapshotChunk) -> Result<(), ObjectError>,
+        F: FnMut(ReplicaServiceSnapshotChunk) -> Result<(), ObjectError>,
     {
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
@@ -270,7 +270,7 @@ impl MatrixChunkService {
         let image = self.export_snapshot_image()?;
         let mut offset = 0;
         loop {
-            let chunk = export_chunk_service_snapshot_chunk_slice_with_checksum(
+            let chunk = export_replica_service_snapshot_chunk_slice_with_checksum(
                 image.bytes.as_ref(),
                 &image.checksum,
                 offset,
@@ -302,7 +302,7 @@ impl MatrixChunkService {
     pub fn export_snapshot_chunks(
         &self,
         max_payload_bytes: usize,
-    ) -> Result<Vec<ChunkServiceSnapshotChunk>, ObjectError> {
+    ) -> Result<Vec<ReplicaServiceSnapshotChunk>, ObjectError> {
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
                 "chunk service snapshot chunk budget must be positive".to_string(),
@@ -315,7 +315,7 @@ impl MatrixChunkService {
         ));
         let mut offset = 0;
         loop {
-            let chunk = export_chunk_service_snapshot_chunk_slice_with_checksum(
+            let chunk = export_replica_service_snapshot_chunk_slice_with_checksum(
                 image.bytes.as_ref(),
                 &image.checksum,
                 offset,
@@ -344,7 +344,7 @@ impl MatrixChunkService {
         Ok(chunks)
     }
 
-    pub fn install_snapshot(&mut self, snapshot: ChunkServiceSnapshot) -> Result<(), ObjectError> {
+    pub fn install_snapshot(&mut self, snapshot: ReplicaServiceSnapshot) -> Result<(), ObjectError> {
         snapshot.validate()?;
         self.snapshot_assembler.reset();
         if snapshot.capacity_bytes > 0 {
@@ -413,14 +413,14 @@ impl MatrixChunkService {
     pub fn install_snapshot_bytes(
         &mut self,
         bytes: &[u8],
-    ) -> Result<ChunkServiceSnapshot, ObjectError> {
-        let snapshot = ChunkServiceSnapshot::from_bytes(bytes)?;
+    ) -> Result<ReplicaServiceSnapshot, ObjectError> {
+        let snapshot = ReplicaServiceSnapshot::from_bytes(bytes)?;
         self.install_snapshot(snapshot.clone())?;
         Ok(snapshot)
     }
 
     pub fn install_snapshot_bytes_in_place(&mut self, bytes: &[u8]) -> Result<(), ObjectError> {
-        self.install_snapshot(ChunkServiceSnapshot::from_bytes(bytes)?)
+        self.install_snapshot(ReplicaServiceSnapshot::from_bytes(bytes)?)
     }
 
     pub fn install_snapshot_chunks<I>(
@@ -428,7 +428,7 @@ impl MatrixChunkService {
         chunks: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ChunkServiceSnapshotChunk>,
+        I: IntoIterator<Item = ReplicaServiceSnapshotChunk>,
     {
         let mut progress = self.snapshot_assembler.install_progress();
         for chunk in chunks {

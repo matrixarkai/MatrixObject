@@ -163,7 +163,7 @@ impl MatrixPageService {
             required_quorum: self.read_quorum as u64,
             ..PageRangeAdmission::default()
         };
-        let mut grouped: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
+        let mut grouped: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for request in requests {
             validate_pipeline_range("block batch read", request.offset, request.length)?;
             admission.payload_bytes = admission

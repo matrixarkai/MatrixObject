@@ -1,4 +1,4 @@
-impl ChunkServiceSnapshot {
+impl ReplicaServiceSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
         validate_storage_receipt_retention(self.receipt_retention)?;
         if self.checksum != self.checksum_material_hash()

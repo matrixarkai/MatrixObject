@@ -13,8 +13,8 @@ pub(crate) fn root_raft_status_checksum(status: &RootRaftStatus) -> String {
     append_u64(&mut material, status.root_metadata_write_ready as u64);
     append_u64(&mut material, status.root_pageserver_read_ready as u64);
     append_u64(&mut material, status.root_pageserver_write_ready as u64);
-    append_u64(&mut material, status.root_chunkserver_read_ready as u64);
-    append_u64(&mut material, status.root_chunkserver_write_ready as u64);
+    append_u64(&mut material, status.root_replicaserver_read_ready as u64);
+    append_u64(&mut material, status.root_replicaserver_write_ready as u64);
     append_u64(&mut material, status.root_readiness_gate_read_ready as u64);
     append_u64(&mut material, status.root_readiness_gate_write_ready as u64);
     append_u64(&mut material, status.node_count);
@@ -201,7 +201,7 @@ pub(crate) fn root_raft_status_checksum(status: &RootRaftStatus) -> String {
     );
     append_u64(
         &mut material,
-        status.root_pageserver_total_chunk_service_mode_rejected_mutations,
+        status.root_pageserver_total_replica_service_mode_rejected_mutations,
     );
     append_u64(
         &mut material,
@@ -307,83 +307,83 @@ pub(crate) fn root_raft_status_checksum(status: &RootRaftStatus) -> String {
         &mut material,
         &status.root_pageserver_service_coverage_status,
     );
-    append_u64(&mut material, status.root_active_chunkserver_count);
-    append_u64(&mut material, status.root_writable_chunkserver_count);
+    append_u64(&mut material, status.root_active_replicaserver_count);
+    append_u64(&mut material, status.root_writable_replicaserver_count);
     append_u64(
         &mut material,
-        status.root_placement_eligible_chunkserver_count,
+        status.root_placement_eligible_replicaserver_count,
     );
     append_u64(
         &mut material,
-        status.root_placement_ineligible_chunkserver_count,
+        status.root_placement_ineligible_replicaserver_count,
     );
-    append_u64(&mut material, status.root_chunkserver_control_proof_count);
+    append_u64(&mut material, status.root_replicaserver_control_proof_count);
     append_u64(
         &mut material,
-        status.root_chunkserver_control_read_ready_count,
+        status.root_replicaserver_control_read_ready_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_control_write_ready_count,
+        status.root_replicaserver_control_write_ready_count,
     );
     append_string(
         &mut material,
-        &status.root_chunkserver_control_proof_checksum,
+        &status.root_replicaserver_control_proof_checksum,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_control_min_raft_commit_index,
+        status.root_replicaserver_control_min_raft_commit_index,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_control_max_raft_commit_index,
+        status.root_replicaserver_control_max_raft_commit_index,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_discarded_range_count,
+        status.root_replicaserver_total_discarded_range_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_reclaimable_bytes,
+        status.root_replicaserver_total_reclaimable_bytes,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_trailing_trim_bytes,
+        status.root_replicaserver_total_trailing_trim_bytes,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_fragmented_chunk_count,
+        status.root_replicaserver_total_fragmented_chunk_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_fragmented_discarded_bytes,
+        status.root_replicaserver_total_fragmented_discarded_bytes,
     );
     append_u64(
         &mut material,
-        status.root_reclaim_pressure_chunkserver_count,
+        status.root_reclaim_pressure_replicaserver_count,
     );
-    append_string(&mut material, &status.root_chunkserver_coverage_status);
-    append_u64(&mut material, status.root_chunkserver_health_ok_count);
+    append_string(&mut material, &status.root_replicaserver_coverage_status);
+    append_u64(&mut material, status.root_replicaserver_health_ok_count);
     append_u64(
         &mut material,
-        status.root_chunkserver_health_degraded_count,
-    );
-    append_u64(
-        &mut material,
-        status.root_chunkserver_health_unavailable_count,
-    );
-    append_u64(&mut material, status.root_chunkserver_health_unknown_count);
-    append_u64(
-        &mut material,
-        status.root_chunkserver_not_fault_tolerant_count,
+        status.root_replicaserver_health_degraded_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_health_reason_count,
+        status.root_replicaserver_health_unavailable_count,
+    );
+    append_u64(&mut material, status.root_replicaserver_health_unknown_count);
+    append_u64(
+        &mut material,
+        status.root_replicaserver_not_fault_tolerant_count,
+    );
+    append_u64(
+        &mut material,
+        status.root_replicaserver_total_health_reason_count,
     );
     append_string(
         &mut material,
-        &status.root_chunkserver_first_health_reasons,
+        &status.root_replicaserver_first_health_reasons,
     );
     etag(&material)
 }

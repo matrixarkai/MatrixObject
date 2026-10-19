@@ -66,7 +66,7 @@ impl MatrixPageService {
         }
         let mut stats = PageBatchStats::default();
         let mut request_locations = Vec::with_capacity(requests.len());
-        let mut grouped: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
+        let mut grouped: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for request in &requests {
             validate_pipeline_range("block batch read", request.offset, request.length)?;
             stats.input_ranges = stats.input_ranges.saturating_add(1);
@@ -137,7 +137,7 @@ impl MatrixPageService {
             payload: Option<Vec<u8>>,
         }
 
-        let mut merged_reads: BTreeMap<ChunkId, Vec<MergedChunkRead>> = BTreeMap::new();
+        let mut merged_reads: BTreeMap<PageId, Vec<MergedChunkRead>> = BTreeMap::new();
         for (chunk_id, ranges) in grouped {
             let merged_ranges = merge_ranges(ranges);
             let mut chunk_payloads = Vec::with_capacity(merged_ranges.len());
@@ -321,9 +321,9 @@ impl MatrixPageService {
 
     fn probe_batch_read_repairs(
         &mut self,
-        chunk_ids: &[ChunkId],
+        chunk_ids: &[PageId],
         stats: &mut PageReadStats,
-    ) -> BTreeMap<ChunkId, PageReadStats> {
+    ) -> BTreeMap<PageId, PageReadStats> {
         let mut repair_stats_by_chunk = BTreeMap::new();
         if self.primary_batch_read_repair_probe_limit == 0 || self.replicas.len() <= 1 {
             return repair_stats_by_chunk;

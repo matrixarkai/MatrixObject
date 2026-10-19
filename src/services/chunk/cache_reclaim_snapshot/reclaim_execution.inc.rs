@@ -1,4 +1,4 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn reclaim_chunks_with_limits(
         &mut self,
         max_chunks: usize,

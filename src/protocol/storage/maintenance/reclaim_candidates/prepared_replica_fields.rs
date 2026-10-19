@@ -24,11 +24,11 @@ impl PreparedChunkReplicaReclaim {
         }
         fields.insert(
             format!("{field_prefix}before_chunk_service_fingerprint"),
-            self.before_chunk_service_fingerprint.clone(),
+            self.before_replica_service_fingerprint.clone(),
         );
         fields.insert(
             format!("{field_prefix}after_chunk_service_fingerprint"),
-            self.after_chunk_service_fingerprint.clone(),
+            self.after_replica_service_fingerprint.clone(),
         );
         fields.extend(
             self.route_control_proof

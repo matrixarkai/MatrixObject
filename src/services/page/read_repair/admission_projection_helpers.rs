@@ -1,7 +1,7 @@
 impl MatrixPageService {
     fn projected_chunk_lengths_for_locations(
         locations: &[PageLocation],
-    ) -> Result<BTreeMap<ChunkId, u64>, ObjectError> {
+    ) -> Result<BTreeMap<PageId, u64>, ObjectError> {
         let mut projected = BTreeMap::new();
         for loc in locations {
             let end = validate_pipeline_range("chunk write", loc.chunk_offset, loc.length)?;
@@ -14,8 +14,8 @@ impl MatrixPageService {
     }
 
     fn projected_chunk_lengths_for_grouped_write_views(
-        grouped: &BTreeMap<(SlabId, ChunkId), Vec<(u64, &[u8])>>,
-    ) -> Result<BTreeMap<ChunkId, u64>, ObjectError> {
+        grouped: &BTreeMap<(SlabId, PageId), Vec<(u64, &[u8])>>,
+    ) -> Result<BTreeMap<PageId, u64>, ObjectError> {
         let mut projected = BTreeMap::new();
         for ((_, chunk_id), writes) in grouped {
             for (offset, data) in writes {
@@ -30,8 +30,8 @@ impl MatrixPageService {
     }
 
     fn replica_accepts_projected_chunk_lengths(
-        replica: &MatrixChunkService,
-        projected_lengths: &BTreeMap<ChunkId, u64>,
+        replica: &MatrixReplicaService,
+        projected_lengths: &BTreeMap<PageId, u64>,
     ) -> Result<(), ObjectError> {
         if let Some(err) = replica.writable_admission_error() {
             return Err(err);
@@ -60,7 +60,7 @@ impl MatrixPageService {
     }
 
     fn record_projected_write_admission_rejection(
-        replica: &mut MatrixChunkService,
+        replica: &mut MatrixReplicaService,
         err: &ObjectError,
         rejected_chunks: u64,
     ) {
@@ -82,7 +82,7 @@ impl MatrixPageService {
 
     fn admissible_write_replicas(
         &mut self,
-        projected_lengths: &BTreeMap<ChunkId, u64>,
+        projected_lengths: &BTreeMap<PageId, u64>,
     ) -> Result<Vec<usize>, ObjectError> {
         let mut accepted = Vec::with_capacity(self.replicas.len());
         let mut first_error: Option<ObjectError> = None;
@@ -117,8 +117,8 @@ impl MatrixPageService {
     }
 
     fn replica_accepts_discard_ranges(
-        replica: &MatrixChunkService,
-        discard_ranges: &BTreeMap<ChunkId, Vec<DataRange>>,
+        replica: &MatrixReplicaService,
+        discard_ranges: &BTreeMap<PageId, Vec<DataRange>>,
     ) -> Result<(), ObjectError> {
         for (chunk_id, ranges) in discard_ranges {
             let admission = replica.can_accept_chunk_discard(chunk_id, ranges)?;
@@ -150,7 +150,7 @@ impl MatrixPageService {
 
     fn admissible_discard_replicas(
         &mut self,
-        discard_ranges: &BTreeMap<ChunkId, Vec<DataRange>>,
+        discard_ranges: &BTreeMap<PageId, Vec<DataRange>>,
     ) -> Result<Vec<usize>, ObjectError> {
         let mut accepted = Vec::with_capacity(self.replicas.len());
         let mut first_error: Option<ObjectError> = None;

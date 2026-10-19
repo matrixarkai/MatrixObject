@@ -16,9 +16,9 @@ struct DistributedRootReadinessSnapshot {
     root_pageserver_service_coverage: RootPageServerServiceCoverage,
     root_pageserver_service_ready: bool,
     root_pageserver_route_control_ready: bool,
-    root_chunkserver_coverage: RootChunkServerCoverage,
-    root_chunkserver_ready: bool,
-    root_chunkserver_control_ready: bool,
+    root_replicaserver_coverage: RootReplicaServerCoverage,
+    root_replicaserver_ready: bool,
+    root_replicaserver_control_ready: bool,
     root_leader_node_id: String,
     root_lease_epoch: u64,
     root_lease_expire_time_ms: u64,
@@ -29,8 +29,8 @@ struct DistributedRootReadinessSnapshot {
     root_metadata_write_ready: bool,
     root_pageserver_read_ready: bool,
     root_pageserver_write_ready: bool,
-    root_chunkserver_read_ready: bool,
-    root_chunkserver_write_ready: bool,
+    root_replicaserver_read_ready: bool,
+    root_replicaserver_write_ready: bool,
     root_readiness_gate_read_ready: bool,
     root_readiness_gate_write_ready: bool,
     root_leader_ready: bool,
@@ -101,14 +101,14 @@ impl DistributedRootReadinessSnapshot {
             root_pageserver_service_coverage.route_control_proof_count == 0
                 || (root_pageserver_service_coverage.route_control_write_ready_count > 0
                     && root_pageserver_service_coverage.route_control_read_ready_count > 0);
-        let root_chunkserver_coverage = store
+        let root_replicaserver_coverage = store
             .meta_service
-            .chunkserver_coverage(min_capacity_free_bytes);
-        let root_chunkserver_ready = root_chunkserver_coverage.active_chunkserver_count == 0
-            || root_chunkserver_coverage.writable_chunkserver_count > 0;
-        let root_chunkserver_control_ready = root_chunkserver_coverage.control_proof_count == 0
-            || (root_chunkserver_coverage.control_read_ready_count > 0
-                && root_chunkserver_coverage.control_write_ready_count > 0);
+            .replicaserver_coverage(min_capacity_free_bytes);
+        let root_replicaserver_ready = root_replicaserver_coverage.active_replicaserver_count == 0
+            || root_replicaserver_coverage.writable_replicaserver_count > 0;
+        let root_replicaserver_control_ready = root_replicaserver_coverage.control_proof_count == 0
+            || (root_replicaserver_coverage.control_read_ready_count > 0
+                && root_replicaserver_coverage.control_write_ready_count > 0);
         let root_lease = store.root_leader_lease();
         let root_leader_node_id = root_lease
             .as_ref()
@@ -120,7 +120,7 @@ impl DistributedRootReadinessSnapshot {
             &root_metadata_coverage,
             &root_page_allocator_coverage,
             &root_pageserver_service_coverage,
-            &root_chunkserver_coverage,
+            &root_replicaserver_coverage,
         );
         let root_raft_status_checksum_format = root_raft_status.control_checksum_format;
         let root_raft_status_checksum = root_raft_status.control_checksum;
@@ -128,8 +128,8 @@ impl DistributedRootReadinessSnapshot {
         let root_metadata_write_ready = root_raft_status.root_metadata_write_ready;
         let root_pageserver_read_ready = root_raft_status.root_pageserver_read_ready;
         let root_pageserver_write_ready = root_raft_status.root_pageserver_write_ready;
-        let root_chunkserver_read_ready = root_raft_status.root_chunkserver_read_ready;
-        let root_chunkserver_write_ready = root_raft_status.root_chunkserver_write_ready;
+        let root_replicaserver_read_ready = root_raft_status.root_replicaserver_read_ready;
+        let root_replicaserver_write_ready = root_raft_status.root_replicaserver_write_ready;
         let root_readiness_gate_read_ready = root_raft_status.root_readiness_gate_read_ready;
         let root_readiness_gate_write_ready = root_raft_status.root_readiness_gate_write_ready;
         let root_read_ready = root_raft_status.linearizable_reads;
@@ -151,8 +151,8 @@ impl DistributedRootReadinessSnapshot {
             && root_page_allocator_ready
             && root_pageserver_service_ready
             && root_pageserver_route_control_ready
-            && root_chunkserver_ready
-            && root_chunkserver_control_ready;
+            && root_replicaserver_ready
+            && root_replicaserver_control_ready;
         let root_ready = if rootserver_required {
             root_leader_ready && root_placement_ready && root_observed_services_ready
         } else {
@@ -177,9 +177,9 @@ impl DistributedRootReadinessSnapshot {
             root_pageserver_service_coverage,
             root_pageserver_service_ready,
             root_pageserver_route_control_ready,
-            root_chunkserver_coverage,
-            root_chunkserver_ready,
-            root_chunkserver_control_ready,
+            root_replicaserver_coverage,
+            root_replicaserver_ready,
+            root_replicaserver_control_ready,
             root_leader_node_id,
             root_lease_epoch,
             root_lease_expire_time_ms,
@@ -190,8 +190,8 @@ impl DistributedRootReadinessSnapshot {
             root_metadata_write_ready,
             root_pageserver_read_ready,
             root_pageserver_write_ready,
-            root_chunkserver_read_ready,
-            root_chunkserver_write_ready,
+            root_replicaserver_read_ready,
+            root_replicaserver_write_ready,
             root_readiness_gate_read_ready,
             root_readiness_gate_write_ready,
             root_leader_ready,

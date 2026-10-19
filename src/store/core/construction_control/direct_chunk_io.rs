@@ -4,7 +4,7 @@ impl MatrixObjectStore {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkWriteReceiptPage, ObjectError> {
         self.page_service
             .list_chunk_write_receipts(replica_index, marker, limit, chunk_id)
@@ -15,7 +15,7 @@ impl MatrixObjectStore {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkBatchWriteReceiptPage, ObjectError> {
         self.page_service
             .list_chunk_batch_write_receipts(replica_index, marker, limit, chunk_id)
@@ -26,7 +26,7 @@ impl MatrixObjectStore {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkDiscardReceiptPage, ObjectError> {
         self.page_service
             .list_chunk_discard_receipts(replica_index, marker, limit, chunk_id)
@@ -37,7 +37,7 @@ impl MatrixObjectStore {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkBatchDiscardReceiptPage, ObjectError> {
         self.page_service
             .list_chunk_batch_discard_receipts(replica_index, marker, limit, chunk_id)
@@ -48,7 +48,7 @@ impl MatrixObjectStore {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkRepairReceiptPage, ObjectError> {
         self.page_service
             .list_chunk_repair_receipts(replica_index, marker, limit, chunk_id)
@@ -57,7 +57,7 @@ impl MatrixObjectStore {
     pub fn read_direct_chunk_range(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<ChunkReadResult, ObjectError> {
@@ -67,7 +67,7 @@ impl MatrixObjectStore {
     pub fn read_direct_chunk_range_bounded(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -85,7 +85,7 @@ impl MatrixObjectStore {
     pub fn read_direct_chunk_ranges(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
     ) -> Result<(Vec<ChunkRangeReadResult>, ChunkReadBatchStats), ObjectError> {
@@ -102,7 +102,7 @@ impl MatrixObjectStore {
     pub fn head_direct_chunk(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<ChunkHead, ObjectError> {
         let replica = self
             .page_service
@@ -117,7 +117,7 @@ impl MatrixObjectStore {
     pub fn head_direct_chunks(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<ChunkId>,
+        chunk_ids: Vec<PageId>,
     ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats), ObjectError> {
         let replica = self
             .page_service
@@ -132,7 +132,7 @@ impl MatrixObjectStore {
     pub fn remove_direct_replica_chunk_for_repair(
         &mut self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<(), ObjectError> {
         self.page_service
             .remove_replica_chunk_for_repair(replica_index, chunk_id)
@@ -141,7 +141,7 @@ impl MatrixObjectStore {
     pub fn write_direct_chunk_range_idempotent(
         &mut self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
@@ -187,7 +187,7 @@ impl MatrixObjectStore {
     pub fn write_direct_chunk_ranges_idempotent(
         &mut self,
         replica_index: usize,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         idempotency_key: &str,
     ) -> Result<(ChunkWriteBatchStats, ChunkBatchWriteReceipt), ObjectError> {
@@ -239,7 +239,7 @@ impl MatrixObjectStore {
     pub fn discard_direct_chunk_range_idempotent(
         &mut self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
@@ -285,7 +285,7 @@ impl MatrixObjectStore {
     pub fn discard_direct_chunk_ranges_idempotent(
         &mut self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
     ) -> Result<(ChunkDiscardBatchStats, ChunkBatchDiscardReceipt), ObjectError> {

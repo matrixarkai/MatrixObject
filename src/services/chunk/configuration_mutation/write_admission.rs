@@ -1,4 +1,4 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     fn ensure_writable(&mut self) -> Result<(), ObjectError> {
         if !self.accepting_writes {
             self.service_mode_rejected_mutations =
@@ -45,7 +45,7 @@ impl MatrixChunkService {
 
     pub(crate) fn projected_physical_bytes_for_chunk_len(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         new_len: u64,
     ) -> Result<u64, ObjectError> {
         let current_len = self
@@ -64,7 +64,7 @@ impl MatrixChunkService {
 
     fn ensure_capacity_for_chunk_len(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         new_len: u64,
     ) -> Result<(), ObjectError> {
         let projected = self.projected_physical_bytes_for_chunk_len(chunk_id, new_len)?;
@@ -79,7 +79,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_chunk_write(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<ChunkWriteAdmission, ObjectError> {
@@ -121,7 +121,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_chunk_writes(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
     ) -> Result<ChunkWriteAdmission, ObjectError> {
@@ -130,7 +130,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_chunk_writes_from(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         write_start_range_index: u64,
@@ -149,7 +149,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_chunk_writes_borrowed(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: &[(u64, &[u8])],
         max_write_bytes: u64,
     ) -> Result<ChunkWriteAdmission, ObjectError> {
@@ -158,7 +158,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_chunk_writes_from_borrowed(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: &[(u64, &[u8])],
         max_write_bytes: u64,
         write_start_range_index: u64,

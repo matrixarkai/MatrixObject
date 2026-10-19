@@ -4,7 +4,7 @@ impl MatrixPageService {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkWriteReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
@@ -17,7 +17,7 @@ impl MatrixPageService {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkBatchWriteReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
@@ -30,7 +30,7 @@ impl MatrixPageService {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkDiscardReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
@@ -43,7 +43,7 @@ impl MatrixPageService {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkBatchDiscardReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
@@ -56,7 +56,7 @@ impl MatrixPageService {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkRepairReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)

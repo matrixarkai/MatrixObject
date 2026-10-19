@@ -2,7 +2,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_write(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
     ) -> Result<ChunkWriteAdmission, ObjectError> {
@@ -18,7 +18,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_write_from(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         write_start_range_index: u64,
@@ -39,7 +39,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_write_from_borrowed(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: &[(u64, &[u8])],
         max_write_bytes: u64,
         write_start_range_index: u64,
@@ -63,7 +63,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_write_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -88,7 +88,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_write_fenced_borrowed(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: &[(u64, &[u8])],
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -109,7 +109,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_discard(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
     ) -> Result<ChunkDiscardAdmission, ObjectError> {
@@ -125,7 +125,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_discard_from(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -142,7 +142,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_discard_from_borrowed(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: &[DataRange],
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -166,7 +166,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_discard_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -186,7 +186,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_discard_fenced_borrowed(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: &[DataRange],
         max_discard_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -207,7 +207,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_read(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
     ) -> Result<ChunkReadAdmission, ObjectError> {
@@ -225,7 +225,7 @@ impl MatrixPageService {
     pub fn can_accept_chunk_replica_batch_read_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,

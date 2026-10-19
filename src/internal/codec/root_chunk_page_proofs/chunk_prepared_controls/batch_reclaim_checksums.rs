@@ -12,7 +12,7 @@ pub(crate) fn prepared_chunk_batch_write_checksum(prepared: &PreparedChunkBatchW
     }
     append_chunk_state(&mut material, &prepared.state);
     append_chunk_batch_write_receipt(&mut material, &prepared.receipt);
-    append_chunk_service_control_proof(&mut material, &prepared.control_proof);
+    append_replica_service_control_proof(&mut material, &prepared.control_proof);
     append_string(&mut material, &prepared.expected_control_checksum);
     etag(&material)
 }
@@ -31,7 +31,7 @@ pub(crate) fn prepared_chunk_batch_discard_checksum(
     }
     append_chunk_state(&mut material, &prepared.state);
     append_chunk_batch_discard_receipt(&mut material, &prepared.receipt);
-    append_chunk_service_control_proof(&mut material, &prepared.control_proof);
+    append_replica_service_control_proof(&mut material, &prepared.control_proof);
     append_string(&mut material, &prepared.expected_control_checksum);
     etag(&material)
 }
@@ -51,8 +51,8 @@ pub(crate) fn prepared_chunk_reclaim_checksum(prepared: &PreparedChunkReplicaRec
     append_u64(&mut material, prepared.now_ms);
     append_chunk_reclaim_plan(&mut material, &prepared.plan);
     append_chunk_partial_reclaim_report(&mut material, &prepared.report);
-    append_string(&mut material, &prepared.before_chunk_service_fingerprint);
-    append_string(&mut material, &prepared.after_chunk_service_fingerprint);
+    append_string(&mut material, &prepared.before_replica_service_fingerprint);
+    append_string(&mut material, &prepared.after_replica_service_fingerprint);
     append_page_route_control_proof(&mut material, &prepared.route_control_proof);
     append_string(&mut material, &prepared.expected_route_control_checksum);
     etag(&material)

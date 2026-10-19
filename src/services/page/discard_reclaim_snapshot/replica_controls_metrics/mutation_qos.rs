@@ -88,7 +88,7 @@ impl MatrixPageService {
             }
             replica_count = replica_count.saturating_add(1);
             append_u64(&mut material, index as u64);
-            append_chunk_service_control_proof(&mut material, &replica.control_proof());
+            append_replica_service_control_proof(&mut material, &replica.control_proof());
         }
         if target_replica_index.is_some() && replica_count == 0 {
             return Err(ObjectError::InvalidArgument(

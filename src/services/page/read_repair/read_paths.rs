@@ -128,7 +128,7 @@ impl MatrixPageService {
 
     fn read_chunk_quorum(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<(ChunkReadResult, PageReadStats), ObjectError> {

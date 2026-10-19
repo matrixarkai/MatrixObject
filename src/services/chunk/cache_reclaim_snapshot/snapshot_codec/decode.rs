@@ -1,4 +1,4 @@
-impl ChunkServiceSnapshot {
+impl ReplicaServiceSnapshot {
     pub fn from_bytes(data: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = SnapshotByteCursor::new(data);
         let magic = cursor.read_string()?;
@@ -160,9 +160,9 @@ impl ChunkServiceSnapshot {
                 volume_id: cursor.read_u64()?,
                 id: cursor.read_u64()?,
             };
-            let chunk_id = ChunkId {
+            let chunk_id = PageId {
                 slab_id,
-                chunk_index: cursor.read_u64()?,
+                page_index: cursor.read_u64()?,
             };
             let logical_length = cursor.read_u64()?;
             let write_sequence = cursor.read_u64()?;
@@ -212,7 +212,7 @@ impl ChunkServiceSnapshot {
             }
             chunks.insert(
                 chunk_id,
-                std::sync::Arc::new(ChunkState {
+                std::sync::Arc::new(PageState {
                     logical_length,
                     write_sequence,
                     checksum,

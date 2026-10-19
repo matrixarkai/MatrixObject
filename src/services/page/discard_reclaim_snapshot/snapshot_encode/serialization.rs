@@ -84,7 +84,7 @@ impl PageServiceSnapshot {
         self.validate()?;
         let mut out = Vec::with_capacity(self.encoded_size_hint());
         append_string(&mut out, "MOSRSBLOCK23");
-        append_u64(&mut out, self.chunk_size);
+        append_u64(&mut out, self.page_size);
         append_u64(&mut out, self.write_quorum as u64);
         append_u64(&mut out, self.read_quorum as u64);
         append_u64(&mut out, self.allocator_slab_size);

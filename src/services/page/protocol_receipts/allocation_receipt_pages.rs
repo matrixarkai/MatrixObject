@@ -9,8 +9,8 @@ pub struct PageAllocationReceiptPage {
     pub next_marker: Option<String>,
     pub slab_id: Option<SlabId>,
     pub skipped_slab_count: u64,
-    pub chunk_index: Option<u64>,
-    pub chunk_size: Option<u64>,
+    pub page_index: Option<u64>,
+    pub page_size: Option<u64>,
     pub skipped_chunk_count: u64,
 }
 
@@ -54,14 +54,14 @@ impl PageAllocationReceiptPage {
                 ));
             }
         }
-        if let Some(chunk_index) = self.chunk_index {
-            let chunk_size = self.chunk_size.ok_or_else(|| {
+        if let Some(page_index) = self.page_index {
+            let page_size = self.page_size.ok_or_else(|| {
                 ObjectError::Corruption(
                     "block allocation receipt page chunk filter is missing chunk size".to_string(),
                 )
             })?;
             if self.receipts.iter().any(|receipt| {
-                !allocation_overlaps_chunk(&receipt.allocation, chunk_index, chunk_size)
+                !allocation_overlaps_chunk(&receipt.allocation, page_index, page_size)
             }) {
                 return Err(ObjectError::Corruption(
                     "block allocation receipt page contains receipt outside chunk filter"
@@ -99,8 +99,8 @@ impl PageAllocationReceiptPage {
         insert_page_chunk_filter_control_fields(
             &mut fields,
             field_prefix,
-            self.chunk_index,
-            self.chunk_size,
+            self.page_index,
+            self.page_size,
             self.skipped_chunk_count,
         );
         fields.insert(
@@ -131,8 +131,8 @@ pub struct PageBatchAllocationReceiptPage {
     pub next_marker: Option<String>,
     pub slab_id: Option<SlabId>,
     pub skipped_slab_count: u64,
-    pub chunk_index: Option<u64>,
-    pub chunk_size: Option<u64>,
+    pub page_index: Option<u64>,
+    pub page_size: Option<u64>,
     pub skipped_chunk_count: u64,
 }
 
@@ -173,8 +173,8 @@ impl PageBatchAllocationReceiptPage {
                 ));
             }
         }
-        if let Some(chunk_index) = self.chunk_index {
-            let chunk_size = self.chunk_size.ok_or_else(|| {
+        if let Some(page_index) = self.page_index {
+            let page_size = self.page_size.ok_or_else(|| {
                 ObjectError::Corruption(
                     "block batch allocation receipt page chunk filter is missing chunk size"
                         .to_string(),
@@ -182,7 +182,7 @@ impl PageBatchAllocationReceiptPage {
             })?;
             if self.receipts.iter().any(|receipt| {
                 !receipt.allocations.iter().any(|allocation| {
-                    allocation_overlaps_chunk(allocation, chunk_index, chunk_size)
+                    allocation_overlaps_chunk(allocation, page_index, page_size)
                 })
             }) {
                 return Err(ObjectError::Corruption(
@@ -221,8 +221,8 @@ impl PageBatchAllocationReceiptPage {
         insert_page_chunk_filter_control_fields(
             &mut fields,
             field_prefix,
-            self.chunk_index,
-            self.chunk_size,
+            self.page_index,
+            self.page_size,
             self.skipped_chunk_count,
         );
         fields.insert(

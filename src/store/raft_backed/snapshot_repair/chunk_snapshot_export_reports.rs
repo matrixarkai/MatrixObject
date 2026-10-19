@@ -6,7 +6,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: Option<&str>,
     ) -> Result<
         (
-            Vec<ProvenStorageRead<ChunkServiceSnapshotChunk>>,
+            Vec<ProvenStorageRead<ReplicaServiceSnapshotChunk>>,
             StorageSnapshotProofStreamReport,
         ),
         ObjectError,
@@ -27,7 +27,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: impl AsRef<str>,
     ) -> Result<
         (
-            Vec<ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>>,
+            Vec<ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>>,
             StorageSnapshotProofStreamReport,
         ),
         ObjectError,
@@ -50,7 +50,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<
         (
-            Vec<ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>>,
+            Vec<ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>>,
             StorageSnapshotProofStreamReport,
         ),
         ObjectError,
@@ -148,7 +148,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<
         (
-            Vec<ProvenStorageRead<ChunkServiceSnapshotChunk>>,
+            Vec<ProvenStorageRead<ReplicaServiceSnapshotChunk>>,
             StorageSnapshotProofStreamReport,
         ),
         ObjectError,

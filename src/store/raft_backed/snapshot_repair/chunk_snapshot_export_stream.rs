@@ -7,7 +7,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         emit: F,
     ) -> Result<(), ObjectError>
     where
-        F: FnMut(ProvenStorageRead<ChunkServiceSnapshotChunk>) -> Result<(), ObjectError>,
+        F: FnMut(ProvenStorageRead<ReplicaServiceSnapshotChunk>) -> Result<(), ObjectError>,
     {
         self.export_chunk_replica_snapshot_chunk_stream_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
@@ -28,7 +28,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<(), ObjectError>
     where
         F: FnMut(
-            ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>,
+            ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>,
         ) -> Result<(), ObjectError>,
     {
         self.export_chunk_replica_snapshot_chunk_stream_with_control_proof_linearizable_fenced_committed_at(
@@ -54,7 +54,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<(), ObjectError>
     where
         F: FnMut(
-            ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>,
+            ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>,
         ) -> Result<(), ObjectError>,
     {
         let expected_checksum = expected_control_checksum.as_ref().to_string();
@@ -129,7 +129,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         mut emit: F,
     ) -> Result<(), ObjectError>
     where
-        F: FnMut(ProvenStorageRead<ChunkServiceSnapshotChunk>) -> Result<(), ObjectError>,
+        F: FnMut(ProvenStorageRead<ReplicaServiceSnapshotChunk>) -> Result<(), ObjectError>,
     {
         let replica = self
             .store

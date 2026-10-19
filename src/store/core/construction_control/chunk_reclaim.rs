@@ -53,7 +53,7 @@ impl MatrixObjectStore {
             .ok_or_else(|| {
                 ObjectError::InvalidArgument("replica index out of range".to_string())
             })?;
-        let before_chunk_service_fingerprint = chunk_service_fingerprint(service);
+        let before_replica_service_fingerprint = replica_service_fingerprint(service);
         let plan = service.plan_reclaim_chunks(
             None,
             max_chunks,
@@ -73,7 +73,7 @@ impl MatrixObjectStore {
             max_trim_bytes,
             now_ms,
         );
-        let after_chunk_service_fingerprint = chunk_service_fingerprint(&projected);
+        let after_replica_service_fingerprint = replica_service_fingerprint(&projected);
         let route_control_proof = self.page_service.route_control_proof();
         let expected_route_control_checksum =
             expected_route_control_checksum.unwrap_or("").to_string();
@@ -86,8 +86,8 @@ impl MatrixObjectStore {
             max_discard_ranges,
             max_trim_bytes,
             now_ms,
-            before_chunk_service_fingerprint,
-            after_chunk_service_fingerprint,
+            before_replica_service_fingerprint,
+            after_replica_service_fingerprint,
             plan,
             report,
             expected_previous_commit_index,
@@ -228,7 +228,7 @@ impl MatrixObjectStore {
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument("replica index out of range".to_string())
                 })?;
-            if chunk_service_fingerprint(replica) == prepared.after_chunk_service_fingerprint {
+            if replica_service_fingerprint(replica) == prepared.after_replica_service_fingerprint {
                 return Ok(prepared.report);
             }
         }
@@ -270,7 +270,7 @@ impl MatrixObjectStore {
             .ok_or_else(|| {
                 ObjectError::InvalidArgument("replica index out of range".to_string())
             })?;
-        if chunk_service_fingerprint(replica) != prepared.before_chunk_service_fingerprint {
+        if replica_service_fingerprint(replica) != prepared.before_replica_service_fingerprint {
             return Err(ObjectError::PreconditionFailed(
                 "chunk prepared reclaim source fingerprint mismatch".to_string(),
             ));
@@ -285,7 +285,7 @@ impl MatrixObjectStore {
             prepared.now_ms,
         );
         if report != prepared.report
-            || chunk_service_fingerprint(replica) != prepared.after_chunk_service_fingerprint
+            || replica_service_fingerprint(replica) != prepared.after_replica_service_fingerprint
         {
             return Err(ObjectError::Corruption(
                 "chunk prepared reclaim deterministic apply mismatch".to_string(),

@@ -1,4 +1,4 @@
-pub(crate) type ChunkReadCacheKey = (ChunkId, u64, u64);
+pub(crate) type ChunkReadCacheKey = (PageId, u64, u64);
 pub(crate) type ChunkReadCacheRangeKey = (u64, u64);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,7 +62,7 @@ impl CacheControlStats {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkReadCacheRange {
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub offset: u64,
     pub length: u64,
 }

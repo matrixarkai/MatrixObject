@@ -15,7 +15,7 @@ impl MatrixObjectStore {
                 "volume_count must be positive".to_string(),
             ));
         }
-        if options.chunk_size == 0 || options.chunk_size > options.slab_size {
+        if options.page_size == 0 || options.page_size > options.slab_size {
             return Err(ObjectError::InvalidArgument(
                 "chunk_size must be 1..segment_size".to_string(),
             ));
@@ -128,7 +128,7 @@ impl MatrixObjectStore {
             }
         }
         let page_service = MatrixPageService::new_with_parallelism(
-            options.chunk_size,
+            options.page_size,
             options.replica_count,
             options.write_quorum,
             options.page_read_parallelism,

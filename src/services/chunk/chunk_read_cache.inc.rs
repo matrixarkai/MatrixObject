@@ -1,7 +1,7 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn read_chunk_with_cache_status(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<(ChunkReadResult, bool), ObjectError> {
