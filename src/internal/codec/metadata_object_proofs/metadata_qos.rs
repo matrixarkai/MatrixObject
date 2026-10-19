@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_metadata_change_checkpoint(
     out: &mut Vec<u8>,
     checkpoint: &MetadataChangeCheckpoint,

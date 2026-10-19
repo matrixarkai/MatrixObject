@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ChunkRouteControlBootstrapReport {
     pub target_commit_index: u64,

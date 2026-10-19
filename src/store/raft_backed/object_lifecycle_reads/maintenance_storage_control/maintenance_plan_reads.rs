@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn plan_run_meta_maintenance(
         &self,

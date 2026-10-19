@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn configure_bucket_policy(
         &mut self,

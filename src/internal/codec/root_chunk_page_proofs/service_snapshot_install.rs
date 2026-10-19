@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn service_snapshot_install_source_proof_checksum(
     service: &str,
     expected_snapshot_read_proof_checksum: &str,

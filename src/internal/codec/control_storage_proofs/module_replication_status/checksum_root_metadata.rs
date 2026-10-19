@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn append_root_metadata_status(mut material: &mut Vec<u8>, status: &ObjectStoreModuleStatus) {
     append_u64(&mut material, status.root_expected_nodes);
     append_string(&mut material, &status.root_leader_node_id);

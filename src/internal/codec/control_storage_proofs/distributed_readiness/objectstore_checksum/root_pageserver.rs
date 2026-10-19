@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn append_root_pageserver_topology(mut material: &mut Vec<u8>, report: &ObjectStoreDistributedReadiness) {
     append_u64(&mut material, report.root_node_count);
     append_u64(&mut material, report.root_active_pageserver_count);

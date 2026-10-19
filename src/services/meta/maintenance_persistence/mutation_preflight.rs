@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// What one `apply_mutation` changed, enough to reverse it exactly.
 #[derive(Clone, Debug)]
 pub(crate) struct MetaRecordUndo {

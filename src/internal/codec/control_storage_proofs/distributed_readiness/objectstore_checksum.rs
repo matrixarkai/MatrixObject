@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("objectstore_checksum/identity.rs");
 include!("objectstore_checksum/metadata.rs");
 include!("objectstore_checksum/metadata_control_proof.rs");

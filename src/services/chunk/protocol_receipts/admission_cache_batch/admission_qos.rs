@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReplicaWriteAdmission {
     pub can_accept: bool,

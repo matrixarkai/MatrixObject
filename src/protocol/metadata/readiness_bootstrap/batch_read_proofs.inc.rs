@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("batch_read_proofs/admitted_object.rs");
 include!("batch_read_proofs/admitted_conditional.rs");
 include!("batch_read_proofs/cache_control.rs");

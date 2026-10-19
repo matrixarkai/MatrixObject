@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn chunk_id_encoded_len() -> usize {
     std::mem::size_of::<u64>() * 3
 }

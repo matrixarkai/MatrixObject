@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn prepare_chunk_capacity_raft_entry(
         &self,

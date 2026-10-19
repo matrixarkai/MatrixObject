@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixReplicaService {
     pub fn control_proof(&self) -> ReplicaServiceControlProof {
         let snapshot_checksum = self.export_snapshot().checksum;

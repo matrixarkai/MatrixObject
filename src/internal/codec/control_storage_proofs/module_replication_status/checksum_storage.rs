@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn append_storage_status(mut material: &mut Vec<u8>, status: &ObjectStoreModuleStatus) {
     append_u64(&mut material, status.live_bytes);
     append_u64(&mut material, status.stale_bytes);

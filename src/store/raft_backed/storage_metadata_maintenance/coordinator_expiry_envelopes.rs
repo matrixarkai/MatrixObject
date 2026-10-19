@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_expire_meta_coordinator_sessions_envelope_linearizable(
         &self,

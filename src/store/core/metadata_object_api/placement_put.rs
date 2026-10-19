@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn put_object_with_root_placement(
         &mut self,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_discard_page_range_idempotent(
         &mut self,

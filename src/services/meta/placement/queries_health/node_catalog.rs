@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     pub fn list_nodes(&self) -> Vec<RootNode> {
         self.nodes.values().cloned().collect()

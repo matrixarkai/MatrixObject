@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn read_multipart_upload(
     cursor: &mut SnapshotByteCursor<'_>,
     store_snapshot_version: u64,

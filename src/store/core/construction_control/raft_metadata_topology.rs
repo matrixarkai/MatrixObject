@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("raft_membership.rs");
 include!("bucket_versioning.rs");
 include!("metadata_shard_topology.rs");

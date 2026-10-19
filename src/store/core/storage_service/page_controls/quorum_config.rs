@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn configure_page_quorum(
         &mut self,

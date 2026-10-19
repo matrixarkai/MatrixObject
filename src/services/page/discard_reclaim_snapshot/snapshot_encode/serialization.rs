@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl ChunkServiceSnapshot {
     fn encoded_size_hint(&self) -> usize {
         const U64: usize = std::mem::size_of::<u64>();

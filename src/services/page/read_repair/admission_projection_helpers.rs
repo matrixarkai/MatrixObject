@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixChunkService {
     fn projected_chunk_lengths_for_locations(
         locations: &[ChunkLocation],

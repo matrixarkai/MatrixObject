@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_abort_multipart_upload_with_route_report(
         &mut self,

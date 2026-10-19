@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_page_id(out: &mut Vec<u8>, page_id: &PageId) {
     append_chunk_id(out, &page_id.chunk_id);
     append_u64(out, page_id.page_index);

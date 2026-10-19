@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_prepared_chunk_local_state_handoff_envelope(
     out: &mut Vec<u8>,
     envelope: &PreparedChunkLocalStateHandoffEnvelope,

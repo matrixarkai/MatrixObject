@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn validate_chunk_state(state: &PageState) -> Result<(), ObjectError> {
     if state.logical_length as usize > state.data.len() {
         return Err(ObjectError::Corruption(

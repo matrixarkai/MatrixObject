@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn root_nodes(&self) -> Vec<RootNode> {
         self.meta_service.list_nodes()

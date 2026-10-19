@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("storage_snapshot_streams.rs");
 include!("metadata_snapshot_streams.rs");
 include!("service_snapshot_install.rs");

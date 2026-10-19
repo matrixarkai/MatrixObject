@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("legacy_formats/v11.rs");
 include!("legacy_formats/v10.rs");
 include!("legacy_formats/v9.rs");

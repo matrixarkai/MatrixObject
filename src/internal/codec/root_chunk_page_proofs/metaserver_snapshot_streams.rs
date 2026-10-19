@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_metaserver_snapshot_proof_material(
     material: &mut Vec<u8>,
     offset: u64,

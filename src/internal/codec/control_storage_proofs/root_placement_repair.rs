@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_root_placement_repair_item(out: &mut Vec<u8>, item: &RootPlacementRepairItem) {
     append_root_placement_migration_plan(out, &item.plan);
 }

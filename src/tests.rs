@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::*;
 
 fn test_options() -> StoreOptions {
@@ -37163,6 +37164,79 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
     assert!(
         PUBLISHED.contains(&feed_claim),
         "the paragraph should read {feed_claim:?}, because that is what a delete adds to object_changes.bytes in this tree"
+    );
+}
+
+#[test]
+fn everything_the_readme_tells_you_to_set_exists() {
+    // `every_option_in_the_table_is_a_field_with_that_default` compiles the
+    // configuration TABLE. Nothing compiled the prose, and the prose was wrong:
+    // it told a reader to set `reuse_stale_slab_space`, which is not a field and
+    // never was, so copying it got a compile error. The sentence two sections
+    // below is the one the table test was written for.
+    //
+    // A word the README tells you to set has to be a real knob. Most are fields;
+    // the two that are not are named here WITH where they live, and the guard
+    // checks that place rather than taking the exemption on trust.
+    const PUBLISHED: &str = include_str!("../README.md");
+    const OPTIONS: &str = include_str!("protocol/storage/store_options.rs");
+    const RETENTION: &str = include_str!("store/core/construction_control/chunk_receipt_retention_control.rs");
+    const EXEMPT: [(&str, &str); 2] = [
+        // set on a live store rather than in the options
+        ("receipt_retention", "configure_chunk_receipt_retention"),
+        // a binary a reader runs, not a knob
+        ("scale_bench", "MATRIX_OBJECTSTORE_BENCH_MODE"),
+    ];
+
+    let mut recommended: Vec<&str> = Vec::new();
+    for prefix in ["With `", "with `", "Set `", "set `", "setting `", "Sizing `", "sizing `"] {
+        let mut rest = PUBLISHED;
+        while let Some(at) = rest.find(prefix) {
+            rest = &rest[at + prefix.len()..];
+            if let Some(stop) = rest.find('`') {
+                let word = &rest[..stop];
+                if word.len() >= 4
+                    && word.contains('_')
+                    && word
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+                {
+                    recommended.push(word);
+                }
+            }
+        }
+    }
+    recommended.sort_unstable();
+    recommended.dedup();
+    assert!(
+        recommended.len() >= 3,
+        "this guard only means something if it found the recommendations: {recommended:?}"
+    );
+
+    // Each exemption has to be real too, or the list becomes a way to wave
+    // anything through.
+    let bench = include_str!("bin/scale_bench.rs");
+    for (word, evidence) in EXEMPT {
+        assert!(
+            RETENTION.contains(evidence) || bench.contains(evidence),
+            "{word} is exempted on the grounds of {evidence}, which does not exist"
+        );
+    }
+
+    let mut unknown: Vec<&str> = Vec::new();
+    for word in &recommended {
+        let is_field = OPTIONS
+            .lines()
+            .any(|line| line.trim_start().starts_with(&format!("pub {word}:")));
+        let is_exempt = EXEMPT.iter().any(|(name, _)| name == word);
+        if !is_field && !is_exempt {
+            unknown.push(word);
+        }
+    }
+    println!("README_SETTABLE recommended={recommended:?} unknown={unknown:?}");
+    assert!(
+        unknown.is_empty(),
+        "the README tells a reader to set {unknown:?}, and none of those is a          StoreOptions field or a named exemption"
     );
 }
 

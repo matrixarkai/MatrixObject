@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     pub fn metadata_shards(&self) -> Vec<MetadataShard> {
         self.shards.values().cloned().collect()

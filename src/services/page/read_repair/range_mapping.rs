@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixChunkService {
     pub fn write_allocated_range(
         &mut self,

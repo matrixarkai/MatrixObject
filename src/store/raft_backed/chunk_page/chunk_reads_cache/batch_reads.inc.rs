@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_batch_with_read_proof_linearizable_fenced_committed_at(
         &self,

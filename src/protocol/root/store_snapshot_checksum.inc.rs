@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl StoreSnapshot {
     pub(crate) fn checksum_material_hash(&self) -> String {
         let mut material = Vec::with_capacity(self.checksum_material_size_hint());

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_metadata_route_cache_status(
     material: &mut Vec<u8>,
     status: &MetadataRouteCacheStatus,

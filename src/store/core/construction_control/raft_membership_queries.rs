@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn raft_voter_node_ids(&self) -> &[String] {
         &self.raft_voter_node_ids

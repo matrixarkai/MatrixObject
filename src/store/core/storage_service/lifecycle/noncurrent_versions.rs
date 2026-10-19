@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     fn apply_bucket_lifecycle_noncurrent(
         &mut self,

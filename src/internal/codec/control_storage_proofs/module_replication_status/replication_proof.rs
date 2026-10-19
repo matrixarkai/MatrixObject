@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub fn metadata_replication_proof_report(
     readiness: &ObjectStoreDistributedReadiness,
 ) -> MetadataReplicationProofReport {

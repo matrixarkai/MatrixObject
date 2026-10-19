@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn metadata_coordinator_config_request_checksum(
     config: &MetadataCoordinatorConfig,
 ) -> String {

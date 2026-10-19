@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixReplicaService {
     pub fn install_chunk_state(
         &mut self,

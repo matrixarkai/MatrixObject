@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixChunkService {
     fn snapshot_cache_stamp_size_hint(&self) -> usize {
         let mut bytes = 1024usize;

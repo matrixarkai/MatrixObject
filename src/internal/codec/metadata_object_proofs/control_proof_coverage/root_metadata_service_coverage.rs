@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn compute_root_metadata_service_coverage(
     nodes: &[RootNode],
     metadata_quorum: u64,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn chunk_storage_readiness_fingerprint_material(
     replicas: &[ReplicaStorageReadiness],
 ) -> Vec<u8> {

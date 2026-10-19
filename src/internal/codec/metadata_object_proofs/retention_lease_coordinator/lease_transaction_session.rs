@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn metadata_lease_request_checksum(
     operation: &str,
     namespace: &str,

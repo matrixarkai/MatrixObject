@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     pub fn register_coordinator_session_idempotent(
         &mut self,

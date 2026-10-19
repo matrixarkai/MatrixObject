@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn new(options: StoreOptions) -> Result<Self, ObjectError> {
         if options.chunk_size == 0 {

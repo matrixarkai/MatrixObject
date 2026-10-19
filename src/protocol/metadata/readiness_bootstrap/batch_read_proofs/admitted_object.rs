@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn admitted_object_batch_read_proof_checksum(
     operation: &str,
     report: &AdmittedObjectBatchReadReport,

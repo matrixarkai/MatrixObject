@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     pub fn migrate_shard(
         &mut self,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixReplicaService {
     pub fn set_read_cache_max_bytes(&self, max_bytes: u64) {
         self.max_read_cache_bytes.set(max_bytes);

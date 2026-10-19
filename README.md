@@ -72,10 +72,12 @@ in both directions: a renamed constant fails it, and so does a new one.
   replica that has fallen behind cannot answer with stale bytes.
 - **Repair.** `repair_chunk_from_quorum` rebuilds one chunk on one replica from
   the others, so a diverged replica costs one chunk of recopying.
-- **Erasure coding.** A chunk with no peers keeps a redundancy fragment, so a
-  partial corruption is still recoverable from the single copy it has.
+- **Erasure coding.** A page with no peers keeps a redundancy fragment, so a
+  partial corruption is still recoverable from the single copy it has. The
+  fragment is local to its page and is empty whenever the page has peers, which
+  is why the data term measures exactly 3.00x at three replicas.
 - **Space reuse.** Overwriting an object normally leaves its previous version
-  resident until collection. With `reuse_stale_slab_space` the next write takes
+  resident until collection. With `reuse_stale_chunk_space` the next write takes
   that space directly, which measures about 9% off resident footprint on an
   overwrite-heavy workload.
 - **Idempotent mutations.** Allocation, write, discard and repair carry

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     fn repair_source_for_placement(&self, placement: &ObjectPlacement) -> Option<String> {
         placement.node_ids.iter().find_map(|node_id| {

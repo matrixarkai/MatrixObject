@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("discard_reclaim_snapshot/discard_single.rs");
 include!("discard_reclaim_snapshot/discard_batch.rs");
 include!("discard_reclaim_snapshot/discard_batch_idempotent.rs");

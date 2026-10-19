@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPageAuditRepair {
     pub after_chunk_id: Option<PageId>,

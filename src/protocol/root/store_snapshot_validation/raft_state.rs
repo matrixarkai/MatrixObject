@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl StoreSnapshot {
     fn validate_raft_state(&self) -> Result<(), ObjectError> {
         if self.last_applied_index > 0 && self.last_applied_term == 0 {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn validate_lifecycle_policy(policy: &BucketLifecyclePolicy) -> Result<(), ObjectError> {
     if policy.transition_after_ms > 0 && policy.transition_storage_class.is_none() {
         return Err(ObjectError::InvalidArgument(

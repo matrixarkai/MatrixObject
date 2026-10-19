@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixReplicaService {
     pub fn read_chunk_state(&self, page_id: &PageId) -> Result<PageState, ObjectError> {
         self.pages

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
 
     pub fn plan_draining_root_placement_repairs(

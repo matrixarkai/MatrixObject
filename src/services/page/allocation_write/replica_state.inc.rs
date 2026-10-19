@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixChunkService {
     fn replica_active(&self, replica_index: usize) -> bool {
         !self.quarantined_replicas.contains(&replica_index)

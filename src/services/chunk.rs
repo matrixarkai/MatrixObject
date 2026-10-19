@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::*;
 include!("chunk/protocol_receipts.inc.rs");
 include!("chunk/service_state.inc.rs");

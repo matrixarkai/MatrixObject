@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn build_objectstore_module_status(
     readiness: ObjectStoreDistributedReadiness,
     health: ModuleHealthLabels,

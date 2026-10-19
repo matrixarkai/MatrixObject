@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn append_metadata_readiness(mut material: &mut Vec<u8>, report: &ObjectStoreDistributedReadiness) {
     append_u64(&mut material, report.metadata.applied_commit_index);
     append_u64(&mut material, report.metadata.raft_log_commit_index);

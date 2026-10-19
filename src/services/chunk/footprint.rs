@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // What a chunk service holds besides the pages themselves.
 //
 // `ACCOUNTED.byte_buffers` says it is the bytes the store can name, and the

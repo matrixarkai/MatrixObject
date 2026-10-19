@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("retention_lease_coordinator/checkpoint_changefeed.rs");
 include!("retention_lease_coordinator/tombstone_compaction.rs");
 include!("retention_lease_coordinator/snapshot_compaction.rs");

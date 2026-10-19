@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("snapshot_contracts.inc.rs");
 include!("snapshot_encode.inc.rs");
 include!("snapshot_decode.inc.rs");

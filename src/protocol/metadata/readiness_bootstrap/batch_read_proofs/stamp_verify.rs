@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn stamp_object_batch_read_proof(operation: &str, report: &mut ObjectBatchReadReport) {
     report.object_batch_read_proof_format = OBJECT_BATCH_READ_PROOF_FORMAT.to_string();
     report.object_batch_read_proof_checksum = object_batch_read_proof_checksum(operation, report);

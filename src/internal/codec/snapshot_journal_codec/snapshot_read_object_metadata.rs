@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn read_range(cursor: &mut SnapshotByteCursor<'_>) -> Result<DataRange, ObjectError> {
     Ok(DataRange {
         offset: cursor.read_u64()?,

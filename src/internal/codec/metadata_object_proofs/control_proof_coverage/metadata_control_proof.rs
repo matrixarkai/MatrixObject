@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn metadata_control_proof(
     readiness: &MetadataRaftReadiness,
     route_cache: &MetadataRouteCacheStatus,

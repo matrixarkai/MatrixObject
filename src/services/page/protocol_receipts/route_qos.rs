@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkRouteQosConfig {
     pub window_ms: u64,

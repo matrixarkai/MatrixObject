@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 macro_rules! impl_prepared_page_raft_entry_checksum_guard {
     ($ty:ty, $label:literal, $require_method:ident) => {
         impl $ty {

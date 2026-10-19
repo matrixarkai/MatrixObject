@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MetadataReadOptions {
     pub min_read_index: u64,

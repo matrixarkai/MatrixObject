@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn discover_pageserver_endpoints_from_catalog(
         &self,

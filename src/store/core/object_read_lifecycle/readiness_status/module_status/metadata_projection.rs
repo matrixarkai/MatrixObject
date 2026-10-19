@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn populate_metadata_module_status(
     status: &mut ObjectStoreModuleStatus,
     readiness: &ObjectStoreDistributedReadiness,

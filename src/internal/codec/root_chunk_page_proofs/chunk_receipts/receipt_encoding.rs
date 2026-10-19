@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_chunk_write_batch_stats(out: &mut Vec<u8>, stats: &ReplicaWriteBatchStats) {
     append_u64(out, stats.input_ranges);
     append_u64(out, stats.input_bytes);

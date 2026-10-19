@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn prepared_chunk_mutation_qos_config_checksum(
     prepared: &PreparedChunkMutationQosConfig,
 ) -> String {

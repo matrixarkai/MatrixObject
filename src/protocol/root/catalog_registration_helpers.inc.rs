@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn root_catalog_registration_fields(
     service_kind: &str,
     node: &RootNode,

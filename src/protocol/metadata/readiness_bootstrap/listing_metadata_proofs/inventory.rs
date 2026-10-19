@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_object_placement(material: &mut Vec<u8>, placement: &ObjectPlacement) {
     append_object_id(material, &placement.object_id);
     append_u64(material, placement.version);

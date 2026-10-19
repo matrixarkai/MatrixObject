@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixChunkService {
     fn cache_control_replica_indexes(
         &self,

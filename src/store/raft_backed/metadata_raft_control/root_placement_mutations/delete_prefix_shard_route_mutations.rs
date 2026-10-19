@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_delete_objects_by_prefix_with_route_proof_from_meta_shard_fenced(
         &mut self,

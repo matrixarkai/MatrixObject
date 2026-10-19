@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_page_chunk_control_proof(out: &mut Vec<u8>, proof: &ReplicaControlProof) {
     append_u64(out, proof.proof_count);
     append_string(out, &proof.proof_checksum);

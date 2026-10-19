@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     fn replay_persistent_journal(&mut self, journal_path: &str) -> Result<u64, ObjectError> {
         let bytes = match std::fs::read(journal_path) {

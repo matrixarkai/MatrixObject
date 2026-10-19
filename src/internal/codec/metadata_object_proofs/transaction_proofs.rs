@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_metadata_mutation(out: &mut Vec<u8>, mutation: &MetadataMutation) {
     append_string(out, &mutation.key);
     append_string(out, &mutation.value);

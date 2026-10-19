@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_metadata_batch_receipt(out: &mut Vec<u8>, receipt: &MetadataBatchReceipt) {
     append_string(out, &receipt.idempotency_key);
     append_string(out, &receipt.request_checksum);

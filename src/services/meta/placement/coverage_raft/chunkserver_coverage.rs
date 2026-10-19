@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     pub fn replicaserver_coverage(&self, min_free_bytes: u64) -> RootReplicaServerCoverage {
         let mut coverage = RootReplicaServerCoverage {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn append_control_plane_readiness(mut material: &mut Vec<u8>, report: &ObjectStoreDistributedReadiness) {
     append_u64(&mut material, report.root_placement_health.degraded_objects);
     append_u64(

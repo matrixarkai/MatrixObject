@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixReplicaService {
     fn ensure_writable(&mut self) -> Result<(), ObjectError> {
         if !self.accepting_writes {

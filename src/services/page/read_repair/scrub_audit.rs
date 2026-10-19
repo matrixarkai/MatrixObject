@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixChunkService {
     pub fn scrub_chunk_replicas(&mut self, repair: bool) -> Result<ReplicaScrubReport, ObjectError> {
         let mut page_ids = BTreeSet::new();

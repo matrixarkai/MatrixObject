@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ReplicaMutationBatch {
     batch_id: String,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("catalog_root_node.inc.rs");
 include!("catalog_metaserver_discovery.inc.rs");
 include!("catalog_page_discovery.inc.rs");

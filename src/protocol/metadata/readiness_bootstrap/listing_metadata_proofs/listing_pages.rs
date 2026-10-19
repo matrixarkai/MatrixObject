@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_optional_string(material: &mut Vec<u8>, value: &Option<String>) {
     append_u64(material, value.is_some() as u64);
     append_string(material, value.as_deref().unwrap_or_default());

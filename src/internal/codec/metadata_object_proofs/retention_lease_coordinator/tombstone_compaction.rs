@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_metadata_tombstone_compaction_report(
     out: &mut Vec<u8>,
     report: &MetadataTombstoneCompactionReport,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("metadata_records_transactions_snapshot/metadata_record_reads.rs");
 include!("metadata_records_transactions_snapshot/object_changefeed_reads.rs");
 include!("metadata_records_transactions_snapshot/object_changefeed_cursor.rs");

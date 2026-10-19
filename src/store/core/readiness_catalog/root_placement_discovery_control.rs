@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("root_placement_discovery_control/node_readiness.rs");
 include!("root_placement_discovery_control/object_placement.rs");
 include!("root_placement_discovery_control/coordinator_config.rs");

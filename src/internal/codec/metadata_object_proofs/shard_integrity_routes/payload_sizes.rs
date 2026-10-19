@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn metadata_transaction_receipt_payload_bytes(
     receipt: &MetadataTransactionReceipt,
 ) -> u64 {

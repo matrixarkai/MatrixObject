@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl RootCatalogObjectStoreRegistration {
     pub fn catalog_route_checksum(&self) -> String {
         root_catalog_route_checksum(

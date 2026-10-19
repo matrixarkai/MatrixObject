@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixReplicaService {
     pub(crate) fn snapshot_cache_stamp_material(&self) -> String {
         use std::fmt::Write as _;

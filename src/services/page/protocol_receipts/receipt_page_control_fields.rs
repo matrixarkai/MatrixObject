@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn page_receipt_page_common_control_fields(
     receipt_count: u64,
     total_receipt_count: u64,

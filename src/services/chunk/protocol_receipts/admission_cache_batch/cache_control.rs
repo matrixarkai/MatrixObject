@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) type ReplicaReadCacheKey = (PageId, u64, u64);
 pub(crate) type ReplicaReadCacheRangeKey = (u64, u64);
 

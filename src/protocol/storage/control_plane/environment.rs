@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn non_empty_endpoint(endpoint: Option<&str>) -> Option<&str> {
     endpoint.and_then(|value| {
         let trimmed = value.trim();

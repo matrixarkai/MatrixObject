@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     pub fn page_allocator_shard_coverage(&self) -> RootPageAllocatorShardCoverage {
         let mut coverage = RootPageAllocatorShardCoverage {

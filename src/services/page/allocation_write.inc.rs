@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("allocation_write/construction.inc.rs");
 include!("allocation_write/receipt_retention.inc.rs");
 include!("allocation_write/route_qos_config.inc.rs");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl StoreSnapshot {
     fn validate_chunks(&self) -> Result<(), ObjectError> {
         let mut max_chunk_id = 0u64;

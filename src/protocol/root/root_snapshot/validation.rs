@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl RootSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
         if self.next_commit_index == 0 {

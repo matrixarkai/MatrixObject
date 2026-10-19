@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl ReplicaServiceSnapshot {
     fn checksum_material_hash(&self) -> String {
         let mut material = Vec::with_capacity(self.encoded_size_hint());

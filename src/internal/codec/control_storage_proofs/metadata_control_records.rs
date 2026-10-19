@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn coordinator_session_metadata(
     session: &CoordinatorSession,
     content_type: &str,

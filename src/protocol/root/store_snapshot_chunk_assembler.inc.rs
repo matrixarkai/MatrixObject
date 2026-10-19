@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl StoreSnapshotChunkAssembler {
     pub fn install_progress(&self) -> SnapshotInstallProgress {
         snapshot_install_progress(

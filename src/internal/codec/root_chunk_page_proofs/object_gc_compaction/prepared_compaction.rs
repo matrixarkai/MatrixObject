@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn chunk_compaction_request_checksum(
     chunk_id: &ChunkId,
     min_stale_bytes: u64,

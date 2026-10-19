@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn register_meta_coordinator_session_idempotent(
         &mut self,

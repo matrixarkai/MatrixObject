@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn metadata_changes_after(&self, sequence: u64, limit: usize) -> Vec<MetadataChange> {
         self.meta_service.list_changes_after(sequence, limit)

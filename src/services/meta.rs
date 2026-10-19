@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::*;
 include!("meta/service_state.inc.rs");
 include!("meta/records_leases_shards.inc.rs");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Page construction controls are grouped by cluster, I/O, and mutation ownership.
 include!("raft_membership_queries.rs");
 include!("allocation_receipts.rs");

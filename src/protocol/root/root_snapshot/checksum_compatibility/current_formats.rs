@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl RootSnapshot {
     fn v26_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(

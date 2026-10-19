@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn gc_report(&self) -> GcReport {
         self.gc_report_with_discard_budget(0)

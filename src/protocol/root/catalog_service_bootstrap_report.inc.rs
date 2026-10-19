@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl RootServiceBootstrapReport {
     pub fn report_checksum_format(&self) -> &'static str {
         ROOT_SERVICE_BOOTSTRAP_REPORT_FORMAT

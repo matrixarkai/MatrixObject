@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 struct DistributedMetadataReadinessSnapshot {
     metadata_route_cache: MetadataRouteCacheStatus,
     metadata_control_proof: MetadataControlProof,

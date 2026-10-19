@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// Hands back one allocation per distinct piece of key text seen in a decode.
 ///
 /// A snapshot states an object's identity once as the map key and again inside

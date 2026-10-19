@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixChunkService {
     pub fn read_chunk_range_repairing(
         &mut self,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn preferred_production_coordinator_backend() -> &'static str {
     "embedded-raft"
 }

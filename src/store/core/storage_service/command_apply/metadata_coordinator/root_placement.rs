@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     fn apply_root_placement_metadata_command(&mut self, command: ObjectCommand) -> Result<ObjectMetadata, ObjectError> {
         match command {

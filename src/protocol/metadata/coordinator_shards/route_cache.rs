@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataRouteCacheEntry {
     /// Shared, because every key resolving to one shard resolves to the same

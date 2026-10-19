@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("metadata_transactions_membership.rs");
 include!("metadata_checkpoints.rs");
 include!("metadata_changefeed_compaction.rs");

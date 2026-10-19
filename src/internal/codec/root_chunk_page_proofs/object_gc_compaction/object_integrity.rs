@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn etag(data: &[u8]) -> String {
     let mut checksum = String::with_capacity(24);
     checksum.push_str("fnv1a64:");

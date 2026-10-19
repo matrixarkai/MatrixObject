@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixChunkService {
     pub fn partial_reclaim_chunk_replicas(
         &mut self,

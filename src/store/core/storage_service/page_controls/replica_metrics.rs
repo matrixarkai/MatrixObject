@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn quarantined_page_replicas(&self) -> Vec<usize> {
         self.chunk_service.quarantined_replica_indices()

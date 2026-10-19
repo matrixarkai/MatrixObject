@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn read_object_change_record(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ObjectChangeRecord, ObjectError> {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #[derive(Clone, Copy)]
 struct RootSnapshotDecodeFeatures {
     has_leader_lease_receipts: bool,

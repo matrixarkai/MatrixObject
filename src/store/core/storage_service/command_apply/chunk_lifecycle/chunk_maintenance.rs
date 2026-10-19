@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     fn apply_chunk_maintenance_command(&mut self, command: ObjectCommand) -> Result<ObjectMetadata, ObjectError> {
         match command {

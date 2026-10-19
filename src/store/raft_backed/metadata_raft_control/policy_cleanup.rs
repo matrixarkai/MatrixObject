@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("snapshot_compaction_config.rs");
 include!("retention_config_prepare.rs");
 include!("admission_policy_prepare.rs");

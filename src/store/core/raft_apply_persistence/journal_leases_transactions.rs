@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     fn encoded_metadata_mutation_len(mutation: &MetadataMutation) -> usize {
         encoded_string_len(&mutation.key)
