@@ -36978,6 +36978,73 @@ fn a_raft_apply_receipt_is_keyed_on_the_debug_formatting_of_its_command() {
 }
 
 #[test]
+fn no_page_carries_a_redundancy_fragment_while_it_has_peers() {
+    // The data term of the space amplification measures exactly 3.0000 at three
+    // replicas, and the reason is that a redundancy fragment is only kept for a
+    // page with no peers. Nothing asserted it, and the audit could not show it:
+    // `replica.ec_shards.count` incremented once per page whether or not a
+    // fragment existed, so it was a second copy of `replica.chunks` and read
+    // 189 where the fragments held no bytes at all.
+    //
+    // Now that the count counts pages carrying a fragment, the property is
+    // checkable, and it is the one that would have to change for #103 to move
+    // the 3.00x floor.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..40u32 {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+
+    let audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let get = |key: &str| -> u64 {
+        *audit
+            .get(key)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    };
+
+    let replicas = get("block.replicas");
+    let pages = get("replica.chunks");
+    let fragments = get("replica.ec_fragments.count");
+    let fragment_bytes = get("replica.ec_fragments.len");
+    println!(
+        "FRAGMENTS replicas={replicas} pages={pages} carrying_a_fragment={fragments} \
+         fragment_bytes={fragment_bytes}"
+    );
+
+    assert!(replicas > 1, "this asserts a property of pages WITH peers, and there are {replicas} replicas");
+    assert!(pages > 0, "the writes must have produced pages, and there are {pages}");
+    assert_eq!(
+        fragments, 0,
+        "every page has peers at {replicas} replicas, so none should carry a \
+         redundancy fragment, and {fragments} of {pages} do"
+    );
+    assert_eq!(
+        fragment_bytes, 0,
+        "and no fragment bytes should be held, against {fragment_bytes}"
+    );
+
+    // The count must not simply be the page count under another name, which is
+    // what it was: that is why this says anything at all.
+    assert_ne!(
+        fragments, pages,
+        "the fragment count should count fragments, not pages -- it reads {fragments} \
+         against {pages} pages"
+    );
+}
+
+#[test]
 fn a_rejection_names_the_setting_it_rejected() {
     // The storage tiers are a chunk of 64 MiB holding pages of 1 MiB. There is
     // no tier above the chunk, and `StoreOptions` names the two correctly.
