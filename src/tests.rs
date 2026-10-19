@@ -36978,6 +36978,139 @@ fn a_raft_apply_receipt_is_keyed_on_the_debug_formatting_of_its_command() {
 }
 
 #[test]
+fn a_page_with_no_peers_carries_a_redundancy_fragment() {
+    // The companion to `no_page_carries_a_redundancy_fragment_while_it_has_peers`,
+    // and the one that makes it say something.
+    //
+    // That test asserts the count is zero at three replicas. Zero is also what
+    // a feature that never runs would report, so on its own it cannot tell
+    // "fragments are correctly suppressed when a page has peers" from
+    // "fragments are never written at all" -- and the second would mean the
+    // local-redundancy story behind the 3.0000x data term is about code that
+    // does nothing.
+    //
+    // At one replica a page has no peers, so it should carry one.
+    fn fragments(replica_count: usize) -> (u64, u64, u64) {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            replica_count,
+            write_quorum: 1,
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..20u32 {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("prefix/{index:08}/kkkkkkkkkk"),
+                    vec![b'x'; 1024],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        let audit: std::collections::BTreeMap<String, u64> =
+            store.footprint_audit().into_iter().collect();
+        let get = |key: &str| -> u64 {
+            *audit
+                .get(key)
+                .unwrap_or_else(|| panic!("the audit should report {key}"))
+        };
+        (
+            get("replica.chunks"),
+            get("replica.ec_fragments.count"),
+            get("replica.ec_fragments.len"),
+        )
+    }
+
+    let (lone_pages, lone_fragments, lone_bytes) = fragments(1);
+    let (peered_pages, peered_fragments, peered_bytes) = fragments(3);
+    println!(
+        "FRAGMENTSBOTH one_replica pages={lone_pages} fragments={lone_fragments} \
+         bytes={lone_bytes} | three_replicas pages={peered_pages} \
+         fragments={peered_fragments} bytes={peered_bytes}"
+    );
+
+    assert!(lone_pages > 0, "the writes must produce pages at one replica");
+    assert_eq!(
+        peered_fragments, 0,
+        "a page with peers should carry no fragment"
+    );
+    assert_eq!(
+        lone_fragments, lone_pages,
+        "every page without peers should carry a redundancy fragment, and \
+         {lone_fragments} of {lone_pages} do. If this is 0 the feature never \
+         runs, and the local-redundancy account of why the data term is exactly \
+         3.0000 at three replicas is about code that does nothing."
+    );
+    assert!(
+        lone_bytes > 0,
+        "and those fragments should hold bytes, against {lone_bytes}"
+    );
+    assert_eq!(peered_bytes, 0, "while peered pages hold none");
+
+    // What the fragment COSTS is not a constant, and the obvious guess is
+    // wrong. `chunk_ec_fragment_count` is `clamp(len / 8192, 2, 16)`, so a page
+    // is split into between 2 and 16 data fragments and the redundancy fragment
+    // is one more -- an overhead of 1/N, which falls as the page fills.
+    //
+    // At 20 KiB of page the split is the minimum 2, so the fragment is half the
+    // data and a single replica costs 1.5x. That is the WORST case, not the
+    // figure: a page past 128 KiB splits 16 ways and the overhead is 6.25%.
+    fn lone_overhead(objects: u32, size: usize) -> (u64, u64) {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            replica_count: 1,
+            write_quorum: 1,
+            volume_count: 1,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("prefix/{index:08}/kkkkkkkkkk"),
+                    vec![b'x'; size],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        let audit: std::collections::BTreeMap<String, u64> =
+            store.footprint_audit().into_iter().collect();
+        let get = |key: &str| -> u64 {
+            *audit
+                .get(key)
+                .unwrap_or_else(|| panic!("the audit should report {key}"))
+        };
+        (get("replica.data.len"), get("replica.ec_fragments.len"))
+    }
+
+    let (small_data, small_fragment) = lone_overhead(20, 1024);
+    let (large_data, large_fragment) = lone_overhead(200, 1024);
+    println!(
+        "FRAGMENTCOST small data={small_data} fragment={small_fragment} | \
+         large data={large_data} fragment={large_fragment}"
+    );
+
+    assert!(small_fragment > 0 && large_fragment > 0, "both pages should carry one");
+    // The small page takes the minimum split, so the fragment is half its data.
+    assert_eq!(
+        small_fragment * 2,
+        small_data,
+        "a page at the minimum split pays 1/2 of its data: {small_fragment} \
+         against {small_data}"
+    );
+    // The larger page splits further, so the overhead is a smaller share --
+    // which is the point: 1.5x is the worst case and not the cost.
+    assert!(
+        large_fragment * 2 < large_data,
+        "a fuller page should split further and pay a smaller share than half: \
+         {large_fragment} against {large_data}"
+    );
+}
+
+#[test]
 fn no_page_carries_a_redundancy_fragment_while_it_has_peers() {
     // The data term of the space amplification measures exactly 3.0000 at three
     // replicas, and the reason is that a redundancy fragment is only kept for a
