@@ -352,6 +352,98 @@ that case at 1,024 records — the object change feed when no cursor is
 registered, the metadata change log when no checkpoint is. A consumer that
 registers later and asks for a trimmed prefix is told to resync, which is the
 read path's existing contract after any compaction.
+## Reaching the store over a network
+
+Every way into the store used to be an in-process call, so a store was only ever as shared as the
+process holding it. `--features http-server` adds an HTTP front door and a binary that serves it.
+
+```
+MATRIXOBJECT_SNAPSHOT_PATH=/var/lib/matrixobject/store.snapshot \
+MATRIXOBJECT_BUCKET=mybucket \
+cargo run --release --features http-server --bin object_server
+```
+
+| variable | default | meaning |
+|---|---|---|
+| `MATRIXOBJECT_HTTP_ADDR` | `127.0.0.1:17200` | address to bind |
+| `MATRIXOBJECT_BUCKET` | `default` | bucket created at startup, idempotently |
+| `MATRIXOBJECT_SNAPSHOT_PATH` | *(unset)* | durable snapshot file; **in memory when unset** |
+| `MATRIXOBJECT_MAX_BODY_BYTES` | 64 MiB | largest object this door accepts |
+| `MATRIXOBJECT_THREADS` | 4 | accept threads |
+
+The verbs, where `{bucket}` is the first path segment and `{key}` is everything after it:
+
+| request | does |
+|---|---|
+| `PUT /{bucket}/{key}` | write an object; honours `If-None-Match: *` and `If-Match: "etag"` |
+| `GET /{bucket}/{key}` | read it; honours `Range: bytes=` and `If-None-Match` |
+| `HEAD /{bucket}/{key}` | its headers, and the length the matching `GET` would send |
+| `DELETE /{bucket}/{key}` | remove it; idempotent, so a retried delete answers 204 |
+| `PUT /{bucket}` | create the bucket, idempotently |
+| `GET /{bucket}?prefix=&marker=&max-keys=` | newline-delimited keys |
+| `GET /healthz` | readiness, which takes the store lock rather than only reporting the listener |
+
+A write answers the object's `ETag`, `Content-Type`, `Last-Modified`, its version and length, and
+any `x-amz-meta-*` headers it was given back again. A listing says whether it was truncated and,
+if it was, the marker to continue from -- a client cannot tell a full page from a truncated one by
+counting.
+
+### Three things to know before putting data in it
+
+**It is unauthenticated.** No signing, no token, no TLS. Anything that can open a socket to the
+port can read, overwrite and delete every object. That is why the default bind is loopback; moving
+it off loopback puts the whole store behind whatever else protects that network. The binary says so
+on startup when the address is not loopback.
+
+**Without a snapshot path nothing survives the process.** The default store is entirely in memory.
+The startup line always reports which of the two you have -- `snapshot=none` included -- so it is
+visible then rather than at the next restart.
+
+**Requests are serialised.** The store keeps interior mutability for its caches and durable stamps,
+so it is `Send` but not `Sync`: it can move between threads but cannot be shared by them, and the
+server holds it behind one lock. Extra accept threads stop a slow client stalling others; they do
+not add parallelism. This door exists so data can reach the store from another machine, not so it
+can reach it faster.
+
+### What it is not
+
+Not an S3-compatible endpoint. The bucket and key come from the path, the conditional headers are
+the ones the store enforces internally, and user metadata travels as `x-amz-meta-*` -- but there is
+no request signing, no multipart upload, no versioning or tagging verb, and a listing answers
+`text/plain` keys rather than the XML body an S3 client parses. Anything a caller might reasonably
+expect and not get answers a status rather than a plausible-looking wrong answer: `chunked` framing
+is refused with 501 rather than read as a body of the wrong length, a `PUT` with no
+`Content-Length` is refused with 411 rather than stored as empty, and a multi-range request falls
+back to the whole object rather than returning one range under a 206 that claims to be all of it.
+
+There is also no deduplicating write. An earlier sketch of this surface answered a write whose
+bytes were already stored with `208 Already Reported`; that is not implementable here, because an
+object's `etag` is derived from its identity -- bucket, key, version, length, content type -- and
+not from a hash of its content. Comparing etags cannot tell the same bytes from the same shape, and
+the honest alternative would read the stored object back on every write. What the surface does
+support is the store's real conditional writes, applied inside the mutation the store guards rather
+than checked out here and then written.
+
+### Embedding it
+
+```rust
+use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
+
+let store = std::sync::Arc::new(std::sync::Mutex::new(store));
+let server = ObjectHttpServer::bind("127.0.0.1:17200", store, ServerOptions::default())?;
+let handle = server.spawn()?;          // returns at once; `local_addr` reports the bound port
+// ... later ...
+handle.shutdown();                     // stops the accept loops and waits for them
+```
+
+The listener is non-blocking so the accept loops can be stopped, which is what makes the server
+usable as a component and testable in-process; the cost is one poll per idle interval.
+
+It adds **no dependencies**. The HTTP reading and writing is written on the standard library
+alone -- see the comment at the top of `src/net/http.rs` for why that is a deliberate constraint
+for a crate that other people's data sits inside, and for the list of framings it refuses rather
+than guesses at.
+
 ## Building
 
 ```
