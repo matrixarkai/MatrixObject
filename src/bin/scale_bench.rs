@@ -25,12 +25,46 @@ static ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
 static FREED_BYTES: AtomicU64 = AtomicU64::new(0);
 static LIVE_PEAK_BYTES: AtomicU64 = AtomicU64::new(0);
 
+/// The largest single allocation, and a count per power-of-four size class.
+///
+/// The total alone cannot tell one store-sized clone from a thousand small
+/// copies. Per-put churn measures 512 bytes for every object already stored,
+/// per replica, while the allocation COUNT stays at 105 whatever the store
+/// holds -- so the same allocations are growing, and the watermark says whether
+/// one of them is the whole term.
+static LARGEST_ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+static ALLOC_CLASS_COUNT: [AtomicU64; 12] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+static ALLOC_CLASS_BYTES: [AtomicU64; 12] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+
+/// Which power-of-four class a size falls in: 0 is <4 B, 11 is >=4 MiB.
+fn alloc_size_class(size: u64) -> usize {
+    let mut class = 0usize;
+    let mut bound = 4u64;
+    while class < 11 && size >= bound {
+        class += 1;
+        bound = bound.saturating_mul(4);
+    }
+    class
+}
+
 struct CountingAllocator;
 
 impl CountingAllocator {
     fn record(size: u64) {
         ALLOC_BYTES.fetch_add(size, Ordering::Relaxed);
         ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        record_max(&LARGEST_ALLOC_BYTES, size);
+        let class = alloc_size_class(size);
+        ALLOC_CLASS_COUNT[class].fetch_add(1, Ordering::Relaxed);
+        ALLOC_CLASS_BYTES[class].fetch_add(size, Ordering::Relaxed);
         let live = ALLOC_BYTES
             .load(Ordering::Relaxed)
             .saturating_sub(FREED_BYTES.load(Ordering::Relaxed));
@@ -4538,6 +4572,20 @@ fn run() -> Result<(), ObjectError> {
         "alloc.live_peak_bytes={}",
         LIVE_PEAK_BYTES.load(Ordering::Relaxed)
     );
+    println!(
+        "alloc.largest_bytes={}",
+        LARGEST_ALLOC_BYTES.load(Ordering::Relaxed)
+    );
+    for class in 0..12 {
+        let count = ALLOC_CLASS_COUNT[class].load(Ordering::Relaxed);
+        if count == 0 {
+            continue;
+        }
+        let bytes = ALLOC_CLASS_BYTES[class].load(Ordering::Relaxed);
+        let upper = 4u64.saturating_pow(class as u32 + 1);
+        println!("alloc.class_under_{upper}.count={count}");
+        println!("alloc.class_under_{upper}.bytes={bytes}");
+    }
     println!("put_ops={}", put_phase.ops);
     println!("put_allocs={}", put_phase.allocs);
     println!("put_alloc_bytes={}", put_phase.alloc_bytes);
