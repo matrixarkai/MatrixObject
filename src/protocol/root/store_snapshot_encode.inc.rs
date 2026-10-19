@@ -123,12 +123,12 @@ impl StoreSnapshot {
         }
         append_u64(&mut out, self.chunks.len() as u64);
         for (chunk_id, chunk) in &self.chunks {
-            append_slab_id(&mut out, chunk_id);
+            append_chunk_id(&mut out, chunk_id);
             append_chunk_info(&mut out, chunk);
         }
         append_u64(&mut out, self.payloads.len() as u64);
         for ((chunk_id, offset), payload) in &self.payloads {
-            append_slab_id(&mut out, chunk_id);
+            append_chunk_id(&mut out, chunk_id);
             append_u64(&mut out, *offset);
             append_u64(&mut out, payload.len() as u64);
             out.extend_from_slice(payload);

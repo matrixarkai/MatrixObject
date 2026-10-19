@@ -2,7 +2,7 @@ pub(crate) fn read_page_write_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ChunkWriteReceipt, ObjectError> {
     Ok(ChunkWriteReceipt {
-        chunk_id: read_slab_id(cursor)?,
+        chunk_id: read_chunk_id(cursor)?,
         offset: cursor.read_u64()?,
         length: cursor.read_u64()?,
         request_checksum: cursor.read_string()?,
@@ -29,7 +29,7 @@ pub(crate) fn read_page_discard_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ChunkDiscardReceipt, ObjectError> {
     Ok(ChunkDiscardReceipt {
-        chunk_id: read_slab_id(cursor)?,
+        chunk_id: read_chunk_id(cursor)?,
         offset: cursor.read_u64()?,
         length: cursor.read_u64()?,
         request_checksum: cursor.read_string()?,

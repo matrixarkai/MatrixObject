@@ -1,5 +1,5 @@
 pub(crate) fn append_chunk_reclaim_candidate(out: &mut Vec<u8>, candidate: &ReplicaReclaimCandidate) {
-    append_chunk_id(out, &candidate.page_id);
+    append_page_id(out, &candidate.page_id);
     append_u64(out, candidate.logical_length);
     append_u64(out, candidate.discarded_bytes);
     append_u64(out, candidate.discarded_range_count);
@@ -15,11 +15,11 @@ pub(crate) fn chunk_reclaim_plan_checksum(plan: &ReplicaReclaimPlan) -> String {
     append_string(&mut material, "MOS-RUST-CHUNK-RECLAIM-PLAN3");
     append_u64(&mut material, plan.marker.is_some() as u64);
     if let Some(marker) = &plan.marker {
-        append_chunk_id(&mut material, marker);
+        append_page_id(&mut material, marker);
     }
     append_u64(&mut material, plan.next_marker.is_some() as u64);
     if let Some(next_marker) = &plan.next_marker {
-        append_chunk_id(&mut material, next_marker);
+        append_page_id(&mut material, next_marker);
     }
     append_u64(&mut material, plan.continuation_safe as u64);
     append_u64(&mut material, plan.next_marker_advanced as u64);

@@ -46,7 +46,7 @@ pub(crate) fn append_prepared_storage_maintenance_envelope(
     append_u64(out, envelope.first_replica_index.unwrap_or_default() as u64);
     append_u64(out, envelope.first_chunk_id.is_some() as u64);
     if let Some(page_id) = &envelope.first_chunk_id {
-        append_chunk_id(out, page_id);
+        append_page_id(out, page_id);
     }
     append_u64(out, envelope.first_estimated_bytes);
 }

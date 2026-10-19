@@ -40,7 +40,7 @@ pub(crate) fn append_prepared_chunk_reclaim_envelope(
     append_u64(out, envelope.next_marker_advanced as u64);
     append_u64(out, envelope.first_reclaim_chunk_id.is_some() as u64);
     if let Some(page_id) = &envelope.first_reclaim_chunk_id {
-        append_chunk_id(out, page_id);
+        append_page_id(out, page_id);
     }
     append_u64(out, envelope.first_reclaim_discarded_bytes);
     append_u64(out, envelope.first_reclaim_discard_ratio_ppm);

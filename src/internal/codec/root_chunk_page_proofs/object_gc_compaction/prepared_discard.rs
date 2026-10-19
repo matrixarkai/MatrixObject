@@ -1,7 +1,7 @@
 pub(crate) fn prepared_chunk_discard_checksum(prepared: &PreparedChunkDiscard) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-PREPARED-SEGMENT-DISCARD1");
-    append_slab_id(&mut material, &prepared.chunk_id);
+    append_chunk_id(&mut material, &prepared.chunk_id);
     append_u64(&mut material, prepared.discard_bytes);
     append_u64(&mut material, prepared.expected_previous_commit_index);
     append_u64(&mut material, prepared.prepared_commit_index);
@@ -30,7 +30,7 @@ pub(crate) fn append_prepared_chunk_discard_envelope(
     envelope: &PreparedChunkDiscardEnvelope,
 ) {
     append_string(out, &envelope.envelope_format);
-    append_slab_id(out, &envelope.chunk_id);
+    append_chunk_id(out, &envelope.chunk_id);
     append_u64(out, envelope.range_count);
     append_u64(out, envelope.discard_bytes);
     append_u64(out, envelope.source_stale_range_count);

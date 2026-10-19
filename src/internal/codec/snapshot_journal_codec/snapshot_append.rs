@@ -108,13 +108,13 @@ pub(crate) fn append_object_metadata_identity(out: &mut Vec<u8>, metadata: &Obje
     append_string_map(out, &metadata.tags);
     append_u64(out, metadata.extents.len() as u64);
     for extent in &metadata.extents {
-        append_slab_id(out, &extent.chunk_id);
+        append_chunk_id(out, &extent.chunk_id);
         append_u64(out, extent.offset);
         append_u64(out, extent.length);
     }
 }
 
-pub(crate) fn append_slab_id(out: &mut Vec<u8>, chunk_id: &ChunkId) {
+pub(crate) fn append_chunk_id(out: &mut Vec<u8>, chunk_id: &ChunkId) {
     append_u64(out, chunk_id.volume_id);
     append_u64(out, chunk_id.id);
 }
@@ -141,7 +141,7 @@ pub(crate) fn append_metadata(out: &mut Vec<u8>, metadata: &ObjectMetadata) {
     append_u64(out, metadata.deleted as u64);
     append_u64(out, metadata.extents.len() as u64);
     for extent in &metadata.extents {
-        append_slab_id(out, &extent.chunk_id);
+        append_chunk_id(out, &extent.chunk_id);
         append_u64(out, extent.offset);
         append_u64(out, extent.length);
     }
@@ -255,7 +255,7 @@ pub(crate) fn raft_membership_receipt_page_proof_checksum(
 }
 
 pub(crate) fn append_chunk_info(out: &mut Vec<u8>, chunk: &ChunkInfo) {
-    append_slab_id(out, &chunk.chunk_id);
+    append_chunk_id(out, &chunk.chunk_id);
     append_u64(out, chunk.logical_bytes);
     append_u64(out, chunk.live_bytes);
     append_u64(out, chunk.stale_bytes);

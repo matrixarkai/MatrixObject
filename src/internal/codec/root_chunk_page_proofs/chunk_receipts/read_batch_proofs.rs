@@ -21,7 +21,7 @@ pub(crate) fn chunk_head_batch_read_proof_checksum(
     append_string(&mut material, &proof.control_kind);
     append_string(&mut material, &proof.control_checksum);
     for (page_id, head) in page_ids.iter().zip(heads.iter()) {
-        append_chunk_id(&mut material, page_id);
+        append_page_id(&mut material, page_id);
         append_u64(&mut material, head.logical_length);
         append_u64(&mut material, head.write_sequence);
         append_string(&mut material, &head.checksum);
@@ -42,7 +42,7 @@ pub(crate) fn chunk_read_batch_read_proof_checksum(
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, CHUNK_READ_BATCH_PROOF_FORMAT);
-    append_chunk_id(&mut material, page_id);
+    append_page_id(&mut material, page_id);
     append_u64(&mut material, ranges.len() as u64);
     append_u64(&mut material, stats.input_ranges);
     append_u64(&mut material, stats.input_bytes);

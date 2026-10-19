@@ -136,7 +136,7 @@ pub(crate) fn chunk_batch_write_receipt_proof_checksum(receipt: &ReplicaBatchWri
             + chunk_write_batch_stats_encoded_len(),
     );
     append_string(&mut material, "MXOS-CHUNK-WRITE-BATCH-PROOF1");
-    append_chunk_id(&mut material, &receipt.page_id);
+    append_page_id(&mut material, &receipt.page_id);
     append_string(&mut material, &receipt.request_checksum);
     append_string(&mut material, &receipt.payload_checksum);
     append_string(&mut material, &receipt.idempotency_key);
@@ -155,7 +155,7 @@ pub(crate) fn chunk_batch_discard_receipt_proof_checksum(
             + chunk_discard_batch_stats_encoded_len(),
     );
     append_string(&mut material, "MXOS-CHUNK-DISCARD-BATCH-PROOF1");
-    append_chunk_id(&mut material, &receipt.page_id);
+    append_page_id(&mut material, &receipt.page_id);
     append_string(&mut material, &receipt.request_checksum);
     append_string(&mut material, &receipt.idempotency_key);
     append_chunk_discard_batch_stats(&mut material, &receipt.stats);

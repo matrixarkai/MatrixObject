@@ -5,7 +5,7 @@ pub(crate) fn append_prepared_page_audit_repair_envelope(
     append_string(out, &envelope.envelope_format);
     append_u64(out, envelope.after_chunk_id.is_some() as u64);
     if let Some(page_id) = &envelope.after_chunk_id {
-        append_chunk_id(out, page_id);
+        append_page_id(out, page_id);
     }
     append_u64(out, envelope.max_chunks);
     append_u64(out, envelope.max_payload_bytes);
@@ -40,7 +40,7 @@ pub(crate) fn append_prepared_page_audit_repair_envelope(
     append_string(out, &envelope.repair_reason);
     append_u64(out, envelope.first_candidate_chunk_id.is_some() as u64);
     if let Some(page_id) = &envelope.first_candidate_chunk_id {
-        append_chunk_id(out, page_id);
+        append_page_id(out, page_id);
     }
     append_u64(out, envelope.first_candidate_replica_index.is_some() as u64);
     append_u64(

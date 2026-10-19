@@ -96,7 +96,7 @@ impl ChunkServiceSnapshot {
         for (allocation_id, allocation) in &self.pending_allocations {
             append_string(&mut out, allocation_id);
             append_string(&mut out, &allocation.allocation_id);
-            append_slab_id(&mut out, &allocation.chunk_id);
+            append_chunk_id(&mut out, &allocation.chunk_id);
             append_u64(&mut out, allocation.offset);
             append_u64(&mut out, allocation.length);
             append_u64(&mut out, allocation.create_time_ms);
@@ -105,7 +105,7 @@ impl ChunkServiceSnapshot {
         for (idempotency_key, allocation) in &self.allocation_request_receipts {
             append_string(&mut out, idempotency_key);
             append_string(&mut out, &allocation.allocation_id);
-            append_slab_id(&mut out, &allocation.chunk_id);
+            append_chunk_id(&mut out, &allocation.chunk_id);
             append_u64(&mut out, allocation.offset);
             append_u64(&mut out, allocation.length);
             append_u64(&mut out, allocation.create_time_ms);
@@ -119,7 +119,7 @@ impl ChunkServiceSnapshot {
             append_u64(&mut out, allocations.len() as u64);
             for allocation in allocations {
                 append_string(&mut out, &allocation.allocation_id);
-                append_slab_id(&mut out, &allocation.chunk_id);
+                append_chunk_id(&mut out, &allocation.chunk_id);
                 append_u64(&mut out, allocation.offset);
                 append_u64(&mut out, allocation.length);
                 append_u64(&mut out, allocation.create_time_ms);
@@ -132,7 +132,7 @@ impl ChunkServiceSnapshot {
         for (idempotency_key, allocation) in &self.release_allocation_request_receipts {
             append_string(&mut out, idempotency_key);
             append_string(&mut out, &allocation.allocation_id);
-            append_slab_id(&mut out, &allocation.chunk_id);
+            append_chunk_id(&mut out, &allocation.chunk_id);
             append_u64(&mut out, allocation.offset);
             append_u64(&mut out, allocation.length);
             append_u64(&mut out, allocation.create_time_ms);
@@ -175,7 +175,7 @@ impl ChunkServiceSnapshot {
         append_page_route_qos_state(&mut out, &self.route_qos_state);
         append_u64(&mut out, self.sealed_chunks.len() as u64);
         for chunk in &self.sealed_chunks {
-            append_slab_id(&mut out, chunk);
+            append_chunk_id(&mut out, chunk);
         }
         append_u64(&mut out, self.cumulative_quorum_write_degraded_chunks);
         append_u64(&mut out, self.cumulative_quorum_read_degraded_chunks);

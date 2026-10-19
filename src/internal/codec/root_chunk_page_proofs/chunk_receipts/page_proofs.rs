@@ -20,7 +20,7 @@ pub(crate) fn append_chunk_receipt_page_common(
     }
     append_u64(material, page_id.is_some() as u64);
     if let Some(page_id) = page_id {
-        append_chunk_id(material, page_id);
+        append_page_id(material, page_id);
     }
     append_u64(material, skipped_chunk_count);
 }

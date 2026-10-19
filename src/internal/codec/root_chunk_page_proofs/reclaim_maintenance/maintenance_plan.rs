@@ -9,7 +9,7 @@ pub(crate) fn append_storage_maintenance_action(
     append_u64(out, action.replica_index.unwrap_or_default() as u64);
     append_u64(out, action.page_id.is_some() as u64);
     if let Some(page_id) = &action.page_id {
-        append_chunk_id(out, page_id);
+        append_page_id(out, page_id);
     }
     append_u64(out, action.estimated_bytes);
 }
@@ -50,7 +50,7 @@ pub(crate) fn storage_maintenance_plan_checksum(plan: &StorageMaintenancePlan) -
     append_page_replica_reclaim_plan(&mut material, &plan.reclaim);
     append_u64(&mut material, plan.chunk_discards.len() as u64);
     for discard in &plan.chunk_discards {
-        append_slab_id(&mut material, &discard.chunk_id);
+        append_chunk_id(&mut material, &discard.chunk_id);
         append_u64(&mut material, discard.discard_bytes);
         append_u64(&mut material, discard.fragmented as u64);
         append_u64(&mut material, discard.compact_instead as u64);

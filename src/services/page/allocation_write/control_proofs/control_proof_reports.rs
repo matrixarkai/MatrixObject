@@ -38,7 +38,7 @@ impl MatrixChunkService {
         append_u64(&mut material, self.receipt_retention as u64);
         append_u64(&mut material, self.sealed_chunks.len() as u64);
         for chunk in &self.sealed_chunks {
-            append_slab_id(&mut material, chunk);
+            append_chunk_id(&mut material, chunk);
         }
         append_u64(
             &mut material,

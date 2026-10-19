@@ -28,7 +28,7 @@ pub(crate) fn append_bounded_repair_report(out: &mut Vec<u8>, report: &BoundedRe
 pub(crate) fn append_chunk_repair_report(out: &mut Vec<u8>, report: &ReplicaRepairReport) {
     append_u64(out, report.page_id.is_some() as u64);
     if let Some(page_id) = &report.page_id {
-        append_chunk_id(out, page_id);
+        append_page_id(out, page_id);
     }
     append_u64(out, report.checked_chunks);
     append_u64(out, report.healthy_chunks);
@@ -59,11 +59,11 @@ pub(crate) fn append_prepared_page_repair_envelope(
     append_string(out, &envelope.operation);
     append_u64(out, envelope.chunk_id.is_some() as u64);
     if let Some(chunk_id) = &envelope.chunk_id {
-        append_slab_id(out, chunk_id);
+        append_chunk_id(out, chunk_id);
     }
     append_u64(out, envelope.page_id.is_some() as u64);
     if let Some(page_id) = &envelope.page_id {
-        append_chunk_id(out, page_id);
+        append_page_id(out, page_id);
     }
     append_u64(out, envelope.offset);
     append_u64(out, envelope.length);

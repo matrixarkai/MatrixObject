@@ -5,7 +5,7 @@ pub(crate) fn chunk_compaction_request_checksum(
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-SEGMENT-COMPACTION-REQUEST1");
-    append_slab_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, chunk_id);
     append_u64(&mut material, min_stale_bytes);
     append_u64(&mut material, update_time_ms);
     etag(&material)
@@ -14,7 +14,7 @@ pub(crate) fn chunk_compaction_request_checksum(
 pub(crate) fn prepared_chunk_compaction_checksum(prepared: &PreparedChunkCompaction) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-PREPARED-SEGMENT-COMPACTION3");
-    append_slab_id(&mut material, &prepared.chunk_id);
+    append_chunk_id(&mut material, &prepared.chunk_id);
     append_u64(&mut material, prepared.min_stale_bytes);
     append_u64(&mut material, prepared.update_time_ms);
     append_u64(&mut material, prepared.expected_previous_commit_index);
@@ -48,7 +48,7 @@ pub(crate) fn append_prepared_chunk_compaction_envelope(
     envelope: &PreparedChunkCompactionEnvelope,
 ) {
     append_string(out, &envelope.envelope_format);
-    append_slab_id(out, &envelope.chunk_id);
+    append_chunk_id(out, &envelope.chunk_id);
     append_u64(out, envelope.min_stale_bytes);
     append_u64(out, envelope.update_time_ms);
     append_u64(out, envelope.live_object_count);

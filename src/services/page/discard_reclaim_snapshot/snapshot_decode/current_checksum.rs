@@ -27,7 +27,7 @@ impl ChunkServiceSnapshot {
         for (allocation_id, allocation) in &self.pending_allocations {
             append_string(&mut material, allocation_id);
             append_string(&mut material, &allocation.allocation_id);
-            append_slab_id(&mut material, &allocation.chunk_id);
+            append_chunk_id(&mut material, &allocation.chunk_id);
             append_u64(&mut material, allocation.offset);
             append_u64(&mut material, allocation.length);
             append_u64(&mut material, allocation.create_time_ms);
@@ -36,7 +36,7 @@ impl ChunkServiceSnapshot {
         for (idempotency_key, allocation) in &self.allocation_request_receipts {
             append_string(&mut material, idempotency_key);
             append_string(&mut material, &allocation.allocation_id);
-            append_slab_id(&mut material, &allocation.chunk_id);
+            append_chunk_id(&mut material, &allocation.chunk_id);
             append_u64(&mut material, allocation.offset);
             append_u64(&mut material, allocation.length);
             append_u64(&mut material, allocation.create_time_ms);
@@ -59,7 +59,7 @@ impl ChunkServiceSnapshot {
         for (idempotency_key, allocation) in &self.release_allocation_request_receipts {
             append_string(&mut material, idempotency_key);
             append_string(&mut material, &allocation.allocation_id);
-            append_slab_id(&mut material, &allocation.chunk_id);
+            append_chunk_id(&mut material, &allocation.chunk_id);
             append_u64(&mut material, allocation.offset);
             append_u64(&mut material, allocation.length);
             append_u64(&mut material, allocation.create_time_ms);
@@ -110,7 +110,7 @@ impl ChunkServiceSnapshot {
         append_page_route_qos_state(&mut material, &route_qos_state);
         append_u64(&mut material, self.sealed_chunks.len() as u64);
         for chunk in &self.sealed_chunks {
-            append_slab_id(&mut material, chunk);
+            append_chunk_id(&mut material, chunk);
         }
         append_u64(&mut material, self.cumulative_quorum_write_degraded_chunks);
         append_u64(&mut material, self.cumulative_quorum_read_degraded_chunks);

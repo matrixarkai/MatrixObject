@@ -82,7 +82,7 @@ pub(crate) fn append_prepared_page_allocation_reservation_envelope(
     append_string(out, &envelope.expected_route_control_checksum);
     append_string(out, &envelope.raft_entry_checksum);
     append_string(out, &envelope.allocation_id);
-    append_slab_id(out, &envelope.allocation_chunk_id);
+    append_chunk_id(out, &envelope.allocation_chunk_id);
     append_u64(out, envelope.allocation_offset);
     append_u64(out, envelope.allocation_length);
     append_u64(out, envelope.allocation_create_time_ms);
