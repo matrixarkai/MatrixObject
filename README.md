@@ -89,10 +89,10 @@ in both directions: a renamed constant fails it, and so does a new one.
 `footprint_audit()` returns two totals, and the difference between them is the
 whole point:
 
-- **`byte_buffers`** is payload buffers, replica data, shards and checksums. An
-  amplification derived from it alone is **data-only**, because everything else
-  the store holds used to be reported as an entry count and never converted to
-  bytes.
+- **`byte_buffers`** is payload buffers, replica data, redundancy fragments and
+  checksums. An amplification derived from it alone is **data-only**, because
+  everything else the store holds used to be reported as an entry count and
+  never converted to bytes.
 - **`total_bytes`** adds the metadata the store keeps to describe that data, and
   is the one to divide by `logical.written`.
 
@@ -110,6 +110,23 @@ Reproduce any row with the measurement harness:
 MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib \
   measure_the_metadata_footprint -- --ignored --nocapture
 ```
+
+**Lowering `replica_count` does not reach 1.0x.** A page with no peers keeps a
+redundancy fragment so that a partial corruption is still recoverable from the
+single copy it has, and a page with peers does not — which is why the data term
+above is exactly 3.00 rather than something above it. Measured at one replica:
+
+| bytes in the page | fragment | split | overhead |
+|---:|---:|---:|---:|
+| 20,480 | 10,240 | 2 | 50% |
+| 204,800 | 12,800 | 16 | **6.25%** |
+
+The split is `clamp(bytes / 8192, 2, 16)` and the fragment is one more piece, so
+the overhead is 1/N and falls as a page fills: **a single replica costs 1.5x for
+a nearly empty page and 1.0625x past 128 KiB.**
+`a_page_with_no_peers_carries_a_redundancy_fragment` asserts both rows, and
+`no_page_carries_a_redundancy_fragment_while_it_has_peers` asserts the
+suppression that makes the 3.00 exact.
 
 ### Metadata is per object, and the per-object figure depends on how many there are
 
