@@ -34028,7 +34028,7 @@ fn measure_how_much_of_the_metadata_projection_is_recomputable() {
     // What a recomputing projection would stop holding, against the two
     // denominators that matter: its own leg, and all metadata.
     println!(
-        "PROJECTION recoverable={} of_leg={:.1}% of_all_metadata={:.1}% per_object={}",
+        "PROJECTION recoverable={} of_leg={:.1}% of_THIS_stores_metadata={:.1}% per_object={}",
         exact.1,
         100.0 * exact.1 as f64 / leg as f64,
         100.0 * exact.1 as f64 / metadata as f64,
@@ -34037,6 +34037,93 @@ fn measure_how_much_of_the_metadata_projection_is_recomputable() {
     println!(
         "PROJECTION leg={leg} all_metadata={metadata} value_share_of_leg={:.1}%",
         100.0 * total_value_bytes as f64 / leg as f64
+    );
+
+    // `of_all_metadata` above is a figure about a store of THIS size, not about
+    // the design, because metadata holds capped legs that stop growing. The
+    // share therefore rises with the object count while the per-object cost
+    // stays flat -- 24.9% at 200 objects and 33.0% at 8,000 -- so a single
+    // count reports whichever answer its denominator happened to give.
+    //
+    // The honest denominator is the SLOPE. Two counts determine the line, and
+    // the fixed part is then named rather than amortised into a per-object
+    // figure that is not one.
+    // Returns the metadata total and the sum of the legs that are CAPPED, so
+    // the caller can check the condition that makes a slope asymptotic rather
+    // than inferring it.
+    fn metadata_total_at(objects: u64) -> (u64, u64) {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("prefix/{index:08}/kkkkkkkkkk"),
+                    vec![b'x'; 1024],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        let audit: std::collections::BTreeMap<String, u64> =
+            store.footprint_audit().into_iter().collect();
+        let at = |k: &str| -> u64 {
+            *audit
+                .get(k)
+                .unwrap_or_else(|| panic!("the audit should report {k}"))
+        };
+        (
+            at("ACCOUNTED.metadata_bytes"),
+            at("object_changes.bytes").saturating_add(at("meta.change_log.bytes")),
+        )
+    }
+    // A two-point fit over 200..800 reports a slope of 910 B/object and an
+    // intercept of 398 B; over 2,000..8,000 the same code reports 661 B/object
+    // and 207,246 B. Neither is wrong arithmetic -- the line is PIECEWISE,
+    // because the capped legs are still growing below roughly a thousand
+    // objects, and a fit straddling the bend returns the bend's chord.
+    //
+    // Comparing adjacent intervals does NOT catch this, and that was worth
+    // finding out: the capped legs grow LINEARLY until they hit their cap, so
+    // three probes below the kink are collinear and agree to 0.0%. Local
+    // linearity is not evidence of having cleared a cap.
+    //
+    // So check the condition itself. The slope is the asymptotic one exactly
+    // when the capped legs have stopped moving, which is a thing to compare
+    // rather than infer.
+    let low = objects.max(2);
+    let mid = low.saturating_mul(2);
+    let high = low.saturating_mul(4);
+    let (m_mid, capped_mid) = metadata_total_at(mid);
+    let (m_high, capped_high) = metadata_total_at(high);
+    let slope = (m_high.saturating_sub(m_mid)) as f64 / (high - mid) as f64;
+    let intercept = m_high as f64 - slope * high as f64;
+    let saturated = capped_mid == capped_high;
+    println!(
+        "PROJECTION capped_legs at {mid}={capped_mid} at {high}={capped_high} saturated={saturated}"
+    );
+    if !saturated {
+        println!(
+            "PROJECTION *** the capped legs are still growing between {mid} and {high} objects, so the slope below is this range's chord and not the design's per-object cost. Raise MEASURE_OBJECTS."
+        );
+    }
+    // The value is one allocation per object, so its own slope is its mean.
+    let value_slope = if exact.0 == 0 {
+        0.0
+    } else {
+        exact.1 as f64 / exact.0 as f64
+    };
+    println!(
+        "PROJECTION fit low={low} high={high} metadata_slope={slope:.1} B/object \
+         metadata_intercept={intercept:.0} B"
+    );
+    println!(
+        "PROJECTION asymptotic_share={:.1}% of per-object metadata \
+         (value_slope={value_slope:.1} B/object)",
+        100.0 * value_slope / slope
     );
 }
 
