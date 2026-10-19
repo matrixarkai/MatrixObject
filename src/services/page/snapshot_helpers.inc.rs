@@ -24,7 +24,7 @@ fn export_page_service_snapshot_chunk_slice_with_checksum(
     })?;
     let payload_slice = &snapshot_bytes[start..end];
     let total_bytes = snapshot_bytes.len() as u64;
-    let chunk_checksum = if offset == 0 && end == snapshot_bytes.len() {
+    let page_checksum = if offset == 0 && end == snapshot_bytes.len() {
         full_checksum.to_string()
     } else {
         etag(payload_slice)
@@ -32,7 +32,7 @@ fn export_page_service_snapshot_chunk_slice_with_checksum(
     Ok(ChunkServiceSnapshotChunk {
         offset,
         total_bytes,
-        chunk_checksum,
+        page_checksum,
         full_checksum: full_checksum.to_string(),
         eof: end == snapshot_bytes.len(),
         payload: payload_slice.to_vec(),

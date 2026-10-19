@@ -2,14 +2,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prewarm_chunk_ranges_with_read_proof_linearizable_fenced(
         &mut self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_bytes: u64,
         expected_control_checksum: Option<&str>,
     ) -> Result<ProvenStorageRead<CacheControlStats>, ObjectError> {
         self.prewarm_chunk_ranges_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_bytes,
             expected_control_checksum,
@@ -21,14 +21,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prewarm_chunk_ranges_with_control_proof_linearizable_fenced(
         &mut self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenChunkControlFencedStorageRead<CacheControlStats>, ObjectError> {
         self.prewarm_chunk_ranges_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_bytes,
             expected_control_checksum,
@@ -40,7 +40,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prewarm_chunk_ranges_with_control_proof_linearizable_fenced_committed_at(
         &mut self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
@@ -59,7 +59,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .control_proof();
         let proven = self.prewarm_chunk_ranges_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_bytes,
             Some(&expected_checksum),
@@ -77,7 +77,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prewarm_chunk_ranges_with_read_proof_linearizable_fenced_committed_at(
         &mut self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -91,7 +91,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .max(min_commit_index);
         self.can_accept_chunk_batch_read_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges.clone(),
             max_bytes,
             expected_control_checksum,
@@ -107,7 +107,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument("replica index is out of range".to_string())
                 })?;
-            replica.prewarm_chunk_ranges(chunk_id, ranges, max_bytes)?
+            replica.prewarm_chunk_ranges(page_id, ranges, max_bytes)?
         };
         let proof = self.chunk_storage_read_proof_committed(
             replica_index,
@@ -120,7 +120,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn invalidate_chunk_cache_with_read_proof_linearizable_fenced(
         &mut self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -128,7 +128,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenStorageRead<CacheControlStats>, ObjectError> {
         self.invalidate_chunk_cache_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             offset,
             length,
             max_bytes,
@@ -141,7 +141,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn invalidate_chunk_cache_with_control_proof_linearizable_fenced(
         &mut self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -149,7 +149,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenChunkControlFencedStorageRead<CacheControlStats>, ObjectError> {
         self.invalidate_chunk_cache_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             offset,
             length,
             max_bytes,
@@ -162,7 +162,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn invalidate_chunk_cache_with_control_proof_linearizable_fenced_committed_at(
         &mut self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -182,7 +182,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .control_proof();
         let proven = self.invalidate_chunk_cache_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             offset,
             length,
             max_bytes,
@@ -201,7 +201,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn invalidate_chunk_cache_with_read_proof_linearizable_fenced_committed_at(
         &mut self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -245,7 +245,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     ObjectError::InvalidArgument("replica index is out of range".to_string())
                 })?;
             replica.check_expected_control_checksum(expected_control_checksum)?;
-            replica.invalidate_chunk_cache_bounded(chunk_id, offset, length, max_bytes)
+            replica.invalidate_chunk_cache_bounded(page_id, offset, length, max_bytes)
         };
         let proof = self.chunk_storage_read_proof_committed(
             replica_index,

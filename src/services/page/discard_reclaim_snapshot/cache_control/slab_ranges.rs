@@ -20,8 +20,8 @@ impl MatrixChunkService {
     ) -> Result<CacheControlStats, ObjectError> {
         let mut grouped: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for loc in self.map_range(slab_id, offset, length)? {
-            grouped.entry(loc.chunk_id).or_default().push(DataRange {
-                offset: loc.chunk_offset,
+            grouped.entry(loc.page_id).or_default().push(DataRange {
+                offset: loc.page_offset,
                 length: loc.length,
             });
         }
@@ -29,12 +29,12 @@ impl MatrixChunkService {
             self.cache_control_replica_indexes(target_replica_index, include_disabled_replicas)?;
         let mut aggregate = CacheControlStats::default();
         let mut budget_left = max_bytes;
-        for (chunk_id, ranges) in grouped {
+        for (page_id, ranges) in grouped {
             for index in replica_indexes.iter().copied() {
                 let replica = self.replicas.get_mut(index).ok_or_else(|| {
                     ObjectError::InvalidArgument("replica index out of range".to_string())
                 })?;
-                let stats = replica.prewarm_chunk_ranges_borrowed(&chunk_id, &ranges, budget_left)?;
+                let stats = replica.prewarm_chunk_ranges_borrowed(&page_id, &ranges, budget_left)?;
                 aggregate.contacted_chunk_endpoints =
                     aggregate.contacted_chunk_endpoints.saturating_add(1);
                 aggregate.applied_chunk_ranges = aggregate
@@ -104,8 +104,8 @@ impl MatrixChunkService {
                     ObjectError::InvalidArgument("replica index out of range".to_string())
                 })?;
                 let stats = replica.invalidate_chunk_cache_bounded(
-                    &loc.chunk_id,
-                    loc.chunk_offset,
+                    &loc.page_id,
+                    loc.page_offset,
                     loc.length,
                     budget_left,
                 );

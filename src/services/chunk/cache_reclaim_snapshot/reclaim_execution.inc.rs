@@ -159,7 +159,7 @@ impl MatrixReplicaService {
         }
         let consumed_trim_ops = plan.scheduled_trim_ops;
         for candidate in plan.candidates {
-            let Some(state) = self.chunks.get_mut(&candidate.chunk_id) else {
+            let Some(state) = self.chunks.get_mut(&candidate.page_id) else {
                 continue;
             };
             let state = std::sync::Arc::make_mut(state);
@@ -205,7 +205,7 @@ impl MatrixReplicaService {
                 .rewritten_bytes
                 .saturating_add(candidate.rewrite_bytes);
             report.trimmed_bytes = report.trimmed_bytes.saturating_add(candidate.trim_bytes);
-            self.invalidate_chunk_cache(&candidate.chunk_id, 0, candidate.logical_length);
+            self.invalidate_chunk_cache(&candidate.page_id, 0, candidate.logical_length);
         }
         if self.trim_flow_enabled() {
             self.trim_flow_available_bytes = self

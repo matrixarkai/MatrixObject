@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPageChunkRepair {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub before_page_service_fingerprint: String,
     pub after_page_service_fingerprint: String,
     pub report: ReplicaRepairReport,

@@ -192,7 +192,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 &mut material,
                 proven.value.offset,
                 payload_len,
-                &proven.value.chunk_checksum,
+                &proven.value.page_checksum,
                 proven.value.last_applied_index,
                 proven.value.term,
                 &proven.proof,

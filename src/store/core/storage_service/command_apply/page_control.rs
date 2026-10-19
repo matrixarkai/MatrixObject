@@ -153,7 +153,7 @@ impl MatrixObjectStore {
                     "_chunkwrite",
                     &format!(
                         "{}:{}",
-                        receipt.chunk_id.slab_id.id, receipt.chunk_id.page_index
+                        receipt.page_id.slab_id.id, receipt.page_id.page_index
                     ),
                     receipt.stats.physical_write_bytes,
                     receipt.deduped as u64,
@@ -171,7 +171,7 @@ impl MatrixObjectStore {
                     "_chunkdiscard",
                     &format!(
                         "{}:{}",
-                        receipt.chunk_id.slab_id.id, receipt.chunk_id.page_index
+                        receipt.page_id.slab_id.id, receipt.page_id.page_index
                     ),
                     receipt.stats.physical_discard_bytes,
                     receipt.deduped as u64,

@@ -4,7 +4,7 @@ fn append_storage_readiness(mut material: &mut Vec<u8>, report: &ObjectStoreDist
     append_u64(&mut material, report.live_object_count);
     append_u64(&mut material, report.deleted_object_count);
     append_u64(&mut material, report.slab_count);
-    append_u64(&mut material, report.chunk_count);
+    append_u64(&mut material, report.page_count);
     append_u64(&mut material, report.live_bytes);
     append_u64(&mut material, report.stale_bytes);
     append_u64(&mut material, report.pending_discard_bytes);

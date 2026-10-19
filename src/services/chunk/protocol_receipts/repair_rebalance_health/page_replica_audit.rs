@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkReplicaAuditItem {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub replica_index: usize,
     pub status: String,
     pub logical_length: u64,

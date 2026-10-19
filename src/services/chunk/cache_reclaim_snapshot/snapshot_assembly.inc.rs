@@ -29,7 +29,7 @@ impl ReplicaServiceSnapshotAssembler {
                 "chunk service snapshot total bytes must be positive".to_string(),
             ));
         }
-        if !etag_matches(&chunk.payload, &chunk.chunk_checksum) {
+        if !etag_matches(&chunk.payload, &chunk.page_checksum) {
             return Err(ObjectError::Corruption(
                 "chunk service snapshot chunk checksum mismatch".to_string(),
             ));
@@ -190,7 +190,7 @@ fn export_replica_service_snapshot_chunk_slice_with_checksum(
         ObjectError::InvalidArgument("chunk service snapshot chunk range overflows".to_string())
     })?;
     let payload_slice = &snapshot_bytes[start..end];
-    let chunk_checksum = if offset == 0 && emit as u64 == total_bytes {
+    let page_checksum = if offset == 0 && emit as u64 == total_bytes {
         full_checksum.to_string()
     } else {
         etag(payload_slice)
@@ -198,7 +198,7 @@ fn export_replica_service_snapshot_chunk_slice_with_checksum(
     Ok(ReplicaServiceSnapshotChunk {
         offset,
         total_bytes,
-        chunk_checksum,
+        page_checksum,
         full_checksum: full_checksum.to_string(),
         eof: offset + emit as u64 >= total_bytes,
         payload: payload_slice.to_vec(),

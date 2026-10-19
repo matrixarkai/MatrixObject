@@ -190,7 +190,7 @@ pub(crate) fn prepared_page_chunk_repair_checksum(prepared: &PreparedPageChunkRe
     append_string(&mut material, "MOS-RUST-PREPARED-BLOCK-CHUNK-REPAIR2");
     append_u64(&mut material, prepared.expected_previous_commit_index);
     append_u64(&mut material, prepared.prepared_commit_index);
-    append_chunk_id(&mut material, &prepared.chunk_id);
+    append_chunk_id(&mut material, &prepared.page_id);
     append_chunk_repair_report(&mut material, &prepared.report);
     append_string(&mut material, &prepared.before_page_service_fingerprint);
     append_string(&mut material, &prepared.after_page_service_fingerprint);

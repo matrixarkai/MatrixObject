@@ -3,7 +3,7 @@ impl MatrixReplicaService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaWriteReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -12,7 +12,7 @@ impl MatrixReplicaService {
         let mut page = ReplicaWriteReceiptPage {
             total_receipt_count: self.write_request_receipts.len() as u64,
             limit: limit as u64,
-            chunk_id: chunk_id.cloned(),
+            page_id: page_id.cloned(),
             ..ReplicaWriteReceiptPage::default()
         };
         let iter: Box<dyn Iterator<Item = (&String, &ReplicaWriteReceipt)> + '_> =
@@ -26,7 +26,7 @@ impl MatrixReplicaService {
             };
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if chunk_id.is_some_and(|chunk_id| &receipt.chunk_id != chunk_id) {
+            if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
                 page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
                 continue;
             }
@@ -45,7 +45,7 @@ impl MatrixReplicaService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaBatchWriteReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -54,7 +54,7 @@ impl MatrixReplicaService {
         let mut page = ReplicaBatchWriteReceiptPage {
             total_receipt_count: self.batch_write_request_receipts.len() as u64,
             limit: limit as u64,
-            chunk_id: chunk_id.cloned(),
+            page_id: page_id.cloned(),
             ..ReplicaBatchWriteReceiptPage::default()
         };
         let iter: Box<dyn Iterator<Item = (&String, &ReplicaBatchWriteReceipt)> + '_> =
@@ -68,7 +68,7 @@ impl MatrixReplicaService {
             };
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if chunk_id.is_some_and(|chunk_id| &receipt.chunk_id != chunk_id) {
+            if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
                 page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
                 continue;
             }
@@ -87,7 +87,7 @@ impl MatrixReplicaService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaDiscardReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -96,7 +96,7 @@ impl MatrixReplicaService {
         let mut page = ReplicaDiscardReceiptPage {
             total_receipt_count: self.discard_request_receipts.len() as u64,
             limit: limit as u64,
-            chunk_id: chunk_id.cloned(),
+            page_id: page_id.cloned(),
             ..ReplicaDiscardReceiptPage::default()
         };
         let iter: Box<dyn Iterator<Item = (&String, &ReplicaDiscardReceipt)> + '_> =
@@ -110,7 +110,7 @@ impl MatrixReplicaService {
             };
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if chunk_id.is_some_and(|chunk_id| &receipt.chunk_id != chunk_id) {
+            if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
                 page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
                 continue;
             }
@@ -129,7 +129,7 @@ impl MatrixReplicaService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaBatchDiscardReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -138,7 +138,7 @@ impl MatrixReplicaService {
         let mut page = ReplicaBatchDiscardReceiptPage {
             total_receipt_count: self.batch_discard_request_receipts.len() as u64,
             limit: limit as u64,
-            chunk_id: chunk_id.cloned(),
+            page_id: page_id.cloned(),
             ..ReplicaBatchDiscardReceiptPage::default()
         };
         let iter: Box<dyn Iterator<Item = (&String, &ReplicaBatchDiscardReceipt)> + '_> =
@@ -152,7 +152,7 @@ impl MatrixReplicaService {
             };
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if chunk_id.is_some_and(|chunk_id| &receipt.chunk_id != chunk_id) {
+            if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
                 page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
                 continue;
             }
@@ -171,7 +171,7 @@ impl MatrixReplicaService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaRepairReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -180,7 +180,7 @@ impl MatrixReplicaService {
         let mut page = ReplicaRepairReceiptPage {
             total_receipt_count: self.repair_request_receipts.len() as u64,
             limit: limit as u64,
-            chunk_id: chunk_id.cloned(),
+            page_id: page_id.cloned(),
             ..ReplicaRepairReceiptPage::default()
         };
         let iter: Box<dyn Iterator<Item = (&String, &ReplicaRepairReceipt)> + '_> =
@@ -194,7 +194,7 @@ impl MatrixReplicaService {
             };
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if chunk_id.is_some_and(|chunk_id| &receipt.chunk_id != chunk_id) {
+            if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
                 page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
                 continue;
             }

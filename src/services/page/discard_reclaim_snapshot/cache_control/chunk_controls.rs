@@ -44,14 +44,14 @@ impl MatrixChunkService {
 
     pub fn prewarm_chunk_read_cache_control(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
     ) -> Result<ReplicaReadCacheControlReport, ObjectError> {
         self.prewarm_chunk_read_cache_control_batch(
             vec![ReplicaReadCacheRange {
-                chunk_id,
+                page_id,
                 offset,
                 length,
             }],
@@ -71,7 +71,7 @@ impl MatrixChunkService {
             if range.length == 0 {
                 continue;
             }
-            grouped.entry(range.chunk_id).or_default().push(DataRange {
+            grouped.entry(range.page_id).or_default().push(DataRange {
                 offset: range.offset,
                 length: range.length,
             });
@@ -79,13 +79,13 @@ impl MatrixChunkService {
         let mut aggregate = CacheControlStats::default();
         let mut budget_left = max_bytes;
         let mut selected_chunk_endpoint = None;
-        for (chunk_id, chunk_ranges) in grouped {
+        for (page_id, page_ranges) in grouped {
             for index in replica_indexes.iter().copied() {
                 let replica = self.replicas.get_mut(index).ok_or_else(|| {
                     ObjectError::InvalidArgument("replica index out of range".to_string())
                 })?;
                 let stats =
-                    replica.prewarm_chunk_ranges_borrowed(&chunk_id, &chunk_ranges, budget_left)?;
+                    replica.prewarm_chunk_ranges_borrowed(&page_id, &page_ranges, budget_left)?;
                 aggregate.contacted_chunk_endpoints =
                     aggregate.contacted_chunk_endpoints.saturating_add(1);
                 aggregate.applied_chunk_ranges = aggregate
@@ -133,14 +133,14 @@ impl MatrixChunkService {
 
     pub fn invalidate_chunk_read_cache_control(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
     ) -> Result<ReplicaReadCacheControlReport, ObjectError> {
         self.invalidate_chunk_read_cache_control_batch(
             vec![ReplicaReadCacheRange {
-                chunk_id,
+                page_id,
                 offset,
                 length,
             }],
@@ -166,7 +166,7 @@ impl MatrixChunkService {
                     ObjectError::InvalidArgument("replica index out of range".to_string())
                 })?;
                 let stats = replica.invalidate_chunk_cache_bounded(
-                    &range.chunk_id,
+                    &range.page_id,
                     range.offset,
                     range.length,
                     budget_left,

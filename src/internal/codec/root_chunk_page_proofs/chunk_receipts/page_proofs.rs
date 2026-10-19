@@ -6,7 +6,7 @@ pub(crate) fn append_chunk_receipt_page_common(
     limit: u64,
     truncated: bool,
     next_marker: &Option<String>,
-    chunk_id: &Option<PageId>,
+    page_id: &Option<PageId>,
     skipped_chunk_count: u64,
 ) {
     append_u64(material, receipt_count);
@@ -18,9 +18,9 @@ pub(crate) fn append_chunk_receipt_page_common(
     if let Some(next_marker) = next_marker {
         append_string(material, next_marker);
     }
-    append_u64(material, chunk_id.is_some() as u64);
-    if let Some(chunk_id) = chunk_id {
-        append_chunk_id(material, chunk_id);
+    append_u64(material, page_id.is_some() as u64);
+    if let Some(page_id) = page_id {
+        append_chunk_id(material, page_id);
     }
     append_u64(material, skipped_chunk_count);
 }
@@ -28,7 +28,7 @@ pub(crate) fn append_chunk_receipt_page_common(
 fn root_chunk_receipt_page_proof_capacity(
     proof_format: &str,
     next_marker: &Option<String>,
-    chunk_id: &Option<PageId>,
+    page_id: &Option<PageId>,
     receipt_count: usize,
 ) -> usize {
     encoded_string_len(proof_format)
@@ -37,7 +37,7 @@ fn root_chunk_receipt_page_proof_capacity(
             .as_ref()
             .map(|value| encoded_string_len(value))
             .unwrap_or(0)
-        + if chunk_id.is_some() {
+        + if page_id.is_some() {
             std::mem::size_of::<u64>() * 3
         } else {
             0
@@ -50,7 +50,7 @@ pub(crate) fn chunk_write_receipt_page_proof_checksum(page: &ReplicaWriteReceipt
     let mut material = Vec::with_capacity(root_chunk_receipt_page_proof_capacity(
         PROOF_FORMAT,
         &page.next_marker,
-        &page.chunk_id,
+        &page.page_id,
         page.receipts.len(),
     ));
     append_string(&mut material, PROOF_FORMAT);
@@ -62,7 +62,7 @@ pub(crate) fn chunk_write_receipt_page_proof_checksum(page: &ReplicaWriteReceipt
         page.limit,
         page.truncated,
         &page.next_marker,
-        &page.chunk_id,
+        &page.page_id,
         page.skipped_chunk_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);
@@ -79,7 +79,7 @@ pub(crate) fn chunk_batch_write_receipt_page_proof_checksum(
     let mut material = Vec::with_capacity(root_chunk_receipt_page_proof_capacity(
         PROOF_FORMAT,
         &page.next_marker,
-        &page.chunk_id,
+        &page.page_id,
         page.receipts.len(),
     ));
     append_string(&mut material, PROOF_FORMAT);
@@ -91,7 +91,7 @@ pub(crate) fn chunk_batch_write_receipt_page_proof_checksum(
         page.limit,
         page.truncated,
         &page.next_marker,
-        &page.chunk_id,
+        &page.page_id,
         page.skipped_chunk_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);
@@ -106,7 +106,7 @@ pub(crate) fn chunk_discard_receipt_page_proof_checksum(page: &ReplicaDiscardRec
     let mut material = Vec::with_capacity(root_chunk_receipt_page_proof_capacity(
         PROOF_FORMAT,
         &page.next_marker,
-        &page.chunk_id,
+        &page.page_id,
         page.receipts.len(),
     ));
     append_string(&mut material, PROOF_FORMAT);
@@ -118,7 +118,7 @@ pub(crate) fn chunk_discard_receipt_page_proof_checksum(page: &ReplicaDiscardRec
         page.limit,
         page.truncated,
         &page.next_marker,
-        &page.chunk_id,
+        &page.page_id,
         page.skipped_chunk_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);
@@ -135,7 +135,7 @@ pub(crate) fn chunk_batch_discard_receipt_page_proof_checksum(
     let mut material = Vec::with_capacity(root_chunk_receipt_page_proof_capacity(
         PROOF_FORMAT,
         &page.next_marker,
-        &page.chunk_id,
+        &page.page_id,
         page.receipts.len(),
     ));
     append_string(&mut material, PROOF_FORMAT);
@@ -147,7 +147,7 @@ pub(crate) fn chunk_batch_discard_receipt_page_proof_checksum(
         page.limit,
         page.truncated,
         &page.next_marker,
-        &page.chunk_id,
+        &page.page_id,
         page.skipped_chunk_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);
@@ -162,7 +162,7 @@ pub(crate) fn chunk_repair_receipt_page_proof_checksum(page: &ReplicaRepairRecei
     let mut material = Vec::with_capacity(root_chunk_receipt_page_proof_capacity(
         PROOF_FORMAT,
         &page.next_marker,
-        &page.chunk_id,
+        &page.page_id,
         page.receipts.len(),
     ));
     append_string(&mut material, PROOF_FORMAT);
@@ -174,7 +174,7 @@ pub(crate) fn chunk_repair_receipt_page_proof_checksum(page: &ReplicaRepairRecei
         page.limit,
         page.truncated,
         &page.next_marker,
-        &page.chunk_id,
+        &page.page_id,
         page.skipped_chunk_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);

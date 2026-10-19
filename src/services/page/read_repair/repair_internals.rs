@@ -14,9 +14,9 @@ impl MatrixChunkService {
             .saturating_add(stats.failed_repairs);
     }
 
-    fn inspect_chunk_repair(&self, chunk_id: &PageId) -> Result<ReplicaRepairReport, ObjectError> {
+    fn inspect_chunk_repair(&self, page_id: &PageId) -> Result<ReplicaRepairReport, ObjectError> {
         let mut report = ReplicaRepairReport {
-            chunk_id: Some(chunk_id.clone()),
+            page_id: Some(page_id.clone()),
             checked_chunks: 1,
             route_control_proof: self.route_control_proof(),
             ..ReplicaRepairReport::default()
@@ -40,7 +40,7 @@ impl MatrixChunkService {
             if self.replica_endpoint_disabled(index) {
                 continue;
             }
-            let status = match replica.read_chunk_state(chunk_id) {
+            let status = match replica.read_chunk_state(page_id) {
                 Ok(state) => {
                     saw_chunk = true;
                     match validate_chunk_state(&state) {
@@ -140,7 +140,7 @@ impl MatrixChunkService {
         Ok(report)
     }
 
-    fn repair_chunk_from_quorum(&mut self, chunk_id: &PageId) -> Result<RepairStats, ObjectError> {
+    fn repair_chunk_from_quorum(&mut self, page_id: &PageId) -> Result<RepairStats, ObjectError> {
         let mut stats = RepairStats {
             checked_chunks: 1,
             ..RepairStats::default()
@@ -152,10 +152,10 @@ impl MatrixChunkService {
             if quarantined.contains(&index) || disabled.contains(&index) || replica.is_frozen() {
                 continue;
             }
-            match replica.read_chunk_state_validated(chunk_id) {
+            match replica.read_chunk_state_validated(page_id) {
                 Ok(_) | Err(ObjectError::NotFound(_)) => {}
                 Err(ObjectError::Corruption(_)) => {
-                    if matches!(replica.repair_chunk_payload_from_ec(chunk_id), Ok(true)) {
+                    if matches!(replica.repair_chunk_payload_from_ec(page_id), Ok(true)) {
                         locally_repaired_replicas.insert(index);
                         stats.repaired_replicas = stats.repaired_replicas.saturating_add(1);
                     }
@@ -168,7 +168,7 @@ impl MatrixChunkService {
             if !self.replica_active(index) {
                 continue;
             }
-            if let Ok(state) = replica.read_chunk_state_validated(chunk_id) {
+            if let Ok(state) = replica.read_chunk_state_validated(page_id) {
                 states.push((index, state));
             }
         }
@@ -215,13 +215,13 @@ impl MatrixChunkService {
             stats.degraded_chunks = 1;
         }
         let payload_checksum = etag(&selected.data);
-        let handoff_token = chunk_state_handoff_checksum(chunk_id, &selected, &payload_checksum);
+        let handoff_token = chunk_state_handoff_checksum(page_id, &selected, &payload_checksum);
         let selected_handoff = ReplicaStateHandoff {
-            chunk_id: chunk_id.clone(),
+            page_id: page_id.clone(),
             state: selected.clone(),
             payload_checksum: payload_checksum.clone(),
             state_checksum: chunk_state_handoff_checksum_v2(
-                chunk_id,
+                page_id,
                 &handoff_token,
                 &selected,
                 &payload_checksum,
@@ -237,7 +237,7 @@ impl MatrixChunkService {
             if quarantined.contains(&index) || disabled.contains(&index) || replica.is_frozen() {
                 continue;
             }
-            let needs_repair = match replica.read_chunk_state_validated(chunk_id) {
+            let needs_repair = match replica.read_chunk_state_validated(page_id) {
                 Ok(state) => state != selected,
                 Err(_) => true,
             };

@@ -4,9 +4,9 @@ impl MatrixChunkService {
     ) -> Result<BTreeMap<PageId, u64>, ObjectError> {
         let mut projected = BTreeMap::new();
         for loc in locations {
-            let end = validate_pipeline_range("chunk write", loc.chunk_offset, loc.length)?;
+            let end = validate_pipeline_range("chunk write", loc.page_offset, loc.length)?;
             projected
-                .entry(loc.chunk_id.clone())
+                .entry(loc.page_id.clone())
                 .and_modify(|length: &mut u64| *length = (*length).max(end))
                 .or_insert(end);
         }
@@ -17,11 +17,11 @@ impl MatrixChunkService {
         grouped: &BTreeMap<(SlabId, PageId), Vec<(u64, &[u8])>>,
     ) -> Result<BTreeMap<PageId, u64>, ObjectError> {
         let mut projected = BTreeMap::new();
-        for ((_, chunk_id), writes) in grouped {
+        for ((_, page_id), writes) in grouped {
             for (offset, data) in writes {
                 let end = validate_pipeline_range("chunk write", *offset, data.len() as u64)?;
                 projected
-                    .entry(chunk_id.clone())
+                    .entry(page_id.clone())
                     .and_modify(|length: &mut u64| *length = (*length).max(end))
                     .or_insert(end);
             }
@@ -37,10 +37,10 @@ impl MatrixChunkService {
             return Err(err);
         }
         let mut projected_physical = replica.physical_bytes();
-        for (chunk_id, new_len) in projected_lengths {
+        for (page_id, new_len) in projected_lengths {
             let current_len = replica
                 .chunks
-                .get(chunk_id)
+                .get(page_id)
                 .map_or(0u64, |state| state.data.len() as u64);
             projected_physical = projected_physical
                 .checked_sub(current_len)
@@ -120,8 +120,8 @@ impl MatrixChunkService {
         replica: &MatrixReplicaService,
         discard_ranges: &BTreeMap<PageId, Vec<DataRange>>,
     ) -> Result<(), ObjectError> {
-        for (chunk_id, ranges) in discard_ranges {
-            let admission = replica.can_accept_chunk_discard(chunk_id, ranges)?;
+        for (page_id, ranges) in discard_ranges {
+            let admission = replica.can_accept_chunk_discard(page_id, ranges)?;
             if admission.can_accept {
                 continue;
             }

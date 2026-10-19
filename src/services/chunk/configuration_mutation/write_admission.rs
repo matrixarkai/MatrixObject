@@ -45,12 +45,12 @@ impl MatrixReplicaService {
 
     pub(crate) fn projected_physical_bytes_for_chunk_len(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         new_len: u64,
     ) -> Result<u64, ObjectError> {
         let current_len = self
             .chunks
-            .get(chunk_id)
+            .get(page_id)
             .map_or(0u64, |state| state.data.len() as u64);
         self.physical_bytes()
             .checked_sub(current_len)
@@ -64,10 +64,10 @@ impl MatrixReplicaService {
 
     fn ensure_capacity_for_chunk_len(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         new_len: u64,
     ) -> Result<(), ObjectError> {
-        let projected = self.projected_physical_bytes_for_chunk_len(chunk_id, new_len)?;
+        let projected = self.projected_physical_bytes_for_chunk_len(page_id, new_len)?;
         if self.capacity_bytes > 0 && projected > self.capacity_bytes {
             self.capacity_rejected_writes = self.capacity_rejected_writes.saturating_add(1);
             return Err(ObjectError::PreconditionFailed(
@@ -79,18 +79,18 @@ impl MatrixReplicaService {
 
     pub fn can_accept_chunk_write(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let end = validate_pipeline_range("chunk write", offset, length)?;
         let projected_len = self
             .chunks
-            .get(chunk_id)
+            .get(page_id)
             .map_or(end, |state| state.data.len() as u64)
             .max(end);
         let projected_physical_bytes =
-            self.projected_physical_bytes_for_chunk_len(chunk_id, projected_len)?;
+            self.projected_physical_bytes_for_chunk_len(page_id, projected_len)?;
         let service_mode_limited = self.writable_admission_error().is_some();
         let capacity_limited =
             self.capacity_bytes > 0 && projected_physical_bytes > self.capacity_bytes;
@@ -121,16 +121,16 @@ impl MatrixReplicaService {
 
     pub fn can_accept_chunk_writes(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
     ) -> Result<ReplicaWriteAdmission, ObjectError> {
-        self.can_accept_chunk_writes_from(chunk_id, writes, max_write_bytes, 0)
+        self.can_accept_chunk_writes_from(page_id, writes, max_write_bytes, 0)
     }
 
     pub fn can_accept_chunk_writes_from(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         write_start_range_index: u64,
@@ -140,7 +140,7 @@ impl MatrixReplicaService {
             borrowed.push((*offset, data.as_slice()));
         }
         self.can_accept_chunk_writes_from_borrowed(
-            chunk_id,
+            page_id,
             &borrowed,
             max_write_bytes,
             write_start_range_index,
@@ -149,16 +149,16 @@ impl MatrixReplicaService {
 
     pub fn can_accept_chunk_writes_borrowed(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         writes: &[(u64, &[u8])],
         max_write_bytes: u64,
     ) -> Result<ReplicaWriteAdmission, ObjectError> {
-        self.can_accept_chunk_writes_from_borrowed(chunk_id, writes, max_write_bytes, 0)
+        self.can_accept_chunk_writes_from_borrowed(page_id, writes, max_write_bytes, 0)
     }
 
     pub fn can_accept_chunk_writes_from_borrowed(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         writes: &[(u64, &[u8])],
         max_write_bytes: u64,
         write_start_range_index: u64,
@@ -239,7 +239,7 @@ impl MatrixReplicaService {
         }
         let projected_len = coalesced.iter().try_fold(
             self.chunks
-                .get(chunk_id)
+                .get(page_id)
                 .map_or(0u64, |state| state.data.len() as u64),
             |acc, (offset, data)| -> Result<u64, ObjectError> {
                 Ok(acc.max(validate_pipeline_range(
@@ -250,7 +250,7 @@ impl MatrixReplicaService {
             },
         )?;
         let projected_physical_bytes =
-            self.projected_physical_bytes_for_chunk_len(chunk_id, projected_len)?;
+            self.projected_physical_bytes_for_chunk_len(page_id, projected_len)?;
         let service_mode_limited = self.writable_admission_error().is_some();
         let capacity_limited =
             self.capacity_bytes > 0 && projected_physical_bytes > self.capacity_bytes;

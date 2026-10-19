@@ -29,7 +29,7 @@ impl SlabInfo {
 impl ReplicaReclaimCandidate {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .chunk_id
+            .page_id
             .to_control_fields(&format!("{field_prefix}chunk."));
         for (name, value) in [
             ("logical_length", self.logical_length),

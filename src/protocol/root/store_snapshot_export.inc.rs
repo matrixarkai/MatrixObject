@@ -26,7 +26,7 @@ pub(crate) fn export_store_snapshot_chunk_bytes_with_checksum(
     let emit = remaining.min(max_payload_bytes);
     let start = offset as usize;
     let payload_slice = &snapshot_bytes[start..start + emit];
-    let chunk_checksum = if offset == 0 && emit as u64 == total_bytes {
+    let page_checksum = if offset == 0 && emit as u64 == total_bytes {
         full_checksum.to_string()
     } else {
         etag(payload_slice)
@@ -34,7 +34,7 @@ pub(crate) fn export_store_snapshot_chunk_bytes_with_checksum(
     Ok(StoreSnapshotChunk {
         offset,
         total_bytes,
-        chunk_checksum,
+        page_checksum,
         full_checksum: full_checksum.to_string(),
         last_applied_index,
         term,

@@ -16,9 +16,9 @@ pub(crate) fn validate_chunk_state_handoff(handoff: &ReplicaStateHandoff) -> Res
         ));
     }
     let legacy_expected =
-        chunk_state_handoff_checksum(&handoff.chunk_id, &handoff.state, &handoff.payload_checksum);
+        chunk_state_handoff_checksum(&handoff.page_id, &handoff.state, &handoff.payload_checksum);
     let token_bound_expected = chunk_state_handoff_checksum_v2(
-        &handoff.chunk_id,
+        &handoff.page_id,
         &handoff.handoff_token,
         &handoff.state,
         &handoff.payload_checksum,

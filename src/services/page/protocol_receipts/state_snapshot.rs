@@ -144,7 +144,7 @@ pub struct StorageMaintenanceAction {
     pub reason: String,
     pub priority: u64,
     pub replica_index: Option<usize>,
-    pub chunk_id: Option<PageId>,
+    pub page_id: Option<PageId>,
     pub estimated_bytes: u64,
 }
 
@@ -242,7 +242,7 @@ pub struct ChunkServiceSnapshot {
 pub struct ChunkServiceSnapshotChunk {
     pub offset: u64,
     pub total_bytes: u64,
-    pub chunk_checksum: String,
+    pub page_checksum: String,
     pub full_checksum: String,
     pub eof: bool,
     pub payload: Vec<u8>,

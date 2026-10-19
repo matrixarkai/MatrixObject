@@ -12,10 +12,10 @@ impl MatrixChunkService {
         let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for loc in &locations {
             discard_ranges
-                .entry(loc.chunk_id.clone())
+                .entry(loc.page_id.clone())
                 .or_default()
                 .push(DataRange {
-                    offset: loc.chunk_offset,
+                    offset: loc.page_offset,
                     length: loc.length,
                 });
         }
@@ -172,22 +172,22 @@ impl MatrixChunkService {
             for loc in self.map_range(&request.slab_id, request.offset, request.length)? {
                 admission.mapped_chunk_ranges = admission.mapped_chunk_ranges.saturating_add(1);
                 discard_ranges
-                    .entry(loc.chunk_id)
+                    .entry(loc.page_id)
                     .or_default()
                     .push(DataRange {
-                        offset: loc.chunk_offset,
+                        offset: loc.page_offset,
                         length: loc.length,
                     });
             }
         }
 
         let mut merged_discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
-        for (chunk_id, ranges) in discard_ranges {
+        for (page_id, ranges) in discard_ranges {
             let merged = merge_ranges(ranges);
             admission.coalesced_chunk_ranges = admission
                 .coalesced_chunk_ranges
                 .saturating_add(merged.len() as u64);
-            merged_discard_ranges.insert(chunk_id, merged);
+            merged_discard_ranges.insert(page_id, merged);
         }
 
         let mut ready_replica_count = 0u64;

@@ -1,14 +1,14 @@
 impl MatrixReplicaService {
     pub fn read_chunk_with_cache_status(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<(ReplicaReadResult, bool), ObjectError> {
         let end = validate_pipeline_range("chunk read", offset, length)?;
         let chunk = self
             .chunks
-            .get(chunk_id)
+            .get(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         if end > chunk.logical_length {
             return Err(ObjectError::InvalidArgument(
@@ -33,7 +33,7 @@ impl MatrixReplicaService {
         }
         let use_read_cache = self.max_cacheable_read_bytes.get() == 0
             || length <= self.max_cacheable_read_bytes.get();
-        let cache_key = use_read_cache.then(|| (chunk_id.clone(), offset, length));
+        let cache_key = use_read_cache.then(|| (page_id.clone(), offset, length));
         let mut remove_cached_entry = false;
         let mut corrupt_cached_entry = false;
         if let Some(cache_key) = cache_key.as_ref() {
@@ -94,7 +94,7 @@ impl MatrixReplicaService {
         let logical_length_index = usize::try_from(chunk.logical_length).map_err(|_| {
             ObjectError::InvalidArgument("chunk logical length exceeds memory size".to_string())
         })?;
-        let data = if self.chunk_pages_valid(chunk_id, chunk, start_index, end_index) {
+        let data = if self.chunk_pages_valid(page_id, chunk, start_index, end_index) {
             if end_index > chunk.data.len() {
                 return Err(ObjectError::Corruption(
                     "chunk payload is shorter than logical length".to_string(),

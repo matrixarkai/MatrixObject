@@ -1,8 +1,8 @@
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkLocation {
-    pub chunk_id: PageId,
-    pub chunk_offset: u64,
+    pub page_id: PageId,
+    pub page_offset: u64,
     pub length: u64,
 }
 

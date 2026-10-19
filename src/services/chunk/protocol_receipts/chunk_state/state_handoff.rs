@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaStateHandoff {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub state: PageState,
     pub payload_checksum: String,
     pub state_checksum: String,
@@ -12,7 +12,7 @@ pub struct ReplicaStateHandoff {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedChunkLocalStateHandoffEnvelope {
     pub envelope_format: String,
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub max_payload_bytes: u64,
     pub request_checksum: String,
     pub payload_bytes: u64,

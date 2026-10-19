@@ -47,8 +47,8 @@ pub(crate) fn page_audit_repair_image_fingerprint(chunk_service: &MatrixChunkSer
         );
         append_u64(&mut material, replica.is_frozen() as u64);
         append_u64(&mut material, replica.chunks.len() as u64);
-        for (chunk_id, state) in &replica.chunks {
-            append_chunk_id(&mut material, chunk_id);
+        for (page_id, state) in &replica.chunks {
+            append_chunk_id(&mut material, page_id);
             append_chunk_state(&mut material, state);
         }
     }
@@ -81,8 +81,8 @@ pub(crate) fn page_batch_mutation_image_fingerprint(chunk_service: &MatrixChunkS
         append_u64(&mut material, replica_index as u64);
         append_u64(&mut material, replica.is_frozen() as u64);
         append_u64(&mut material, replica.chunks.len() as u64);
-        for (chunk_id, state) in &replica.chunks {
-            append_chunk_id(&mut material, chunk_id);
+        for (page_id, state) in &replica.chunks {
+            append_chunk_id(&mut material, page_id);
             append_chunk_state(&mut material, state);
         }
     }

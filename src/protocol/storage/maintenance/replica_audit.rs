@@ -37,7 +37,7 @@ impl ChunkReplicaAuditChunk {
         }
         for (index, item) in self.items.iter().enumerate() {
             fields.extend(
-                item.chunk_id
+                item.page_id
                     .to_control_fields(&format!("{field_prefix}item.{index}.chunk.")),
             );
             fields.insert(

@@ -251,7 +251,7 @@ pub struct ObjectStoreDistributedReadiness {
     pub live_object_count: u64,
     pub deleted_object_count: u64,
     pub slab_count: u64,
-    pub chunk_count: u64,
+    pub page_count: u64,
     pub live_bytes: u64,
     pub stale_bytes: u64,
     pub pending_discard_bytes: u64,

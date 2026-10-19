@@ -10,7 +10,7 @@ pub(crate) fn chunk_storage_readiness_fingerprint_material(
         append_u64(&mut material, replica.writable as u64);
         append_u64(&mut material, replica.ready as u64);
         append_string(&mut material, &replica.reason);
-        append_u64(&mut material, replica.chunk_count);
+        append_u64(&mut material, replica.page_count);
         append_u64(&mut material, replica.physical_bytes);
         append_u64(&mut material, replica.capacity_bytes);
         append_u64(&mut material, replica.capacity_free_bytes);

@@ -1,12 +1,12 @@
 pub(crate) fn chunk_head_batch_read_proof_checksum(
-    chunk_ids: &[PageId],
+    page_ids: &[PageId],
     heads: &[ReplicaHead],
     stats: &ReplicaHeadBatchStats,
     proof: &StorageReadProof,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, CHUNK_HEAD_BATCH_PROOF_FORMAT);
-    append_u64(&mut material, chunk_ids.len() as u64);
+    append_u64(&mut material, page_ids.len() as u64);
     append_u64(&mut material, heads.len() as u64);
     append_u64(&mut material, stats.input_heads);
     append_u64(&mut material, stats.physical_heads);
@@ -20,8 +20,8 @@ pub(crate) fn chunk_head_batch_read_proof_checksum(
     append_u64(&mut material, proof.storage_commit_index_lag);
     append_string(&mut material, &proof.control_kind);
     append_string(&mut material, &proof.control_checksum);
-    for (chunk_id, head) in chunk_ids.iter().zip(heads.iter()) {
-        append_chunk_id(&mut material, chunk_id);
+    for (page_id, head) in page_ids.iter().zip(heads.iter()) {
+        append_chunk_id(&mut material, page_id);
         append_u64(&mut material, head.logical_length);
         append_u64(&mut material, head.write_sequence);
         append_string(&mut material, &head.checksum);
@@ -35,14 +35,14 @@ pub(crate) fn chunk_head_batch_read_proof_checksum(
 }
 
 pub(crate) fn chunk_read_batch_read_proof_checksum(
-    chunk_id: &PageId,
+    page_id: &PageId,
     ranges: &[ReplicaRangeReadResult],
     stats: &ReplicaReadBatchStats,
     proof: &StorageReadProof,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, CHUNK_READ_BATCH_PROOF_FORMAT);
-    append_chunk_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, page_id);
     append_u64(&mut material, ranges.len() as u64);
     append_u64(&mut material, stats.input_ranges);
     append_u64(&mut material, stats.input_bytes);

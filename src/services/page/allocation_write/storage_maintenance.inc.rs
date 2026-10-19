@@ -37,7 +37,7 @@ impl MatrixChunkService {
                 reason: readiness.reason.clone(),
                 priority: 100,
                 replica_index: None,
-                chunk_id: None,
+                page_id: None,
                 estimated_bytes: 0,
             });
         }
@@ -48,7 +48,7 @@ impl MatrixChunkService {
                     reason: "replica_quarantine".to_string(),
                     priority: 90,
                     replica_index: Some(index),
-                    chunk_id: None,
+                    page_id: None,
                     estimated_bytes: replica.physical_bytes,
                 });
             } else if self.disabled_chunk_endpoints.contains(&index) {
@@ -57,7 +57,7 @@ impl MatrixChunkService {
                     reason: "chunk_endpoint_disabled".to_string(),
                     priority: 85,
                     replica_index: Some(index),
-                    chunk_id: None,
+                    page_id: None,
                     estimated_bytes: replica.physical_bytes,
                 });
             } else if replica.frozen {
@@ -66,7 +66,7 @@ impl MatrixChunkService {
                     reason: "replica_frozen".to_string(),
                     priority: 80,
                     replica_index: Some(index),
-                    chunk_id: None,
+                    page_id: None,
                     estimated_bytes: replica.physical_bytes,
                 });
             } else if replica.draining {
@@ -75,7 +75,7 @@ impl MatrixChunkService {
                     reason: "replica_draining".to_string(),
                     priority: 70,
                     replica_index: Some(index),
-                    chunk_id: None,
+                    page_id: None,
                     estimated_bytes: replica.physical_bytes,
                 });
             } else if replica.capacity_pressure {
@@ -84,7 +84,7 @@ impl MatrixChunkService {
                     reason: "capacity_pressure".to_string(),
                     priority: 60,
                     replica_index: Some(index),
-                    chunk_id: None,
+                    page_id: None,
                     estimated_bytes: min_capacity_free_bytes
                         .saturating_sub(replica.capacity_free_bytes.min(min_capacity_free_bytes)),
                 });
@@ -95,7 +95,7 @@ impl MatrixChunkService {
                     reason: "trim_flow_limited".to_string(),
                     priority: 50,
                     replica_index: Some(index),
-                    chunk_id: None,
+                    page_id: None,
                     estimated_bytes: replica.reclaimable_bytes,
                 });
             }
@@ -107,7 +107,7 @@ impl MatrixChunkService {
                 reason: "trim_budget_limited".to_string(),
                 priority: 55,
                 replica_index: Some(candidate.replica_index),
-                chunk_id: Some(candidate.candidate.chunk_id.clone()),
+                page_id: Some(candidate.candidate.page_id.clone()),
                 estimated_bytes: reclaim
                     .skipped_by_trim_budget_bytes
                     .max(candidate.candidate.trim_bytes),
@@ -119,7 +119,7 @@ impl MatrixChunkService {
                 reason: "rewrite_budget_limited".to_string(),
                 priority: 45,
                 replica_index: Some(candidate.replica_index),
-                chunk_id: Some(candidate.candidate.chunk_id.clone()),
+                page_id: Some(candidate.candidate.page_id.clone()),
                 estimated_bytes: reclaim
                     .skipped_by_budget_bytes
                     .max(candidate.candidate.rewrite_bytes),
@@ -138,10 +138,10 @@ impl MatrixChunkService {
                     .first_budget_skipped_candidate
                     .as_ref()
                     .map(|candidate| candidate.replica_index),
-                chunk_id: reclaim
+                page_id: reclaim
                     .first_budget_skipped_candidate
                     .as_ref()
-                    .map(|candidate| candidate.candidate.chunk_id.clone()),
+                    .map(|candidate| candidate.candidate.page_id.clone()),
                 estimated_bytes: reclaim
                     .skipped_by_budget_bytes
                     .max(reclaim.remaining_discard_bytes),
@@ -154,7 +154,7 @@ impl MatrixChunkService {
                 reason: candidate.candidate.reason.clone(),
                 priority: 40u64.saturating_add(candidate.candidate.reclaim_score.min(19)),
                 replica_index: Some(candidate.replica_index),
-                chunk_id: Some(candidate.candidate.chunk_id.clone()),
+                page_id: Some(candidate.candidate.page_id.clone()),
                 estimated_bytes: candidate.candidate.discarded_bytes,
             });
         }
@@ -166,7 +166,7 @@ impl MatrixChunkService {
                 .then_with(|| left.action.cmp(&right.action))
                 .then_with(|| left.reason.cmp(&right.reason))
                 .then_with(|| left.replica_index.cmp(&right.replica_index))
-                .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+                .then_with(|| left.page_id.cmp(&right.page_id))
         });
         let truncated = max_actions > 0 && actions.len() > max_actions;
         if truncated {

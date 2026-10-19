@@ -1,7 +1,7 @@
 impl MatrixReplicaService {
     pub fn install_chunk_state(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         mut state: PageState,
     ) -> Result<(), ObjectError> {
         self.ensure_writable()?;
@@ -13,39 +13,39 @@ impl MatrixReplicaService {
             }
         }
         validate_chunk_state(&state)?;
-        self.ensure_capacity_for_chunk_len(&chunk_id, state.data.len() as u64)?;
-        self.invalidate_chunk_cache(&chunk_id, 0, state.logical_length);
-        self.chunks.insert(chunk_id, std::sync::Arc::new(state));
+        self.ensure_capacity_for_chunk_len(&page_id, state.data.len() as u64)?;
+        self.invalidate_chunk_cache(&page_id, 0, state.logical_length);
+        self.chunks.insert(page_id, std::sync::Arc::new(state));
         Ok(())
     }
 
     pub fn install_chunk_state_fenced(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         state: PageState,
         expected_control_checksum: Option<&str>,
     ) -> Result<(), ObjectError> {
         self.check_expected_control_checksum(expected_control_checksum)?;
-        self.install_chunk_state(chunk_id, state)
+        self.install_chunk_state(page_id, state)
     }
 
     pub fn install_chunk_state_idempotent(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         state: PageState,
         idempotency_key: &str,
     ) -> Result<ReplicaStateInstallReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         let payload_checksum = etag(&state.data);
-        let state_checksum = chunk_state_handoff_checksum(&chunk_id, &state, &payload_checksum);
+        let state_checksum = chunk_state_handoff_checksum(&page_id, &state, &payload_checksum);
         let request_checksum = chunk_state_install_request_checksum(
-            &chunk_id,
+            &page_id,
             &state,
             &payload_checksum,
             &state_checksum,
         );
         if let Some(existing) = self.state_install_request_receipts.get(idempotency_key) {
-            if existing.chunk_id != chunk_id
+            if existing.page_id != page_id
                 || existing.request_checksum != request_checksum
                 || existing.payload_checksum != payload_checksum
                 || existing.state_checksum != state_checksum
@@ -58,9 +58,9 @@ impl MatrixReplicaService {
             receipt.deduped = true;
             return Ok(receipt);
         }
-        self.install_chunk_state(chunk_id.clone(), state.clone())?;
+        self.install_chunk_state(page_id.clone(), state.clone())?;
         let receipt = ReplicaStateInstallReceipt {
-            chunk_id,
+            page_id,
             request_checksum,
             payload_checksum,
             state_checksum,
@@ -78,12 +78,12 @@ impl MatrixReplicaService {
 
     pub fn repair_chunk_payload_from_ec(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
     ) -> Result<bool, ObjectError> {
         self.ensure_writable()?;
         let chunk = self
             .chunks
-            .get_mut(chunk_id)
+            .get_mut(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         let chunk = std::sync::Arc::make_mut(chunk);
         if etag_matches(&chunk.data, &chunk.checksum) {
@@ -118,22 +118,22 @@ impl MatrixReplicaService {
         }
         self.ec_reconstructed_reads
             .set(self.ec_reconstructed_reads.get().saturating_add(1));
-        self.invalidate_chunk_cache(chunk_id, 0, u64::MAX);
+        self.invalidate_chunk_cache(page_id, 0, u64::MAX);
         Ok(true)
     }
 
     pub fn prepare_chunk_state_handoff(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
     ) -> Result<ReplicaStateHandoff, ObjectError> {
-        let state = self.read_chunk_state_validated(chunk_id)?;
+        let state = self.read_chunk_state_validated(page_id)?;
         let payload_checksum = etag(&state.data);
-        let legacy_checksum = chunk_state_handoff_checksum(chunk_id, &state, &payload_checksum);
+        let legacy_checksum = chunk_state_handoff_checksum(page_id, &state, &payload_checksum);
         let handoff_token = legacy_checksum.clone();
         let state_checksum =
-            chunk_state_handoff_checksum_v2(chunk_id, &handoff_token, &state, &payload_checksum);
+            chunk_state_handoff_checksum_v2(page_id, &handoff_token, &state, &payload_checksum);
         Ok(ReplicaStateHandoff {
-            chunk_id: chunk_id.clone(),
+            page_id: page_id.clone(),
             state,
             payload_checksum,
             state_checksum,
@@ -145,10 +145,10 @@ impl MatrixReplicaService {
 
     pub fn prepare_chunk_state_handoff_envelope(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         max_payload_bytes: u64,
     ) -> Result<PreparedChunkLocalStateHandoff, ObjectError> {
-        let handoff = self.prepare_chunk_state_handoff(chunk_id)?;
+        let handoff = self.prepare_chunk_state_handoff(page_id)?;
         let payload_bytes = handoff.state.data.len() as u64;
         if max_payload_bytes > 0 && payload_bytes > max_payload_bytes {
             return Err(ObjectError::InvalidArgument(
@@ -165,7 +165,7 @@ impl MatrixReplicaService {
         handoff: ReplicaStateHandoff,
     ) -> Result<(), ObjectError> {
         validate_chunk_state_handoff(&handoff)?;
-        self.install_chunk_state(handoff.chunk_id, handoff.state)
+        self.install_chunk_state(handoff.page_id, handoff.state)
     }
 
     pub fn install_chunk_state_handoff_fenced(
@@ -174,7 +174,7 @@ impl MatrixReplicaService {
         expected_control_checksum: Option<&str>,
     ) -> Result<(), ObjectError> {
         validate_chunk_state_handoff(&handoff)?;
-        self.install_chunk_state_fenced(handoff.chunk_id, handoff.state, expected_control_checksum)
+        self.install_chunk_state_fenced(handoff.page_id, handoff.state, expected_control_checksum)
     }
 
 }

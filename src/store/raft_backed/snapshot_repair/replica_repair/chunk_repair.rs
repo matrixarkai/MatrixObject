@@ -1,15 +1,15 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_repair_page_chunk_raft_entry(
         &self,
-        chunk_id: PageId,
+        page_id: PageId,
     ) -> Result<PreparedPageChunkRepair, ObjectError> {
         self.store
-            .prepare_page_chunk_repair_raft_entry(chunk_id, self.store.last_applied_index())
+            .prepare_page_chunk_repair_raft_entry(page_id, self.store.last_applied_index())
     }
 
     pub fn prepare_repair_page_chunk_raft_entry_linearizable_fenced(
         &self,
-        chunk_id: PageId,
+        page_id: PageId,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<PreparedPageChunkRepair, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
@@ -17,7 +17,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "block chunk repair prepare",
             expected_page_route_control_checksum,
         )?;
-        let mut prepared = self.prepare_repair_page_chunk_raft_entry(chunk_id)?;
+        let mut prepared = self.prepare_repair_page_chunk_raft_entry(page_id)?;
         prepared.report.expected_route_control_checksum =
             expected_page_route_control_checksum.to_string();
         prepared.expected_route_control_checksum =
@@ -28,11 +28,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_page_chunk_raft_entry_with_read_proof_linearizable_fenced(
         &self,
-        chunk_id: PageId,
+        page_id: PageId,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenStorageRead<PreparedPageChunkRepair>, ObjectError> {
         self.prepare_repair_page_chunk_raft_entry_with_read_proof_linearizable_fenced_committed_at(
-            chunk_id,
+            page_id,
             expected_page_route_control_checksum,
             self.raft.commit_index(),
             0,
@@ -41,7 +41,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_page_chunk_raft_entry_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        chunk_id: PageId,
+        page_id: PageId,
         expected_page_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
@@ -59,7 +59,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let prepared = self.prepare_repair_page_chunk_raft_entry_linearizable_fenced(
-            chunk_id,
+            page_id,
             expected_page_route_control_checksum,
         )?;
         let proof = self.page_storage_read_proof_committed(requested_read_index, min_commit_index);
@@ -71,11 +71,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_page_chunk_envelope_linearizable_fenced(
         &self,
-        chunk_id: PageId,
+        page_id: PageId,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<PreparedPageRepairEnvelope, ObjectError> {
         let prepared = self.prepare_repair_page_chunk_raft_entry_linearizable_fenced(
-            chunk_id,
+            page_id,
             expected_page_route_control_checksum,
         )?;
         Ok(prepared_page_chunk_repair_envelope(&prepared))
@@ -83,11 +83,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_page_chunk_envelope_with_read_proof_linearizable_fenced(
         &self,
-        chunk_id: PageId,
+        page_id: PageId,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenPreparedPageRepairEnvelope, ObjectError> {
         self.prepare_repair_page_chunk_envelope_with_read_proof_linearizable_fenced_committed_at(
-            chunk_id,
+            page_id,
             expected_page_route_control_checksum,
             self.raft.commit_index(),
             0,
@@ -96,14 +96,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_page_chunk_envelope_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        chunk_id: PageId,
+        page_id: PageId,
         expected_page_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<ProvenPreparedPageRepairEnvelope, ObjectError> {
         let prepared = self
             .prepare_repair_page_chunk_raft_entry_with_read_proof_linearizable_fenced_committed_at(
-                chunk_id,
+                page_id,
                 expected_page_route_control_checksum,
                 min_read_index,
                 min_commit_index,
@@ -173,12 +173,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_repair_page_chunk_prepared_linearizable_fenced(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self.prepare_repair_page_chunk_raft_entry_linearizable_fenced(
-            chunk_id,
+            page_id,
             expected_page_route_control_checksum,
         )?;
         let expected_raft_entry_checksum = expected_raft_entry_checksum.as_ref();
@@ -288,13 +288,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 "proven block chunk repair envelope raft entry checksum mismatch".to_string(),
             ));
         }
-        let chunk_id = proven_envelope.envelope.chunk_id.clone().ok_or_else(|| {
+        let page_id = proven_envelope.envelope.page_id.clone().ok_or_else(|| {
             ObjectError::InvalidArgument(
                 "proven block chunk repair envelope missing chunk id".to_string(),
             )
         })?;
         let prepared = self.prepare_repair_page_chunk_raft_entry_linearizable_fenced(
-            chunk_id,
+            page_id,
             expected_page_route_control_checksum,
         )?;
         let actual_envelope = prepared_page_chunk_repair_envelope(&prepared);

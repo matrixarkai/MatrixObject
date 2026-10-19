@@ -1,7 +1,7 @@
 impl MatrixReplicaService {
     pub fn can_accept_chunk_reads(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
     ) -> Result<ReplicaReadAdmission, ObjectError> {
@@ -38,7 +38,7 @@ impl MatrixReplicaService {
         }
         admission.stats.budget_limited =
             max_payload_bytes > 0 && admission.stats.payload_bytes > max_payload_bytes;
-        let Some(chunk) = self.chunks.get(chunk_id) else {
+        let Some(chunk) = self.chunks.get(page_id) else {
             admission.missing_chunk = true;
             admission.partial_status = "chunk is missing".to_string();
             return Ok(admission);
@@ -80,7 +80,7 @@ impl MatrixReplicaService {
                 let cache_hit = self
                     .read_cache
                     .borrow()
-                    .get(&(chunk_id.clone(), range.offset, range.length))
+                    .get(&(page_id.clone(), range.offset, range.length))
                     .is_some_and(|entry| {
                         entry.result.write_sequence == chunk.write_sequence
                             && entry.result.checksum == chunk.checksum
@@ -122,7 +122,7 @@ impl MatrixReplicaService {
                 continue;
             }
             let cache_hit = read_cache
-                .get(&(chunk_id.clone(), range.offset, range.length))
+                .get(&(page_id.clone(), range.offset, range.length))
                 .is_some_and(|entry| {
                     entry.result.write_sequence == chunk.write_sequence
                         && entry.result.checksum == chunk.checksum

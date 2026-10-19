@@ -158,7 +158,7 @@ pub(crate) fn append_repair_stats(out: &mut Vec<u8>, stats: &RepairStats) {
 }
 
 pub(crate) fn append_page_replica_audit_item(out: &mut Vec<u8>, item: &ChunkReplicaAuditItem) {
-    append_chunk_id(out, &item.chunk_id);
+    append_chunk_id(out, &item.page_id);
     append_u64(out, item.replica_index as u64);
     append_string(out, &item.status);
     append_u64(out, item.logical_length);

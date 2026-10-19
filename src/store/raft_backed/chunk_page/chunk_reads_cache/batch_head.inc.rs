@@ -2,24 +2,24 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_linearizable(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<PageId>,
+        page_ids: Vec<PageId>,
     ) -> Result<(Vec<ReplicaHead>, ReplicaHeadBatchStats, u64), ObjectError> {
-        self.head_chunk_batch_linearizable_at(replica_index, chunk_ids, self.raft.commit_index())
+        self.head_chunk_batch_linearizable_at(replica_index, page_ids, self.raft.commit_index())
     }
 
     pub fn head_chunk_batch_linearizable_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<PageId>,
+        page_ids: Vec<PageId>,
         min_read_index: u64,
     ) -> Result<(Vec<ReplicaHead>, ReplicaHeadBatchStats, u64), ObjectError> {
-        self.head_chunk_batch_linearizable_committed_at(replica_index, chunk_ids, min_read_index, 0)
+        self.head_chunk_batch_linearizable_committed_at(replica_index, page_ids, min_read_index, 0)
     }
 
     pub fn head_chunk_batch_linearizable_committed_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<PageId>,
+        page_ids: Vec<PageId>,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<(Vec<ReplicaHead>, ReplicaHeadBatchStats, u64), ObjectError> {
@@ -57,19 +57,19 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .ok_or_else(|| {
                 ObjectError::InvalidArgument("replica index is out of range".to_string())
             })?;
-        let (heads, stats) = replica.head_chunk_batch(chunk_ids)?;
+        let (heads, stats) = replica.head_chunk_batch(page_ids)?;
         Ok((heads, stats, required_read_index))
     }
 
     pub fn head_chunk_batch_with_read_proof_linearizable_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<PageId>,
+        page_ids: Vec<PageId>,
         min_read_index: u64,
     ) -> Result<ProvenStorageRead<ReplicaHeadBatchRead>, ObjectError> {
         self.head_chunk_batch_with_read_proof_linearizable_committed_at(
             replica_index,
-            chunk_ids,
+            page_ids,
             min_read_index,
             0,
         )
@@ -78,15 +78,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_with_read_proof_linearizable_committed_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<PageId>,
+        page_ids: Vec<PageId>,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<ProvenStorageRead<ReplicaHeadBatchRead>, ObjectError> {
-        let requested_chunk_ids = chunk_ids.clone();
+        let requested_chunk_ids = page_ids.clone();
         let (heads, stats, requested_read_index) = self
             .head_chunk_batch_linearizable_committed_at(
                 replica_index,
-                chunk_ids,
+                page_ids,
                 min_read_index,
                 min_commit_index,
             )?;
@@ -113,12 +113,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_strict_linearizable(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<PageId>,
+        page_ids: Vec<PageId>,
         expected_chunk_head_batch_proof_checksum: impl AsRef<str>,
     ) -> Result<ProvenStorageRead<ReplicaHeadBatchRead>, ObjectError> {
         self.head_chunk_batch_strict_linearizable_committed_at(
             replica_index,
-            chunk_ids,
+            page_ids,
             expected_chunk_head_batch_proof_checksum,
             self.raft.commit_index(),
             0,
@@ -128,13 +128,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_strict_linearizable_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<PageId>,
+        page_ids: Vec<PageId>,
         expected_chunk_head_batch_proof_checksum: impl AsRef<str>,
         min_read_index: u64,
     ) -> Result<ProvenStorageRead<ReplicaHeadBatchRead>, ObjectError> {
         self.head_chunk_batch_strict_linearizable_committed_at(
             replica_index,
-            chunk_ids,
+            page_ids,
             expected_chunk_head_batch_proof_checksum,
             min_read_index,
             0,
@@ -144,14 +144,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_strict_linearizable_committed_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<PageId>,
+        page_ids: Vec<PageId>,
         expected_chunk_head_batch_proof_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<ProvenStorageRead<ReplicaHeadBatchRead>, ObjectError> {
         let proven = self.head_chunk_batch_with_read_proof_linearizable_committed_at(
             replica_index,
-            chunk_ids,
+            page_ids,
             min_read_index,
             min_commit_index,
         )?;

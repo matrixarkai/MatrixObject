@@ -1,7 +1,7 @@
 impl MatrixObjectStore {
     pub fn prepare_page_chunk_repair_raft_entry(
         &self,
-        chunk_id: PageId,
+        page_id: PageId,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedPageChunkRepair, ObjectError> {
         if expected_previous_commit_index != self.last_applied_index() {
@@ -12,10 +12,10 @@ impl MatrixObjectStore {
         let before_page_service_fingerprint =
             page_audit_repair_image_fingerprint(&self.chunk_service);
         let mut projected = self.chunk_service.clone();
-        let report = projected.repair_chunk_replicas(&chunk_id)?;
+        let report = projected.repair_chunk_replicas(&page_id)?;
         let after_page_service_fingerprint = page_audit_repair_image_fingerprint(&projected);
         let mut prepared = PreparedPageChunkRepair {
-            chunk_id,
+            page_id,
             before_page_service_fingerprint,
             after_page_service_fingerprint,
             route_control_proof: report.route_control_proof.clone(),
@@ -84,7 +84,7 @@ impl MatrixObjectStore {
             .repair_request_receipts
             .get(&prepared.raft_entry_checksum)
         {
-            if existing.chunk_id != prepared.chunk_id || existing.report != prepared.report {
+            if existing.page_id != prepared.page_id || existing.report != prepared.report {
                 return Err(ObjectError::PreconditionFailed(
                     "block prepared chunk repair receipt image mismatch".to_string(),
                 ));
@@ -96,7 +96,7 @@ impl MatrixObjectStore {
         let current_fingerprint = page_audit_repair_image_fingerprint(&self.chunk_service);
         if current_fingerprint == prepared.after_page_service_fingerprint {
             let receipt = ReplicaRepairReceipt {
-                chunk_id: prepared.chunk_id.clone(),
+                page_id: prepared.page_id.clone(),
                 request_checksum: prepared.raft_entry_checksum.clone(),
                 idempotency_key: prepared.raft_entry_checksum.clone(),
                 report: prepared.report.clone(),
@@ -129,7 +129,7 @@ impl MatrixObjectStore {
             ));
         }
         let mut current = self.prepare_page_chunk_repair_raft_entry(
-            prepared.chunk_id.clone(),
+            prepared.page_id.clone(),
             prepared.expected_previous_commit_index,
         )?;
         current.report.expected_route_control_checksum =
@@ -148,7 +148,7 @@ impl MatrixObjectStore {
         }
         let mut report = self
             .chunk_service
-            .repair_chunk_replicas(&prepared.chunk_id)?;
+            .repair_chunk_replicas(&prepared.page_id)?;
         report.expected_route_control_checksum =
             prepared.report.expected_route_control_checksum.clone();
         if report != prepared.report
@@ -160,7 +160,7 @@ impl MatrixObjectStore {
             ));
         }
         let receipt = ReplicaRepairReceipt {
-            chunk_id: prepared.chunk_id.clone(),
+            page_id: prepared.page_id.clone(),
             request_checksum: prepared.raft_entry_checksum.clone(),
             idempotency_key: prepared.raft_entry_checksum.clone(),
             report: prepared.report.clone(),

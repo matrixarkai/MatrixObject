@@ -14,7 +14,7 @@ pub struct ReplicaMutationBatchStatus {
     pub batch_id: String,
     pub started_control_commit_index: u64,
     pub current_control_commit_index: u64,
-    pub chunk_count: u64,
+    pub page_count: u64,
     pub physical_bytes: u64,
     pub discarded_bytes: u64,
     pub write_receipt_count: u64,

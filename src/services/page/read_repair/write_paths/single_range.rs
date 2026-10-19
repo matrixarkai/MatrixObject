@@ -86,23 +86,23 @@ impl MatrixChunkService {
                     continue;
                 }
                 let write_result = if let Some(base_key) = idempotency_key {
-                    let chunk_key = replica_receipt_key(
+                    let page_key = replica_receipt_key(
                         "sw",
                         base_key,
-                        &loc.chunk_id,
+                        &loc.page_id,
                         index,
-                        &(loc.chunk_offset, slice),
+                        &(loc.page_offset, slice),
                     );
                     replica
                         .write_chunk_idempotent(
-                            loc.chunk_id.clone(),
-                            loc.chunk_offset,
+                            loc.page_id.clone(),
+                            loc.page_offset,
                             slice,
-                            &chunk_key,
+                            &page_key,
                         )
                         .map(|_| ())
                 } else {
-                    replica.write_chunk(loc.chunk_id.clone(), loc.chunk_offset, slice)
+                    replica.write_chunk(loc.page_id.clone(), loc.page_offset, slice)
                 };
                 match write_result {
                     Ok(()) => ok += 1,

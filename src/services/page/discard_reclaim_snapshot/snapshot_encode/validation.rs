@@ -170,8 +170,8 @@ impl ChunkServiceSnapshot {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.request_checksum.is_empty()
-                || receipt.request_checksum != chunk_repair_request_checksum(&receipt.chunk_id)
-                || receipt.report.chunk_id.as_ref() != Some(&receipt.chunk_id)
+                || receipt.request_checksum != chunk_repair_request_checksum(&receipt.page_id)
+                || receipt.report.page_id.as_ref() != Some(&receipt.page_id)
             {
                 return Err(ObjectError::Corruption(
                     "block service snapshot repair receipt is invalid".to_string(),

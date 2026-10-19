@@ -13,7 +13,7 @@ pub struct RootSnapshot {
 pub struct RootSnapshotChunk {
     pub offset: u64,
     pub total_bytes: u64,
-    pub chunk_checksum: String,
+    pub page_checksum: String,
     pub full_checksum: String,
     pub eof: bool,
     pub payload: Vec<u8>,

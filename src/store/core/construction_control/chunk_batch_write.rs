@@ -2,14 +2,14 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_write_raft_entry(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         idempotency_key: &str,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedChunkBatchWrite, ObjectError> {
         self.prepare_chunk_batch_write_raft_entry_fenced(
             replica_index,
-            chunk_id,
+            page_id,
             writes,
             idempotency_key,
             expected_previous_commit_index,
@@ -20,7 +20,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_write_raft_entry_fenced(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         idempotency_key: &str,
         expected_previous_commit_index: u64,
@@ -61,11 +61,11 @@ impl MatrixObjectStore {
         }
         let mut projected = replica.clone();
         let (_stats, receipt) = projected.write_chunk_ranges_idempotent_borrowed(
-            chunk_id.clone(),
+            page_id.clone(),
             &borrowed_selected,
             idempotency_key,
         )?;
-        let state = projected.read_chunk_state(&chunk_id)?;
+        let state = projected.read_chunk_state(&page_id)?;
         let mut prepared = PreparedChunkBatchWrite {
             replica_index,
             writes: selected,
@@ -84,7 +84,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_write_raft_entry_bounded(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         idempotency_key: &str,
@@ -92,7 +92,7 @@ impl MatrixObjectStore {
     ) -> Result<PreparedChunkBatchWrite, ObjectError> {
         self.prepare_chunk_batch_write_raft_entry_bounded_from(
             replica_index,
-            chunk_id,
+            page_id,
             writes,
             max_write_bytes,
             0,
@@ -104,7 +104,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_write_raft_entry_bounded_from(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         write_start_range_index: u64,
@@ -122,7 +122,7 @@ impl MatrixObjectStore {
         }
         let admission = self.chunk_service.can_accept_chunk_replica_batch_write_from_borrowed(
             replica_index,
-            &chunk_id,
+            &page_id,
             &borrowed_selected,
             max_write_bytes,
             0,
@@ -143,7 +143,7 @@ impl MatrixObjectStore {
         }
         self.prepare_chunk_batch_write_raft_entry_fenced(
             replica_index,
-            chunk_id,
+            page_id,
             selected,
             idempotency_key,
             expected_previous_commit_index,
@@ -154,7 +154,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_write_raft_entry_bounded_fenced(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         idempotency_key: &str,
@@ -163,7 +163,7 @@ impl MatrixObjectStore {
     ) -> Result<PreparedChunkBatchWrite, ObjectError> {
         self.prepare_chunk_batch_write_raft_entry_bounded_fenced_from(
             replica_index,
-            chunk_id,
+            page_id,
             writes,
             max_write_bytes,
             0,
@@ -176,7 +176,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_write_raft_entry_bounded_fenced_from(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         write_start_range_index: u64,
@@ -197,7 +197,7 @@ impl MatrixObjectStore {
             .chunk_service
             .can_accept_chunk_replica_batch_write_fenced_borrowed(
             replica_index,
-            &chunk_id,
+            &page_id,
             &borrowed_selected,
             max_write_bytes,
             expected_control_checksum,
@@ -218,7 +218,7 @@ impl MatrixObjectStore {
         }
         self.prepare_chunk_batch_write_raft_entry_fenced(
             replica_index,
-            chunk_id,
+            page_id,
             selected,
             idempotency_key,
             expected_previous_commit_index,
@@ -249,7 +249,7 @@ impl MatrixObjectStore {
             ));
         }
         let request_checksum =
-            chunk_batch_write_request_checksum(&prepared.receipt.chunk_id, &prepared.writes);
+            chunk_batch_write_request_checksum(&prepared.receipt.page_id, &prepared.writes);
         let payload_checksum = chunk_batch_write_payload_checksum(&prepared.writes);
         if prepared.receipt.request_checksum != request_checksum
             || prepared.receipt.payload_checksum != payload_checksum
@@ -277,7 +277,7 @@ impl MatrixObjectStore {
             .batch_write_request_receipts
             .get(&prepared.receipt.idempotency_key)
         {
-            if existing.chunk_id != prepared.receipt.chunk_id
+            if existing.page_id != prepared.receipt.page_id
                 || existing.request_checksum != prepared.receipt.request_checksum
                 || existing.payload_checksum != prepared.receipt.payload_checksum
             {
@@ -309,7 +309,7 @@ impl MatrixObjectStore {
         replica.check_expected_control_checksum(Some(&current_control_proof.state_checksum))?;
         let projected_len = prepared.state.data.len() as u64;
         let projected_physical = replica
-            .projected_physical_bytes_for_chunk_len(&prepared.receipt.chunk_id, projected_len)?;
+            .projected_physical_bytes_for_chunk_len(&prepared.receipt.page_id, projected_len)?;
         if replica.capacity_bytes > 0 && projected_physical > replica.capacity_bytes {
             replica.capacity_rejected_writes = replica.capacity_rejected_writes.saturating_add(1);
             return Err(ObjectError::PreconditionFailed(
@@ -319,10 +319,10 @@ impl MatrixObjectStore {
         replica
             .chunks
             .insert(
-                prepared.receipt.chunk_id.clone(),
+                prepared.receipt.page_id.clone(),
                 std::sync::Arc::new(prepared.state),
             );
-        let _ = replica.invalidate_chunk_cache(&prepared.receipt.chunk_id, 0, projected_len);
+        let _ = replica.invalidate_chunk_cache(&prepared.receipt.page_id, 0, projected_len);
         replica.physical_write_count = replica
             .physical_write_count
             .saturating_add(prepared.receipt.stats.physical_write_count);

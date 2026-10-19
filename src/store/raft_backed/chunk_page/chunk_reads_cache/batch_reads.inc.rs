@@ -2,7 +2,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_batch_with_read_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -11,7 +11,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenStorageRead<ReplicaReadBatchRead>, ObjectError> {
         let proven = self.read_chunk_ranges_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_payload_bytes,
             expected_control_checksum,
@@ -20,7 +20,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let (ranges, stats) = proven.value;
         let proof_checksum =
-            chunk_read_batch_read_proof_checksum(chunk_id, &ranges, &stats, &proven.proof);
+            chunk_read_batch_read_proof_checksum(page_id, &ranges, &stats, &proven.proof);
         Ok(ProvenStorageRead {
             value: ReplicaReadBatchRead {
                 ranges,
@@ -37,14 +37,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_batch_with_read_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
     ) -> Result<ProvenStorageRead<ReplicaReadBatchRead>, ObjectError> {
         self.read_chunk_ranges_batch_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_payload_bytes,
             expected_control_checksum,
@@ -56,7 +56,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_batch_with_read_proof_linearizable_fenced_at(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -64,7 +64,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenStorageRead<ReplicaReadBatchRead>, ObjectError> {
         self.read_chunk_ranges_batch_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_payload_bytes,
             expected_control_checksum,
@@ -76,14 +76,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_batch_with_control_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenChunkControlFencedStorageRead<ReplicaReadBatchRead>, ObjectError> {
         self.read_chunk_ranges_batch_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_payload_bytes,
             expected_control_checksum,
@@ -95,7 +95,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_batch_with_control_proof_linearizable_fenced_at(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
@@ -103,7 +103,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenChunkControlFencedStorageRead<ReplicaReadBatchRead>, ObjectError> {
         self.read_chunk_ranges_batch_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_payload_bytes,
             expected_control_checksum,
@@ -115,7 +115,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_batch_with_control_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
@@ -135,7 +135,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let proven = self
             .read_chunk_ranges_batch_with_read_proof_linearizable_fenced_committed_at(
                 replica_index,
-                chunk_id,
+                page_id,
                 ranges,
                 max_payload_bytes,
                 Some(&expected_checksum),
@@ -153,7 +153,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_batch_strict_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -161,7 +161,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenStorageRead<ReplicaReadBatchRead>, ObjectError> {
         self.read_chunk_ranges_batch_strict_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_payload_bytes,
             expected_control_checksum,
@@ -174,7 +174,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_batch_strict_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -185,7 +185,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let proven = self
             .read_chunk_ranges_batch_with_read_proof_linearizable_fenced_committed_at(
                 replica_index,
-                chunk_id,
+                page_id,
                 ranges,
                 max_payload_bytes,
                 expected_control_checksum,

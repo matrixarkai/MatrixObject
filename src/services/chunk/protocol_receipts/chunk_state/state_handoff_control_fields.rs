@@ -56,7 +56,7 @@ impl ReplicaStateHandoffApplyReport {
 impl ReplicaStateHandoff {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .chunk_id
+            .page_id
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.extend(
             self.state
@@ -81,7 +81,7 @@ impl ReplicaStateHandoff {
 impl PreparedChunkLocalStateHandoffEnvelope {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .chunk_id
+            .page_id
             .to_control_fields(&format!("{field_prefix}chunk."));
         for (name, value) in [
             ("max_payload_bytes", self.max_payload_bytes),
@@ -185,9 +185,9 @@ impl PreparedChunkStateHandoffEnvelope {
             format!("{field_prefix}first_handoff_chunk_present"),
             self.first_handoff_chunk_id.is_some().to_string(),
         );
-        if let Some(chunk_id) = &self.first_handoff_chunk_id {
+        if let Some(page_id) = &self.first_handoff_chunk_id {
             fields
-                .extend(chunk_id.to_control_fields(&format!("{field_prefix}first_handoff_chunk.")));
+                .extend(page_id.to_control_fields(&format!("{field_prefix}first_handoff_chunk.")));
         }
         for (index, checksum) in self.handoff_state_checksums.iter().enumerate() {
             fields.insert(

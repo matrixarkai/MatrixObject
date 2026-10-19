@@ -84,10 +84,10 @@ impl MatrixChunkService {
                 .saturating_add(locations.len() as u64);
             for loc in locations {
                 grouped
-                    .entry((request.slab_id.clone(), loc.chunk_id))
+                    .entry((request.slab_id.clone(), loc.page_id))
                     .or_default()
                     .push(DataRange {
-                        offset: loc.chunk_offset,
+                        offset: loc.page_offset,
                         length: loc.length,
                     });
             }
@@ -103,16 +103,16 @@ impl MatrixChunkService {
         )?;
         let mut merged_grouped: BTreeMap<(SlabId, PageId), Vec<DataRange>> = BTreeMap::new();
         let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
-        for ((slab_id, chunk_id), ranges) in grouped {
+        for ((slab_id, page_id), ranges) in grouped {
             let merged = merge_ranges(ranges);
             if merged.is_empty() {
                 continue;
             }
-            discard_ranges.insert(chunk_id.clone(), merged.clone());
-            merged_grouped.insert((slab_id, chunk_id), merged);
+            discard_ranges.insert(page_id.clone(), merged.clone());
+            merged_grouped.insert((slab_id, page_id), merged);
         }
         let accepted_replicas = self.admissible_discard_replicas(&discard_ranges)?;
-        for ((_, chunk_id), merged) in merged_grouped {
+        for ((_, page_id), merged) in merged_grouped {
             let mut ok = 0usize;
             let mut first_error: Option<ObjectError> = None;
             let mut physical_ranges = 0u64;
@@ -122,13 +122,13 @@ impl MatrixChunkService {
                     continue;
                 }
                 let discard_result = if let Some(base_key) = idempotency_key {
-                    let chunk_key =
-                        replica_receipt_key("bd", base_key, &chunk_id, index, &merged);
+                    let page_key =
+                        replica_receipt_key("bd", base_key, &page_id, index, &merged);
                     replica
-                        .discard_chunk_ranges_idempotent_borrowed(&chunk_id, &merged, &chunk_key)
+                        .discard_chunk_ranges_idempotent_borrowed(&page_id, &merged, &page_key)
                         .map(|(stats, _)| stats)
                 } else {
-                    replica.discard_chunk_ranges_borrowed(&chunk_id, &merged)
+                    replica.discard_chunk_ranges_borrowed(&page_id, &merged)
                 };
                 match discard_result {
                     Ok(replica_stats) => {

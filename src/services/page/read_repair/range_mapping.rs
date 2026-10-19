@@ -34,15 +34,15 @@ impl MatrixChunkService {
         while cursor < length {
             let absolute = offset + cursor;
             let page_index = absolute / self.page_size;
-            let chunk_offset = absolute % self.page_size;
-            let available = self.page_size - chunk_offset;
+            let page_offset = absolute % self.page_size;
+            let available = self.page_size - page_offset;
             let n = available.min(length - cursor);
             out.push(ChunkLocation {
-                chunk_id: PageId {
+                page_id: PageId {
                     slab_id: slab_id.clone(),
                     page_index,
                 },
-                chunk_offset,
+                page_offset,
                 length: n,
             });
             cursor += n;

@@ -29,7 +29,7 @@ fn populate_lifecycle_module_status(
     status.live_object_count = readiness.live_object_count;
     status.deleted_object_count = readiness.deleted_object_count;
     status.slab_count = readiness.slab_count;
-    status.chunk_count = readiness.chunk_count;
+    status.page_count = readiness.page_count;
     status.logical_written_bytes = readiness.logical_written_bytes;
     status.physical_written_bytes = readiness.physical_written_bytes;
     status.chunk_read_cache_max_bytes_per_replica =

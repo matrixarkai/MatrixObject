@@ -4,12 +4,12 @@ impl MatrixChunkService {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaWriteReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
-            .list_write_receipts(marker, limit, chunk_id)
+            .list_write_receipts(marker, limit, page_id)
     }
 
     pub fn list_chunk_batch_write_receipts(
@@ -17,12 +17,12 @@ impl MatrixChunkService {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaBatchWriteReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
-            .list_batch_write_receipts(marker, limit, chunk_id)
+            .list_batch_write_receipts(marker, limit, page_id)
     }
 
     pub fn list_chunk_discard_receipts(
@@ -30,12 +30,12 @@ impl MatrixChunkService {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaDiscardReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
-            .list_discard_receipts(marker, limit, chunk_id)
+            .list_discard_receipts(marker, limit, page_id)
     }
 
     pub fn list_chunk_batch_discard_receipts(
@@ -43,12 +43,12 @@ impl MatrixChunkService {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaBatchDiscardReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
-            .list_batch_discard_receipts(marker, limit, chunk_id)
+            .list_batch_discard_receipts(marker, limit, page_id)
     }
 
     pub fn list_chunk_repair_receipts(
@@ -56,11 +56,11 @@ impl MatrixChunkService {
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaRepairReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
-            .list_repair_receipts(marker, limit, chunk_id)
+            .list_repair_receipts(marker, limit, page_id)
     }
 }

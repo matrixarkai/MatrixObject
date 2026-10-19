@@ -67,14 +67,14 @@ impl MatrixObjectStore {
             59 => {
                 let replica_index =
                     cursor.read_count("persistent journal chunk write replica index")?;
-                let chunk_id = read_chunk_id(&mut cursor)?;
+                let page_id = read_chunk_id(&mut cursor)?;
                 let offset = cursor.read_u64()?;
                 let data_len = cursor.read_u64()? as usize;
                 let data = cursor.read_bytes(data_len)?.to_vec();
                 let idempotency_key = cursor.read_string()?;
                 self.write_direct_chunk_range_idempotent(
                     replica_index,
-                    chunk_id,
+                    page_id,
                     offset,
                     &data,
                     &idempotency_key,
@@ -83,7 +83,7 @@ impl MatrixObjectStore {
             60 => {
                 let replica_index =
                     cursor.read_count("persistent journal chunk batch write replica index")?;
-                let chunk_id = read_chunk_id(&mut cursor)?;
+                let page_id = read_chunk_id(&mut cursor)?;
                 let count = cursor.read_count("persistent journal chunk batch write count")?;
                 let mut writes = Vec::with_capacity(count);
                 for _ in 0..count {
@@ -95,7 +95,7 @@ impl MatrixObjectStore {
                 let idempotency_key = cursor.read_string()?;
                 self.write_direct_chunk_ranges_idempotent(
                     replica_index,
-                    chunk_id,
+                    page_id,
                     writes,
                     &idempotency_key,
                 )?;
@@ -103,13 +103,13 @@ impl MatrixObjectStore {
             61 => {
                 let replica_index =
                     cursor.read_count("persistent journal chunk discard replica index")?;
-                let chunk_id = read_chunk_id(&mut cursor)?;
+                let page_id = read_chunk_id(&mut cursor)?;
                 let offset = cursor.read_u64()?;
                 let length = cursor.read_u64()?;
                 let idempotency_key = cursor.read_string()?;
                 self.discard_direct_chunk_range_idempotent(
                     replica_index,
-                    &chunk_id,
+                    &page_id,
                     offset,
                     length,
                     &idempotency_key,
@@ -118,7 +118,7 @@ impl MatrixObjectStore {
             62 => {
                 let replica_index =
                     cursor.read_count("persistent journal chunk batch discard replica index")?;
-                let chunk_id = read_chunk_id(&mut cursor)?;
+                let page_id = read_chunk_id(&mut cursor)?;
                 let count = cursor.read_count("persistent journal chunk batch discard count")?;
                 let mut ranges = Vec::with_capacity(count);
                 for _ in 0..count {
@@ -127,7 +127,7 @@ impl MatrixObjectStore {
                 let idempotency_key = cursor.read_string()?;
                 self.discard_direct_chunk_ranges_idempotent(
                     replica_index,
-                    &chunk_id,
+                    &page_id,
                     ranges,
                     &idempotency_key,
                 )?;

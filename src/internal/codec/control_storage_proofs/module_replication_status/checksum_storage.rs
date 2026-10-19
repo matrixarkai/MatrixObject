@@ -26,7 +26,7 @@ fn append_storage_status(mut material: &mut Vec<u8>, status: &ObjectStoreModuleS
     append_u64(&mut material, status.live_object_count);
     append_u64(&mut material, status.deleted_object_count);
     append_u64(&mut material, status.slab_count);
-    append_u64(&mut material, status.chunk_count);
+    append_u64(&mut material, status.page_count);
     append_u64(&mut material, status.logical_written_bytes);
     append_u64(&mut material, status.physical_written_bytes);
     append_u64(&mut material, status.chunk_read_cache_max_bytes_per_replica);

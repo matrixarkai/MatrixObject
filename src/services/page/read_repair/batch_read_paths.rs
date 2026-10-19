@@ -101,10 +101,10 @@ impl MatrixChunkService {
             }
             for loc in &locations {
                 grouped
-                    .entry(loc.chunk_id.clone())
+                    .entry(loc.page_id.clone())
                     .or_default()
                     .push(DataRange {
-                        offset: loc.chunk_offset,
+                        offset: loc.page_offset,
                         length: loc.length,
                     });
             }
@@ -120,13 +120,13 @@ impl MatrixChunkService {
             now_millis(),
         )?;
 
-        let mut chunk_ids = Vec::with_capacity(grouped.len());
-        for chunk_id in grouped.keys() {
-            chunk_ids.push(chunk_id.clone());
+        let mut page_ids = Vec::with_capacity(grouped.len());
+        for page_id in grouped.keys() {
+            page_ids.push(page_id.clone());
         }
         merge_page_read_stats(
             &mut stats.read_stats,
-            self.collect_metadata_head_admission_stats(&chunk_ids),
+            self.collect_metadata_head_admission_stats(&page_ids),
         );
 
         struct MergedChunkRead {
@@ -138,12 +138,12 @@ impl MatrixChunkService {
         }
 
         let mut merged_reads: BTreeMap<PageId, Vec<MergedChunkRead>> = BTreeMap::new();
-        for (chunk_id, ranges) in grouped {
+        for (page_id, ranges) in grouped {
             let merged_ranges = merge_ranges(ranges);
             let mut chunk_payloads = Vec::with_capacity(merged_ranges.len());
             for range in merged_ranges {
                 let (read, read_stats) =
-                    self.read_chunk_quorum(&chunk_id, range.offset, range.length)?;
+                    self.read_chunk_quorum(&page_id, range.offset, range.length)?;
                 merge_page_read_stats(&mut stats.read_stats, read_stats.clone());
                 stats.coalesced_chunk_ranges = stats.coalesced_chunk_ranges.saturating_add(1);
                 chunk_payloads.push(MergedChunkRead {
@@ -154,21 +154,21 @@ impl MatrixChunkService {
                     payload: Some(read.data),
                 });
             }
-            merged_reads.insert(chunk_id, chunk_payloads);
+            merged_reads.insert(page_id, chunk_payloads);
         }
-        let repair_stats_by_chunk = self.probe_batch_read_repairs(&chunk_ids, &mut stats.read_stats);
+        let repair_stats_by_chunk = self.probe_batch_read_repairs(&page_ids, &mut stats.read_stats);
         for locations in &request_locations {
             for loc in locations {
-                let loc_end = loc.chunk_offset.checked_add(loc.length).ok_or_else(|| {
+                let loc_end = loc.page_offset.checked_add(loc.length).ok_or_else(|| {
                     ObjectError::InvalidArgument("batch read location overflows".to_string())
                 })?;
-                let Some(chunk_reads) = merged_reads.get_mut(&loc.chunk_id) else {
+                let Some(chunk_reads) = merged_reads.get_mut(&loc.page_id) else {
                     return Err(ObjectError::Corruption(
                         "batch read missing coalesced chunk payload".to_string(),
                     ));
                 };
                 let candidate_index = chunk_reads
-                    .partition_point(|read| read.offset <= loc.chunk_offset)
+                    .partition_point(|read| read.offset <= loc.page_offset)
                     .checked_sub(1)
                     .ok_or_else(|| {
                         ObjectError::Corruption(
@@ -199,20 +199,20 @@ impl MatrixChunkService {
             let mut data_reserved = false;
             let mut result_stats = ChunkReadStats::default();
             for loc in locations {
-                let loc_end = loc.chunk_offset.checked_add(loc.length).ok_or_else(|| {
+                let loc_end = loc.page_offset.checked_add(loc.length).ok_or_else(|| {
                     ObjectError::InvalidArgument("batch read location overflows".to_string())
                 })?;
                 let mut found = false;
-                let Some(chunk_reads) = merged_reads.get(&loc.chunk_id) else {
+                let Some(chunk_reads) = merged_reads.get(&loc.page_id) else {
                     return Err(ObjectError::Corruption(
                         "batch read missing coalesced chunk payload".to_string(),
                     ));
                 };
                 let candidate_index = chunk_reads
-                    .partition_point(|read| read.offset <= loc.chunk_offset)
+                    .partition_point(|read| read.offset <= loc.page_offset)
                     .checked_sub(1);
                 if let Some(candidate_index) = candidate_index {
-                    let chunk_reads = merged_reads.get_mut(&loc.chunk_id).ok_or_else(|| {
+                    let chunk_reads = merged_reads.get_mut(&loc.page_id).ok_or_else(|| {
                         ObjectError::Corruption(
                             "batch read missing coalesced chunk payload".to_string(),
                         )
@@ -223,7 +223,7 @@ impl MatrixChunkService {
                     })?;
                     if merged_end >= loc_end {
                         let start =
-                            usize::try_from(loc.chunk_offset - merged.offset).map_err(|_| {
+                            usize::try_from(loc.page_offset - merged.offset).map_err(|_| {
                                 ObjectError::InvalidArgument(
                                     "block batch read chunk offset exceeds memory size".to_string(),
                                 )
@@ -254,7 +254,7 @@ impl MatrixChunkService {
                                     .to_string(),
                             ));
                         }
-                        let exact_single_use = loc.chunk_offset == merged.offset
+                        let exact_single_use = loc.page_offset == merged.offset
                             && loc.length == merged.length
                             && merged.ref_count == 1;
                         if exact_single_use {
@@ -297,7 +297,7 @@ impl MatrixChunkService {
                             data.extend_from_slice(&payload[start..end]);
                         }
                         merge_page_range_result_fault_stats(&mut result_stats, &merged.stats);
-                        if let Some(repair_stats) = repair_stats_by_chunk.get(&loc.chunk_id) {
+                        if let Some(repair_stats) = repair_stats_by_chunk.get(&loc.page_id) {
                             merge_page_range_result_fault_stats(&mut result_stats, repair_stats);
                         }
                         found = true;
@@ -321,7 +321,7 @@ impl MatrixChunkService {
 
     fn probe_batch_read_repairs(
         &mut self,
-        chunk_ids: &[PageId],
+        page_ids: &[PageId],
         stats: &mut ChunkReadStats,
     ) -> BTreeMap<PageId, ChunkReadStats> {
         let mut repair_stats_by_chunk = BTreeMap::new();
@@ -329,9 +329,9 @@ impl MatrixChunkService {
             return repair_stats_by_chunk;
         }
         let mut probes = 0usize;
-        for chunk_id in chunk_ids {
+        for page_id in page_ids {
             let mut chunk_repair_stats = ChunkReadStats::default();
-            match self.repair_chunk_from_quorum(chunk_id) {
+            match self.repair_chunk_from_quorum(page_id) {
                 Ok(repair) => {
                     chunk_repair_stats.replica_read_repairs = repair.repaired_replicas;
                     chunk_repair_stats.replica_read_repair_failures = repair.failed_repairs;
@@ -364,7 +364,7 @@ impl MatrixChunkService {
                         .saturating_add(1);
                 }
             }
-            repair_stats_by_chunk.insert(chunk_id.clone(), chunk_repair_stats);
+            repair_stats_by_chunk.insert(page_id.clone(), chunk_repair_stats);
             probes = probes.saturating_add(1);
             if probes >= self.primary_batch_read_repair_probe_limit {
                 break;

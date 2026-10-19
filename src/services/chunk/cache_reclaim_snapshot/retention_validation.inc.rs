@@ -48,9 +48,9 @@ fn chunk_map_compression_stats(
     chunks: &BTreeMap<PageId, std::sync::Arc<PageState>>,
 ) -> (u64, u64) {
     chunks.values().fold((0u64, 0u64), |(count, bytes), state| {
-        let (chunk_count, saved_bytes) = chunk_compression_stats(state);
+        let (page_count, saved_bytes) = chunk_compression_stats(state);
         (
-            count.saturating_add(chunk_count),
+            count.saturating_add(page_count),
             bytes.saturating_add(saved_bytes),
         )
     })

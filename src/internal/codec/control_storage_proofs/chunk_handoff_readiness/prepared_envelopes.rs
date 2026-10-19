@@ -3,7 +3,7 @@ pub(crate) fn append_prepared_chunk_local_state_handoff_envelope(
     envelope: &PreparedChunkLocalStateHandoffEnvelope,
 ) {
     append_string(out, &envelope.envelope_format);
-    append_chunk_id(out, &envelope.chunk_id);
+    append_chunk_id(out, &envelope.page_id);
     append_u64(out, envelope.max_payload_bytes);
     append_string(out, &envelope.request_checksum);
     append_u64(out, envelope.payload_bytes);
@@ -42,10 +42,10 @@ pub(crate) fn make_prepared_chunk_local_state_handoff_envelope(
     let payload_bytes = handoff.state.data.len() as u64;
     let mut envelope = PreparedChunkLocalStateHandoffEnvelope {
         envelope_format: "MXOSCHUNK-HANDOFF-ENVELOPE1".to_string(),
-        chunk_id: handoff.chunk_id.clone(),
+        page_id: handoff.page_id.clone(),
         max_payload_bytes,
         request_checksum: chunk_local_state_handoff_request_checksum(
-            &handoff.chunk_id,
+            &handoff.page_id,
             max_payload_bytes,
         ),
         payload_bytes,
@@ -85,8 +85,8 @@ pub(crate) fn append_prepared_chunk_state_handoff_envelope(
     append_u64(out, envelope.route_control_commit_index);
     append_u64(out, envelope.route_control_next_log_index);
     append_u64(out, envelope.first_handoff_chunk_id.is_some() as u64);
-    if let Some(chunk_id) = &envelope.first_handoff_chunk_id {
-        append_chunk_id(out, chunk_id);
+    if let Some(page_id) = &envelope.first_handoff_chunk_id {
+        append_chunk_id(out, page_id);
     }
     append_string(out, &envelope.first_handoff_state_checksum);
     append_u64(out, envelope.first_handoff_payload_bytes);
@@ -166,7 +166,7 @@ pub(crate) fn make_prepared_chunk_state_handoff_envelope(
         route_control_proof_bytes: route_control_proof.state_bytes,
         route_control_commit_index: route_control_proof.chunk_route_control_commit_index,
         route_control_next_log_index: route_control_proof.chunk_route_control_next_log_index,
-        first_handoff_chunk_id: first_handoff.map(|handoff| handoff.chunk_id.clone()),
+        first_handoff_chunk_id: first_handoff.map(|handoff| handoff.page_id.clone()),
         first_handoff_state_checksum: first_handoff
             .map(|handoff| handoff.state_checksum.clone())
             .unwrap_or_default(),

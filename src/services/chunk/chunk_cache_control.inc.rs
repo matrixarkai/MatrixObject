@@ -1,16 +1,16 @@
 impl MatrixReplicaService {
     pub fn prewarm_chunk_ranges(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_bytes: u64,
     ) -> Result<CacheControlStats, ObjectError> {
-        self.prewarm_chunk_ranges_borrowed(chunk_id, &ranges, max_bytes)
+        self.prewarm_chunk_ranges_borrowed(page_id, &ranges, max_bytes)
     }
 
     pub fn prewarm_chunk_ranges_borrowed(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: &[DataRange],
         max_bytes: u64,
     ) -> Result<CacheControlStats, ObjectError> {
@@ -58,7 +58,7 @@ impl MatrixReplicaService {
                 continue;
             }
             let cache_key = (
-                chunk_id.clone(),
+                page_id.clone(),
                 selected_range.offset,
                 selected_range.length,
             );
@@ -83,7 +83,7 @@ impl MatrixReplicaService {
                 continue;
             }
             let (_, cache_hit) = self.read_chunk_with_cache_status(
-                chunk_id,
+                page_id,
                 selected_range.offset,
                 selected_range.length,
             )?;
@@ -103,16 +103,16 @@ impl MatrixReplicaService {
 
     pub fn invalidate_chunk_cache(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
     ) -> CacheControlStats {
-        self.invalidate_chunk_cache_bounded(chunk_id, offset, length, 0)
+        self.invalidate_chunk_cache_bounded(page_id, offset, length, 0)
     }
 
     pub fn invalidate_chunk_cache_bounded(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -121,14 +121,14 @@ impl MatrixReplicaService {
         // The page-validation memo is keyed by (write_sequence, checksum) so a
         // mutation already forces revalidation; dropping it here additionally stops
         // a removed chunk from leaving its entry behind forever.
-        self.page_validation.borrow_mut().remove(chunk_id);
+        self.page_validation.borrow_mut().remove(page_id);
         self.read_cache_invalidations
             .set(self.read_cache_invalidations.get().saturating_add(1));
         if max_bytes == 0 {
             let keys: Vec<ReplicaReadCacheRangeKey> = self
                 .read_cache_by_chunk
                 .borrow()
-                .get(chunk_id)
+                .get(page_id)
                 .into_iter()
                 .flat_map(|keys| keys.iter())
                 .filter(|(cached_offset, cached_length)| {
@@ -137,7 +137,7 @@ impl MatrixReplicaService {
                 .copied()
                 .collect();
             for (cached_offset, cached_length) in keys {
-                let key = (chunk_id.clone(), cached_offset, cached_length);
+                let key = (page_id.clone(), cached_offset, cached_length);
                 if let Some(entry) = self.remove_read_cache_entry(&key) {
                     stats.invalidated_entries = stats.invalidated_entries.saturating_add(1);
                     let removed_bytes = entry.result.data.len() as u64;
@@ -158,14 +158,14 @@ impl MatrixReplicaService {
             let cache = self.read_cache.borrow();
             self.read_cache_by_chunk
                 .borrow()
-                .get(chunk_id)
+                .get(page_id)
                 .into_iter()
-                .flat_map(|chunk_keys| chunk_keys.iter())
+                .flat_map(|page_keys| page_keys.iter())
                 .filter_map(|(cached_offset, cached_length)| {
                     if !ranges_intersect(offset, length, *cached_offset, *cached_length) {
                         return None;
                     }
-                    let key = (chunk_id.clone(), *cached_offset, *cached_length);
+                    let key = (page_id.clone(), *cached_offset, *cached_length);
                     cache
                         .get(&key)
                         .map(|entry| ((*cached_offset, *cached_length), entry.result.data.len() as u64))
@@ -182,7 +182,7 @@ impl MatrixReplicaService {
                 stats.budget_limited = true;
                 continue;
             }
-            let key = (chunk_id.clone(), cached_offset, cached_length);
+            let key = (page_id.clone(), cached_offset, cached_length);
             if let Some(entry) = self.remove_read_cache_entry(&key) {
                 stats.invalidated_entries = stats.invalidated_entries.saturating_add(1);
                 let removed_bytes = entry.result.data.len() as u64;

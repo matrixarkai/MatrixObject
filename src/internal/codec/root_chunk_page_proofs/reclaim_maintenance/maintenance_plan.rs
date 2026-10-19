@@ -7,9 +7,9 @@ pub(crate) fn append_storage_maintenance_action(
     append_u64(out, action.priority);
     append_u64(out, action.replica_index.is_some() as u64);
     append_u64(out, action.replica_index.unwrap_or_default() as u64);
-    append_u64(out, action.chunk_id.is_some() as u64);
-    if let Some(chunk_id) = &action.chunk_id {
-        append_chunk_id(out, chunk_id);
+    append_u64(out, action.page_id.is_some() as u64);
+    if let Some(page_id) = &action.page_id {
+        append_chunk_id(out, page_id);
     }
     append_u64(out, action.estimated_bytes);
 }

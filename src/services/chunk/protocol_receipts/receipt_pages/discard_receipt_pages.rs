@@ -7,7 +7,7 @@ pub struct ReplicaDiscardReceiptPage {
     pub limit: u64,
     pub truncated: bool,
     pub next_marker: Option<String>,
-    pub chunk_id: Option<PageId>,
+    pub page_id: Option<PageId>,
     pub skipped_chunk_count: u64,
 }
 
@@ -35,11 +35,11 @@ impl ReplicaDiscardReceiptPage {
             self.receipts.len(),
             self.skipped_chunk_count,
         )?;
-        if let Some(chunk_id) = &self.chunk_id {
+        if let Some(page_id) = &self.page_id {
             if self
                 .receipts
                 .iter()
-                .any(|receipt| &receipt.chunk_id != chunk_id)
+                .any(|receipt| &receipt.page_id != page_id)
             {
                 return Err(ObjectError::Corruption(
                     "chunk discard receipt page contains receipt outside chunk filter".to_string(),
@@ -69,7 +69,7 @@ impl ReplicaDiscardReceiptPage {
             self.limit,
             self.truncated,
             &self.next_marker,
-            &self.chunk_id,
+            &self.page_id,
             self.skipped_chunk_count,
             field_prefix,
         );
@@ -117,7 +117,7 @@ pub struct ReplicaBatchDiscardReceiptPage {
     pub limit: u64,
     pub truncated: bool,
     pub next_marker: Option<String>,
-    pub chunk_id: Option<PageId>,
+    pub page_id: Option<PageId>,
     pub skipped_chunk_count: u64,
 }
 
@@ -145,11 +145,11 @@ impl ReplicaBatchDiscardReceiptPage {
             self.receipts.len(),
             self.skipped_chunk_count,
         )?;
-        if let Some(chunk_id) = &self.chunk_id {
+        if let Some(page_id) = &self.page_id {
             if self
                 .receipts
                 .iter()
-                .any(|receipt| &receipt.chunk_id != chunk_id)
+                .any(|receipt| &receipt.page_id != page_id)
             {
                 return Err(ObjectError::Corruption(
                     "chunk batch discard receipt page contains receipt outside chunk filter"
@@ -180,7 +180,7 @@ impl ReplicaBatchDiscardReceiptPage {
             self.limit,
             self.truncated,
             &self.next_marker,
-            &self.chunk_id,
+            &self.page_id,
             self.skipped_chunk_count,
             field_prefix,
         );

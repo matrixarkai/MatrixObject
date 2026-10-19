@@ -36,7 +36,7 @@ fn merge_discard_ranges_in_place(existing: &mut Vec<DataRange>, additions: &[Dat
 impl MatrixReplicaService {
     pub fn discard_chunk(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<(), ObjectError> {
@@ -47,7 +47,7 @@ impl MatrixReplicaService {
         let end = validate_pipeline_range("chunk discard", offset, length)?;
         let logical_length = self
             .chunks
-            .get(chunk_id)
+            .get(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?
             .logical_length;
         if end > logical_length {
@@ -58,7 +58,7 @@ impl MatrixReplicaService {
         self.admit_mutation_qos(0, 0, 1, length, now_millis())?;
         let chunk = self
             .chunks
-            .get_mut(chunk_id)
+            .get_mut(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         let chunk = std::sync::Arc::make_mut(chunk);
         merge_discard_ranges_in_place(
@@ -66,7 +66,7 @@ impl MatrixReplicaService {
             &[DataRange { offset, length }],
         );
         chunk.write_sequence = chunk.write_sequence.saturating_add(1);
-        self.invalidate_chunk_cache(chunk_id, offset, length);
+        self.invalidate_chunk_cache(page_id, offset, length);
         self.physical_discard_ranges = self.physical_discard_ranges.saturating_add(1);
         self.physical_discard_bytes = self.physical_discard_bytes.saturating_add(length);
         self.mark_metadata_mutation();
@@ -75,50 +75,50 @@ impl MatrixReplicaService {
 
     pub fn discard_chunk_fenced(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         expected_control_checksum: Option<&str>,
     ) -> Result<(), ObjectError> {
         self.check_expected_control_checksum(expected_control_checksum)?;
-        self.discard_chunk(chunk_id, offset, length)
+        self.discard_chunk(page_id, offset, length)
     }
 
     pub fn can_accept_chunk_discard(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: &[DataRange],
     ) -> Result<ReplicaDiscardAdmission, ObjectError> {
-        self.can_accept_chunk_discards_borrowed(chunk_id, ranges, 0)
+        self.can_accept_chunk_discards_borrowed(page_id, ranges, 0)
     }
 
     pub fn can_accept_chunk_discards(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
     ) -> Result<ReplicaDiscardAdmission, ObjectError> {
-        self.can_accept_chunk_discards_from_borrowed(chunk_id, &ranges, max_discard_bytes, 0)
+        self.can_accept_chunk_discards_from_borrowed(page_id, &ranges, max_discard_bytes, 0)
     }
 
     pub fn can_accept_chunk_discards_borrowed(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: &[DataRange],
         max_discard_bytes: u64,
     ) -> Result<ReplicaDiscardAdmission, ObjectError> {
-        self.can_accept_chunk_discards_from_borrowed(chunk_id, ranges, max_discard_bytes, 0)
+        self.can_accept_chunk_discards_from_borrowed(page_id, ranges, max_discard_bytes, 0)
     }
 
     pub fn can_accept_chunk_discards_from(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
     ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         self.can_accept_chunk_discards_from_borrowed(
-            chunk_id,
+            page_id,
             &ranges,
             max_discard_bytes,
             discard_start_range_index,
@@ -127,7 +127,7 @@ impl MatrixReplicaService {
 
     pub fn can_accept_chunk_discards_from_borrowed(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: &[DataRange],
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -205,7 +205,7 @@ impl MatrixReplicaService {
             admission.selected_discard_bytes,
             now_millis(),
         );
-        let Some(chunk) = self.chunks.get(chunk_id) else {
+        let Some(chunk) = self.chunks.get(page_id) else {
             admission.missing_chunk = true;
             admission.can_accept = false;
             return Ok(admission);
@@ -227,7 +227,7 @@ impl MatrixReplicaService {
 
     pub fn discard_chunk_idempotent(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
@@ -238,9 +238,9 @@ impl MatrixReplicaService {
                 "chunk idempotent discard length must be positive".to_string(),
             ));
         }
-        let request_checksum = chunk_discard_request_checksum(chunk_id, offset, length);
+        let request_checksum = chunk_discard_request_checksum(page_id, offset, length);
         if let Some(existing) = self.discard_request_receipts.get(idempotency_key) {
-            if existing.chunk_id != *chunk_id
+            if existing.page_id != *page_id
                 || existing.offset != offset
                 || existing.length != length
                 || existing.request_checksum != request_checksum
@@ -253,9 +253,9 @@ impl MatrixReplicaService {
             receipt.deduped = true;
             return Ok(receipt);
         }
-        self.discard_chunk(chunk_id, offset, length)?;
+        self.discard_chunk(page_id, offset, length)?;
         let receipt = ReplicaDiscardReceipt {
-            chunk_id: chunk_id.clone(),
+            page_id: page_id.clone(),
             offset,
             length,
             request_checksum,
@@ -270,40 +270,40 @@ impl MatrixReplicaService {
 
     pub fn discard_chunk_ranges(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
     ) -> Result<ReplicaDiscardBatchStats, ObjectError> {
-        self.discard_chunk_ranges_borrowed_internal(chunk_id, &ranges, true)
+        self.discard_chunk_ranges_borrowed_internal(page_id, &ranges, true)
     }
 
     pub fn discard_chunk_ranges_borrowed(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: &[DataRange],
     ) -> Result<ReplicaDiscardBatchStats, ObjectError> {
-        self.discard_chunk_ranges_borrowed_internal(chunk_id, ranges, true)
+        self.discard_chunk_ranges_borrowed_internal(page_id, ranges, true)
     }
 
     pub fn discard_chunk_ranges_fenced(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         expected_control_checksum: Option<&str>,
     ) -> Result<ReplicaDiscardBatchStats, ObjectError> {
         self.check_expected_control_checksum(expected_control_checksum)?;
-        self.discard_chunk_ranges(chunk_id, ranges)
+        self.discard_chunk_ranges(page_id, ranges)
     }
 
     fn discard_chunk_ranges_borrowed_internal(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: &[DataRange],
         record_internal_receipt: bool,
     ) -> Result<ReplicaDiscardBatchStats, ObjectError> {
         self.ensure_writable()?;
         let logical_length = self
             .chunks
-            .get(chunk_id)
+            .get(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?
             .logical_length;
         let mut stats = ReplicaDiscardBatchStats::default();
@@ -325,12 +325,12 @@ impl MatrixReplicaService {
         if stats.input_ranges == 0 {
             return Ok(stats);
         }
-        let request_checksum = chunk_batch_discard_nonempty_request_checksum(chunk_id, ranges);
+        let request_checksum = chunk_batch_discard_nonempty_request_checksum(page_id, ranges);
         let merged = merge_range_slice(ranges);
         self.admit_mutation_qos(0, 0, merged.len() as u64, stats.input_bytes, now_millis())?;
         let chunk = self
             .chunks
-            .get_mut(chunk_id)
+            .get_mut(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         let chunk = std::sync::Arc::make_mut(chunk);
         merge_discard_ranges_in_place(&mut chunk.discarded_ranges, &merged);
@@ -342,7 +342,7 @@ impl MatrixReplicaService {
             stats.physical_discard_ranges = stats.physical_discard_ranges.saturating_add(1);
             stats.physical_discard_bytes =
                 stats.physical_discard_bytes.saturating_add(range.length);
-            let invalidated = self.invalidate_chunk_cache(chunk_id, range.offset, range.length);
+            let invalidated = self.invalidate_chunk_cache(page_id, range.offset, range.length);
             stats.invalidated_cache_entries = stats
                 .invalidated_cache_entries
                 .saturating_add(invalidated.invalidated_entries);
@@ -367,7 +367,7 @@ impl MatrixReplicaService {
             idempotency_key.push_str(PREFIX);
             idempotency_key.push_str(&request_checksum);
             let receipt = ReplicaBatchDiscardReceipt {
-                chunk_id: chunk_id.clone(),
+                page_id: page_id.clone(),
                 request_checksum,
                 idempotency_key: idempotency_key.clone(),
                 stats: stats.clone(),
@@ -382,16 +382,16 @@ impl MatrixReplicaService {
 
     pub fn discard_chunk_ranges_idempotent(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
     ) -> Result<(ReplicaDiscardBatchStats, ReplicaBatchDiscardReceipt), ObjectError> {
-        self.discard_chunk_ranges_idempotent_borrowed(chunk_id, &ranges, idempotency_key)
+        self.discard_chunk_ranges_idempotent_borrowed(page_id, &ranges, idempotency_key)
     }
 
     pub fn discard_chunk_ranges_idempotent_borrowed(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: &[DataRange],
         idempotency_key: &str,
     ) -> Result<(ReplicaDiscardBatchStats, ReplicaBatchDiscardReceipt), ObjectError> {
@@ -413,9 +413,9 @@ impl MatrixReplicaService {
                 )
             })?;
         }
-        let request_checksum = chunk_batch_discard_nonempty_request_checksum(chunk_id, ranges);
+        let request_checksum = chunk_batch_discard_nonempty_request_checksum(page_id, ranges);
         if let Some(existing) = self.batch_discard_request_receipts.get(idempotency_key) {
-            if existing.chunk_id != *chunk_id || existing.request_checksum != request_checksum {
+            if existing.page_id != *page_id || existing.request_checksum != request_checksum {
                 return Err(ObjectError::PreconditionFailed(
                     "chunk batch discard idempotency key reused with different request".to_string(),
                 ));
@@ -424,9 +424,9 @@ impl MatrixReplicaService {
             receipt.deduped = true;
             return Ok((receipt.stats.clone(), receipt));
         }
-        let stats = self.discard_chunk_ranges_borrowed_internal(chunk_id, ranges, false)?;
+        let stats = self.discard_chunk_ranges_borrowed_internal(page_id, ranges, false)?;
         let receipt = ReplicaBatchDiscardReceipt {
-            chunk_id: chunk_id.clone(),
+            page_id: page_id.clone(),
             request_checksum,
             idempotency_key: idempotency_key.to_string(),
             stats: stats.clone(),

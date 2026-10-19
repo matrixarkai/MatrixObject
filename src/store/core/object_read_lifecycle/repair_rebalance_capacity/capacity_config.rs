@@ -10,15 +10,15 @@ impl MatrixObjectStore {
                     .map_range(&extent.slab_id, extent.offset, extent.length)?
             {
                 chunks
-                    .entry(loc.chunk_id)
+                    .entry(loc.page_id)
                     .and_modify(|bytes| *bytes = bytes.saturating_add(loc.length))
                     .or_insert(loc.length);
             }
         }
         let mut degraded_chunks = 0u64;
         let mut degraded_bytes = 0u64;
-        for (chunk_id, bytes) in chunks {
-            let repair = self.chunk_service.plan_repair_chunk_replicas(&chunk_id)?;
+        for (page_id, bytes) in chunks {
+            let repair = self.chunk_service.plan_repair_chunk_replicas(&page_id)?;
             if repair.degraded_chunks > 0 {
                 degraded_chunks = degraded_chunks.saturating_add(1);
                 degraded_bytes = degraded_bytes.saturating_add(bytes);

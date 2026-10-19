@@ -678,7 +678,7 @@ impl MatrixObjectStore {
             live_object_count: object_footprint.live_object_count,
             deleted_object_count: object_footprint.deleted_object_count,
             slab_count: self.slabs.len() as u64,
-            chunk_count: object_footprint.chunk_count,
+            page_count: object_footprint.page_count,
             live_bytes: object_footprint.live_bytes,
             stale_bytes: object_footprint.stale_bytes,
             pending_discard_bytes: object_footprint.pending_discard_bytes,

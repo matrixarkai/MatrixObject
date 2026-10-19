@@ -37,8 +37,8 @@ pub(crate) fn snapshot_chunk_vec_capacity(total_bytes: u64, max_payload_bytes: u
         return 0;
     }
     let max_payload_bytes = max_payload_bytes as u64;
-    let chunk_count = total_bytes.saturating_add(max_payload_bytes - 1) / max_payload_bytes;
-    usize::try_from(chunk_count)
+    let page_count = total_bytes.saturating_add(max_payload_bytes - 1) / max_payload_bytes;
+    usize::try_from(page_count)
         .unwrap_or(SNAPSHOT_CHUNK_VEC_RESERVE_CAP)
         .min(SNAPSHOT_CHUNK_VEC_RESERVE_CAP)
 }

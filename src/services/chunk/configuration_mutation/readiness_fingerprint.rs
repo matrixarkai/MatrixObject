@@ -102,8 +102,8 @@ impl MatrixReplicaService {
             &mut material,
             self.batch_discard_request_receipts.len() as u64,
         );
-        for (chunk_id, state) in &self.chunks {
-            append_chunk_id(&mut material, chunk_id);
+        for (page_id, state) in &self.chunks {
+            append_chunk_id(&mut material, page_id);
             append_u64(&mut material, state.logical_length);
             append_u64(&mut material, state.write_sequence);
             append_string(&mut material, &state.checksum);
@@ -182,7 +182,7 @@ impl MatrixReplicaService {
             accepting_writes: self.accepting_writes,
             draining: self.draining,
             frozen: self.frozen,
-            chunk_count: self.chunks.len() as u64,
+            page_count: self.chunks.len() as u64,
             physical_bytes,
             capacity_bytes: self.capacity_bytes,
             capacity_free_bytes,

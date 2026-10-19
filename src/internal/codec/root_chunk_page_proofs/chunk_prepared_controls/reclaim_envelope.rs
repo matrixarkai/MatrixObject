@@ -39,8 +39,8 @@ pub(crate) fn append_prepared_chunk_reclaim_envelope(
     append_u64(out, envelope.continuation_safe as u64);
     append_u64(out, envelope.next_marker_advanced as u64);
     append_u64(out, envelope.first_reclaim_chunk_id.is_some() as u64);
-    if let Some(chunk_id) = &envelope.first_reclaim_chunk_id {
-        append_chunk_id(out, chunk_id);
+    if let Some(page_id) = &envelope.first_reclaim_chunk_id {
+        append_chunk_id(out, page_id);
     }
     append_u64(out, envelope.first_reclaim_discarded_bytes);
     append_u64(out, envelope.first_reclaim_discard_ratio_ppm);
@@ -100,7 +100,7 @@ pub(crate) fn make_prepared_chunk_reclaim_envelope(
         truncated: prepared.plan.truncated,
         continuation_safe: prepared.plan.continuation_safe,
         next_marker_advanced: prepared.plan.next_marker_advanced,
-        first_reclaim_chunk_id: first_candidate.map(|candidate| candidate.chunk_id.clone()),
+        first_reclaim_chunk_id: first_candidate.map(|candidate| candidate.page_id.clone()),
         first_reclaim_discarded_bytes: first_candidate
             .map(|candidate| candidate.discarded_bytes)
             .unwrap_or_default(),

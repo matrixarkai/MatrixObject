@@ -160,7 +160,7 @@ impl ReplicaServiceSnapshot {
                 volume_id: cursor.read_u64()?,
                 id: cursor.read_u64()?,
             };
-            let chunk_id = PageId {
+            let page_id = PageId {
                 slab_id,
                 page_index: cursor.read_u64()?,
             };
@@ -211,7 +211,7 @@ impl ReplicaServiceSnapshot {
                 });
             }
             chunks.insert(
-                chunk_id,
+                page_id,
                 std::sync::Arc::new(PageState {
                     logical_length,
                     write_sequence,

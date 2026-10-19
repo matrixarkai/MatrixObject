@@ -2,7 +2,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_with_read_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -10,7 +10,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenStorageRead<ReplicaReadResult>, ObjectError> {
         self.read_chunk_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             offset,
             length,
             max_payload_bytes,
@@ -23,7 +23,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_with_control_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -31,7 +31,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenChunkControlFencedStorageRead<ReplicaReadResult>, ObjectError> {
         self.read_chunk_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             offset,
             length,
             max_payload_bytes,
@@ -44,7 +44,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_with_control_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -64,7 +64,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let control_proof = replica.control_proof();
         let proven = self.read_chunk_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             offset,
             length,
             max_payload_bytes,
@@ -83,7 +83,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_with_read_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -98,7 +98,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .max(min_commit_index);
         self.can_accept_chunk_batch_read_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             vec![DataRange { offset, length }],
             max_payload_bytes,
             expected_control_checksum,
@@ -113,7 +113,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .ok_or_else(|| {
                 ObjectError::InvalidArgument("replica index is out of range".to_string())
             })?;
-        let value = replica.read_chunk_bounded(chunk_id, offset, length, max_payload_bytes)?;
+        let value = replica.read_chunk_bounded(page_id, offset, length, max_payload_bytes)?;
         let proof = self.chunk_storage_read_proof_committed(
             replica_index,
             requested_read_index,
@@ -125,7 +125,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_with_read_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -133,7 +133,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     {
         self.read_chunk_ranges_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_payload_bytes,
             expected_control_checksum,
@@ -145,7 +145,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_with_control_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
@@ -155,7 +155,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     > {
         self.read_chunk_ranges_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_payload_bytes,
             expected_control_checksum,
@@ -167,7 +167,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_with_control_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
@@ -189,7 +189,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let control_proof = replica.control_proof();
         let proven = self.read_chunk_ranges_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_payload_bytes,
             Some(&expected_checksum),
@@ -207,7 +207,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn read_chunk_ranges_with_read_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
@@ -222,7 +222,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .max(min_commit_index);
         self.can_accept_chunk_batch_read_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges.clone(),
             max_payload_bytes,
             expected_control_checksum,
@@ -237,7 +237,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .ok_or_else(|| {
                 ObjectError::InvalidArgument("replica index is out of range".to_string())
             })?;
-        let value = replica.read_chunk_ranges(chunk_id, ranges, max_payload_bytes)?;
+        let value = replica.read_chunk_ranges(page_id, ranges, max_payload_bytes)?;
         let proof = self.chunk_storage_read_proof_committed(
             replica_index,
             requested_read_index,

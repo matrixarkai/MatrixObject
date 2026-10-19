@@ -46,10 +46,10 @@ impl MatrixChunkService {
             let loc = &locations[0];
             merge_page_read_stats(
                 &mut stats,
-                self.collect_metadata_head_admission_stats(std::slice::from_ref(&loc.chunk_id)),
+                self.collect_metadata_head_admission_stats(std::slice::from_ref(&loc.page_id)),
             );
             let (selected, read_stats) =
-                self.read_chunk_quorum(&loc.chunk_id, loc.chunk_offset, loc.length)?;
+                self.read_chunk_quorum(&loc.page_id, loc.page_offset, loc.length)?;
             merge_page_read_stats(&mut stats, read_stats);
             self.record_page_read_stats(&stats);
             return Ok((selected.data, stats));
@@ -57,11 +57,11 @@ impl MatrixChunkService {
         merge_page_read_stats(
             &mut stats,
             {
-                let mut chunk_ids = Vec::with_capacity(locations.len());
+                let mut page_ids = Vec::with_capacity(locations.len());
                 for loc in &locations {
-                    chunk_ids.push(loc.chunk_id.clone());
+                    page_ids.push(loc.page_id.clone());
                 }
-                self.collect_metadata_head_admission_stats(&chunk_ids)
+                self.collect_metadata_head_admission_stats(&page_ids)
             },
         );
         let capacity = usize::try_from(length).map_err(|_| {
@@ -70,7 +70,7 @@ impl MatrixChunkService {
         let mut out = Vec::with_capacity(capacity);
         for loc in locations {
             let (selected, read_stats) =
-                self.read_chunk_quorum(&loc.chunk_id, loc.chunk_offset, loc.length)?;
+                self.read_chunk_quorum(&loc.page_id, loc.page_offset, loc.length)?;
             merge_page_read_stats(&mut stats, read_stats);
             out.extend_from_slice(&selected.data);
         }
@@ -128,7 +128,7 @@ impl MatrixChunkService {
 
     fn read_chunk_quorum(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<(ReplicaReadResult, ChunkReadStats), ObjectError> {
@@ -146,7 +146,7 @@ impl MatrixChunkService {
                 continue;
             }
             attempted += 1;
-            match replica.read_chunk_with_cache_status(chunk_id, offset, length) {
+            match replica.read_chunk_with_cache_status(page_id, offset, length) {
                 Ok((read, cache_hit)) => {
                     if cache_hit {
                         stats.cache_hits = stats.cache_hits.saturating_add(1);

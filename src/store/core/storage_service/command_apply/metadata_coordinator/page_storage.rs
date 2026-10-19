@@ -17,7 +17,7 @@ impl MatrixObjectStore {
                         .audit
                         .next_marker
                         .as_ref()
-                        .map_or(0, |chunk_id| chunk_id.page_index),
+                        .map_or(0, |page_id| page_id.page_index),
                 ))
             }
             ObjectCommand::ApplyPreparedPageRangeRepair { prepared } => {
@@ -48,9 +48,9 @@ impl MatrixObjectStore {
                         "blockserver/prepared-exact-chunk-repair"
                     },
                     report
-                        .chunk_id
+                        .page_id
                         .as_ref()
-                        .map_or(0, |chunk_id| chunk_id.page_index),
+                        .map_or(0, |page_id| page_id.page_index),
                 ))
             }
             ObjectCommand::ScrubPageReplicas { repair } => {
@@ -102,11 +102,11 @@ impl MatrixObjectStore {
                 ))
             }
             ObjectCommand::RepairPageChunk {
-                chunk_id,
+                page_id,
                 expected_route_control_checksum,
             } => {
                 let report = self.repair_page_chunk_fenced(
-                    &chunk_id,
+                    &page_id,
                     (!expected_route_control_checksum.is_empty())
                         .then_some(expected_route_control_checksum.as_str()),
                 )?;
@@ -114,7 +114,7 @@ impl MatrixObjectStore {
                     "_blockrepair",
                     &format!(
                         "{}:{}:{}",
-                        chunk_id.slab_id.volume_id, chunk_id.slab_id.id, chunk_id.page_index
+                        page_id.slab_id.volume_id, page_id.slab_id.id, page_id.page_index
                     ),
                     report.checked_chunks,
                     report.repaired_replicas,
@@ -123,7 +123,7 @@ impl MatrixObjectStore {
                     } else {
                         "blockserver/exact-chunk-repair"
                     },
-                    chunk_id.page_index,
+                    page_id.page_index,
                 ))
             }
             ObjectCommand::RepairAuditedPageReplicas {

@@ -29,7 +29,7 @@ impl ChunkServiceSnapshotAssembler {
                 "block service snapshot chunk has zero total bytes".to_string(),
             ));
         }
-        if !etag_matches(&chunk.payload, &chunk.chunk_checksum) {
+        if !etag_matches(&chunk.payload, &chunk.page_checksum) {
             return Err(ObjectError::Corruption(
                 "block service snapshot chunk checksum mismatch".to_string(),
             ));

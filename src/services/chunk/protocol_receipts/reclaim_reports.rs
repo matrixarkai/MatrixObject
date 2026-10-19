@@ -64,7 +64,7 @@ impl ReplicaPartialReclaimReport {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaReclaimCandidate {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub logical_length: u64,
     pub discarded_bytes: u64,
     pub discarded_range_count: u64,

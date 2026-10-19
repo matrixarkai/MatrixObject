@@ -62,7 +62,7 @@ impl CacheControlStats {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaReadCacheRange {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub offset: u64,
     pub length: u64,
 }

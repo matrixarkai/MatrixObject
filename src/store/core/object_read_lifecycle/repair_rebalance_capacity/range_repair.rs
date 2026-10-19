@@ -83,7 +83,7 @@ impl MatrixObjectStore {
             )?;
             let extent_chunk_count = extent_locations
                 .iter()
-                .map(|location| location.chunk_id.clone())
+                .map(|location| location.page_id.clone())
                 .collect::<BTreeSet<_>>()
                 .len() as u64;
             if extent_chunk_count == 0 {
@@ -97,7 +97,7 @@ impl MatrixObjectStore {
             });
             let extent_start_chunk_index = extent_locations
                 .first()
-                .map(|location| location.chunk_id.page_index)
+                .map(|location| location.page_id.page_index)
                 .unwrap_or(0);
             if start_chunk_index >= object_chunk_cursor.saturating_add(extent_chunk_count) {
                 object_chunk_cursor = object_chunk_cursor.saturating_add(extent_chunk_count);
