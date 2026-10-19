@@ -37449,6 +37449,70 @@ fn every_heap_owning_field_of_the_long_lived_state_is_named_in_the_footprint() {
 }
 
 #[test]
+fn a_per_unit_figure_is_a_slope_and_not_a_total_divided_by_a_count() {
+    // The README publishes per-unit costs for the structures bounded by a
+    // setting. Dividing a leg's total by the number of units gives the wrong
+    // number whenever the leg also contains something FIXED: the fixed part is
+    // spread over however many units happen to be there, so the figure drifts
+    // with the size of the store it was measured on.
+    //
+    // `block.receipts.bytes` is such a leg -- it carries the page service's
+    // endpoints and sealed chunks beside the receipts. Dividing gives 275 at
+    // 120 receipts and 274 at 600, and neither is the cost of a receipt.
+    //
+    // The marginal cost is the slope between two sizes, and the intercept is
+    // what the leg holds regardless. This asserts the slope is stable, which is
+    // what makes a published per-unit figure valid at a bound nobody measured
+    // at.
+    fn receipts_at(objects: u32) -> (u64, u64) {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            let key = format!("prefix/{index:08}/kkkkkkkkkk");
+            store
+                .put_object("bucket", &key, vec![b'x'; 1024], "application/octet-stream")
+                .unwrap();
+            store.delete_object("bucket", &key).unwrap();
+        }
+        let audit: std::collections::BTreeMap<String, u64> =
+            store.footprint_audit().into_iter().collect();
+        let get = |k: &str| -> u64 { audit.get(k).copied().unwrap_or(0) };
+        let count = get("replica.receipts");
+        assert!(count > 0, "{objects} writes and deletes must leave receipts");
+        (count, get("block.receipts.bytes"))
+    }
+
+    let (n1, b1) = receipts_at(40);
+    let (n2, b2) = receipts_at(200);
+    let (n3, b3) = receipts_at(400);
+    assert!(n2 > n1 && n3 > n2, "the counts must increase: {n1}, {n2}, {n3}");
+
+    let slope_low = (b2 - b1) / (n2 - n1);
+    let slope_high = (b3 - b2) / (n3 - n2);
+    let intercept = b2.saturating_sub(slope_low * n2);
+    println!(
+        "PERUNIT receipts n=({n1},{n2},{n3}) bytes=({b1},{b2},{b3}) \
+         slope_low={slope_low} slope_high={slope_high} intercept={intercept}"
+    );
+    println!("PERUNIT naive_total_over_count={} and {}", b1 / n1, b2 / n2);
+
+    assert_eq!(
+        slope_low, slope_high,
+        "the marginal cost of a receipt must not depend on how many are held: \
+         {slope_low} between {n1} and {n2}, {slope_high} between {n2} and {n3}"
+    );
+    assert!(
+        intercept < slope_low * 4,
+        "the fixed part of this leg should be small beside a few receipts, and \
+         it is {intercept} against a slope of {slope_low}"
+    );
+}
+
+#[test]
 fn the_metadata_total_is_the_sum_of_the_legs_it_names() {
     // `ACCOUNTED.metadata_bytes` is the figure every per-object number in the
     // README divides. A structure can be left out of it in total silence: it
