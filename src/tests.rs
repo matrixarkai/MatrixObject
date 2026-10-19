@@ -36549,6 +36549,108 @@ fn every_option_in_the_table_is_a_field_with_that_default() {
 }
 
 #[test]
+fn an_open_batch_makes_every_write_copy_the_whole_page() {
+    // A write takes the page state mutably through `Arc::make_mut`, and the
+    // comment there accounts for copying `PageState`. But `PageState.data` is
+    // itself an `Arc<Vec<u8>>`, so cloning the state SHARES the data, and the
+    // line that writes the bytes has to take that mutably too -- copying the
+    // whole page.
+    //
+    // Measured on the benchmark, a put allocates 512 bytes for every object
+    // already stored, per replica, and the largest single allocation in a put
+    // is exactly the bytes already in the page. This is the same fact asked as
+    // a question a test can answer: does the data allocation MOVE?
+    //
+    // Pointer identity is the only honest test. A byte comparison cannot tell a
+    // copy from a share, and an allocation counter cannot be attributed when
+    // other tests run beside this one.
+    //
+    // The write used here overwrites a range that already exists, so growing
+    // the vector cannot be what moves it.
+    fn data_pointer(service: &MatrixReplicaService, page: &PageId) -> *const Vec<u8> {
+        std::sync::Arc::as_ptr(
+            &service
+                .chunks
+                .get(page)
+                .expect("the page should exist after a write")
+                .data,
+        )
+    }
+
+    let page = PageId {
+        chunk_id: ChunkId {
+            volume_id: 0,
+            id: 7,
+        },
+        page_index: 0,
+    };
+
+    // Without a batch open, nothing else names the page, so an in-place write
+    // must not move the data.
+    let mut quiet = MatrixReplicaService::new();
+    quiet.write_chunk(page.clone(), 0, &[b'a'; 2048]).unwrap();
+    let before_quiet = data_pointer(&quiet, &page);
+    quiet.write_chunk(page.clone(), 0, &[b'b'; 1024]).unwrap();
+    let after_quiet = data_pointer(&quiet, &page);
+    println!(
+        "PAGECOPY no_batch moved={} len={}",
+        before_quiet != after_quiet,
+        quiet.chunks.get(&page).unwrap().data.len()
+    );
+    assert_eq!(
+        before_quiet, after_quiet,
+        "with nothing else naming the page, an in-place write should write in \
+         place rather than copying the page"
+    );
+
+    // With a batch open, the snapshot it captures names every page, so the same
+    // write has to copy. `begin_mutation_batch` is what the store's put path
+    // uses; `begin_mutation_batch_without_undo` is the variant whose doc says it
+    // skips that snapshot.
+    let mut batched = MatrixReplicaService::new();
+    batched.write_chunk(page.clone(), 0, &[b'a'; 2048]).unwrap();
+    batched.begin_mutation_batch("batch-a").unwrap();
+    let before_batched = data_pointer(&batched, &page);
+    batched.write_chunk(page.clone(), 0, &[b'b'; 1024]).unwrap();
+    let after_batched = data_pointer(&batched, &page);
+    println!(
+        "PAGECOPY with_batch moved={} len={}",
+        before_batched != after_batched,
+        batched.chunks.get(&page).unwrap().data.len()
+    );
+    assert_ne!(
+        before_batched, after_batched,
+        "an open batch's snapshot names the page, so the write copies it -- if \
+         this stops being true the per-put page copy has been fixed and the \
+         benchmark figures in #13 should be re-measured"
+    );
+
+    // And the without-undo variant should leave the write in place, which is
+    // what makes it the cheaper option its own documentation claims.
+    let mut unsnapshotted = MatrixReplicaService::new();
+    unsnapshotted
+        .write_chunk(page.clone(), 0, &[b'a'; 2048])
+        .unwrap();
+    unsnapshotted
+        .begin_mutation_batch_without_undo("batch-b")
+        .unwrap();
+    let before_unsnapshotted = data_pointer(&unsnapshotted, &page);
+    unsnapshotted
+        .write_chunk(page.clone(), 0, &[b'b'; 1024])
+        .unwrap();
+    let after_unsnapshotted = data_pointer(&unsnapshotted, &page);
+    println!(
+        "PAGECOPY without_undo moved={}",
+        before_unsnapshotted != after_unsnapshotted
+    );
+    assert_eq!(
+        before_unsnapshotted, after_unsnapshotted,
+        "a batch that skips the snapshot should leave the write in place, which \
+         is the saving its documentation describes"
+    );
+}
+
+#[test]
 fn a_rejection_names_the_setting_it_rejected() {
     // The storage tiers are a chunk of 64 MiB holding pages of 1 MiB. There is
     // no tier above the chunk, and `StoreOptions` names the two correctly.
