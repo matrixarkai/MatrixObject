@@ -34616,6 +34616,92 @@ fn a_rolled_back_mutation_leaves_no_change_behind_it() {
 }
 
 #[test]
+fn an_object_key_costs_two_bytes_a_character_however_many_places_name_it() {
+    // Two guards above check that the holders of one object's key point at the
+    // same allocation -- one for the `objects` side, one for the projection
+    // side. Each asks only about the holders it enumerates, and a holder nobody
+    // thought to enumerate is exactly how this cost came back before.
+    //
+    // Measured against a planted third holder, those two are not equivalent to
+    // this: filing the projection record under its own fresh allocation is
+    // caught by the projection-side identity guard and NOT by the object-side
+    // one. This is the complement rather than a replacement -- it counts copies
+    // without naming a holder, so it covers places neither guard reaches, while
+    // they localise a failure this can only quantify.
+    //
+    // So ask the question without naming any holder. Every unshared holder of
+    // the key text adds one byte per character per object, so the number of
+    // resident copies is the SLOPE of metadata against key length -- wherever
+    // the copies live, and including holders added after this was written.
+    //
+    // It is 2.0: one allocation on the `objects` side and one on the
+    // `meta.records` side. Those two are not yet shared with each other, which
+    // is the remaining byte per character.
+    //
+    // Measured at three key lengths rather than two, so that a holder which
+    // shares only for short keys -- an inline-capacity threshold, say -- shows
+    // up as two different slopes instead of being averaged away.
+    fn metadata_with_keys_of_length(key_len: usize, objects: usize) -> u64 {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            let stem = format!("prefix/{index:08}/");
+            let mut key = stem.clone();
+            while key.len() < key_len {
+                key.push('k');
+            }
+            key.truncate(key_len.max(stem.len()));
+            store
+                .put_object("bucket", &key, vec![b'x'; 256], "application/octet-stream")
+                .unwrap();
+        }
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == "ACCOUNTED.metadata_bytes")
+            .map(|(_, value)| value)
+            .expect("the audit reports a metadata total")
+    }
+
+    const OBJECTS: usize = 400;
+    let lengths = [26usize, 46, 66];
+    let totals: Vec<u64> = lengths
+        .iter()
+        .map(|len| metadata_with_keys_of_length(*len, OBJECTS))
+        .collect();
+
+    let per_character = |low: usize, high: usize| -> u64 {
+        let extra_characters = ((lengths[high] - lengths[low]) * OBJECTS) as u64;
+        (totals[high] - totals[low]) / extra_characters
+    };
+    let low = per_character(0, 1);
+    let high = per_character(1, 2);
+    println!(
+        "KEYSLOPE lengths={lengths:?} totals={totals:?} bytes_per_character=({low},{high})"
+    );
+
+    assert_eq!(
+        low, high,
+        "the cost of a key character must not depend on how long the key is: \
+         {low} bytes a character between {} and {} characters, {high} between \
+         {} and {}",
+        lengths[0], lengths[1], lengths[1], lengths[2]
+    );
+    assert_eq!(
+        low, 2,
+        "an object key's characters should be resident in exactly two \
+         allocations -- the `objects` side and the `meta.records` side -- and \
+         this store holds {low} copies of every character. A new holder that \
+         mints its own copy costs one byte a character an object, wherever in \
+         the store it lives."
+    );
+}
+
+#[test]
 fn a_shared_allocation_is_charged_for_its_header() {
     // The audit charged only the characters behind a shared handle, so every
     // figure the key-sharing work produced was understated by one header per
