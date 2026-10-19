@@ -247,12 +247,20 @@ only names:
 
 | stored objects | copied | named |
 |---:|---:|---:|
-| 250 | 2,941 B | 768,096 B |
-| 1,000 | **2,941 B** | 3,072,096 B |
+| 250 | 2,485 B | 768,456 B |
+| 1,000 | **2,485 B** | 3,072,456 B |
 
-Also flat, because a chunk's payload is shared rather than duplicated. What it
-copies is the structure around the payload and the receipt maps — and the receipt
-maps are the one term here that still grows.
+Also flat in the object count, because a chunk's payload is shared rather than
+copied and so are the receipt maps. The copy is 823 bytes of page service state,
+1,398 bytes of replica state, 168 bytes of shared receipt handles, and 32 bytes
+for each chunk — so what moves it is the chunk count, which the object SIZE
+drives rather than the object count.
+
+The receipt maps used to be the term that grew. They were copied outright, so an
+open batch held the whole of what the receipts table above reaches at its bound;
+sharing them until the batch writes one took that to the 168 bytes counted here.
+`the_published_mutation_copy_figures_are_the_ones_this_tree_produces` reads this
+table and fails if either figure stops being what the tree produces.
 
 ```
 cargo test --release --lib measure_what_a_mutation_undo_costs -- --ignored --nocapture
