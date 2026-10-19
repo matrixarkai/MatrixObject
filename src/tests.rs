@@ -33545,13 +33545,26 @@ fn measure_how_much_of_a_record_value_is_scaffolding() {
     })
     .unwrap();
     store.create_bucket("bucket").unwrap();
+    // The objects have to DIFFER from each other or this measures nothing: a
+    // run of identical payloads gives every record the same length and the same
+    // etag, and the split between "the same characters every time" and "varies
+    // per object" then reports the fixture rather than the system. The first
+    // version of this measurement did exactly that and found zero varying
+    // bytes, which is impossible for a store holding different objects.
+    let content_types = [
+        "application/octet-stream",
+        "text/plain",
+        "image/png",
+        "application/json",
+    ];
     for index in 0..objects {
+        let size = 512 + (index % 97) * 37;
         store
             .put_object(
                 "bucket",
                 &format!("prefix/{index:08}/kkkkkkkkkk"),
-                vec![b'x'; 1024],
-                "application/octet-stream",
+                vec![b'a' + (index % 26) as u8; size],
+                content_types[index % content_types.len()],
             )
             .unwrap();
     }
