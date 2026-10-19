@@ -40,11 +40,11 @@ impl MatrixObjectStore {
             version: metadata.version,
             length: metadata.length,
             etag_fnv1a64: {
-                let parsed = change_etag_digest(&metadata.etag);
+                let parsed = change_etag_digest(&metadata.etag());
                 debug_assert!(
                     parsed.is_ok(),
                     "an object's etag is empty or an fnv1a64 digest, not {:?}",
-                    metadata.etag
+                    metadata.etag()
                 );
                 parsed.unwrap_or(None)
             },
@@ -90,11 +90,11 @@ impl MatrixObjectStore {
         }
         change.version = metadata.version;
         change.length = metadata.length;
-        let parsed = change_etag_digest(&metadata.etag);
+        let parsed = change_etag_digest(&metadata.etag());
         debug_assert!(
             parsed.is_ok(),
             "an object's etag is empty or an fnv1a64 digest, not {:?}",
-            metadata.etag
+            metadata.etag()
         );
         change.etag_fnv1a64 = parsed.unwrap_or(None);
         change.deleted = metadata.deleted;

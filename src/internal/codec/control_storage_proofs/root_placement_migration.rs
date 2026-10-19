@@ -360,7 +360,7 @@ pub(crate) fn committed_root_placement_migration_envelope(
         committed_raft_index,
         metadata_version: metadata.version,
         metadata_length: metadata.length,
-        metadata_etag: metadata.etag.to_string(),
+        metadata_etag: metadata.etag().to_string(),
         metadata_content_type: metadata.content_type.to_string(),
         metadata_update_time_ms: metadata.update_time_ms,
         envelope_format: "MOSRSROOT-PLACEMENT-MIGRATION-COMMIT-ENVELOPE2".to_string(),

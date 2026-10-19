@@ -63,7 +63,7 @@ pub(crate) fn object_batch_delete_proof_checksum(
 fn object_metadata_encoded_len(metadata: &ObjectMetadata) -> usize {
     encoded_string_len(&metadata.object_id.bucket)
         + encoded_string_len(&metadata.object_id.key)
-        + encoded_string_len(&metadata.etag)
+        + encoded_string_len(&metadata.etag())
         + encoded_string_len(&metadata.content_type)
         + encoded_string_len(&metadata.storage_class)
         + metadata

@@ -61,7 +61,7 @@ pub(crate) fn append_admitted_conditional_object(
             value.data.as_ref().map(|data| data.len()).unwrap_or(0) as u64,
         );
         append_u64(material, value.metadata.version);
-        append_string(material, &value.metadata.etag);
+        append_string(material, &value.metadata.etag());
     }
     append_string(material, &object.admission.storage_admission_proof_format);
     append_string(material, &object.admission.storage_admission_proof_checksum);

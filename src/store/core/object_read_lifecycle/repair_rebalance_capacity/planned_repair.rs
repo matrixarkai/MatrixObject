@@ -95,7 +95,7 @@ impl MatrixObjectStore {
                     continue;
                 }
             };
-            if current.etag != object.etag
+            if current.etag() != object.etag()
                 || current.version != object.version
                 || current.length != object.length
             {

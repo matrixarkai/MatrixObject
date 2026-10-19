@@ -87,7 +87,7 @@ impl MatrixObjectStore {
                     continue;
                 }
             };
-            if current.etag != item.object.etag || current.version != item.object.version {
+            if current.etag() != item.object.etag() || current.version != item.object.version {
                 report.skipped_migration_objects =
                     report.skipped_migration_objects.saturating_add(1);
                 continue;

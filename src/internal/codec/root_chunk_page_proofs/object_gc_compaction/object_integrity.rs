@@ -133,14 +133,14 @@ pub(crate) fn evaluate_object_read_preconditions(
     preconditions: &ObjectReadPreconditions,
 ) -> Result<bool, ObjectError> {
     if !preconditions.if_match_etags.is_empty()
-        && !entity_tag_list_matches(&preconditions.if_match_etags, &metadata.etag)
+        && !entity_tag_list_matches(&preconditions.if_match_etags, &metadata.etag())
     {
         return Err(ObjectError::PreconditionFailed(
             "if-match etag does not match current object".to_string(),
         ));
     }
     Ok(!preconditions.if_none_match_etags.is_empty()
-        && entity_tag_list_matches(&preconditions.if_none_match_etags, &metadata.etag))
+        && entity_tag_list_matches(&preconditions.if_none_match_etags, &metadata.etag()))
 }
 
 pub(crate) fn fnv1a64(data: &[u8]) -> u64 {

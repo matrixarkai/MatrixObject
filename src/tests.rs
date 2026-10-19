@@ -1513,7 +1513,7 @@ fn batch_object_reads_return_per_item_results_and_bounds() {
     store
         .put_object("bucket", "small", b"xyz".to_vec(), "text/plain")
         .unwrap();
-    let small_etag = store.head_object("bucket", "small").unwrap().etag;
+    let small_etag = store.head_object("bucket", "small").unwrap().etag();
 
     let report = store
         .batch_get_objects(
@@ -1909,7 +1909,7 @@ fn batch_object_deletes_return_per_item_results_and_bounds() {
         store.get_object("bucket", "delete-a"),
         Err(ObjectError::NotFound(_))
     ));
-    assert_eq!(store.head_object("bucket", "keep").unwrap().etag, keep.etag);
+    assert_eq!(store.head_object("bucket", "keep").unwrap().etag(), keep.etag());
     assert!(matches!(
         store.batch_delete_objects(Vec::new(), 0, false, 30),
         Err(ObjectError::InvalidArgument(_))
@@ -2239,7 +2239,7 @@ fn object_delete_discard_admission_bounds_budget_across_extents() {
         "response_budget_limited"
     );
 
-    let etag = admitted.object.as_ref().unwrap().metadata.etag.clone();
+    let etag = admitted.object.as_ref().unwrap().metadata.etag().clone();
     let not_modified = store
         .get_object_conditional_with_read_admission(
             "bucket",
@@ -11974,7 +11974,7 @@ fn copy_object_uses_put_semantics_and_stale_accounting() {
         .copy_object("bucket", "source", "bucket", "copy")
         .unwrap();
     assert_eq!(copy.length, source.length);
-    assert_eq!(copy.etag, source.etag);
+    assert_eq!(copy.etag(), source.etag());
     assert_eq!(copy.content_type, "text/plain");
     assert_eq!(copy.tags.get("team").map(String::as_str), Some("storage"));
     assert_eq!(
@@ -11990,7 +11990,7 @@ fn copy_object_uses_put_semantics_and_stale_accounting() {
             "copy",
             Some("application/octet-stream".to_string()),
             PutOptions {
-                if_match_etag: Some(copy.etag.to_string()),
+                if_match_etag: Some(copy.etag().to_string()),
                 tags: tags(&[("team", "database")]),
                 ..PutOptions::default()
             },
@@ -14865,7 +14865,7 @@ fn raft_backed_store_gates_object_metadata_reads_on_raft_and_shard_owner() {
     let (owner_read, owner_readiness) = replicated
         .head_object_from_meta_shard("bucket", "object", commit_index, "meta-a", 1, 20)
         .unwrap();
-    assert_eq!(owner_read.etag, metadata.etag);
+    assert_eq!(owner_read.etag(), metadata.etag());
     assert_eq!(owner_readiness.reason, "ready");
     let (owner_object, _) = replicated
         .get_object_from_meta_shard("bucket", "object", commit_index, "meta-a", 1, 20)
@@ -23397,7 +23397,7 @@ fn raft_backed_store_replays_prepared_page_reclaim_with_route_fence() {
         replicated.propose_prepared_page_reclaim_linearizable_fenced(
             prepared,
             Some(&route_checksum),
-            &receipt.etag
+            &receipt.etag()
         ),
         Err(ObjectError::PreconditionFailed(_))
     ));
@@ -27807,7 +27807,7 @@ fn raft_backed_store_gates_prepared_root_actions() {
         migration.envelope.committed_raft_index,
         replicated.raft_commit_index()
     );
-    assert_eq!(migration.envelope.metadata_etag, *migration.metadata.etag);
+    assert_eq!(migration.envelope.metadata_etag, *migration.metadata.etag());
     assert!(migration.envelope.envelope_bytes > 0);
     assert!(!migration.envelope.envelope_checksum.is_empty());
 
@@ -27872,7 +27872,7 @@ fn raft_backed_store_replays_batch_delete_with_root_release() {
                 ObjectDeleteRequest {
                     bucket: "bucket".to_string(),
                     key: "delete-a".to_string(),
-                    if_match_etag: Some(first.etag.to_string()),
+                    if_match_etag: Some(first.etag().to_string()),
                     version: None,
                 },
                 ObjectDeleteRequest {
@@ -29207,7 +29207,7 @@ fn conditional_put_delete_and_version_lifecycle() {
             "text/plain",
             PutOptions {
                 if_none_match: false,
-                if_match_etag: Some(first.etag.to_string()),
+                if_match_etag: Some(first.etag().to_string()),
                 ..PutOptions::default()
             },
         )
@@ -29244,7 +29244,7 @@ fn conditional_put_delete_and_version_lifecycle() {
             1,
             &ObjectReadPreconditions {
                 if_match_etags: Vec::new(),
-                if_none_match_etags: vec![first.etag.to_string()],
+                if_none_match_etags: vec![first.etag().to_string()],
             },
         )
         .unwrap();
@@ -29275,7 +29275,7 @@ fn conditional_put_delete_and_version_lifecycle() {
                     }),
                     preconditions: ObjectReadPreconditions {
                         if_match_etags: Vec::new(),
-                        if_none_match_etags: vec![second.etag.to_string()],
+                        if_none_match_etags: vec![second.etag().to_string()],
                     },
                 },
             ],
@@ -29315,7 +29315,7 @@ fn conditional_put_delete_and_version_lifecycle() {
                     range: None,
                     preconditions: ObjectReadPreconditions {
                         if_match_etags: Vec::new(),
-                        if_none_match_etags: vec![first.etag.to_string()],
+                        if_none_match_etags: vec![first.etag().to_string()],
                     },
                 },
                 VersionedConditionalObjectReadRequest {
@@ -29383,11 +29383,11 @@ fn conditional_put_delete_and_version_lifecycle() {
         2
     );
     assert!(matches!(
-        store.delete_object_with_match("bucket", "object", Some(first.etag.to_string())),
+        store.delete_object_with_match("bucket", "object", Some(first.etag().to_string())),
         Err(ObjectError::PreconditionFailed(_))
     ));
     let delete_marker = store
-        .delete_object_with_match("bucket", "object", Some(second.etag.to_string()))
+        .delete_object_with_match("bucket", "object", Some(second.etag().to_string()))
         .unwrap();
     assert!(delete_marker.deleted);
     assert_eq!(

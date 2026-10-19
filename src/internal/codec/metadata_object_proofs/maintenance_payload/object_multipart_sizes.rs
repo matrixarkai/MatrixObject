@@ -27,7 +27,7 @@ pub(crate) fn object_metadata_payload_bytes(metadata: &ObjectMetadata) -> u64 {
         .bucket
         .len()
         .saturating_add(metadata.object_id.key.len())
-        .saturating_add(metadata.etag.len())
+        .saturating_add(metadata.etag().len())
         .saturating_add(metadata.content_type.len())
         .saturating_add(user_metadata_bytes)
         .saturating_add(metadata.storage_class.len())

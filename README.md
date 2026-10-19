@@ -165,11 +165,11 @@ cargo test --release --lib measure_what_a_mutation_batch_snapshot_costs -- --ign
 #### A delete does not reclaim, it trades
 
 Writing 500 objects of 1 KiB and then deleting every one leaves the store
-**21.5% larger** than when it held them:
+**22.3% larger** than when it held them:
 
 | | bytes |
 |---|---:|
-| holding 500 objects | 1,961,205 |
+| holding 500 objects | 1,949,205 |
 | after deleting all 500 | 2,384,346 |
 
 The payload index is given back in full. What replaces it is **822 bytes of

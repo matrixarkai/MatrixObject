@@ -41,7 +41,7 @@ pub(crate) fn read_metadata(
         object_id,
         version,
         length,
-        etag: etag.into(),
+        etag_fnv1a64: change_etag_digest(&etag)?,
         content_type: content_type.into(),
         user_metadata: user_metadata.into(),
         storage_class: interned_storage_class(&storage_class),

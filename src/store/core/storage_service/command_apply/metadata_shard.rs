@@ -21,7 +21,7 @@ impl MatrixObjectStore {
                     object_id: ObjectId::new("_multipart", upload.upload_id),
                     version: 0,
                     length: upload.total_bytes,
-                    etag: String::new().into(),
+                    etag_fnv1a64: None,
                     content_type: "multipart/abort-idempotent".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
                     storage_class: k_standard_storage_class().to_string().into(),

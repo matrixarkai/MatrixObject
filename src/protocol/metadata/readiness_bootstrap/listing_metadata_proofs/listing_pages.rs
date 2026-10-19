@@ -22,7 +22,7 @@ fn listing_object_id_encoded_len(object_id: &ObjectId) -> usize {
 
 fn listing_object_metadata_encoded_len(metadata: &ObjectMetadata) -> usize {
     listing_object_id_encoded_len(&metadata.object_id)
-        + encoded_string_len(&metadata.etag)
+        + encoded_string_len(&metadata.etag())
         + encoded_string_len(&metadata.content_type)
         + listing_string_map_encoded_len(&metadata.user_metadata)
         + encoded_string_len(&metadata.storage_class)
