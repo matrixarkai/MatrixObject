@@ -121,8 +121,8 @@ impl StoreSnapshot {
             append_string(&mut out, consumer_id);
             append_object_change_cursor(&mut out, change_cursor);
         }
-        append_u64(&mut out, self.slabs.len() as u64);
-        for (chunk_id, slab) in &self.slabs {
+        append_u64(&mut out, self.chunks.len() as u64);
+        for (chunk_id, slab) in &self.chunks {
             append_slab_id(&mut out, chunk_id);
             append_chunk_info(&mut out, slab);
         }
@@ -335,7 +335,7 @@ impl StoreSnapshot {
                     version_total.saturating_add(metadata_size(metadata))
                 }))
         });
-        let slab_bytes = self.slabs.values().fold(0usize, |total, slab| {
+        let slab_bytes = self.chunks.values().fold(0usize, |total, slab| {
             total.saturating_add(U64 * 2).saturating_add(chunk_size(slab))
         });
         let applied_receipt_bytes = self

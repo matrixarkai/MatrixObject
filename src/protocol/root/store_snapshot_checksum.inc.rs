@@ -150,7 +150,7 @@ impl StoreSnapshot {
                 append_metadata(&mut material, metadata);
             }
         }
-        for (chunk_id, slab) in &self.slabs {
+        for (chunk_id, slab) in &self.chunks {
             append_slab_id(&mut material, chunk_id);
             append_chunk_info(&mut material, slab);
         }

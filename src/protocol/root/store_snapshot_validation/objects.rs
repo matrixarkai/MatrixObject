@@ -22,7 +22,7 @@ impl StoreSnapshot {
             }
         }
         for ((chunk_id, offset), payload) in &self.payloads {
-            let slab = self.slabs.get(chunk_id).ok_or_else(|| {
+            let slab = self.chunks.get(chunk_id).ok_or_else(|| {
                 ObjectError::Corruption("snapshot payload references missing segment".to_string())
             })?;
             let payload_end = offset.checked_add(payload.len() as u64).ok_or_else(|| {
@@ -72,7 +72,7 @@ impl StoreSnapshot {
                     extent.offset.checked_add(extent.length).ok_or_else(|| {
                         ObjectError::Corruption("snapshot extent address overflows".to_string())
                     })?;
-                    let slab = self.slabs.get(&extent.chunk_id).ok_or_else(|| {
+                    let slab = self.chunks.get(&extent.chunk_id).ok_or_else(|| {
                         ObjectError::Corruption(
                             "snapshot object references missing segment".to_string(),
                         )

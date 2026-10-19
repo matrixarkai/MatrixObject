@@ -186,7 +186,7 @@ pub struct StorageMaintenanceRunReport {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SealedChunkPage {
-    pub slabs: Vec<ChunkId>,
+    pub chunks: Vec<ChunkId>,
     pub sealed_chunk_count: u64,
     pub limit: u64,
     pub truncated: bool,

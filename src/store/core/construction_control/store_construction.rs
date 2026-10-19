@@ -173,7 +173,7 @@ impl MatrixObjectStore {
             metadata_route_cache_expired_invalidations: 0,
             metadata_route_cache_capacity_evictions: 0,
             metadata_route_cache_sequence: 0,
-            slabs: BTreeMap::new(),
+            chunks: BTreeMap::new(),
             payloads: BTreeMap::new(),
             chunk_service,
             next_chunk_id: 1,

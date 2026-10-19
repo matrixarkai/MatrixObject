@@ -65,22 +65,22 @@ impl MatrixChunkService {
                 "sealed segment list limit must be positive".to_string(),
             ));
         }
-        let mut slabs = Vec::new();
+        let mut chunks = Vec::new();
         let mut truncated = false;
         let mut next_marker = None;
         for slab in &self.sealed_chunks {
             if marker.map(|item| slab <= item).unwrap_or(false) {
                 continue;
             }
-            if slabs.len() >= limit {
+            if chunks.len() >= limit {
                 truncated = true;
                 break;
             }
             next_marker = Some(slab.clone());
-            slabs.push(slab.clone());
+            chunks.push(slab.clone());
         }
         Ok(SealedChunkPage {
-            slabs,
+            chunks,
             sealed_chunk_count: self.sealed_chunks.len() as u64,
             limit: limit as u64,
             truncated,

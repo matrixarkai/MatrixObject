@@ -86,8 +86,8 @@ pub struct MatrixObjectStore {
     metadata_route_cache_expired_invalidations: u64,
     metadata_route_cache_capacity_evictions: u64,
     metadata_route_cache_sequence: u64,
-    pub(crate) slabs: BTreeMap<ChunkId, ChunkInfo>,
-    // Visible to the crate as `slabs` is, so that the invariant the targeted
+    pub(crate) chunks: BTreeMap<ChunkId, ChunkInfo>,
+    // Visible to the crate as `chunks` is, so that the invariant the targeted
     // undo derives from -- a stale range holds no payload entry -- can be
     // asserted from a test rather than argued for in a comment.
     pub(crate) payloads: BTreeMap<(ChunkId, u64), StoredPayload>,
@@ -161,7 +161,7 @@ pub(crate) struct ObjectMutationRollback {
     multipart_abort_receipts: BTreeMap<String, MultipartAbortReceipt>,
     next_upload_sequence: u64,
     meta_service: Option<MatrixMetaService>,
-    slabs: BTreeMap<ChunkId, ChunkInfo>,
+    chunks: BTreeMap<ChunkId, ChunkInfo>,
     payloads: BTreeMap<(ChunkId, u64), StoredPayload>,
     /// Absent on the put path, where the page service's own mutation batch
     /// holds the undo and the put drives its abort.

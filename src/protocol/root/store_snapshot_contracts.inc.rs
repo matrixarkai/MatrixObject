@@ -19,7 +19,7 @@ pub struct StoreSnapshot {
     pub object_changes: Vec<ObjectChangeRecord>,
     pub object_change_cursors: BTreeMap<String, ObjectChangeCursor>,
     pub next_object_change_sequence: u64,
-    pub slabs: BTreeMap<ChunkId, ChunkInfo>,
+    pub chunks: BTreeMap<ChunkId, ChunkInfo>,
     pub payloads: BTreeMap<(ChunkId, u64), std::sync::Arc<Vec<u8>>>,
     pub meta_snapshot: MetaSnapshot,
     pub root_snapshot: RootSnapshot,

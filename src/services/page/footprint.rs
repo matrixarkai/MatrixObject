@@ -243,7 +243,7 @@ impl MatrixChunkService {
     /// allocations are counted here too: they are the same shape and the same
     /// growth, differing only in that a commit removes them.
     ///
-    /// The endpoints and the sealed slabs ride along because they grow with the
+    /// The endpoints and the sealed chunks ride along because they grow with the
     /// same configuration rather than with the data.
     pub(crate) fn receipt_bytes(&self) -> u64 {
         chunk_receipt_maps_bytes(

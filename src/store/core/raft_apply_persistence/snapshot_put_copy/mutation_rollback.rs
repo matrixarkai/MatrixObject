@@ -62,7 +62,7 @@ impl MatrixObjectStore {
             } else {
                 Some(self.meta_service.clone())
             },
-            slabs: self.slabs.clone(),
+            chunks: self.chunks.clone(),
             payloads: if targeted {
                 Default::default()
             } else {
@@ -223,7 +223,7 @@ impl MatrixObjectStore {
                 self.object_changes
                     .retain(|change| change.sequence < rollback.next_object_change_sequence);
                 self.meta_service.restore_record_undo(targeted.meta);
-                self.restore_targeted_payloads(&rollback.slabs, targeted.previous_payloads);
+                self.restore_targeted_payloads(&rollback.chunks, targeted.previous_payloads);
             }
             None => {
                 self.buckets = rollback.buckets;
@@ -251,7 +251,7 @@ impl MatrixObjectStore {
         if let Some(meta_service) = rollback.meta_service {
             self.meta_service = meta_service;
         }
-        self.slabs = rollback.slabs;
+        self.chunks = rollback.chunks;
         if !was_targeted {
             self.payloads = rollback.payloads;
         }

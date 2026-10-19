@@ -231,7 +231,7 @@ fn append_object_extends_existing_blob_without_staling_old_extents() {
         b"abcdefghi"
     );
     let first_slab = store
-        .slabs
+        .chunks
         .get(&first.extents[0].chunk_id)
         .expect("first append segment remains present");
     assert_eq!(first_slab.stale_bytes, 0);
@@ -20823,7 +20823,7 @@ fn raft_backed_store_fences_prepared_chunk_compaction() {
             options: PutOptions::default(),
         })
         .unwrap();
-    let source_before = replicated.store().slabs.get(&source_chunk).unwrap();
+    let source_before = replicated.store().chunks.get(&source_chunk).unwrap();
     assert_eq!(source_before.stale_bytes, 8);
     assert_eq!(source_before.live_bytes, 8);
 
@@ -21037,7 +21037,7 @@ fn raft_backed_store_fences_prepared_chunk_compaction() {
         fields.get("segment_compact.metadata.content_type"),
         Some(&"segment/prepared-compaction".to_string())
     );
-    let source_after = replicated.store().slabs.get(&source_chunk).unwrap();
+    let source_after = replicated.store().chunks.get(&source_chunk).unwrap();
     assert_eq!(source_after.live_bytes, 0);
     assert_eq!(source_after.stale_bytes, source_after.next_offset);
     assert_eq!(
@@ -21059,7 +21059,7 @@ fn raft_backed_store_fences_prepared_chunk_compaction() {
         follower.get_object("bucket", "compact-me").unwrap().data,
         b"new-data".to_vec()
     );
-    let follower_source = follower.slabs.get(&source_chunk).unwrap();
+    let follower_source = follower.chunks.get(&source_chunk).unwrap();
     assert_eq!(follower_source.live_bytes, 0);
     assert_eq!(follower_source.stale_bytes, follower_source.next_offset);
 }
@@ -29585,7 +29585,7 @@ fn snapshot_round_trips_validated_versioned_state() {
     ));
     let mut corrupt_payload_range = chunk_restored.export_snapshot().unwrap();
     let (chunk_id, slab) = corrupt_payload_range
-        .slabs
+        .chunks
         .iter()
         .next()
         .map(|(chunk_id, slab)| (chunk_id.clone(), slab.clone()))
@@ -35830,7 +35830,7 @@ fn a_stale_range_holds_no_payload_entry() {
     }
     store.delete_object("bucket", "k1").unwrap();
     let mut stale_ranges_seen = 0usize;
-    for (chunk_id, slab) in store.slabs.iter() {
+    for (chunk_id, slab) in store.chunks.iter() {
         for range in slab.stale_ranges.iter() {
             stale_ranges_seen += 1;
             for (key, _) in store.payloads.iter() {
