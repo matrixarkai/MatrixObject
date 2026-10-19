@@ -37608,6 +37608,101 @@ fn a_per_unit_figure_is_a_slope_and_not_a_total_divided_by_a_count() {
 }
 
 #[test]
+fn every_metadata_leg_is_a_line_and_the_intercepts_are_named() {
+    // `the_metadata_total_is_the_sum_of_the_legs_it_names` holds that the legs
+    // add up. That makes the decomposition complete at one store size; it says
+    // nothing about the SHAPE of each leg, and the shape is what the README
+    // publishes -- a per-object figure plus a fixed term.
+    //
+    // The fixed term was published as 206,848 bytes, the product of the two
+    // capped feeds' per-record costs and their 1,024-record bound. The measured
+    // intercept is 207,246. The missing 398 bytes are real and are not in the
+    // feeds: 86 inside `objects`, 108 inside `meta.records`, 84 of
+    // `meta.entities` and 120 of `segments`. A derived fixed term hid them.
+    //
+    // So this takes three store sizes at or above the feeds' bound, fits each
+    // contributing leg separately, and asserts every one of them is a line --
+    // the same marginal cost across both intervals -- and that the total's own
+    // slope and intercept are the sums of the legs'. That is what makes the
+    // published pair of numbers a model of the store rather than two figures
+    // measured at one size.
+    const LEGS: [&str; 7] = [
+        "objects.bytes",
+        "object_changes.bytes",
+        "meta.records.bytes",
+        "meta.change_log.bytes",
+        "meta.entities.bytes",
+        "payloads.key_bytes",
+        "segments.bytes",
+    ];
+
+    fn metadata_at(objects: u64) -> std::collections::BTreeMap<String, u64> {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("prefix/{index:08}/kkkkkkkkkk"),
+                    vec![b'x'; 256],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        store.footprint_audit().into_iter().collect()
+    }
+
+    // At or above the feeds' 1,024-record bound, so the feeds are full and
+    // contribute a constant rather than a third regime.
+    let counts = [1024u64, 2048, 3072];
+    let audits: Vec<_> = counts.iter().map(|n| metadata_at(*n)).collect();
+    let at = |which: usize, key: &str| -> u64 {
+        *audits[which]
+            .get(key)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    };
+
+    // Fit each leg, and the total, over the two intervals.
+    let fit = |key: &str| -> (u64, u64, u64) {
+        let (v0, v1, v2) = (at(0, key), at(1, key), at(2, key));
+        let low = (v1 - v0) / (counts[1] - counts[0]);
+        let high = (v2 - v1) / (counts[2] - counts[1]);
+        let intercept = v2 - high * counts[2];
+        (low, high, intercept)
+    };
+
+    let mut slopes = 0u64;
+    let mut intercepts = 0u64;
+    for leg in LEGS {
+        let (low, high, intercept) = fit(leg);
+        println!("METALINE {leg} slope={high} intercept={intercept}");
+        assert_eq!(
+            low, high,
+            "{leg} must be a line: its marginal cost is {low} between {} and {}              objects and {high} between {} and {}",
+            counts[0], counts[1], counts[1], counts[2]
+        );
+        slopes += high;
+        intercepts += intercept;
+    }
+
+    let (total_low, total_high, total_intercept) = fit("ACCOUNTED.metadata_bytes");
+    println!("METALINE total slope={total_high} intercept={total_intercept}");
+    assert_eq!(total_low, total_high, "the metadata total must be a line too");
+    assert_eq!(
+        total_high, slopes,
+        "the per-object cost must be the sum of the legs': {total_high} against {slopes}"
+    );
+    assert_eq!(
+        total_intercept, intercepts,
+        "the fixed term must be the sum of the legs' fixed terms, with nothing          derived and nothing left over: {total_intercept} against {intercepts}"
+    );
+}
+
+#[test]
 fn the_metadata_total_is_the_sum_of_the_legs_it_names() {
     // `ACCOUNTED.metadata_bytes` is the figure every per-object number in the
     // README divides. A structure can be left out of it in total silence: it

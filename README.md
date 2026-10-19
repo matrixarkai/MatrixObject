@@ -113,10 +113,17 @@ MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib \
 
 ### Metadata is per object, and the per-object figure depends on how many there are
 
-At a fixed object count the metadata total is **identical** whatever the objects
-contain: 2,867,510 bytes for 4,000 objects at both 1 KiB and 4 KiB. So it
+At a fixed object count the metadata total barely moves with what the objects
+contain: 2,851,246 bytes for 4,000 objects at both 1 KiB and 4 KiB. So it
 disappears into a large object and dominates a small one, which is the whole
 reason the two totals are reported separately.
+
+It is not quite constant, and the reason is worth knowing: an object's length is
+stored as **decimal text**, so the per-object cost rises by one byte for every
+decimal digit in the size. At 4,000 objects the metadata total is 2,847,246 at
+256 B, 2,851,246 at both 1 KiB and 4 KiB, and 2,855,606 at 64 KiB — a byte an
+object per digit, which is why the 1 KiB and 4 KiB figures agree exactly and the
+others do not.
 
 The per-object figure falls as the store grows, because two of the structures
 are bounded rather than per object:
@@ -127,8 +134,31 @@ are bounded rather than per object:
 
 Both change feeds cap at 1,024 records, so together they are 27.2% of metadata
 at a hundred objects and 3.8% at eight thousand. Everything else is exactly
-linear, which gives an asymptote of **661 bytes per object** plus 206,848 bytes
-of capped feeds spread across however many objects there are.
+linear, which makes the total a line once the feeds are full:
+
+```
+metadata = 661 bytes an object + 207,246 bytes fixed      (remainder: zero)
+```
+
+measured at 4,000 and 8,000 objects of 1 KiB, and reproducing both totals
+exactly. The fixed term is measured rather than derived, which matters because
+deriving it from the feeds' own per-record costs gives 206,848 and loses 398
+bytes that are not in the feeds at all:
+
+| | bytes | |
+|---|---:|---|
+| object change feed | 149,504 | 1,024 records at its bound |
+| metadata change log | 57,344 | 1,024 records at its bound |
+| inside `objects` | 86 | the content-type and storage-class text, shared by every object |
+| inside `meta.records` | 108 | one record more than there are objects — the bucket's |
+| `meta.entities` | 84 | |
+| `segments` | 120 | |
+| **fixed total** | **207,246** | |
+
+`every_metadata_leg_is_a_line_and_the_intercepts_are_named` fits each leg over
+three store sizes and fails unless every one is a line and the fixed terms sum
+to the total's — so a leg that starts depending on the object count, or a fixed
+byte that stops being named, is caught rather than absorbed.
 
 That 661 is now more than half one item:
 
@@ -138,12 +168,25 @@ That 661 is now more than half one item:
 | `objects` — the structured metadata | 282 B | 42.7% |
 | payload index keys | 24 B | 3.6% |
 
-The largest single item inside either half is the projection record's **value**,
-at 227 bytes per object — **34% of everything the store holds per object** — of
-which 151 bytes are field names that nothing parses. Issue #40 has the
-measurement and what closing it would require. It is unchanged in absolute
-terms while everything around it has shrunk, which is why its share keeps
-rising.
+Those two halves hold the **same facts twice**. `objects` is a binary struct —
+152 bytes inline, with the object id, length, etag, content type, storage class
+and extent list in fixed-width fields. `meta.records` is a text projection of
+the same object, and it is the largest single item in the store per object: 227
+bytes of value, **34% of everything the store holds per object**.
+
+Measured against what that text actually distinguishes:
+
+| | per record | share | |
+|---|---:|---:|---|
+| field names and separators | 151 B | 70% | `retention_until_ms`, `metadata_count`, … spelled out for every object |
+| values that never differ | 24 B | 11% | 9 of the 12 fields have **one** distinct value across every object |
+| values that differ | 42 B | 19% | etag, length, content type |
+
+So **175 of 217 bytes carry no information that varies between objects** — 81%,
+and 26% of all per-object metadata. Issue #40 has the measurement and what
+closing it would require; it is a durable format, so the cost is a migration
+rather than an edit. The item is unchanged in absolute terms while everything
+around it has shrunk, which is why its share keeps rising.
 
 So if you store small objects, three replicas do not cost 3x. Any amplification
 figure published for this store before the metadata was counted was the
