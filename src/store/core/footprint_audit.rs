@@ -288,7 +288,10 @@ impl MatrixObjectStore {
             // the store still holds costs nothing again for the key characters.
             changes_object_id = changes_object_id
                 .saturating_add(audit_object_id_heap(&mut ledger, &change.object_id));
-            changes_etag = changes_etag.saturating_add(audit_boxed_str_heap(&change.etag));
+            // The digest is inline in the record, so it owns no heap at all --
+            // the leg stays, reporting zero, because a reader of the breakdown
+            // should see that it was weighed rather than dropped.
+            changes_etag = changes_etag.saturating_add(0);
         }
         let changes_bytes = changes_inline
             .saturating_add(changes_operation)
@@ -932,7 +935,7 @@ impl ObjectMutationRollback {
             changes_bytes = changes_bytes
                 .saturating_add(ledger.charge(&change.operation))
                 .saturating_add(audit_object_id_heap(&mut ledger, &change.object_id))
-                .saturating_add(audit_boxed_str_heap(&change.etag));
+                .saturating_add(0);
         }
 
         let mut multipart_bytes = audit_bucket_keyed_inline_bytes(&self.multipart_complete_receipts)

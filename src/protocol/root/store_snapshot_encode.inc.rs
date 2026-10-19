@@ -312,7 +312,7 @@ impl StoreSnapshot {
             U64.saturating_mul(6)
                 .saturating_add(encoded_string_len(&change.operation))
                 .saturating_add(object_id_size(&change.object_id))
-                .saturating_add(encoded_string_len(&change.etag))
+                .saturating_add(encoded_string_len(&change.etag()))
         }
         fn object_change_cursor_size(cursor: &ObjectChangeCursor) -> usize {
             encoded_string_len(&cursor.consumer_id).saturating_add(U64 * 2)
