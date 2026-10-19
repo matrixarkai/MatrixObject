@@ -1,4 +1,4 @@
-pub(crate) fn append_chunk_write_batch_stats(out: &mut Vec<u8>, stats: &ChunkWriteBatchStats) {
+pub(crate) fn append_chunk_write_batch_stats(out: &mut Vec<u8>, stats: &ReplicaWriteBatchStats) {
     append_u64(out, stats.input_ranges);
     append_u64(out, stats.input_bytes);
     append_u64(out, stats.coalesced_ranges);
@@ -8,7 +8,7 @@ pub(crate) fn append_chunk_write_batch_stats(out: &mut Vec<u8>, stats: &ChunkWri
     append_u64(out, stats.invalidated_cache_entries);
 }
 
-pub(crate) fn append_chunk_discard_batch_stats(out: &mut Vec<u8>, stats: &ChunkDiscardBatchStats) {
+pub(crate) fn append_chunk_discard_batch_stats(out: &mut Vec<u8>, stats: &ReplicaDiscardBatchStats) {
     append_u64(out, stats.input_ranges);
     append_u64(out, stats.input_bytes);
     append_u64(out, stats.coalesced_ranges);
@@ -20,7 +20,7 @@ pub(crate) fn append_chunk_discard_batch_stats(out: &mut Vec<u8>, stats: &ChunkD
 
 pub(crate) fn append_chunk_batch_write_receipt(
     out: &mut Vec<u8>,
-    receipt: &ChunkBatchWriteReceipt,
+    receipt: &ReplicaBatchWriteReceipt,
 ) {
     append_chunk_id(out, &receipt.chunk_id);
     append_string(out, &receipt.request_checksum);
@@ -29,7 +29,7 @@ pub(crate) fn append_chunk_batch_write_receipt(
     append_chunk_write_batch_stats(out, &receipt.stats);
 }
 
-pub(crate) fn append_chunk_write_receipt(out: &mut Vec<u8>, receipt: &ChunkWriteReceipt) {
+pub(crate) fn append_chunk_write_receipt(out: &mut Vec<u8>, receipt: &ReplicaWriteReceipt) {
     append_chunk_id(out, &receipt.chunk_id);
     append_u64(out, receipt.offset);
     append_u64(out, receipt.length);
@@ -38,7 +38,7 @@ pub(crate) fn append_chunk_write_receipt(out: &mut Vec<u8>, receipt: &ChunkWrite
     append_string(out, &receipt.idempotency_key);
 }
 
-pub(crate) fn append_chunk_discard_receipt(out: &mut Vec<u8>, receipt: &ChunkDiscardReceipt) {
+pub(crate) fn append_chunk_discard_receipt(out: &mut Vec<u8>, receipt: &ReplicaDiscardReceipt) {
     append_chunk_id(out, &receipt.chunk_id);
     append_u64(out, receipt.offset);
     append_u64(out, receipt.length);
@@ -48,7 +48,7 @@ pub(crate) fn append_chunk_discard_receipt(out: &mut Vec<u8>, receipt: &ChunkDis
 
 pub(crate) fn append_chunk_batch_discard_receipt(
     out: &mut Vec<u8>,
-    receipt: &ChunkBatchDiscardReceipt,
+    receipt: &ReplicaBatchDiscardReceipt,
 ) {
     append_chunk_id(out, &receipt.chunk_id);
     append_string(out, &receipt.request_checksum);
@@ -58,7 +58,7 @@ pub(crate) fn append_chunk_batch_discard_receipt(
 
 pub(crate) fn append_chunk_state_install_receipt(
     out: &mut Vec<u8>,
-    receipt: &ChunkStateInstallReceipt,
+    receipt: &ReplicaStateInstallReceipt,
 ) {
     append_chunk_id(out, &receipt.chunk_id);
     append_string(out, &receipt.request_checksum);
@@ -70,7 +70,7 @@ pub(crate) fn append_chunk_state_install_receipt(
     append_u64(out, receipt.discard_range_count);
 }
 
-pub(crate) fn append_chunk_reclaim_receipt(out: &mut Vec<u8>, receipt: &ChunkReclaimReceipt) {
+pub(crate) fn append_chunk_reclaim_receipt(out: &mut Vec<u8>, receipt: &ReplicaReclaimReceipt) {
     append_string(out, &receipt.request_checksum);
     append_string(out, &receipt.idempotency_key);
     append_u64(out, receipt.max_chunks);
@@ -82,7 +82,7 @@ pub(crate) fn append_chunk_reclaim_receipt(out: &mut Vec<u8>, receipt: &ChunkRec
     append_chunk_partial_reclaim_report(out, &receipt.report);
 }
 
-pub(crate) fn append_chunk_repair_receipt(out: &mut Vec<u8>, receipt: &ChunkRepairReceipt) {
+pub(crate) fn append_chunk_repair_receipt(out: &mut Vec<u8>, receipt: &ReplicaRepairReceipt) {
     append_chunk_id(out, &receipt.chunk_id);
     append_string(out, &receipt.request_checksum);
     append_string(out, &receipt.idempotency_key);
@@ -91,7 +91,7 @@ pub(crate) fn append_chunk_repair_receipt(out: &mut Vec<u8>, receipt: &ChunkRepa
 
 pub(crate) fn append_page_range_repair_receipt(
     out: &mut Vec<u8>,
-    receipt: &PageRangeRepairReceipt,
+    receipt: &ChunkRangeRepairReceipt,
 ) {
     append_slab_id(out, &receipt.slab_id);
     append_u64(out, receipt.offset);
@@ -105,7 +105,7 @@ pub(crate) fn append_page_range_repair_receipt(
 
 pub(crate) fn append_page_audit_repair_receipt(
     out: &mut Vec<u8>,
-    receipt: &PageAuditRepairReceipt,
+    receipt: &ChunkAuditRepairReceipt,
 ) {
     append_u64(out, receipt.after_chunk_id.is_some() as u64);
     if let Some(after_chunk_id) = &receipt.after_chunk_id {

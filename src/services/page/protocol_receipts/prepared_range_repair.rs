@@ -10,9 +10,9 @@ pub struct PreparedPageRangeRepair {
     pub report: BoundedRepairReport,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
-    pub chunk_control_proof: PageChunkControlProof,
+    pub chunk_control_proof: ReplicaControlProof,
     pub raft_entry_checksum: String,
 }
 
@@ -27,7 +27,7 @@ pub struct PreparedPageRangeRepairApplyReport {
     pub external_raft_required: bool,
     pub deduped: bool,
     pub report: BoundedRepairReport,
-    pub receipt: PageRangeRepairReceipt,
+    pub receipt: ChunkRangeRepairReceipt,
     pub metadata: ObjectMetadata,
 }
 

@@ -79,7 +79,7 @@ impl MatrixObjectStore {
 
     fn chunk_mutation_qos_control_metadata(
         &self,
-        config: &ChunkMutationQosConfig,
+        config: &ReplicaMutationQosConfig,
         target_replica_index: Option<usize>,
         content_type: &str,
     ) -> ObjectMetadata {

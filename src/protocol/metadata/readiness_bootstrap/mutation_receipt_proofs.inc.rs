@@ -141,7 +141,7 @@ fn multipart_upload_encoded_len(upload: &MultipartUpload) -> usize {
     encoded_len
 }
 
-fn page_route_control_proof_encoded_len(proof: &PageRouteControlProof) -> usize {
+fn chunk_route_control_proof_encoded_len(proof: &ChunkRouteControlProof) -> usize {
     encoded_string_len(&proof.state_format)
         + encoded_string_len(&proof.state_checksum)
         + std::mem::size_of::<u64>() * 34
@@ -150,12 +150,12 @@ fn page_route_control_proof_encoded_len(proof: &PageRouteControlProof) -> usize 
 fn multipart_proof_common_encoded_len(
     format: &str,
     operation: &str,
-    route_control_proof: &PageRouteControlProof,
+    route_control_proof: &ChunkRouteControlProof,
     expected_route_control_checksum: &str,
 ) -> usize {
     encoded_string_len(format)
         + encoded_string_len(operation)
-        + page_route_control_proof_encoded_len(route_control_proof)
+        + chunk_route_control_proof_encoded_len(route_control_proof)
         + encoded_string_len(expected_route_control_checksum)
 }
 

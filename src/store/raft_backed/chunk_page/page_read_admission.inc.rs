@@ -1,9 +1,9 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn can_accept_page_batch_read_linearizable(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_linearizable_at(
             requests,
             max_payload_bytes,
@@ -13,10 +13,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_linearizable_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         min_read_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_linearizable_committed_at(
             requests,
             max_payload_bytes,
@@ -27,11 +27,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_linearizable_committed_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
@@ -43,10 +43,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_linearizable_fenced(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
@@ -58,11 +58,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_linearizable_fenced_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
@@ -74,12 +74,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_linearizable_fenced_committed_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_bounded_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
@@ -92,13 +92,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_bounded_linearizable_fenced_committed_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_bounded_linearizable_fenced_committed_at_borrowed(
             &requests,
             max_payload_bytes,
@@ -111,13 +111,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_bounded_linearizable_fenced_committed_at_borrowed(
         &self,
-        requests: &[PageRangeRequest],
+        requests: &[ChunkRangeRequest],
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         let required_read_index = self
             .raft
             .commit_index()
@@ -159,11 +159,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_with_read_proof_linearizable_fenced_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
-    ) -> Result<ProvenAdmissionRead<PageRangeAdmission>, ObjectError> {
+    ) -> Result<ProvenAdmissionRead<ChunkRangeAdmission>, ObjectError> {
         self.can_accept_page_batch_read_with_read_proof_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
@@ -175,11 +175,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_with_route_proof_linearizable_fenced_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         expected_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
-    ) -> Result<ProvenPageRouteFencedAdmissionRead<PageRangeAdmission>, ObjectError> {
+    ) -> Result<ProvenPageRouteFencedAdmissionRead<ChunkRangeAdmission>, ObjectError> {
         self.can_accept_page_batch_read_bounded_with_route_proof_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
@@ -192,13 +192,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_bounded_with_route_proof_linearizable_fenced_committed_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenPageRouteFencedAdmissionRead<PageRangeAdmission>, ObjectError> {
+    ) -> Result<ProvenPageRouteFencedAdmissionRead<ChunkRangeAdmission>, ObjectError> {
         let expected_checksum = expected_route_control_checksum.as_ref().to_string();
         let proven = self
             .can_accept_page_batch_read_bounded_with_read_proof_linearizable_fenced_committed_at(
@@ -219,12 +219,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenAdmissionRead<PageRangeAdmission>, ObjectError> {
+    ) -> Result<ProvenAdmissionRead<ChunkRangeAdmission>, ObjectError> {
         self.can_accept_page_batch_read_bounded_with_read_proof_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
@@ -237,13 +237,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_bounded_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenAdmissionRead<PageRangeAdmission>, ObjectError> {
+    ) -> Result<ProvenAdmissionRead<ChunkRangeAdmission>, ObjectError> {
         let requested_read_index = self
             .raft
             .commit_index()
@@ -264,12 +264,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_strict_linearizable_fenced(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
         expected_admission_proof_checksum: impl AsRef<str>,
-    ) -> Result<ProvenAdmissionRead<PageRangeAdmission>, ObjectError> {
+    ) -> Result<ProvenAdmissionRead<ChunkRangeAdmission>, ObjectError> {
         self.can_accept_page_batch_read_strict_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
@@ -283,14 +283,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_read_strict_linearizable_fenced_committed_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
         expected_admission_proof_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenAdmissionRead<PageRangeAdmission>, ObjectError> {
+    ) -> Result<ProvenAdmissionRead<ChunkRangeAdmission>, ObjectError> {
         self.can_accept_page_batch_read_bounded_with_read_proof_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,

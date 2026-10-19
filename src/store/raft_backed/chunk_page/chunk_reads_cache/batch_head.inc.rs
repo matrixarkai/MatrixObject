@@ -3,7 +3,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         replica_index: usize,
         chunk_ids: Vec<PageId>,
-    ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats, u64), ObjectError> {
+    ) -> Result<(Vec<ReplicaHead>, ReplicaHeadBatchStats, u64), ObjectError> {
         self.head_chunk_batch_linearizable_at(replica_index, chunk_ids, self.raft.commit_index())
     }
 
@@ -12,7 +12,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_index: usize,
         chunk_ids: Vec<PageId>,
         min_read_index: u64,
-    ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats, u64), ObjectError> {
+    ) -> Result<(Vec<ReplicaHead>, ReplicaHeadBatchStats, u64), ObjectError> {
         self.head_chunk_batch_linearizable_committed_at(replica_index, chunk_ids, min_read_index, 0)
     }
 
@@ -22,7 +22,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         chunk_ids: Vec<PageId>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats, u64), ObjectError> {
+    ) -> Result<(Vec<ReplicaHead>, ReplicaHeadBatchStats, u64), ObjectError> {
         let required_read_index = self
             .raft
             .commit_index()
@@ -51,7 +51,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -66,7 +66,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_index: usize,
         chunk_ids: Vec<PageId>,
         min_read_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkHeadBatchRead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaHeadBatchRead>, ObjectError> {
         self.head_chunk_batch_with_read_proof_linearizable_committed_at(
             replica_index,
             chunk_ids,
@@ -81,7 +81,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         chunk_ids: Vec<PageId>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkHeadBatchRead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaHeadBatchRead>, ObjectError> {
         let requested_chunk_ids = chunk_ids.clone();
         let (heads, stats, requested_read_index) = self
             .head_chunk_batch_linearizable_committed_at(
@@ -98,7 +98,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let proof_checksum =
             chunk_head_batch_read_proof_checksum(&requested_chunk_ids, &heads, &stats, &proof);
         Ok(ProvenStorageRead {
-            value: ChunkHeadBatchRead {
+            value: ReplicaHeadBatchRead {
                 heads,
                 stats,
                 min_read_index,
@@ -115,7 +115,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_index: usize,
         chunk_ids: Vec<PageId>,
         expected_chunk_head_batch_proof_checksum: impl AsRef<str>,
-    ) -> Result<ProvenStorageRead<ChunkHeadBatchRead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaHeadBatchRead>, ObjectError> {
         self.head_chunk_batch_strict_linearizable_committed_at(
             replica_index,
             chunk_ids,
@@ -131,7 +131,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         chunk_ids: Vec<PageId>,
         expected_chunk_head_batch_proof_checksum: impl AsRef<str>,
         min_read_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkHeadBatchRead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaHeadBatchRead>, ObjectError> {
         self.head_chunk_batch_strict_linearizable_committed_at(
             replica_index,
             chunk_ids,
@@ -148,7 +148,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_chunk_head_batch_proof_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkHeadBatchRead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaHeadBatchRead>, ObjectError> {
         let proven = self.head_chunk_batch_with_read_proof_linearizable_committed_at(
             replica_index,
             chunk_ids,

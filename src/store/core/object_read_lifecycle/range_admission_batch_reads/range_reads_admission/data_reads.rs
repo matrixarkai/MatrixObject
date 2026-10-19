@@ -96,7 +96,7 @@ impl MatrixObjectStore {
         key: &str,
         offset: u64,
         length: u64,
-    ) -> Result<(ObjectData, PageReadStats), ObjectError> {
+    ) -> Result<(ObjectData, ChunkReadStats), ObjectError> {
         self.get_object_range_with_read_stats_bounded(bucket, key, offset, length, 0)
     }
 
@@ -107,7 +107,7 @@ impl MatrixObjectStore {
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
-    ) -> Result<(ObjectData, PageReadStats), ObjectError> {
+    ) -> Result<(ObjectData, ChunkReadStats), ObjectError> {
         let metadata = self.head_object(bucket, key)?;
         check_payload_read_allowed(&metadata, now_millis())?;
         if offset > metadata.length {

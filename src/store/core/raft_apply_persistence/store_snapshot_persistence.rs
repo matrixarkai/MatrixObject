@@ -19,7 +19,7 @@ impl MatrixObjectStore {
         let mut out = std::collections::BTreeMap::new();
         for ((slab_id, offset), stored) in &self.payloads {
             let (bytes, _) =
-                self.page_service
+                self.chunk_service
                     .read_slab_range(slab_id, *offset, stored.len)?;
             out.insert((slab_id.clone(), *offset), std::sync::Arc::new(bytes));
         }
@@ -143,10 +143,10 @@ impl MatrixObjectStore {
             chunk_read_cache_max_bytes_per_replica: self.chunk_read_cache_max_bytes_per_replica,
             chunk_read_cache_max_cacheable_read_bytes_per_replica: self
                 .chunk_read_cache_max_cacheable_read_bytes_per_replica,
-            page_write_quorum: self.page_service.write_quorum(),
-            page_read_quorum: self.page_service.read_quorum(),
-            page_chunk_endpoints: self.page_service.chunk_endpoints().to_vec(),
-            page_disabled_chunk_endpoints: self.page_service.disabled_chunk_endpoints.clone(),
+            page_write_quorum: self.chunk_service.write_quorum(),
+            page_read_quorum: self.chunk_service.read_quorum(),
+            replica_endpoints: self.chunk_service.chunk_endpoints().to_vec(),
+            page_disabled_chunk_endpoints: self.chunk_service.disabled_chunk_endpoints.clone(),
             snapshot_checksum: String::new(),
         };
         snapshot.snapshot_checksum = snapshot.checksum_material_hash();
@@ -260,7 +260,7 @@ impl MatrixObjectStore {
         append_u64(&mut material, self.options.page_repair_parallelism as u64);
         append_u64(
             &mut material,
-            self.options.page_chunk_fanout_parallelism as u64,
+            self.options.replica_fanout_parallelism as u64,
         );
         append_u64(
             &mut material,
@@ -306,18 +306,18 @@ impl MatrixObjectStore {
             &mut material,
             self.chunk_read_cache_max_cacheable_read_bytes_per_replica,
         );
-        append_u64(&mut material, self.page_service.write_quorum() as u64);
-        append_u64(&mut material, self.page_service.read_quorum() as u64);
-        let page_chunk_endpoints = self.page_service.chunk_endpoints();
-        append_u64(&mut material, page_chunk_endpoints.len() as u64);
-        for endpoint in page_chunk_endpoints {
+        append_u64(&mut material, self.chunk_service.write_quorum() as u64);
+        append_u64(&mut material, self.chunk_service.read_quorum() as u64);
+        let replica_endpoints = self.chunk_service.chunk_endpoints();
+        append_u64(&mut material, replica_endpoints.len() as u64);
+        for endpoint in replica_endpoints {
             append_string(&mut material, endpoint);
         }
         append_u64(
             &mut material,
-            self.page_service.disabled_chunk_endpoints.len() as u64,
+            self.chunk_service.disabled_chunk_endpoints.len() as u64,
         );
-        for index in &self.page_service.disabled_chunk_endpoints {
+        for index in &self.chunk_service.disabled_chunk_endpoints {
             append_u64(&mut material, *index as u64);
         }
         append_string_set(&mut material, &self.buckets);
@@ -576,7 +576,7 @@ impl MatrixObjectStore {
         *self.snapshot_export_cache.borrow_mut() = None;
         *self.persistent_snapshot_durable_stamp.borrow_mut() = None;
         self.snapshot_assembler.reset();
-        let mut page_service = MatrixPageService::new_with_parallelism(
+        let mut chunk_service = MatrixChunkService::new_with_parallelism(
             snapshot.options.page_size,
             snapshot.options.replica_count,
             snapshot.page_write_quorum,
@@ -586,12 +586,12 @@ impl MatrixObjectStore {
             snapshot.options.page_batch_write_parallelism,
             snapshot.options.page_batch_discard_parallelism,
             snapshot.options.page_repair_parallelism,
-            snapshot.options.page_chunk_fanout_parallelism,
+            snapshot.options.replica_fanout_parallelism,
             snapshot.options.local_replica_store_parallelism,
         )?;
         let mut payload_index = std::collections::BTreeMap::new();
         for ((slab_id, offset), payload) in &snapshot.payloads {
-            page_service.write_slab_range(slab_id, *offset, payload)?;
+            chunk_service.write_slab_range(slab_id, *offset, payload)?;
             payload_index.insert(
                 (slab_id.clone(), *offset),
                 StoredPayload {
@@ -600,8 +600,8 @@ impl MatrixObjectStore {
                 },
             );
         }
-        page_service.configure_chunk_endpoints(
-            snapshot.page_chunk_endpoints.clone(),
+        chunk_service.configure_chunk_endpoints(
+            snapshot.replica_endpoints.clone(),
             snapshot.page_disabled_chunk_endpoints.clone(),
             snapshot.page_write_quorum,
             snapshot.page_read_quorum,
@@ -651,7 +651,7 @@ impl MatrixObjectStore {
         self.meta_service.install_placement_snapshot(snapshot.root_snapshot)?;
         self.slabs = snapshot.slabs;
         self.payloads = payload_index;
-        self.page_service = page_service;
+        self.chunk_service = chunk_service;
         self.next_slab_id = snapshot.next_slab_id;
         self.next_upload_sequence = snapshot.next_upload_sequence;
         self.logical_written_bytes = snapshot.logical_written_bytes;

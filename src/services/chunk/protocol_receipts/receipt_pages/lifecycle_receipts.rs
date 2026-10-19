@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkStateInstallReceipt {
+pub struct ReplicaStateInstallReceipt {
     pub chunk_id: PageId,
     pub request_checksum: String,
     pub payload_checksum: String,
@@ -11,7 +11,7 @@ pub struct ChunkStateInstallReceipt {
     pub deduped: bool,
 }
 
-impl ChunkStateInstallReceipt {
+impl ReplicaStateInstallReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MOSRS-CHUNK-STATE-INSTALL-RECEIPT-PROOF1"
     }
@@ -75,7 +75,7 @@ impl ChunkStateInstallReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkReclaimReceipt {
+pub struct ReplicaReclaimReceipt {
     pub request_checksum: String,
     pub idempotency_key: String,
     pub max_chunks: u64,
@@ -84,11 +84,11 @@ pub struct ChunkReclaimReceipt {
     pub min_discard_ratio_ppm: u64,
     pub max_discard_ranges: u64,
     pub max_trim_bytes: u64,
-    pub report: ChunkPartialReclaimReport,
+    pub report: ReplicaPartialReclaimReport,
     pub deduped: bool,
 }
 
-impl ChunkReclaimReceipt {
+impl ReplicaReclaimReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MOSRS-CHUNK-RECLAIM-RECEIPT-PROOF1"
     }
@@ -154,15 +154,15 @@ impl ChunkReclaimReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkRepairReceipt {
+pub struct ReplicaRepairReceipt {
     pub chunk_id: PageId,
     pub request_checksum: String,
     pub idempotency_key: String,
-    pub report: ChunkRepairReport,
+    pub report: ReplicaRepairReport,
     pub deduped: bool,
 }
 
-impl ChunkRepairReceipt {
+impl ReplicaRepairReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-CHUNK-REPAIR-RECEIPT1"
     }

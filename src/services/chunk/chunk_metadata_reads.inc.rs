@@ -6,12 +6,12 @@ impl MatrixReplicaService {
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))
     }
 
-    pub fn head_chunk(&self, chunk_id: &PageId) -> Result<ChunkHead, ObjectError> {
+    pub fn head_chunk(&self, chunk_id: &PageId) -> Result<ReplicaHead, ObjectError> {
         let state = self
             .chunks
             .get(chunk_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
-        Ok(ChunkHead {
+        Ok(ReplicaHead {
             logical_length: state.logical_length,
             write_sequence: state.write_sequence,
             checksum: state.checksum.clone(),
@@ -23,22 +23,22 @@ impl MatrixReplicaService {
     pub fn head_chunk_batch(
         &self,
         chunk_ids: Vec<PageId>,
-    ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats), ObjectError> {
+    ) -> Result<(Vec<ReplicaHead>, ReplicaHeadBatchStats), ObjectError> {
         self.head_chunk_batch_refs(&chunk_ids)
     }
 
     pub(crate) fn head_chunk_batch_refs(
         &self,
         chunk_ids: &[PageId],
-    ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats), ObjectError> {
+    ) -> Result<(Vec<ReplicaHead>, ReplicaHeadBatchStats), ObjectError> {
         if chunk_ids.len() <= 1 {
             return self.head_unique_chunk_batch_refs(chunk_ids);
         }
-        let mut stats = ChunkHeadBatchStats {
+        let mut stats = ReplicaHeadBatchStats {
             input_heads: chunk_ids.len() as u64,
-            ..ChunkHeadBatchStats::default()
+            ..ReplicaHeadBatchStats::default()
         };
-        let mut cached_heads: BTreeMap<&PageId, (usize, Option<ChunkHead>)> = BTreeMap::new();
+        let mut cached_heads: BTreeMap<&PageId, (usize, Option<ReplicaHead>)> = BTreeMap::new();
         for chunk_id in chunk_ids {
             cached_heads
                 .entry(chunk_id)
@@ -73,10 +73,10 @@ impl MatrixReplicaService {
     pub(crate) fn head_unique_chunk_batch_refs(
         &self,
         chunk_ids: &[PageId],
-    ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats), ObjectError> {
-        let mut stats = ChunkHeadBatchStats {
+    ) -> Result<(Vec<ReplicaHead>, ReplicaHeadBatchStats), ObjectError> {
+        let mut stats = ReplicaHeadBatchStats {
             input_heads: chunk_ids.len() as u64,
-            ..ChunkHeadBatchStats::default()
+            ..ReplicaHeadBatchStats::default()
         };
         let mut heads = Vec::with_capacity(chunk_ids.len());
         for chunk_id in chunk_ids {
@@ -90,10 +90,10 @@ impl MatrixReplicaService {
     pub(crate) fn head_unique_chunk_batch_stats_refs(
         &self,
         chunk_ids: &[PageId],
-    ) -> Result<ChunkHeadBatchStats, ObjectError> {
-        let mut stats = ChunkHeadBatchStats {
+    ) -> Result<ReplicaHeadBatchStats, ObjectError> {
+        let mut stats = ReplicaHeadBatchStats {
             input_heads: chunk_ids.len() as u64,
-            ..ChunkHeadBatchStats::default()
+            ..ReplicaHeadBatchStats::default()
         };
         for chunk_id in chunk_ids {
             self.chunks

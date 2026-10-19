@@ -27,7 +27,7 @@ struct DistributedObjectFootprintSnapshot {
 }
 
 impl DistributedObjectFootprintSnapshot {
-    fn capture(store: &MatrixObjectStore, page: &PageStorageReadiness) -> Self {
+    fn capture(store: &MatrixObjectStore, page: &ChunkStorageReadiness) -> Self {
         let live_object_count = store
             .objects
             .values()

@@ -8,7 +8,7 @@ impl MatrixReplicaService {
         max_discard_ranges: usize,
         max_trim_bytes: u64,
         idempotency_key: &str,
-    ) -> Result<(ChunkPartialReclaimReport, ChunkReclaimReceipt), ObjectError> {
+    ) -> Result<(ReplicaPartialReclaimReport, ReplicaReclaimReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         let request_checksum = chunk_reclaim_request_checksum(
             max_chunks,
@@ -36,7 +36,7 @@ impl MatrixReplicaService {
             max_discard_ranges,
             max_trim_bytes,
         );
-        let receipt = ChunkReclaimReceipt {
+        let receipt = ReplicaReclaimReceipt {
             request_checksum,
             idempotency_key: idempotency_key.to_string(),
             max_chunks: max_chunks as u64,

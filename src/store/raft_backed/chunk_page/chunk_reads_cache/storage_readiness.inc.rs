@@ -5,7 +5,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_capacity_free_bytes: u64,
         min_reclaimable_bytes: u64,
         now_ms: u64,
-    ) -> Result<(ChunkStorageReadiness, u64), ObjectError> {
+    ) -> Result<(ReplicaStorageReadiness, u64), ObjectError> {
         self.chunk_replica_storage_readiness_linearizable_at(
             replica_index,
             min_capacity_free_bytes,
@@ -22,7 +22,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_reclaimable_bytes: u64,
         now_ms: u64,
         min_read_index: u64,
-    ) -> Result<(ChunkStorageReadiness, u64), ObjectError> {
+    ) -> Result<(ReplicaStorageReadiness, u64), ObjectError> {
         self.chunk_replica_storage_readiness_linearizable_committed_at(
             replica_index,
             min_capacity_free_bytes,
@@ -41,7 +41,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<(ChunkStorageReadiness, u64), ObjectError> {
+    ) -> Result<(ReplicaStorageReadiness, u64), ObjectError> {
         let required_read_index = self
             .raft
             .commit_index()
@@ -70,7 +70,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -89,7 +89,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_reclaimable_bytes: u64,
         now_ms: u64,
         min_read_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkStorageReadiness>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaStorageReadiness>, ObjectError> {
         self.chunk_replica_storage_readiness_with_read_proof_linearizable_committed_at(
             replica_index,
             min_capacity_free_bytes,
@@ -108,7 +108,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkStorageReadiness>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaStorageReadiness>, ObjectError> {
         let (value, requested_read_index) = self
             .chunk_replica_storage_readiness_linearizable_committed_at(
                 replica_index,

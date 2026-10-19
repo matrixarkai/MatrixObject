@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn bootstrap_chunk_mutation_control_from_env(
         &mut self,
-    ) -> Result<Option<ChunkMutationControlBootstrapReport>, ObjectError> {
+    ) -> Result<Option<ReplicaMutationControlBootstrapReport>, ObjectError> {
         let Some(target_commit_index) =
             first_non_empty_env_u64(&MATRIX_REPLICASERVER_RAFT_COMMIT_INDEX_ENV_NAMES)?
         else {
@@ -25,7 +25,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 .unwrap_or(65_536);
         let before_proof = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -46,7 +46,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         loop {
             let current_proof = self
                 .store
-                .page_service
+                .chunk_service
                 .replicas
                 .get(replica_index)
                 .ok_or_else(|| {
@@ -80,12 +80,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             }
             let route_checksum = self
                 .store
-                .page_service
+                .chunk_service
                 .route_control_proof()
                 .state_checksum;
             let config = self
                 .store
-                .page_service
+                .chunk_service
                 .replicas
                 .get(replica_index)
                 .ok_or_else(|| {
@@ -106,7 +106,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let after_proof = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -116,7 +116,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 ))
             })?
             .control_proof();
-        let report = ChunkMutationControlBootstrapReport {
+        let report = ReplicaMutationControlBootstrapReport {
             replica_index,
             target_commit_index,
             max_steps,
@@ -136,7 +136,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn bootstrap_chunk_trim_flow_from_env(
         &mut self,
         replica_index: usize,
-        before_readiness: &ChunkStorageReadiness,
+        before_readiness: &ReplicaStorageReadiness,
         now_ms: u64,
     ) -> Result<bool, ObjectError> {
         let requested_rate =
@@ -189,7 +189,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         {
             let route_checksum = self
                 .store
-                .page_service
+                .chunk_service
                 .route_control_proof()
                 .state_checksum;
             self.propose_configure_chunk_replica_trim_flow_prepared_full_linearizable_fenced(

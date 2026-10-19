@@ -33,7 +33,7 @@ struct DistributedStorageOperationsSnapshot {
     page_batch_write_parallelism: u64,
     page_batch_discard_parallelism: u64,
     page_repair_parallelism: u64,
-    page_chunk_fanout_parallelism: u64,
+    replica_fanout_parallelism: u64,
     effective_chunk_fanout_parallelism: u64,
     local_replica_store_parallelism: u64,
     effective_local_replica_store_parallelism: u64,
@@ -43,7 +43,7 @@ struct DistributedStorageOperationsSnapshot {
 }
 
 impl DistributedStorageOperationsSnapshot {
-    fn capture(page: &PageStorageReadiness) -> Self {
+    fn capture(page: &ChunkStorageReadiness) -> Self {
         Self {
             cumulative_repair_checked_chunks: page.cumulative_repair_checked_chunks,
             cumulative_repair_degraded_chunks: page.cumulative_repair_degraded_chunks,
@@ -85,7 +85,7 @@ impl DistributedStorageOperationsSnapshot {
             page_batch_write_parallelism: page.page_batch_write_parallelism,
             page_batch_discard_parallelism: page.page_batch_discard_parallelism,
             page_repair_parallelism: page.page_repair_parallelism,
-            page_chunk_fanout_parallelism: page.page_chunk_fanout_parallelism,
+            replica_fanout_parallelism: page.replica_fanout_parallelism,
             effective_chunk_fanout_parallelism: page.effective_chunk_fanout_parallelism,
             local_replica_store_parallelism: page.local_replica_store_parallelism,
             effective_local_replica_store_parallelism: page

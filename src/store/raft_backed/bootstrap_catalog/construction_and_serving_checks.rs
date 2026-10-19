@@ -8,7 +8,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ProvenCacheControlStats {
             stats,
             proof: object_read_proof_from_readiness(readiness),
-            route_control_proof: self.store.page_service.route_control_proof(),
+            route_control_proof: self.store.chunk_service.route_control_proof(),
             expected_route_control_checksum: expected_route_control_checksum.to_string(),
         }
     }

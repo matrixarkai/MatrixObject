@@ -80,13 +80,13 @@ pub(crate) fn append_replica_service_control_proof(
 }
 
 pub(crate) fn page_read_cache_control_image_fingerprint(
-    page_service: &MatrixPageService,
+    chunk_service: &MatrixChunkService,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-BLOCK-READ-CACHE-CONTROL-IMAGE1");
-    append_page_service_fingerprint(&mut material, page_service);
-    append_u64(&mut material, page_service.replicas.len() as u64);
-    for (replica_index, replica) in page_service.replicas.iter().enumerate() {
+    append_page_service_fingerprint(&mut material, chunk_service);
+    append_u64(&mut material, chunk_service.replicas.len() as u64);
+    for (replica_index, replica) in chunk_service.replicas.iter().enumerate() {
         let stats = replica.read_cache_stats();
         append_u64(&mut material, replica_index as u64);
         append_u64(&mut material, stats.max_bytes);
@@ -95,30 +95,30 @@ pub(crate) fn page_read_cache_control_image_fingerprint(
 }
 
 pub(crate) fn page_capacity_control_image_fingerprint(
-    page_service: &MatrixPageService,
+    chunk_service: &MatrixChunkService,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-BLOCK-CAPACITY-CONTROL-IMAGE1");
-    append_u64(&mut material, page_service.write_quorum as u64);
-    append_u64(&mut material, page_service.read_quorum as u64);
-    append_u64(&mut material, page_service.chunk_endpoints.len() as u64);
-    for (index, endpoint) in page_service.chunk_endpoints.iter().enumerate() {
+    append_u64(&mut material, chunk_service.write_quorum as u64);
+    append_u64(&mut material, chunk_service.read_quorum as u64);
+    append_u64(&mut material, chunk_service.chunk_endpoints.len() as u64);
+    for (index, endpoint) in chunk_service.chunk_endpoints.iter().enumerate() {
         append_u64(&mut material, index as u64);
         append_string(&mut material, endpoint);
         append_u64(
             &mut material,
-            page_service.disabled_chunk_endpoints.contains(&index) as u64,
+            chunk_service.disabled_chunk_endpoints.contains(&index) as u64,
         );
     }
     append_u64(
         &mut material,
-        page_service.quarantined_replicas.len() as u64,
+        chunk_service.quarantined_replicas.len() as u64,
     );
-    for replica_index in &page_service.quarantined_replicas {
+    for replica_index in &chunk_service.quarantined_replicas {
         append_u64(&mut material, *replica_index as u64);
     }
-    append_u64(&mut material, page_service.replicas.len() as u64);
-    for (replica_index, replica) in page_service.replicas.iter().enumerate() {
+    append_u64(&mut material, chunk_service.replicas.len() as u64);
+    for (replica_index, replica) in chunk_service.replicas.iter().enumerate() {
         append_u64(&mut material, replica_index as u64);
         append_u64(&mut material, replica.accepting_writes() as u64);
         append_u64(&mut material, replica.is_draining() as u64);
@@ -129,13 +129,13 @@ pub(crate) fn page_capacity_control_image_fingerprint(
 }
 
 pub(crate) fn page_trim_flow_control_image_fingerprint(
-    page_service: &MatrixPageService,
+    chunk_service: &MatrixChunkService,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-BLOCK-TRIM-FLOW-CONTROL-IMAGE1");
-    append_page_service_fingerprint(&mut material, page_service);
-    append_u64(&mut material, page_service.replicas.len() as u64);
-    for (replica_index, replica) in page_service.replicas.iter().enumerate() {
+    append_page_service_fingerprint(&mut material, chunk_service);
+    append_u64(&mut material, chunk_service.replicas.len() as u64);
+    for (replica_index, replica) in chunk_service.replicas.iter().enumerate() {
         append_u64(&mut material, replica_index as u64);
         append_u64(&mut material, replica.trim_flow_rate_bytes_per_sec());
         append_u64(&mut material, replica.trim_flow_burst_bytes());
@@ -157,7 +157,7 @@ pub(crate) fn append_repair_stats(out: &mut Vec<u8>, stats: &RepairStats) {
     append_u64(out, stats.degraded_chunks);
 }
 
-pub(crate) fn append_page_replica_audit_item(out: &mut Vec<u8>, item: &PageReplicaAuditItem) {
+pub(crate) fn append_page_replica_audit_item(out: &mut Vec<u8>, item: &ChunkReplicaAuditItem) {
     append_chunk_id(out, &item.chunk_id);
     append_u64(out, item.replica_index as u64);
     append_string(out, &item.status);
@@ -169,7 +169,7 @@ pub(crate) fn append_page_replica_audit_item(out: &mut Vec<u8>, item: &PageRepli
     append_u64(out, item.quarantined as u64);
 }
 
-pub(crate) fn append_page_replica_audit_page(out: &mut Vec<u8>, page: &PageReplicaAuditPage) {
+pub(crate) fn append_page_replica_audit_page(out: &mut Vec<u8>, page: &ChunkReplicaAuditChunk) {
     append_u64(out, page.items.len() as u64);
     for item in &page.items {
         append_page_replica_audit_item(out, item);
@@ -195,13 +195,13 @@ pub(crate) fn append_page_replica_audit_page(out: &mut Vec<u8>, page: &PageRepli
     append_u64(out, page.has_more as u64);
 }
 
-pub(crate) fn append_page_route_control_proof(out: &mut Vec<u8>, proof: &PageRouteControlProof) {
+pub(crate) fn append_page_route_control_proof(out: &mut Vec<u8>, proof: &ChunkRouteControlProof) {
     append_u64(out, proof.control_receipt as u64);
     append_string(out, &proof.state_format);
     append_u64(out, proof.state_bytes);
     append_string(out, &proof.state_checksum);
-    append_u64(out, proof.page_route_control_commit_index);
-    append_u64(out, proof.page_route_control_next_log_index);
+    append_u64(out, proof.chunk_route_control_commit_index);
+    append_u64(out, proof.chunk_route_control_next_log_index);
     append_u64(out, proof.chunk_endpoint_count);
     append_u64(out, proof.disabled_chunk_endpoint_count);
     append_u64(out, proof.write_quorum);

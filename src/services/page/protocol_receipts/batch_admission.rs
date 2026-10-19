@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageBatchStats {
+pub struct ChunkBatchStats {
     pub input_ranges: u64,
     pub mapped_chunk_ranges: u64,
     pub coalesced_chunk_ranges: u64,
@@ -8,10 +8,10 @@ pub struct PageBatchStats {
     pub physical_chunk_discard_ranges: u64,
     pub physical_chunk_discard_bytes: u64,
     pub payload_bytes: u64,
-    pub read_stats: PageReadStats,
+    pub read_stats: ChunkReadStats,
 }
 
-impl PageBatchStats {
+impl ChunkBatchStats {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -47,7 +47,7 @@ impl PageBatchStats {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageRangeAdmission {
+pub struct ChunkRangeAdmission {
     pub can_accept: bool,
     pub input_ranges: u64,
     pub mapped_chunk_ranges: u64,
@@ -77,7 +77,7 @@ pub struct PageRangeAdmission {
     pub discard_start_range_index: u64,
     pub next_discard_range_index: u64,
     pub discard_has_more: bool,
-    pub read_stats: PageReadStats,
+    pub read_stats: ChunkReadStats,
     pub partial_status: String,
     pub admission_reason: String,
     pub admission_proof_format: String,
@@ -87,13 +87,13 @@ pub struct PageRangeAdmission {
     pub read_quorum_limited: bool,
     pub write_quorum_limited: bool,
     pub discard_budget_limited: bool,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub route_control_fenced: bool,
     pub route_control_fence_matched: bool,
 }
 
-impl PageRangeAdmission {
+impl ChunkRangeAdmission {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -218,9 +218,9 @@ impl PageRangeAdmission {
 }
 
 pub(crate) fn select_admitted_page_discard_requests(
-    requests: Vec<PageRangeRequest>,
-    admission: &PageRangeAdmission,
-) -> Result<Vec<PageRangeRequest>, ObjectError> {
+    requests: Vec<ChunkRangeRequest>,
+    admission: &ChunkRangeAdmission,
+) -> Result<Vec<ChunkRangeRequest>, ObjectError> {
     if !admission.can_accept {
         return Err(ObjectError::PreconditionFailed(
             "block batch discard admission rejected".to_string(),
@@ -278,7 +278,7 @@ pub(crate) fn select_admitted_page_discard_requests(
     Ok(selected)
 }
 
-impl ProvenAdmissionRead<PageRangeAdmission> {
+impl ProvenAdmissionRead<ChunkRangeAdmission> {
     pub fn require_page_admission_proof_checksum(
         mut self,
         expected_admission_proof_checksum: impl AsRef<str>,
@@ -293,7 +293,7 @@ impl ProvenAdmissionRead<PageRangeAdmission> {
     }
 }
 
-impl ProvenPageRouteFencedAdmissionRead<PageRangeAdmission> {
+impl ProvenPageRouteFencedAdmissionRead<ChunkRangeAdmission> {
     pub fn require_page_admission_proof_checksum(
         mut self,
         expected_admission_proof_checksum: impl AsRef<str>,

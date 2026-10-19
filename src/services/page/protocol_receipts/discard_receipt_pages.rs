@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PageDiscardReceiptPage {
-    pub receipts: Vec<PageDiscardReceipt>,
+    pub receipts: Vec<ChunkDiscardReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,
@@ -115,7 +115,7 @@ impl PageDiscardReceiptPage {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PageBatchDiscardReceiptPage {
-    pub receipts: Vec<PageBatchDiscardReceipt>,
+    pub receipts: Vec<ChunkBatchDiscardReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,

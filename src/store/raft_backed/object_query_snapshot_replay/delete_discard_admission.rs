@@ -173,7 +173,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenMetadataRead<ObjectRangeAdmission>, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let (admission, readiness) = self.can_accept_object_delete_discard_linearizable_fenced(
@@ -198,7 +198,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenMetadataRead<ObjectRangeAdmission>, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let (admission, readiness) = self.can_accept_object_delete_discard_from_meta_shard_fenced(

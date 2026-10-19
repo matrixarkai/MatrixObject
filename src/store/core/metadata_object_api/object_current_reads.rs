@@ -77,7 +77,7 @@ impl MatrixObjectStore {
         &self,
         bucket: &str,
         key: &str,
-    ) -> Result<(ObjectData, PageReadStats), ObjectError> {
+    ) -> Result<(ObjectData, ChunkReadStats), ObjectError> {
         let metadata = self.head_object(bucket, key)?;
         check_payload_read_allowed(&metadata, now_millis())?;
         let (data, stats) = self.read_extents_with_stats(&metadata.extents, 0, metadata.length)?;

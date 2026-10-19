@@ -1,10 +1,10 @@
 impl MatrixObjectStore {
     pub fn page_write_quorum(&self) -> usize {
-        self.page_service.write_quorum()
+        self.chunk_service.write_quorum()
     }
 
     pub fn page_read_quorum(&self) -> usize {
-        self.page_service.read_quorum()
+        self.chunk_service.read_quorum()
     }
 
     pub fn can_accept_page_write(
@@ -14,8 +14,8 @@ impl MatrixObjectStore {
         length: u64,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        self.page_service.can_accept_slab_write(
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.chunk_service.can_accept_slab_write(
             slab_id,
             offset,
             length,
@@ -32,8 +32,8 @@ impl MatrixObjectStore {
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        self.page_service.can_accept_slab_write_fenced(
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.chunk_service.can_accept_slab_write_fenced(
             slab_id,
             offset,
             length,
@@ -45,21 +45,21 @@ impl MatrixObjectStore {
 
     pub fn can_accept_page_batch_write(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_write_from(writes, max_write_bytes, max_chunk_write_count, 0)
     }
 
     pub fn can_accept_page_batch_write_from(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        self.page_service.can_accept_slab_writes_from(
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.chunk_service.can_accept_slab_writes_from(
             writes,
             max_write_bytes,
             max_chunk_write_count,
@@ -69,11 +69,11 @@ impl MatrixObjectStore {
 
     pub fn can_accept_page_batch_write_fenced(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_write_fenced_from(
             writes,
             max_write_bytes,
@@ -85,13 +85,13 @@ impl MatrixObjectStore {
 
     pub fn can_accept_page_batch_write_fenced_from(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        self.page_service.can_accept_slab_writes_fenced_from(
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.chunk_service.can_accept_slab_writes_fenced_from(
             writes,
             max_write_bytes,
             max_chunk_write_count,

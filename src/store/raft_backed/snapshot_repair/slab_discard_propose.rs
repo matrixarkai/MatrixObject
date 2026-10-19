@@ -194,7 +194,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         if route_checksum.is_empty() {
             route_checksum = self
                 .store
-                .page_service
+                .chunk_service
                 .route_control_proof()
                 .state_checksum;
         }
@@ -213,7 +213,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 .iter()
                 .map(|plan| plan.discard_bytes)
                 .fold(0u64, saturating_add),
-            route_control_proof: self.store.page_service.route_control_proof(),
+            route_control_proof: self.store.chunk_service.route_control_proof(),
             expected_route_control_checksum: route_checksum.clone(),
             ..SlabDiscardRunReport::default()
         };
@@ -276,7 +276,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         if route_checksum.is_empty() {
             route_checksum = self
                 .store
-                .page_service
+                .chunk_service
                 .route_control_proof()
                 .state_checksum;
         }

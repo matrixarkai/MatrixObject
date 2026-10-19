@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PageAllocationReceiptPage {
-    pub receipts: Vec<PageAllocationReceipt>,
+    pub receipts: Vec<ChunkAllocationReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,
@@ -122,7 +122,7 @@ pub type PageReleaseAllocationReceiptPage = PageAllocationReceiptPage;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PageBatchAllocationReceiptPage {
-    pub receipts: Vec<PageBatchAllocationReceipt>,
+    pub receipts: Vec<ChunkBatchAllocationReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,

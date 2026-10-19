@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn list_allocation_receipts(
         &self,
         marker: Option<&str>,
@@ -27,7 +27,7 @@ impl MatrixPageService {
             page_size: page_index.map(|_| self.page_size),
             ..PageAllocationReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &PageAllocation)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ChunkAllocation)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.allocation_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -53,7 +53,7 @@ impl MatrixPageService {
                 break;
             }
             page.next_marker = Some(idempotency_key.clone());
-            page.receipts.push(PageAllocationReceipt {
+            page.receipts.push(ChunkAllocationReceipt {
                 allocation: allocation.clone(),
                 idempotency_key: idempotency_key.clone(),
                 released: false,
@@ -92,7 +92,7 @@ impl MatrixPageService {
             page_size: page_index.map(|_| self.page_size),
             ..PageReleaseAllocationReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &PageAllocation)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ChunkAllocation)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.release_allocation_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -118,7 +118,7 @@ impl MatrixPageService {
                 break;
             }
             page.next_marker = Some(idempotency_key.clone());
-            page.receipts.push(PageAllocationReceipt {
+            page.receipts.push(ChunkAllocationReceipt {
                 allocation: allocation.clone(),
                 idempotency_key: idempotency_key.clone(),
                 released: true,
@@ -157,7 +157,7 @@ impl MatrixPageService {
             page_size: page_index.map(|_| self.page_size),
             ..PageBatchAllocationReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &Vec<PageAllocation>)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &Vec<ChunkAllocation>)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.batch_allocation_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -189,7 +189,7 @@ impl MatrixPageService {
                 break;
             }
             page.next_marker = Some(idempotency_key.clone());
-            page.receipts.push(PageBatchAllocationReceipt {
+            page.receipts.push(ChunkBatchAllocationReceipt {
                 allocations: allocations.clone(),
                 idempotency_key: idempotency_key.clone(),
                 deduped: false,

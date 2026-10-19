@@ -1,13 +1,13 @@
 pub(crate) fn read_page_route_control_proof(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<PageRouteControlProof, ObjectError> {
-    Ok(PageRouteControlProof {
+) -> Result<ChunkRouteControlProof, ObjectError> {
+    Ok(ChunkRouteControlProof {
         control_receipt: cursor.read_u64()? != 0,
         state_format: cursor.read_string()?,
         state_bytes: cursor.read_u64()?,
         state_checksum: cursor.read_string()?,
-        page_route_control_commit_index: cursor.read_u64()?,
-        page_route_control_next_log_index: cursor.read_u64()?,
+        chunk_route_control_commit_index: cursor.read_u64()?,
+        chunk_route_control_next_log_index: cursor.read_u64()?,
         chunk_endpoint_count: cursor.read_u64()?,
         disabled_chunk_endpoint_count: cursor.read_u64()?,
         write_quorum: cursor.read_u64()?,
@@ -43,14 +43,14 @@ pub(crate) fn read_page_route_control_proof(
 
 pub(crate) fn read_chunk_repair_report(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkRepairReport, ObjectError> {
+) -> Result<ReplicaRepairReport, ObjectError> {
     let has_chunk_id = cursor.read_u64()? != 0;
     let chunk_id = if has_chunk_id {
         Some(read_chunk_id(cursor)?)
     } else {
         None
     };
-    Ok(ChunkRepairReport {
+    Ok(ReplicaRepairReport {
         chunk_id,
         checked_chunks: cursor.read_u64()?,
         healthy_chunks: cursor.read_u64()?,
@@ -78,8 +78,8 @@ pub(crate) fn read_chunk_repair_report(
 
 pub(crate) fn read_chunk_repair_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkRepairReceipt, ObjectError> {
-    Ok(ChunkRepairReceipt {
+) -> Result<ReplicaRepairReceipt, ObjectError> {
+    Ok(ReplicaRepairReceipt {
         chunk_id: read_chunk_id(cursor)?,
         request_checksum: cursor.read_string()?,
         idempotency_key: cursor.read_string()?,
@@ -120,8 +120,8 @@ pub(crate) fn read_bounded_repair_report(
 
 pub(crate) fn read_page_range_repair_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<PageRangeRepairReceipt, ObjectError> {
-    Ok(PageRangeRepairReceipt {
+) -> Result<ChunkRangeRepairReceipt, ObjectError> {
+    Ok(ChunkRangeRepairReceipt {
         slab_id: read_slab_id(cursor)?,
         offset: cursor.read_u64()?,
         length: cursor.read_u64()?,
@@ -136,8 +136,8 @@ pub(crate) fn read_page_range_repair_receipt(
 
 pub(crate) fn read_page_replica_audit_item(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<PageReplicaAuditItem, ObjectError> {
-    Ok(PageReplicaAuditItem {
+) -> Result<ChunkReplicaAuditItem, ObjectError> {
+    Ok(ChunkReplicaAuditItem {
         chunk_id: read_chunk_id(cursor)?,
         replica_index: cursor.read_count("block replica audit item replica index")?,
         status: cursor.read_string()?,
@@ -152,7 +152,7 @@ pub(crate) fn read_page_replica_audit_item(
 
 pub(crate) fn read_page_replica_audit_page(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<PageReplicaAuditPage, ObjectError> {
+) -> Result<ChunkReplicaAuditChunk, ObjectError> {
     let item_count = cursor.read_count("block replica audit page item count")?;
     let mut items = Vec::with_capacity(item_count);
     for _ in 0..item_count {
@@ -168,7 +168,7 @@ pub(crate) fn read_page_replica_audit_page(
     } else {
         None
     };
-    Ok(PageReplicaAuditPage {
+    Ok(ChunkReplicaAuditChunk {
         items,
         marker,
         next_marker,
@@ -188,8 +188,8 @@ pub(crate) fn read_page_replica_audit_page(
 
 pub(crate) fn read_page_replica_audit_repair_report(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<PageReplicaAuditRepairReport, ObjectError> {
-    Ok(PageReplicaAuditRepairReport {
+) -> Result<ChunkReplicaAuditRepairReport, ObjectError> {
+    Ok(ChunkReplicaAuditRepairReport {
         audit: read_page_replica_audit_page(cursor)?,
         candidate_chunks: cursor.read_u64()?,
         repaired_chunks: cursor.read_u64()?,
@@ -205,13 +205,13 @@ pub(crate) fn read_page_replica_audit_repair_report(
 
 pub(crate) fn read_page_audit_repair_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<PageAuditRepairReceipt, ObjectError> {
+) -> Result<ChunkAuditRepairReceipt, ObjectError> {
     let after_chunk_id = if cursor.read_u64()? != 0 {
         Some(read_chunk_id(cursor)?)
     } else {
         None
     };
-    Ok(PageAuditRepairReceipt {
+    Ok(ChunkAuditRepairReceipt {
         after_chunk_id,
         max_chunks: cursor.read_u64()?,
         max_payload_bytes: cursor.read_u64()?,

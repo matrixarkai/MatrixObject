@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     fn record_repair_stats(&mut self, stats: &RepairStats) {
         self.cumulative_repair_checked_chunks = self
             .cumulative_repair_checked_chunks
@@ -14,12 +14,12 @@ impl MatrixPageService {
             .saturating_add(stats.failed_repairs);
     }
 
-    fn inspect_chunk_repair(&self, chunk_id: &PageId) -> Result<ChunkRepairReport, ObjectError> {
-        let mut report = ChunkRepairReport {
+    fn inspect_chunk_repair(&self, chunk_id: &PageId) -> Result<ReplicaRepairReport, ObjectError> {
+        let mut report = ReplicaRepairReport {
             chunk_id: Some(chunk_id.clone()),
             checked_chunks: 1,
             route_control_proof: self.route_control_proof(),
-            ..ChunkRepairReport::default()
+            ..ReplicaRepairReport::default()
         };
         let mut states: Vec<(usize, PageState)> = Vec::with_capacity(self.replicas.len());
         let mut saw_chunk = false;
@@ -216,7 +216,7 @@ impl MatrixPageService {
         }
         let payload_checksum = etag(&selected.data);
         let handoff_token = chunk_state_handoff_checksum(chunk_id, &selected, &payload_checksum);
-        let selected_handoff = ChunkStateHandoff {
+        let selected_handoff = ReplicaStateHandoff {
             chunk_id: chunk_id.clone(),
             state: selected.clone(),
             payload_checksum: payload_checksum.clone(),

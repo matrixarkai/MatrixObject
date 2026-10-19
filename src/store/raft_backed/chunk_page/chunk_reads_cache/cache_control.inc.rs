@@ -3,7 +3,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &mut self,
         max_bytes_per_replica: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.configure_chunk_read_cache_control_with_read_proof_linearizable_fenced_committed_at(
             max_bytes_per_replica,
             expected_route_control_checksum,
@@ -18,7 +18,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         let requested_read_index = self
             .raft
             .commit_index()
@@ -40,7 +40,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn clear_chunk_read_cache_control_with_read_proof_linearizable_fenced(
         &mut self,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.clear_chunk_read_cache_control_with_read_proof_linearizable_fenced_committed_at(
             expected_route_control_checksum,
             self.raft.commit_index(),
@@ -53,7 +53,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         let requested_read_index = self
             .raft
             .commit_index()
@@ -77,7 +77,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         length: u64,
         max_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.prewarm_chunk_read_cache_control_with_read_proof_linearizable_fenced_committed_at(
             chunk_id,
             offset,
@@ -98,9 +98,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.prewarm_chunk_read_cache_control_batch_with_read_proof_linearizable_fenced_committed_at(
-            vec![ChunkReadCacheRange {
+            vec![ReplicaReadCacheRange {
                 chunk_id,
                 offset,
                 length,
@@ -114,10 +114,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prewarm_chunk_read_cache_control_batch_with_read_proof_linearizable_fenced(
         &mut self,
-        ranges: Vec<ChunkReadCacheRange>,
+        ranges: Vec<ReplicaReadCacheRange>,
         max_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.prewarm_chunk_read_cache_control_batch_with_read_proof_linearizable_fenced_committed_at(
             ranges,
             max_bytes,
@@ -129,12 +129,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prewarm_chunk_read_cache_control_batch_with_read_proof_linearizable_fenced_committed_at(
         &mut self,
-        ranges: Vec<ChunkReadCacheRange>,
+        ranges: Vec<ReplicaReadCacheRange>,
         max_bytes: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         let requested_read_index = self
             .raft
             .commit_index()
@@ -160,7 +160,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         length: u64,
         max_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.invalidate_chunk_read_cache_control_with_read_proof_linearizable_fenced_committed_at(
             chunk_id,
             offset,
@@ -181,9 +181,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.invalidate_chunk_read_cache_control_batch_with_read_proof_linearizable_fenced_committed_at(
-            vec![ChunkReadCacheRange {
+            vec![ReplicaReadCacheRange {
                 chunk_id,
                 offset,
                 length,
@@ -197,10 +197,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn invalidate_chunk_read_cache_control_batch_with_read_proof_linearizable_fenced(
         &mut self,
-        ranges: Vec<ChunkReadCacheRange>,
+        ranges: Vec<ReplicaReadCacheRange>,
         max_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.invalidate_chunk_read_cache_control_batch_with_read_proof_linearizable_fenced_committed_at(
             ranges,
             max_bytes,
@@ -212,12 +212,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn invalidate_chunk_read_cache_control_batch_with_read_proof_linearizable_fenced_committed_at(
         &mut self,
-        ranges: Vec<ChunkReadCacheRange>,
+        ranges: Vec<ReplicaReadCacheRange>,
         max_bytes: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkReadCacheControlReport>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         let requested_read_index = self
             .raft
             .commit_index()

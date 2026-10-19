@@ -1,11 +1,11 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn discard_slab_range_idempotent(
         &mut self,
         slab_id: &SlabId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
-    ) -> Result<PageDiscardReceipt, ObjectError> {
+    ) -> Result<ChunkDiscardReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         if length == 0 {
             return Err(ObjectError::InvalidArgument(
@@ -33,7 +33,7 @@ impl MatrixPageService {
             length,
             Some(idempotency_key),
         )?;
-        let receipt = PageDiscardReceipt {
+        let receipt = ChunkDiscardReceipt {
             slab_id: slab_id.clone(),
             offset,
             length,
@@ -54,7 +54,7 @@ impl MatrixPageService {
         length: u64,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageDiscardReceipt, ObjectError> {
+    ) -> Result<ChunkDiscardReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         if self.discard_request_receipts.contains_key(idempotency_key) {
             return self.discard_slab_range_idempotent(
@@ -75,7 +75,7 @@ impl MatrixPageService {
         length: u64,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageIdempotentDiscardReport, ObjectError> {
+    ) -> Result<ChunkIdempotentDiscardReport, ObjectError> {
         let receipt = self.discard_slab_range_idempotent_fenced(
             slab_id,
             offset,
@@ -83,13 +83,13 @@ impl MatrixPageService {
             idempotency_key,
             expected_route_control_checksum,
         )?;
-        let stats = PageBatchStats {
+        let stats = ChunkBatchStats {
             input_ranges: if receipt.length == 0 { 0 } else { 1 },
             mapped_chunk_ranges: self.mapped_chunk_count(receipt.offset, receipt.length)?,
             payload_bytes: receipt.length,
-            ..PageBatchStats::default()
+            ..ChunkBatchStats::default()
         };
-        Ok(PageIdempotentDiscardReport {
+        Ok(ChunkIdempotentDiscardReport {
             receipt,
             mutation: self.storage_mutation_report(stats, expected_route_control_checksum, None),
         })

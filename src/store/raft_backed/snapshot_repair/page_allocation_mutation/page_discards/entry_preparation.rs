@@ -1,12 +1,12 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_page_batch_discard_raft_entry(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         idempotency_key: &str,
     ) -> Result<PreparedPageBatchDiscard, ObjectError> {
         let expected_route_control_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         self.store.prepare_page_batch_discard_raft_entry_fenced(
@@ -19,7 +19,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_discard_raft_entry_bounded(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         idempotency_key: &str,
     ) -> Result<PreparedPageBatchDiscard, ObjectError> {
@@ -33,7 +33,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_discard_raft_entry_bounded_from(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
         idempotency_key: &str,
@@ -50,7 +50,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_discard_raft_entry_bounded_with_read_proof_linearizable_fenced(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
@@ -67,7 +67,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_discard_raft_entry_bounded_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
@@ -103,7 +103,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_discard_raft_entry_bounded_from_with_read_proof_linearizable_fenced(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
         idempotency_key: &str,
@@ -122,7 +122,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_discard_raft_entry_bounded_from_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
         idempotency_key: &str,

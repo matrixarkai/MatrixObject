@@ -27,7 +27,7 @@ struct DistributedStorageCacheSnapshot {
 }
 
 impl DistributedStorageCacheSnapshot {
-    fn capture(page: &PageStorageReadiness, cache: &ChunkReadCacheStats) -> Self {
+    fn capture(page: &ChunkStorageReadiness, cache: &ReplicaReadCacheStats) -> Self {
         Self {
             bytes: cache.bytes,
             entries: page.total_read_cache_entries,

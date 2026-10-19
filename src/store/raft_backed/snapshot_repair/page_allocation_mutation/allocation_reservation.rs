@@ -58,7 +58,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn propose_prepared_page_allocation_reservation_apply(
         &mut self,
         prepared: PreparedPageAllocationReservation,
-    ) -> Result<(ObjectMetadata, PageAllocationReceipt), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkAllocationReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
                 "prepared block allocation reservation requires raft/store commit alignment"
@@ -245,7 +245,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn propose_prepared_page_batch_allocation_reservation_apply(
         &mut self,
         prepared: PreparedPageBatchAllocationReservation,
-    ) -> Result<(ObjectMetadata, PageBatchAllocationReceipt), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkBatchAllocationReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
                 "prepared block batch allocation reservation requires raft/store commit alignment"

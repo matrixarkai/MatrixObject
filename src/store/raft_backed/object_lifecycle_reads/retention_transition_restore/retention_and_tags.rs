@@ -22,7 +22,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let metadata =
             self.propose_set_object_retention(bucket, key, retention_until_ms, update_time_ms)?;
         let readiness = self.ensure_metadata_read_index_committed_at(
@@ -118,7 +118,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let metadata = self.propose_set_object_tags(bucket, key, tags, update_time_ms)?;
         let readiness = self.ensure_metadata_read_index_committed_at(
             "set object tags post-commit",

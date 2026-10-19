@@ -14,7 +14,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.store
-            .page_service
+            .chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.propose(ObjectCommand::ConfigureChunkReplicaCapacity {
             replica_index,
@@ -70,7 +70,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         operation: &str,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRouteControlProof, ObjectError> {
+    ) -> Result<ChunkRouteControlProof, ObjectError> {
         self.ensure_storage_control_read_index_committed_at(
             operation,
             expected_route_control_checksum,
@@ -85,7 +85,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<PageRouteControlProof, ObjectError> {
+    ) -> Result<ChunkRouteControlProof, ObjectError> {
         let required_read_index = self
             .raft
             .commit_index()
@@ -115,7 +115,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 required_read_index
             )));
         }
-        let proof = self.store.page_service.route_control_proof();
+        let proof = self.store.chunk_service.route_control_proof();
         if let Some(expected) = expected_route_control_checksum {
             if expected.is_empty() {
                 return Err(ObjectError::InvalidArgument(

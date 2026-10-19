@@ -18,7 +18,7 @@ impl MatrixObjectStore {
         }
         let mut report = ConditionalObjectBatchReadReport {
             requested_objects: requests.len() as u64,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..ConditionalObjectBatchReadReport::default()
         };
         if let Some(options) = metadata_read_options.as_ref() {
@@ -36,7 +36,7 @@ impl MatrixObjectStore {
                 report.items.push(ConditionalObjectReadItem {
                     request,
                     object: None,
-                    stats: PageReadStats::default(),
+                    stats: ChunkReadStats::default(),
                     error_code: Some("PreconditionFailed".to_string()),
                     error_message: Some(
                         "conditional batch object read payload budget exceeded".to_string(),
@@ -57,7 +57,7 @@ impl MatrixObjectStore {
                             &request.preconditions,
                             options.clone(),
                         )?;
-                        Ok((object, PageReadStats::default()))
+                        Ok((object, ChunkReadStats::default()))
                     } else {
                         let object = self.get_object_range_conditional(
                             &request.bucket,
@@ -67,7 +67,7 @@ impl MatrixObjectStore {
                             remaining_payload_budget,
                             &request.preconditions,
                         )?;
-                        Ok((object, PageReadStats::default()))
+                        Ok((object, ChunkReadStats::default()))
                     }
                 }),
                 None => {
@@ -89,7 +89,7 @@ impl MatrixObjectStore {
                                         data: None,
                                         not_modified: true,
                                     },
-                                    PageReadStats::default(),
+                                    ChunkReadStats::default(),
                                 ));
                             }
                             check_payload_read_allowed(&metadata, now_millis())?;
@@ -127,7 +127,7 @@ impl MatrixObjectStore {
                                         data: None,
                                         not_modified: true,
                                     },
-                                    PageReadStats::default(),
+                                    ChunkReadStats::default(),
                                 ));
                             }
                             check_payload_read_allowed(&metadata, now_millis())?;
@@ -174,7 +174,7 @@ impl MatrixObjectStore {
                         report.items.push(ConditionalObjectReadItem {
                             request,
                             object: None,
-                            stats: PageReadStats::default(),
+                            stats: ChunkReadStats::default(),
                             error_code: Some("Corruption".to_string()),
                             error_message: Some(
                                 "conditional object read returned no payload".to_string(),
@@ -188,7 +188,7 @@ impl MatrixObjectStore {
                         report.items.push(ConditionalObjectReadItem {
                             request,
                             object: None,
-                            stats: PageReadStats::default(),
+                            stats: ChunkReadStats::default(),
                             error_code: Some("PreconditionFailed".to_string()),
                             error_message: Some(
                                 "conditional batch object read payload budget exceeded".to_string(),
@@ -212,7 +212,7 @@ impl MatrixObjectStore {
                     report.items.push(ConditionalObjectReadItem {
                         request,
                         object: None,
-                        stats: PageReadStats::default(),
+                        stats: ChunkReadStats::default(),
                         error_code: Some(object_error_code(&err).to_string()),
                         error_message: Some(err.to_string()),
                     });

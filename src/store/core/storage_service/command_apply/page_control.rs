@@ -252,12 +252,12 @@ impl MatrixObjectStore {
             }
             ObjectCommand::ConfigurePageRouteQos { config } => {
                 let config = if let Some(raft_entry_index) = raft_entry_index {
-                    self.page_service
+                    self.chunk_service
                         .configure_route_qos_at_commit(config, raft_entry_index)?
                 } else {
                     self.configure_page_route_qos(config)?
                 };
-                let proof = self.page_service.route_control_proof();
+                let proof = self.chunk_service.route_control_proof();
                 Ok(metadata_control_metadata(
                     "_blockqos",
                     &proof.state_format,
@@ -273,7 +273,7 @@ impl MatrixObjectStore {
             }
             ObjectCommand::ApplyPreparedPageRouteQos { prepared } => {
                 let config = self.apply_prepared_page_route_qos(prepared)?;
-                let proof = self.page_service.route_control_proof();
+                let proof = self.chunk_service.route_control_proof();
                 Ok(metadata_control_metadata(
                     "_blockqos",
                     &proof.state_format,
@@ -291,19 +291,19 @@ impl MatrixObjectStore {
                 slab_id,
                 expected_route_control_checksum,
             } => {
-                self.page_service.check_expected_route_control_checksum(
+                self.chunk_service.check_expected_route_control_checksum(
                     (!expected_route_control_checksum.is_empty())
                         .then_some(expected_route_control_checksum.as_str()),
                 )?;
-                let inserted = self.page_service.seal_slab(slab_id.clone())?;
-                let proof = self.page_service.route_control_proof();
+                let inserted = self.chunk_service.seal_slab(slab_id.clone())?;
+                let proof = self.chunk_service.route_control_proof();
                 Ok(metadata_control_metadata(
                     "_blockseal",
                     &format!("{}:{}", slab_id.volume_id, slab_id.id),
-                    self.page_service.sealed_slab_count(),
+                    self.chunk_service.sealed_slab_count(),
                     inserted as u64,
                     "blockserver/seal-segment",
-                    proof.page_route_control_commit_index,
+                    proof.chunk_route_control_commit_index,
                 ))
             }
             ObjectCommand::ApplyPreparedPageAllocationReservation { prepared } => {

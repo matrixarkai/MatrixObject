@@ -5,8 +5,8 @@ impl MatrixObjectStore {
         chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
-        self.page_service.can_accept_chunk_replica_batch_write(
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
+        self.chunk_service.can_accept_chunk_replica_batch_write(
             replica_index,
             chunk_id,
             writes,
@@ -21,8 +21,8 @@ impl MatrixObjectStore {
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
-        self.page_service
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
+        self.chunk_service
             .can_accept_chunk_replica_batch_write_fenced(
                 replica_index,
                 chunk_id,
@@ -39,9 +39,9 @@ impl MatrixObjectStore {
         offset: u64,
         length: u64,
         max_write_bytes: u64,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -62,9 +62,9 @@ impl MatrixObjectStore {
         length: u64,
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -80,8 +80,8 @@ impl MatrixObjectStore {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
-        self.page_service.can_accept_chunk_replica_batch_discard(
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
+        self.chunk_service.can_accept_chunk_replica_batch_discard(
             replica_index,
             chunk_id,
             ranges,
@@ -96,8 +96,8 @@ impl MatrixObjectStore {
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
-        self.page_service
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
+        self.chunk_service
             .can_accept_chunk_replica_batch_discard_fenced(
                 replica_index,
                 chunk_id,
@@ -114,9 +114,9 @@ impl MatrixObjectStore {
         offset: u64,
         length: u64,
         max_discard_bytes: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -137,9 +137,9 @@ impl MatrixObjectStore {
         length: u64,
         max_discard_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -155,8 +155,8 @@ impl MatrixObjectStore {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
-    ) -> Result<ChunkReadAdmission, ObjectError> {
-        self.page_service.can_accept_chunk_replica_batch_read(
+    ) -> Result<ReplicaReadAdmission, ObjectError> {
+        self.chunk_service.can_accept_chunk_replica_batch_read(
             replica_index,
             chunk_id,
             ranges,
@@ -171,8 +171,8 @@ impl MatrixObjectStore {
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkReadAdmission, ObjectError> {
-        self.page_service
+    ) -> Result<ReplicaReadAdmission, ObjectError> {
+        self.chunk_service
             .can_accept_chunk_replica_batch_read_fenced(
                 replica_index,
                 chunk_id,
@@ -189,9 +189,9 @@ impl MatrixObjectStore {
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
-    ) -> Result<ChunkReadAdmission, ObjectError> {
+    ) -> Result<ReplicaReadAdmission, ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -212,9 +212,9 @@ impl MatrixObjectStore {
         length: u64,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkReadAdmission, ObjectError> {
+    ) -> Result<ReplicaReadAdmission, ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -224,12 +224,12 @@ impl MatrixObjectStore {
         self.can_accept_chunk_read(replica_index, chunk_id, offset, length, max_payload_bytes)
     }
 
-    pub fn chunk_replica_mutation_qos_configs(&self) -> Vec<ChunkMutationQosConfig> {
-        self.page_service.chunk_replica_mutation_qos_configs()
+    pub fn chunk_replica_mutation_qos_configs(&self) -> Vec<ReplicaMutationQosConfig> {
+        self.chunk_service.chunk_replica_mutation_qos_configs()
     }
 
-    pub fn chunk_replica_mutation_qos_states(&self) -> Vec<ChunkMutationQosState> {
-        self.page_service.chunk_replica_mutation_qos_states()
+    pub fn chunk_replica_mutation_qos_states(&self) -> Vec<ReplicaMutationQosState> {
+        self.chunk_service.chunk_replica_mutation_qos_states()
     }
 
 }

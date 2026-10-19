@@ -155,7 +155,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenMetadataRead<GcReport>, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let (report, readiness) = self.object_gc_report_with_discard_policy_linearizable_fenced(
@@ -202,7 +202,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenMetadataRead<GcReport>, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let (report, readiness) = self

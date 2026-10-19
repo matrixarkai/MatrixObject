@@ -150,7 +150,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenObjectBatchCacheControlReport, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let report = self.batch_prewarm_object_range_cache_linearizable_fenced(
@@ -175,7 +175,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenObjectBatchCacheControlReport, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let report = self.batch_prewarm_object_range_cache_routed_linearizable_fenced(

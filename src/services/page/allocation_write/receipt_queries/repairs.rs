@@ -1,21 +1,21 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn list_repair_receipts(
         &self,
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkRepairReceiptPage, ObjectError> {
+    ) -> Result<ReplicaRepairReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
         }
         let limit = limit.clamp(1, k_max_storage_receipt_list_limit());
-        let mut page = ChunkRepairReceiptPage {
+        let mut page = ReplicaRepairReceiptPage {
             total_receipt_count: self.repair_request_receipts.len() as u64,
             limit: limit as u64,
             chunk_id: chunk_id.cloned(),
-            ..ChunkRepairReceiptPage::default()
+            ..ReplicaRepairReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &ChunkRepairReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ReplicaRepairReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.repair_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -57,7 +57,7 @@ impl MatrixPageService {
             slab_id: slab_id.cloned(),
             ..PageRangeRepairReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &PageRangeRepairReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ChunkRangeRepairReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.range_repair_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -99,7 +99,7 @@ impl MatrixPageService {
             after_chunk_id: after_chunk_id.cloned(),
             ..PageAuditRepairReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &PageAuditRepairReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ChunkAuditRepairReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.audit_repair_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),

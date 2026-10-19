@@ -1,12 +1,12 @@
-impl MatrixPageService {
-    pub fn chunk_replica_mutation_qos_configs(&self) -> Vec<ChunkMutationQosConfig> {
+impl MatrixChunkService {
+    pub fn chunk_replica_mutation_qos_configs(&self) -> Vec<ReplicaMutationQosConfig> {
         self.replicas
             .iter()
             .map(MatrixReplicaService::mutation_qos_config)
             .collect()
     }
 
-    pub fn chunk_replica_mutation_qos_states(&self) -> Vec<ChunkMutationQosState> {
+    pub fn chunk_replica_mutation_qos_states(&self) -> Vec<ReplicaMutationQosState> {
         self.replicas
             .iter()
             .map(MatrixReplicaService::mutation_qos_state)

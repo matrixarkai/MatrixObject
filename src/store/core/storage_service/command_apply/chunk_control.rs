@@ -171,13 +171,13 @@ impl MatrixObjectStore {
                 write_quorum,
                 read_quorum,
             } => {
-                self.page_service.configure_chunk_endpoints(
+                self.chunk_service.configure_chunk_endpoints(
                     endpoints,
                     disabled_endpoints,
                     write_quorum,
                     read_quorum,
                 )?;
-                let proof = self.page_service.route_control_proof();
+                let proof = self.chunk_service.route_control_proof();
                 Ok(metadata_control_metadata(
                     "_blockroute",
                     "chunk-endpoints",
@@ -194,7 +194,7 @@ impl MatrixObjectStore {
                 if replica_index == PAGE_CHUNK_CAPACITY_ALL_ELIGIBLE_TARGET {
                     self.configure_all_eligible_chunk_replica_capacity(capacity_bytes)?;
                 } else {
-                    self.page_service
+                    self.chunk_service
                         .set_chunk_replica_capacity(replica_index, capacity_bytes)?;
                 }
                 Ok(self.chunk_capacity_control_metadata(

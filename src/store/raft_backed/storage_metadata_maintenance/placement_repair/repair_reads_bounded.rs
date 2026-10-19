@@ -11,7 +11,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let mut route_checksum = expected_page_route_control_checksum.map_or_else(
             || {
                 self.store
-                    .page_service
+                    .chunk_service
                     .route_control_proof()
                     .state_checksum
             },
@@ -54,7 +54,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             let local_len = read_end - read_start;
             let selected_chunks = self
                 .store
-                .page_service
+                .chunk_service
                 .map_range(&extent.slab_id, extent.offset + local_offset, local_len)?
                 .into_iter()
                 .filter(|loc| loc.chunk_id.page_index >= next_chunk_index)
@@ -82,7 +82,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             )?;
             route_checksum = self
                 .store
-                .page_service
+                .chunk_service
                 .route_control_proof()
                 .state_checksum;
             remaining_chunks = remaining_chunks.saturating_sub(chunk_limit);

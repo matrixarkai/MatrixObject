@@ -31,7 +31,7 @@ pub struct ObjectReplicaRepairRunReport {
     pub stats: RepairStats,
     pub first_error: Option<String>,
     pub repaired: Vec<ObjectMetadata>,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub expected_plan_checksum: String,
 }
@@ -52,7 +52,7 @@ pub struct ObjectReplicaDecommissionReport {
     pub stats: RepairStats,
     pub first_error: Option<String>,
     pub migrated: Vec<ObjectPlacement>,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub expected_plan_checksum: String,
 }
@@ -91,7 +91,7 @@ pub struct ObjectCapacityRebalanceRunReport {
     pub bytes_migrated: u64,
     pub first_error: Option<String>,
     pub migrated: Vec<ObjectPlacement>,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub expected_plan_checksum: String,
 }

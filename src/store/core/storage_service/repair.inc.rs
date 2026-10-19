@@ -1,30 +1,30 @@
 impl MatrixObjectStore {
-    pub fn scrub_page_replicas(&mut self, repair: bool) -> Result<ChunkScrubReport, ObjectError> {
-        self.page_service.scrub_chunk_replicas(repair)
+    pub fn scrub_page_replicas(&mut self, repair: bool) -> Result<ReplicaScrubReport, ObjectError> {
+        self.chunk_service.scrub_chunk_replicas(repair)
     }
 
     pub fn plan_repair_page_chunk(
         &self,
         chunk_id: &PageId,
-    ) -> Result<ChunkRepairReport, ObjectError> {
-        self.page_service.plan_repair_chunk_replicas(chunk_id)
+    ) -> Result<ReplicaRepairReport, ObjectError> {
+        self.chunk_service.plan_repair_chunk_replicas(chunk_id)
     }
 
     pub fn repair_page_chunk(
         &mut self,
         chunk_id: &PageId,
-    ) -> Result<ChunkRepairReport, ObjectError> {
-        self.page_service.repair_chunk_replicas(chunk_id)
+    ) -> Result<ReplicaRepairReport, ObjectError> {
+        self.chunk_service.repair_chunk_replicas(chunk_id)
     }
 
     pub fn repair_page_chunk_fenced(
         &mut self,
         chunk_id: &PageId,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ChunkRepairReport, ObjectError> {
-        self.page_service
+    ) -> Result<ReplicaRepairReport, ObjectError> {
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let mut report = self.page_service.repair_chunk_replicas(chunk_id)?;
+        let mut report = self.chunk_service.repair_chunk_replicas(chunk_id)?;
         report.expected_route_control_checksum = expected_route_control_checksum
             .unwrap_or_default()
             .to_string();
@@ -36,8 +36,8 @@ impl MatrixObjectStore {
         after_chunk_id: Option<&PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
-    ) -> Result<PageReplicaAuditPage, ObjectError> {
-        self.page_service
+    ) -> Result<ChunkReplicaAuditChunk, ObjectError> {
+        self.chunk_service
             .audit_chunk_replicas(after_chunk_id, max_chunks, max_payload_bytes)
     }
 
@@ -46,8 +46,8 @@ impl MatrixObjectStore {
         after_chunk_id: Option<&PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
-    ) -> Result<PageReplicaAuditRepairReport, ObjectError> {
-        self.page_service.repair_audited_chunk_replicas(
+    ) -> Result<ChunkReplicaAuditRepairReport, ObjectError> {
+        self.chunk_service.repair_audited_chunk_replicas(
             after_chunk_id,
             max_chunks,
             max_payload_bytes,
@@ -60,10 +60,10 @@ impl MatrixObjectStore {
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageReplicaAuditRepairReport, ObjectError> {
-        self.page_service
+    ) -> Result<ChunkReplicaAuditRepairReport, ObjectError> {
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let mut report = self.page_service.repair_audited_chunk_replicas(
+        let mut report = self.chunk_service.repair_audited_chunk_replicas(
             after_chunk_id,
             max_chunks,
             max_payload_bytes,
@@ -79,8 +79,8 @@ impl MatrixObjectStore {
         max_chunks: usize,
         max_rewrite_bytes: u64,
         min_discarded_bytes: u64,
-    ) -> ChunkPartialReclaimReport {
-        self.page_service.partial_reclaim_chunk_replicas(
+    ) -> ReplicaPartialReclaimReport {
+        self.chunk_service.partial_reclaim_chunk_replicas(
             max_chunks,
             max_rewrite_bytes,
             min_discarded_bytes,
@@ -96,8 +96,8 @@ impl MatrixObjectStore {
         min_discard_ratio_ppm: u64,
         max_discard_ranges: usize,
         max_trim_bytes: u64,
-    ) -> Result<PageReplicaReclaimPlan, ObjectError> {
-        self.page_service.plan_chunk_replica_reclaim(
+    ) -> Result<ChunkReplicaReclaimPlan, ObjectError> {
+        self.chunk_service.plan_chunk_replica_reclaim(
             marker,
             max_chunks,
             max_rewrite_bytes,
@@ -116,8 +116,8 @@ impl MatrixObjectStore {
         min_discard_ratio_ppm: u64,
         max_discard_ranges: usize,
         max_trim_bytes: u64,
-    ) -> ChunkPartialReclaimReport {
-        self.page_service.reclaim_chunk_replicas_with_limits(
+    ) -> ReplicaPartialReclaimReport {
+        self.chunk_service.reclaim_chunk_replicas_with_limits(
             max_chunks,
             max_rewrite_bytes,
             min_discarded_bytes,
@@ -136,8 +136,8 @@ impl MatrixObjectStore {
         max_discard_ranges: usize,
         max_trim_bytes: u64,
         now_ms: u64,
-    ) -> ChunkPartialReclaimReport {
-        self.page_service.reclaim_chunk_replicas_with_limits_at(
+    ) -> ReplicaPartialReclaimReport {
+        self.chunk_service.reclaim_chunk_replicas_with_limits_at(
             max_chunks,
             max_rewrite_bytes,
             min_discarded_bytes,
@@ -152,7 +152,7 @@ impl MatrixObjectStore {
         &mut self,
         bucket: &str,
         key: &str,
-    ) -> Result<(ObjectData, PageReadStats), ObjectError> {
+    ) -> Result<(ObjectData, ChunkReadStats), ObjectError> {
         let metadata = self.head_object(bucket, key)?;
         self.get_object_range_repairing(bucket, key, 0, metadata.length)
     }
@@ -172,7 +172,7 @@ impl MatrixObjectStore {
         key: &str,
         offset: u64,
         length: u64,
-    ) -> Result<(ObjectData, PageReadStats), ObjectError> {
+    ) -> Result<(ObjectData, ChunkReadStats), ObjectError> {
         let metadata = self.head_object(bucket, key)?;
         check_payload_read_allowed(&metadata, now_millis())?;
         let range_end = bounded_object_range_end(offset, length, metadata.length)?;
@@ -180,7 +180,7 @@ impl MatrixObjectStore {
             ObjectError::InvalidArgument("object repair read range exceeds memory size".to_string())
         })?;
         let mut data = Vec::with_capacity(range_length);
-        let mut stats = PageReadStats::default();
+        let mut stats = ChunkReadStats::default();
         let mut object_cursor = 0u64;
         for extent in &metadata.extents {
             let extent_start = object_cursor;
@@ -198,7 +198,7 @@ impl MatrixObjectStore {
             let read_end = range_end.min(extent_end);
             let local_offset = read_start - extent_start;
             let local_len = read_end - read_start;
-            let (payload, read_stats) = self.page_service.read_slab_range_repairing(
+            let (payload, read_stats) = self.chunk_service.read_slab_range_repairing(
                 &extent.slab_id,
                 extent.offset + local_offset,
                 local_len,
@@ -216,7 +216,7 @@ impl MatrixObjectStore {
         offset: u64,
         length: u64,
     ) -> Result<ObjectReadRepairReport, ObjectError> {
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let (object, stats) = self.get_object_range_repairing(bucket, key, offset, length)?;
         Ok(ObjectReadRepairReport {
             requested_offset: offset,
@@ -240,7 +240,7 @@ impl MatrixObjectStore {
         length: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectReadRepairReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report = self.get_object_range_repair_report(bucket, key, offset, length)?;
         report.expected_route_control_checksum = expected_route_control_checksum

@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn plan_storage_maintenance(
         &self,
         max_actions: usize,
@@ -304,7 +304,7 @@ impl MatrixPageService {
         let repair = if max_actions > 0 {
             self.repair_audited_chunk_replicas(None, max_actions, 0)?
         } else {
-            PageReplicaAuditRepairReport::default()
+            ChunkReplicaAuditRepairReport::default()
         };
         let reclaim_actions = plan
             .actions
@@ -322,7 +322,7 @@ impl MatrixPageService {
                 now_ms,
             )
         } else {
-            ChunkPartialReclaimReport::default()
+            ReplicaPartialReclaimReport::default()
         };
         let executed_actions = if reclaim.reclaimed_chunks > 0 {
             reclaim_actions

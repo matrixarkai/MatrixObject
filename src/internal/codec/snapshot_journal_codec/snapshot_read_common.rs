@@ -57,8 +57,8 @@ pub(crate) fn read_chunk_id(cursor: &mut SnapshotByteCursor<'_>) -> Result<PageI
 
 pub(crate) fn read_chunk_write_batch_stats(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkWriteBatchStats, ObjectError> {
-    Ok(ChunkWriteBatchStats {
+) -> Result<ReplicaWriteBatchStats, ObjectError> {
+    Ok(ReplicaWriteBatchStats {
         input_ranges: cursor.read_u64()?,
         input_bytes: cursor.read_u64()?,
         coalesced_ranges: cursor.read_u64()?,
@@ -71,8 +71,8 @@ pub(crate) fn read_chunk_write_batch_stats(
 
 pub(crate) fn read_chunk_discard_batch_stats(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkDiscardBatchStats, ObjectError> {
-    Ok(ChunkDiscardBatchStats {
+) -> Result<ReplicaDiscardBatchStats, ObjectError> {
+    Ok(ReplicaDiscardBatchStats {
         input_ranges: cursor.read_u64()?,
         input_bytes: cursor.read_u64()?,
         coalesced_ranges: cursor.read_u64()?,

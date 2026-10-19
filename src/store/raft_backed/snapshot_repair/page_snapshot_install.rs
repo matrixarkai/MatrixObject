@@ -7,7 +7,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenStorageRead<PageServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenStorageRead<ChunkServiceSnapshotChunk>>,
     {
         let mut source_control_checksum: Option<String> = None;
         let mut progress = SnapshotInstallProgress::default();
@@ -70,10 +70,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenStorageRead<PageServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenStorageRead<ChunkServiceSnapshotChunk>>,
     {
         let chunks = chunks.into_iter();
-        let mut assembler = PageServiceSnapshotAssembler::default();
+        let mut assembler = ChunkServiceSnapshotAssembler::default();
         let mut assembled_snapshot = None;
         let mut material = Vec::with_capacity(
             encoded_string_len("MXOS-RUST-STORAGE-SNAPSHOT-READ-PROOFS1")
@@ -171,7 +171,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         self.store
-            .page_service
+            .chunk_service
             .install_snapshot_bytes_in_place(&assembled_snapshot.bytes)?;
         let snapshot_bytes = assembled_snapshot.bytes.len() as u64;
         let snapshot_checksum = assembled_snapshot.full_checksum.clone();
@@ -196,7 +196,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenStorageRead<PageServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenStorageRead<ChunkServiceSnapshotChunk>>,
     {
         let actual_source_proof = storage_snapshot_install_source_proof_report(expected_report);
         verify_storage_snapshot_install_source_proof_report(
@@ -221,7 +221,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenPageRouteFencedStorageRead<PageServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>,
     {
         self.install_page_snapshot_chunks_with_read_proof(
             chunks
@@ -242,7 +242,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenPageRouteFencedStorageRead<PageServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>,
     {
         self.install_page_snapshot_chunks_with_read_proof_report(
             chunks
@@ -264,7 +264,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ProvenPageRouteFencedStorageRead<PageServiceSnapshotChunk>>,
+        I: IntoIterator<Item = ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>,
     {
         self.install_page_snapshot_chunks_with_read_proof_source_report(
             chunks

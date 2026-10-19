@@ -145,8 +145,8 @@ impl ReplicaServiceSnapshot {
             )
         } else {
             (
-                ChunkMutationQosConfig::default(),
-                ChunkMutationQosState::default(),
+                ReplicaMutationQosConfig::default(),
+                ReplicaMutationQosState::default(),
             )
         };
         let receipt_retention = if version >= 10 {

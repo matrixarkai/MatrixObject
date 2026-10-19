@@ -1,4 +1,4 @@
-pub(crate) fn append_page_chunk_control_proof(out: &mut Vec<u8>, proof: &PageChunkControlProof) {
+pub(crate) fn append_page_chunk_control_proof(out: &mut Vec<u8>, proof: &ReplicaControlProof) {
     append_u64(out, proof.proof_count);
     append_string(out, &proof.proof_checksum);
     append_u64(out, proof.min_raft_commit_index);
@@ -25,7 +25,7 @@ pub(crate) fn append_bounded_repair_report(out: &mut Vec<u8>, report: &BoundedRe
     append_string(out, &report.expected_route_control_checksum);
 }
 
-pub(crate) fn append_chunk_repair_report(out: &mut Vec<u8>, report: &ChunkRepairReport) {
+pub(crate) fn append_chunk_repair_report(out: &mut Vec<u8>, report: &ReplicaRepairReport) {
     append_u64(out, report.chunk_id.is_some() as u64);
     if let Some(chunk_id) = &report.chunk_id {
         append_chunk_id(out, chunk_id);
@@ -135,10 +135,10 @@ pub(crate) fn prepared_page_range_repair_envelope(
         route_control_proof_bytes: prepared.route_control_proof.state_bytes,
         route_control_commit_index: prepared
             .route_control_proof
-            .page_route_control_commit_index,
+            .chunk_route_control_commit_index,
         route_control_next_log_index: prepared
             .route_control_proof
-            .page_route_control_next_log_index,
+            .chunk_route_control_next_log_index,
         expected_route_control_checksum: prepared.expected_route_control_checksum.clone(),
         raft_entry_checksum: prepared.raft_entry_checksum.clone(),
         envelope_checksum: String::new(),
@@ -179,10 +179,10 @@ pub(crate) fn prepared_page_chunk_repair_envelope(
         route_control_proof_bytes: prepared.route_control_proof.state_bytes,
         route_control_commit_index: prepared
             .route_control_proof
-            .page_route_control_commit_index,
+            .chunk_route_control_commit_index,
         route_control_next_log_index: prepared
             .route_control_proof
-            .page_route_control_next_log_index,
+            .chunk_route_control_next_log_index,
         expected_route_control_checksum: prepared.expected_route_control_checksum.clone(),
         raft_entry_checksum: prepared.raft_entry_checksum.clone(),
         envelope_checksum: String::new(),
@@ -193,7 +193,7 @@ pub(crate) fn prepared_page_chunk_repair_envelope(
 
 pub(crate) fn append_page_replica_audit_repair_report(
     out: &mut Vec<u8>,
-    report: &PageReplicaAuditRepairReport,
+    report: &ChunkReplicaAuditRepairReport,
 ) {
     append_page_replica_audit_page(out, &report.audit);
     append_u64(out, report.candidate_chunks);

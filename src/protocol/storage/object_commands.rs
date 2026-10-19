@@ -462,11 +462,11 @@ pub enum ObjectCommand {
         prepared: PreparedChunkTrimFlowConfig,
     },
     ConfigureChunkMutationQos {
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     },
     ConfigureChunkReplicaMutationQos {
         replica_index: usize,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     },
     ApplyPreparedChunkMutationQos {
         prepared: PreparedChunkMutationQosConfig,
@@ -517,7 +517,7 @@ pub enum ObjectCommand {
         prepared: PreparedPageReceiptRetentionConfig,
     },
     ConfigurePageRouteQos {
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
     },
     ApplyPreparedPageRouteQos {
         prepared: PreparedPageRouteQosConfig,
@@ -551,7 +551,7 @@ pub enum ObjectCommand {
         idempotency_key: String,
     },
     WritePageRangesIdempotent {
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         idempotency_key: String,
     },
     ApplyPreparedPageBatchWrite {
@@ -564,7 +564,7 @@ pub enum ObjectCommand {
         idempotency_key: String,
     },
     DiscardPageRangesIdempotent {
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         idempotency_key: String,
     },
     ApplyPreparedPageBatchDiscard {
@@ -604,7 +604,7 @@ pub enum ObjectCommand {
     },
     ApplyChunkStateHandoffs {
         target_replica_index: usize,
-        handoffs: Vec<ChunkStateHandoff>,
+        handoffs: Vec<ReplicaStateHandoff>,
         expected_page_route_control_checksum: String,
     },
     ReclaimChunkReplicas {

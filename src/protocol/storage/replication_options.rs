@@ -168,7 +168,7 @@ impl Default for StoreOptions {
             page_batch_write_parallelism: DEFAULT_PAGE_BATCH_WRITE_PARALLELISM,
             page_batch_discard_parallelism: DEFAULT_PAGE_BATCH_DISCARD_PARALLELISM,
             page_repair_parallelism: DEFAULT_PAGE_REPAIR_PARALLELISM,
-            page_chunk_fanout_parallelism: DEFAULT_PAGE_CHUNK_FANOUT_PARALLELISM,
+            replica_fanout_parallelism: DEFAULT_PAGE_CHUNK_FANOUT_PARALLELISM,
             local_replica_store_parallelism: DEFAULT_LOCAL_REPLICA_STORE_PARALLELISM,
             control_plane_mode: ControlPlaneMode::Auto,
             metaserver_catalog_endpoints: String::new(),

@@ -76,11 +76,11 @@ impl MatrixObjectStore {
                 start_chunk_index,
                 expected_route_control_checksum,
             } => {
-                self.page_service.check_expected_route_control_checksum(
+                self.chunk_service.check_expected_route_control_checksum(
                     (!expected_route_control_checksum.is_empty())
                         .then_some(expected_route_control_checksum.as_str()),
                 )?;
-                let mut report = self.page_service.repair_slab_range_bounded(
+                let mut report = self.chunk_service.repair_slab_range_bounded(
                     &slab_id,
                     offset,
                     length,
@@ -158,12 +158,12 @@ impl MatrixObjectStore {
                 handoffs,
                 expected_page_route_control_checksum,
             } => {
-                self.page_service.check_expected_route_control_checksum(
+                self.chunk_service.check_expected_route_control_checksum(
                     (!expected_page_route_control_checksum.is_empty())
                         .then_some(expected_page_route_control_checksum.as_str()),
                 )?;
                 let stats = self
-                    .page_service
+                    .chunk_service
                     .apply_chunk_state_handoffs(target_replica_index, handoffs)?;
                 Ok(metadata_control_metadata(
                     "_chunkhandoff",
@@ -301,7 +301,7 @@ impl MatrixObjectStore {
                     "route_control_commit_index".to_string(),
                     report
                         .route_control_proof
-                        .page_route_control_commit_index
+                        .chunk_route_control_commit_index
                         .to_string(),
                 );
                 if report.route_control_fenced {

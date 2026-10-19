@@ -4,7 +4,7 @@ impl MatrixObjectStore {
         replica_index: usize,
         retention: usize,
     ) -> Result<u64, ObjectError> {
-        self.page_service
+        self.chunk_service
             .configure_chunk_replica_receipt_retention(replica_index, retention)
     }
 
@@ -12,7 +12,7 @@ impl MatrixObjectStore {
         &mut self,
         retention: usize,
     ) -> Result<(u64, u64), ObjectError> {
-        self.page_service
+        self.chunk_service
             .configure_chunk_receipt_retention(retention)
     }
 
@@ -21,7 +21,7 @@ impl MatrixObjectStore {
         retention: usize,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedChunkReceiptRetentionConfig, ObjectError> {
-        let admitted_route_checksum = self.page_service.route_control_proof().state_checksum;
+        let admitted_route_checksum = self.chunk_service.route_control_proof().state_checksum;
         self.prepare_chunk_receipt_retention_raft_entry_fenced(
             retention,
             expected_previous_commit_index,
@@ -65,7 +65,7 @@ impl MatrixObjectStore {
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<PreparedChunkReceiptRetentionConfig, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -73,8 +73,8 @@ impl MatrixObjectStore {
             ));
         }
         let before_page_service_fingerprint =
-            page_chunk_receipt_retention_control_image_fingerprint(&self.page_service);
-        let mut projected = self.page_service.clone();
+            replica_receipt_retention_control_image_fingerprint(&self.chunk_service);
+        let mut projected = self.chunk_service.clone();
         let (trimmed_receipts, chunk_prepared_replica_count) = if let Some(replica_index) =
             target_replica_index
         {
@@ -86,7 +86,7 @@ impl MatrixObjectStore {
             projected.configure_chunk_receipt_retention(retention)?
         };
         let after_page_service_fingerprint =
-            page_chunk_receipt_retention_control_image_fingerprint(&projected);
+            replica_receipt_retention_control_image_fingerprint(&projected);
         let mut prepared = PreparedChunkReceiptRetentionConfig {
             target_replica_index,
             retention,
@@ -96,7 +96,7 @@ impl MatrixObjectStore {
             after_page_service_fingerprint,
             expected_previous_commit_index,
             prepared_commit_index: expected_previous_commit_index.saturating_add(1),
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             expected_route_control_checksum: expected_route_control_checksum
                 .unwrap_or_default()
                 .to_string(),
@@ -139,7 +139,7 @@ impl MatrixObjectStore {
             ));
         }
         let current_fingerprint =
-            page_chunk_receipt_retention_control_image_fingerprint(&self.page_service);
+            replica_receipt_retention_control_image_fingerprint(&self.chunk_service);
         if current_fingerprint == prepared.after_page_service_fingerprint {
             return Ok(prepared.trimmed_receipts);
         }
@@ -148,7 +148,7 @@ impl MatrixObjectStore {
                 "chunk prepared receipt retention previous commit fence mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "chunk prepared receipt retention",
@@ -162,16 +162,16 @@ impl MatrixObjectStore {
             prepared.target_replica_index
         {
             (
-                self.page_service
+                self.chunk_service
                     .configure_chunk_replica_receipt_retention(replica_index, prepared.retention)?,
                 1,
             )
         } else {
-            self.page_service
+            self.chunk_service
                 .configure_chunk_receipt_retention(prepared.retention)?
         };
         if configured_replica_count != prepared.chunk_prepared_replica_count
-            || page_chunk_receipt_retention_control_image_fingerprint(&self.page_service)
+            || replica_receipt_retention_control_image_fingerprint(&self.chunk_service)
                 != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(

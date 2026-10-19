@@ -1,7 +1,7 @@
 pub(crate) fn read_page_write_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<PageWriteReceipt, ObjectError> {
-    Ok(PageWriteReceipt {
+) -> Result<ChunkWriteReceipt, ObjectError> {
+    Ok(ChunkWriteReceipt {
         slab_id: read_slab_id(cursor)?,
         offset: cursor.read_u64()?,
         length: cursor.read_u64()?,
@@ -15,8 +15,8 @@ pub(crate) fn read_page_write_receipt(
 pub(crate) fn read_page_batch_write_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
     has_metadata_head_stats: bool,
-) -> Result<PageBatchWriteReceipt, ObjectError> {
-    Ok(PageBatchWriteReceipt {
+) -> Result<ChunkBatchWriteReceipt, ObjectError> {
+    Ok(ChunkBatchWriteReceipt {
         request_checksum: cursor.read_string()?,
         payload_checksum: cursor.read_string()?,
         idempotency_key: cursor.read_string()?,
@@ -27,8 +27,8 @@ pub(crate) fn read_page_batch_write_receipt(
 
 pub(crate) fn read_page_discard_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<PageDiscardReceipt, ObjectError> {
-    Ok(PageDiscardReceipt {
+) -> Result<ChunkDiscardReceipt, ObjectError> {
+    Ok(ChunkDiscardReceipt {
         slab_id: read_slab_id(cursor)?,
         offset: cursor.read_u64()?,
         length: cursor.read_u64()?,
@@ -41,7 +41,7 @@ pub(crate) fn read_page_discard_receipt(
 pub(crate) fn read_page_read_stats(
     cursor: &mut SnapshotByteCursor<'_>,
     has_metadata_head_stats: bool,
-) -> Result<PageReadStats, ObjectError> {
+) -> Result<ChunkReadStats, ObjectError> {
     let chunk_reads = cursor.read_u64()?;
     let cache_hits = cursor.read_u64()?;
     let coalesced_chunk_read_count = cursor.read_u64()?;
@@ -63,7 +63,7 @@ pub(crate) fn read_page_read_stats(
     } else {
         (0, 0, 0, 0, 0)
     };
-    Ok(PageReadStats {
+    Ok(ChunkReadStats {
         chunk_reads,
         cache_hits,
         coalesced_chunk_read_count,
@@ -84,8 +84,8 @@ pub(crate) fn read_page_read_stats(
 pub(crate) fn read_page_batch_stats(
     cursor: &mut SnapshotByteCursor<'_>,
     has_metadata_head_stats: bool,
-) -> Result<PageBatchStats, ObjectError> {
-    Ok(PageBatchStats {
+) -> Result<ChunkBatchStats, ObjectError> {
+    Ok(ChunkBatchStats {
         input_ranges: cursor.read_u64()?,
         mapped_chunk_ranges: cursor.read_u64()?,
         coalesced_chunk_ranges: cursor.read_u64()?,
@@ -101,8 +101,8 @@ pub(crate) fn read_page_batch_stats(
 pub(crate) fn read_page_batch_discard_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
     has_metadata_head_stats: bool,
-) -> Result<PageBatchDiscardReceipt, ObjectError> {
-    Ok(PageBatchDiscardReceipt {
+) -> Result<ChunkBatchDiscardReceipt, ObjectError> {
+    Ok(ChunkBatchDiscardReceipt {
         request_checksum: cursor.read_string()?,
         idempotency_key: cursor.read_string()?,
         stats: read_page_batch_stats(cursor, has_metadata_head_stats)?,

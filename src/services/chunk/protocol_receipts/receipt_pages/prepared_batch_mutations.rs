@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ChunkMutationBatch {
+struct ReplicaMutationBatch {
     batch_id: String,
     started_control_commit_index: u64,
     /// The undo, when this batch owns it. `None` when the caller that opened
@@ -9,7 +9,7 @@ struct ChunkMutationBatch {
     snapshot: Option<Box<ReplicaServiceSnapshot>>,
 }
 
-pub struct ChunkMutationBatchStatus {
+pub struct ReplicaMutationBatchStatus {
     pub active: bool,
     pub batch_id: String,
     pub started_control_commit_index: u64,
@@ -30,7 +30,7 @@ pub struct PreparedChunkBatchWrite {
     pub replica_index: usize,
     pub writes: Vec<(u64, Vec<u8>)>,
     pub state: PageState,
-    pub receipt: ChunkBatchWriteReceipt,
+    pub receipt: ReplicaBatchWriteReceipt,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
     pub control_proof: ReplicaServiceControlProof,
@@ -67,7 +67,7 @@ pub struct PreparedChunkBatchWriteApplyReport {
     pub prepared: bool,
     pub external_raft_required: bool,
     pub deduped: bool,
-    pub receipt: ChunkBatchWriteReceipt,
+    pub receipt: ReplicaBatchWriteReceipt,
     pub metadata: ObjectMetadata,
 }
 
@@ -115,7 +115,7 @@ pub struct PreparedChunkBatchDiscard {
     pub replica_index: usize,
     pub ranges: Vec<DataRange>,
     pub state: PageState,
-    pub receipt: ChunkBatchDiscardReceipt,
+    pub receipt: ReplicaBatchDiscardReceipt,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
     pub control_proof: ReplicaServiceControlProof,
@@ -152,7 +152,7 @@ pub struct PreparedChunkBatchDiscardApplyReport {
     pub prepared: bool,
     pub external_raft_required: bool,
     pub deduped: bool,
-    pub receipt: ChunkBatchDiscardReceipt,
+    pub receipt: ReplicaBatchDiscardReceipt,
     pub metadata: ObjectMetadata,
 }
 

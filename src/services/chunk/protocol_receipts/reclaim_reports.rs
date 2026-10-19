@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkPartialReclaimReport {
+pub struct ReplicaPartialReclaimReport {
     pub scanned_chunks: u64,
     pub candidate_chunks: u64,
     pub reclaimed_chunks: u64,
@@ -20,7 +20,7 @@ pub struct ChunkPartialReclaimReport {
     pub last_partial_reclaim_failure_status: String,
 }
 
-impl ChunkPartialReclaimReport {
+impl ReplicaPartialReclaimReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -63,7 +63,7 @@ impl ChunkPartialReclaimReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkReclaimCandidate {
+pub struct ReplicaReclaimCandidate {
     pub chunk_id: PageId,
     pub logical_length: u64,
     pub discarded_bytes: u64,
@@ -76,7 +76,7 @@ pub struct ChunkReclaimCandidate {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkReclaimPlan {
+pub struct ReplicaReclaimPlan {
     pub marker: Option<PageId>,
     pub next_marker: Option<PageId>,
     pub continuation_safe: bool,
@@ -105,9 +105,9 @@ pub struct ChunkReclaimPlan {
     pub trim_flow_available_bytes: u64,
     pub trim_flow_throttled_ops: u64,
     pub trim_flow_throttled_bytes: u64,
-    pub candidates: Vec<ChunkReclaimCandidate>,
-    pub first_budget_skipped_candidate: Option<ChunkReclaimCandidate>,
-    pub first_trim_budget_skipped_candidate: Option<ChunkReclaimCandidate>,
+    pub candidates: Vec<ReplicaReclaimCandidate>,
+    pub first_budget_skipped_candidate: Option<ReplicaReclaimCandidate>,
+    pub first_trim_budget_skipped_candidate: Option<ReplicaReclaimCandidate>,
     pub reclaim_needed: bool,
     pub reclaim_can_apply: bool,
     pub reclaim_reason: String,
@@ -117,13 +117,13 @@ pub struct ChunkReclaimPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageReplicaReclaimCandidate {
+pub struct ChunkReplicaReclaimCandidate {
     pub replica_index: usize,
-    pub candidate: ChunkReclaimCandidate,
+    pub candidate: ReplicaReclaimCandidate,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageReplicaReclaimPlan {
+pub struct ChunkReplicaReclaimPlan {
     pub continuation_safe: bool,
     pub next_marker_advanced: bool,
     pub scanned_replicas: u64,
@@ -150,9 +150,9 @@ pub struct PageReplicaReclaimPlan {
     pub truncated: bool,
     pub global_reclaim_budget_enforced: bool,
     pub global_reclaim_budget_basis: String,
-    pub candidates: Vec<PageReplicaReclaimCandidate>,
-    pub first_budget_skipped_candidate: Option<PageReplicaReclaimCandidate>,
-    pub first_trim_budget_skipped_candidate: Option<PageReplicaReclaimCandidate>,
+    pub candidates: Vec<ChunkReplicaReclaimCandidate>,
+    pub first_budget_skipped_candidate: Option<ChunkReplicaReclaimCandidate>,
+    pub first_trim_budget_skipped_candidate: Option<ChunkReplicaReclaimCandidate>,
     pub reclaim_needed: bool,
     pub reclaim_can_apply: bool,
     pub reclaim_reason: String,
@@ -173,11 +173,11 @@ pub struct PreparedChunkReplicaReclaim {
     pub now_ms: u64,
     pub before_replica_service_fingerprint: String,
     pub after_replica_service_fingerprint: String,
-    pub plan: ChunkReclaimPlan,
-    pub report: ChunkPartialReclaimReport,
+    pub plan: ReplicaReclaimPlan,
+    pub report: ReplicaPartialReclaimReport,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -193,7 +193,7 @@ pub struct PreparedChunkReclaimApplyReport {
     pub external_raft_required: bool,
     pub deduped: bool,
     pub replica_index: usize,
-    pub report: ChunkPartialReclaimReport,
+    pub report: ReplicaPartialReclaimReport,
     pub metadata: ObjectMetadata,
 }
 

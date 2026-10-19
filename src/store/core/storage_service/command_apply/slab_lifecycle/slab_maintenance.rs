@@ -72,7 +72,7 @@ impl MatrixObjectStore {
                 expected_object_gc_report_proof_checksum,
                 expected_full_compaction_plan_checksum,
             } => {
-                self.page_service.check_expected_route_control_checksum(
+                self.chunk_service.check_expected_route_control_checksum(
                     if expected_page_route_control_checksum.is_empty() {
                         None
                     } else {

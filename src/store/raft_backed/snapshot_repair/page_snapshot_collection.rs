@@ -3,7 +3,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         max_payload_bytes: usize,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<Vec<ProvenStorageRead<PageServiceSnapshotChunk>>, ObjectError> {
+    ) -> Result<Vec<ProvenStorageRead<ChunkServiceSnapshotChunk>>, ObjectError> {
         self.export_page_snapshot_chunks_with_read_proof_linearizable_fenced_committed_at(
             max_payload_bytes,
             expected_route_control_checksum,
@@ -16,7 +16,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         max_payload_bytes: usize,
         expected_route_control_checksum: impl AsRef<str>,
-    ) -> Result<Vec<ProvenPageRouteFencedStorageRead<PageServiceSnapshotChunk>>, ObjectError>
+    ) -> Result<Vec<ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>, ObjectError>
     {
         self.export_page_snapshot_chunks_with_route_proof_linearizable_fenced_committed_at(
             max_payload_bytes,
@@ -32,7 +32,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<Vec<ProvenPageRouteFencedStorageRead<PageServiceSnapshotChunk>>, ObjectError>
+    ) -> Result<Vec<ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>, ObjectError>
     {
         let mut chunks = Vec::new();
         self.export_page_snapshot_chunk_stream_with_route_proof_linearizable_fenced_committed_at(
@@ -60,7 +60,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<Vec<ProvenStorageRead<PageServiceSnapshotChunk>>, ObjectError> {
+    ) -> Result<Vec<ProvenStorageRead<ChunkServiceSnapshotChunk>>, ObjectError> {
         let mut chunks = Vec::new();
         self.export_page_snapshot_chunk_stream_with_read_proof_linearizable_fenced_committed_at(
             max_payload_bytes,
@@ -87,7 +87,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<
         (
-            Vec<ProvenStorageRead<PageServiceSnapshotChunk>>,
+            Vec<ProvenStorageRead<ChunkServiceSnapshotChunk>>,
             StorageSnapshotProofStreamReport,
         ),
         ObjectError,
@@ -106,7 +106,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: impl AsRef<str>,
     ) -> Result<
         (
-            Vec<ProvenPageRouteFencedStorageRead<PageServiceSnapshotChunk>>,
+            Vec<ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>,
             StorageSnapshotProofStreamReport,
         ),
         ObjectError,
@@ -127,7 +127,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<
         (
-            Vec<ProvenPageRouteFencedStorageRead<PageServiceSnapshotChunk>>,
+            Vec<ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>>,
             StorageSnapshotProofStreamReport,
         ),
         ObjectError,
@@ -223,7 +223,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<
         (
-            Vec<ProvenStorageRead<PageServiceSnapshotChunk>>,
+            Vec<ProvenStorageRead<ChunkServiceSnapshotChunk>>,
             StorageSnapshotProofStreamReport,
         ),
         ObjectError,

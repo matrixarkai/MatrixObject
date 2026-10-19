@@ -23,7 +23,7 @@ impl MatrixObjectStore {
         update_time_ms: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectBatchDeleteReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if max_items == 0 {
             return Err(ObjectError::InvalidArgument(
@@ -43,7 +43,7 @@ impl MatrixObjectStore {
             requested_objects: requests.len() as u64,
             unique_objects: seen_objects.len() as u64,
             duplicate_objects: requests.len().saturating_sub(seen_objects.len()) as u64,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             expected_route_control_checksum: expected_route_control_checksum
                 .unwrap_or_default()
                 .to_string(),

@@ -1,4 +1,4 @@
-pub(crate) fn page_allocation_reservation_request_checksum(
+pub(crate) fn chunk_allocation_reservation_request_checksum(
     length: u64,
     now_ms: u64,
     idempotency_key: &str,
@@ -30,7 +30,7 @@ pub(crate) fn page_batch_allocation_reservation_request_checksum(
     etag(&material)
 }
 
-pub(crate) fn page_allocation_release_request_checksum(
+pub(crate) fn chunk_allocation_release_request_checksum(
     allocation_id: &str,
     idempotency_key: &str,
 ) -> String {

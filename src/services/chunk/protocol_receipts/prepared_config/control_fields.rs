@@ -23,7 +23,7 @@ fn append_prepared_chunk_common_fields(
     prepared_commit_index: u64,
     expected_route_control_checksum: &str,
     raft_entry_checksum: &str,
-    route_control_proof: &PageRouteControlProof,
+    route_control_proof: &ChunkRouteControlProof,
 ) {
     for (name, value) in [
         ("chunk_prepared_replica_count", chunk_prepared_replica_count),
@@ -62,7 +62,7 @@ fn append_prepared_chunk_page_fingerprint_fields(
     );
 }
 
-impl ChunkMutationQosConfig {
+impl ReplicaMutationQosConfig {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [

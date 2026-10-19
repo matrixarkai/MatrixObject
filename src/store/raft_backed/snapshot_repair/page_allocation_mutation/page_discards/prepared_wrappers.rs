@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_page_batch_discard_prepared(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         idempotency_key: &str,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self.prepare_page_batch_discard_raft_entry(requests, idempotency_key)?;
@@ -10,7 +10,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_page_batch_discard_prepared_bounded(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         idempotency_key: &str,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -24,7 +24,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_page_batch_discard_prepared_bounded_from(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
         idempotency_key: &str,
@@ -40,7 +40,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_page_batch_discard_prepared_bounded_fenced(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
@@ -68,7 +68,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_page_batch_discard_prepared_bounded_from_fenced(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
         idempotency_key: &str,

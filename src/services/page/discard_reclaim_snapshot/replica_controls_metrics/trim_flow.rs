@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn configure_chunk_trim_flow(
         &mut self,
         rate_bytes_per_sec: u64,

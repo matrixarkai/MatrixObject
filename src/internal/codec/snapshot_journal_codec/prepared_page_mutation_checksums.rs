@@ -7,13 +7,13 @@ pub(crate) fn prepared_page_batch_write_checksum(prepared: &PreparedPageBatchWri
         &mut material,
         prepared
             .route_control_proof
-            .page_route_control_commit_index,
+            .chunk_route_control_commit_index,
     );
     append_u64(
         &mut material,
         prepared
             .route_control_proof
-            .page_route_control_next_log_index,
+            .chunk_route_control_next_log_index,
     );
     append_u64(&mut material, prepared.writes.len() as u64);
     for write in &prepared.writes {
@@ -123,13 +123,13 @@ pub(crate) fn prepared_page_batch_discard_checksum(
         &mut material,
         prepared
             .route_control_proof
-            .page_route_control_commit_index,
+            .chunk_route_control_commit_index,
     );
     append_u64(
         &mut material,
         prepared
             .route_control_proof
-            .page_route_control_next_log_index,
+            .chunk_route_control_next_log_index,
     );
     append_u64(&mut material, prepared.requests.len() as u64);
     for request in &prepared.requests {

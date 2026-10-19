@@ -82,7 +82,7 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         offset: u64,
         length: u64,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let end = validate_pipeline_range("chunk write", offset, length)?;
         let projected_len = self
             .chunks
@@ -96,7 +96,7 @@ impl MatrixReplicaService {
             self.capacity_bytes > 0 && projected_physical_bytes > self.capacity_bytes;
         let write_count = if length == 0 { 0 } else { 1 };
         let qos_limited = self.mutation_qos_would_limit(write_count, length, 0, 0, now_millis());
-        Ok(ChunkWriteAdmission {
+        Ok(ReplicaWriteAdmission {
             can_accept: !service_mode_limited && !capacity_limited && !qos_limited,
             write_count,
             coalesced_ranges: write_count,
@@ -124,7 +124,7 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         self.can_accept_chunk_writes_from(chunk_id, writes, max_write_bytes, 0)
     }
 
@@ -134,7 +134,7 @@ impl MatrixReplicaService {
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         write_start_range_index: u64,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let mut borrowed = Vec::with_capacity(writes.len());
         for (offset, data) in &writes {
             borrowed.push((*offset, data.as_slice()));
@@ -152,7 +152,7 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         writes: &[(u64, &[u8])],
         max_write_bytes: u64,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         self.can_accept_chunk_writes_from_borrowed(chunk_id, writes, max_write_bytes, 0)
     }
 
@@ -162,7 +162,7 @@ impl MatrixReplicaService {
         writes: &[(u64, &[u8])],
         max_write_bytes: u64,
         write_start_range_index: u64,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let requested_start = write_start_range_index as usize;
         let mut admitted = Vec::with_capacity(writes.len().saturating_sub(requested_start));
         let mut input_ranges = 0u64;
@@ -264,7 +264,7 @@ impl MatrixReplicaService {
         })?;
         let qos_limited =
             self.mutation_qos_would_limit(coalesced_ranges, coalesced_bytes, 0, 0, now_millis());
-        Ok(ChunkWriteAdmission {
+        Ok(ReplicaWriteAdmission {
             can_accept: !service_mode_limited
                 && !capacity_limited
                 && !budget_limited

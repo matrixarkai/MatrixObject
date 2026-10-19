@@ -1,14 +1,14 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkHeadBatchRead {
-    pub heads: Vec<ChunkHead>,
-    pub stats: ChunkHeadBatchStats,
+pub struct ReplicaHeadBatchRead {
+    pub heads: Vec<ReplicaHead>,
+    pub stats: ReplicaHeadBatchStats,
     pub min_read_index: u64,
     pub min_commit_index: u64,
     pub proof_format: String,
     pub proof_checksum: String,
 }
 
-impl ChunkHeadBatchRead {
+impl ReplicaHeadBatchRead {
     pub fn verify_storage_fence(
         &self,
         expected_min_read_index: u64,
@@ -55,7 +55,7 @@ impl ChunkHeadBatchRead {
     }
 }
 
-impl ProvenStorageRead<ChunkHeadBatchRead> {
+impl ProvenStorageRead<ReplicaHeadBatchRead> {
     pub fn require_chunk_head_batch_storage_fence(
         self,
         expected_min_read_index: u64,

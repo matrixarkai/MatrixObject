@@ -7,7 +7,7 @@ impl MatrixReplicaService {
         min_discard_ratio_ppm: u64,
         max_discard_ranges: usize,
         max_trim_bytes: u64,
-    ) -> ChunkPartialReclaimReport {
+    ) -> ReplicaPartialReclaimReport {
         self.reclaim_chunks_with_limits_at(
             max_chunks,
             max_rewrite_bytes,
@@ -28,16 +28,16 @@ impl MatrixReplicaService {
         max_discard_ranges: usize,
         max_trim_bytes: u64,
         now_ms: u64,
-    ) -> ChunkPartialReclaimReport {
+    ) -> ReplicaPartialReclaimReport {
         if self.ensure_writable().is_err() {
             self.partial_reclaim_failures = self.partial_reclaim_failures.saturating_add(1);
             self.last_partial_reclaim_failure_status = "reclaim_not_writable".to_string();
-            return ChunkPartialReclaimReport {
+            return ReplicaPartialReclaimReport {
                 partial_reclaim_failures: 1,
                 last_partial_reclaim_failure_status: self
                     .last_partial_reclaim_failure_status
                     .clone(),
-                ..ChunkPartialReclaimReport::default()
+                ..ReplicaPartialReclaimReport::default()
             };
         }
         let requested_trim_bytes = max_trim_bytes;
@@ -54,12 +54,12 @@ impl MatrixReplicaService {
         ) else {
             self.partial_reclaim_failures = self.partial_reclaim_failures.saturating_add(1);
             self.last_partial_reclaim_failure_status = "reclaim_plan_failed".to_string();
-            return ChunkPartialReclaimReport {
+            return ReplicaPartialReclaimReport {
                 partial_reclaim_failures: 1,
                 last_partial_reclaim_failure_status: self
                     .last_partial_reclaim_failure_status
                     .clone(),
-                ..ChunkPartialReclaimReport::default()
+                ..ReplicaPartialReclaimReport::default()
             };
         };
         if self.trim_flow_enabled() {
@@ -130,7 +130,7 @@ impl MatrixReplicaService {
             plan.trim_flow_limited = true;
             plan.budget_limited = true;
         }
-        let mut report = ChunkPartialReclaimReport::default();
+        let mut report = ReplicaPartialReclaimReport::default();
         report.scanned_chunks = plan.scanned_chunks;
         report.candidate_chunks = plan.candidate_chunks;
         report.skipped_chunks = plan.skipped_chunks;

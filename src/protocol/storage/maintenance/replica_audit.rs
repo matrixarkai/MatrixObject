@@ -1,4 +1,4 @@
-impl PageReplicaAuditPage {
+impl ChunkReplicaAuditChunk {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -75,7 +75,7 @@ impl PageReplicaAuditPage {
     }
 }
 
-impl PageReplicaAuditRepairReport {
+impl ChunkReplicaAuditRepairReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .audit

@@ -22,7 +22,7 @@ pub struct GcReport {
     pub compaction_candidate_bytes: u64,
     pub compaction_candidate_range_count: u64,
     pub discard_candidates: Vec<ObjectGcDiscardCandidate>,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 
@@ -40,7 +40,7 @@ pub struct FullCompactionPlan {
     pub candidate_live_bytes: u64,
     pub candidate_logical_bytes: u64,
     pub candidate_slab_ids: Vec<SlabId>,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub object_gc_report_proof_checksum: String,
 }

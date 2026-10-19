@@ -57,8 +57,8 @@ pub(crate) fn meta_coordinator_bootstrap_report_checksum(
     etag(&material)
 }
 
-pub(crate) fn page_route_bootstrap_report_checksum(
-    report: &PageRouteControlBootstrapReport,
+pub(crate) fn chunk_route_bootstrap_report_checksum(
+    report: &ChunkRouteControlBootstrapReport,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, PAGE_ROUTE_BOOTSTRAP_REPORT_FORMAT);
@@ -71,8 +71,8 @@ pub(crate) fn page_route_bootstrap_report_checksum(
     etag(&material)
 }
 
-pub(crate) fn page_service_bootstrap_report_checksum(
-    report: &PageServiceBootstrapReport,
+pub(crate) fn chunk_service_bootstrap_report_checksum(
+    report: &ChunkServiceBootstrapReport,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, PAGE_SERVICE_BOOTSTRAP_REPORT_FORMAT);
@@ -97,7 +97,7 @@ pub(crate) fn page_service_bootstrap_report_checksum(
 }
 
 pub(crate) fn chunk_mutation_bootstrap_report_checksum(
-    report: &ChunkMutationControlBootstrapReport,
+    report: &ReplicaMutationControlBootstrapReport,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, CHUNK_MUTATION_BOOTSTRAP_REPORT_FORMAT);

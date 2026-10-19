@@ -12,7 +12,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &mut self,
         replica_index: usize,
         prepared: PreparedChunkReplicaReclaim,
-    ) -> Result<(ObjectMetadata, ChunkPartialReclaimReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ReplicaPartialReclaimReport), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
                 "prepared chunk reclaim requires raft/store commit alignment".to_string(),
@@ -79,7 +79,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_index: usize,
         prepared: PreparedChunkReplicaReclaim,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<(ObjectMetadata, ChunkPartialReclaimReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ReplicaPartialReclaimReport), ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "prepared chunk replica reclaim",

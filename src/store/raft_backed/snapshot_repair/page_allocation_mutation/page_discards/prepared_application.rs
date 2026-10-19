@@ -10,7 +10,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn propose_prepared_page_batch_discard_apply(
         &mut self,
         prepared: PreparedPageBatchDiscard,
-    ) -> Result<(ObjectMetadata, PageBatchDiscardReceipt), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkBatchDiscardReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
                 "prepared block batch discard requires raft/store commit alignment".to_string(),

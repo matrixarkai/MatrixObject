@@ -3,7 +3,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         replica_index: usize,
         chunk_id: &PageId,
-    ) -> Result<(ChunkHead, u64), ObjectError> {
+    ) -> Result<(ReplicaHead, u64), ObjectError> {
         self.head_chunk_linearizable_at(replica_index, chunk_id, self.raft.commit_index())
     }
 
@@ -12,7 +12,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_index: usize,
         chunk_id: &PageId,
         min_read_index: u64,
-    ) -> Result<(ChunkHead, u64), ObjectError> {
+    ) -> Result<(ReplicaHead, u64), ObjectError> {
         self.head_chunk_linearizable_committed_at(replica_index, chunk_id, min_read_index, 0)
     }
 
@@ -22,7 +22,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         chunk_id: &PageId,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<(ChunkHead, u64), ObjectError> {
+    ) -> Result<(ReplicaHead, u64), ObjectError> {
         let required_read_index = self
             .raft
             .commit_index()
@@ -51,7 +51,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -66,7 +66,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_index: usize,
         chunk_id: &PageId,
         min_read_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkHead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaHead>, ObjectError> {
         self.head_chunk_with_read_proof_linearizable_committed_at(
             replica_index,
             chunk_id,
@@ -81,7 +81,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         chunk_id: &PageId,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkHead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaHead>, ObjectError> {
         let (value, requested_read_index) = self.head_chunk_linearizable_committed_at(
             replica_index,
             chunk_id,

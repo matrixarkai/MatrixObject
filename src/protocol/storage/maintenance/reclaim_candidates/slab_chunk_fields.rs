@@ -26,7 +26,7 @@ impl SlabInfo {
     }
 }
 
-impl ChunkReclaimCandidate {
+impl ReplicaReclaimCandidate {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .chunk_id
@@ -47,7 +47,7 @@ impl ChunkReclaimCandidate {
     }
 }
 
-impl ChunkReclaimPlan {
+impl ReplicaReclaimPlan {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(

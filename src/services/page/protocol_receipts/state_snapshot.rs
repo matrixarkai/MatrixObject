@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageRouteQosState {
+pub struct ChunkRouteQosState {
     pub window_start_ms: u64,
     pub read_ops_in_window: u64,
     pub read_bytes_in_window: u64,
@@ -12,7 +12,7 @@ pub struct PageRouteQosState {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageStorageReadiness {
+pub struct ChunkStorageReadiness {
     pub readable: bool,
     pub writable: bool,
     pub ready: bool,
@@ -88,7 +88,7 @@ pub struct PageStorageReadiness {
     pub page_batch_write_parallelism: u64,
     pub page_batch_discard_parallelism: u64,
     pub page_repair_parallelism: u64,
-    pub page_chunk_fanout_parallelism: u64,
+    pub replica_fanout_parallelism: u64,
     pub primary_batch_read_repair_probe_limit: u64,
     pub effective_chunk_fanout_parallelism: u64,
     pub local_replica_store_parallelism: u64,
@@ -129,13 +129,13 @@ pub struct PageStorageReadiness {
     pub page_state_fingerprint: String,
     pub page_state_fingerprint_format: String,
     pub page_state_fingerprint_bytes: u64,
-    pub page_route_control_proof_format: String,
-    pub page_route_control_proof_checksum: String,
-    pub page_route_control_proof_bytes: u64,
+    pub chunk_route_control_proof_format: String,
+    pub chunk_route_control_proof_checksum: String,
+    pub chunk_route_control_proof_bytes: u64,
     pub sealed_slab_count: u64,
     pub allocator_active_slab_sealed: bool,
-    pub route_control_proof: PageRouteControlProof,
-    pub replica_readiness: Vec<ChunkStorageReadiness>,
+    pub route_control_proof: ChunkRouteControlProof,
+    pub replica_readiness: Vec<ReplicaStorageReadiness>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -150,8 +150,8 @@ pub struct StorageMaintenanceAction {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StorageMaintenancePlan {
-    pub readiness: PageStorageReadiness,
-    pub reclaim: PageReplicaReclaimPlan,
+    pub readiness: ChunkStorageReadiness,
+    pub reclaim: ChunkReplicaReclaimPlan,
     pub slab_discards: Vec<DiscardPlan>,
     pub actions: Vec<StorageMaintenanceAction>,
     pub plan_checksum: String,
@@ -168,11 +168,11 @@ pub struct StorageMaintenancePlan {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StorageMaintenanceRunReport {
     pub plan: StorageMaintenancePlan,
-    pub repair: PageReplicaAuditRepairReport,
-    pub reclaim: ChunkPartialReclaimReport,
+    pub repair: ChunkReplicaAuditRepairReport,
+    pub reclaim: ReplicaPartialReclaimReport,
     pub slab_discard: SlabDiscardRunReport,
-    pub post_readiness: PageStorageReadiness,
-    pub route_control_proof: PageRouteControlProof,
+    pub post_readiness: ChunkStorageReadiness,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub route_control_fenced: bool,
     pub route_control_fence_matched: bool,
@@ -194,7 +194,7 @@ pub struct SealedSlabPage {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageServiceSnapshot {
+pub struct ChunkServiceSnapshot {
     pub page_size: u64,
     pub write_quorum: usize,
     pub read_quorum: usize,
@@ -202,25 +202,25 @@ pub struct PageServiceSnapshot {
     pub allocator_next_slab_id: u64,
     pub allocator_next_offset: u64,
     pub receipt_retention: usize,
-    pub pending_allocations: BTreeMap<String, PageAllocation>,
-    pub allocation_request_receipts: BTreeMap<String, PageAllocation>,
-    pub batch_allocation_request_receipts: BTreeMap<String, Vec<PageAllocation>>,
-    pub release_allocation_request_receipts: BTreeMap<String, PageAllocation>,
-    pub write_request_receipts: BTreeMap<String, PageWriteReceipt>,
-    pub batch_write_request_receipts: BTreeMap<String, PageBatchWriteReceipt>,
-    pub discard_request_receipts: BTreeMap<String, PageDiscardReceipt>,
-    pub batch_discard_request_receipts: BTreeMap<String, PageBatchDiscardReceipt>,
-    pub repair_request_receipts: BTreeMap<String, ChunkRepairReceipt>,
-    pub range_repair_request_receipts: BTreeMap<String, PageRangeRepairReceipt>,
-    pub audit_repair_request_receipts: BTreeMap<String, PageAuditRepairReceipt>,
+    pub pending_allocations: BTreeMap<String, ChunkAllocation>,
+    pub allocation_request_receipts: BTreeMap<String, ChunkAllocation>,
+    pub batch_allocation_request_receipts: BTreeMap<String, Vec<ChunkAllocation>>,
+    pub release_allocation_request_receipts: BTreeMap<String, ChunkAllocation>,
+    pub write_request_receipts: BTreeMap<String, ChunkWriteReceipt>,
+    pub batch_write_request_receipts: BTreeMap<String, ChunkBatchWriteReceipt>,
+    pub discard_request_receipts: BTreeMap<String, ChunkDiscardReceipt>,
+    pub batch_discard_request_receipts: BTreeMap<String, ChunkBatchDiscardReceipt>,
+    pub repair_request_receipts: BTreeMap<String, ReplicaRepairReceipt>,
+    pub range_repair_request_receipts: BTreeMap<String, ChunkRangeRepairReceipt>,
+    pub audit_repair_request_receipts: BTreeMap<String, ChunkAuditRepairReceipt>,
     pub released_allocation_count: u64,
     pub quarantined_replicas: BTreeSet<usize>,
     pub chunk_endpoints: Vec<String>,
     pub disabled_chunk_endpoints: BTreeSet<usize>,
-    pub page_route_control_commit_index: u64,
-    pub page_route_control_next_log_index: u64,
-    pub route_qos_config: PageRouteQosConfig,
-    pub route_qos_state: PageRouteQosState,
+    pub chunk_route_control_commit_index: u64,
+    pub chunk_route_control_next_log_index: u64,
+    pub route_qos_config: ChunkRouteQosConfig,
+    pub route_qos_state: ChunkRouteQosState,
     pub sealed_slabs: BTreeSet<SlabId>,
     pub cumulative_quorum_write_degraded_chunks: u64,
     pub cumulative_quorum_read_degraded_chunks: u64,
@@ -239,7 +239,7 @@ pub struct PageServiceSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageServiceSnapshotChunk {
+pub struct ChunkServiceSnapshotChunk {
     pub offset: u64,
     pub total_bytes: u64,
     pub chunk_checksum: String,
@@ -249,13 +249,13 @@ pub struct PageServiceSnapshotChunk {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageServiceSnapshotAssembler {
+pub struct ChunkServiceSnapshotAssembler {
     expected_total_bytes: Option<u64>,
     expected_full_checksum: Option<String>,
     buffer: Vec<u8>,
 }
 
-impl PageServiceSnapshotAssembler {
+impl ChunkServiceSnapshotAssembler {
     /// What a partly received snapshot holds. Its fields are private to this
     /// module, which is why the accounting lives here.
     pub(crate) fn footprint_bytes(&self) -> u64 {
@@ -268,21 +268,21 @@ impl PageServiceSnapshotAssembler {
     }
 }
 
-pub(crate) struct PageServiceSnapshotAssembledImage {
+pub(crate) struct ChunkServiceSnapshotAssembledImage {
     pub bytes: Vec<u8>,
     pub full_checksum: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct PageMutationBatch {
+struct ChunkMutationBatch {
     batch_id: String,
     started_route_commit_index: u64,
     replica_indices: Vec<usize>,
-    snapshot: Box<PageServiceSnapshot>,
+    snapshot: Box<ChunkServiceSnapshot>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageMutationBatchStatus {
+pub struct ChunkMutationBatchStatus {
     pub active: bool,
     pub batch_id: String,
     pub started_route_commit_index: u64,
@@ -301,7 +301,7 @@ pub struct PageMutationBatchStatus {
     pub aborted: bool,
 }
 
-fn page_chunk_mutation_batch_id(page_batch_id: &str, replica_index: usize) -> String {
+fn replica_mutation_batch_id(page_batch_id: &str, replica_index: usize) -> String {
     let prefix = if page_batch_id.is_empty() {
         "block-batch".to_string()
     } else if page_batch_id.len() > 220 {
@@ -312,7 +312,7 @@ fn page_chunk_mutation_batch_id(page_batch_id: &str, replica_index: usize) -> St
     format!("{prefix}-chunk-{replica_index}")
 }
 
-impl PageServiceSnapshotChunk {
+impl ChunkServiceSnapshotChunk {
     pub fn install_progress(&self) -> SnapshotInstallProgress {
         snapshot_install_progress(
             true,

@@ -1,7 +1,7 @@
 pub(crate) fn chunk_head_batch_read_proof_checksum(
     chunk_ids: &[PageId],
-    heads: &[ChunkHead],
-    stats: &ChunkHeadBatchStats,
+    heads: &[ReplicaHead],
+    stats: &ReplicaHeadBatchStats,
     proof: &StorageReadProof,
 ) -> String {
     let mut material = Vec::new();
@@ -36,8 +36,8 @@ pub(crate) fn chunk_head_batch_read_proof_checksum(
 
 pub(crate) fn chunk_read_batch_read_proof_checksum(
     chunk_id: &PageId,
-    ranges: &[ChunkRangeReadResult],
-    stats: &ChunkReadBatchStats,
+    ranges: &[ReplicaRangeReadResult],
+    stats: &ReplicaReadBatchStats,
     proof: &StorageReadProof,
 ) -> String {
     let mut material = Vec::new();

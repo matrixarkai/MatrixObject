@@ -85,7 +85,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let metadata = self.propose_complete_multipart_upload_with_root_placement_fenced(
             upload_id,
             expected_size,

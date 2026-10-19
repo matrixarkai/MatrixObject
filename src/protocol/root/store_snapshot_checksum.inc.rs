@@ -33,7 +33,7 @@ impl StoreSnapshot {
         append_u64(&mut material, self.options.page_repair_parallelism as u64);
         append_u64(
             &mut material,
-            self.options.page_chunk_fanout_parallelism as u64,
+            self.options.replica_fanout_parallelism as u64,
         );
         append_u64(
             &mut material,
@@ -81,8 +81,8 @@ impl StoreSnapshot {
         );
         append_u64(&mut material, self.page_write_quorum as u64);
         append_u64(&mut material, self.page_read_quorum as u64);
-        append_u64(&mut material, self.page_chunk_endpoints.len() as u64);
-        for endpoint in &self.page_chunk_endpoints {
+        append_u64(&mut material, self.replica_endpoints.len() as u64);
+        for endpoint in &self.replica_endpoints {
             append_string(&mut material, endpoint);
         }
         append_u64(

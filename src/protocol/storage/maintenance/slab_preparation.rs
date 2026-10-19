@@ -19,7 +19,7 @@ pub struct PreparedSlabDiscard {
     pub request_checksum: String,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -81,7 +81,7 @@ pub struct SlabDiscardRunReport {
     pub first_error: String,
     pub discarded_slab_ids: Vec<SlabId>,
     pub compaction_slab_ids: Vec<SlabId>,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 
@@ -98,7 +98,7 @@ pub struct PreparedSlabCompaction {
     pub request_checksum: String,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub expected_object_gc_report_proof_checksum: String,
     pub raft_entry_checksum: String,

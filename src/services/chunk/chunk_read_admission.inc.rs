@@ -4,10 +4,10 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
-    ) -> Result<ChunkReadAdmission, ObjectError> {
-        let mut admission = ChunkReadAdmission {
+    ) -> Result<ReplicaReadAdmission, ObjectError> {
+        let mut admission = ReplicaReadAdmission {
             max_payload_bytes,
-            ..ChunkReadAdmission::default()
+            ..ReplicaReadAdmission::default()
         };
         let mut selected = Vec::with_capacity(ranges.len());
         for range in ranges {

@@ -109,7 +109,7 @@ impl MatrixObjectStore {
                 expected_route_control_checksum, plan.readiness.route_control_proof.state_checksum
             )));
         }
-        let mut report = self.page_service.run_storage_maintenance_control_fenced(
+        let mut report = self.chunk_service.run_storage_maintenance_control_fenced(
             max_actions,
             min_capacity_free_bytes,
             min_reclaimable_bytes,
@@ -143,7 +143,7 @@ impl MatrixObjectStore {
                 .saturating_sub(report.executed_actions as usize) as u64;
         report.reclaimed = report.reclaimed || report.slab_discard.discarded_slabs > 0;
         report.plan = plan;
-        report.post_readiness = self.page_service.storage_readiness(
+        report.post_readiness = self.chunk_service.storage_readiness(
             min_capacity_free_bytes,
             min_reclaimable_bytes,
             now_ms,

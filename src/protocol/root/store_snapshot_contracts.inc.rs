@@ -38,7 +38,7 @@ pub struct StoreSnapshot {
     pub chunk_read_cache_max_cacheable_read_bytes_per_replica: u64,
     pub page_write_quorum: usize,
     pub page_read_quorum: usize,
-    pub page_chunk_endpoints: Vec<String>,
+    pub replica_endpoints: Vec<String>,
     pub page_disabled_chunk_endpoints: BTreeSet<usize>,
     pub snapshot_checksum: String,
 }

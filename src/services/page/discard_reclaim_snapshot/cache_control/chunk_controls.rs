@@ -1,13 +1,13 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn configure_chunk_read_cache_control(
         &self,
         max_bytes_per_replica: u64,
-    ) -> Result<ChunkReadCacheControlReport, ObjectError> {
+    ) -> Result<ReplicaReadCacheControlReport, ObjectError> {
         let before = self.read_cache_stats();
         let replica_indexes = self.cache_control_replica_indexes(None, false)?;
         self.set_read_cache_max_bytes_per_replica(max_bytes_per_replica);
         let after = self.read_cache_stats();
-        Ok(ChunkReadCacheControlReport {
+        Ok(ReplicaReadCacheControlReport {
             previous_read_cache_bytes: before.bytes,
             previous_read_cache_entries: before.entries,
             previous_read_cache_max_bytes: before.max_bytes,
@@ -16,18 +16,18 @@ impl MatrixPageService {
             read_cache_max_bytes: after.max_bytes,
             remote_chunk_endpoint_count: self.chunk_endpoints.len() as u64,
             configured_chunk_endpoint_count: replica_indexes.len() as u64,
-            ..ChunkReadCacheControlReport::default()
+            ..ReplicaReadCacheControlReport::default()
         })
     }
 
     pub fn clear_chunk_read_cache_control(
         &self,
-    ) -> Result<ChunkReadCacheControlReport, ObjectError> {
+    ) -> Result<ReplicaReadCacheControlReport, ObjectError> {
         let before = self.read_cache_stats();
         let replica_indexes = self.cache_control_replica_indexes(None, false)?;
         self.clear_read_cache();
         let after = self.read_cache_stats();
-        Ok(ChunkReadCacheControlReport {
+        Ok(ReplicaReadCacheControlReport {
             previous_read_cache_bytes: before.bytes,
             previous_read_cache_entries: before.entries,
             previous_read_cache_max_bytes: before.max_bytes,
@@ -38,7 +38,7 @@ impl MatrixPageService {
             cleared_read_cache_entries: before.entries.saturating_sub(after.entries),
             remote_chunk_endpoint_count: self.chunk_endpoints.len() as u64,
             cleared_chunk_endpoint_count: replica_indexes.len() as u64,
-            ..ChunkReadCacheControlReport::default()
+            ..ReplicaReadCacheControlReport::default()
         })
     }
 
@@ -48,9 +48,9 @@ impl MatrixPageService {
         offset: u64,
         length: u64,
         max_bytes: u64,
-    ) -> Result<ChunkReadCacheControlReport, ObjectError> {
+    ) -> Result<ReplicaReadCacheControlReport, ObjectError> {
         self.prewarm_chunk_read_cache_control_batch(
-            vec![ChunkReadCacheRange {
+            vec![ReplicaReadCacheRange {
                 chunk_id,
                 offset,
                 length,
@@ -61,9 +61,9 @@ impl MatrixPageService {
 
     pub fn prewarm_chunk_read_cache_control_batch(
         &mut self,
-        ranges: Vec<ChunkReadCacheRange>,
+        ranges: Vec<ReplicaReadCacheRange>,
         max_bytes: u64,
-    ) -> Result<ChunkReadCacheControlReport, ObjectError> {
+    ) -> Result<ReplicaReadCacheControlReport, ObjectError> {
         let before = self.read_cache_stats();
         let replica_indexes = self.cache_control_replica_indexes(None, false)?;
         let mut grouped: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
@@ -117,7 +117,7 @@ impl MatrixPageService {
             .cumulative_cache_prewarm_failed_ranges
             .saturating_add(aggregate.failed_chunk_ranges);
         let after = self.read_cache_stats();
-        Ok(ChunkReadCacheControlReport {
+        Ok(ReplicaReadCacheControlReport {
             stats: aggregate,
             previous_read_cache_bytes: before.bytes,
             previous_read_cache_entries: before.entries,
@@ -127,7 +127,7 @@ impl MatrixPageService {
             read_cache_max_bytes: after.max_bytes,
             remote_chunk_endpoint_count: self.chunk_endpoints.len() as u64,
             selected_chunk_endpoint,
-            ..ChunkReadCacheControlReport::default()
+            ..ReplicaReadCacheControlReport::default()
         })
     }
 
@@ -137,9 +137,9 @@ impl MatrixPageService {
         offset: u64,
         length: u64,
         max_bytes: u64,
-    ) -> Result<ChunkReadCacheControlReport, ObjectError> {
+    ) -> Result<ReplicaReadCacheControlReport, ObjectError> {
         self.invalidate_chunk_read_cache_control_batch(
-            vec![ChunkReadCacheRange {
+            vec![ReplicaReadCacheRange {
                 chunk_id,
                 offset,
                 length,
@@ -150,9 +150,9 @@ impl MatrixPageService {
 
     pub fn invalidate_chunk_read_cache_control_batch(
         &mut self,
-        ranges: Vec<ChunkReadCacheRange>,
+        ranges: Vec<ReplicaReadCacheRange>,
         max_bytes: u64,
-    ) -> Result<ChunkReadCacheControlReport, ObjectError> {
+    ) -> Result<ReplicaReadCacheControlReport, ObjectError> {
         let before = self.read_cache_stats();
         let replica_indexes = self.cache_control_replica_indexes(None, false)?;
         let mut aggregate = CacheControlStats::default();
@@ -199,7 +199,7 @@ impl MatrixPageService {
             .cumulative_cache_invalidate_failed_ranges
             .saturating_add(aggregate.failed_chunk_ranges);
         let after = self.read_cache_stats();
-        Ok(ChunkReadCacheControlReport {
+        Ok(ReplicaReadCacheControlReport {
             stats: aggregate,
             previous_read_cache_bytes: before.bytes,
             previous_read_cache_entries: before.entries,
@@ -209,7 +209,7 @@ impl MatrixPageService {
             read_cache_max_bytes: after.max_bytes,
             remote_chunk_endpoint_count: self.chunk_endpoints.len() as u64,
             invalidated_chunk_endpoint_count: replica_indexes.len() as u64,
-            ..ChunkReadCacheControlReport::default()
+            ..ReplicaReadCacheControlReport::default()
         })
     }
 

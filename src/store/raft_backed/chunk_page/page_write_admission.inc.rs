@@ -1,10 +1,10 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn can_accept_page_batch_write_linearizable(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_write_linearizable_from(
             writes,
             max_write_bytes,
@@ -15,11 +15,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_write_linearizable_from(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_write_linearizable_from_committed_at(
             writes,
             max_write_bytes,
@@ -32,12 +32,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_write_linearizable_committed_at(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_write_linearizable_from_committed_at(
             writes,
             max_write_bytes,
@@ -50,13 +50,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_write_linearizable_from_committed_at(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_write_linearizable_fenced_from_committed_at(
             writes,
             max_write_bytes,
@@ -70,11 +70,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_write_linearizable_fenced(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_write_linearizable_fenced_from(
             writes,
             max_write_bytes,
@@ -86,12 +86,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_write_linearizable_fenced_from(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_write_linearizable_fenced_from_committed_at(
             writes,
             max_write_bytes,
@@ -105,13 +105,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_write_linearizable_fenced_committed_at(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_write_linearizable_fenced_from_committed_at(
             writes,
             max_write_bytes,
@@ -125,14 +125,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn can_accept_page_batch_write_linearizable_fenced_from_committed_at(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         let required_read_index = self
             .raft
             .commit_index()

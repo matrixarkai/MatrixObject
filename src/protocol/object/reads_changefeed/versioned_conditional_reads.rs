@@ -2,7 +2,7 @@
 pub struct VersionedConditionalObjectReadItem {
     pub request: VersionedConditionalObjectReadRequest,
     pub object: Option<ConditionalObjectData>,
-    pub stats: PageReadStats,
+    pub stats: ChunkReadStats,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
 }
@@ -53,9 +53,9 @@ pub struct VersionedConditionalObjectBatchReadReport {
     pub not_modified_objects: u64,
     pub failed_objects: u64,
     pub payload_bytes: u64,
-    pub read_stats: PageReadStats,
+    pub read_stats: ChunkReadStats,
     pub read_proof: ObjectReadProof,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub object_batch_read_proof_format: String,
     pub object_batch_read_proof_checksum: String,

@@ -24,7 +24,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectMetadata, ObjectError> {
         if self
             .store
-            .page_service
+            .chunk_service
             .write_request_receipts
             .contains_key(idempotency_key)
         {
@@ -36,7 +36,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             );
         }
         self.store
-            .page_service
+            .chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.propose_write_page_range_idempotent(slab_id, offset, data, idempotency_key)
     }
@@ -48,7 +48,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         data: Vec<u8>,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<(ObjectMetadata, PageIdempotentWriteReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkIdempotentWriteReport), ObjectError> {
         let metadata = self.propose_write_page_range_idempotent_fenced(
             slab_id.clone(),
             offset,
@@ -58,7 +58,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let receipt = self
             .store
-            .page_service
+            .chunk_service
             .write_request_receipts
             .get(idempotency_key)
             .cloned()
@@ -67,18 +67,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     "raft idempotent block write receipt missing after apply".to_string(),
                 )
             })?;
-        let stats = PageBatchStats {
+        let stats = ChunkBatchStats {
             input_ranges: if receipt.length == 0 { 0 } else { 1 },
             mapped_chunk_ranges: self
                 .store
-                .page_service
+                .chunk_service
                 .mapped_chunk_count(receipt.offset, receipt.length)?,
             payload_bytes: receipt.length,
-            ..PageBatchStats::default()
+            ..ChunkBatchStats::default()
         };
-        let report = PageIdempotentWriteReport {
+        let report = ChunkIdempotentWriteReport {
             receipt,
-            mutation: self.store.page_service.storage_mutation_report(
+            mutation: self.store.chunk_service.storage_mutation_report(
                 stats,
                 expected_route_control_checksum,
                 None,

@@ -4,8 +4,8 @@ enum CommandApplyFamily {
     Multipart,
     MetadataShard,
     MetadataRecordLease,
+    ReplicaControl,
     ChunkControl,
-    PageControl,
     StorageRootMaintenance,
     MetadataCoordinator,
     BucketPolicy,
@@ -95,7 +95,7 @@ impl ObjectCommand {
             | ObjectCommand::ApplyPreparedChunkCapacity { .. }
             | ObjectCommand::ConfigureChunkReplicaServiceMode { .. }
             | ObjectCommand::ApplyPreparedReplicaServiceMode { .. }
-            | ObjectCommand::ConfigureChunkTrimFlow { .. } => CommandApplyFamily::ChunkControl,
+            | ObjectCommand::ConfigureChunkTrimFlow { .. } => CommandApplyFamily::ReplicaControl,
             ObjectCommand::ConfigureChunkReplicaTrimFlow { .. }
             | ObjectCommand::ApplyPreparedChunkTrimFlow { .. }
             | ObjectCommand::ConfigureChunkMutationQos { .. }
@@ -121,7 +121,7 @@ impl ObjectCommand {
             | ObjectCommand::ApplyPreparedPageBatchAllocationReservation { .. }
             | ObjectCommand::ReleasePageAllocationIdempotent { .. }
             | ObjectCommand::AllocatePageRangesIdempotent { .. } => {
-                CommandApplyFamily::PageControl
+                CommandApplyFamily::ChunkControl
             }
             ObjectCommand::ApplyPreparedPageAllocationRelease { .. }
             | ObjectCommand::WritePageRangeIdempotent { .. }
@@ -269,10 +269,10 @@ impl MatrixObjectStore {
             CommandApplyFamily::MetadataRecordLease => {
                 self.apply_metadata_record_lease_command(command, raft_entry_index)
             }
-            CommandApplyFamily::ChunkControl => {
+            CommandApplyFamily::ReplicaControl => {
                 self.apply_chunk_control_command(command, raft_entry_index)
             }
-            CommandApplyFamily::PageControl => {
+            CommandApplyFamily::ChunkControl => {
                 self.apply_page_control_command(command, raft_entry_index)
             }
             CommandApplyFamily::StorageRootMaintenance => {

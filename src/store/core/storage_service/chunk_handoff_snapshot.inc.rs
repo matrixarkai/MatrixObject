@@ -6,8 +6,8 @@ impl MatrixObjectStore {
         length: u64,
         source_replica_index: usize,
         max_payload_bytes: u64,
-    ) -> Result<Vec<ChunkStateHandoff>, ObjectError> {
-        self.page_service.prepare_chunk_state_handoffs(
+    ) -> Result<Vec<ReplicaStateHandoff>, ObjectError> {
+        self.chunk_service.prepare_chunk_state_handoffs(
             slab_id,
             offset,
             length,
@@ -19,9 +19,9 @@ impl MatrixObjectStore {
     pub fn apply_chunk_state_handoffs(
         &mut self,
         target_replica_index: usize,
-        handoffs: Vec<ChunkStateHandoff>,
+        handoffs: Vec<ReplicaStateHandoff>,
     ) -> Result<RepairStats, ObjectError> {
-        self.page_service
+        self.chunk_service
             .apply_chunk_state_handoffs(target_replica_index, handoffs)
     }
 
@@ -29,8 +29,8 @@ impl MatrixObjectStore {
         &self,
         offset: u64,
         max_payload_bytes: usize,
-    ) -> Result<PageServiceSnapshotChunk, ObjectError> {
-        self.page_service
+    ) -> Result<ChunkServiceSnapshotChunk, ObjectError> {
+        self.chunk_service
             .export_snapshot_chunk(offset, max_payload_bytes)
     }
 
@@ -40,17 +40,17 @@ impl MatrixObjectStore {
         emit: F,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        F: FnMut(PageServiceSnapshotChunk) -> Result<(), ObjectError>,
+        F: FnMut(ChunkServiceSnapshotChunk) -> Result<(), ObjectError>,
     {
-        self.page_service
+        self.chunk_service
             .export_snapshot_chunk_stream(max_payload_bytes, emit)
     }
 
     pub fn export_page_snapshot_chunks(
         &self,
         max_payload_bytes: usize,
-    ) -> Result<Vec<PageServiceSnapshotChunk>, ObjectError> {
-        self.page_service.export_snapshot_chunks(max_payload_bytes)
+    ) -> Result<Vec<ChunkServiceSnapshotChunk>, ObjectError> {
+        self.chunk_service.export_snapshot_chunks(max_payload_bytes)
     }
 
     pub fn install_page_snapshot_chunks<I>(
@@ -58,20 +58,20 @@ impl MatrixObjectStore {
         chunks: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = PageServiceSnapshotChunk>,
+        I: IntoIterator<Item = ChunkServiceSnapshotChunk>,
     {
-        self.page_service.install_snapshot_chunks(chunks)
+        self.chunk_service.install_snapshot_chunks(chunks)
     }
 
-    pub fn page_snapshot_install_progress(&self) -> SnapshotInstallProgress {
-        self.page_service.snapshot_install_progress()
+    pub fn chunk_snapshot_install_progress(&self) -> SnapshotInstallProgress {
+        self.chunk_service.snapshot_install_progress()
     }
 
     pub fn abort_page_snapshot_install(
         &mut self,
         expected_stream_id: Option<&str>,
     ) -> Result<SnapshotAbortReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .abort_snapshot_install(expected_stream_id)
     }
 
@@ -81,7 +81,7 @@ impl MatrixObjectStore {
         offset: u64,
         max_payload_bytes: usize,
     ) -> Result<ReplicaServiceSnapshotChunk, ObjectError> {
-        self.page_service.export_chunk_replica_snapshot_chunk(
+        self.chunk_service.export_chunk_replica_snapshot_chunk(
             replica_index,
             offset,
             max_payload_bytes,
@@ -97,7 +97,7 @@ impl MatrixObjectStore {
     where
         F: FnMut(ReplicaServiceSnapshotChunk) -> Result<(), ObjectError>,
     {
-        self.page_service
+        self.chunk_service
             .export_chunk_replica_snapshot_chunk_stream(replica_index, max_payload_bytes, emit)
     }
 
@@ -106,7 +106,7 @@ impl MatrixObjectStore {
         replica_index: usize,
         max_payload_bytes: usize,
     ) -> Result<Vec<ReplicaServiceSnapshotChunk>, ObjectError> {
-        self.page_service
+        self.chunk_service
             .export_chunk_replica_snapshot_chunks(replica_index, max_payload_bytes)
     }
 
@@ -118,7 +118,7 @@ impl MatrixObjectStore {
     where
         I: IntoIterator<Item = ReplicaServiceSnapshotChunk>,
     {
-        self.page_service
+        self.chunk_service
             .install_chunk_replica_snapshot_chunks(replica_index, chunks)
     }
 
@@ -126,7 +126,7 @@ impl MatrixObjectStore {
         &self,
         replica_index: usize,
     ) -> Result<SnapshotInstallProgress, ObjectError> {
-        self.page_service
+        self.chunk_service
             .chunk_replica_snapshot_install_progress(replica_index)
     }
 
@@ -135,7 +135,7 @@ impl MatrixObjectStore {
         replica_index: usize,
         expected_stream_id: Option<&str>,
     ) -> Result<SnapshotAbortReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .abort_chunk_replica_snapshot_install(replica_index, expected_stream_id)
     }
 

@@ -6,7 +6,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         emit: F,
     ) -> Result<(), ObjectError>
     where
-        F: FnMut(ProvenStorageRead<PageServiceSnapshotChunk>) -> Result<(), ObjectError>,
+        F: FnMut(ProvenStorageRead<ChunkServiceSnapshotChunk>) -> Result<(), ObjectError>,
     {
         self.export_page_snapshot_chunk_stream_with_read_proof_linearizable_fenced_committed_at(
             max_payload_bytes,
@@ -25,7 +25,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<(), ObjectError>
     where
         F: FnMut(
-            ProvenPageRouteFencedStorageRead<PageServiceSnapshotChunk>,
+            ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>,
         ) -> Result<(), ObjectError>,
     {
         self.export_page_snapshot_chunk_stream_with_route_proof_linearizable_fenced_committed_at(
@@ -47,13 +47,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<(), ObjectError>
     where
         F: FnMut(
-            ProvenPageRouteFencedStorageRead<PageServiceSnapshotChunk>,
+            ProvenPageRouteFencedStorageRead<ChunkServiceSnapshotChunk>,
         ) -> Result<(), ObjectError>,
     {
         let expected_checksum = expected_route_control_checksum.as_ref().to_string();
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         self.store
-            .page_service
+            .chunk_service
             .check_expected_route_control_checksum(Some(&expected_checksum))?;
         let requested_read_index = self
             .raft
@@ -83,7 +83,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let proof = self.page_storage_read_proof_committed(requested_read_index, min_commit_index);
         self.store
-            .page_service
+            .chunk_service
             .export_snapshot_chunk_stream(max_payload_bytes, |value| {
                 emit(ProvenPageRouteFencedStorageRead {
                     value,
@@ -105,7 +105,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         mut emit: F,
     ) -> Result<(), ObjectError>
     where
-        F: FnMut(ProvenStorageRead<PageServiceSnapshotChunk>) -> Result<(), ObjectError>,
+        F: FnMut(ProvenStorageRead<ChunkServiceSnapshotChunk>) -> Result<(), ObjectError>,
     {
         let requested_read_index = self
             .raft
@@ -134,11 +134,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             )));
         }
         self.store
-            .page_service
+            .chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let proof = self.page_storage_read_proof_committed(requested_read_index, min_commit_index);
         self.store
-            .page_service
+            .chunk_service
             .export_snapshot_chunk_stream(max_payload_bytes, |value| {
                 emit(ProvenStorageRead {
                     value,

@@ -1,8 +1,8 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn release_page_allocation(
         &mut self,
         allocation_id: &str,
-    ) -> Result<PageAllocation, ObjectError> {
+    ) -> Result<ChunkAllocation, ObjectError> {
         let allocation = self
             .pending_allocations
             .remove(allocation_id)
@@ -15,7 +15,7 @@ impl MatrixPageService {
         &mut self,
         allocation_id: &str,
         idempotency_key: &str,
-    ) -> Result<PageAllocationReceipt, ObjectError> {
+    ) -> Result<ChunkAllocationReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         validate_idempotency_key(allocation_id)?;
         if let Some(existing) = self
@@ -27,7 +27,7 @@ impl MatrixPageService {
                     "block allocation release idempotency key allocation mismatch".to_string(),
                 ));
             }
-            return Ok(PageAllocationReceipt {
+            return Ok(ChunkAllocationReceipt {
                 allocation: existing.clone(),
                 idempotency_key: idempotency_key.to_string(),
                 released: true,
@@ -38,7 +38,7 @@ impl MatrixPageService {
         self.release_allocation_request_receipts
             .insert(idempotency_key.to_string(), allocation.clone());
         self.trim_receipts_to_retention();
-        Ok(PageAllocationReceipt {
+        Ok(ChunkAllocationReceipt {
             allocation,
             idempotency_key: idempotency_key.to_string(),
             released: true,

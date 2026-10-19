@@ -106,7 +106,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "root placement migration route proof",
             &expected_checksum,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
             .propose_root_placement_migration_prepared_with_envelope_and_read_proof_linearizable_committed_at(
                 plan,

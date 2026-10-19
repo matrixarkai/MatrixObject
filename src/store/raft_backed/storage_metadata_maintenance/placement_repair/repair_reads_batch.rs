@@ -67,7 +67,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let readiness = self.ensure_metadata_read_index("batch object read repair", now_ms)?;
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let report = self.propose_batch_get_objects_repairing_fenced(

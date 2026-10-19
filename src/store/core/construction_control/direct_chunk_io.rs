@@ -5,8 +5,8 @@ impl MatrixObjectStore {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkWriteReceiptPage, ObjectError> {
-        self.page_service
+    ) -> Result<ReplicaWriteReceiptPage, ObjectError> {
+        self.chunk_service
             .list_chunk_write_receipts(replica_index, marker, limit, chunk_id)
     }
 
@@ -16,8 +16,8 @@ impl MatrixObjectStore {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkBatchWriteReceiptPage, ObjectError> {
-        self.page_service
+    ) -> Result<ReplicaBatchWriteReceiptPage, ObjectError> {
+        self.chunk_service
             .list_chunk_batch_write_receipts(replica_index, marker, limit, chunk_id)
     }
 
@@ -27,8 +27,8 @@ impl MatrixObjectStore {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkDiscardReceiptPage, ObjectError> {
-        self.page_service
+    ) -> Result<ReplicaDiscardReceiptPage, ObjectError> {
+        self.chunk_service
             .list_chunk_discard_receipts(replica_index, marker, limit, chunk_id)
     }
 
@@ -38,8 +38,8 @@ impl MatrixObjectStore {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkBatchDiscardReceiptPage, ObjectError> {
-        self.page_service
+    ) -> Result<ReplicaBatchDiscardReceiptPage, ObjectError> {
+        self.chunk_service
             .list_chunk_batch_discard_receipts(replica_index, marker, limit, chunk_id)
     }
 
@@ -49,8 +49,8 @@ impl MatrixObjectStore {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkRepairReceiptPage, ObjectError> {
-        self.page_service
+    ) -> Result<ReplicaRepairReceiptPage, ObjectError> {
+        self.chunk_service
             .list_chunk_repair_receipts(replica_index, marker, limit, chunk_id)
     }
 
@@ -60,7 +60,7 @@ impl MatrixObjectStore {
         chunk_id: &PageId,
         offset: u64,
         length: u64,
-    ) -> Result<ChunkReadResult, ObjectError> {
+    ) -> Result<ReplicaReadResult, ObjectError> {
         self.read_direct_chunk_range_bounded(replica_index, chunk_id, offset, length, 0)
     }
 
@@ -71,9 +71,9 @@ impl MatrixObjectStore {
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
-    ) -> Result<ChunkReadResult, ObjectError> {
+    ) -> Result<ReplicaReadResult, ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -88,9 +88,9 @@ impl MatrixObjectStore {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
-    ) -> Result<(Vec<ChunkRangeReadResult>, ChunkReadBatchStats), ObjectError> {
+    ) -> Result<(Vec<ReplicaRangeReadResult>, ReplicaReadBatchStats), ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -103,9 +103,9 @@ impl MatrixObjectStore {
         &self,
         replica_index: usize,
         chunk_id: &PageId,
-    ) -> Result<ChunkHead, ObjectError> {
+    ) -> Result<ReplicaHead, ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -118,9 +118,9 @@ impl MatrixObjectStore {
         &self,
         replica_index: usize,
         chunk_ids: Vec<PageId>,
-    ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats), ObjectError> {
+    ) -> Result<(Vec<ReplicaHead>, ReplicaHeadBatchStats), ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -134,7 +134,7 @@ impl MatrixObjectStore {
         replica_index: usize,
         chunk_id: &PageId,
     ) -> Result<(), ObjectError> {
-        self.page_service
+        self.chunk_service
             .remove_replica_chunk_for_repair(replica_index, chunk_id)
     }
 
@@ -145,7 +145,7 @@ impl MatrixObjectStore {
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
-    ) -> Result<ChunkWriteReceipt, ObjectError> {
+    ) -> Result<ReplicaWriteReceipt, ObjectError> {
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
@@ -153,7 +153,7 @@ impl MatrixObjectStore {
         };
         let receipt = {
             let replica = self
-                .page_service
+                .chunk_service
                 .replicas
                 .get_mut(replica_index)
                 .ok_or_else(|| {
@@ -190,7 +190,7 @@ impl MatrixObjectStore {
         chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         idempotency_key: &str,
-    ) -> Result<(ChunkWriteBatchStats, ChunkBatchWriteReceipt), ObjectError> {
+    ) -> Result<(ReplicaWriteBatchStats, ReplicaBatchWriteReceipt), ObjectError> {
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
@@ -202,7 +202,7 @@ impl MatrixObjectStore {
             .collect::<Vec<_>>();
         let (stats, receipt) = {
             let replica = self
-                .page_service
+                .chunk_service
                 .replicas
                 .get_mut(replica_index)
                 .ok_or_else(|| {
@@ -243,7 +243,7 @@ impl MatrixObjectStore {
         offset: u64,
         length: u64,
         idempotency_key: &str,
-    ) -> Result<ChunkDiscardReceipt, ObjectError> {
+    ) -> Result<ReplicaDiscardReceipt, ObjectError> {
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
@@ -251,7 +251,7 @@ impl MatrixObjectStore {
         };
         let receipt = {
             let replica = self
-                .page_service
+                .chunk_service
                 .replicas
                 .get_mut(replica_index)
                 .ok_or_else(|| {
@@ -288,7 +288,7 @@ impl MatrixObjectStore {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
-    ) -> Result<(ChunkDiscardBatchStats, ChunkBatchDiscardReceipt), ObjectError> {
+    ) -> Result<(ReplicaDiscardBatchStats, ReplicaBatchDiscardReceipt), ObjectError> {
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
@@ -296,7 +296,7 @@ impl MatrixObjectStore {
         };
         let (stats, receipt) = {
             let replica = self
-                .page_service
+                .chunk_service
                 .replicas
                 .get_mut(replica_index)
                 .ok_or_else(|| {

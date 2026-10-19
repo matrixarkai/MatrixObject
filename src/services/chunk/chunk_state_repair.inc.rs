@@ -34,7 +34,7 @@ impl MatrixReplicaService {
         chunk_id: PageId,
         state: PageState,
         idempotency_key: &str,
-    ) -> Result<ChunkStateInstallReceipt, ObjectError> {
+    ) -> Result<ReplicaStateInstallReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         let payload_checksum = etag(&state.data);
         let state_checksum = chunk_state_handoff_checksum(&chunk_id, &state, &payload_checksum);
@@ -59,7 +59,7 @@ impl MatrixReplicaService {
             return Ok(receipt);
         }
         self.install_chunk_state(chunk_id.clone(), state.clone())?;
-        let receipt = ChunkStateInstallReceipt {
+        let receipt = ReplicaStateInstallReceipt {
             chunk_id,
             request_checksum,
             payload_checksum,
@@ -125,14 +125,14 @@ impl MatrixReplicaService {
     pub fn prepare_chunk_state_handoff(
         &self,
         chunk_id: &PageId,
-    ) -> Result<ChunkStateHandoff, ObjectError> {
+    ) -> Result<ReplicaStateHandoff, ObjectError> {
         let state = self.read_chunk_state_validated(chunk_id)?;
         let payload_checksum = etag(&state.data);
         let legacy_checksum = chunk_state_handoff_checksum(chunk_id, &state, &payload_checksum);
         let handoff_token = legacy_checksum.clone();
         let state_checksum =
             chunk_state_handoff_checksum_v2(chunk_id, &handoff_token, &state, &payload_checksum);
-        Ok(ChunkStateHandoff {
+        Ok(ReplicaStateHandoff {
             chunk_id: chunk_id.clone(),
             state,
             payload_checksum,
@@ -162,7 +162,7 @@ impl MatrixReplicaService {
 
     pub fn install_chunk_state_handoff(
         &mut self,
-        handoff: ChunkStateHandoff,
+        handoff: ReplicaStateHandoff,
     ) -> Result<(), ObjectError> {
         validate_chunk_state_handoff(&handoff)?;
         self.install_chunk_state(handoff.chunk_id, handoff.state)
@@ -170,7 +170,7 @@ impl MatrixReplicaService {
 
     pub fn install_chunk_state_handoff_fenced(
         &mut self,
-        handoff: ChunkStateHandoff,
+        handoff: ReplicaStateHandoff,
         expected_control_checksum: Option<&str>,
     ) -> Result<(), ObjectError> {
         validate_chunk_state_handoff(&handoff)?;

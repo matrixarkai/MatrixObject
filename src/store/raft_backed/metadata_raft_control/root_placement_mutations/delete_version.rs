@@ -26,7 +26,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "object version delete",
             expected_page_route_control_checksum.as_ref(),
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let request = ObjectDeleteRequest {
             bucket: bucket.to_string(),
             key: key.to_string(),

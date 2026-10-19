@@ -1,8 +1,8 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn begin_mutation_batch(
         &mut self,
         batch_id: impl Into<String>,
-    ) -> Result<PageMutationBatchStatus, ObjectError> {
+    ) -> Result<ChunkMutationBatchStatus, ObjectError> {
         let batch_id = batch_id.into();
         if !batch_id.is_empty() {
             validate_idempotency_key(&batch_id)?;
@@ -16,7 +16,7 @@ impl MatrixPageService {
             ));
         }
         let snapshot = self.export_snapshot_unsealed();
-        let started_route_commit_index = self.page_route_control_commit_index;
+        let started_route_commit_index = self.chunk_route_control_commit_index;
         let mut replica_indices = Vec::with_capacity(self.replicas.len());
         for index in 0..self.replicas.len() {
             if self.replica_writable(index) {
@@ -29,7 +29,7 @@ impl MatrixPageService {
             ));
         }
         for index in &replica_indices {
-            let replica_batch_id = page_chunk_mutation_batch_id(&batch_id, *index);
+            let replica_batch_id = replica_mutation_batch_id(&batch_id, *index);
             // `snapshot` above already carries every replica, and the abort below
             // rebuilds them from it, so the replica needs no second copy.
             if let Err(err) =
@@ -44,7 +44,7 @@ impl MatrixPageService {
                 return Err(err);
             }
         }
-        self.active_mutation_batch = Some(PageMutationBatch {
+        self.active_mutation_batch = Some(ChunkMutationBatch {
             batch_id,
             started_route_commit_index,
             replica_indices,
@@ -56,7 +56,7 @@ impl MatrixPageService {
     pub fn end_mutation_batch(
         &mut self,
         batch_id: impl AsRef<str>,
-    ) -> Result<PageMutationBatchStatus, ObjectError> {
+    ) -> Result<ChunkMutationBatchStatus, ObjectError> {
         let Some(active) = self.active_mutation_batch.as_ref() else {
             return Err(ObjectError::PreconditionFailed(
                 "block mutation batch is not active".to_string(),
@@ -73,7 +73,7 @@ impl MatrixPageService {
         let replica_indices = active.replica_indices.clone();
         for index in replica_indices {
             self.replicas[index]
-                .end_mutation_batch(page_chunk_mutation_batch_id(&batch_id, index))?;
+                .end_mutation_batch(replica_mutation_batch_id(&batch_id, index))?;
         }
         self.active_mutation_batch = None;
         let mut status = self.mutation_batch_status();
@@ -86,7 +86,7 @@ impl MatrixPageService {
     pub fn abort_mutation_batch(
         &mut self,
         batch_id: impl AsRef<str>,
-    ) -> Result<PageMutationBatchStatus, ObjectError> {
+    ) -> Result<ChunkMutationBatchStatus, ObjectError> {
         let active = self.active_mutation_batch.take().ok_or_else(|| {
             ObjectError::PreconditionFailed("block mutation batch is not active".to_string())
         })?;
@@ -109,7 +109,7 @@ impl MatrixPageService {
         Ok(status)
     }
 
-    pub fn mutation_batch_status(&self) -> PageMutationBatchStatus {
+    pub fn mutation_batch_status(&self) -> ChunkMutationBatchStatus {
         let active = self.active_mutation_batch.as_ref();
         let active_replica_count = (0..self.replicas.len())
             .filter(|index| self.replica_active(*index))
@@ -119,11 +119,11 @@ impl MatrixPageService {
             .iter()
             .filter(|replica| replica.mutation_batch_status().active)
             .count() as u64;
-        PageMutationBatchStatus {
+        ChunkMutationBatchStatus {
             active: active.is_some(),
             batch_id: active.map_or_else(String::new, |batch| batch.batch_id.clone()),
             started_route_commit_index: active.map_or(0, |batch| batch.started_route_commit_index),
-            current_route_commit_index: self.page_route_control_commit_index,
+            current_route_commit_index: self.chunk_route_control_commit_index,
             active_replica_count,
             opened_replica_batch_count: active
                 .map_or(0, |batch| batch.replica_indices.len() as u64),

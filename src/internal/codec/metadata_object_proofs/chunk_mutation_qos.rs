@@ -1,4 +1,4 @@
-pub(crate) fn append_chunk_mutation_qos_config(out: &mut Vec<u8>, config: &ChunkMutationQosConfig) {
+pub(crate) fn append_chunk_mutation_qos_config(out: &mut Vec<u8>, config: &ReplicaMutationQosConfig) {
     append_u64(out, config.window_ms);
     append_u64(out, config.max_write_ops_per_window);
     append_u64(out, config.max_write_bytes_per_window);
@@ -8,8 +8,8 @@ pub(crate) fn append_chunk_mutation_qos_config(out: &mut Vec<u8>, config: &Chunk
 
 pub(crate) fn read_chunk_mutation_qos_config(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkMutationQosConfig, ObjectError> {
-    let config = ChunkMutationQosConfig {
+) -> Result<ReplicaMutationQosConfig, ObjectError> {
+    let config = ReplicaMutationQosConfig {
         window_ms: cursor.read_u64()?,
         max_write_ops_per_window: cursor.read_u64()?,
         max_write_bytes_per_window: cursor.read_u64()?,
@@ -20,7 +20,7 @@ pub(crate) fn read_chunk_mutation_qos_config(
     Ok(config)
 }
 
-pub(crate) fn append_chunk_mutation_qos_state(out: &mut Vec<u8>, state: &ChunkMutationQosState) {
+pub(crate) fn append_chunk_mutation_qos_state(out: &mut Vec<u8>, state: &ReplicaMutationQosState) {
     append_u64(out, state.window_start_ms);
     append_u64(out, state.write_ops_in_window);
     append_u64(out, state.write_bytes_in_window);
@@ -32,8 +32,8 @@ pub(crate) fn append_chunk_mutation_qos_state(out: &mut Vec<u8>, state: &ChunkMu
 
 pub(crate) fn read_chunk_mutation_qos_state(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkMutationQosState, ObjectError> {
-    Ok(ChunkMutationQosState {
+) -> Result<ReplicaMutationQosState, ObjectError> {
+    Ok(ReplicaMutationQosState {
         window_start_ms: cursor.read_u64()?,
         write_ops_in_window: cursor.read_u64()?,
         write_bytes_in_window: cursor.read_u64()?,

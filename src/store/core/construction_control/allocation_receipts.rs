@@ -5,7 +5,7 @@ impl MatrixObjectStore {
         limit: usize,
         slab_id: Option<&SlabId>,
     ) -> Result<PageAllocationReceiptPage, ObjectError> {
-        self.page_service
+        self.chunk_service
             .list_allocation_receipts(marker, limit, slab_id)
     }
 
@@ -16,7 +16,7 @@ impl MatrixObjectStore {
         slab_id: Option<&SlabId>,
         page_index: Option<u64>,
     ) -> Result<PageAllocationReceiptPage, ObjectError> {
-        self.page_service.list_allocation_receipts_for_chunk(
+        self.chunk_service.list_allocation_receipts_for_chunk(
             marker,
             limit,
             slab_id,
@@ -30,7 +30,7 @@ impl MatrixObjectStore {
         limit: usize,
         slab_id: Option<&SlabId>,
     ) -> Result<PageReleaseAllocationReceiptPage, ObjectError> {
-        self.page_service
+        self.chunk_service
             .list_release_allocation_receipts(marker, limit, slab_id)
     }
 
@@ -41,7 +41,7 @@ impl MatrixObjectStore {
         slab_id: Option<&SlabId>,
         page_index: Option<u64>,
     ) -> Result<PageReleaseAllocationReceiptPage, ObjectError> {
-        self.page_service
+        self.chunk_service
             .list_release_allocation_receipts_for_chunk(marker, limit, slab_id, page_index)
     }
 
@@ -51,7 +51,7 @@ impl MatrixObjectStore {
         limit: usize,
         slab_id: Option<&SlabId>,
     ) -> Result<PageBatchAllocationReceiptPage, ObjectError> {
-        self.page_service
+        self.chunk_service
             .list_batch_allocation_receipts(marker, limit, slab_id)
     }
 
@@ -62,7 +62,7 @@ impl MatrixObjectStore {
         slab_id: Option<&SlabId>,
         page_index: Option<u64>,
     ) -> Result<PageBatchAllocationReceiptPage, ObjectError> {
-        self.page_service.list_batch_allocation_receipts_for_chunk(
+        self.chunk_service.list_batch_allocation_receipts_for_chunk(
             marker,
             limit,
             slab_id,

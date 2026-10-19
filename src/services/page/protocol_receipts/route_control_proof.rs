@@ -1,11 +1,11 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageRouteControlProof {
+pub struct ChunkRouteControlProof {
     pub control_receipt: bool,
     pub state_format: String,
     pub state_bytes: u64,
     pub state_checksum: String,
-    pub page_route_control_commit_index: u64,
-    pub page_route_control_next_log_index: u64,
+    pub chunk_route_control_commit_index: u64,
+    pub chunk_route_control_next_log_index: u64,
     pub chunk_endpoint_count: u64,
     pub disabled_chunk_endpoint_count: u64,
     pub write_quorum: u64,
@@ -38,7 +38,7 @@ pub struct PageRouteControlProof {
     pub cumulative_replica_read_repair_failures: u64,
 }
 
-impl PageRouteControlProof {
+impl ChunkRouteControlProof {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -57,11 +57,11 @@ impl PageRouteControlProof {
             ("state_bytes", self.state_bytes),
             (
                 "block_route_control_commit_index",
-                self.page_route_control_commit_index,
+                self.chunk_route_control_commit_index,
             ),
             (
                 "block_route_control_next_log_index",
-                self.page_route_control_next_log_index,
+                self.chunk_route_control_next_log_index,
             ),
             ("chunk_endpoint_count", self.chunk_endpoint_count),
             (

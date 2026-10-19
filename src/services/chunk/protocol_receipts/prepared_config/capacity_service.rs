@@ -8,7 +8,7 @@ pub struct PreparedChunkCapacityConfig {
     pub chunk_prepared_replica_count: u64,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -25,7 +25,7 @@ pub struct PreparedReplicaServiceModeConfig {
     pub chunk_prepared_replica_count: u64,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }

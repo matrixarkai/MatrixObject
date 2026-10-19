@@ -12,7 +12,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.store
-            .page_service
+            .chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.propose(ObjectCommand::ConfigurePageReceiptRetention { retention })
     }

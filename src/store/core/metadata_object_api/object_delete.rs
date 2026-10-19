@@ -48,9 +48,9 @@ impl MatrixObjectStore {
         if_match_etag: Option<String>,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectDeleteReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let request = ObjectDeleteRequest {
             bucket: bucket.to_string(),
             key: key.to_string(),
@@ -129,9 +129,9 @@ impl MatrixObjectStore {
         if_match_etag: Option<String>,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectDeleteReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let request = ObjectDeleteRequest {
             bucket: bucket.to_string(),
             key: key.to_string(),

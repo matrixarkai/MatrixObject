@@ -45,7 +45,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_checksum = expected_control_checksum.as_ref().to_string();
         let control_proof = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -106,7 +106,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {

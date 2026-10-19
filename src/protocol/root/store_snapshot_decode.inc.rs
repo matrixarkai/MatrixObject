@@ -69,7 +69,7 @@ impl StoreSnapshot {
             page_batch_write_parallelism: DEFAULT_PAGE_BATCH_WRITE_PARALLELISM,
             page_batch_discard_parallelism: DEFAULT_PAGE_BATCH_DISCARD_PARALLELISM,
             page_repair_parallelism: DEFAULT_PAGE_REPAIR_PARALLELISM,
-            page_chunk_fanout_parallelism: DEFAULT_PAGE_CHUNK_FANOUT_PARALLELISM,
+            replica_fanout_parallelism: DEFAULT_PAGE_CHUNK_FANOUT_PARALLELISM,
             local_replica_store_parallelism: DEFAULT_LOCAL_REPLICA_STORE_PARALLELISM,
             control_plane_mode: ControlPlaneMode::Auto,
             metaserver_catalog_endpoints: String::new(),
@@ -93,7 +93,7 @@ impl StoreSnapshot {
                 cursor.read_count("store snapshot block batch discard parallelism")?;
             options.page_repair_parallelism =
                 cursor.read_count("store snapshot block repair parallelism")?;
-            options.page_chunk_fanout_parallelism =
+            options.replica_fanout_parallelism =
                 cursor.read_count("store snapshot block chunk fanout parallelism")?;
         }
         if snapshot_version >= 6 {
@@ -308,7 +308,7 @@ impl StoreSnapshot {
         let (
             page_write_quorum,
             page_read_quorum,
-            page_chunk_endpoints,
+            replica_endpoints,
             page_disabled_chunk_endpoints,
         ) = if snapshot_version >= 7 {
             let page_write_quorum = cursor.read_count("store snapshot block write quorum")?;
@@ -382,7 +382,7 @@ impl StoreSnapshot {
             chunk_read_cache_max_cacheable_read_bytes_per_replica,
             page_write_quorum,
             page_read_quorum,
-            page_chunk_endpoints,
+            replica_endpoints,
             page_disabled_chunk_endpoints,
             snapshot_checksum,
         };

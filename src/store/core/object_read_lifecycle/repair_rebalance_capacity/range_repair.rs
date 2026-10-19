@@ -26,7 +26,7 @@ impl MatrixObjectStore {
             let read_end = range_end.min(extent_end);
             let local_offset = read_start - extent_start;
             let local_len = read_end - read_start;
-            let stats = self.page_service.repair_slab_range(
+            let stats = self.chunk_service.repair_slab_range(
                 &extent.slab_id,
                 extent.offset + local_offset,
                 local_len,
@@ -50,7 +50,7 @@ impl MatrixObjectStore {
         let mut aggregate = BoundedRepairReport {
             start_chunk_index,
             next_chunk_index: start_chunk_index,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..BoundedRepairReport::default()
         };
         let mut object_cursor = 0u64;
@@ -76,7 +76,7 @@ impl MatrixObjectStore {
             let read_end = range_end.min(extent_end);
             let local_offset = read_start - extent_start;
             let local_len = read_end - read_start;
-            let extent_locations = self.page_service.map_range(
+            let extent_locations = self.chunk_service.map_range(
                 &extent.slab_id,
                 extent.offset + local_offset,
                 local_len,
@@ -118,7 +118,7 @@ impl MatrixObjectStore {
             let local_start_chunk_index = start_chunk_index.saturating_sub(object_chunk_cursor);
             let slab_start_chunk_index =
                 extent_start_chunk_index.saturating_add(local_start_chunk_index);
-            let report = self.page_service.repair_slab_range_bounded(
+            let report = self.chunk_service.repair_slab_range_bounded(
                 &extent.slab_id,
                 extent.offset + local_offset,
                 local_len,

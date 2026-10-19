@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn set_chunk_replica_capacity(
         &mut self,
         replica_index: usize,

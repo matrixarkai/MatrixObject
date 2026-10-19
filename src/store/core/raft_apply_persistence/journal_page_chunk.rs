@@ -80,7 +80,7 @@ impl MatrixObjectStore {
 
     fn append_page_batch_write_journal_record(
         &self,
-        writes: &[PageRangeWrite],
+        writes: &[ChunkRangeWrite],
         idempotency_key: &str,
     ) -> Result<(), ObjectError> {
         if self.persistent_journal_path.is_empty() {
@@ -136,7 +136,7 @@ impl MatrixObjectStore {
 
     fn append_page_batch_discard_journal_record(
         &self,
-        requests: &[PageRangeRequest],
+        requests: &[ChunkRangeRequest],
         idempotency_key: &str,
     ) -> Result<(), ObjectError> {
         if self.persistent_journal_path.is_empty() {

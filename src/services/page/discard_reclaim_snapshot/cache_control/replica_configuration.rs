@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     fn cache_control_replica_indexes(
         &self,
         target_replica_index: Option<usize>,

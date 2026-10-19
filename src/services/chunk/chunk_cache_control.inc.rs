@@ -125,7 +125,7 @@ impl MatrixReplicaService {
         self.read_cache_invalidations
             .set(self.read_cache_invalidations.get().saturating_add(1));
         if max_bytes == 0 {
-            let keys: Vec<ChunkReadCacheRangeKey> = self
+            let keys: Vec<ReplicaReadCacheRangeKey> = self
                 .read_cache_by_chunk
                 .borrow()
                 .get(chunk_id)
@@ -154,7 +154,7 @@ impl MatrixReplicaService {
             }
             return stats;
         }
-        let mut keys: Vec<(ChunkReadCacheRangeKey, u64)> = {
+        let mut keys: Vec<(ReplicaReadCacheRangeKey, u64)> = {
             let cache = self.read_cache.borrow();
             self.read_cache_by_chunk
                 .borrow()

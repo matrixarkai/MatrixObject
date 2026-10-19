@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn list_discard_receipts(
         &self,
         marker: Option<&str>,
@@ -27,7 +27,7 @@ impl MatrixPageService {
             page_size: page_index.map(|_| self.page_size),
             ..PageDiscardReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &PageDiscardReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ChunkDiscardReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.discard_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -78,7 +78,7 @@ impl MatrixPageService {
             limit: limit as u64,
             ..PageBatchDiscardReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &PageBatchDiscardReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ChunkBatchDiscardReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.batch_discard_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),

@@ -4,7 +4,7 @@ impl MatrixObjectStore {
         write_quorum: usize,
         read_quorum: usize,
     ) -> Result<(), ObjectError> {
-        self.page_service
+        self.chunk_service
             .configure_quorums(write_quorum, read_quorum)
     }
 
@@ -14,7 +14,7 @@ impl MatrixObjectStore {
         read_quorum: usize,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedPageQuorumConfig, ObjectError> {
-        let admitted_route_checksum = self.page_service.route_control_proof().state_checksum;
+        let admitted_route_checksum = self.chunk_service.route_control_proof().state_checksum;
         self.prepare_page_quorum_raft_entry_fenced(
             write_quorum,
             read_quorum,
@@ -30,7 +30,7 @@ impl MatrixObjectStore {
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<PreparedPageQuorumConfig, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -38,10 +38,10 @@ impl MatrixObjectStore {
             ));
         }
         let before_page_service_fingerprint =
-            page_route_control_image_fingerprint(&self.page_service);
-        let mut projected = self.page_service.clone();
+            chunk_route_control_image_fingerprint(&self.chunk_service);
+        let mut projected = self.chunk_service.clone();
         projected.configure_quorums(write_quorum, read_quorum)?;
-        let after_page_service_fingerprint = page_route_control_image_fingerprint(&projected);
+        let after_page_service_fingerprint = chunk_route_control_image_fingerprint(&projected);
         let mut prepared = PreparedPageQuorumConfig {
             write_quorum,
             read_quorum,
@@ -49,7 +49,7 @@ impl MatrixObjectStore {
             after_page_service_fingerprint,
             expected_previous_commit_index,
             prepared_commit_index: expected_previous_commit_index.saturating_add(1),
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             expected_route_control_checksum: expected_route_control_checksum
                 .unwrap_or_default()
                 .to_string(),
@@ -89,7 +89,7 @@ impl MatrixObjectStore {
                 "block prepared quorum commit index must be adjacent".to_string(),
             ));
         }
-        let current_fingerprint = page_route_control_image_fingerprint(&self.page_service);
+        let current_fingerprint = chunk_route_control_image_fingerprint(&self.chunk_service);
         if current_fingerprint == prepared.after_page_service_fingerprint {
             return Ok(());
         }
@@ -98,7 +98,7 @@ impl MatrixObjectStore {
                 "block prepared quorum previous commit fence mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "block prepared quorum",
@@ -108,9 +108,9 @@ impl MatrixObjectStore {
                 "block prepared quorum source fingerprint mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .configure_quorums(prepared.write_quorum, prepared.read_quorum)?;
-        if page_route_control_image_fingerprint(&self.page_service)
+        if chunk_route_control_image_fingerprint(&self.chunk_service)
             != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(

@@ -23,7 +23,7 @@ impl MatrixObjectStore {
             requested_objects: requests.len() as u64,
             max_payload_bytes,
             max_chunk_read_count,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..AdmittedVersionedConditionalObjectBatchReadReport::default()
         };
         if let Some(options) = metadata_read_options.as_ref() {

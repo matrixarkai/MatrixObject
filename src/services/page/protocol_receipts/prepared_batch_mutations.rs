@@ -1,12 +1,12 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPageBatchWrite {
-    pub writes: Vec<PageRangeWrite>,
+    pub writes: Vec<ChunkRangeWrite>,
     pub before_page_service_fingerprint: String,
     pub after_page_service_fingerprint: String,
-    pub receipt: PageBatchWriteReceipt,
+    pub receipt: ChunkBatchWriteReceipt,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -40,7 +40,7 @@ pub struct PreparedPageBatchWriteApplyReport {
     pub prepared: bool,
     pub external_raft_required: bool,
     pub deduped: bool,
-    pub receipt: PageBatchWriteReceipt,
+    pub receipt: ChunkBatchWriteReceipt,
     pub metadata: ObjectMetadata,
 }
 
@@ -85,13 +85,13 @@ impl PreparedPageBatchWriteApplyReport {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPageBatchDiscard {
-    pub requests: Vec<PageRangeRequest>,
+    pub requests: Vec<ChunkRangeRequest>,
     pub before_page_service_fingerprint: String,
     pub after_page_service_fingerprint: String,
-    pub receipt: PageBatchDiscardReceipt,
+    pub receipt: ChunkBatchDiscardReceipt,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -125,7 +125,7 @@ pub struct PreparedPageBatchDiscardApplyReport {
     pub prepared: bool,
     pub external_raft_required: bool,
     pub deduped: bool,
-    pub receipt: PageBatchDiscardReceipt,
+    pub receipt: ChunkBatchDiscardReceipt,
     pub metadata: ObjectMetadata,
 }
 

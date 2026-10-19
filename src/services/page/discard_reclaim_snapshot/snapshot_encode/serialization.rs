@@ -1,4 +1,4 @@
-impl PageServiceSnapshot {
+impl ChunkServiceSnapshot {
     fn encoded_size_hint(&self) -> usize {
         const U64: usize = std::mem::size_of::<u64>();
         let mut bytes = encoded_string_len("MOSRSBLOCK23")
@@ -169,8 +169,8 @@ impl PageServiceSnapshot {
         for index in &self.disabled_chunk_endpoints {
             append_u64(&mut out, *index as u64);
         }
-        append_u64(&mut out, self.page_route_control_commit_index);
-        append_u64(&mut out, self.page_route_control_next_log_index);
+        append_u64(&mut out, self.chunk_route_control_commit_index);
+        append_u64(&mut out, self.chunk_route_control_next_log_index);
         append_page_route_qos_config(&mut out, &self.route_qos_config);
         append_page_route_qos_state(&mut out, &self.route_qos_state);
         append_u64(&mut out, self.sealed_slabs.len() as u64);

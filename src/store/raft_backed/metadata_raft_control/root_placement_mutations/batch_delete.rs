@@ -88,7 +88,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "batch delete objects route proof",
             &expected_checksum,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
             .propose_batch_delete_objects_fenced_with_read_proof_linearizable_committed_at(
                 requests,

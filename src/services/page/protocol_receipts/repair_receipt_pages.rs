@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PageRangeRepairReceiptPage {
-    pub receipts: Vec<PageRangeRepairReceipt>,
+    pub receipts: Vec<ChunkRangeRepairReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,
@@ -91,7 +91,7 @@ impl PageRangeRepairReceiptPage {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PageAuditRepairReceiptPage {
-    pub receipts: Vec<PageAuditRepairReceipt>,
+    pub receipts: Vec<ChunkAuditRepairReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,

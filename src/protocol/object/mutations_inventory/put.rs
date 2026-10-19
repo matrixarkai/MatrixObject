@@ -95,7 +95,7 @@ pub struct ObjectBatchPutReport {
     pub payload_bytes: u64,
     pub max_payload_bytes: u64,
     pub read_proof: ObjectReadProof,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub put_batch_proof_format: String,
     pub put_batch_proof_checksum: String,

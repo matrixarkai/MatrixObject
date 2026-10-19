@@ -68,10 +68,10 @@ impl MatrixObjectStore {
             } else {
                 self.payloads.clone()
             },
-            page_service: if targeted {
+            chunk_service: if targeted {
                 None
             } else {
-                Some(self.page_service.clone())
+                Some(self.chunk_service.clone())
             },
             logical_written_bytes: self.logical_written_bytes,
             physical_written_bytes: self.physical_written_bytes,
@@ -82,7 +82,7 @@ impl MatrixObjectStore {
 
     /// Captures a rollback for a single-key object mutation.
     ///
-    /// `page_service` is not copied either. `begin_mutation_batch` takes its own
+    /// `chunk_service` is not copied either. `begin_mutation_batch` takes its own
     /// full snapshot of the page service and holds it for the batch, nothing
     /// mutates the page service between that call and this capture, and every
     /// error path aborts the batch before restoring here -- so this copy was
@@ -255,8 +255,8 @@ impl MatrixObjectStore {
         if !was_targeted {
             self.payloads = rollback.payloads;
         }
-        if let Some(page_service) = rollback.page_service {
-            self.page_service = page_service;
+        if let Some(chunk_service) = rollback.chunk_service {
+            self.chunk_service = chunk_service;
         }
         self.logical_written_bytes = rollback.logical_written_bytes;
         self.physical_written_bytes = rollback.physical_written_bytes;

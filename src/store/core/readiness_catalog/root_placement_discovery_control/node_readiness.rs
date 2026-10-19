@@ -5,9 +5,9 @@ impl MatrixObjectStore {
         min_capacity_free_bytes: u64,
         min_reclaimable_bytes: u64,
         now_ms: u64,
-    ) -> Result<ChunkStorageReadiness, ObjectError> {
+    ) -> Result<ReplicaStorageReadiness, ObjectError> {
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {

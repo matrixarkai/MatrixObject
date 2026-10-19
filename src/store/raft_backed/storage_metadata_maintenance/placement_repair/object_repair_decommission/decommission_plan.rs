@@ -22,7 +22,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         plan.verify_expected_plan_checksum(expected_plan_checksum)?;
         let mut report = ObjectReplicaDecommissionReport {
             plan,
-            route_control_proof: self.store.page_service.route_control_proof(),
+            route_control_proof: self.store.chunk_service.route_control_proof(),
             expected_plan_checksum: expected_plan_checksum.to_string(),
             ..ObjectReplicaDecommissionReport::default()
         };

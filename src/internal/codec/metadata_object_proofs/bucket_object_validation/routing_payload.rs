@@ -9,7 +9,7 @@ pub(crate) fn metadata_shard_overlaps_prefix(shard: &MetadataShard, prefix: &str
     !shard.end_key.is_empty() && shard.end_key.starts_with(prefix)
 }
 
-pub(crate) fn page_replica_audit_item_payload_bytes(item: &PageReplicaAuditItem) -> u64 {
+pub(crate) fn chunk_replica_audit_item_payload_bytes(item: &ChunkReplicaAuditItem) -> u64 {
     item.chunk_id
         .slab_id
         .volume_id

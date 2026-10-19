@@ -1,8 +1,8 @@
 impl MatrixReplicaService {
     pub fn configure_mutation_qos(
         &mut self,
-        config: ChunkMutationQosConfig,
-    ) -> Result<ChunkMutationQosConfig, ObjectError> {
+        config: ReplicaMutationQosConfig,
+    ) -> Result<ReplicaMutationQosConfig, ObjectError> {
         let commit_index = self
             .chunk_mutation_control_next_log_index
             .max(self.chunk_mutation_control_commit_index.saturating_add(1));
@@ -11,9 +11,9 @@ impl MatrixReplicaService {
 
     pub(crate) fn configure_mutation_qos_at_commit(
         &mut self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         commit_index: u64,
-    ) -> Result<ChunkMutationQosConfig, ObjectError> {
+    ) -> Result<ReplicaMutationQosConfig, ObjectError> {
         validate_chunk_mutation_qos_config(&config)?;
         if commit_index == 0 {
             return Err(ObjectError::InvalidArgument(
@@ -26,17 +26,17 @@ impl MatrixReplicaService {
             ));
         }
         self.mutation_qos_config = config.clone();
-        self.mutation_qos_state = ChunkMutationQosState::default();
+        self.mutation_qos_state = ReplicaMutationQosState::default();
         self.chunk_mutation_control_commit_index = commit_index;
         self.chunk_mutation_control_next_log_index = commit_index.saturating_add(1);
         Ok(config)
     }
 
-    pub fn mutation_qos_config(&self) -> ChunkMutationQosConfig {
+    pub fn mutation_qos_config(&self) -> ReplicaMutationQosConfig {
         self.mutation_qos_config.clone()
     }
 
-    pub fn mutation_qos_state(&self) -> ChunkMutationQosState {
+    pub fn mutation_qos_state(&self) -> ReplicaMutationQosState {
         self.mutation_qos_state.clone()
     }
 

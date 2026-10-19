@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkHeadBatchStats {
+pub struct ReplicaHeadBatchStats {
     pub input_heads: u64,
     pub physical_heads: u64,
     pub coalesced_heads: u64,
@@ -8,7 +8,7 @@ pub struct ChunkHeadBatchStats {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkReadCacheStats {
+pub struct ReplicaReadCacheStats {
     pub entries: u64,
     pub bytes: u64,
     pub max_bytes: u64,

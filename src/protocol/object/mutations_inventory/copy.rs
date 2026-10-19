@@ -102,7 +102,7 @@ pub struct ObjectBatchCopyReport {
     pub failed_objects: u64,
     pub copied_bytes: u64,
     pub read_proof: ObjectReadProof,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub copy_batch_proof_format: String,
     pub copy_batch_proof_checksum: String,

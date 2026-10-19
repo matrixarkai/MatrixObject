@@ -4,11 +4,11 @@ pub struct ObjectReadRepairReport {
     pub requested_offset: u64,
     pub requested_length: u64,
     pub payload_checksum: String,
-    pub stats: PageReadStats,
+    pub stats: ChunkReadStats,
     pub repaired_replicas: u64,
     pub failed_repairs: u64,
     pub degraded_chunks: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 

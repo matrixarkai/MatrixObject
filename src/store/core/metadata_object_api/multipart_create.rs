@@ -63,9 +63,9 @@ impl MatrixObjectStore {
         options: PutOptions,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<MultipartCreateReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let upload = self.create_multipart_upload(bucket, key, content_type, options)?;
         let mut report = MultipartCreateReport {
             upload,

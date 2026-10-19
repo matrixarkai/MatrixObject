@@ -8,7 +8,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkReadBatchRead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadBatchRead>, ObjectError> {
         let proven = self.read_chunk_ranges_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
             chunk_id,
@@ -22,7 +22,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let proof_checksum =
             chunk_read_batch_read_proof_checksum(chunk_id, &ranges, &stats, &proven.proof);
         Ok(ProvenStorageRead {
-            value: ChunkReadBatchRead {
+            value: ReplicaReadBatchRead {
                 ranges,
                 stats,
                 min_read_index,
@@ -41,7 +41,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<ChunkReadBatchRead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadBatchRead>, ObjectError> {
         self.read_chunk_ranges_batch_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
             chunk_id,
@@ -61,7 +61,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
         min_read_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkReadBatchRead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadBatchRead>, ObjectError> {
         self.read_chunk_ranges_batch_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
             chunk_id,
@@ -80,7 +80,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenChunkControlFencedStorageRead<ChunkReadBatchRead>, ObjectError> {
+    ) -> Result<ProvenChunkControlFencedStorageRead<ReplicaReadBatchRead>, ObjectError> {
         self.read_chunk_ranges_batch_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
             chunk_id,
@@ -100,7 +100,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
         min_read_index: u64,
-    ) -> Result<ProvenChunkControlFencedStorageRead<ChunkReadBatchRead>, ObjectError> {
+    ) -> Result<ProvenChunkControlFencedStorageRead<ReplicaReadBatchRead>, ObjectError> {
         self.read_chunk_ranges_batch_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
             chunk_id,
@@ -121,11 +121,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenChunkControlFencedStorageRead<ChunkReadBatchRead>, ObjectError> {
+    ) -> Result<ProvenChunkControlFencedStorageRead<ReplicaReadBatchRead>, ObjectError> {
         let expected_checksum = expected_control_checksum.as_ref().to_string();
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -158,7 +158,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
         expected_chunk_read_batch_proof_checksum: impl AsRef<str>,
-    ) -> Result<ProvenStorageRead<ChunkReadBatchRead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadBatchRead>, ObjectError> {
         self.read_chunk_ranges_batch_strict_linearizable_fenced_committed_at(
             replica_index,
             chunk_id,
@@ -181,7 +181,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_chunk_read_batch_proof_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkReadBatchRead>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaReadBatchRead>, ObjectError> {
         let proven = self
             .read_chunk_ranges_batch_with_read_proof_linearizable_fenced_committed_at(
                 replica_index,

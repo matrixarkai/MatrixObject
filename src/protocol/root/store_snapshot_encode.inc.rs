@@ -24,7 +24,7 @@ impl StoreSnapshot {
             self.options.page_batch_discard_parallelism as u64,
         );
         append_u64(&mut out, self.options.page_repair_parallelism as u64);
-        append_u64(&mut out, self.options.page_chunk_fanout_parallelism as u64);
+        append_u64(&mut out, self.options.replica_fanout_parallelism as u64);
         append_u64(
             &mut out,
             self.options.local_replica_store_parallelism as u64,
@@ -171,8 +171,8 @@ impl StoreSnapshot {
         );
         append_u64(&mut out, self.page_write_quorum as u64);
         append_u64(&mut out, self.page_read_quorum as u64);
-        append_u64(&mut out, self.page_chunk_endpoints.len() as u64);
-        for endpoint in &self.page_chunk_endpoints {
+        append_u64(&mut out, self.replica_endpoints.len() as u64);
+        for endpoint in &self.replica_endpoints {
             append_string(&mut out, endpoint);
         }
         append_u64(&mut out, self.page_disabled_chunk_endpoints.len() as u64);
@@ -419,7 +419,7 @@ impl StoreSnapshot {
             .saturating_add(strings_size(self.object_change_cursors.keys()))
             .saturating_add(strings_size(self.raft_voter_node_ids.iter()))
             .saturating_add(strings_size(self.raft_membership_receipts.keys()))
-            .saturating_add(strings_size(self.page_chunk_endpoints.iter()));
+            .saturating_add(strings_size(self.replica_endpoints.iter()));
         FIXED_HEADER_BYTES
             .saturating_add(meta_snapshot_bytes)
             .saturating_add(root_snapshot_bytes)

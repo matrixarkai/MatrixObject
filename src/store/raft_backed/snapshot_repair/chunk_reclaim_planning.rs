@@ -139,7 +139,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_discard_ratio_ppm: u64,
         max_discard_ranges: usize,
         max_trim_bytes: u64,
-    ) -> Result<PageReplicaReclaimPlan, ObjectError> {
+    ) -> Result<ChunkReplicaReclaimPlan, ObjectError> {
         self.plan_chunk_replica_reclaim_linearizable_fenced(
             marker,
             max_chunks,
@@ -162,7 +162,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_discard_ranges: usize,
         max_trim_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<PageReplicaReclaimPlan, ObjectError> {
+    ) -> Result<ChunkReplicaReclaimPlan, ObjectError> {
         self.ensure_page_route_control_ready(
             "chunk replica reclaim plan",
             expected_page_route_control_checksum.as_ref(),
@@ -188,7 +188,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_discard_ranges: usize,
         max_trim_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenStorageRead<PageReplicaReclaimPlan>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ChunkReplicaReclaimPlan>, ObjectError> {
         self.plan_chunk_replica_reclaim_with_read_proof_linearizable_fenced_committed_at(
             marker,
             max_chunks,
@@ -215,7 +215,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_page_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<PageReplicaReclaimPlan>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ChunkReplicaReclaimPlan>, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         let requested_read_index = self
             .raft

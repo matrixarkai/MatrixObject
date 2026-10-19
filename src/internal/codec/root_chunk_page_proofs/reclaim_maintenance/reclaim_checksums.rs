@@ -1,4 +1,4 @@
-pub(crate) fn append_chunk_reclaim_candidate(out: &mut Vec<u8>, candidate: &ChunkReclaimCandidate) {
+pub(crate) fn append_chunk_reclaim_candidate(out: &mut Vec<u8>, candidate: &ReplicaReclaimCandidate) {
     append_chunk_id(out, &candidate.chunk_id);
     append_u64(out, candidate.logical_length);
     append_u64(out, candidate.discarded_bytes);
@@ -10,7 +10,7 @@ pub(crate) fn append_chunk_reclaim_candidate(out: &mut Vec<u8>, candidate: &Chun
     append_string(out, &candidate.reason);
 }
 
-pub(crate) fn chunk_reclaim_plan_checksum(plan: &ChunkReclaimPlan) -> String {
+pub(crate) fn chunk_reclaim_plan_checksum(plan: &ReplicaReclaimPlan) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-CHUNK-RECLAIM-PLAN3");
     append_u64(&mut material, plan.marker.is_some() as u64);
@@ -71,7 +71,7 @@ pub(crate) fn chunk_reclaim_plan_checksum(plan: &ChunkReclaimPlan) -> String {
     etag(&material)
 }
 
-pub(crate) fn page_replica_reclaim_plan_checksum(plan: &PageReplicaReclaimPlan) -> String {
+pub(crate) fn chunk_replica_reclaim_plan_checksum(plan: &ChunkReplicaReclaimPlan) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-BLOCK-REPLICA-RECLAIM-PLAN3");
     append_u64(&mut material, plan.continuation_safe as u64);

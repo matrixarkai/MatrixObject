@@ -14,8 +14,8 @@ impl MatrixObjectStore {
             ));
         }
         let before_page_service_fingerprint =
-            page_audit_repair_image_fingerprint(&self.page_service);
-        let mut projected = self.page_service.clone();
+            page_audit_repair_image_fingerprint(&self.chunk_service);
+        let mut projected = self.chunk_service.clone();
         let report = projected.repair_slab_range_bounded(
             &slab_id,
             offset,
@@ -34,7 +34,7 @@ impl MatrixObjectStore {
             after_page_service_fingerprint,
             route_control_proof: report.route_control_proof.clone(),
             expected_route_control_checksum: report.expected_route_control_checksum.clone(),
-            chunk_control_proof: self.page_service.chunk_control_proof(),
+            chunk_control_proof: self.chunk_service.chunk_control_proof(),
             report,
             expected_previous_commit_index,
             prepared_commit_index: expected_previous_commit_index.saturating_add(1),
@@ -47,7 +47,7 @@ impl MatrixObjectStore {
     pub fn apply_prepared_page_range_repair(
         &mut self,
         prepared: PreparedPageRangeRepair,
-    ) -> Result<(BoundedRepairReport, PageRangeRepairReceipt), ObjectError> {
+    ) -> Result<(BoundedRepairReport, ChunkRangeRepairReceipt), ObjectError> {
         let expected_checksum = prepared_page_range_repair_checksum(&PreparedPageRangeRepair {
             raft_entry_checksum: String::new(),
             ..prepared.clone()
@@ -94,7 +94,7 @@ impl MatrixObjectStore {
             ));
         }
         if let Some(existing) = self
-            .page_service
+            .chunk_service
             .range_repair_request_receipts
             .get(&prepared.raft_entry_checksum)
         {
@@ -113,9 +113,9 @@ impl MatrixObjectStore {
             receipt.deduped = true;
             return Ok((receipt.report.clone(), receipt));
         }
-        let current_fingerprint = page_audit_repair_image_fingerprint(&self.page_service);
+        let current_fingerprint = page_audit_repair_image_fingerprint(&self.chunk_service);
         if current_fingerprint == prepared.after_page_service_fingerprint {
-            let receipt = PageRangeRepairReceipt {
+            let receipt = ChunkRangeRepairReceipt {
                 slab_id: prepared.slab_id.clone(),
                 offset: prepared.offset,
                 length: prepared.length,
@@ -132,10 +132,10 @@ impl MatrixObjectStore {
                 report: prepared.report.clone(),
                 deduped: false,
             };
-            self.page_service
+            self.chunk_service
                 .range_repair_request_receipts
                 .insert(prepared.raft_entry_checksum.clone(), receipt.clone());
-            self.page_service.trim_receipts_to_retention();
+            self.chunk_service.trim_receipts_to_retention();
             return Ok((prepared.report, receipt));
         }
         if prepared.expected_previous_commit_index != self.last_applied_index() {
@@ -143,12 +143,12 @@ impl MatrixObjectStore {
                 "block prepared range repair previous commit fence mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "block prepared range repair",
             )?;
-        self.page_service
+        self.chunk_service
             .check_prepared_chunk_control_proof_cursor(
                 &prepared.chunk_control_proof,
                 "block prepared range repair",
@@ -180,7 +180,7 @@ impl MatrixObjectStore {
                 "block prepared range repair no longer matches current state".to_string(),
             ));
         }
-        let mut report = self.page_service.repair_slab_range_bounded(
+        let mut report = self.chunk_service.repair_slab_range_bounded(
             &prepared.slab_id,
             prepared.offset,
             prepared.length,
@@ -190,14 +190,14 @@ impl MatrixObjectStore {
         report.expected_route_control_checksum =
             prepared.report.expected_route_control_checksum.clone();
         if report != prepared.report
-            || page_audit_repair_image_fingerprint(&self.page_service)
+            || page_audit_repair_image_fingerprint(&self.chunk_service)
                 != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(
                 "block prepared range repair deterministic apply mismatch".to_string(),
             ));
         }
-        let receipt = PageRangeRepairReceipt {
+        let receipt = ChunkRangeRepairReceipt {
             slab_id: prepared.slab_id.clone(),
             offset: prepared.offset,
             length: prepared.length,
@@ -214,10 +214,10 @@ impl MatrixObjectStore {
             report: prepared.report.clone(),
             deduped: false,
         };
-        self.page_service
+        self.chunk_service
             .range_repair_request_receipts
             .insert(prepared.raft_entry_checksum.clone(), receipt.clone());
-        self.page_service.trim_receipts_to_retention();
+        self.chunk_service.trim_receipts_to_retention();
         Ok((prepared.report, receipt))
     }
 

@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn prewarm_slab_range_cache(
         &mut self,
         slab_id: &SlabId,

@@ -102,11 +102,11 @@ pub(crate) fn make_prepared_storage_maintenance_envelope(
         route_control_commit_index: plan
             .readiness
             .route_control_proof
-            .page_route_control_commit_index,
+            .chunk_route_control_commit_index,
         route_control_next_log_index: plan
             .readiness
             .route_control_proof
-            .page_route_control_next_log_index,
+            .chunk_route_control_next_log_index,
         selected_action_count: plan.actions.len() as u64,
         planned_repair_actions,
         planned_reclaim_chunks: plan.reclaim.candidate_chunks,

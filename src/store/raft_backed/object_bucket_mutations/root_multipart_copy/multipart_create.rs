@@ -51,7 +51,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<MultipartCreateReport, ObjectError> {
         let expected_route_control_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         self.propose_create_multipart_upload_with_route_report_linearizable_fenced(
@@ -81,7 +81,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "multipart create idempotent",
             expected_page_route_control_checksum.as_ref(),
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let upload_id = upload_id.into();
         let content_type = content_type.into();
         if let Ok(existing) = self.store.multipart_upload(&upload_id) {

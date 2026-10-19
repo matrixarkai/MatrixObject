@@ -10,7 +10,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn propose_prepared_page_batch_write_apply(
         &mut self,
         prepared: PreparedPageBatchWrite,
-    ) -> Result<(ObjectMetadata, PageBatchWriteReceipt), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkBatchWriteReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
                 "prepared block batch write requires raft/store commit alignment".to_string(),
@@ -121,7 +121,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_page_batch_write_prepared(
         &mut self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self.prepare_page_batch_write_raft_entry(writes, idempotency_key)?;
@@ -130,7 +130,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_page_batch_write_prepared_bounded(
         &mut self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         idempotency_key: &str,
@@ -146,7 +146,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_page_batch_write_prepared_bounded_fenced(
         &mut self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         idempotency_key: &str,

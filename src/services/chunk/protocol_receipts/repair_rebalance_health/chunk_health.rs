@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkScrubReport {
+pub struct ReplicaScrubReport {
     pub checked_chunks: u64,
     pub healthy_chunks: u64,
     pub degraded_chunks: u64,
@@ -12,7 +12,7 @@ pub struct ChunkScrubReport {
     pub unrepaired_chunks: u64,
 }
 
-impl ChunkScrubReport {
+impl ReplicaScrubReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         append_chunk_health_control_fields(
@@ -34,7 +34,7 @@ impl ChunkScrubReport {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkRepairReport {
+pub struct ReplicaRepairReport {
     pub chunk_id: Option<PageId>,
     pub checked_chunks: u64,
     pub healthy_chunks: u64,
@@ -51,11 +51,11 @@ pub struct ChunkRepairReport {
     pub unrepaired_chunks: u64,
     pub committed: bool,
     pub first_error: Option<String>,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 
-impl ChunkRepairReport {
+impl ReplicaRepairReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(

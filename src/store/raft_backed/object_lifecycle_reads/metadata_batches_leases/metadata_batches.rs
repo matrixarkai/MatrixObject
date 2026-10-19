@@ -103,7 +103,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_write_raft_entry_bounded_with_read_proof_linearizable_fenced(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         idempotency_key: &str,
@@ -121,7 +121,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_write_raft_entry_bounded_from_with_read_proof_linearizable_fenced(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
@@ -142,7 +142,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_write_raft_entry_bounded_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,

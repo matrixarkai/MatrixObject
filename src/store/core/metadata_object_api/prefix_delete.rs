@@ -52,7 +52,7 @@ impl MatrixObjectStore {
         expected_route_control_checksum: Option<&str>,
         expected_delete_batch_proof_checksum: Option<&str>,
     ) -> Result<ObjectPrefixDeleteReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if max_objects == 0 {
             return Err(ObjectError::InvalidArgument(

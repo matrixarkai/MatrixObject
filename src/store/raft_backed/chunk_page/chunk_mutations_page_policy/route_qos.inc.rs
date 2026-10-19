@@ -1,25 +1,25 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_configure_page_route_qos(
         &mut self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose_configure_page_route_qos_fenced(config, None)
     }
 
     pub fn propose_configure_page_route_qos_fenced(
         &mut self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.store
-            .page_service
+            .chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.propose(ObjectCommand::ConfigurePageRouteQos { config })
     }
 
     pub fn propose_configure_page_route_qos_linearizable_fenced(
         &mut self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
@@ -35,7 +35,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_configure_page_route_qos_raft_entry(
         &self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
     ) -> Result<PreparedPageRouteQosConfig, ObjectError> {
         self.store
             .prepare_page_route_qos_raft_entry(config, self.store.last_applied_index())
@@ -43,14 +43,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_configure_page_route_qos_raft_entry_linearizable(
         &self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
     ) -> Result<PreparedPageRouteQosConfig, ObjectError> {
         self.prepare_configure_page_route_qos_raft_entry_linearizable_fenced(config, None)
     }
 
     pub fn prepare_configure_page_route_qos_raft_entry_linearizable_fenced(
         &self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<PreparedPageRouteQosConfig, ObjectError> {
         let proof = self.ensure_storage_control_read_index(
@@ -68,7 +68,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_configure_page_route_qos_raft_entry_with_read_proof_linearizable_fenced(
         &self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ProvenStorageRead<PreparedPageRouteQosConfig>, ObjectError> {
         let requested_read_index = self.raft.commit_index();
@@ -179,7 +179,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_configure_page_route_qos_prepared(
         &mut self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self.prepare_configure_page_route_qos_raft_entry(config)?;
         self.propose_prepared_page_route_qos(prepared)
@@ -187,14 +187,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_configure_page_route_qos_prepared_linearizable(
         &mut self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose_configure_page_route_qos_prepared_linearizable_fenced(config, None)
     }
 
     pub fn propose_configure_page_route_qos_prepared_linearizable_fenced(
         &mut self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self.prepare_configure_page_route_qos_raft_entry_linearizable_fenced(

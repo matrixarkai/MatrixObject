@@ -9,11 +9,11 @@ pub struct PreparedPageReplicaReclaim {
     pub now_ms: u64,
     pub before_page_service_fingerprint: String,
     pub after_page_service_fingerprint: String,
-    pub plan: PageReplicaReclaimPlan,
-    pub report: ChunkPartialReclaimReport,
+    pub plan: ChunkReplicaReclaimPlan,
+    pub report: ReplicaPartialReclaimReport,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -28,7 +28,7 @@ pub struct PreparedPageReclaimApplyReport {
     pub prepared: bool,
     pub external_raft_required: bool,
     pub deduped: bool,
-    pub report: ChunkPartialReclaimReport,
+    pub report: ReplicaPartialReclaimReport,
     pub metadata: ObjectMetadata,
 }
 

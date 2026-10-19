@@ -71,7 +71,7 @@ impl MatrixObjectStore {
         let plan = self.plan_object_capacity_rebalance(max_objects, min_free_bytes, marker);
         let mut report = ObjectCapacityRebalanceRunReport {
             plan,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..ObjectCapacityRebalanceRunReport::default()
         };
         let items = report.plan.items.clone();
@@ -126,7 +126,7 @@ impl MatrixObjectStore {
         marker: Option<&ObjectId>,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectCapacityRebalanceRunReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report = self.rebalance_object_capacity(max_objects, min_free_bytes, marker);
         report.expected_route_control_checksum = expected_route_control_checksum

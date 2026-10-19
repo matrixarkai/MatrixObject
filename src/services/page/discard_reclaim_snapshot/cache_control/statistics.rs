@@ -1,6 +1,6 @@
-impl MatrixPageService {
-    pub fn read_cache_stats(&self) -> ChunkReadCacheStats {
-        let mut aggregate = ChunkReadCacheStats {
+impl MatrixChunkService {
+    pub fn read_cache_stats(&self) -> ReplicaReadCacheStats {
+        let mut aggregate = ReplicaReadCacheStats {
             entries: 0,
             bytes: 0,
             max_bytes: 0,

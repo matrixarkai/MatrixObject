@@ -34,7 +34,7 @@ impl MatrixObjectStore {
         max_prewarm_bytes: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectBatchCacheControlReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report =
             self.batch_object_cache_control(requests, max_items, max_prewarm_bytes, true, None)?;
@@ -53,7 +53,7 @@ impl MatrixObjectStore {
         include_disabled_replicas: bool,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectBatchCacheControlReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report = self.batch_object_cache_control_routed(
             requests,

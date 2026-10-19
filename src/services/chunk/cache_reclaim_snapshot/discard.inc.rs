@@ -88,7 +88,7 @@ impl MatrixReplicaService {
         &self,
         chunk_id: &PageId,
         ranges: &[DataRange],
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         self.can_accept_chunk_discards_borrowed(chunk_id, ranges, 0)
     }
 
@@ -97,7 +97,7 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         self.can_accept_chunk_discards_from_borrowed(chunk_id, &ranges, max_discard_bytes, 0)
     }
 
@@ -106,7 +106,7 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         ranges: &[DataRange],
         max_discard_bytes: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         self.can_accept_chunk_discards_from_borrowed(chunk_id, ranges, max_discard_bytes, 0)
     }
 
@@ -116,7 +116,7 @@ impl MatrixReplicaService {
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         self.can_accept_chunk_discards_from_borrowed(
             chunk_id,
             &ranges,
@@ -131,11 +131,11 @@ impl MatrixReplicaService {
         ranges: &[DataRange],
         max_discard_bytes: u64,
         discard_start_range_index: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
-        let mut admission = ChunkDiscardAdmission {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
+        let mut admission = ReplicaDiscardAdmission {
             max_discard_bytes,
             discard_start_range_index,
-            ..ChunkDiscardAdmission::default()
+            ..ReplicaDiscardAdmission::default()
         };
         let mut selected = Vec::with_capacity(ranges.len());
         for range in ranges {
@@ -231,7 +231,7 @@ impl MatrixReplicaService {
         offset: u64,
         length: u64,
         idempotency_key: &str,
-    ) -> Result<ChunkDiscardReceipt, ObjectError> {
+    ) -> Result<ReplicaDiscardReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         if length == 0 {
             return Err(ObjectError::InvalidArgument(
@@ -254,7 +254,7 @@ impl MatrixReplicaService {
             return Ok(receipt);
         }
         self.discard_chunk(chunk_id, offset, length)?;
-        let receipt = ChunkDiscardReceipt {
+        let receipt = ReplicaDiscardReceipt {
             chunk_id: chunk_id.clone(),
             offset,
             length,
@@ -272,7 +272,7 @@ impl MatrixReplicaService {
         &mut self,
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
-    ) -> Result<ChunkDiscardBatchStats, ObjectError> {
+    ) -> Result<ReplicaDiscardBatchStats, ObjectError> {
         self.discard_chunk_ranges_borrowed_internal(chunk_id, &ranges, true)
     }
 
@@ -280,7 +280,7 @@ impl MatrixReplicaService {
         &mut self,
         chunk_id: &PageId,
         ranges: &[DataRange],
-    ) -> Result<ChunkDiscardBatchStats, ObjectError> {
+    ) -> Result<ReplicaDiscardBatchStats, ObjectError> {
         self.discard_chunk_ranges_borrowed_internal(chunk_id, ranges, true)
     }
 
@@ -289,7 +289,7 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkDiscardBatchStats, ObjectError> {
+    ) -> Result<ReplicaDiscardBatchStats, ObjectError> {
         self.check_expected_control_checksum(expected_control_checksum)?;
         self.discard_chunk_ranges(chunk_id, ranges)
     }
@@ -299,14 +299,14 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         ranges: &[DataRange],
         record_internal_receipt: bool,
-    ) -> Result<ChunkDiscardBatchStats, ObjectError> {
+    ) -> Result<ReplicaDiscardBatchStats, ObjectError> {
         self.ensure_writable()?;
         let logical_length = self
             .chunks
             .get(chunk_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?
             .logical_length;
-        let mut stats = ChunkDiscardBatchStats::default();
+        let mut stats = ReplicaDiscardBatchStats::default();
         for range in ranges {
             if range.length == 0 {
                 continue;
@@ -366,7 +366,7 @@ impl MatrixReplicaService {
                 String::with_capacity(PREFIX.len() + request_checksum.len());
             idempotency_key.push_str(PREFIX);
             idempotency_key.push_str(&request_checksum);
-            let receipt = ChunkBatchDiscardReceipt {
+            let receipt = ReplicaBatchDiscardReceipt {
                 chunk_id: chunk_id.clone(),
                 request_checksum,
                 idempotency_key: idempotency_key.clone(),
@@ -385,7 +385,7 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
-    ) -> Result<(ChunkDiscardBatchStats, ChunkBatchDiscardReceipt), ObjectError> {
+    ) -> Result<(ReplicaDiscardBatchStats, ReplicaBatchDiscardReceipt), ObjectError> {
         self.discard_chunk_ranges_idempotent_borrowed(chunk_id, &ranges, idempotency_key)
     }
 
@@ -394,7 +394,7 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         ranges: &[DataRange],
         idempotency_key: &str,
-    ) -> Result<(ChunkDiscardBatchStats, ChunkBatchDiscardReceipt), ObjectError> {
+    ) -> Result<(ReplicaDiscardBatchStats, ReplicaBatchDiscardReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         if ranges.iter().all(|range| range.length == 0) {
             return Err(ObjectError::InvalidArgument(
@@ -425,7 +425,7 @@ impl MatrixReplicaService {
             return Ok((receipt.stats.clone(), receipt));
         }
         let stats = self.discard_chunk_ranges_borrowed_internal(chunk_id, ranges, false)?;
-        let receipt = ChunkBatchDiscardReceipt {
+        let receipt = ReplicaBatchDiscardReceipt {
             chunk_id: chunk_id.clone(),
             request_checksum,
             idempotency_key: idempotency_key.to_string(),

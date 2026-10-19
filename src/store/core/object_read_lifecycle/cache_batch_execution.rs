@@ -40,7 +40,7 @@ impl MatrixObjectStore {
         }
         let mut report = ObjectBatchCacheControlReport {
             requested_objects: requests.len() as u64,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..ObjectBatchCacheControlReport::default()
         };
         if let Some(options) = metadata_read_options.as_ref() {

@@ -4,7 +4,7 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         offset: u64,
         length: u64,
-    ) -> Result<(ChunkReadResult, bool), ObjectError> {
+    ) -> Result<(ReplicaReadResult, bool), ObjectError> {
         let end = validate_pipeline_range("chunk read", offset, length)?;
         let chunk = self
             .chunks
@@ -131,7 +131,7 @@ impl MatrixReplicaService {
                 reconstructed[start_index..end_index].to_vec()
             }
         };
-        let result = ChunkReadResult {
+        let result = ReplicaReadResult {
             data,
             write_sequence: chunk.write_sequence,
             checksum: chunk.checksum.clone(),

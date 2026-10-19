@@ -59,7 +59,7 @@ pub struct AdmittedVersionedConditionalObjectBatchReadReport {
     pub max_chunk_read_count: u64,
     pub budget_limited: bool,
     pub read_proof: ObjectReadProof,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub storage_admission_proof_format: String,
     pub storage_admission_proof_checksum: String,

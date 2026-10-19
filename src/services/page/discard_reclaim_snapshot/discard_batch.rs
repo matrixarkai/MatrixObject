@@ -1,17 +1,17 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn discard_slab_ranges(
         &mut self,
-        requests: Vec<PageRangeRequest>,
-    ) -> Result<PageBatchStats, ObjectError> {
+        requests: Vec<ChunkRangeRequest>,
+    ) -> Result<ChunkBatchStats, ObjectError> {
         self.discard_slab_ranges_with_chunk_receipts(&requests, None)
     }
 
     pub fn discard_slab_ranges_bounded_from(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
-    ) -> Result<(PageBatchStats, PageRangeAdmission), ObjectError> {
+    ) -> Result<(ChunkBatchStats, ChunkRangeAdmission), ObjectError> {
         let admission = self.can_accept_slab_discards_from_borrowed(
             &requests,
             max_discard_bytes,
@@ -24,18 +24,18 @@ impl MatrixPageService {
 
     pub fn discard_slab_ranges_bounded(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
-    ) -> Result<(PageBatchStats, PageRangeAdmission), ObjectError> {
+    ) -> Result<(ChunkBatchStats, ChunkRangeAdmission), ObjectError> {
         self.discard_slab_ranges_bounded_from(requests, max_discard_bytes, 0)
     }
 
     pub fn discard_slab_ranges_storage_fenced(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
-    ) -> Result<PageBatchStats, ObjectError> {
+    ) -> Result<ChunkBatchStats, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.check_expected_chunk_control_proof_checksum(expected_chunk_control_proof_checksum)?;
         self.discard_slab_ranges(requests)
@@ -43,10 +43,10 @@ impl MatrixPageService {
 
     pub fn discard_slab_ranges_storage_fenced_report(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
-    ) -> Result<PageStorageMutationReport, ObjectError> {
+    ) -> Result<ChunkStorageMutationReport, ObjectError> {
         let stats = self.discard_slab_ranges_storage_fenced(
             requests,
             expected_route_control_checksum,
@@ -61,10 +61,10 @@ impl MatrixPageService {
 
     fn discard_slab_ranges_with_chunk_receipts(
         &mut self,
-        requests: &[PageRangeRequest],
+        requests: &[ChunkRangeRequest],
         idempotency_key: Option<&str>,
-    ) -> Result<PageBatchStats, ObjectError> {
-        let mut stats = PageBatchStats::default();
+    ) -> Result<ChunkBatchStats, ObjectError> {
+        let mut stats = ChunkBatchStats::default();
         let mut grouped: BTreeMap<(SlabId, PageId), Vec<DataRange>> = BTreeMap::new();
         for request in requests {
             validate_pipeline_range("block batch discard", request.offset, request.length)?;
@@ -123,7 +123,7 @@ impl MatrixPageService {
                 }
                 let discard_result = if let Some(base_key) = idempotency_key {
                     let chunk_key =
-                        page_chunk_receipt_key("bd", base_key, &chunk_id, index, &merged);
+                        replica_receipt_key("bd", base_key, &chunk_id, index, &merged);
                     replica
                         .discard_chunk_ranges_idempotent_borrowed(&chunk_id, &merged, &chunk_key)
                         .map(|(stats, _)| stats)

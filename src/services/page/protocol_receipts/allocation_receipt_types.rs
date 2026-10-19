@@ -1,12 +1,12 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageAllocationReceipt {
-    pub allocation: PageAllocation,
+pub struct ChunkAllocationReceipt {
+    pub allocation: ChunkAllocation,
     pub idempotency_key: String,
     pub released: bool,
     pub deduped: bool,
 }
 
-impl PageAllocationReceipt {
+impl ChunkAllocationReceipt {
     pub fn proof_format(&self) -> &'static str {
         if self.released {
             "MXOS-BLOCK-ALLOCATION-RELEASE-RECEIPT-PROOF1"
@@ -16,7 +16,7 @@ impl PageAllocationReceipt {
     }
 
     pub fn proof_checksum(&self) -> String {
-        page_allocation_receipt_proof_checksum(self)
+        chunk_allocation_receipt_proof_checksum(self)
     }
 
     pub fn verify_expected_proof_checksum(
@@ -63,13 +63,13 @@ impl PageAllocationReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageBatchAllocationReceipt {
-    pub allocations: Vec<PageAllocation>,
+pub struct ChunkBatchAllocationReceipt {
+    pub allocations: Vec<ChunkAllocation>,
     pub idempotency_key: String,
     pub deduped: bool,
 }
 
-impl PageBatchAllocationReceipt {
+impl ChunkBatchAllocationReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-BLOCK-ALLOCATION-BATCH-RECEIPT-PROOF1"
     }

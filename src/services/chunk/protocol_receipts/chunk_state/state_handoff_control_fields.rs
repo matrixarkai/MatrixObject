@@ -1,4 +1,4 @@
-impl ChunkStateHandoffApplyReport {
+impl ReplicaStateHandoffApplyReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .stats
@@ -53,7 +53,7 @@ impl ChunkStateHandoffApplyReport {
     }
 }
 
-impl ChunkStateHandoff {
+impl ReplicaStateHandoff {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .chunk_id
@@ -212,7 +212,7 @@ impl ProvenPreparedChunkStateHandoffEnvelope {
     }
 }
 
-impl ProvenStorageRead<Vec<ChunkStateHandoff>> {
+impl ProvenStorageRead<Vec<ReplicaStateHandoff>> {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(

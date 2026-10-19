@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     fn check_expected_chunk_control_proof_checksum(
         &self,
         expected_checksum: Option<&str>,
@@ -28,7 +28,7 @@ impl MatrixPageService {
 
     fn stamp_route_control_admission(
         &self,
-        admission: &mut PageRangeAdmission,
+        admission: &mut ChunkRangeAdmission,
         expected_route_control_checksum: Option<&str>,
     ) {
         let route_control_proof = self.route_control_proof();
@@ -43,13 +43,13 @@ impl MatrixPageService {
 
     pub(crate) fn storage_mutation_report(
         &self,
-        stats: PageBatchStats,
+        stats: ChunkBatchStats,
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
-    ) -> PageStorageMutationReport {
+    ) -> ChunkStorageMutationReport {
         let route_control_proof = self.route_control_proof();
         let chunk_control_proof = self.chunk_control_proof();
-        PageStorageMutationReport {
+        ChunkStorageMutationReport {
             stats,
             route_control_proof: route_control_proof.clone(),
             expected_route_control_checksum: expected_route_control_checksum
@@ -72,15 +72,15 @@ impl MatrixPageService {
 
     pub(crate) fn check_prepared_route_control_proof_cursor(
         &self,
-        prepared_proof: &PageRouteControlProof,
+        prepared_proof: &ChunkRouteControlProof,
         context: &str,
     ) -> Result<(), ObjectError> {
         let current_proof = self.route_control_proof();
         if current_proof.state_checksum != prepared_proof.state_checksum
-            || current_proof.page_route_control_commit_index
-                != prepared_proof.page_route_control_commit_index
-            || current_proof.page_route_control_next_log_index
-                != prepared_proof.page_route_control_next_log_index
+            || current_proof.chunk_route_control_commit_index
+                != prepared_proof.chunk_route_control_commit_index
+            || current_proof.chunk_route_control_next_log_index
+                != prepared_proof.chunk_route_control_next_log_index
         {
             return Err(ObjectError::PreconditionFailed(format!(
                 "{context} route proof cursor mismatch"
@@ -91,7 +91,7 @@ impl MatrixPageService {
 
     pub(crate) fn check_prepared_chunk_control_proof_cursor(
         &self,
-        prepared_proof: &PageChunkControlProof,
+        prepared_proof: &ReplicaControlProof,
         context: &str,
     ) -> Result<(), ObjectError> {
         if prepared_proof.proof_count == 0 || prepared_proof.proof_checksum.is_empty() {

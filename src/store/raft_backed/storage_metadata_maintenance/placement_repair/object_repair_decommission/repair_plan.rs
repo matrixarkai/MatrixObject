@@ -49,7 +49,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectReplicaRepairRunReport, ObjectError> {
         let mut report = ObjectReplicaRepairRunReport {
             plan,
-            route_control_proof: self.store.page_service.route_control_proof(),
+            route_control_proof: self.store.chunk_service.route_control_proof(),
             ..ObjectReplicaRepairRunReport::default()
         };
         let items = report.plan.items.clone();

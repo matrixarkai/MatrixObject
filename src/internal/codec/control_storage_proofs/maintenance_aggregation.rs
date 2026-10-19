@@ -108,8 +108,8 @@ pub(crate) fn merge_bounded_repair_report(
 }
 
 pub(crate) fn merge_chunk_partial_reclaim_report(
-    target: &mut ChunkPartialReclaimReport,
-    next: ChunkPartialReclaimReport,
+    target: &mut ReplicaPartialReclaimReport,
+    next: ReplicaPartialReclaimReport,
 ) {
     target.scanned_chunks = target.scanned_chunks.saturating_add(next.scanned_chunks);
     target.candidate_chunks = target
@@ -163,7 +163,7 @@ pub(crate) fn discarded_range_bytes(ranges: &[DataRange]) -> u64 {
         .fold(0u64, |total, range| total.saturating_add(range.length))
 }
 
-pub(crate) fn finalize_chunk_reclaim_plan(plan: &mut ChunkReclaimPlan) {
+pub(crate) fn finalize_chunk_reclaim_plan(plan: &mut ReplicaReclaimPlan) {
     plan.next_marker_advanced = match (&plan.marker, &plan.next_marker) {
         (_, None) => false,
         (None, Some(_)) => true,
@@ -192,7 +192,7 @@ pub(crate) fn finalize_chunk_reclaim_plan(plan: &mut ChunkReclaimPlan) {
     plan.actual_plan_checksum = plan.plan_checksum.clone();
 }
 
-pub(crate) fn finalize_page_replica_reclaim_plan(plan: &mut PageReplicaReclaimPlan) {
+pub(crate) fn finalize_page_replica_reclaim_plan(plan: &mut ChunkReplicaReclaimPlan) {
     plan.next_marker_advanced = false;
     plan.continuation_safe = !plan.budget_limited && !plan.truncated;
     plan.reclaim_needed = plan.scheduled_chunks > 0;
@@ -211,11 +211,11 @@ pub(crate) fn finalize_page_replica_reclaim_plan(plan: &mut PageReplicaReclaimPl
         "blockserver_reclaim_ready"
     }
     .to_string();
-    plan.plan_checksum = page_replica_reclaim_plan_checksum(plan);
+    plan.plan_checksum = chunk_replica_reclaim_plan_checksum(plan);
     plan.actual_plan_checksum = plan.plan_checksum.clone();
 }
 
-pub(crate) fn finalize_page_audit_repair_report(report: &mut PageReplicaAuditRepairReport) {
+pub(crate) fn finalize_page_audit_repair_report(report: &mut ChunkReplicaAuditRepairReport) {
     report.repair_needed = report.candidate_chunks > 0;
     report.repair_can_apply = report.repair_needed
         && report.unrepaired_chunks == 0
@@ -267,7 +267,7 @@ pub(crate) fn trailing_discarded_bytes(logical_length: u64, ranges: &[DataRange]
     logical_length.saturating_sub(trim_start)
 }
 
-pub(crate) fn merge_page_read_stats(target: &mut PageReadStats, next: PageReadStats) {
+pub(crate) fn merge_page_read_stats(target: &mut ChunkReadStats, next: ChunkReadStats) {
     target.chunk_reads = target.chunk_reads.saturating_add(next.chunk_reads);
     target.cache_hits = target.cache_hits.saturating_add(next.cache_hits);
     target.coalesced_chunk_read_count = target

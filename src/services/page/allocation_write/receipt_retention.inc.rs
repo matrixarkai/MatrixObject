@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn receipt_retention(&self) -> usize {
         self.receipt_retention
     }

@@ -1,6 +1,6 @@
 pub(crate) fn append_page_batch_allocation_receipt(
     out: &mut Vec<u8>,
-    receipt: &PageBatchAllocationReceipt,
+    receipt: &ChunkBatchAllocationReceipt,
 ) {
     append_u64(out, receipt.allocations.len() as u64);
     for allocation in &receipt.allocations {
@@ -11,12 +11,12 @@ pub(crate) fn append_page_batch_allocation_receipt(
 }
 
 pub(crate) fn page_batch_allocation_receipt_proof_checksum(
-    receipt: &PageBatchAllocationReceipt,
+    receipt: &ChunkBatchAllocationReceipt,
 ) -> String {
     let allocation_bytes: usize = receipt
         .allocations
         .iter()
-        .map(page_allocation_encoded_len)
+        .map(chunk_allocation_encoded_len)
         .sum();
     let mut material = Vec::with_capacity(
         encoded_string_len("MXOS-BLOCK-ALLOCATION-BATCH-RECEIPT-PROOF1")
@@ -82,7 +82,7 @@ pub(crate) fn prepared_page_batch_allocation_reservation_checksum(
         .receipt
         .allocations
         .iter()
-        .map(page_allocation_encoded_len)
+        .map(chunk_allocation_encoded_len)
         .sum();
     let mut material = Vec::with_capacity(
         encoded_string_len("MOS-RUST-PREPARED-BLOCK-BATCH-ALLOCATION-RESERVATION1")
