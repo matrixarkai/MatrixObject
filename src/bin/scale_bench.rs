@@ -193,6 +193,8 @@ fn percent_operation_count(object_count: u64, percent: u64) -> u64 {
 
 #[derive(Clone, Debug, Default)]
 struct PhaseResult {
+    /// The largest single allocation made DURING this phase.
+    largest_alloc_bytes: u64,
     ops: u64,
     bytes: u64,
     max_inflight: u64,
@@ -571,6 +573,11 @@ where
 {
     let allocs_at_start = ALLOC_COUNT.load(Ordering::Relaxed);
     let alloc_bytes_at_start = ALLOC_BYTES.load(Ordering::Relaxed);
+    // Reset the watermark so it measures THIS phase. The process-wide one is
+    // dominated by the recovery snapshot written at the end of the run, which
+    // is a single copy of the whole store and reads exactly like a per-put
+    // clone if the phase is not isolated.
+    LARGEST_ALLOC_BYTES.store(0, Ordering::Relaxed);
     let start = Instant::now();
     let next = Arc::new(AtomicU64::new(0));
     let ok_ops = Arc::new(AtomicU64::new(0));
@@ -652,6 +659,7 @@ where
     };
     let (p50_ms, p95_ms, p99_ms, p999_ms) = latency_percentiles_ms(&mut latencies);
     Ok(PhaseResult {
+        largest_alloc_bytes: LARGEST_ALLOC_BYTES.load(Ordering::Relaxed),
         allocs: ALLOC_COUNT
             .load(Ordering::Relaxed)
             .saturating_sub(allocs_at_start),
@@ -4588,6 +4596,7 @@ fn run() -> Result<(), ObjectError> {
     }
     println!("put_ops={}", put_phase.ops);
     println!("put_allocs={}", put_phase.allocs);
+    println!("put_largest_alloc_bytes={}", put_phase.largest_alloc_bytes);
     println!("put_alloc_bytes={}", put_phase.alloc_bytes);
     println!(
         "put_allocs_per_op={}",
