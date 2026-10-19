@@ -33844,17 +33844,25 @@ fn measure_what_the_object_metadata_struct_is_made_of() {
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_what_an_object_change_record_holds() {
-    // `object_changes.bytes` is 198 an object at 1 KiB -- 21% of the ~933 bytes
-    // of metadata that is the whole distance between 3.93x amplification and
-    // the 3.00x three-way replication allows. The total alone cannot say which
-    // part of a record is worth changing, so the audit now splits it.
+    // `object_changes` is a CAPPED leg: it grows per object until the bound
+    // and is flat after it, so a figure from a fixed small count is a figure
+    // about that count. 200 objects is below the bend -- the caps close
+    // between 2,000 and 4,000 -- so the count is a knob here as it is in the
+    // metadata breakdown, and the run prints whether it cleared the bound.
+    //
+    // The total alone cannot say which part of a record is worth changing,
+    // which is why the audit splits it.
+    let objects: u32 = std::env::var("MEASURE_OBJECTS")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(200);
     let mut store = MatrixObjectStore::new(StoreOptions {
         volume_count: 2,
         ..StoreOptions::default()
     })
     .unwrap();
     store.create_bucket("bucket").unwrap();
-    for index in 0..200u32 {
+    for index in 0..objects {
         store
             .put_object(
                 "bucket",
@@ -35501,6 +35509,103 @@ fn the_interned_storage_classes_are_the_valid_ones() {
 }
 
 #[test]
+fn the_interned_change_operations_cover_every_operation_recorded() {
+    // The storage-class table is pinned against its validator. There is no
+    // validator for an operation name -- the set is closed by the eleven call
+    // sites instead -- so this pins it against what a run actually produces.
+    //
+    // Self-consistency first: every name in the table comes back as the same
+    // allocation, so a record naming it twice names it once.
+    const OPERATIONS: [&str; 17] = [
+        "append_object",
+        "batch_put_object",
+        "compact_segment_put",
+        "complete_multipart_put",
+        "copy_object",
+        "delete_object",
+        "delete_object_version",
+        "put_object",
+        "put_object_with_root_placement",
+        "refresh_object_root_placement",
+        "restore_object",
+        "restore_object_version",
+        "set_object_legal_hold",
+        "set_object_retention",
+        "set_object_tags",
+        "transition_object",
+        "transition_object_with_root_placement",
+    ];
+    for operation in OPERATIONS {
+        assert_eq!(
+            interned_change_operation(operation).as_str(),
+            operation,
+            "a recorded operation must be in the table"
+        );
+        assert!(
+            interned_change_operation(operation)
+                .shares_with(&interned_change_operation(operation)),
+            "{operation} must come back as the same allocation every time"
+        );
+    }
+    // A name outside the set still works and simply gets its own allocation --
+    // interning is about where the characters live, not about what is allowed.
+    assert_eq!(
+        interned_change_operation("freeze_object").as_str(),
+        "freeze_object"
+    );
+
+    // And the behavioural half, which is the one that catches a NEW operation
+    // added without being interned. The whole closed set costs at most its
+    // names plus one allocation header each, whatever the record count; a
+    // single name left uninterned costs its length at every record instead.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..300u32 {
+        let key = format!("prefix/{index:08}/kkkkkkkkkk");
+        store
+            .put_object("bucket", &key, vec![b'x'; 64], "application/octet-stream")
+            .unwrap();
+        if index % 3 == 0 {
+            store
+                .set_object_tags("bucket", &key, [("k".to_string(), "v".to_string())].into())
+                .unwrap();
+        }
+        if index % 5 == 0 {
+            store.delete_object("bucket", &key).unwrap();
+        }
+    }
+    let audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let get = |k: &str| -> u64 {
+        *audit
+            .get(k)
+            .unwrap_or_else(|| panic!("the audit should report {k}"))
+    };
+    let records = get("object_changes.len");
+    let operation_bytes = get("object_changes.operation_bytes");
+    // The bound, stated rather than hidden in the comparison: every name in the
+    // table, charged once, with the shared allocation's two-word header.
+    let bound: u64 = OPERATIONS
+        .iter()
+        .map(|name| name.len() as u64 + 2 * std::mem::size_of::<usize>() as u64)
+        .sum();
+    println!(
+        "OPERATIONS records={records} operation_bytes={operation_bytes} closed_set_bound={bound}"
+    );
+    assert!(records > 100, "this run has to hold enough records to tell the two cases apart, not {records}");
+    assert!(
+        operation_bytes <= bound,
+        "{records} records charge {operation_bytes} bytes for operation names, above the \
+         {bound} the whole closed set costs -- a name is reaching a change record without \
+         going through interned_change_operation"
+    );
+}
+
+#[test]
 fn an_extent_list_carries_no_spare_capacity() {
     // The extent list is never grown in place -- an append builds a fresh list
     // from the previous one -- so it does not need a `Vec`'s capacity field,
@@ -36746,7 +36851,10 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
     // The delete trade, from the same document. Its two rows were stale as
     // well -- by 8,023 and 16,095 bytes -- and the percentage printed above
     // them is derived from the pair, so one stale row makes a stale claim too.
-    fn total_bytes(objects: usize, delete_them: bool) -> u64 {
+    fn total_bytes(
+        objects: usize,
+        delete_them: bool,
+    ) -> std::collections::BTreeMap<String, u64> {
         let mut store = MatrixObjectStore::new(StoreOptions {
             volume_count: 2,
             ..StoreOptions::default()
@@ -36766,16 +36874,18 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
                 store.delete_object("bucket", key).unwrap();
             }
         }
-        store
-            .footprint_audit()
-            .into_iter()
-            .find(|(name, _)| name == "ACCOUNTED.total_bytes")
-            .map(|(_, value)| value)
-            .expect("the audit reports a total")
+        store.footprint_audit().into_iter().collect()
+    }
+    fn leg(audit: &std::collections::BTreeMap<String, u64>, key: &str) -> u64 {
+        *audit
+            .get(key)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
     }
 
-    let holding = total_bytes(500, false);
-    let emptied = total_bytes(500, true);
+    let holding_audit = total_bytes(500, false);
+    let emptied_audit = total_bytes(500, true);
+    let holding = leg(&holding_audit, "ACCOUNTED.total_bytes");
+    let emptied = leg(&emptied_audit, "ACCOUNTED.total_bytes");
     let share = (emptied - holding) * 1000 / holding;
     println!("PUBLISHED delete_trade holding={holding} emptied={emptied} permille={share}");
     assert_eq!(
@@ -36792,6 +36902,19 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
     assert!(
         PUBLISHED.contains(&printed),
         "the share above that table is derived from the two figures and should read {printed}"
+    );
+
+    // The same paragraph states what a delete adds to the change feed. That was
+    // prose, so nothing checked it, and it went stale as soon as the feed
+    // stopped copying an operation name into every record.
+    let feed_per_delete = leg(&emptied_audit, "object_changes.bytes")
+        .saturating_sub(leg(&holding_audit, "object_changes.bytes"))
+        / 500;
+    let feed_claim = format!("{feed_per_delete} bytes of change feed");
+    println!("PUBLISHED feed_per_delete={feed_per_delete} claim={feed_claim:?}");
+    assert!(
+        PUBLISHED.contains(&feed_claim),
+        "the paragraph should read {feed_claim:?}, because that is what a delete adds to object_changes.bytes in this tree"
     );
 }
 

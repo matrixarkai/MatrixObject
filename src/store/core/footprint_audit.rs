@@ -276,8 +276,14 @@ impl MatrixObjectStore {
         let mut changes_etag = 0u64;
         let mut changes_object_id = 0u64;
         for change in self.object_changes.iter() {
+            // Charged through the pass ledger, because the operation is now a
+            // SharedText drawn from a closed set of seventeen names. Charging
+            // the length at each record would report 1,024 copies of
+            // seventeen words -- which is what it did, and is exactly the
+            // figure the interning removes. An instrument that charges per
+            // holder cannot see sharing it is being used to measure.
             changes_operation =
-                changes_operation.saturating_add(audit_boxed_str_heap(&change.operation));
+                changes_operation.saturating_add(ledger.charge(&change.operation));
             // Charged through the pass ledger, so a feed entry naming an object
             // the store still holds costs nothing again for the key characters.
             changes_object_id = changes_object_id
@@ -924,7 +930,7 @@ impl ObjectMutationRollback {
             .saturating_mul(std::mem::size_of::<ObjectChangeRecord>() as u64);
         for change in self.object_changes.iter() {
             changes_bytes = changes_bytes
-                .saturating_add(audit_boxed_str_heap(&change.operation))
+                .saturating_add(ledger.charge(&change.operation))
                 .saturating_add(audit_object_id_heap(&mut ledger, &change.object_id))
                 .saturating_add(audit_boxed_str_heap(&change.etag));
         }

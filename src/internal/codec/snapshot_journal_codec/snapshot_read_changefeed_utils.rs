@@ -4,7 +4,7 @@ pub(crate) fn read_object_change_record(
     Ok(ObjectChangeRecord {
         sequence: cursor.read_u64()?,
         previous_sequence: cursor.read_u64()?,
-        operation: cursor.read_string()?.into(),
+        operation: interned_change_operation(&cursor.read_string()?),
         object_id: read_object_id(cursor)?,
         version: cursor.read_u64()?,
         length: cursor.read_u64()?,
