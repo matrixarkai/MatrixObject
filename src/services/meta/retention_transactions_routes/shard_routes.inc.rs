@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     pub fn metadata_shard(&self, shard_id: &str) -> Result<MetadataShard, ObjectError> {
         validate_meta_key(shard_id)?;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_prepared_chunk_reclaim_envelope(
     out: &mut Vec<u8>,
     envelope: &PreparedChunkReclaimEnvelope,

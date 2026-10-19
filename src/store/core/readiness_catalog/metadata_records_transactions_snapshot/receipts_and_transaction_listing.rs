@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn commit_owner_fenced_metadata_batch(
         &mut self,

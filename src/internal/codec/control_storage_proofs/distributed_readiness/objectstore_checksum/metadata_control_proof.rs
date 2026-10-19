@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn append_metadata_control_proof(mut material: &mut Vec<u8>, report: &ObjectStoreDistributedReadiness) {
     append_string(&mut material, &report.metadata_control_proof.state_format);
     append_u64(&mut material, report.metadata_control_proof.state_bytes);

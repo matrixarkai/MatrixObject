@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Construction, service policy, and bucket operations have separate ownership.
 include!("store_construction.rs");
 include!("page_receipt_retention_control.rs");

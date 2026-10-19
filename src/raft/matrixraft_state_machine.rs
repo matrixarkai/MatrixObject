@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Running the metadata service as a MatrixRaft state machine.
 //
 // `matrixraft::StateMachine` is three methods -- apply, snapshot and

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn multipart_upload(&self, upload_id: &str) -> Result<MultipartUpload, ObjectError> {
         validate_upload_id(upload_id)?;

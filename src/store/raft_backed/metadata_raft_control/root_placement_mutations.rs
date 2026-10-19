@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("root_placement_mutations/changefeed_cursor.rs");
 include!("root_placement_mutations/put_placement.rs");
 include!("root_placement_mutations/delete_release.rs");

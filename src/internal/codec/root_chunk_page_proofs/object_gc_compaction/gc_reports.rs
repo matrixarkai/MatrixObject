@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn slab_discard_request_checksum(
     chunk_id: &ChunkId,
     ranges: &[DataRange],

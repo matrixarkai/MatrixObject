@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn encoded_journal_string_map_len(values: &BTreeMap<String, String>) -> usize {
     std::mem::size_of::<u64>()
         + values

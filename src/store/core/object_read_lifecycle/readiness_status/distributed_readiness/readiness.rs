@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     fn root_snapshot_fault_count(
         rootserver_required: bool,

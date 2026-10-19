@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn append_range_control_fields(
     range: &Option<DataRange>,
     field_prefix: &str,

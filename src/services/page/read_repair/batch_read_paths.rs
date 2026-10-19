@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn merge_page_range_result_fault_stats(target: &mut ChunkReadStats, source: &ChunkReadStats) {
     target.replica_fallback_reads = target
         .replica_fallback_reads

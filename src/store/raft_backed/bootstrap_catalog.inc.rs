@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("bootstrap_catalog/construction_and_serving_checks.rs");
 include!("bootstrap_catalog/environment_bootstrap.rs");
 include!("bootstrap_catalog/gateway_catalog_membership.rs");

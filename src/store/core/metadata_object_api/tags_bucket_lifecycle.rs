@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("object_tags.rs");
 include!("object_retention_lock.rs");
 include!("object_transition_restore.rs");

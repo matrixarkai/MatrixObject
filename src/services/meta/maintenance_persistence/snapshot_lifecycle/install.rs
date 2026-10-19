@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     pub fn install_snapshot(&mut self, snapshot: MetaSnapshot) -> Result<(), ObjectError> {
         snapshot.validate()?;

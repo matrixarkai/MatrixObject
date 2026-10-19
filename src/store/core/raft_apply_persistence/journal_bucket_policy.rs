@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     fn encoded_bucket_journal_optional_string_len(value: Option<&str>) -> usize {
         std::mem::size_of::<u64>() + value.map(encoded_string_len).unwrap_or_default()

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("coordinator_shards/coordinator_sessions.rs");
 include!("coordinator_shards/coordinator_config.rs");
 include!("coordinator_shards/coordinator_receipts.rs");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl ControlPlaneCatalogSelection {
     pub fn compute_catalog_route_checksum(&self) -> String {
         let mut material = Vec::with_capacity(

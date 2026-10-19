@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn chunk_allocation_reservation_request_checksum(
     length: u64,
     now_ms: u64,

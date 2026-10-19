@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn stamp_object_metadata_batch_read_proof(
     operation: &str,
     batch: &mut ObjectMetadataBatchRead,

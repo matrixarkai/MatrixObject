@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("metadata_object_proofs/maintenance_payload.rs");
 include!("metadata_object_proofs/transaction_proofs.rs");
 include!("metadata_object_proofs/metadata_qos.rs");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
 
     pub fn metadata_admission_policy(&self) -> MetadataAdmissionPolicy {

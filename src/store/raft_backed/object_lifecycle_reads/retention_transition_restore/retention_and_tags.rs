@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_set_object_retention_fenced_with_read_proof_linearizable_committed_at(
         &mut self,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_chunk_receipt_page_common(
     material: &mut Vec<u8>,
     receipt_count: u64,

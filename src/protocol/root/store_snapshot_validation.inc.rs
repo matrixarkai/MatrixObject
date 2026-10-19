@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("store_snapshot_validation/configuration.rs");
 include!("store_snapshot_validation/bucket_policies.rs");
 include!("store_snapshot_validation/raft_state.rs");

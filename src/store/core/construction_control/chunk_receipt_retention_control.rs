@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     /// How many receipts the PAGE SERVICE keeps for its own requests.
     ///

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("shard_integrity_routes/shard_plans.rs");
 include!("shard_integrity_routes/report_finalize.rs");
 include!("shard_integrity_routes/prepared_plans.rs");

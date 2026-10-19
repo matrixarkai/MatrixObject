@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("page_write_admission.inc.rs");
 include!("page_write_admission_proofs.inc.rs");
 include!("page_read_admission.inc.rs");

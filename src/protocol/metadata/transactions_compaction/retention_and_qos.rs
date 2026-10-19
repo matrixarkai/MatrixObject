@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MetadataRetentionConfigReport {
     pub change_log_retention_limit: u64,

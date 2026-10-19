@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose(&mut self, command: ObjectCommand) -> Result<ObjectMetadata, ObjectError> {
         self.store.clone().apply_command(command.clone())?;

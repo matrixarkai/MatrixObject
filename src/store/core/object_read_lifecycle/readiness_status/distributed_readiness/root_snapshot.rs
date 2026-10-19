@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 struct DistributedRootReadinessSnapshot {
     root_node_count: u64,
     rootserver_required: bool,

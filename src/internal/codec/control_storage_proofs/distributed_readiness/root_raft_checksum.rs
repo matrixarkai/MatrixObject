@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn root_raft_status_checksum(status: &RootRaftStatus) -> String {
     let mut material = Vec::new();
     append_string(&mut material, &status.control_checksum_format);

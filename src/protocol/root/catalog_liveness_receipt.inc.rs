@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl RootCatalogLivenessReceipt {
     pub fn require_checksum(&self, expected_checksum: &str) -> Result<(), ObjectError> {
         if expected_checksum.is_empty() {

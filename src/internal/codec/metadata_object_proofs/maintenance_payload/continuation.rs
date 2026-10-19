@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn metadata_maintenance_continuation(
     lease_report: &MetadataLeaseExpiryReport,
     expired_sessions: &[CoordinatorSession],

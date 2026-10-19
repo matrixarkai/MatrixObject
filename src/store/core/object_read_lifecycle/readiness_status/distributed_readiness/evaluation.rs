@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 struct DistributedReadinessEvaluation<'a> {
     ready: bool,
     metadata_replication_ready: bool,

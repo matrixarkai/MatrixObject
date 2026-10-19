@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn configure_metadata_shard(&mut self, shard: MetadataShard) -> Result<(), ObjectError> {
         self.meta_service.configure_shard(shard)?;

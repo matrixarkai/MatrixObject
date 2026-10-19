@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn last_applied_index(&self) -> u64 {
         self.last_applied_index

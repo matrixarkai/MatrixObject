@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// Trims a shared receipt map, taking the owned map only when a trim is due.
 ///
 /// `Arc::make_mut` copies on ACCESS rather than on modification, and this runs

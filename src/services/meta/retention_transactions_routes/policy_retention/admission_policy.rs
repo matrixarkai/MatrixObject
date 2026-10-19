@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     pub fn admission_policy(&self) -> MetadataAdmissionPolicy {
         self.admission_policy.clone()

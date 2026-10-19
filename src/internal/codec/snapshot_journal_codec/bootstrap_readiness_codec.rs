@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_metadata_bootstrap_readiness(
     out: &mut Vec<u8>,
     readiness: &MetadataRaftReadiness,

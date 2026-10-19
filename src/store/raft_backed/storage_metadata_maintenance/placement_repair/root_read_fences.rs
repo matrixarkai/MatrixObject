@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn ensure_root_read_index(&self, operation: &str) -> Result<RootReadProof, ObjectError> {
         self.ensure_root_read_index_committed_at(operation, self.raft.commit_index(), 0)

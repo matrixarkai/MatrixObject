@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl ProvenMetadataRead<ObjectReplicaRepairRunReport> {
     pub fn verify_expected_repair_fences(
         &self,

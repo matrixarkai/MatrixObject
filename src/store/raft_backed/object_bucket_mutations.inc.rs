@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("object_bucket_mutations/root_multipart_copy.rs");
 include!("object_bucket_mutations/batch_put.rs");
 include!("object_bucket_mutations/append.rs");

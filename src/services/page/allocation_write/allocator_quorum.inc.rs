@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixChunkService {
     pub fn configure_allocator(&mut self, chunk_size: u64) -> Result<(), ObjectError> {
         if chunk_size == 0 || chunk_size < self.page_size {

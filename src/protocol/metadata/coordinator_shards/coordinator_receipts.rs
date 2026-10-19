@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataCoordinatorConfigReceipt {
     pub idempotency_key: String,

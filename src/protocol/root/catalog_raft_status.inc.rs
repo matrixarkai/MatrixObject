@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl RootRaftStatus {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = root_raft_status_identity_fields(self, field_prefix);

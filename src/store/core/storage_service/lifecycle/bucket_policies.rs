@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub(crate) fn apply_bucket_lifecycle_policies_at(
         &mut self,

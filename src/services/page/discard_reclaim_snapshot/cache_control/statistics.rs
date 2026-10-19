@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixChunkService {
     pub fn read_cache_stats(&self) -> ReplicaReadCacheStats {
         let mut aggregate = ReplicaReadCacheStats {

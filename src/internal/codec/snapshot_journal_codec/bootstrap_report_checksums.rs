@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn meta_raft_bootstrap_report_checksum(report: &MetadataRaftBootstrapReport) -> String {
     let mut material = Vec::new();
     append_string(&mut material, META_RAFT_BOOTSTRAP_REPORT_FORMAT);

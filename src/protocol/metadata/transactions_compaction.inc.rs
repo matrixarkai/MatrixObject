@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("transactions_compaction/transaction_state.rs");
 include!("transactions_compaction/transaction_receipts.rs");
 include!("transactions_compaction/transaction_summary_pages.rs");

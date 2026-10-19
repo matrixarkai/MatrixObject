@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl ChunkServiceSnapshot {
     /// Computes the checksum an unsealed snapshot is missing, so `validate`
     /// accepts it. Paired with the `export_snapshot_unsealed` constructors,

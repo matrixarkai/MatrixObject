@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("reclaim_candidates/reports.rs");
 include!("reclaim_candidates/chunk_fields.rs");
 include!("reclaim_candidates/replica_plan_fields.rs");

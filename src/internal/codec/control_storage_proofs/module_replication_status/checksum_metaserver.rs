@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn append_metaserver_status(mut material: &mut Vec<u8>, status: &ObjectStoreModuleStatus) {
     append_u64(&mut material, status.metadata_commit_index);
     append_u64(&mut material, status.metadata_replication_enabled as u64);

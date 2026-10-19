@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("lifecycle/version_deletion.rs");
 include!("lifecycle/legacy_retention.rs");
 include!("lifecycle/bucket_policies.rs");

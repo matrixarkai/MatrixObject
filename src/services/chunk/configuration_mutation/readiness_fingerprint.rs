@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixReplicaService {
     pub fn service_mode_rejected_mutations(&self) -> u64 {
         self.service_mode_rejected_mutations

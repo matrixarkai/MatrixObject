@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("sessions_changefeed_snapshot/coordinator_sessions.inc.rs");
 include!("sessions_changefeed_snapshot/record_batches.inc.rs");
 include!("sessions_changefeed_snapshot/transaction_raft.inc.rs");

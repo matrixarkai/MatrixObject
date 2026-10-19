@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn object_metadata_batch_read_proof_checksum(
     operation: &str,
     batch: &ObjectMetadataBatchRead,

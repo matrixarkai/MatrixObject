@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("maintenance_persistence/maintenance_transactions.rs");
 include!("maintenance_persistence/changefeed.rs");
 include!("maintenance_persistence/snapshot_tombstone_retention.rs");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_storage_maintenance_action(
     out: &mut Vec<u8>,
     action: &StorageMaintenanceAction,

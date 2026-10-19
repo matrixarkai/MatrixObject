@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_batch_copy_objects_with_root_placement_with_route_proof_from_meta_shard_fenced(
         &mut self,

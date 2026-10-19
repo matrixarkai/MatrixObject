@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("page_discards/direct_proposals.rs");
 include!("page_discards/entry_preparation.rs");
 include!("page_discards/prepared_application.rs");

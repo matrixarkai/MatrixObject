@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl PreparedChunkReplicaReclaim {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self.plan.to_control_fields(&format!("{field_prefix}plan."));

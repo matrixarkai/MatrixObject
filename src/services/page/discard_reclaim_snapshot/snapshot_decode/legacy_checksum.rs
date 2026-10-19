@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl ChunkServiceSnapshot {
     fn legacy_checksum_material_hash(&self) -> String {
         let mut material = Vec::with_capacity(self.encoded_size_hint().min(2 * 1024 * 1024));

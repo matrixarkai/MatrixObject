@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn validate_storage_parallelism(value: usize, field: &str) -> Result<(), ObjectError> {
     if value == 0 || value > MAX_STORAGE_PARALLELISM {
         return Err(ObjectError::InvalidArgument(format!(

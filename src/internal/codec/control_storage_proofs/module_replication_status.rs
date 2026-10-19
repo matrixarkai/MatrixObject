@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("module_replication_status/replication_checksum.rs");
 include!("module_replication_status/replication_proof.rs");
 include!("module_replication_status/status_verification.rs");

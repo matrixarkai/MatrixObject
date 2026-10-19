@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn metadata_maintenance_plan_from_prepared(
     prepared: PreparedMetadataMaintenance,
     readiness: MetadataRaftReadiness,

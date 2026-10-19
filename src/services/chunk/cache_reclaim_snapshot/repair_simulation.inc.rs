@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixReplicaService {
     pub fn remove_chunk_for_repair(&mut self, page_id: &PageId) -> bool {
         self.invalidate_chunk_cache(page_id, 0, u64::MAX);

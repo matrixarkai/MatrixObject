@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl RootSnapshot {
     pub fn from_bytes(data: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = SnapshotByteCursor::new(data);

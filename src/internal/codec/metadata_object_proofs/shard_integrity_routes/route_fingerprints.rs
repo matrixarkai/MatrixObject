@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn metadata_route_cache_expire_time_ms(
     route: &MetadataShardRoute,
     now_ms: u64,

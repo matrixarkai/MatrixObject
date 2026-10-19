@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MetaSnapshot {
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         self.validate()?;

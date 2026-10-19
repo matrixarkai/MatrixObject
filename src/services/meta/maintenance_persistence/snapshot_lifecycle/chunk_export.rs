@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     fn snapshot_cache_stamp(&self) -> String {
         format!(

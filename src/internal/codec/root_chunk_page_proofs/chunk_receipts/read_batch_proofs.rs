@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn chunk_head_batch_read_proof_checksum(
     page_ids: &[PageId],
     heads: &[ReplicaHead],

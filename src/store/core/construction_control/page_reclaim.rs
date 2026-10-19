@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn prepare_page_reclaim_raft_entry_fenced(
         &self,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_chunk_partial_reclaim_report(
     out: &mut Vec<u8>,
     report: &ReplicaPartialReclaimReport,

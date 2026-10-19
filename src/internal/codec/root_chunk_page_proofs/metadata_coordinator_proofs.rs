@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_coordinator_session(out: &mut Vec<u8>, session: &CoordinatorSession) {
     append_string(out, &session.session_id);
     append_string(out, &session.owner);

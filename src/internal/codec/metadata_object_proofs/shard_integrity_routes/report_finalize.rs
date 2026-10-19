@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn finalize_metadata_shard_split_report(report: &mut MetadataShardSplitReport) {
     report.shard_plan_needed = report.planned_shards > 0;
     report.shard_plan_can_apply =

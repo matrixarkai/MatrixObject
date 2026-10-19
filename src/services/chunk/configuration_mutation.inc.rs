@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("configuration_mutation/initialization_receipts.rs");
 include!("configuration_mutation/service_mode_batches.rs");
 include!("configuration_mutation/capacity_checkpoint_stats.rs");

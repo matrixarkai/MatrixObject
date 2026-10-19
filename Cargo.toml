@@ -2,8 +2,19 @@
 name = "matrixobjectstore-rs"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
 license = "Apache-2.0"
-description = "Rust MatrixObjectStore core with object semantics, segment GC accounting, and raft-shaped replication"
+# The description is published verbatim on a package index, so it says what the
+# crate is in one line and uses the tier names the code uses. It said "segment
+# GC accounting" until 2026-10-19; segment is a retired name for a chunk.
+description = "Apache-2.0 distributed object store in Rust: object semantics, chunk and page tiers, quorum replication, and a footprint audit that names every resident byte"
+repository = "https://github.com/matrixarkai/MatrixObject"
+homepage = "https://github.com/matrixarkai/MatrixObject"
+documentation = "https://docs.rs/matrixobjectstore-rs"
+readme = "README.md"
+keywords = ["object-store", "storage", "s3", "distributed", "replication"]
+categories = ["database-implementations", "filesystem"]
+exclude = ["pages/", "scratchpad/", "target/"]
 
 [features]
 default = ["raft-rs"]

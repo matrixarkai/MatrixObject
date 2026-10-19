@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn bucket_membership_metadata(
     bucket: &str,
     content_type: &str,

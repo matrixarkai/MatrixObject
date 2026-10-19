@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn apply_metadata_maintenance_payload_budget(
     prepared: &mut PreparedMetadataMaintenance,
 ) -> Result<(), ObjectError> {

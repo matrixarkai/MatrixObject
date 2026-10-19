@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("coordinator_receipt_proofs.rs");
 include!("page_mutation_receipt_proofs.rs");
 include!("page_receipt_page_proofs.rs");

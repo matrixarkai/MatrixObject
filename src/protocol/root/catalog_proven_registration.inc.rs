@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub trait RootCatalogControlFields {
     fn to_root_catalog_control_fields(&self) -> BTreeMap<String, String>;
     fn require_root_catalog_route_checksum(

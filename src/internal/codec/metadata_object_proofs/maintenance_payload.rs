@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("maintenance_payload/payload_sizes.rs");
 include!("maintenance_payload/budget.rs");
 include!("maintenance_payload/continuation.rs");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn objectstore_module_catalog_route_checksum(
     status: &ObjectStoreModuleStatus,
 ) -> String {

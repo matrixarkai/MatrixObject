@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl StoreSnapshot {
     fn validate_snapshot_checksum(&self) -> Result<(), ObjectError> {
         let expected = self.checksum_material_hash();

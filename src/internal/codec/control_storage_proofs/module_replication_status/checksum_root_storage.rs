@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn append_root_storage_status(mut material: &mut Vec<u8>, status: &ObjectStoreModuleStatus) {
     append_u64(&mut material, status.root_active_pageserver_count);
     append_u64(&mut material, status.root_active_replicaserver_count);

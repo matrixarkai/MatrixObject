@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("metadata/leases_maintenance.inc.rs");
 include!("metadata/coordinator_shards.inc.rs");
 include!("metadata/mutations_prepared.inc.rs");

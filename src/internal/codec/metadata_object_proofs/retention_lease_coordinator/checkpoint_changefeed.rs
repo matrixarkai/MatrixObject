@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn metadata_change_checkpoint_request_checksum(
     checkpoint: &MetadataChangeCheckpoint,
 ) -> String {

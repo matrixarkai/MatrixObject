@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl StoreSnapshot {
     fn validate_configuration(&self) -> Result<(), ObjectError> {
         if self.options.chunk_size == 0

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_replica_service_control_proof(
     out: &mut Vec<u8>,
     proof: &ReplicaServiceControlProof,

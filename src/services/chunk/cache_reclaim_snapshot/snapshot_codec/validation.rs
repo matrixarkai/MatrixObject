@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl ReplicaServiceSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
         validate_storage_receipt_retention(self.receipt_retention)?;

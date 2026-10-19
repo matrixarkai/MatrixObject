@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn snapshot_install_progress(&self) -> SnapshotInstallProgress {
         self.store.snapshot_install_progress()

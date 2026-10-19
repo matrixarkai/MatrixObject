@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn read_chunk_batch_write_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ReplicaBatchWriteReceipt, ObjectError> {

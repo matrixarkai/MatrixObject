@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn read_page_route_control_proof(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ChunkRouteControlProof, ObjectError> {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl RootSnapshot {
     fn v7_checksum_material_hash(&self) -> String {
         let mut material = Vec::new();

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     fn release_committed_bytes(&mut self, placement: &ObjectPlacement) {
         for node_id in &placement.node_ids {

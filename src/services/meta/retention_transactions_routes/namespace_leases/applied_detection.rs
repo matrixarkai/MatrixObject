@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     fn prepared_lease_already_applied(&self, prepared: &PreparedMetadataLease) -> bool {
         if !self.metadata_log_has_applied(prepared.prepared_commit_index) {

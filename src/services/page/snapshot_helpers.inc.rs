@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn export_page_service_snapshot_chunk_slice_with_checksum(
     snapshot_bytes: &[u8],
     full_checksum: &str,

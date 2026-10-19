@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use matrixobjectstore_rs::{
     raft_backend, PageId, DataRange, GcReport, MatrixObjectStore, ObjectDeleteRequest,
     ObjectError, ObjectPutRequest, ObjectReadRequest, ObjectStoreDistributedReadiness, PutOptions,

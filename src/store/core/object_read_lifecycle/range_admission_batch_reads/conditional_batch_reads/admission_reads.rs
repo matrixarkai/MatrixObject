@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     fn batch_get_objects_conditional_with_read_admission_internal(
         &self,

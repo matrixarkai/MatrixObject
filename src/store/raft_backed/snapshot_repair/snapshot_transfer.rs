@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("page_snapshot_export.rs");
 include!("page_snapshot_stream.rs");
 include!("page_snapshot_collection.rs");

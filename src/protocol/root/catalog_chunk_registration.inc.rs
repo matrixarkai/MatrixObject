@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn validate_root_catalog_route(
     service_kind: &str,
     catalog_source: &str,

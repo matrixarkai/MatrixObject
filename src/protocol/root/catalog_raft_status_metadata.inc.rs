@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn root_raft_status_metadata_fields(
     status: &RootRaftStatus,
     field_prefix: &str,

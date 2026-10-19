@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn validate_meta_key(key: &str) -> Result<(), ObjectError> {
     if key.is_empty() || key.len() > 8192 {
         return Err(ObjectError::InvalidArgument(

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("apply_tags_retention_quota.rs");
 include!("apply_versioning_lifecycle.rs");
 include!("apply_bucket_policy_config.rs");

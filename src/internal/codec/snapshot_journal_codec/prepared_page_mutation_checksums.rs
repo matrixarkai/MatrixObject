@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn prepared_page_batch_write_checksum(prepared: &PreparedPageBatchWrite) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-PREPARED-BLOCK-WRITE4");

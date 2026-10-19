@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("cache_reclaim_snapshot/read_cache.inc.rs");
 include!("cache_reclaim_snapshot/discard.inc.rs");
 include!("cache_reclaim_snapshot/receipt_queries.inc.rs");

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     pub fn pageserver_service_coverage(&self) -> RootPageServerServiceCoverage {
         let mut coverage = RootPageServerServiceCoverage {

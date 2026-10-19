@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl ObjectStoreModuleStatus {
     pub fn to_catalog_control_fields(&self) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();

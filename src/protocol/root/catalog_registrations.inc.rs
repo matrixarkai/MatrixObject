@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("catalog_placement_lease.inc.rs");
 include!("catalog_embedded_bootstrap.inc.rs");
 include!("catalog_registration_contracts.inc.rs");

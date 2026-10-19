@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub(crate) fn validate_bucket(bucket: &str) -> Result<(), ObjectError> {
     if bucket.is_empty() || bucket.len() > 255 {
         return Err(ObjectError::InvalidArgument(

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 fn metadata_fingerprint_reserve_hint(service: &MatrixMetaService) -> usize {
     let hint = 4096usize
         .saturating_add(service.records.len().saturating_mul(128))

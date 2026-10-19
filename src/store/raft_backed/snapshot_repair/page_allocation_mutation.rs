@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("page_allocation_mutation/discard_admission.rs");
 include!("page_allocation_mutation/direct_allocation.rs");
 include!("page_allocation_mutation/allocation_reservation.rs");

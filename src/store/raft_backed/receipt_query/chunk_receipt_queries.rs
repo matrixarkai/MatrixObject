@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn list_chunk_discard_receipts_with_read_proof_linearizable_fenced(
         &self,

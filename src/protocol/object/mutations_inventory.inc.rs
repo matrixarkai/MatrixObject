@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("mutations_inventory/delete.rs");
 include!("mutations_inventory/inventory.rs");
 include!("mutations_inventory/put.rs");

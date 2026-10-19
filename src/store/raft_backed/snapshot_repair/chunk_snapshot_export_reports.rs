@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn export_chunk_replica_snapshot_chunks_with_read_proof_report_linearizable_fenced(
         &self,

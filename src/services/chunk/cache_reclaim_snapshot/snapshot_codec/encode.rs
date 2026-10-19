@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl ReplicaServiceSnapshot {
     pub(crate) fn encoded_size_hint(&self) -> usize {
         const U64: usize = std::mem::size_of::<u64>();

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixMetaService {
     fn validate_leader_candidate(&self, node_id: &str, ttl_ms: u64) -> Result<(), ObjectError> {
         validate_node_id(node_id)?;

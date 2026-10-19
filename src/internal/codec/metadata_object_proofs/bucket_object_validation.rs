@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 include!("bucket_object_validation/routing_payload.rs");
 include!("bucket_object_validation/bucket_requests.rs");
 include!("bucket_object_validation/policy_receipts.rs");

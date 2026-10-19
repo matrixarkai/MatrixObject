@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 pub trait RustRaftLog {
     fn append(&mut self, command: ObjectCommand) -> Result<RaftLogEntry, ObjectError>;
     fn commit_index(&self) -> u64;

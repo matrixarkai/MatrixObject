@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
     pub fn register_local_objectstore_gateway_in_catalog(
         &mut self,
