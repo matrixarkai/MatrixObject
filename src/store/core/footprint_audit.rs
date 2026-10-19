@@ -256,14 +256,34 @@ impl MatrixObjectStore {
                 .saturating_add(audit_object_id_heap(&mut ledger, object_id))
                 .saturating_add(row_bytes);
         }
-        let mut changes_bytes = (self.object_changes.capacity() as u64)
+        // The feed's cost split into its parts, because the total alone cannot
+        // say which part is worth changing.
+        //
+        // The inline term is charged at the vector's CAPACITY rather than its
+        // length: the spare slots are resident, and a vector grown by doubling
+        // keeps them.
+        let changes_inline = (self.object_changes.capacity() as u64)
             .saturating_mul(std::mem::size_of::<ObjectChangeRecord>() as u64);
+        let mut changes_operation = 0u64;
+        let mut changes_etag = 0u64;
+        let mut changes_object_id = 0u64;
         for change in self.object_changes.iter() {
-            changes_bytes = changes_bytes
-                .saturating_add(audit_string_heap(&change.operation))
-                .saturating_add(audit_object_id_heap(&mut ledger, &change.object_id))
-                .saturating_add(audit_string_heap(&change.etag));
+            changes_operation =
+                changes_operation.saturating_add(audit_string_heap(&change.operation));
+            // Charged through the pass ledger, so a feed entry naming an object
+            // the store still holds costs nothing again for the key characters.
+            changes_object_id = changes_object_id
+                .saturating_add(audit_object_id_heap(&mut ledger, &change.object_id));
+            changes_etag = changes_etag.saturating_add(audit_string_heap(&change.etag));
         }
+        let changes_bytes = changes_inline
+            .saturating_add(changes_operation)
+            .saturating_add(changes_object_id)
+            .saturating_add(changes_etag);
+        push("object_changes.inline_bytes", changes_inline);
+        push("object_changes.operation_bytes", changes_operation);
+        push("object_changes.etag_bytes", changes_etag);
+        push("object_changes.object_id_bytes", changes_object_id);
         // The service accounts for itself: its change log, receipt maps,
         // entity maps and snapshot export caches are private to its module,
         // and until this was asked for, only the record map was in any total.

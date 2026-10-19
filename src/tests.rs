@@ -33707,6 +33707,55 @@ fn measure_what_the_object_metadata_struct_is_made_of() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_an_object_change_record_holds() {
+    // `object_changes.bytes` is 198 an object at 1 KiB -- 21% of the ~933 bytes
+    // of metadata that is the whole distance between 3.93x amplification and
+    // the 3.00x three-way replication allows. The total alone cannot say which
+    // part of a record is worth changing, so the audit now splits it.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..200u32 {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let get = |k: &str| -> u64 { audit.get(k).copied().unwrap_or(0) };
+    let records = get("object_changes.len").max(1);
+
+    println!(
+        "CHANGEFEED struct_inline={} records={} vec_capacity={}",
+        std::mem::size_of::<ObjectChangeRecord>(),
+        get("object_changes.len"),
+        get("object_changes.capacity")
+    );
+    for leg in [
+        "object_changes.bytes",
+        "object_changes.inline_bytes",
+        "object_changes.operation_bytes",
+        "object_changes.etag_bytes",
+        "object_changes.object_id_bytes",
+    ] {
+        println!("CHANGEFEED {leg}={} per_record={}", get(leg), get(leg) / records);
+    }
+    // The spare slots are resident: a vector grown by doubling keeps them.
+    let slack = get("object_changes.capacity").saturating_sub(get("object_changes.len"))
+        * std::mem::size_of::<ObjectChangeRecord>() as u64;
+    println!("CHANGEFEED vector_slack_bytes={slack} per_record={}", slack / records);
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_space_amplification() {
     // What a stored byte costs in resident bytes, at several object sizes.
     //
