@@ -143,7 +143,7 @@ impl MatrixObjectStore {
         let slab = self
             .slabs
             .get_mut(chunk_id)
-            .ok_or_else(|| ObjectError::NotFound(format!("segment {:?}", chunk_id)))?;
+            .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
         for range in merged {
             range.end()?;
             slab.discarded_bytes = saturating_add(slab.discarded_bytes, range.length);
@@ -210,7 +210,7 @@ impl MatrixObjectStore {
         let slab = self
             .slabs
             .get(chunk_id)
-            .ok_or_else(|| ObjectError::NotFound(format!("segment {:?}", chunk_id)))?;
+            .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
         let source_stale_ranges = merge_range_slice(&slab.stale_ranges);
         if !ranges_covered_by(&ranges, &source_stale_ranges) {
             return Err(ObjectError::PreconditionFailed(
