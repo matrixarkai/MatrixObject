@@ -4,7 +4,7 @@ impl MatrixObjectStore {
         chunk_id: &ChunkId,
     ) -> Result<Vec<ObjectId>, ObjectError> {
         if !self.slabs.contains_key(chunk_id) {
-            return Err(ObjectError::NotFound(format!("segment {:?}", chunk_id)));
+            return Err(ObjectError::NotFound(format!("chunk {:?}", chunk_id)));
         }
         let mut live_objects = Vec::new();
         for metadata in self.objects.values() {
@@ -181,7 +181,7 @@ impl MatrixObjectStore {
         let slab = self
             .slabs
             .get(chunk_id)
-            .ok_or_else(|| ObjectError::NotFound(format!("segment {:?}", chunk_id)))?;
+            .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
         if slab.stale_bytes < min_stale_bytes {
             return Err(ObjectError::PreconditionFailed(format!(
                 "segment stale bytes {} below compaction threshold {}",
