@@ -123,11 +123,11 @@ are bounded rather than per object:
 
 | objects | 100 | 1,000 | 4,000 | 8,000 |
 |---:|---:|---:|---:|---:|
-| metadata per object | 933 B | 884 B | 717 B | **689 B** |
+| metadata per object | 914 B | 867 B | 712 B | **686 B** |
 
-Both change feeds cap at 1,024 records, so together they are 28.9% of metadata
-at a hundred objects and 4.1% at eight thousand. Everything else is exactly
-linear, which gives an asymptote of **661 bytes per object** plus 223,232 bytes
+Both change feeds cap at 1,024 records, so together they are 27.2% of metadata
+at a hundred objects and 3.8% at eight thousand. Everything else is exactly
+linear, which gives an asymptote of **661 bytes per object** plus 206,848 bytes
 of capped feeds spread across however many objects there are.
 
 That 661 is now more than half one item:
@@ -184,9 +184,14 @@ cargo test --lib measure_ -- --ignored --nocapture
 | idempotency receipts | `receipt_retention` | 100,000 | 274 B | **82.2 MB** across three replicas |
 | metadata route cache | `metadata_route_cache_entries` | 100,000 | 144 B | **14.4 MB** |
 | raft apply receipts | `k_max_raft_apply_receipts()` | 4,096 | 280 B | 1.15 MB |
-| object change feed | `UNCONSUMED_OBJECT_CHANGE_RETENTION` | 1,024 | 177 B | 181 KB |
-| metadata change log | `UNCHECKPOINTED_METADATA_CHANGE_RETENTION` | 1,024 | 56 B | 57 KB |
+| object change feed | `UNCONSUMED_OBJECT_CHANGE_RETENTION` | 1,024 | 146 B | 146 KB |
+| metadata change log | `UNCHECKPOINTED_METADATA_CHANGE_RETENTION` | 1,024 | 56 B | 56 KB |
 | read cache | `chunk_read_cache_max_bytes_per_replica` | — | — | the bound **plus 5.6%** |
+
+A change feed's per-record figure is the one **at its cap**. A smaller store
+reports more per record, because a vector that has grown by doubling carries
+spare slots and the audit charges capacity rather than length: at 200 records
+the feed measures 177 bytes a record, and at its cap of 1,024 it measures 146.
 
 The read cache is the odd one: its setting bounds the cached payload, and the
 entries, keys, checksums, by-chunk index and eviction queue beside it are

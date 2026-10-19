@@ -33761,7 +33761,13 @@ fn measure_where_the_per_object_metadata_goes() {
     // the 3.00x three-way replication allows. Each component has now been taken
     // apart on its own; this checks that the parts account for the total rather
     // than deriving one from the others.
-    let objects = 200u64;
+    // The capped structures only reach their cap at a large enough object
+    // count, so the count has to be a knob: at 200 objects the feeds hold 200
+    // records and look linear, and at 8,000 they are flat.
+    let objects: u64 = std::env::var("MEASURE_OBJECTS")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(200);
     let mut store = MatrixObjectStore::new(StoreOptions {
         volume_count: 2,
         ..StoreOptions::default()
