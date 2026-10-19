@@ -33809,7 +33809,13 @@ fn measure_what_an_object_change_record_holds() {
     }
     let audit: std::collections::BTreeMap<String, u64> =
         store.footprint_audit().into_iter().collect();
-    let get = |k: &str| -> u64 { audit.get(k).copied().unwrap_or(0) };
+    // A missing key must fail, not read zero: a renamed or mistyped audit key
+    // otherwise reads 0 and the assertion below can still pass.
+    let get = |k: &str| -> u64 {
+        *audit
+            .get(k)
+            .unwrap_or_else(|| panic!("the audit should report {k}"))
+    };
     let records = get("object_changes.len").max(1);
 
     println!(
@@ -33865,7 +33871,13 @@ fn measure_where_the_per_object_metadata_goes() {
     }
     let audit: std::collections::BTreeMap<String, u64> =
         store.footprint_audit().into_iter().collect();
-    let get = |k: &str| -> u64 { audit.get(k).copied().unwrap_or(0) };
+    // A missing key must fail, not read zero: a renamed or mistyped audit key
+    // otherwise reads 0 and the assertion below can still pass.
+    let get = |k: &str| -> u64 {
+        *audit
+            .get(k)
+            .unwrap_or_else(|| panic!("the audit should report {k}"))
+    };
 
     let parts = [
         ("meta.records.bytes", get("meta.records.bytes")),
@@ -34154,7 +34166,13 @@ fn measure_the_space_amplification() {
         }
         let audit: std::collections::BTreeMap<String, u64> =
             store.footprint_audit().into_iter().collect();
-        let get = |k: &str| -> u64 { audit.get(k).copied().unwrap_or(0) };
+        // A missing key must fail, not read zero: a renamed or mistyped audit key
+    // otherwise reads 0 and the assertion below can still pass.
+    let get = |k: &str| -> u64 {
+        *audit
+            .get(k)
+            .unwrap_or_else(|| panic!("the audit should report {k}"))
+    };
         let logical = (objects as u64).saturating_mul(size as u64);
         let total = get("ACCOUNTED.total_bytes");
         let buffers = get("ACCOUNTED.byte_buffers");
@@ -37813,7 +37831,11 @@ fn every_retained_receipt_is_filed_under_the_key_it_carries() {
     }
     let audit: std::collections::BTreeMap<String, u64> =
         store.footprint_audit().into_iter().collect();
-    let get = |wanted: &str| -> u64 { audit.get(wanted).copied().unwrap_or(0) };
+    let get = |wanted: &str| -> u64 {
+        *audit
+            .get(wanted)
+            .unwrap_or_else(|| panic!("the audit should report {wanted}"))
+    };
 
     // The maps whose receipts carry the field, as the audit counts them.
     let filed = get("replica.receipts")
@@ -38362,7 +38384,13 @@ fn a_per_unit_figure_is_a_slope_and_not_a_total_divided_by_a_count() {
         }
         let audit: std::collections::BTreeMap<String, u64> =
             store.footprint_audit().into_iter().collect();
-        let get = |k: &str| -> u64 { audit.get(k).copied().unwrap_or(0) };
+        // A missing key must fail, not read zero: a renamed or mistyped audit key
+    // otherwise reads 0 and the assertion below can still pass.
+    let get = |k: &str| -> u64 {
+        *audit
+            .get(k)
+            .unwrap_or_else(|| panic!("the audit should report {k}"))
+    };
         let count = get("replica.receipts");
         assert!(count > 0, "{objects} writes and deletes must leave receipts");
         (count, get("block.receipts.bytes"))
