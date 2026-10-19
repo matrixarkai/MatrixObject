@@ -4495,9 +4495,9 @@ fn run() -> Result<(), ObjectError> {
         cfg.overwrite_ratio_percent.min(100)
     );
     println!("delete_ratio_percent={}", cfg.delete_ratio_percent.min(100));
-    println!("segment_size={}", cfg.chunk_size);
+    println!("chunk_size={}", cfg.chunk_size);
     println!("max_extent_bytes={}", cfg.max_extent_bytes);
-    println!("chunk_size={}", cfg.page_size);
+    println!("page_size={}", cfg.page_size);
     println!(
         "chunk_read_cache_max_bytes_per_replica={}",
         cfg.chunk_read_cache_max_bytes_per_replica
