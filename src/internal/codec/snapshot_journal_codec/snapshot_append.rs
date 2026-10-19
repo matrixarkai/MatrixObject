@@ -418,7 +418,7 @@ pub(crate) fn append_object_change_record(out: &mut Vec<u8>, change: &ObjectChan
     append_object_id(out, &change.object_id);
     append_u64(out, change.version);
     append_u64(out, change.length);
-    append_string(out, &change.etag);
+    append_string(out, &change.etag());
     append_u64(out, change.deleted as u64);
     append_u64(out, change.event_time_ms);
 }
@@ -428,7 +428,7 @@ pub(crate) fn object_change_record_payload_bytes(change: &ObjectChangeRecord) ->
         .saturating_add(change.operation.len() as u64)
         .saturating_add(change.object_id.bucket.len() as u64)
         .saturating_add(change.object_id.key.len() as u64)
-        .saturating_add(change.etag.len() as u64)
+        .saturating_add(change.etag().len() as u64)
 }
 
 pub(crate) fn append_object_change_cursor(out: &mut Vec<u8>, cursor: &ObjectChangeCursor) {

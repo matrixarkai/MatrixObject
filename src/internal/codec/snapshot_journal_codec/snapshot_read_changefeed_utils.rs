@@ -8,7 +8,7 @@ pub(crate) fn read_object_change_record(
         object_id: read_object_id(cursor)?,
         version: cursor.read_u64()?,
         length: cursor.read_u64()?,
-        etag: cursor.read_string()?.into(),
+        etag_fnv1a64: change_etag_digest(&cursor.read_string()?)?,
         deleted: cursor.read_bool()?,
         event_time_ms: cursor.read_u64()?,
     })

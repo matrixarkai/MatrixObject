@@ -32,7 +32,7 @@ fn listing_object_metadata_encoded_len(metadata: &ObjectMetadata) -> usize {
 fn listing_object_change_record_encoded_len(record: &ObjectChangeRecord) -> usize {
     encoded_string_len(&record.operation)
         + listing_object_id_encoded_len(&record.object_id)
-        + encoded_string_len(&record.etag)
+        + encoded_string_len(&record.etag())
         + std::mem::size_of::<u64>() * 6
 }
 

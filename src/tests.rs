@@ -33903,47 +33903,37 @@ fn measure_what_an_object_change_record_holds() {
         * std::mem::size_of::<ObjectChangeRecord>() as u64;
     println!("CHANGEFEED vector_slack_bytes={slack} per_record={}", slack / records);
 
-    // WHETHER SHARING A STRING CAN PAY IS ARITHMETIC, AND THIS IS THE
-    // ARITHMETIC. `object_id` costs zero in this feed because it is a
-    // SharedText, so the etag beside it looks like the same move. It is not,
-    // and the difference is holders per allocation.
+    // THE ETAG IS A DIGEST NOW, AND THIS IS WHY IT IS NOT A SHARED HANDLE.
     //
-    // An etag is content-derived and unique per object, so there is nothing to
-    // share ACROSS objects -- only the feed's own copy of an object the store
-    // still holds has a second holder. `Arc<str>` charges two counts
-    // per allocation where `Box<str>` charges none, so converting pays the
-    // header on every object to save a copy on the fraction the feed retains.
+    // `object_id` costs zero in this feed because it is a SharedText, so the
+    // etag beside it looked like the same move. Converting both fields was
+    // measured and REFUTED: Arc<str> charges two counts -- 16 bytes of header
+    // per allocation -- where Box<str> charges none, and an etag is
+    // content-derived and unique per object, so there is nothing to share
+    // across objects. Only the fraction the feed retains has a second holder:
+    // 2.00 holders per allocation at 500 objects, 1.51 at 2,000, 1.13 at
+    // 8,000. The conversion paid a header on all of them to save a copy on an
+    // eighth, which measured a 4,000-byte win at 500 objects and a 7,424-byte
+    // LOSS at 2,000.
     //
-    // Measured by converting both fields and re-running the totals: a win of
-    // 4,000 bytes at 500 objects and a LOSS of 7,424 at 2,000, break-even near
-    // 1,536. Below the bound the feed holds one record per object, so the
-    // saving is 24 bytes an object against a 16-byte header -- 8 bytes an
-    // object. At the bound the saving stops growing and the header does not.
-    let etag_chars = get("object_changes.etag_bytes") / records.max(1);
-    let shareable = records.min(objects as u64);
-    let would_save = shareable.saturating_mul(etag_chars);
-    let header = 2 * std::mem::size_of::<usize>() as u64;
-    let would_cost = (objects as u64).saturating_mul(header);
-    println!(
-        "SHARING etag_chars={etag_chars} feed_records={records} objects={objects} \
-         holders_per_allocation={:.2}",
-        1.0 + shareable as f64 / (objects as f64)
+    // Holding the DIGEST instead costs nothing either way: Option<u64> is the
+    // same 16 inline bytes as Box<str>, so the 24-byte buffer behind every
+    // retained record simply goes, and the record's own size does not move.
+    assert_eq!(
+        get("object_changes.etag_bytes"),
+        0,
+        "the feed holds the etag as a digest, so it owns no heap for it"
+    );
+    assert_eq!(
+        std::mem::size_of::<ObjectChangeRecord>(),
+        112,
+        "Option<u64> is the same 16 inline bytes Box<str> was, so the record must          not have grown to pay for the heap it stopped holding"
     );
     println!(
-        "SHARING would_save={would_save} would_cost={would_cost} net={}{}",
-        if would_save >= would_cost { "-" } else { "+" },
-        would_save.abs_diff(would_cost)
-    );
-    // Break-even is where the saving stops growing and the cost does not:
-    // the feed's retained records times the characters each copies, over the
-    // header charged per object. Below the bound the saving is per object too,
-    // so the figure sits above the object count and the conversion wins;
-    // at the bound it stops moving and the object count overtakes it.
-    println!(
-        "SHARING break_even_objects={} (a conversion pays only below this)",
-        records.saturating_mul(etag_chars) / header.max(1)
-    );
-}
+        "CHANGEFEED etag_is_a_digest heap_bytes={} record_inline={}",
+        get("object_changes.etag_bytes"),
+        std::mem::size_of::<ObjectChangeRecord>()
+    );}
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
@@ -35547,6 +35537,41 @@ fn the_interned_storage_classes_are_the_valid_ones() {
         !interned_storage_class("NEARLINE").shares_with(&interned_storage_class("NEARLINE")),
         "an unknown name is not in the table, so each call owns its own"
     );
+}
+
+#[test]
+fn a_change_feed_etag_round_trips_through_its_digest() {
+    // Three cases, and the middle one is the reason the field is an Option
+    // rather than a u64: the empty etag is a real state that a delete marker
+    // and a bucket membership record both carry, and a digest of 0 formats as
+    // "fnv1a64:0000000000000000", which is not "".
+    assert_eq!(change_etag_digest("").unwrap(), None);
+    let text = etag(b"abc");
+    let digest = change_etag_digest(&text).unwrap();
+    assert!(digest.is_some(), "a real etag has a digest");
+    // The round trip is what keeps the wire bytes and every proof unchanged.
+    let record = ObjectChangeRecord {
+        sequence: 1,
+        previous_sequence: 0,
+        operation: interned_change_operation("put_object"),
+        object_id: ObjectId::new("bucket", "key"),
+        version: 1,
+        length: 3,
+        etag_fnv1a64: digest,
+        deleted: false,
+        event_time_ms: 0,
+    };
+    assert_eq!(record.etag(), text, "the digest must spell the etag it came from");
+    let empty = ObjectChangeRecord {
+        etag_fnv1a64: None,
+        ..record.clone()
+    };
+    assert_eq!(empty.etag(), "", "and None must spell the empty etag");
+
+    // Anything else came from a snapshot that does not hold what the format
+    // says, so it is reported rather than quietly becoming the empty etag.
+    assert!(change_etag_digest("not-an-etag").is_err());
+    assert!(change_etag_digest("fnv1a64:nothex").is_err());
 }
 
 #[test]

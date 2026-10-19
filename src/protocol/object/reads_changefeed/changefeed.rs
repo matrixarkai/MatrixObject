@@ -24,9 +24,19 @@ pub struct ObjectChangeRecord {
     pub object_id: ObjectId,
     pub version: u64,
     pub length: u64,
-    /// The object metadata holds this too, and the metadata record's value
-    /// restates it a third time. Boxed for the same reason as the operation.
-    pub etag: Box<str>,
+    /// The DIGEST, not its spelling. `etag` formats this same number as
+    /// "fnv1a64:" followed by 16 hex digits, so holding the number costs the
+    /// same 16 inline bytes a `Box<str>` cost and drops the 24-byte buffer
+    /// behind it -- 24,576 bytes across the 1,024 records the feed retains at
+    /// its bound, at no per-object cost. `store/core.rs` already holds payload
+    /// digests this way.
+    ///
+    /// `None` is the EMPTY etag, which is a real state rather than a missing
+    /// one: a delete marker and a bucket membership record both carry it, and
+    /// a delete marker is exactly what a change record records on a delete.
+    /// A digest of 0 formats as "fnv1a64:0000000000000000", which is not "",
+    /// so the two cannot share a representation.
+    pub etag_fnv1a64: Option<u64>,
     pub deleted: bool,
     pub event_time_ms: u64,
 }
@@ -56,7 +66,7 @@ impl ObjectChangeRecord {
             self.sequence.to_string(),
         );
         fields.insert(format!("{field_prefix}length"), self.length.to_string());
-        fields.insert(format!("{field_prefix}etag"), self.etag.to_string());
+        fields.insert(format!("{field_prefix}etag"), self.etag());
         fields.insert(format!("{field_prefix}deleted"), self.deleted.to_string());
         fields.insert(
             format!("{field_prefix}event_time_ms"),
@@ -206,4 +216,39 @@ pub(crate) fn interned_change_operation(operation: &str) -> SharedText {
         .find(|known| known.as_str() == operation)
         .cloned()
         .unwrap_or_else(|| SharedText::from(operation))
+}
+
+impl ObjectChangeRecord {
+    /// The etag as it was stored and as it still goes on the wire.
+    pub fn etag(&self) -> String {
+        match self.etag_fnv1a64 {
+            None => String::new(),
+            Some(digest) => {
+                let mut text = String::with_capacity(24);
+                append_etag_of_digest(&mut text, digest);
+                text
+            }
+        }
+    }
+}
+
+/// The inverse: the digest behind an etag's spelling.
+///
+/// An etag is either empty or `etag()`'s output, because those are the only
+/// two things that ever produce one. Anything else reaching here came from a
+/// snapshot that does not hold what this format says it holds, so it is
+/// reported rather than silently reshaped.
+pub(crate) fn change_etag_digest(text: &str) -> Result<Option<u64>, ObjectError> {
+    const PREFIX: &str = "fnv1a64:";
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let Some(hex) = text.strip_prefix(PREFIX) else {
+        return Err(ObjectError::Corruption(format!(
+            "change feed etag is neither empty nor a {PREFIX} digest: {text}"
+        )));
+    };
+    u64::from_str_radix(hex, 16).map(Some).map_err(|_| {
+        ObjectError::Corruption(format!("change feed etag digest is not hex: {text}"))
+    })
 }
