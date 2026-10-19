@@ -135,7 +135,7 @@ impl MatrixObjectStore {
     /// for the maps whose cost is per-entry overhead rather than payload.
     ///
     /// Two totals. `ACCOUNTED.byte_buffers` is payload buffers, replica data,
-    /// shards and checksums -- an amplification derived from it alone is
+    /// fragments and checksums -- an amplification derived from it alone is
     /// data-only, because everything else used to be reported as an entry count.
     /// `ACCOUNTED.total_bytes` adds the metadata the store holds to describe
     /// that data, and is the one to divide by `logical.written`. Neither
@@ -198,9 +198,9 @@ impl MatrixObjectStore {
         let mut chunks = 0u64;
         let mut data_len = 0u64;
         let mut data_cap = 0u64;
-        let mut shard_len = 0u64;
-        let mut shard_cap = 0u64;
-        let mut shard_count = 0u64;
+        let mut fragment_len = 0u64;
+        let mut fragment_cap = 0u64;
+        let mut fragment_count = 0u64;
         let mut checksum_bytes = 0u64;
         let mut discard_rows = 0u64;
         let mut replica_receipts = 0u64;
@@ -211,9 +211,17 @@ impl MatrixObjectStore {
                 data_cap = data_cap.saturating_add(state.data.capacity() as u64);
                 checksum_bytes = checksum_bytes.saturating_add(state.checksum.capacity() as u64);
                 discard_rows = discard_rows.saturating_add(state.discarded_ranges.len() as u64);
-                shard_count = shard_count.saturating_add(1);
-                shard_len = shard_len.saturating_add(state.ec_parity_fragment.len() as u64);
-                shard_cap = shard_cap.saturating_add(state.ec_parity_fragment.capacity() as u64);
+                // Count the pages that actually CARRY a redundancy fragment. This
+                // incremented once per page regardless, which made it a second copy
+                // of `replica.chunks` and left no way to tell "no fragments stored"
+                // from "one empty slot per page" -- the distinction that explains
+                // why the data term measures exactly 3.0000 at three replicas.
+                if !state.ec_parity_fragment.is_empty() {
+                    fragment_count = fragment_count.saturating_add(1);
+                }
+                fragment_len = fragment_len.saturating_add(state.ec_parity_fragment.len() as u64);
+                fragment_cap =
+                    fragment_cap.saturating_add(state.ec_parity_fragment.capacity() as u64);
             }
             replica_receipts = replica_receipts
                 .saturating_add(replica.write_request_receipts.len() as u64)
@@ -224,9 +232,9 @@ impl MatrixObjectStore {
         push("replica.chunks", chunks);
         push("replica.data.len", data_len);
         push("replica.data.capacity", data_cap);
-        push("replica.ec_shards.count", shard_count);
-        push("replica.ec_shards.len", shard_len);
-        push("replica.ec_shards.capacity", shard_cap);
+        push("replica.ec_fragments.count", fragment_count);
+        push("replica.ec_fragments.len", fragment_len);
+        push("replica.ec_fragments.capacity", fragment_cap);
         push("replica.checksum.capacity", checksum_bytes);
         push("replica.discard_rows", discard_rows);
         push("replica.receipts", replica_receipts);
@@ -779,7 +787,7 @@ impl MatrixObjectStore {
         push("store.content_types.bytes", content_type_bytes);
         let accounted = payload_cap
             .saturating_add(data_cap)
-            .saturating_add(shard_cap)
+            .saturating_add(fragment_cap)
             .saturating_add(checksum_bytes)
             .saturating_add(page.total())
             .saturating_add(store_export_caches);
