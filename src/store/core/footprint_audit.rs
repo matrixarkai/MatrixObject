@@ -171,7 +171,7 @@ impl MatrixObjectStore {
         push("versions.rows", version_rows);
         push("object_changes.len", self.object_changes.len() as u64);
         push("object_changes.capacity", self.object_changes.capacity() as u64);
-        push("segments.entries", self.chunks.len() as u64);
+        push("chunks.entries", self.chunks.len() as u64);
         push("applied_raft_receipts.entries", self.applied_raft_receipts.len() as u64);
         push("multipart_uploads.entries", self.multipart_uploads.len() as u64);
         push("metadata_route_cache.entries", self.metadata_route_cache.len() as u64);
@@ -184,15 +184,15 @@ impl MatrixObjectStore {
 
         // ---- page service: receipt maps ------------------------------------
         let b = &self.chunk_service;
-        push("block.pending_allocations", b.pending_allocations.len() as u64);
-        push("block.alloc_receipts", b.allocation_request_receipts.len() as u64);
-        push("block.batch_alloc_receipts", b.batch_allocation_request_receipts.len() as u64);
-        push("block.release_receipts", b.release_allocation_request_receipts.len() as u64);
-        push("block.write_receipts", b.write_request_receipts.len() as u64);
-        push("block.batch_write_receipts", b.batch_write_request_receipts.len() as u64);
-        push("block.discard_receipts", b.discard_request_receipts.len() as u64);
-        push("block.batch_discard_receipts", b.batch_discard_request_receipts.len() as u64);
-        push("block.replicas", b.replicas.len() as u64);
+        push("page.pending_allocations", b.pending_allocations.len() as u64);
+        push("page.alloc_receipts", b.allocation_request_receipts.len() as u64);
+        push("page.batch_alloc_receipts", b.batch_allocation_request_receipts.len() as u64);
+        push("page.release_receipts", b.release_allocation_request_receipts.len() as u64);
+        push("page.write_receipts", b.write_request_receipts.len() as u64);
+        push("page.batch_write_receipts", b.batch_write_request_receipts.len() as u64);
+        push("page.discard_receipts", b.discard_request_receipts.len() as u64);
+        push("page.batch_discard_receipts", b.batch_discard_request_receipts.len() as u64);
+        push("page.replicas", b.replicas.len() as u64);
 
         // ---- the replicas: where the bytes actually live ---------------------
         let mut pages = 0u64;
@@ -598,7 +598,7 @@ impl MatrixObjectStore {
                         .saturating_mul(std::mem::size_of::<DataRange>() as u64),
                 );
         }
-        push("segments.bytes", slab_bytes);
+        push("chunks.bytes", slab_bytes);
 
         let metadata_bytes = objects_bytes
             .saturating_add(versions_bytes)
@@ -624,8 +624,8 @@ impl MatrixObjectStore {
         push("replica.read_cache.payload_bytes", page.read_cache_payload);
         push("replica.read_cache.overhead_bytes", page.read_cache_overhead);
         push("replica.page_validation.bytes", page.page_validation);
-        push("block.export_caches.bytes", page.export_caches);
-        push("block.receipts.bytes", page.receipts);
+        push("page.export_caches.bytes", page.export_caches);
+        push("page.receipts.bytes", page.receipts);
         // Of those bytes, the characters of the second copy: every one of these
         // maps is keyed by an idempotency key, and the receipt it stores carries
         // that same text again in its own field.
@@ -638,11 +638,11 @@ impl MatrixObjectStore {
         // measurement. Reporting the characters alone would read as a saving a
         // third larger than the one available.
         push(
-            "block.receipts.duplicate_key_bytes",
+            "page.receipts.duplicate_key_bytes",
             page.receipt_duplicate_keys,
         );
         push(
-            "block.receipts.matching_key_entries",
+            "page.receipts.matching_key_entries",
             page.receipt_matching_keys,
         );
 
@@ -979,7 +979,7 @@ impl ObjectMutationRollback {
             ("undo.multipart.bytes", multipart_bytes),
             ("undo.meta_service.bytes", meta_service_bytes),
             ("undo.page_service.bytes", chunk_service_bytes),
-            ("undo.slabs.bytes", chunks_bytes),
+            ("undo.chunks.bytes", chunks_bytes),
             ("undo.payloads.bytes", payloads_bytes),
         ];
         let mut out: Vec<(String, u64)> = legs

@@ -33887,7 +33887,7 @@ fn measure_where_the_per_object_metadata_goes() {
         ("meta.receipts.bytes", get("meta.receipts.bytes")),
         ("meta.entities.bytes", get("meta.entities.bytes")),
         ("versions.bytes", get("versions.bytes")),
-        ("segments.bytes", get("segments.bytes")),
+        ("chunks.bytes", get("chunks.bytes")),
         ("metadata_route_cache.bytes", get("metadata_route_cache.bytes")),
         ("payloads.key_bytes", get("payloads.key_bytes")),
         ("multipart.metadata_bytes", get("multipart.metadata_bytes")),
@@ -35530,7 +35530,7 @@ fn the_receipt_maps_are_counted_in_bytes() {
         .unwrap();
 
     // A plain put leaves no receipt: they are written by the idempotent paths.
-    let before = audit_value(&store, "block.receipts.bytes");
+    let before = audit_value(&store, "page.receipts.bytes");
 
     // An allocation with an idempotency key does leave one, in the page
     // service's own maps.
@@ -35539,7 +35539,7 @@ fn the_receipt_maps_are_counted_in_bytes() {
         .allocate_page_range_idempotent(4096, 1_000, "alloc-one")
         .expect("the allocation should succeed");
     assert!(allocated.allocation.length >= 4096);
-    let after = audit_value(&store, "block.receipts.bytes");
+    let after = audit_value(&store, "page.receipts.bytes");
     assert!(
         after > before,
         "an allocation receipt is bytes, so the figure must have grown past \
@@ -36850,7 +36850,7 @@ fn the_documented_way_to_set_receipt_retention_works() {
             .expect("the audit should report the leg this test reads")
     };
     let retained_before = read(&store, "replica.receipts");
-    let bytes_before = read(&store, "block.receipts.bytes");
+    let bytes_before = read(&store, "page.receipts.bytes");
     assert!(
         retained_before > 8,
         "the writes and deletes should leave more than 8 receipts, and they left \
@@ -36862,7 +36862,7 @@ fn the_documented_way_to_set_receipt_retention_works() {
         store.configure_chunk_receipt_retention(8).unwrap();
 
     let retained_after = read(&store, "replica.receipts");
-    let bytes_after = read(&store, "block.receipts.bytes");
+    let bytes_after = read(&store, "page.receipts.bytes");
     println!(
         "RETENTION receipts {retained_before} -> {retained_after}  bytes \
          {bytes_before} -> {bytes_after}  trimmed={receipts_trimmed} \
@@ -36870,11 +36870,11 @@ fn the_documented_way_to_set_receipt_retention_works() {
     );
 
     assert!(
-        retained_after <= 8 * read(&store, "block.replicas").max(1),
+        retained_after <= 8 * read(&store, "page.replicas").max(1),
         "after setting the bound to 8 per replica the store should hold at most \
          that many, and it holds {retained_after} across \
          {} replicas",
-        read(&store, "block.replicas")
+        read(&store, "page.replicas")
     );
     assert!(
         bytes_after < bytes_before,
@@ -37253,7 +37253,7 @@ fn no_page_carries_a_redundancy_fragment_while_it_has_peers() {
             .unwrap_or_else(|| panic!("the audit should report {key}"))
     };
 
-    let replicas = get("block.replicas");
+    let replicas = get("page.replicas");
     let pages = get("replica.chunks");
     let fragments = get("replica.ec_fragments.count");
     let fragment_bytes = get("replica.ec_fragments.len");
@@ -38151,21 +38151,21 @@ fn every_retained_receipt_is_filed_under_the_key_it_carries() {
 
     // The maps whose receipts carry the field, as the audit counts them.
     let filed = get("replica.receipts")
-        + get("block.write_receipts")
-        + get("block.batch_write_receipts")
-        + get("block.discard_receipts")
-        + get("block.batch_discard_receipts");
+        + get("page.write_receipts")
+        + get("page.batch_write_receipts")
+        + get("page.discard_receipts")
+        + get("page.batch_discard_receipts");
     assert!(
         filed > 0,
         "40 objects written and deleted must leave receipts behind, and left none"
     );
     assert_eq!(
-        get("block.receipts.matching_key_entries"),
+        get("page.receipts.matching_key_entries"),
         filed,
         "every retained receipt must carry the key it is filed under"
     );
     assert!(
-        get("block.receipts.duplicate_key_bytes") > 0,
+        get("page.receipts.duplicate_key_bytes") > 0,
         "those matching keys must account for some bytes"
     );
 }
@@ -38239,7 +38239,7 @@ fn measure_which_receipt_maps_a_batch_actually_writes() {
         store
             .footprint_audit()
             .into_iter()
-            .find(|(k, _)| k == "block.receipts.bytes")
+            .find(|(k, _)| k == "page.receipts.bytes")
             .map(|(_, v)| v)
             .unwrap_or(0)
     );
@@ -38356,7 +38356,7 @@ fn measure_what_an_open_batch_holds_once_the_receipts_fill() {
     println!(
         "OPENBATCH deleted receipts={} block_receipt_bytes={}",
         read(&store, "replica.receipts"),
-        read(&store, "block.receipts.bytes")
+        read(&store, "page.receipts.bytes")
     );
     report(&mut store, "deleted");
 }
@@ -38393,20 +38393,20 @@ fn measure_what_the_retained_receipts_cost() {
     };
     let counted = |store: &MatrixObjectStore| -> u64 {
         [
-            "block.alloc_receipts",
-            "block.batch_alloc_receipts",
-            "block.release_receipts",
-            "block.write_receipts",
-            "block.batch_write_receipts",
-            "block.discard_receipts",
-            "block.batch_discard_receipts",
+            "page.alloc_receipts",
+            "page.batch_alloc_receipts",
+            "page.release_receipts",
+            "page.write_receipts",
+            "page.batch_write_receipts",
+            "page.discard_receipts",
+            "page.batch_discard_receipts",
             "replica.receipts",
         ]
         .iter()
         .map(|leg| read(store, leg))
         .sum()
     };
-    let before_bytes = read(&store, "block.receipts.bytes");
+    let before_bytes = read(&store, "page.receipts.bytes");
     let before_count = counted(&store);
     for index in 0..objects {
         store
@@ -38418,19 +38418,19 @@ fn measure_what_the_retained_receipts_cost() {
             )
             .unwrap();
     }
-    let after_bytes = read(&store, "block.receipts.bytes");
+    let after_bytes = read(&store, "page.receipts.bytes");
     let after_count = counted(&store);
     println!(
         "RECEIPTS puts={objects} size={size} entries={before_count}->{after_count}          bytes={before_bytes}->{after_bytes}"
     );
     for leg in [
-        "block.alloc_receipts",
-        "block.batch_alloc_receipts",
-        "block.release_receipts",
-        "block.write_receipts",
-        "block.batch_write_receipts",
-        "block.discard_receipts",
-        "block.batch_discard_receipts",
+        "page.alloc_receipts",
+        "page.batch_alloc_receipts",
+        "page.release_receipts",
+        "page.write_receipts",
+        "page.batch_write_receipts",
+        "page.discard_receipts",
+        "page.batch_discard_receipts",
         "replica.receipts",
     ] {
         let value = read(&store, leg);
@@ -38455,20 +38455,20 @@ fn measure_what_the_retained_receipts_cost() {
             .unwrap();
     }
     for leg in [
-        "block.alloc_receipts",
-        "block.batch_alloc_receipts",
-        "block.release_receipts",
-        "block.write_receipts",
-        "block.batch_write_receipts",
-        "block.discard_receipts",
-        "block.batch_discard_receipts",
+        "page.alloc_receipts",
+        "page.batch_alloc_receipts",
+        "page.release_receipts",
+        "page.write_receipts",
+        "page.batch_write_receipts",
+        "page.discard_receipts",
+        "page.batch_discard_receipts",
         "replica.receipts",
     ] {
         println!("RECEIPTS-AFTER-DELETES   {leg}={}", read(&store, leg));
     }
     let deleted_entries = counted(&store);
-    let deleted_bytes = read(&store, "block.receipts.bytes");
-    let duplicate = read(&store, "block.receipts.duplicate_key_bytes");
+    let deleted_bytes = read(&store, "page.receipts.bytes");
+    let duplicate = read(&store, "page.receipts.duplicate_key_bytes");
     println!("RECEIPTS-AFTER-DELETES entries={deleted_entries} bytes={deleted_bytes}");
     if deleted_entries > 0 {
         let per = deleted_bytes / deleted_entries;
@@ -38705,7 +38705,7 @@ fn a_per_unit_figure_is_a_slope_and_not_a_total_divided_by_a_count() {
     };
         let count = get("replica.receipts");
         assert!(count > 0, "{objects} writes and deletes must leave receipts");
-        (count, get("block.receipts.bytes"))
+        (count, get("page.receipts.bytes"))
     }
 
     let (n1, b1) = receipts_at(40);
@@ -38760,7 +38760,7 @@ fn every_metadata_leg_is_a_line_and_the_intercepts_are_named() {
         "meta.change_log.bytes",
         "meta.entities.bytes",
         "payloads.key_bytes",
-        "segments.bytes",
+        "chunks.bytes",
     ];
 
     fn metadata_at(objects: u64) -> std::collections::BTreeMap<String, u64> {
@@ -38890,7 +38890,7 @@ fn the_metadata_total_is_the_sum_of_the_legs_it_names() {
         "multipart.metadata_bytes",
         "applied_raft_receipts.bytes",
         "metadata_route_cache.bytes",
-        "segments.bytes",
+        "chunks.bytes",
     ];
     let summed: u64 = legs.iter().map(|key| at(key)).sum();
     assert_eq!(
@@ -38906,7 +38906,7 @@ fn the_metadata_total_is_the_sum_of_the_legs_it_names() {
         "the route cache leg must be exercised, or it is asserted vacuously"
     );
     assert!(
-        at("segments.bytes") > 0,
+        at("chunks.bytes") > 0,
         "the slab leg must be exercised, or it is asserted vacuously"
     );
 }
