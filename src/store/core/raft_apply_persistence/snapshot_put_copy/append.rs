@@ -90,7 +90,7 @@ impl MatrixObjectStore {
                 ));
             }
             if put_options_have_if_match(&options)
-                && !put_options_if_match_satisfied(&options, &previous.etag)
+                && !put_options_if_match_satisfied(&options, &previous.etag())
             {
                 return Err(ObjectError::PreconditionFailed(
                     "if-match etag does not match current object".to_string(),
@@ -128,7 +128,7 @@ impl MatrixObjectStore {
             object_id: object_id.clone(),
             version,
             length,
-            etag: etag(&etag_data).into(),
+            etag_fnv1a64: Some(fnv1a64(&etag_data)),
             content_type: previous
                 .as_ref()
                 .map_or(content_type.into(), |metadata| metadata.content_type.clone()),

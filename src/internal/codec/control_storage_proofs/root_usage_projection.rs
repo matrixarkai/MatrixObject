@@ -111,7 +111,7 @@ pub(crate) fn metadata_projection_value(metadata: &ObjectMetadata) -> String {
         "version={} length={} etag={} content_type={} metadata_count={} storage_class={} restore_until_ms={} deleted={} extent_count={} tag_count={} legal_hold={} retention_until_ms={}",
         metadata.version,
         metadata.length,
-        metadata.etag,
+        metadata.etag(),
         metadata.content_type,
         metadata.user_metadata.len(),
         metadata.storage_class,
@@ -129,7 +129,7 @@ pub(crate) fn object_inventory_record_payload_bytes(record: &ObjectInventoryReco
     bytes = bytes
         .saturating_add(record.metadata.object_id.bucket.len() as u64)
         .saturating_add(record.metadata.object_id.key.len() as u64)
-        .saturating_add(record.metadata.etag.len() as u64)
+        .saturating_add(record.metadata.etag().len() as u64)
         .saturating_add(record.metadata.content_type.len() as u64)
         .saturating_add(record.metadata.storage_class.len() as u64)
         .saturating_add((record.metadata.extents.len() as u64).saturating_mul(32));
@@ -207,7 +207,7 @@ impl ObjectProjection {
         Self {
             version: metadata.version,
             length: metadata.length,
-            etag_fnv1a64: change_etag_digest(&metadata.etag).unwrap_or(None),
+            etag_fnv1a64: metadata.etag_fnv1a64,
             content_type: metadata.content_type.clone(),
             metadata_count: metadata.user_metadata.len() as u32,
             storage_class: metadata.storage_class.clone(),

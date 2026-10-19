@@ -9,7 +9,7 @@ pub(crate) fn bucket_membership_metadata(
         object_id: ObjectId::new(bucket, ""),
         version: 0,
         length: 0,
-        etag: String::new().into(),
+        etag_fnv1a64: None,
         content_type: content_type.to_string().into(),
         user_metadata: BTreeMap::new().into(),
         storage_class: k_standard_storage_class().to_string().into(),

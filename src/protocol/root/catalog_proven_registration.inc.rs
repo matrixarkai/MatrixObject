@@ -47,7 +47,7 @@ impl<T> ProvenRootCatalogRegistration<T> {
             append_object_id(&mut material, &receipt.object_id);
             append_u64(&mut material, receipt.version);
             append_u64(&mut material, receipt.length);
-            append_string(&mut material, &receipt.etag);
+            append_string(&mut material, &receipt.etag());
             append_string(&mut material, &receipt.content_type);
             append_u64(&mut material, receipt.update_time_ms);
         }
@@ -213,7 +213,7 @@ impl<T: RootCatalogControlFields> ProvenRootCatalogRegistration<T> {
             fields.insert(format!("{prefix}key"), receipt.object_id.key.to_string());
             fields.insert(format!("{prefix}version"), receipt.version.to_string());
             fields.insert(format!("{prefix}length"), receipt.length.to_string());
-            fields.insert(format!("{prefix}etag"), receipt.etag.to_string());
+            fields.insert(format!("{prefix}etag"), receipt.etag().to_string());
             fields.insert(
                 format!("{prefix}content_type"),
                 receipt.content_type.to_string(),

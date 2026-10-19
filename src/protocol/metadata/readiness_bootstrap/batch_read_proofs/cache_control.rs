@@ -76,7 +76,7 @@ pub(crate) fn object_batch_cache_control_proof_checksum(
         if let Some(metadata) = item.metadata.as_ref() {
             append_u64(&mut material, 1);
             append_u64(&mut material, metadata.version);
-            append_string(&mut material, &metadata.etag);
+            append_string(&mut material, &metadata.etag());
             append_u64(&mut material, metadata.length);
         } else {
             append_u64(&mut material, 0);

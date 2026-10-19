@@ -117,7 +117,8 @@ pub(crate) fn audit_object_id_heap(ledger: &mut SharedTextLedger, object_id: &Ob
 fn audit_object_metadata_heap(ledger: &mut SharedTextLedger, metadata: &ObjectMetadata) -> u64 {
     audit_object_lock_bytes(&metadata.lock)
         .saturating_add(audit_object_id_heap(ledger, &metadata.object_id))
-        .saturating_add(audit_boxed_str_heap(&metadata.etag))
+        // The etag is a digest inline in the metadata, so it owns no heap.
+        .saturating_add(0)
         .saturating_add(ledger.charge(&metadata.content_type))
         .saturating_add(ledger.charge(&metadata.storage_class))
         .saturating_add(audit_object_attributes_bytes(&metadata.user_metadata))
@@ -365,7 +366,10 @@ impl MatrixObjectStore {
                     id_text_shared = id_text_shared.saturating_add(1);
                 }
                 lock_bytes = lock_bytes.saturating_add(audit_object_lock_bytes(&metadata.lock));
-                etag_heap = etag_heap.saturating_add(audit_boxed_str_heap(&metadata.etag));
+                // Inline, so nothing. The leg stays and reports zero,
+                // because a reader of the breakdown should see that it was
+                // weighed rather than quietly dropped.
+                etag_heap = etag_heap.saturating_add(0);
                 content_type_heap =
                     content_type_heap.saturating_add(detail_ledger.charge(&metadata.content_type));
                 storage_class_heap =

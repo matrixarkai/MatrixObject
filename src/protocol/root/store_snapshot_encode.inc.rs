@@ -212,7 +212,7 @@ impl StoreSnapshot {
         fn metadata_size(metadata: &ObjectMetadata) -> usize {
             object_id_size(&metadata.object_id)
                 .saturating_add(U64 * 9)
-                .saturating_add(encoded_string_len(&metadata.etag))
+                .saturating_add(encoded_string_len(&metadata.etag()))
                 .saturating_add(encoded_string_len(&metadata.content_type))
                 .saturating_add(encoded_string_len(&metadata.storage_class))
                 .saturating_add(string_map_size(&metadata.user_metadata))

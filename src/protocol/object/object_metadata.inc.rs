@@ -11,7 +11,16 @@ pub struct ObjectMetadata {
     pub object_id: ObjectId,
     pub version: u64,
     pub length: u64,
-    pub etag: Box<str>,
+    /// The DIGEST, not its spelling. `etag()` formats this same number as
+    /// "fnv1a64:" followed by 16 hex digits, which is the only form an etag has
+    /// ever taken, so holding the number costs the same 16 inline bytes a
+    /// `Box<str>` cost and drops the 24-byte buffer behind it -- 24 bytes an
+    /// object, 8.5% of what `objects` costs and 3.6% of the metadata slope.
+    ///
+    /// `None` is the EMPTY etag, a real state rather than a missing one: a
+    /// delete marker and a bucket membership record both carry it, and a digest
+    /// of 0 spells "fnv1a64:0000000000000000", which is not "".
+    pub etag_fnv1a64: Option<u64>,
     pub content_type: SharedText,
     pub user_metadata: ObjectAttributes,
     pub storage_class: SharedText,
@@ -23,6 +32,19 @@ pub struct ObjectMetadata {
 }
 
 impl ObjectMetadata {
+    /// The etag as it has always been spelled, and as it still goes on the
+    /// wire, into proof material and out of the HTTP front door.
+    pub fn etag(&self) -> String {
+        match self.etag_fnv1a64 {
+            None => String::new(),
+            Some(digest) => {
+                let mut text = String::with_capacity(24);
+                append_etag_of_digest(&mut text, digest);
+                text
+            }
+        }
+    }
+
     pub fn metadata_to_flat_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         string_map_to_flat_fields(&self.user_metadata, field_prefix)
     }
@@ -46,7 +68,7 @@ impl ObjectMetadata {
             self.object_id.bucket.to_string(),
         );
         fields.insert(format!("{field_prefix}key"), self.object_id.key.to_string());
-        fields.insert(format!("{field_prefix}etag"), self.etag.clone().into());
+        fields.insert(format!("{field_prefix}etag"), self.etag().clone().into());
         fields.insert(
             format!("{field_prefix}content_type"),
             self.content_type.clone().into(),

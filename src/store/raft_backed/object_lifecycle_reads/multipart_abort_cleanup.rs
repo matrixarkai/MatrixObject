@@ -25,7 +25,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     object_id: ObjectId::new("_multipart", existing.upload.upload_id.clone()),
                     version: 0,
                     length: existing.upload.total_bytes,
-                    etag: String::new().into(),
+                    etag_fnv1a64: None,
                     content_type: "multipart/abort-idempotent-deduped".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
                     storage_class: k_standard_storage_class().to_string().into(),

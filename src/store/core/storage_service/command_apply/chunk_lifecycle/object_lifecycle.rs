@@ -124,7 +124,7 @@ impl MatrixObjectStore {
                     object_id: placement.object_id,
                     version: placement.version,
                     length: placement.length,
-                    etag: String::new().into(),
+                    etag_fnv1a64: None,
                     content_type: "root/placement-migration".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
                     storage_class: k_standard_storage_class().to_string().into(),

@@ -154,7 +154,7 @@ impl MatrixObjectStore {
                     object_id: ObjectId::new("_metacoord", "expired"),
                     version: 0,
                     length: expired.len() as u64,
-                    etag: String::new().into(),
+                    etag_fnv1a64: None,
                     content_type: "metaserver/session-expire".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
                     storage_class: k_standard_storage_class().to_string().into(),
