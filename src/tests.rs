@@ -35540,6 +35540,71 @@ fn the_interned_storage_classes_are_the_valid_ones() {
 }
 
 #[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_whether_a_projection_can_be_parsed_back() {
+    // The packed projection spells the text exactly, which is half of what a
+    // conversion needs. The other half is the DECODE: a snapshot stores the
+    // text, so a restored record can only be packed again if the text can be
+    // read back into twelve values.
+    //
+    // It cannot in general, and nothing stops it. There is no
+    // validate_content_type -- storage_class is a closed set of four and the
+    // content type is whatever the caller passed -- so a content type carrying
+    // a space puts an unquoted space inside a space-separated format, and one
+    // carrying `=` puts a second `k=v` where a parser expects a value.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for (index, content_type) in [
+        "application/octet-stream",
+        "text/plain; charset=utf-8",
+        "x metadata_count=9 storage_class=GLACIER",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let key = format!("object{index}");
+        store
+            .put_object("bucket", &key, vec![b'x'; 8], *content_type)
+            .unwrap();
+        let metadata = store
+            .objects
+            .get(&ObjectId::new("bucket", &key))
+            .expect("the object was just written");
+        let text = metadata_projection_value(metadata);
+        // The field count a naive parser would see, against the twelve there are.
+        let fields = text.split(' ').filter(|part| part.contains('=')).count();
+        println!("PARSEBACK content_type={content_type:?} fields_seen={fields} of 12");
+        println!("PARSEBACK   {text}");
+        assert_eq!(
+            ObjectProjection::from_metadata(metadata).to_text(),
+            text,
+            "packing still spells it exactly, whatever the content type"
+        );
+    }
+    // And the pair that matters for a proof: two DIFFERENT states cannot
+    // produce the same text, because an injected copy of the literals adds
+    // length that the real fields still follow. So the format is unparseable
+    // without being ambiguous -- it is safe to hash and unsafe to read back.
+    let a = store
+        .objects
+        .get(&ObjectId::new("bucket", "object1"))
+        .unwrap();
+    let b = store
+        .objects
+        .get(&ObjectId::new("bucket", "object2"))
+        .unwrap();
+    assert_ne!(
+        metadata_projection_value(a),
+        metadata_projection_value(b),
+        "two states must not share a projection"
+    );
+}
+
+#[test]
 fn the_packed_projection_spells_the_same_text() {
     // The projection's FORMAT is hashed into three proofs, so a packed form is
     // only usable if it reproduces the text byte for byte. This asserts that
