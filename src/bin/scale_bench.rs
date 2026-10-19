@@ -44,6 +44,18 @@ static ALLOC_CLASS_BYTES: [AtomicU64; 12] = [
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
 ];
 
+/// Print a phase's allocation shape, skipping classes it never used.
+fn report_phase_classes(label: &str, phase: &PhaseResult) {
+    for class in 0..12 {
+        let count = phase.class_counts[class];
+        if count == 0 {
+            continue;
+        }
+        let upper = 4u64.saturating_pow(class as u32 + 1);
+        println!("{label}_class_under_{upper}={count}");
+    }
+}
+
 /// Which power-of-four class a size falls in: 0 is <4 B, 11 is >=4 MiB.
 fn alloc_size_class(size: u64) -> usize {
     let mut class = 0usize;
@@ -206,6 +218,8 @@ fn percent_operation_count(object_count: u64, percent: u64) -> u64 {
 
 #[derive(Clone, Debug, Default)]
 struct PhaseResult {
+    /// How many allocations this phase made in each power-of-four size class.
+    class_counts: [u64; 12],
     /// The largest single allocation made DURING this phase.
     largest_alloc_bytes: u64,
     ops: u64,
@@ -591,6 +605,11 @@ where
     // is a single copy of the whole store and reads exactly like a per-put
     // clone if the phase is not isolated.
     LARGEST_ALLOC_BYTES.store(0, Ordering::Relaxed);
+    // And the size classes, for the same reason: a phase that makes 608 small
+    // allocations and one that makes 105 large ones want opposite fixes, and
+    // the process-wide histogram cannot tell which phase did either.
+    let classes_at_start: [u64; 12] =
+        std::array::from_fn(|class| ALLOC_CLASS_COUNT[class].load(Ordering::Relaxed));
     let start = Instant::now();
     let next = Arc::new(AtomicU64::new(0));
     let ok_ops = Arc::new(AtomicU64::new(0));
@@ -672,6 +691,11 @@ where
     };
     let (p50_ms, p95_ms, p99_ms, p999_ms) = latency_percentiles_ms(&mut latencies);
     Ok(PhaseResult {
+        class_counts: std::array::from_fn(|class| {
+            ALLOC_CLASS_COUNT[class]
+                .load(Ordering::Relaxed)
+                .saturating_sub(classes_at_start[class])
+        }),
         largest_alloc_bytes: LARGEST_ALLOC_BYTES.load(Ordering::Relaxed),
         allocs: ALLOC_COUNT
             .load(Ordering::Relaxed)
@@ -4628,6 +4652,7 @@ fn run() -> Result<(), ObjectError> {
     println!("put_ops={}", put_phase.ops);
     println!("put_allocs={}", put_phase.allocs);
     println!("put_largest_alloc_bytes={}", put_phase.largest_alloc_bytes);
+    report_phase_classes("put", &put_phase);
     println!("put_alloc_bytes={}", put_phase.alloc_bytes);
     println!(
         "put_allocs_per_op={}",
@@ -4650,6 +4675,7 @@ fn run() -> Result<(), ObjectError> {
     println!("range_ops={}", range_phase.ops);
     println!("range_allocs={}", range_phase.allocs);
     println!("range_largest_alloc_bytes={}", range_phase.largest_alloc_bytes);
+    report_phase_classes("range", &range_phase);
     println!("range_alloc_bytes={}", range_phase.alloc_bytes);
     println!(
         "range_allocs_per_op={}",
@@ -4672,6 +4698,7 @@ fn run() -> Result<(), ObjectError> {
     println!("overwrite_ops={}", overwrite_phase.ops);
     println!("overwrite_allocs={}", overwrite_phase.allocs);
     println!("overwrite_largest_alloc_bytes={}", overwrite_phase.largest_alloc_bytes);
+    report_phase_classes("overwrite", &overwrite_phase);
     println!("overwrite_alloc_bytes={}", overwrite_phase.alloc_bytes);
     println!(
         "overwrite_allocs_per_op={}",
@@ -4687,6 +4714,7 @@ fn run() -> Result<(), ObjectError> {
     println!("delete_ops={}", delete_phase.ops);
     println!("delete_allocs={}", delete_phase.allocs);
     println!("delete_largest_alloc_bytes={}", delete_phase.largest_alloc_bytes);
+    report_phase_classes("delete", &delete_phase);
     println!("delete_alloc_bytes={}", delete_phase.alloc_bytes);
     println!(
         "delete_allocs_per_op={}",
