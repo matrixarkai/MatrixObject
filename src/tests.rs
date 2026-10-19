@@ -36866,6 +36866,67 @@ fn the_documented_way_to_set_receipt_retention_works() {
 }
 
 #[test]
+fn a_raft_apply_receipt_is_keyed_on_the_debug_formatting_of_its_command() {
+    // `object_command_checksum` is `etag(format!("{:?}", command))` -- a hash of
+    // the command's DEBUG OUTPUT. That checksum is stored in a
+    // `RaftApplyReceipt` and compared when an entry at an already-applied index
+    // arrives again; on a mismatch `apply_stale_raft_entry_receipt` returns an
+    // error rather than the remembered result.
+    //
+    // The receipts live in the store snapshot -- the snapshot validator checks
+    // their count against `k_max_raft_apply_receipts()` -- so a checksum
+    // written by one build can be compared against a command formatted by
+    // another. Renaming a field, reordering two fields, or changing any nested
+    // type's `Debug` therefore turns a benign retry into a refused apply, with
+    // nothing anywhere pinning the format that decides it.
+    //
+    // So pin it. If this fails, the Debug formatting of a command changed and
+    // the question to answer is what happens to receipts written before the
+    // change -- not whether to update the constant.
+    //
+    // The surface is wider than the command's own fields. The Debug output of a
+    // PutObject embeds the whole of `PutOptions`, all twelve fields of it:
+    //
+    //   PutObject { bucket: "bucket", key: "prefix/key", data: [120, 120, 120,
+    //   120], content_type: "application/octet-stream", update_time_ms: 1,
+    //   options: PutOptions { if_none_match: false, if_match_etag: None,
+    //   if_match_etags: [], expected_checksum: None, lease_owner: None,
+    //   lease_epoch: None, user_metadata: {}, tags: {}, storage_class: None,
+    //   min_read_index: 0, min_commit_index: 0 } }
+    //
+    // so adding a thirteenth option changes the checksum of every PutObject
+    // command, including ones whose options a caller never touched.
+    let command = ObjectCommand::PutObject {
+        bucket: "bucket".to_string(),
+        key: "prefix/key".to_string(),
+        data: vec![b'x'; 4],
+        content_type: "application/octet-stream".to_string(),
+        update_time_ms: 1,
+        options: PutOptions::default(),
+    };
+
+    let debug = format!("{command:?}");
+    let checksum = object_command_checksum(&command);
+    println!("COMMANDCHECKSUM {checksum}");
+    println!("COMMANDDEBUG {debug}");
+
+    assert_eq!(
+        checksum,
+        etag(debug.as_bytes()),
+        "the checksum is the etag of the Debug formatting, which is what makes \
+         it fragile -- if this no longer holds the comment above is stale"
+    );
+    assert_eq!(
+        checksum, "fnv1a64:2d8c744c881c48d8",
+        "the Debug formatting of ObjectCommand::PutObject decides whether a \
+         retried raft entry is deduplicated or refused, and it changed. \
+         Receipts written before the change will no longer match a command \
+         formatted after it, and apply_stale_raft_entry_receipt errors on a \
+         mismatch. Decide what happens to those receipts before updating this."
+    );
+}
+
+#[test]
 fn a_rejection_names_the_setting_it_rejected() {
     // The storage tiers are a chunk of 64 MiB holding pages of 1 MiB. There is
     // no tier above the chunk, and `StoreOptions` names the two correctly.
