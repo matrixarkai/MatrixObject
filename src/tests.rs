@@ -36453,6 +36453,102 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
 }
 
 #[test]
+fn every_option_in_the_table_is_a_field_with_that_default() {
+    // The README's configuration table had six rows and four were wrong:
+    // `slab_size` and `reuse_stale_slab_space` were not fields at all, so a
+    // reader copying them got a compile error; `chunk_size` was given as 1 MiB
+    // when it is 64; and `page_size` -- which the very next section calls the
+    // one option worth setting deliberately -- was missing.
+    //
+    // Nothing could catch that, because a table in a document is not compiled.
+    // This compiles it: every row's name has to appear below as a real field of
+    // `StoreOptions`, so a documented option that does not exist cannot be
+    // listed here, and every stated default is compared against
+    // `StoreOptions::default()`.
+    const PUBLISHED: &str = include_str!("../README.md");
+
+    fn rendered(bytes: u64) -> String {
+        const MIB: u64 = 1024 * 1024;
+        if bytes >= MIB && bytes % MIB == 0 {
+            format!("{} MiB", bytes / MIB)
+        } else if bytes >= 1024 && bytes % 1024 == 0 {
+            format!("{} KiB", bytes / 1024)
+        } else {
+            bytes.to_string()
+        }
+    }
+
+    let defaults = StoreOptions::default();
+    // Each entry names a real field. `defaults.slab_size` would not compile,
+    // which is what makes this stronger than a list of strings.
+    let known: Vec<(&str, String)> = vec![
+        ("chunk_size", rendered(defaults.chunk_size)),
+        ("page_size", rendered(defaults.page_size)),
+        ("max_extent_bytes", rendered(defaults.max_extent_bytes)),
+        ("volume_count", defaults.volume_count.to_string()),
+        ("replica_count", defaults.replica_count.to_string()),
+        ("write_quorum", defaults.write_quorum.to_string()),
+        (
+            "reuse_stale_chunk_space",
+            defaults.reuse_stale_chunk_space.to_string(),
+        ),
+    ];
+
+    // The rows of the table introduced by this exact header.
+    let header = "| option | default | meaning |";
+    let start = PUBLISHED
+        .find(header)
+        .expect("the README should carry the configuration table");
+    let rows: Vec<&str> = PUBLISHED[start..]
+        .lines()
+        .skip(2)
+        .take_while(|line| line.starts_with("| `"))
+        .collect();
+    assert!(
+        rows.len() >= known.len(),
+        "the table should list at least the {} options named here, and it lists {}",
+        known.len(),
+        rows.len()
+    );
+
+    for row in rows.iter() {
+        let mut cells = row.split('|').skip(1);
+        let name = cells
+            .next()
+            .expect("a row has a first cell")
+            .trim()
+            .trim_matches('`')
+            .to_string();
+        let stated = cells.next().expect("a row has a default cell").trim();
+        let expected = known
+            .iter()
+            .find(|(field, _)| *field == name)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "the table documents {name:?}, which is not a field of \
+                     StoreOptions named in this test -- either the option does \
+                     not exist, or add it here so its default is checked"
+                )
+            });
+        println!("OPTIONTABLE {name} stated={stated:?} actual={expected:?}");
+        assert_eq!(
+            stated, expected,
+            "the table states {name} defaults to {stated:?} and it is {expected:?}"
+        );
+    }
+
+    // And every option this test knows about must be in the table, so a row
+    // cannot simply be deleted to make the check pass.
+    for (field, _) in known.iter() {
+        assert!(
+            rows.iter().any(|row| row.starts_with(&format!("| `{field}` |"))),
+            "the table should list {field}, and it does not"
+        );
+    }
+}
+
+#[test]
 fn a_rejection_names_the_setting_it_rejected() {
     // The storage tiers are a chunk of 64 MiB holding pages of 1 MiB. There is
     // no tier above the chunk, and `StoreOptions` names the two correctly.

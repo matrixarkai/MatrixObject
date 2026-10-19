@@ -459,38 +459,74 @@ Nothing external is required to build or run the tests.
 
 | option | default | meaning |
 |---|---|---|
-| `slab_size` | 64 MiB | how large a slab grows before a new one is opened |
-| `chunk_size` | 1 MiB | the replicated unit a write lands in |
+| `chunk_size` | 64 MiB | how large a chunk grows before a new one is opened |
+| `page_size` | 1 MiB | the replicated unit a write lands in — see the sizing note below |
 | `max_extent_bytes` | 4 MiB | the largest contiguous range one extent may cover |
-| `replica_count` | 3 | copies of each chunk |
+| `volume_count` | 1 | volumes to spread chunks across |
+| `replica_count` | 3 | copies kept of each chunk |
 | `write_quorum` | 2 | replicas that must accept a write |
-| `reuse_stale_slab_space` | false | take the space a superseded object left instead of growing the slab |
+| `reuse_stale_chunk_space` | false | take the space a superseded object left instead of growing the chunk |
 
-### Sizing `chunk_size` for your object size
+Every default above is `StoreOptions::default()`, and
+`every_option_in_the_table_is_a_field_with_that_default` reads this table and
+fails if a row names a field that does not exist or states a default the tree
+does not have. Four of the six rows this replaces were wrong: `slab_size` and
+`reuse_stale_slab_space` were not fields at all, `chunk_size` was given as 1 MiB
+when it is 64, and `page_size` — the option the next section calls the one worth
+setting deliberately — was missing.
 
-`chunk_size` is the one option worth setting deliberately before you store small
-objects, because a write's undo is currently the chunk it lands in rather than
+### Sizing `page_size` for your object size
+
+`page_size` is the one option worth setting deliberately before you store small
+objects, because a write's undo is currently the **page** it lands in rather than
 the range it wrote. Measured per put, with a deterministic allocation counter:
 
 ```
-undo bytes per put  ~=  replica_count  x  0.572  x  chunk_size
+undo bytes per put  ~=  replica_count  x  0.572  x  page_size
 ```
 
-The 0.572 is a chunk's average occupancy as it fills, and the per-replica factor
+The 0.572 is a page's average occupancy as it fills, and the per-replica factor
 came out identical at three and five replicas. At the defaults that is about
 1.7 MiB copied to store a 1 KiB object. The effect on time, 4,000 puts of 1 KiB
 at three replicas:
 
-| `chunk_size` | put seconds |
+| `page_size` | put seconds |
 |---:|---:|
 | 1 MiB (default) | 8.84 |
 | 256 KiB | 2.12 |
 | 64 KiB | 0.70 |
 
-So pick a `chunk_size` near the size of the objects you actually store. The
-trade is that smaller chunks mean more of them to track: allocation *count* rose
+So pick a `page_size` near the size of the objects you actually store. The
+trade is that smaller pages mean more of them to track: allocation *count* rose
 from 23,091,061 to 23,764,493 across that range, while bytes and time both fell
 much further.
+
+The largest single allocation a put makes says the same thing exactly, measured
+with `scale_bench`'s per-phase allocation watermark:
+
+```
+put_largest_alloc_bytes  =  min(bytes already in the page, page_size)   per replica
+```
+
+| `page_size` | 400 objects | 800 | 1,600 |
+|---:|---:|---:|---:|
+| 256 KiB | 261,120 **at the bound** | 261,120 | 261,120 |
+| 1 MiB | 408,576 | 818,176 | 1,047,552 **at the bound** |
+| 4 MiB | 408,576 | 818,176 | 1,637,376 |
+
+The copy grows with what the page already holds and stops at `page_size`, which
+makes `page_size x replica_count` the ceiling on what one write copies — about
+**3 MiB at the defaults**, to store a single 1 KiB object. Reproduce with
+`cargo build --release --bin scale_bench` and
+`./target/release/scale_bench 1024 400 1 65536`, reading
+`put_largest_alloc_bytes` — not `alloc.largest_bytes`, which is process-wide and
+reports the recovery snapshot.
+
+Note which setting this is. `chunk_size` is the 64 MiB container **above** the
+page and is not the one to reduce here: lowering it below `max_extent_bytes`
+(4 MiB by default) is refused outright with
+`max_extent_bytes must be 1..chunk_size`. The environment names the benchmark
+reads are `MATRIX_OBJECTSTORE_PAGE_SIZE` and `MATRIX_OBJECTSTORE_CHUNK_SIZE`.
 
 This is a property of the write undo, not of the storage layout, and it is
 tracked as an issue rather than accepted as the design.
