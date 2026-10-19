@@ -36764,15 +36764,15 @@ fn the_documented_way_to_set_receipt_retention_works() {
     );
 
     // The snippet the README now shows.
-    let (chunk_commit_index, page_commit_index) =
+    let (receipts_trimmed, replicas_configured) =
         store.configure_chunk_receipt_retention(8).unwrap();
 
     let retained_after = read(&store, "replica.receipts");
     let bytes_after = read(&store, "block.receipts.bytes");
     println!(
         "RETENTION receipts {retained_before} -> {retained_after}  bytes \
-         {bytes_before} -> {bytes_after}  commit_index \
-         chunk={chunk_commit_index} page={page_commit_index}"
+         {bytes_before} -> {bytes_after}  trimmed={receipts_trimmed} \
+         replicas_configured={replicas_configured}"
     );
 
     assert!(
