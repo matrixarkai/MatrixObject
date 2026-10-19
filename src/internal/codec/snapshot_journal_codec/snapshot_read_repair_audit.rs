@@ -105,7 +105,7 @@ pub(crate) fn read_bounded_repair_report(
     Ok(BoundedRepairReport {
         total_chunk_count: cursor.read_u64()?,
         selected_chunk_count: cursor.read_u64()?,
-        skipped_chunk_count: cursor.read_u64()?,
+        skipped_page_count: cursor.read_u64()?,
         candidate_repair_bytes: cursor.read_u64()?,
         selected_repair_bytes: cursor.read_u64()?,
         skipped_repair_bytes: cursor.read_u64()?,

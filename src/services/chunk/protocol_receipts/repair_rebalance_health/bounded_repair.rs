@@ -17,7 +17,7 @@ impl RepairStats {
 pub struct BoundedRepairReport {
     pub total_chunk_count: u64,
     pub selected_chunk_count: u64,
-    pub skipped_chunk_count: u64,
+    pub skipped_page_count: u64,
     pub candidate_repair_bytes: u64,
     pub selected_repair_bytes: u64,
     pub skipped_repair_bytes: u64,
@@ -35,7 +35,7 @@ impl BoundedRepairReport {
         for (name, value) in [
             ("total_chunk_count", self.total_chunk_count),
             ("selected_chunk_count", self.selected_chunk_count),
-            ("skipped_chunk_count", self.skipped_chunk_count),
+            ("skipped_chunk_count", self.skipped_page_count),
             ("candidate_repair_bytes", self.candidate_repair_bytes),
             ("selected_repair_bytes", self.selected_repair_bytes),
             ("skipped_repair_bytes", self.skipped_repair_bytes),

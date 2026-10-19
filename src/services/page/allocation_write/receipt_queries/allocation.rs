@@ -39,13 +39,13 @@ impl MatrixChunkService {
         for (idempotency_key, allocation) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
             if chunk_id.is_some_and(|chunk_id| &allocation.chunk_id != chunk_id) {
-                page.skipped_slab_count = page.skipped_slab_count.saturating_add(1);
+                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
                 continue;
             }
             if page_index.is_some_and(|page_index| {
                 !allocation_overlaps_chunk(allocation, page_index, self.page_size)
             }) {
-                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
+                page.skipped_page_count = page.skipped_page_count.saturating_add(1);
                 continue;
             }
             if page.receipts.len() >= limit {
@@ -104,13 +104,13 @@ impl MatrixChunkService {
         for (idempotency_key, allocation) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
             if chunk_id.is_some_and(|chunk_id| &allocation.chunk_id != chunk_id) {
-                page.skipped_slab_count = page.skipped_slab_count.saturating_add(1);
+                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
                 continue;
             }
             if page_index.is_some_and(|page_index| {
                 !allocation_overlaps_chunk(allocation, page_index, self.page_size)
             }) {
-                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
+                page.skipped_page_count = page.skipped_page_count.saturating_add(1);
                 continue;
             }
             if page.receipts.len() >= limit {
@@ -173,7 +173,7 @@ impl MatrixChunkService {
                     .iter()
                     .any(|allocation| &allocation.chunk_id == chunk_id)
             }) {
-                page.skipped_slab_count = page.skipped_slab_count.saturating_add(1);
+                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
                 continue;
             }
             if page_index.is_some_and(|page_index| {
@@ -181,7 +181,7 @@ impl MatrixChunkService {
                     allocation_overlaps_chunk(allocation, page_index, self.page_size)
                 })
             }) {
-                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
+                page.skipped_page_count = page.skipped_page_count.saturating_add(1);
                 continue;
             }
             if page.receipts.len() >= limit {

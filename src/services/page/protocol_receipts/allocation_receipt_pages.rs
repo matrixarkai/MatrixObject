@@ -8,10 +8,10 @@ pub struct PageAllocationReceiptPage {
     pub truncated: bool,
     pub next_marker: Option<String>,
     pub chunk_id: Option<ChunkId>,
-    pub skipped_slab_count: u64,
+    pub skipped_chunk_count: u64,
     pub page_index: Option<u64>,
     pub page_size: Option<u64>,
-    pub skipped_chunk_count: u64,
+    pub skipped_page_count: u64,
 }
 
 impl PageAllocationReceiptPage {
@@ -40,7 +40,7 @@ impl PageAllocationReceiptPage {
             self.truncated,
             &self.next_marker,
             self.receipts.len(),
-            self.skipped_slab_count,
+            self.skipped_chunk_count,
         )?;
         if let Some(chunk_id) = &self.chunk_id {
             if self
@@ -93,7 +93,7 @@ impl PageAllocationReceiptPage {
             self.truncated,
             &self.next_marker,
             self.chunk_id.as_ref(),
-            self.skipped_slab_count,
+            self.skipped_chunk_count,
             field_prefix,
         );
         insert_page_chunk_filter_control_fields(
@@ -101,7 +101,7 @@ impl PageAllocationReceiptPage {
             field_prefix,
             self.page_index,
             self.page_size,
-            self.skipped_chunk_count,
+            self.skipped_page_count,
         );
         fields.insert(
             format!("{field_prefix}block_allocation_receipt_page_proof_format"),
@@ -130,10 +130,10 @@ pub struct PageBatchAllocationReceiptPage {
     pub truncated: bool,
     pub next_marker: Option<String>,
     pub chunk_id: Option<ChunkId>,
-    pub skipped_slab_count: u64,
+    pub skipped_chunk_count: u64,
     pub page_index: Option<u64>,
     pub page_size: Option<u64>,
-    pub skipped_chunk_count: u64,
+    pub skipped_page_count: u64,
 }
 
 impl PageBatchAllocationReceiptPage {
@@ -158,7 +158,7 @@ impl PageBatchAllocationReceiptPage {
             self.truncated,
             &self.next_marker,
             self.receipts.len(),
-            self.skipped_slab_count,
+            self.skipped_chunk_count,
         )?;
         if let Some(chunk_id) = &self.chunk_id {
             if self.receipts.iter().any(|receipt| {
@@ -215,7 +215,7 @@ impl PageBatchAllocationReceiptPage {
             self.truncated,
             &self.next_marker,
             self.chunk_id.as_ref(),
-            self.skipped_slab_count,
+            self.skipped_chunk_count,
             field_prefix,
         );
         insert_page_chunk_filter_control_fields(
@@ -223,7 +223,7 @@ impl PageBatchAllocationReceiptPage {
             field_prefix,
             self.page_index,
             self.page_size,
-            self.skipped_chunk_count,
+            self.skipped_page_count,
         );
         fields.insert(
             format!("{field_prefix}block_batch_allocation_receipt_page_proof_format"),

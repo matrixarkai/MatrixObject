@@ -27,7 +27,7 @@ impl MatrixReplicaService {
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
             if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
-                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
+                page.skipped_page_count = page.skipped_page_count.saturating_add(1);
                 continue;
             }
             if page.receipts.len() >= limit {
@@ -69,7 +69,7 @@ impl MatrixReplicaService {
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
             if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
-                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
+                page.skipped_page_count = page.skipped_page_count.saturating_add(1);
                 continue;
             }
             if page.receipts.len() >= limit {
@@ -111,7 +111,7 @@ impl MatrixReplicaService {
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
             if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
-                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
+                page.skipped_page_count = page.skipped_page_count.saturating_add(1);
                 continue;
             }
             if page.receipts.len() >= limit {
@@ -153,7 +153,7 @@ impl MatrixReplicaService {
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
             if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
-                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
+                page.skipped_page_count = page.skipped_page_count.saturating_add(1);
                 continue;
             }
             if page.receipts.len() >= limit {
@@ -195,7 +195,7 @@ impl MatrixReplicaService {
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
             if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
-                page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
+                page.skipped_page_count = page.skipped_page_count.saturating_add(1);
                 continue;
             }
             if page.receipts.len() >= limit {

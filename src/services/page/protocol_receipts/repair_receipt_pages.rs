@@ -8,7 +8,7 @@ pub struct PageRangeRepairReceiptPage {
     pub truncated: bool,
     pub next_marker: Option<String>,
     pub chunk_id: Option<ChunkId>,
-    pub skipped_slab_count: u64,
+    pub skipped_chunk_count: u64,
 }
 
 impl PageRangeRepairReceiptPage {
@@ -33,7 +33,7 @@ impl PageRangeRepairReceiptPage {
             self.truncated,
             &self.next_marker,
             self.receipts.len(),
-            self.skipped_slab_count,
+            self.skipped_chunk_count,
         )?;
         if let Some(chunk_id) = &self.chunk_id {
             if self
@@ -71,7 +71,7 @@ impl PageRangeRepairReceiptPage {
             self.truncated,
             &self.next_marker,
             self.chunk_id.as_ref(),
-            self.skipped_slab_count,
+            self.skipped_chunk_count,
             field_prefix,
         );
         fields.insert(

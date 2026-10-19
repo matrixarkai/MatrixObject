@@ -8,7 +8,7 @@ pub struct ReplicaRepairReceiptPage {
     pub truncated: bool,
     pub next_marker: Option<String>,
     pub page_id: Option<PageId>,
-    pub skipped_chunk_count: u64,
+    pub skipped_page_count: u64,
 }
 
 impl ReplicaRepairReceiptPage {
@@ -33,7 +33,7 @@ impl ReplicaRepairReceiptPage {
             self.truncated,
             &self.next_marker,
             self.receipts.len(),
-            self.skipped_chunk_count,
+            self.skipped_page_count,
         )?;
         if let Some(page_id) = &self.page_id {
             if self
@@ -70,7 +70,7 @@ impl ReplicaRepairReceiptPage {
             self.truncated,
             &self.next_marker,
             &self.page_id,
-            self.skipped_chunk_count,
+            self.skipped_page_count,
             field_prefix,
         );
         fields.insert(
@@ -143,8 +143,8 @@ macro_rules! impl_chunk_storage_receipt_page_source {
                 self.page_id.as_ref()
             }
 
-            fn storage_receipt_page_skipped_chunk_count(&self) -> u64 {
-                self.skipped_chunk_count
+            fn storage_receipt_page_skipped_page_count(&self) -> u64 {
+                self.skipped_page_count
             }
 
             fn storage_receipt_page_typed_proof_checksum(&self) -> String {
@@ -168,7 +168,7 @@ fn chunk_receipt_page_common_control_fields(
     truncated: bool,
     next_marker: &Option<String>,
     page_id: &Option<PageId>,
-    skipped_chunk_count: u64,
+    skipped_page_count: u64,
     field_prefix: &str,
 ) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
@@ -199,7 +199,7 @@ fn chunk_receipt_page_common_control_fields(
     }
     fields.insert(
         format!("{field_prefix}skipped_chunk_count"),
-        skipped_chunk_count.to_string(),
+        skipped_page_count.to_string(),
     );
     fields
 }

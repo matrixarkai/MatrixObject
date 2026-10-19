@@ -7,7 +7,7 @@ pub(crate) fn append_page_receipt_page_common(
     truncated: bool,
     next_marker: &Option<String>,
     chunk_id: &Option<ChunkId>,
-    skipped_slab_count: u64,
+    skipped_chunk_count: u64,
 ) {
     append_u64(material, receipt_count);
     append_u64(material, total_receipt_count);
@@ -22,21 +22,21 @@ pub(crate) fn append_page_receipt_page_common(
     if let Some(chunk_id) = chunk_id {
         append_chunk_id(material, chunk_id);
     }
-    append_u64(material, skipped_slab_count);
+    append_u64(material, skipped_chunk_count);
 }
 
 pub(crate) fn append_page_receipt_page_chunk_filter(
     material: &mut Vec<u8>,
     page_index: Option<u64>,
     page_size: Option<u64>,
-    skipped_chunk_count: u64,
+    skipped_page_count: u64,
 ) {
     append_u64(material, page_index.is_some() as u64);
     if let Some(page_index) = page_index {
         append_u64(material, page_index);
         append_u64(material, page_size.unwrap_or(0));
     }
-    append_u64(material, skipped_chunk_count);
+    append_u64(material, skipped_page_count);
 }
 
 fn receipt_page_proof_capacity(
@@ -99,13 +99,13 @@ pub(crate) fn page_write_receipt_page_proof_checksum(page: &PageWriteReceiptPage
         page.truncated,
         &page.next_marker,
         &page.chunk_id,
-        page.skipped_slab_count,
+        page.skipped_chunk_count,
     );
     append_page_receipt_page_chunk_filter(
         &mut material,
         page.page_index,
         page.page_size,
-        page.skipped_chunk_count,
+        page.skipped_page_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);
     for receipt in &page.receipts {
@@ -163,13 +163,13 @@ pub(crate) fn page_discard_receipt_page_proof_checksum(page: &PageDiscardReceipt
         page.truncated,
         &page.next_marker,
         &page.chunk_id,
-        page.skipped_slab_count,
+        page.skipped_chunk_count,
     );
     append_page_receipt_page_chunk_filter(
         &mut material,
         page.page_index,
         page.page_size,
-        page.skipped_chunk_count,
+        page.skipped_page_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);
     for receipt in &page.receipts {
@@ -229,7 +229,7 @@ pub(crate) fn page_range_repair_receipt_page_proof_checksum(
         page.truncated,
         &page.next_marker,
         &page.chunk_id,
-        page.skipped_slab_count,
+        page.skipped_chunk_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);
     for receipt in &page.receipts {

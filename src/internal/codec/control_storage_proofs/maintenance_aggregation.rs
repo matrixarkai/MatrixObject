@@ -90,9 +90,9 @@ pub(crate) fn merge_bounded_repair_report(
     target.selected_chunk_count = target
         .selected_chunk_count
         .saturating_add(next.selected_chunk_count);
-    target.skipped_chunk_count = target
-        .skipped_chunk_count
-        .saturating_add(next.skipped_chunk_count);
+    target.skipped_page_count = target
+        .skipped_page_count
+        .saturating_add(next.skipped_page_count);
     target.candidate_repair_bytes = target
         .candidate_repair_bytes
         .saturating_add(next.candidate_repair_bytes);

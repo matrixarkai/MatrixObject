@@ -277,7 +277,7 @@ impl MatrixChunkService {
                 continue;
             }
             if selected >= limit {
-                report.skipped_chunk_count = report.skipped_chunk_count.saturating_add(1);
+                report.skipped_page_count = report.skipped_page_count.saturating_add(1);
                 report.skipped_repair_bytes = report.skipped_repair_bytes.saturating_add(bytes);
                 if !report.has_more {
                     report.next_chunk_index = page_id.page_index;

@@ -8,7 +8,7 @@ pub struct ReplicaWriteReceiptPage {
     pub truncated: bool,
     pub next_marker: Option<String>,
     pub page_id: Option<PageId>,
-    pub skipped_chunk_count: u64,
+    pub skipped_page_count: u64,
 }
 
 impl ReplicaWriteReceiptPage {
@@ -33,7 +33,7 @@ impl ReplicaWriteReceiptPage {
             self.truncated,
             &self.next_marker,
             self.receipts.len(),
-            self.skipped_chunk_count,
+            self.skipped_page_count,
         )?;
         if let Some(page_id) = &self.page_id {
             if self
@@ -70,7 +70,7 @@ impl ReplicaWriteReceiptPage {
             self.truncated,
             &self.next_marker,
             &self.page_id,
-            self.skipped_chunk_count,
+            self.skipped_page_count,
             field_prefix,
         );
         fields.insert(
@@ -118,7 +118,7 @@ pub struct ReplicaBatchWriteReceiptPage {
     pub truncated: bool,
     pub next_marker: Option<String>,
     pub page_id: Option<PageId>,
-    pub skipped_chunk_count: u64,
+    pub skipped_page_count: u64,
 }
 
 impl ReplicaBatchWriteReceiptPage {
@@ -143,7 +143,7 @@ impl ReplicaBatchWriteReceiptPage {
             self.truncated,
             &self.next_marker,
             self.receipts.len(),
-            self.skipped_chunk_count,
+            self.skipped_page_count,
         )?;
         if let Some(page_id) = &self.page_id {
             if self
@@ -181,7 +181,7 @@ impl ReplicaBatchWriteReceiptPage {
             self.truncated,
             &self.next_marker,
             &self.page_id,
-            self.skipped_chunk_count,
+            self.skipped_page_count,
             field_prefix,
         );
         fields.insert(
