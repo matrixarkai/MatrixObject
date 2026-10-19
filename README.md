@@ -172,17 +172,30 @@ are bounded by a configured limit, so they are the same size whether the store
 holds a thousand objects or a million, and a deployment has to provision for
 them separately.
 
-| structure | setting | default | at that default |
-|---|---|---:|---:|
-| metadata route cache | `metadata_route_cache_entries` | 100,000 | **16.8 MB** |
-| idempotency receipts | `receipt_retention` | 100,000 | ~82 MB across three replicas |
-| raft apply receipts | `k_max_raft_apply_receipts()` | 4,096 | ~1.4 MB |
-| object change feed | `UNCONSUMED_OBJECT_CHANGE_RETENTION` | 1,024 | included in the figures above |
-| metadata change log | `UNCHECKPOINTED_METADATA_CHANGE_RETENTION` | 1,024 | included in the figures above |
+Each per-unit cost below is measured rather than estimated. The figures come
+from the ignored `measure_*` tests in the suite, which print them on demand:
 
-For scale, the metadata for 2,000 objects of 1 KiB is about 1.5 MB. A full route
-cache is ten times that, and the receipt maps at their default are considerably
-more.
+```
+cargo test --lib measure_ -- --ignored --nocapture
+```
+
+| structure | setting | default | per unit | at that default |
+|---|---|---:|---:|---:|
+| idempotency receipts | `receipt_retention` | 100,000 | 274 B | **82.2 MB** across three replicas |
+| metadata route cache | `metadata_route_cache_entries` | 100,000 | 144 B | **14.4 MB** |
+| raft apply receipts | `k_max_raft_apply_receipts()` | 4,096 | 280 B | 1.15 MB |
+| object change feed | `UNCONSUMED_OBJECT_CHANGE_RETENTION` | 1,024 | 177 B | 181 KB |
+| metadata change log | `UNCHECKPOINTED_METADATA_CHANGE_RETENTION` | 1,024 | 56 B | 57 KB |
+| read cache | `chunk_read_cache_max_bytes_per_replica` | — | — | the bound **plus 5.6%** |
+
+The read cache is the odd one: its setting bounds the cached payload, and the
+entries, keys, checksums, by-chunk index and eviction queue beside it are
+outside that bound. A replica configured to cache 1 GiB holds about 1.056 GiB,
+and the overhead's share depends on how large the cached ranges are.
+
+For scale, the metadata for 2,000 objects of 1 KiB is about 1.8 MB. A full
+route cache is eight times that, and the receipt maps at their default are
+considerably more.
 
 The route cache is the one most likely to surprise, because it is keyed by
 **metadata key** — one entry per object key resolved, not one per shard — so it
