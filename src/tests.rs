@@ -36978,6 +36978,112 @@ fn a_raft_apply_receipt_is_keyed_on_the_debug_formatting_of_its_command() {
 }
 
 #[test]
+fn any_k_of_k_plus_m_fragments_reconstruct_the_payload() {
+    // The sidecar scheme in the tree is a single XOR of every data fragment,
+    // which is Reed-Solomon with m = 1 and nothing more: it rebuilds exactly one
+    // lost fragment whatever k is. Fragments placed on different nodes, which is
+    // what replaces replication, have to survive losing several -- so m > 1, and
+    // that needs arithmetic in a field rather than a a single XOR.
+    //
+    // The property is "any k of the k + m reconstruct", and it is checked here
+    // EXHAUSTIVELY rather than argued: every subset of fragments of size k, for
+    // every k and m the configuration allows. The Cauchy construction is chosen
+    // because every square submatrix of a Cauchy matrix is invertible, which is
+    // that property -- but a construction that is right on paper and wrong in
+    // code looks identical until something enumerates the cases.
+    fn split(data: &[u8], k: usize) -> Vec<Vec<u8>> {
+        let fragment_len = data.len().div_ceil(k);
+        (0..k)
+            .map(|index| {
+                let start = (index * fragment_len).min(data.len());
+                let end = ((index + 1) * fragment_len).min(data.len());
+                let mut fragment = data[start..end].to_vec();
+                fragment.resize(fragment_len, 0);
+                fragment
+            })
+            .collect()
+    }
+
+    let payload: Vec<u8> = (0..4096u32).map(|index| (index * 31 + 7) as u8).collect();
+    let mut checked = 0usize;
+
+    for k in [2usize, 3, 4, 8, 16] {
+        for m in [1usize, 2, 3, 4] {
+            let data = split(&payload, k);
+            let redundancy = rs_encode_redundancy(&data, m);
+            assert_eq!(redundancy.len(), m, "m redundancy fragments for k={k} m={m}");
+            assert!(
+                redundancy.iter().all(|fragment| fragment.len() == data[0].len()),
+                "a redundancy fragment is the length of a data fragment"
+            );
+
+            // Every fragment, data and redundancy, by its index in the whole set.
+            let whole: Vec<(usize, Vec<u8>)> = data
+                .iter()
+                .cloned()
+                .chain(redundancy.iter().cloned())
+                .enumerate()
+                .collect();
+            let total = k + m;
+
+            // Every subset of exactly k fragments, enumerated by bitmask. The
+            // largest case is 20 choose 16, which is 4,845 subsets.
+            for mask in 0u32..(1u32 << total) {
+                if mask.count_ones() as usize != k {
+                    continue;
+                }
+                let surviving: Vec<(usize, Vec<u8>)> = (0..total)
+                    .filter(|index| mask & (1 << index) != 0)
+                    .map(|index| whole[index].clone())
+                    .collect();
+                let rebuilt = rs_reconstruct_data(&surviving, k, m).unwrap_or_else(|err| {
+                    panic!("k={k} m={m} mask={mask:b} should reconstruct, and it failed: {err:?}")
+                });
+                assert_eq!(
+                    rebuilt, data,
+                    "k={k} m={m} mask={mask:b} rebuilt the wrong payload"
+                );
+                checked += 1;
+            }
+        }
+    }
+    // The count the parameter lists imply: sum of C(k + m, k). Asserted rather
+    // than eyeballed, because an enumeration that quietly skips cases passes
+    // every reconstruction it does run. My first attempt at this was a
+    // remembered threshold of 10,000 and the real figure is 6,926 -- the test
+    // failed on the guess while the codec was correct.
+    fn binomial(n: usize, r: usize) -> usize {
+        let mut value = 1usize;
+        for step in 0..r {
+            value = value * (n - step) / (step + 1);
+        }
+        value
+    }
+    let expected: usize = [2usize, 3, 4, 8, 16]
+        .iter()
+        .flat_map(|k| [1usize, 2, 3, 4].iter().map(move |m| binomial(k + m, *k)))
+        .sum();
+    println!("FRAGMENTCODING subsets_checked={checked} expected={expected}");
+    assert_eq!(
+        checked, expected,
+        "every subset of size k must be enumerated for every k and m"
+    );
+
+    // And fewer than k fragments must be refused rather than guessed at.
+    let data = split(&payload, 4);
+    let redundancy = rs_encode_redundancy(&data, 2);
+    let too_few: Vec<(usize, Vec<u8>)> = vec![
+        (0, data[0].clone()),
+        (4, redundancy[0].clone()),
+        (5, redundancy[1].clone()),
+    ];
+    assert!(
+        rs_reconstruct_data(&too_few, 4, 2).is_err(),
+        "three fragments cannot reconstruct a four-fragment payload"
+    );
+}
+
+#[test]
 fn a_page_with_no_peers_carries_a_redundancy_fragment() {
     // The companion to `no_page_carries_a_redundancy_fragment_while_it_has_peers`,
     // and the one that makes it say something.
