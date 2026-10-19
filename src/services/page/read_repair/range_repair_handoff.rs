@@ -11,16 +11,16 @@ impl MatrixChunkService {
             ObjectError::InvalidArgument("block repair read range exceeds memory size".to_string())
         })?;
         let mut out = Vec::with_capacity(capacity);
-        let chunk_ids = locations
+        let page_ids = locations
             .iter()
-            .map(|loc| loc.chunk_id.clone())
+            .map(|loc| loc.page_id.clone())
             .collect::<Vec<_>>();
-        let mut stats = self.collect_metadata_head_admission_stats(&chunk_ids);
+        let mut stats = self.collect_metadata_head_admission_stats(&page_ids);
         for loc in locations {
             let (selected, read_stats) =
-                self.read_chunk_quorum(&loc.chunk_id, loc.chunk_offset, loc.length)?;
+                self.read_chunk_quorum(&loc.page_id, loc.page_offset, loc.length)?;
             merge_page_read_stats(&mut stats, read_stats);
-            let repair = self.repair_chunk_from_quorum(&loc.chunk_id)?;
+            let repair = self.repair_chunk_from_quorum(&loc.page_id)?;
             stats.replica_read_repairs = stats
                 .replica_read_repairs
                 .saturating_add(repair.repaired_replicas);
@@ -86,9 +86,9 @@ impl MatrixChunkService {
         Ok(report)
     }
 
-    fn collect_metadata_head_admission_stats(&self, chunk_ids: &[PageId]) -> ChunkReadStats {
+    fn collect_metadata_head_admission_stats(&self, page_ids: &[PageId]) -> ChunkReadStats {
         let mut stats = ChunkReadStats::default();
-        if chunk_ids.is_empty() {
+        if page_ids.is_empty() {
             return stats;
         }
         let mut successful = 0usize;
@@ -98,7 +98,7 @@ impl MatrixChunkService {
             }
             stats.metadata_head_batch_requests =
                 stats.metadata_head_batch_requests.saturating_add(1);
-            if let Ok(head_stats) = replica.head_unique_chunk_batch_stats_refs(chunk_ids) {
+            if let Ok(head_stats) = replica.head_unique_chunk_batch_stats_refs(page_ids) {
                 stats.metadata_physical_head_count = stats
                     .metadata_physical_head_count
                     .saturating_add(head_stats.physical_heads);
@@ -129,10 +129,10 @@ impl MatrixChunkService {
         let mut aggregate = RepairStats::default();
         let mut seen = BTreeSet::new();
         for loc in self.map_range(slab_id, offset, length)? {
-            if seen.insert(loc.chunk_id.clone()) {
+            if seen.insert(loc.page_id.clone()) {
                 merge_repair_stats(
                     &mut aggregate,
-                    self.repair_chunk_from_quorum(&loc.chunk_id)?,
+                    self.repair_chunk_from_quorum(&loc.page_id)?,
                 );
             }
         }
@@ -162,11 +162,11 @@ impl MatrixChunkService {
         let mut seen = BTreeSet::new();
         let mut payload_bytes = 0u64;
         for loc in locations {
-            if !seen.insert(loc.chunk_id.clone()) {
+            if !seen.insert(loc.page_id.clone()) {
                 continue;
             }
             let handoff =
-                self.replicas[source_replica_index].prepare_chunk_state_handoff(&loc.chunk_id)?;
+                self.replicas[source_replica_index].prepare_chunk_state_handoff(&loc.page_id)?;
             let next_payload = payload_bytes.saturating_add(handoff.state.data.len() as u64);
             if max_payload_bytes > 0 && next_payload > max_payload_bytes {
                 if out.is_empty() {
@@ -224,7 +224,7 @@ impl MatrixChunkService {
                 stats.failed_repairs = stats.failed_repairs.saturating_add(1);
                 continue;
             }
-            let needs_install = match target.read_chunk_state_validated(&handoff.chunk_id) {
+            let needs_install = match target.read_chunk_state_validated(&handoff.page_id) {
                 Ok(state) => state != handoff.state,
                 Err(_) => true,
             };
@@ -252,7 +252,7 @@ impl MatrixChunkService {
         let mut chunks: BTreeMap<PageId, u64> = BTreeMap::new();
         for loc in self.map_range(slab_id, offset, length)? {
             chunks
-                .entry(loc.chunk_id.clone())
+                .entry(loc.page_id.clone())
                 .and_modify(|bytes| *bytes = bytes.saturating_add(loc.length))
                 .or_insert(loc.length);
         }
@@ -272,15 +272,15 @@ impl MatrixChunkService {
             max_repair_chunks
         };
         let mut selected = 0usize;
-        for (chunk_id, bytes) in chunks {
-            if chunk_id.page_index < start_chunk_index {
+        for (page_id, bytes) in chunks {
+            if page_id.page_index < start_chunk_index {
                 continue;
             }
             if selected >= limit {
                 report.skipped_chunk_count = report.skipped_chunk_count.saturating_add(1);
                 report.skipped_repair_bytes = report.skipped_repair_bytes.saturating_add(bytes);
                 if !report.has_more {
-                    report.next_chunk_index = chunk_id.page_index;
+                    report.next_chunk_index = page_id.page_index;
                 }
                 report.has_more = true;
                 continue;
@@ -288,8 +288,8 @@ impl MatrixChunkService {
             selected += 1;
             report.selected_chunk_count = report.selected_chunk_count.saturating_add(1);
             report.selected_repair_bytes = report.selected_repair_bytes.saturating_add(bytes);
-            report.next_chunk_index = chunk_id.page_index.saturating_add(1);
-            match self.repair_chunk_from_quorum(&chunk_id) {
+            report.next_chunk_index = page_id.page_index.saturating_add(1);
+            match self.repair_chunk_from_quorum(&page_id) {
                 Ok(stats) => merge_repair_stats(&mut report.stats, stats),
                 Err(_) => {
                     report.stats.failed_repairs = report.stats.failed_repairs.saturating_add(1)

@@ -2,12 +2,12 @@ pub(crate) fn append_root_snapshot_proof_material(
     material: &mut Vec<u8>,
     offset: u64,
     payload_len: u64,
-    chunk_checksum: &str,
+    page_checksum: &str,
     proof: &RootReadProof,
 ) {
     append_u64(material, offset);
     append_u64(material, payload_len);
-    append_string(material, chunk_checksum);
+    append_string(material, page_checksum);
     append_string(material, &proof.proof_format);
     append_string(material, &proof.operation);
     append_u64(material, proof.requested_root_read_index);

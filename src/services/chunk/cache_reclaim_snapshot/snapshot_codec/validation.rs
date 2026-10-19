@@ -114,11 +114,11 @@ impl ReplicaServiceSnapshot {
                 "chunk service snapshot exceeds configured capacity".to_string(),
             ));
         }
-        for (chunk_id, state) in &self.chunks {
+        for (page_id, state) in &self.chunks {
             validate_chunk_state(state).map_err(|err| {
                 ObjectError::Corruption(format!(
                     "chunk service snapshot invalid chunk {:?}: {}",
-                    chunk_id, err
+                    page_id, err
                 ))
             })?;
         }
@@ -140,7 +140,7 @@ impl ReplicaServiceSnapshot {
                 || receipt.payload_checksum.is_empty()
                 || receipt.request_checksum
                     != chunk_write_receipt_request_checksum(
-                        &receipt.chunk_id,
+                        &receipt.page_id,
                         receipt.offset,
                         receipt.length,
                         &receipt.payload_checksum,
@@ -158,7 +158,7 @@ impl ReplicaServiceSnapshot {
                 || receipt.request_checksum.is_empty()
                 || receipt.request_checksum
                     != chunk_discard_request_checksum(
-                        &receipt.chunk_id,
+                        &receipt.page_id,
                         receipt.offset,
                         receipt.length,
                     )
@@ -229,8 +229,8 @@ impl ReplicaServiceSnapshot {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.request_checksum.is_empty()
-                || receipt.request_checksum != chunk_repair_request_checksum(&receipt.chunk_id)
-                || receipt.report.chunk_id.as_ref() != Some(&receipt.chunk_id)
+                || receipt.request_checksum != chunk_repair_request_checksum(&receipt.page_id)
+                || receipt.report.page_id.as_ref() != Some(&receipt.page_id)
             {
                 return Err(ObjectError::Corruption(
                     "chunk service snapshot repair receipt is invalid".to_string(),

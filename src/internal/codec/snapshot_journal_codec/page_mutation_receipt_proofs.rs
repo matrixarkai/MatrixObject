@@ -1,7 +1,7 @@
 pub(crate) fn replica_receipt_key<T: std::fmt::Debug>(
     prefix: &str,
     base_key: &str,
-    chunk_id: &PageId,
+    page_id: &PageId,
     replica_index: usize,
     request: &T,
 ) -> String {
@@ -12,7 +12,7 @@ pub(crate) fn replica_receipt_key<T: std::fmt::Debug>(
             + encoded_string_len(&request_debug),
     );
     append_string(&mut material, base_key);
-    append_chunk_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, page_id);
     append_u64(&mut material, replica_index as u64);
     append_string(&mut material, &request_debug);
     format!("{prefix}:{}", etag(&material))

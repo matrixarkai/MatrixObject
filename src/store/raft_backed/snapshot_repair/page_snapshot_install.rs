@@ -129,7 +129,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 &mut material,
                 proven.value.offset,
                 payload_len,
-                &proven.value.chunk_checksum,
+                &proven.value.page_checksum,
                 &proven.proof,
             );
             proof_count = proof_count.saturating_add(1);

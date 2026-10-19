@@ -21,13 +21,13 @@ impl MatrixObjectStore {
 
     pub fn prewarm_chunk_read_cache_control(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
     ) -> Result<ReplicaReadCacheControlReport, ObjectError> {
         self.chunk_service
-            .prewarm_chunk_read_cache_control(chunk_id, offset, length, max_bytes)
+            .prewarm_chunk_read_cache_control(page_id, offset, length, max_bytes)
     }
 
     pub fn prewarm_chunk_read_cache_control_batch(
@@ -41,13 +41,13 @@ impl MatrixObjectStore {
 
     pub fn invalidate_chunk_read_cache_control(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
     ) -> Result<ReplicaReadCacheControlReport, ObjectError> {
         self.chunk_service
-            .invalidate_chunk_read_cache_control(chunk_id, offset, length, max_bytes)
+            .invalidate_chunk_read_cache_control(page_id, offset, length, max_bytes)
     }
 
     pub fn invalidate_chunk_read_cache_control_batch(

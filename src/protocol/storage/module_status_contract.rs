@@ -284,7 +284,7 @@ pub struct ObjectStoreModuleStatus {
     pub live_object_count: u64,
     pub deleted_object_count: u64,
     pub slab_count: u64,
-    pub chunk_count: u64,
+    pub page_count: u64,
     pub logical_written_bytes: u64,
     pub physical_written_bytes: u64,
     pub chunk_read_cache_max_bytes_per_replica: u64,

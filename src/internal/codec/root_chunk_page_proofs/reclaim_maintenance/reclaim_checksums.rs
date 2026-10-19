@@ -1,5 +1,5 @@
 pub(crate) fn append_chunk_reclaim_candidate(out: &mut Vec<u8>, candidate: &ReplicaReclaimCandidate) {
-    append_chunk_id(out, &candidate.chunk_id);
+    append_chunk_id(out, &candidate.page_id);
     append_u64(out, candidate.logical_length);
     append_u64(out, candidate.discarded_bytes);
     append_u64(out, candidate.discarded_range_count);

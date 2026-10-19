@@ -4,26 +4,26 @@ impl MatrixObjectStore {
         if data.is_empty() || data.len() > max_extent {
             return self.allocate_extents(&data);
         }
-        let chunk_len = data.len();
-        if let Some((slab_id, offset)) = self.take_reusable_stale_range(chunk_len as u64) {
+        let page_len = data.len();
+        if let Some((slab_id, offset)) = self.take_reusable_stale_range(page_len as u64) {
             self.chunk_service
                 .write_slab_range(&slab_id, offset, &data)?;
             self.payloads.insert(
                 (slab_id.clone(), offset),
                 StoredPayload {
-                    len: chunk_len as u64,
+                    len: page_len as u64,
                     etag_fnv1a64: fnv1a64(&data),
                 },
             );
             self.physical_written_bytes =
-                saturating_add(self.physical_written_bytes, chunk_len as u64);
+                saturating_add(self.physical_written_bytes, page_len as u64);
             return Ok(vec![ObjectExtent {
                 slab_id,
                 offset,
-                length: chunk_len as u64,
+                length: page_len as u64,
             }]);
         }
-        let slab_id = self.ensure_writable_slab(chunk_len as u64)?;
+        let slab_id = self.ensure_writable_slab(page_len as u64)?;
         let slab = self
             .slabs
             .get_mut(&slab_id)
@@ -31,25 +31,25 @@ impl MatrixObjectStore {
         let offset = slab.next_offset;
         slab.next_offset = slab
             .next_offset
-            .checked_add(chunk_len as u64)
+            .checked_add(page_len as u64)
             .ok_or_else(|| ObjectError::InvalidArgument("segment offset overflow".to_string()))?;
         slab.logical_bytes = slab.next_offset;
-        slab.live_bytes = saturating_add(slab.live_bytes, chunk_len as u64);
+        slab.live_bytes = saturating_add(slab.live_bytes, page_len as u64);
         self.chunk_service
             .write_slab_range(&slab_id, offset, &data)?;
         self.payloads.insert(
             (slab_id.clone(), offset),
             StoredPayload {
-                len: chunk_len as u64,
+                len: page_len as u64,
                 etag_fnv1a64: fnv1a64(&data),
             },
         );
         self.physical_written_bytes =
-            saturating_add(self.physical_written_bytes, chunk_len as u64);
+            saturating_add(self.physical_written_bytes, page_len as u64);
         Ok(vec![ObjectExtent {
             slab_id,
             offset,
-            length: chunk_len as u64,
+            length: page_len as u64,
         }])
     }
 
@@ -63,8 +63,8 @@ impl MatrixObjectStore {
         let mut cursor = 0usize;
         while cursor < data.len() {
             let remaining = data.len() - cursor;
-            let chunk_len = remaining.min(max_extent);
-            let slab_id = self.ensure_writable_slab(chunk_len as u64)?;
+            let page_len = remaining.min(max_extent);
+            let slab_id = self.ensure_writable_slab(page_len as u64)?;
             let slab = self
                 .slabs
                 .get_mut(&slab_id)
@@ -72,32 +72,32 @@ impl MatrixObjectStore {
             let offset = slab.next_offset;
             slab.next_offset = slab
                 .next_offset
-                .checked_add(chunk_len as u64)
+                .checked_add(page_len as u64)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument("segment offset overflow".to_string())
                 })?;
             slab.logical_bytes = slab.next_offset;
-            slab.live_bytes = saturating_add(slab.live_bytes, chunk_len as u64);
+            slab.live_bytes = saturating_add(slab.live_bytes, page_len as u64);
             self.chunk_service.write_slab_range(
                 &slab_id,
                 offset,
-                &data[cursor..cursor + chunk_len],
+                &data[cursor..cursor + page_len],
             )?;
             self.payloads.insert(
                 (slab_id.clone(), offset),
                 StoredPayload {
-                    len: chunk_len as u64,
-                    etag_fnv1a64: fnv1a64(&data[cursor..cursor + chunk_len]),
+                    len: page_len as u64,
+                    etag_fnv1a64: fnv1a64(&data[cursor..cursor + page_len]),
                 },
             );
             self.physical_written_bytes =
-                saturating_add(self.physical_written_bytes, chunk_len as u64);
+                saturating_add(self.physical_written_bytes, page_len as u64);
             extents.push(ObjectExtent {
                 slab_id,
                 offset,
-                length: chunk_len as u64,
+                length: page_len as u64,
             });
-            cursor += chunk_len;
+            cursor += page_len;
         }
         Ok(extents)
     }

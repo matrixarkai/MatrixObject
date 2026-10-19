@@ -88,9 +88,9 @@ impl MatrixChunkService {
                     ));
                 }
                 grouped
-                    .entry((write.slab_id.clone(), loc.chunk_id))
+                    .entry((write.slab_id.clone(), loc.page_id))
                     .or_default()
-                    .push((loc.chunk_offset, &write.data[cursor..next]));
+                    .push((loc.page_offset, &write.data[cursor..next]));
                 cursor = next;
             }
         }
@@ -105,7 +105,7 @@ impl MatrixChunkService {
         )?;
         let projected_lengths = Self::projected_chunk_lengths_for_grouped_write_views(&grouped)?;
         let accepted_replicas = self.admissible_write_replicas(&projected_lengths)?;
-        for ((_, chunk_id), chunk_writes) in grouped {
+        for ((_, page_id), chunk_writes) in grouped {
             let mut ok = 0usize;
             let mut first_error: Option<ObjectError> = None;
             let mut logical_coalesced_ranges = 0u64;
@@ -116,17 +116,17 @@ impl MatrixChunkService {
                     continue;
                 }
                 let write_result = if let Some(base_key) = idempotency_key {
-                    let chunk_key =
-                        replica_receipt_key("bw", base_key, &chunk_id, index, &chunk_writes);
+                    let page_key =
+                        replica_receipt_key("bw", base_key, &page_id, index, &chunk_writes);
                     replica
                         .write_chunk_ranges_idempotent_borrowed(
-                            chunk_id.clone(),
+                            page_id.clone(),
                             &chunk_writes,
-                            &chunk_key,
+                            &page_key,
                         )
                         .map(|(stats, _)| stats)
                 } else {
-                    replica.write_chunk_ranges_borrowed(chunk_id.clone(), &chunk_writes)
+                    replica.write_chunk_ranges_borrowed(page_id.clone(), &chunk_writes)
                 };
                 match write_result {
                     Ok(replica_stats) => {

@@ -31,14 +31,14 @@ impl MatrixChunkService {
             let locations = self.map_range(slab_id, offset, length)?;
             read_stats = if locations.len() == 1 {
                 self.collect_metadata_head_admission_stats(std::slice::from_ref(
-                    &locations[0].chunk_id,
+                    &locations[0].page_id,
                 ))
             } else {
-                let mut chunk_ids = Vec::with_capacity(locations.len());
+                let mut page_ids = Vec::with_capacity(locations.len());
                 for loc in &locations {
-                    chunk_ids.push(loc.chunk_id.clone());
+                    page_ids.push(loc.page_id.clone());
                 }
-                self.collect_metadata_head_admission_stats(&chunk_ids)
+                self.collect_metadata_head_admission_stats(&page_ids)
             };
             for loc in &locations {
                 let mut ready = 0u64;
@@ -46,7 +46,7 @@ impl MatrixChunkService {
                     if !self.replica_active(index) {
                         continue;
                     }
-                    match replica.head_chunk(&loc.chunk_id) {
+                    match replica.head_chunk(&loc.page_id) {
                         Ok(_) => ready = ready.saturating_add(1),
                         Err(err) if first_error.is_none() => first_error = Some(err),
                         Err(_) => {}
@@ -199,21 +199,21 @@ impl MatrixChunkService {
                 return Ok(admission);
             }
             for loc in self.map_range(&request.slab_id, request.offset, request.length)? {
-                grouped.entry(loc.chunk_id).or_default().push(DataRange {
-                    offset: loc.chunk_offset,
+                grouped.entry(loc.page_id).or_default().push(DataRange {
+                    offset: loc.page_offset,
                     length: loc.length,
                 });
             }
         }
 
-        let mut chunk_ids = Vec::with_capacity(grouped.len());
-        for chunk_id in grouped.keys() {
-            chunk_ids.push(chunk_id.clone());
+        let mut page_ids = Vec::with_capacity(grouped.len());
+        for page_id in grouped.keys() {
+            page_ids.push(page_id.clone());
         }
-        admission.read_stats = self.collect_metadata_head_admission_stats(&chunk_ids);
+        admission.read_stats = self.collect_metadata_head_admission_stats(&page_ids);
         let mut first_error: Option<ObjectError> = None;
         let mut min_ready = u64::MAX;
-        for (chunk_id, ranges) in grouped {
+        for (page_id, ranges) in grouped {
             for range in merge_ranges(ranges) {
                 admission.coalesced_chunk_ranges =
                     admission.coalesced_chunk_ranges.saturating_add(1);
@@ -225,7 +225,7 @@ impl MatrixChunkService {
                     if !self.replica_active(index) {
                         continue;
                     }
-                    match replica.head_chunk(&chunk_id) {
+                    match replica.head_chunk(&page_id) {
                         Ok(head) => {
                             let readable = range_end <= head.logical_length
                                 && !head.discarded_ranges.iter().any(|discarded| {

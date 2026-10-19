@@ -49,7 +49,7 @@ fn append_page_readiness(mut material: &mut Vec<u8>, report: &ObjectStoreDistrib
     append_u64(&mut material, report.page.replica_readiness.len() as u64);
     for replica in &report.page.replica_readiness {
         append_string(&mut material, &replica.chunk_state_fingerprint);
-        append_u64(&mut material, replica.chunk_count);
+        append_u64(&mut material, replica.page_count);
         append_u64(&mut material, replica.physical_bytes);
         append_u64(&mut material, replica.discarded_range_count);
         append_u64(&mut material, replica.reclaimable_bytes);

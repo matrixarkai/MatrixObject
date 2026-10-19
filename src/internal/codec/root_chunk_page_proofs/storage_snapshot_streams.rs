@@ -23,12 +23,12 @@ pub(crate) fn append_storage_snapshot_proof_material(
     material: &mut Vec<u8>,
     offset: u64,
     payload_len: u64,
-    chunk_checksum: &str,
+    page_checksum: &str,
     proof: &StorageReadProof,
 ) {
     append_u64(material, offset);
     append_u64(material, payload_len);
-    append_string(material, chunk_checksum);
+    append_string(material, page_checksum);
     append_string(material, &proof.control_kind);
     append_string(material, &proof.control_checksum);
     append_u64(material, proof.requested_storage_read_index);

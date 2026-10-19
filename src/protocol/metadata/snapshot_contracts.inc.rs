@@ -33,7 +33,7 @@ pub struct MetaSnapshot {
 pub struct MetaSnapshotChunk {
     pub offset: u64,
     pub total_bytes: u64,
-    pub chunk_checksum: String,
+    pub page_checksum: String,
     pub full_checksum: String,
     pub last_applied_index: u64,
     pub eof: bool,

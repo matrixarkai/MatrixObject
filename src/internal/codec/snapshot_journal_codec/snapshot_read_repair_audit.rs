@@ -45,13 +45,13 @@ pub(crate) fn read_chunk_repair_report(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ReplicaRepairReport, ObjectError> {
     let has_chunk_id = cursor.read_u64()? != 0;
-    let chunk_id = if has_chunk_id {
+    let page_id = if has_chunk_id {
         Some(read_chunk_id(cursor)?)
     } else {
         None
     };
     Ok(ReplicaRepairReport {
-        chunk_id,
+        page_id,
         checked_chunks: cursor.read_u64()?,
         healthy_chunks: cursor.read_u64()?,
         degraded_chunks: cursor.read_u64()?,
@@ -80,7 +80,7 @@ pub(crate) fn read_chunk_repair_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ReplicaRepairReceipt, ObjectError> {
     Ok(ReplicaRepairReceipt {
-        chunk_id: read_chunk_id(cursor)?,
+        page_id: read_chunk_id(cursor)?,
         request_checksum: cursor.read_string()?,
         idempotency_key: cursor.read_string()?,
         report: read_chunk_repair_report(cursor)?,
@@ -138,7 +138,7 @@ pub(crate) fn read_page_replica_audit_item(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ChunkReplicaAuditItem, ObjectError> {
     Ok(ChunkReplicaAuditItem {
-        chunk_id: read_chunk_id(cursor)?,
+        page_id: read_chunk_id(cursor)?,
         replica_index: cursor.read_count("block replica audit item replica index")?,
         status: cursor.read_string()?,
         logical_length: cursor.read_u64()?,

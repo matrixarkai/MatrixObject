@@ -5,26 +5,26 @@ impl MatrixObjectStore {
 
     pub fn plan_repair_page_chunk(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
     ) -> Result<ReplicaRepairReport, ObjectError> {
-        self.chunk_service.plan_repair_chunk_replicas(chunk_id)
+        self.chunk_service.plan_repair_chunk_replicas(page_id)
     }
 
     pub fn repair_page_chunk(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
     ) -> Result<ReplicaRepairReport, ObjectError> {
-        self.chunk_service.repair_chunk_replicas(chunk_id)
+        self.chunk_service.repair_chunk_replicas(page_id)
     }
 
     pub fn repair_page_chunk_fenced(
         &mut self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ReplicaRepairReport, ObjectError> {
         self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let mut report = self.chunk_service.repair_chunk_replicas(chunk_id)?;
+        let mut report = self.chunk_service.repair_chunk_replicas(page_id)?;
         report.expected_route_control_checksum = expected_route_control_checksum
             .unwrap_or_default()
             .to_string();

@@ -594,7 +594,7 @@ pub enum ObjectCommand {
         expected_route_control_checksum: String,
     },
     RepairPageChunk {
-        chunk_id: PageId,
+        page_id: PageId,
         expected_route_control_checksum: String,
     },
     RepairAuditedPageReplicas {

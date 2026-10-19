@@ -17,7 +17,7 @@ impl RootSnapshotChunkAssembler {
                 "root snapshot chunk has zero total bytes".to_string(),
             ));
         }
-        if !etag_matches(&chunk.payload, &chunk.chunk_checksum) {
+        if !etag_matches(&chunk.payload, &chunk.page_checksum) {
             return Err(ObjectError::Corruption(
                 "root snapshot chunk checksum mismatch".to_string(),
             ));
@@ -133,7 +133,7 @@ pub(crate) fn export_root_snapshot_chunk_bytes_with_checksum(
     let start = offset as usize;
     let end = (start + max_payload_bytes).min(snapshot_bytes.len());
     let payload_slice = &snapshot_bytes[start..end];
-    let chunk_checksum = if offset == 0 && end == snapshot_bytes.len() {
+    let page_checksum = if offset == 0 && end == snapshot_bytes.len() {
         full_checksum.to_string()
     } else {
         etag(payload_slice)
@@ -141,7 +141,7 @@ pub(crate) fn export_root_snapshot_chunk_bytes_with_checksum(
     Ok(RootSnapshotChunk {
         offset,
         total_bytes: snapshot_bytes.len() as u64,
-        chunk_checksum,
+        page_checksum,
         full_checksum: full_checksum.to_string(),
         eof: end == snapshot_bytes.len(),
         payload: payload_slice.to_vec(),

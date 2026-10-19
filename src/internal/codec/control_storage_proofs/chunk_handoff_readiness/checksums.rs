@@ -1,5 +1,5 @@
 pub(crate) fn chunk_state_handoff_checksum(
-    chunk_id: &PageId,
+    page_id: &PageId,
     state: &PageState,
     payload_checksum: &str,
 ) -> String {
@@ -8,8 +8,8 @@ pub(crate) fn chunk_state_handoff_checksum(
             + encoded_string_len(payload_checksum)
             + state.discarded_ranges.len() * std::mem::size_of::<u64>() * 2,
     );
-    append_slab_id(&mut material, &chunk_id.slab_id);
-    append_u64(&mut material, chunk_id.page_index);
+    append_slab_id(&mut material, &page_id.slab_id);
+    append_u64(&mut material, page_id.page_index);
     append_u64(&mut material, state.logical_length);
     append_u64(&mut material, state.write_sequence);
     append_string(&mut material, payload_checksum);
@@ -40,12 +40,12 @@ pub(crate) fn chunk_local_state_checksum(state: &PageState) -> String {
 }
 
 pub(crate) fn chunk_state_handoff_checksum_v2(
-    chunk_id: &PageId,
+    page_id: &PageId,
     handoff_token: &str,
     state: &PageState,
     payload_checksum: &str,
 ) -> String {
-    let legacy_checksum = chunk_state_handoff_checksum(chunk_id, state, payload_checksum);
+    let legacy_checksum = chunk_state_handoff_checksum(page_id, state, payload_checksum);
     let mut material = Vec::with_capacity(
         encoded_string_len("MOSRS_CHUNK_HANDOFF_V2")
             + encoded_string_len(handoff_token)
@@ -69,7 +69,7 @@ pub(crate) fn chunk_state_handoff_payload_checksum(handoffs: &[ReplicaStateHando
 }
 
 pub(crate) fn chunk_local_state_handoff_request_checksum(
-    chunk_id: &PageId,
+    page_id: &PageId,
     max_payload_bytes: u64,
 ) -> String {
     let mut material = Vec::with_capacity(
@@ -77,7 +77,7 @@ pub(crate) fn chunk_local_state_handoff_request_checksum(
             + std::mem::size_of::<u64>() * 4,
     );
     append_string(&mut material, "MXOSCHUNK-HANDOFF-REQUEST1");
-    append_chunk_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, page_id);
     append_u64(&mut material, max_payload_bytes);
     etag(&material)
 }

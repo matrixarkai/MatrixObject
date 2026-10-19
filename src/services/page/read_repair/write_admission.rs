@@ -232,9 +232,9 @@ impl MatrixChunkService {
             for loc in locations {
                 let next = cursor + loc.length as usize;
                 grouped
-                    .entry((write.slab_id.clone(), loc.chunk_id))
+                    .entry((write.slab_id.clone(), loc.page_id))
                     .or_default()
-                    .push((loc.chunk_offset, &write.data[cursor..next]));
+                    .push((loc.page_offset, &write.data[cursor..next]));
                 cursor = next;
             }
         }

@@ -41,7 +41,7 @@ pub(crate) fn append_chunk_storage_bootstrap_readiness(
     append_u64(out, readiness.accepting_writes as u64);
     append_u64(out, readiness.draining as u64);
     append_u64(out, readiness.frozen as u64);
-    append_u64(out, readiness.chunk_count);
+    append_u64(out, readiness.page_count);
     append_u64(out, readiness.physical_bytes);
     append_u64(out, readiness.capacity_bytes);
     append_u64(out, readiness.capacity_free_bytes);

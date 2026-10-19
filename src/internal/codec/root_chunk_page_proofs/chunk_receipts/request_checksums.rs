@@ -1,6 +1,6 @@
-pub(crate) fn append_chunk_id(out: &mut Vec<u8>, chunk_id: &PageId) {
-    append_slab_id(out, &chunk_id.slab_id);
-    append_u64(out, chunk_id.page_index);
+pub(crate) fn append_chunk_id(out: &mut Vec<u8>, page_id: &PageId) {
+    append_slab_id(out, &page_id.slab_id);
+    append_u64(out, page_id.page_index);
 }
 
 fn request_slab_id_encoded_len() -> usize {
@@ -12,7 +12,7 @@ fn request_chunk_id_encoded_len() -> usize {
 }
 
 pub(crate) fn chunk_write_receipt_request_checksum(
-    chunk_id: &PageId,
+    page_id: &PageId,
     offset: u64,
     length: u64,
     payload_checksum: &str,
@@ -22,7 +22,7 @@ pub(crate) fn chunk_write_receipt_request_checksum(
             + std::mem::size_of::<u64>() * 2
             + encoded_string_len(payload_checksum),
     );
-    append_chunk_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, page_id);
     append_u64(&mut material, offset);
     append_u64(&mut material, length);
     append_string(&mut material, payload_checksum);
@@ -30,13 +30,13 @@ pub(crate) fn chunk_write_receipt_request_checksum(
 }
 
 pub(crate) fn chunk_discard_request_checksum(
-    chunk_id: &PageId,
+    page_id: &PageId,
     offset: u64,
     length: u64,
 ) -> String {
     let mut material =
         Vec::with_capacity(request_chunk_id_encoded_len() + std::mem::size_of::<u64>() * 2);
-    append_chunk_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, page_id);
     append_u64(&mut material, offset);
     append_u64(&mut material, length);
     etag(&material)
@@ -52,7 +52,7 @@ pub(crate) fn chunk_write_receipt_proof_checksum(receipt: &ReplicaWriteReceipt) 
             + encoded_string_len(&receipt.idempotency_key),
     );
     append_string(&mut material, "MXOS-CHUNK-WRITE-RECEIPT-PROOF1");
-    append_chunk_id(&mut material, &receipt.chunk_id);
+    append_chunk_id(&mut material, &receipt.page_id);
     append_u64(&mut material, receipt.offset);
     append_u64(&mut material, receipt.length);
     append_string(&mut material, &receipt.request_checksum);
@@ -70,7 +70,7 @@ pub(crate) fn chunk_discard_receipt_proof_checksum(receipt: &ReplicaDiscardRecei
             + encoded_string_len(&receipt.idempotency_key),
     );
     append_string(&mut material, "MXOS-CHUNK-DISCARD-RECEIPT-PROOF1");
-    append_chunk_id(&mut material, &receipt.chunk_id);
+    append_chunk_id(&mut material, &receipt.page_id);
     append_u64(&mut material, receipt.offset);
     append_u64(&mut material, receipt.length);
     append_string(&mut material, &receipt.request_checksum);
@@ -98,29 +98,29 @@ pub(crate) fn chunk_batch_write_payload_checksum_borrowed(writes: &[(u64, &[u8])
 }
 
 pub(crate) fn chunk_batch_write_request_checksum(
-    chunk_id: &PageId,
+    page_id: &PageId,
     writes: &[(u64, Vec<u8>)],
 ) -> String {
     let mut borrowed = Vec::with_capacity(writes.len());
     borrowed.extend(writes.iter().map(|(offset, data)| (*offset, data.as_slice())));
-    chunk_batch_write_request_checksum_borrowed(chunk_id, &borrowed)
+    chunk_batch_write_request_checksum_borrowed(page_id, &borrowed)
 }
 
 pub(crate) fn chunk_batch_write_request_checksum_borrowed(
-    chunk_id: &PageId,
+    page_id: &PageId,
     writes: &[(u64, &[u8])],
 ) -> String {
     let payload_checksum = chunk_batch_write_payload_checksum_borrowed(writes);
     let mut material = Vec::with_capacity(
         request_chunk_id_encoded_len() + encoded_string_len(&payload_checksum),
     );
-    append_chunk_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, page_id);
     append_string(&mut material, &payload_checksum);
     etag(&material)
 }
 
 pub(crate) fn chunk_batch_discard_request_checksum(
-    chunk_id: &PageId,
+    page_id: &PageId,
     ranges: &[DataRange],
 ) -> String {
     let mut material = Vec::with_capacity(
@@ -128,7 +128,7 @@ pub(crate) fn chunk_batch_discard_request_checksum(
             + std::mem::size_of::<u64>()
             + ranges.len() * std::mem::size_of::<u64>() * 2,
     );
-    append_chunk_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, page_id);
     append_u64(&mut material, ranges.len() as u64);
     for range in ranges {
         append_range(&mut material, range);
@@ -137,7 +137,7 @@ pub(crate) fn chunk_batch_discard_request_checksum(
 }
 
 pub(crate) fn chunk_batch_discard_nonempty_request_checksum(
-    chunk_id: &PageId,
+    page_id: &PageId,
     ranges: &[DataRange],
 ) -> String {
     let nonempty_count = ranges.iter().filter(|range| range.length > 0).count();
@@ -146,7 +146,7 @@ pub(crate) fn chunk_batch_discard_nonempty_request_checksum(
             + std::mem::size_of::<u64>()
             + nonempty_count * std::mem::size_of::<u64>() * 2,
     );
-    append_chunk_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, page_id);
     append_u64(&mut material, nonempty_count as u64);
     for range in ranges {
         if range.length > 0 {
@@ -157,7 +157,7 @@ pub(crate) fn chunk_batch_discard_nonempty_request_checksum(
 }
 
 pub(crate) fn chunk_state_install_request_checksum(
-    chunk_id: &PageId,
+    page_id: &PageId,
     state: &PageState,
     payload_checksum: &str,
     state_checksum: &str,
@@ -168,7 +168,7 @@ pub(crate) fn chunk_state_install_request_checksum(
             + encoded_string_len(payload_checksum)
             + encoded_string_len(state_checksum),
     );
-    append_chunk_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, page_id);
     append_u64(&mut material, state.logical_length);
     append_u64(&mut material, state.write_sequence);
     append_string(&mut material, payload_checksum);
@@ -195,9 +195,9 @@ pub(crate) fn chunk_reclaim_request_checksum(
     etag(&material)
 }
 
-pub(crate) fn chunk_repair_request_checksum(chunk_id: &PageId) -> String {
+pub(crate) fn chunk_repair_request_checksum(page_id: &PageId) -> String {
     let mut material = Vec::with_capacity(request_chunk_id_encoded_len());
-    append_chunk_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, page_id);
     etag(&material)
 }
 
@@ -248,7 +248,7 @@ pub(crate) fn chunk_state_install_receipt_request_checksum(
             + encoded_string_len(&receipt.payload_checksum)
             + encoded_string_len(&receipt.state_checksum),
     );
-    append_chunk_id(&mut material, &receipt.chunk_id);
+    append_chunk_id(&mut material, &receipt.page_id);
     append_u64(&mut material, receipt.logical_length);
     append_u64(&mut material, receipt.write_sequence);
     append_string(&mut material, &receipt.payload_checksum);

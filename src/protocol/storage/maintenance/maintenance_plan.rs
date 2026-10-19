@@ -16,10 +16,10 @@ impl StorageMaintenanceAction {
         }
         fields.insert(
             format!("{field_prefix}chunk_present"),
-            self.chunk_id.is_some().to_string(),
+            self.page_id.is_some().to_string(),
         );
-        if let Some(chunk_id) = &self.chunk_id {
-            fields.extend(chunk_id.to_control_fields(&format!("{field_prefix}chunk.")));
+        if let Some(page_id) = &self.page_id {
+            fields.extend(page_id.to_control_fields(&format!("{field_prefix}chunk.")));
         }
         fields.insert(
             format!("{field_prefix}estimated_bytes"),

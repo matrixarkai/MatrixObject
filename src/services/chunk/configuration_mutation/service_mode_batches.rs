@@ -126,7 +126,7 @@ impl MatrixReplicaService {
             started_control_commit_index: active
                 .map_or(0, |batch| batch.started_control_commit_index),
             current_control_commit_index: self.chunk_mutation_control_commit_index,
-            chunk_count: self.chunks.len() as u64,
+            page_count: self.chunks.len() as u64,
             physical_bytes: self.physical_bytes(),
             discarded_bytes: self.discarded_bytes(),
             write_receipt_count: self.write_request_receipts.len() as u64,

@@ -63,7 +63,7 @@ fn receipt_page_proof_capacity(
 fn chunk_receipt_page_proof_capacity(
     proof_format: &str,
     next_marker: &Option<String>,
-    chunk_id: &Option<PageId>,
+    page_id: &Option<PageId>,
     receipt_count: usize,
 ) -> usize {
     encoded_string_len(proof_format)
@@ -72,7 +72,7 @@ fn chunk_receipt_page_proof_capacity(
             .as_ref()
             .map(|value| encoded_string_len(value))
             .unwrap_or(0)
-        + if chunk_id.is_some() {
+        + if page_id.is_some() {
             std::mem::size_of::<u64>() * 3
         } else {
             0

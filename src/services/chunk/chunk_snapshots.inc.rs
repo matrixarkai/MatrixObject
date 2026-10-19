@@ -87,13 +87,13 @@ impl MatrixReplicaService {
             stamp.push_str("|rp:");
             stamp.push_str(key);
         }
-        for (chunk_id, state) in &self.chunks {
+        for (page_id, state) in &self.chunks {
             let _ = write!(
                 stamp,
                 "|c:{}/{}:{}:{}:{}:{}:{}:{}",
-                chunk_id.slab_id.volume_id,
-                chunk_id.slab_id.id,
-                chunk_id.page_index,
+                page_id.slab_id.volume_id,
+                page_id.slab_id.id,
+                page_id.page_index,
                 state.logical_length,
                 state.write_sequence,
                 state.checksum,

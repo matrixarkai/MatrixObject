@@ -1429,12 +1429,12 @@ fn run_replica_repair_fault_probe(
             locked.head_object("bench", &format!("object-{index}"))
         })?;
         for extent in metadata.extents {
-            let chunk_id = PageId {
+            let page_id = PageId {
                 slab_id: extent.slab_id,
                 page_index: extent.offset / cfg.page_size,
             };
-            if !target_chunks.contains(&chunk_id) {
-                target_chunks.push(chunk_id);
+            if !target_chunks.contains(&page_id) {
+                target_chunks.push(page_id);
             }
             if target_chunks.len() as u64 >= cfg.repair_fault_remove_chunks {
                 break;
@@ -1453,8 +1453,8 @@ fn run_replica_repair_fault_probe(
             locked.list_chunk_batch_write_receipts(0, None, receipt_limit, None)
         })?;
         for receipt in batch_receipts.receipts {
-            if !target_chunks.contains(&receipt.chunk_id) {
-                target_chunks.push(receipt.chunk_id);
+            if !target_chunks.contains(&receipt.page_id) {
+                target_chunks.push(receipt.page_id);
             }
             if target_chunks.len() as u64 >= cfg.repair_fault_remove_chunks {
                 break;
@@ -1467,12 +1467,12 @@ fn run_replica_repair_fault_probe(
             } else {
                 receipt.offset / cfg.page_size
             };
-            let chunk_id = PageId {
+            let page_id = PageId {
                 slab_id: receipt.slab_id,
                 page_index,
             };
-            if !target_chunks.contains(&chunk_id) {
-                target_chunks.push(chunk_id);
+            if !target_chunks.contains(&page_id) {
+                target_chunks.push(page_id);
             }
             if target_chunks.len() as u64 >= cfg.repair_fault_remove_chunks {
                 break;
@@ -1487,12 +1487,12 @@ fn run_replica_repair_fault_probe(
             if receipt.released {
                 continue;
             }
-            let chunk_id = PageId {
+            let page_id = PageId {
                 slab_id: receipt.allocation.slab_id,
                 page_index: receipt.allocation.offset / cfg.page_size,
             };
-            if !target_chunks.contains(&chunk_id) {
-                target_chunks.push(chunk_id);
+            if !target_chunks.contains(&page_id) {
+                target_chunks.push(page_id);
             }
             if target_chunks.len() as u64 >= cfg.repair_fault_remove_chunks {
                 break;
@@ -1505,12 +1505,12 @@ fn run_replica_repair_fault_probe(
         })?;
         for receipt in batch_allocation_receipts.receipts {
             for allocation in receipt.allocations {
-                let chunk_id = PageId {
+                let page_id = PageId {
                     slab_id: allocation.slab_id,
                     page_index: allocation.offset / cfg.page_size,
                 };
-                if !target_chunks.contains(&chunk_id) {
-                    target_chunks.push(chunk_id);
+                if !target_chunks.contains(&page_id) {
+                    target_chunks.push(page_id);
                 }
                 if target_chunks.len() as u64 >= cfg.repair_fault_remove_chunks {
                     break;
@@ -1526,9 +1526,9 @@ fn run_replica_repair_fault_probe(
         return Ok(result);
     }
 
-    for chunk_id in &target_chunks {
+    for page_id in &target_chunks {
         match with_store(store, lock_stats, |locked| {
-            locked.remove_direct_replica_chunk_for_repair(0, chunk_id)
+            locked.remove_direct_replica_chunk_for_repair(0, page_id)
         }) {
             Ok(()) => result.removed_chunks = result.removed_chunks.saturating_add(1),
             Err(err) => {
@@ -3120,7 +3120,7 @@ fn render_scale_json_report(
         readiness.ready,
         json_escape(&readiness.reason),
         readiness.slab_count,
-        readiness.chunk_count,
+        readiness.page_count,
         readiness.metadata_commit_index,
         json_escape(&readiness.metadata_state_fingerprint),
         json_escape(&readiness.root_state_fingerprint),
@@ -3227,7 +3227,7 @@ fn render_scale_json_report(
         readiness.metaserver_route_cache_remaining_capacity,
         replicaserver_readiness_json(readiness),
         readiness.slab_count,
-        readiness.chunk_count,
+        readiness.page_count,
         chunk_metadata_journal.fsync_every_records,
         chunk_metadata_journal.fsync_every_bytes,
         chunk_metadata_journal.fsync_max_unsynced_ms,
@@ -4913,7 +4913,7 @@ fn run() -> Result<(), ObjectError> {
         gc.compaction_candidate_count
     );
     println!("segment_count={}", readiness.slab_count);
-    println!("chunk_count={}", readiness.chunk_count);
+    println!("chunk_count={}", readiness.page_count);
     println!(
         "chunk_metadata_journal_fsync_every_records={}",
         chunk_metadata_journal.fsync_every_records

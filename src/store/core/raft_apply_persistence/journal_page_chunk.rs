@@ -161,7 +161,7 @@ impl MatrixObjectStore {
     fn append_chunk_write_journal_record(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
@@ -177,7 +177,7 @@ impl MatrixObjectStore {
         );
         append_u64(&mut payload, 59);
         append_u64(&mut payload, replica_index as u64);
-        append_chunk_id(&mut payload, chunk_id);
+        append_chunk_id(&mut payload, page_id);
         append_u64(&mut payload, offset);
         append_u64(&mut payload, data.len() as u64);
         payload.extend_from_slice(data);
@@ -188,7 +188,7 @@ impl MatrixObjectStore {
     fn append_chunk_batch_write_journal_record(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         writes: &[(u64, Vec<u8>)],
         idempotency_key: &str,
     ) -> Result<(), ObjectError> {
@@ -207,7 +207,7 @@ impl MatrixObjectStore {
         );
         append_u64(&mut payload, 60);
         append_u64(&mut payload, replica_index as u64);
-        append_chunk_id(&mut payload, chunk_id);
+        append_chunk_id(&mut payload, page_id);
         append_u64(&mut payload, writes.len() as u64);
         for (offset, data) in writes {
             append_u64(&mut payload, *offset);
@@ -221,7 +221,7 @@ impl MatrixObjectStore {
     fn append_chunk_discard_journal_record(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
@@ -236,7 +236,7 @@ impl MatrixObjectStore {
         );
         append_u64(&mut payload, 61);
         append_u64(&mut payload, replica_index as u64);
-        append_chunk_id(&mut payload, chunk_id);
+        append_chunk_id(&mut payload, page_id);
         append_u64(&mut payload, offset);
         append_u64(&mut payload, length);
         append_string(&mut payload, idempotency_key);
@@ -246,7 +246,7 @@ impl MatrixObjectStore {
     fn append_chunk_batch_discard_journal_record(
         &self,
         replica_index: usize,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: &[DataRange],
         idempotency_key: &str,
     ) -> Result<(), ObjectError> {
@@ -261,7 +261,7 @@ impl MatrixObjectStore {
         );
         append_u64(&mut payload, 62);
         append_u64(&mut payload, replica_index as u64);
-        append_chunk_id(&mut payload, chunk_id);
+        append_chunk_id(&mut payload, page_id);
         append_u64(&mut payload, ranges.len() as u64);
         for range in ranges {
             append_range(&mut payload, range);

@@ -112,7 +112,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     &mut material,
                     proven.value.offset,
                     payload_len,
-                    &proven.value.chunk_checksum,
+                    &proven.value.page_checksum,
                     &proven.proof,
                 );
                 chunks.push(proven);
@@ -209,7 +209,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     &mut material,
                     proven.value.offset,
                     payload_len,
-                    &proven.value.chunk_checksum,
+                    &proven.value.page_checksum,
                     &proven.proof,
                 );
                 chunks.push(proven);

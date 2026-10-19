@@ -316,12 +316,12 @@ impl PreparedPageAuditRepairEnvelope {
         ] {
             fields.insert(format!("{field_prefix}{name}"), value.to_string());
         }
-        if let Some(chunk_id) = &self.after_chunk_id {
-            fields.extend(chunk_id.to_control_fields(&format!("{field_prefix}after_chunk.")));
+        if let Some(page_id) = &self.after_chunk_id {
+            fields.extend(page_id.to_control_fields(&format!("{field_prefix}after_chunk.")));
         }
-        if let Some(chunk_id) = &self.first_candidate_chunk_id {
+        if let Some(page_id) = &self.first_candidate_chunk_id {
             fields.extend(
-                chunk_id.to_control_fields(&format!("{field_prefix}first_candidate_chunk.")),
+                page_id.to_control_fields(&format!("{field_prefix}first_candidate_chunk.")),
             );
         }
         if let Some(replica_index) = self.first_candidate_replica_index {

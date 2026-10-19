@@ -2,7 +2,7 @@
 struct DistributedObjectFootprintSnapshot {
     live_object_count: u64,
     deleted_object_count: u64,
-    chunk_count: u64,
+    page_count: u64,
     live_bytes: u64,
     stale_bytes: u64,
     pending_discard_bytes: u64,
@@ -50,10 +50,10 @@ impl DistributedObjectFootprintSnapshot {
         Self {
             live_object_count,
             deleted_object_count,
-            chunk_count: page
+            page_count: page
                 .replica_readiness
                 .iter()
-                .map(|replica| replica.chunk_count)
+                .map(|replica| replica.page_count)
                 .max()
                 .unwrap_or(0),
             live_bytes,

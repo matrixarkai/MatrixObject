@@ -2,13 +2,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_chunk_batch_discard_raft_entry(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
     ) -> Result<PreparedChunkBatchDiscard, ObjectError> {
         self.store.prepare_chunk_batch_discard_raft_entry(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             idempotency_key,
             self.store.last_applied_index(),
@@ -18,14 +18,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         idempotency_key: &str,
     ) -> Result<PreparedChunkBatchDiscard, ObjectError> {
         self.prepare_chunk_batch_discard_raft_entry_bounded_from(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_discard_bytes,
             0,
@@ -36,7 +36,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_from(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -45,7 +45,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store
             .prepare_chunk_batch_discard_raft_entry_bounded_from(
                 replica_index,
-                chunk_id,
+                page_id,
                 ranges,
                 max_discard_bytes,
                 discard_start_range_index,
@@ -57,7 +57,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_fenced(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         idempotency_key: &str,
@@ -65,7 +65,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<PreparedChunkBatchDiscard, ObjectError> {
         self.prepare_chunk_batch_discard_raft_entry_bounded_fenced_from(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_discard_bytes,
             0,
@@ -77,7 +77,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_fenced_from(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -87,7 +87,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store
             .prepare_chunk_batch_discard_raft_entry_bounded_fenced_from(
                 replica_index,
-                chunk_id,
+                page_id,
                 ranges,
                 max_discard_bytes,
                 discard_start_range_index,
@@ -100,7 +100,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_with_read_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         idempotency_key: &str,
@@ -108,7 +108,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenStorageRead<PreparedChunkBatchDiscard>, ObjectError> {
         self.prepare_chunk_batch_discard_raft_entry_bounded_from_with_read_proof_linearizable_fenced(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_discard_bytes,
             0,
@@ -120,7 +120,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_from_with_read_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -129,7 +129,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenStorageRead<PreparedChunkBatchDiscard>, ObjectError> {
         self.prepare_chunk_batch_discard_raft_entry_bounded_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_discard_bytes,
             discard_start_range_index,
@@ -143,7 +143,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_with_read_proof_linearizable_fenced_committed_at(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -180,7 +180,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let prepared = self.prepare_chunk_batch_discard_raft_entry_bounded_fenced_from(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_discard_bytes,
             discard_start_range_index,

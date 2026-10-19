@@ -193,8 +193,8 @@ impl PreparedStorageMaintenanceEnvelope {
             format!("{field_prefix}first_chunk_present"),
             self.first_chunk_id.is_some().to_string(),
         );
-        if let Some(chunk_id) = &self.first_chunk_id {
-            fields.extend(chunk_id.to_control_fields(&format!("{field_prefix}first_chunk.")));
+        if let Some(page_id) = &self.first_chunk_id {
+            fields.extend(page_id.to_control_fields(&format!("{field_prefix}first_chunk.")));
         }
         fields
     }

@@ -2,14 +2,14 @@ pub(crate) fn append_metadata_snapshot_proof_material(
     material: &mut Vec<u8>,
     offset: u64,
     payload_len: u64,
-    chunk_checksum: &str,
+    page_checksum: &str,
     snapshot_last_applied_index: u64,
     snapshot_term: u64,
     proof: &ObjectReadProof,
 ) {
     append_u64(material, offset);
     append_u64(material, payload_len);
-    append_string(material, chunk_checksum);
+    append_string(material, page_checksum);
     append_u64(material, snapshot_last_applied_index);
     append_u64(material, snapshot_term);
     append_u64(material, proof.requested_read_index);

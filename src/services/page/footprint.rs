@@ -477,7 +477,7 @@ impl ChunkServiceSnapshot {
         let mut chunks_copied = 0u64;
         let mut chunks_shared = 0u64;
         let mut replica_other = 0u64;
-        let mut chunk_count = 0u64;
+        let mut page_count = 0u64;
         for replica in &self.replicas {
             // Seven handles, and the maps behind them are shared with the
             // live service until the batch writes one -- at which point
@@ -543,7 +543,7 @@ impl ChunkServiceSnapshot {
                 .saturating_add(replica.checksum.capacity() as u64)
                 .saturating_add(replica.last_partial_reclaim_failure_status.capacity() as u64);
             for (_, state) in replica.chunks.iter() {
-                chunk_count = chunk_count.saturating_add(1);
+                page_count = page_count.saturating_add(1);
                 // The chunk identity and one handle. The state behind the
                 // handle is named rather than copied, so it is charged below
                 // and once.
@@ -578,7 +578,7 @@ impl ChunkServiceSnapshot {
             ),
             ("batch.replica_other.bytes".to_string(), replica_other),
             ("batch.replica_chunks.copied_bytes".to_string(), chunks_copied),
-            ("batch.replica_chunks.entries".to_string(), chunk_count),
+            ("batch.replica_chunks.entries".to_string(), page_count),
             // Named by the live replicas as well, so this is what the snapshot
             // points at rather than what it duplicates.
             (

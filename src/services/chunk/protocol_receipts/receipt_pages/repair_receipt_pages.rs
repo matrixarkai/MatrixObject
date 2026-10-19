@@ -7,7 +7,7 @@ pub struct ReplicaRepairReceiptPage {
     pub limit: u64,
     pub truncated: bool,
     pub next_marker: Option<String>,
-    pub chunk_id: Option<PageId>,
+    pub page_id: Option<PageId>,
     pub skipped_chunk_count: u64,
 }
 
@@ -35,11 +35,11 @@ impl ReplicaRepairReceiptPage {
             self.receipts.len(),
             self.skipped_chunk_count,
         )?;
-        if let Some(chunk_id) = &self.chunk_id {
+        if let Some(page_id) = &self.page_id {
             if self
                 .receipts
                 .iter()
-                .any(|receipt| &receipt.chunk_id != chunk_id)
+                .any(|receipt| &receipt.page_id != page_id)
             {
                 return Err(ObjectError::Corruption(
                     "chunk repair receipt page contains receipt outside chunk filter".to_string(),
@@ -69,7 +69,7 @@ impl ReplicaRepairReceiptPage {
             self.limit,
             self.truncated,
             &self.next_marker,
-            &self.chunk_id,
+            &self.page_id,
             self.skipped_chunk_count,
             field_prefix,
         );
@@ -140,7 +140,7 @@ macro_rules! impl_chunk_storage_receipt_page_source {
             }
 
             fn storage_receipt_page_chunk_id_filter(&self) -> Option<&PageId> {
-                self.chunk_id.as_ref()
+                self.page_id.as_ref()
             }
 
             fn storage_receipt_page_skipped_chunk_count(&self) -> u64 {
@@ -167,7 +167,7 @@ fn chunk_receipt_page_common_control_fields(
     limit: u64,
     truncated: bool,
     next_marker: &Option<String>,
-    chunk_id: &Option<PageId>,
+    page_id: &Option<PageId>,
     skipped_chunk_count: u64,
     field_prefix: &str,
 ) -> BTreeMap<String, String> {
@@ -192,10 +192,10 @@ fn chunk_receipt_page_common_control_fields(
     );
     fields.insert(
         format!("{field_prefix}chunk_filter_present"),
-        chunk_id.is_some().to_string(),
+        page_id.is_some().to_string(),
     );
-    if let Some(chunk_id) = chunk_id {
-        fields.extend(chunk_id.to_control_fields(&format!("{field_prefix}chunk_filter.")));
+    if let Some(page_id) = page_id {
+        fields.extend(page_id.to_control_fields(&format!("{field_prefix}chunk_filter.")));
     }
     fields.insert(
         format!("{field_prefix}skipped_chunk_count"),

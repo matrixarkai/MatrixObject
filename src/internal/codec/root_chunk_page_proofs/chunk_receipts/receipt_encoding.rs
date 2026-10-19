@@ -22,7 +22,7 @@ pub(crate) fn append_chunk_batch_write_receipt(
     out: &mut Vec<u8>,
     receipt: &ReplicaBatchWriteReceipt,
 ) {
-    append_chunk_id(out, &receipt.chunk_id);
+    append_chunk_id(out, &receipt.page_id);
     append_string(out, &receipt.request_checksum);
     append_string(out, &receipt.payload_checksum);
     append_string(out, &receipt.idempotency_key);
@@ -30,7 +30,7 @@ pub(crate) fn append_chunk_batch_write_receipt(
 }
 
 pub(crate) fn append_chunk_write_receipt(out: &mut Vec<u8>, receipt: &ReplicaWriteReceipt) {
-    append_chunk_id(out, &receipt.chunk_id);
+    append_chunk_id(out, &receipt.page_id);
     append_u64(out, receipt.offset);
     append_u64(out, receipt.length);
     append_string(out, &receipt.request_checksum);
@@ -39,7 +39,7 @@ pub(crate) fn append_chunk_write_receipt(out: &mut Vec<u8>, receipt: &ReplicaWri
 }
 
 pub(crate) fn append_chunk_discard_receipt(out: &mut Vec<u8>, receipt: &ReplicaDiscardReceipt) {
-    append_chunk_id(out, &receipt.chunk_id);
+    append_chunk_id(out, &receipt.page_id);
     append_u64(out, receipt.offset);
     append_u64(out, receipt.length);
     append_string(out, &receipt.request_checksum);
@@ -50,7 +50,7 @@ pub(crate) fn append_chunk_batch_discard_receipt(
     out: &mut Vec<u8>,
     receipt: &ReplicaBatchDiscardReceipt,
 ) {
-    append_chunk_id(out, &receipt.chunk_id);
+    append_chunk_id(out, &receipt.page_id);
     append_string(out, &receipt.request_checksum);
     append_string(out, &receipt.idempotency_key);
     append_chunk_discard_batch_stats(out, &receipt.stats);
@@ -60,7 +60,7 @@ pub(crate) fn append_chunk_state_install_receipt(
     out: &mut Vec<u8>,
     receipt: &ReplicaStateInstallReceipt,
 ) {
-    append_chunk_id(out, &receipt.chunk_id);
+    append_chunk_id(out, &receipt.page_id);
     append_string(out, &receipt.request_checksum);
     append_string(out, &receipt.payload_checksum);
     append_string(out, &receipt.state_checksum);
@@ -83,7 +83,7 @@ pub(crate) fn append_chunk_reclaim_receipt(out: &mut Vec<u8>, receipt: &ReplicaR
 }
 
 pub(crate) fn append_chunk_repair_receipt(out: &mut Vec<u8>, receipt: &ReplicaRepairReceipt) {
-    append_chunk_id(out, &receipt.chunk_id);
+    append_chunk_id(out, &receipt.page_id);
     append_string(out, &receipt.request_checksum);
     append_string(out, &receipt.idempotency_key);
     append_chunk_repair_report(out, &receipt.report);

@@ -82,9 +82,9 @@ impl MatrixObjectStore {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaRepairReceiptPage, ObjectError> {
         self.chunk_service
-            .list_repair_receipts(marker, limit, chunk_id)
+            .list_repair_receipts(marker, limit, page_id)
     }
 }

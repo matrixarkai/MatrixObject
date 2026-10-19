@@ -31,12 +31,12 @@ impl MatrixReplicaService {
             ..ReplicaReclaimPlan::default()
         };
         let mut budget_left = max_rewrite_bytes;
-        for (chunk_id, state) in &self.chunks {
-            if marker.map_or(false, |marker| chunk_id <= marker) {
+        for (page_id, state) in &self.chunks {
+            if marker.map_or(false, |marker| page_id <= marker) {
                 continue;
             }
             plan.scanned_chunks = plan.scanned_chunks.saturating_add(1);
-            plan.next_marker = Some(chunk_id.clone());
+            plan.next_marker = Some(page_id.clone());
             let discarded_ranges = merge_range_slice(&state.discarded_ranges);
             let discarded = discarded_range_bytes(&discarded_ranges);
             if discarded == 0 {
@@ -75,7 +75,7 @@ impl MatrixReplicaService {
                 "rewrite_reclaim"
             };
             let candidate = ReplicaReclaimCandidate {
-                chunk_id: chunk_id.clone(),
+                page_id: page_id.clone(),
                 logical_length: state.logical_length,
                 discarded_bytes: discarded,
                 discarded_range_count: discarded_ranges.len() as u64,

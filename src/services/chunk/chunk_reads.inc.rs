@@ -1,16 +1,16 @@
 impl MatrixReplicaService {
     pub fn read_chunk(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<ReplicaReadResult, ObjectError> {
-        self.read_chunk_bounded(chunk_id, offset, length, 0)
+        self.read_chunk_bounded(page_id, offset, length, 0)
     }
 
     pub fn read_chunk_bounded(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -20,13 +20,13 @@ impl MatrixReplicaService {
                 "chunk read payload budget exceeded".to_string(),
             ));
         }
-        self.read_chunk_with_cache_status(chunk_id, offset, length)
+        self.read_chunk_with_cache_status(page_id, offset, length)
             .map(|(read, _)| read)
     }
 
     pub fn read_chunk_ranges(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
     ) -> Result<(Vec<ReplicaRangeReadResult>, ReplicaReadBatchStats), ObjectError> {
@@ -75,7 +75,7 @@ impl MatrixReplicaService {
                 ObjectError::Corruption("chunk batch read missing selected range".to_string())
             })?;
             let (read, cache_hit) =
-                self.read_chunk_with_cache_status(chunk_id, range.offset, range.length)?;
+                self.read_chunk_with_cache_status(page_id, range.offset, range.length)?;
             stats.coalesced_ranges = 1;
             stats.coalesced_bytes = range.length;
             if cache_hit {
@@ -133,7 +133,7 @@ impl MatrixReplicaService {
         let mut merged_reads = Vec::with_capacity(merged_ranges.len());
         for merged in merged_ranges {
             let (read, cache_hit) =
-                self.read_chunk_with_cache_status(chunk_id, merged.offset, merged.length)?;
+                self.read_chunk_with_cache_status(page_id, merged.offset, merged.length)?;
             stats.coalesced_ranges = stats.coalesced_ranges.saturating_add(1);
             stats.coalesced_bytes = stats.coalesced_bytes.saturating_add(merged.length);
             if cache_hit {

@@ -2,14 +2,14 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedChunkBatchDiscard, ObjectError> {
         self.prepare_chunk_batch_discard_raft_entry_fenced(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             idempotency_key,
             expected_previous_commit_index,
@@ -20,7 +20,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry_fenced(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
         expected_previous_commit_index: u64,
@@ -57,11 +57,11 @@ impl MatrixObjectStore {
         }
         let mut projected = replica.clone();
         let (_stats, receipt) = projected.discard_chunk_ranges_idempotent_borrowed(
-            &chunk_id,
+            &page_id,
             &selected,
             idempotency_key,
         )?;
-        let state = projected.read_chunk_state(&chunk_id)?;
+        let state = projected.read_chunk_state(&page_id)?;
         let mut prepared = PreparedChunkBatchDiscard {
             replica_index,
             ranges: selected,
@@ -80,7 +80,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         idempotency_key: &str,
@@ -88,7 +88,7 @@ impl MatrixObjectStore {
     ) -> Result<PreparedChunkBatchDiscard, ObjectError> {
         self.prepare_chunk_batch_discard_raft_entry_bounded_from(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_discard_bytes,
             0,
@@ -100,7 +100,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_from(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -116,7 +116,7 @@ impl MatrixObjectStore {
             .chunk_service
             .can_accept_chunk_replica_batch_discard_from_borrowed(
             replica_index,
-            &chunk_id,
+            &page_id,
             &selected,
             max_discard_bytes,
             0,
@@ -139,7 +139,7 @@ impl MatrixObjectStore {
         }
         self.prepare_chunk_batch_discard_raft_entry_fenced(
             replica_index,
-            chunk_id,
+            page_id,
             selected,
             idempotency_key,
             expected_previous_commit_index,
@@ -150,7 +150,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_fenced(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         idempotency_key: &str,
@@ -159,7 +159,7 @@ impl MatrixObjectStore {
     ) -> Result<PreparedChunkBatchDiscard, ObjectError> {
         self.prepare_chunk_batch_discard_raft_entry_bounded_fenced_from(
             replica_index,
-            chunk_id,
+            page_id,
             ranges,
             max_discard_bytes,
             0,
@@ -172,7 +172,7 @@ impl MatrixObjectStore {
     pub fn prepare_chunk_batch_discard_raft_entry_bounded_fenced_from(
         &self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -189,7 +189,7 @@ impl MatrixObjectStore {
             .chunk_service
             .can_accept_chunk_replica_batch_discard_fenced_borrowed(
             replica_index,
-            &chunk_id,
+            &page_id,
             &selected,
             max_discard_bytes,
             expected_control_checksum,
@@ -212,7 +212,7 @@ impl MatrixObjectStore {
         }
         self.prepare_chunk_batch_discard_raft_entry_fenced(
             replica_index,
-            chunk_id,
+            page_id,
             selected,
             idempotency_key,
             expected_previous_commit_index,
@@ -246,7 +246,7 @@ impl MatrixObjectStore {
             ));
         }
         let request_checksum =
-            chunk_batch_discard_request_checksum(&prepared.receipt.chunk_id, &prepared.ranges);
+            chunk_batch_discard_request_checksum(&prepared.receipt.page_id, &prepared.ranges);
         if prepared.receipt.request_checksum != request_checksum {
             return Err(ObjectError::Corruption(
                 "chunk prepared batch discard request checksum mismatch".to_string(),
@@ -271,7 +271,7 @@ impl MatrixObjectStore {
             .batch_discard_request_receipts
             .get(&prepared.receipt.idempotency_key)
         {
-            if existing.chunk_id != prepared.receipt.chunk_id
+            if existing.page_id != prepared.receipt.page_id
                 || existing.request_checksum != prepared.receipt.request_checksum
             {
                 return Err(ObjectError::PreconditionFailed(
@@ -304,10 +304,10 @@ impl MatrixObjectStore {
         replica
             .chunks
             .insert(
-                prepared.receipt.chunk_id.clone(),
+                prepared.receipt.page_id.clone(),
                 std::sync::Arc::new(prepared.state),
             );
-        let _ = replica.invalidate_chunk_cache(&prepared.receipt.chunk_id, 0, projected_len);
+        let _ = replica.invalidate_chunk_cache(&prepared.receipt.page_id, 0, projected_len);
         replica.physical_discard_ranges = replica
             .physical_discard_ranges
             .saturating_add(prepared.receipt.stats.physical_discard_ranges);

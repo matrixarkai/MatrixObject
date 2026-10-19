@@ -3,7 +3,7 @@ impl MatrixChunkService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&PageId>,
+        page_id: Option<&PageId>,
     ) -> Result<ReplicaRepairReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -12,7 +12,7 @@ impl MatrixChunkService {
         let mut page = ReplicaRepairReceiptPage {
             total_receipt_count: self.repair_request_receipts.len() as u64,
             limit: limit as u64,
-            chunk_id: chunk_id.cloned(),
+            page_id: page_id.cloned(),
             ..ReplicaRepairReceiptPage::default()
         };
         let iter: Box<dyn Iterator<Item = (&String, &ReplicaRepairReceipt)> + '_> =
@@ -26,7 +26,7 @@ impl MatrixChunkService {
             };
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if chunk_id.is_some_and(|chunk_id| &receipt.chunk_id != chunk_id) {
+            if page_id.is_some_and(|page_id| &receipt.page_id != page_id) {
                 page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);
                 continue;
             }

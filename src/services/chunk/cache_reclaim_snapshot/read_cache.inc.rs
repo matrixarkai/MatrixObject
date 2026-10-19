@@ -141,7 +141,7 @@ impl MatrixReplicaService {
     /// recovery exactly as a whole-chunk mismatch did.
     fn chunk_pages_valid(
         &self,
-        chunk_id: &PageId,
+        page_id: &PageId,
         chunk: &PageState,
         start: usize,
         end: usize,
@@ -149,7 +149,7 @@ impl MatrixReplicaService {
         let page = CHUNK_VALIDATION_PAGE_BYTES;
         {
             let memo = self.page_validation.borrow();
-            if let Some((sequence, checksum, hashes)) = memo.get(chunk_id) {
+            if let Some((sequence, checksum, hashes)) = memo.get(page_id) {
                 if *sequence == chunk.write_sequence && checksum == &chunk.checksum {
                     let first = start / page;
                     let last = end.saturating_sub(1) / page;
@@ -170,7 +170,7 @@ impl MatrixReplicaService {
         }
         // cold: validate the whole payload once, then memoise the pages
         if !etag_matches(&chunk.data, &chunk.checksum) {
-            self.page_validation.borrow_mut().remove(chunk_id);
+            self.page_validation.borrow_mut().remove(page_id);
             return false;
         }
         let mut hashes = Vec::with_capacity(chunk.data.len() / page + 1);
@@ -181,7 +181,7 @@ impl MatrixReplicaService {
             from = to;
         }
         self.page_validation.borrow_mut().insert(
-            chunk_id.clone(),
+            page_id.clone(),
             (chunk.write_sequence, chunk.checksum.clone(), hashes),
         );
         true

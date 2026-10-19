@@ -87,9 +87,9 @@ impl PreparedChunkReclaimEnvelope {
             format!("{field_prefix}first_reclaim_chunk_id_present"),
             self.first_reclaim_chunk_id.is_some().to_string(),
         );
-        if let Some(chunk_id) = &self.first_reclaim_chunk_id {
+        if let Some(page_id) = &self.first_reclaim_chunk_id {
             fields
-                .extend(chunk_id.to_control_fields(&format!("{field_prefix}first_reclaim_chunk.")));
+                .extend(page_id.to_control_fields(&format!("{field_prefix}first_reclaim_chunk.")));
         }
         fields
     }

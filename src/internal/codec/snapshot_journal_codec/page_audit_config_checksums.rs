@@ -4,8 +4,8 @@ pub(crate) fn append_prepared_page_audit_repair_envelope(
 ) {
     append_string(out, &envelope.envelope_format);
     append_u64(out, envelope.after_chunk_id.is_some() as u64);
-    if let Some(chunk_id) = &envelope.after_chunk_id {
-        append_chunk_id(out, chunk_id);
+    if let Some(page_id) = &envelope.after_chunk_id {
+        append_chunk_id(out, page_id);
     }
     append_u64(out, envelope.max_chunks);
     append_u64(out, envelope.max_payload_bytes);
@@ -39,8 +39,8 @@ pub(crate) fn append_prepared_page_audit_repair_envelope(
     append_u64(out, envelope.repair_can_apply as u64);
     append_string(out, &envelope.repair_reason);
     append_u64(out, envelope.first_candidate_chunk_id.is_some() as u64);
-    if let Some(chunk_id) = &envelope.first_candidate_chunk_id {
-        append_chunk_id(out, chunk_id);
+    if let Some(page_id) = &envelope.first_candidate_chunk_id {
+        append_chunk_id(out, page_id);
     }
     append_u64(out, envelope.first_candidate_replica_index.is_some() as u64);
     append_u64(
@@ -101,7 +101,7 @@ pub(crate) fn make_prepared_page_audit_repair_envelope(
         repair_needed: prepared.report.repair_needed,
         repair_can_apply: prepared.report.repair_can_apply,
         repair_reason: prepared.report.repair_reason.clone(),
-        first_candidate_chunk_id: first_candidate.map(|item| item.chunk_id.clone()),
+        first_candidate_chunk_id: first_candidate.map(|item| item.page_id.clone()),
         first_candidate_replica_index: first_candidate.map(|item| item.replica_index),
         first_candidate_status: first_candidate
             .map(|item| item.status.clone())

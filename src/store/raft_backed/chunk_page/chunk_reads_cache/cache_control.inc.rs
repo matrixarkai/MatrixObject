@@ -72,14 +72,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prewarm_chunk_read_cache_control_with_read_proof_linearizable_fenced(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.prewarm_chunk_read_cache_control_with_read_proof_linearizable_fenced_committed_at(
-            chunk_id,
+            page_id,
             offset,
             length,
             max_bytes,
@@ -91,7 +91,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prewarm_chunk_read_cache_control_with_read_proof_linearizable_fenced_committed_at(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -101,7 +101,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.prewarm_chunk_read_cache_control_batch_with_read_proof_linearizable_fenced_committed_at(
             vec![ReplicaReadCacheRange {
-                chunk_id,
+                page_id,
                 offset,
                 length,
             }],
@@ -155,14 +155,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn invalidate_chunk_read_cache_control_with_read_proof_linearizable_fenced(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.invalidate_chunk_read_cache_control_with_read_proof_linearizable_fenced_committed_at(
-            chunk_id,
+            page_id,
             offset,
             length,
             max_bytes,
@@ -174,7 +174,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn invalidate_chunk_read_cache_control_with_read_proof_linearizable_fenced_committed_at(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -184,7 +184,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenStorageRead<ReplicaReadCacheControlReport>, ObjectError> {
         self.invalidate_chunk_read_cache_control_batch_with_read_proof_linearizable_fenced_committed_at(
             vec![ReplicaReadCacheRange {
-                chunk_id,
+                page_id,
                 offset,
                 length,
             }],

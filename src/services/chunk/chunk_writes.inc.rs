@@ -1,7 +1,7 @@
 impl MatrixReplicaService {
     pub fn write_chunk(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         data: &[u8],
     ) -> Result<(), ObjectError> {
@@ -9,10 +9,10 @@ impl MatrixReplicaService {
         let end = validate_pipeline_range("chunk write", offset, data.len() as u64)?;
         let projected_len = self
             .chunks
-            .get(&chunk_id)
+            .get(&page_id)
             .map_or(end, |state| state.data.len() as u64)
             .max(end);
-        self.ensure_capacity_for_chunk_len(&chunk_id, projected_len)?;
+        self.ensure_capacity_for_chunk_len(&page_id, projected_len)?;
         self.admit_mutation_qos(
             if data.is_empty() { 0 } else { 1 },
             data.len() as u64,
@@ -20,12 +20,12 @@ impl MatrixReplicaService {
             0,
             now_millis(),
         )?;
-        let cache_chunk_id = chunk_id.clone();
+        let cache_chunk_id = page_id.clone();
         // `make_mut` copies this one chunk's state if a snapshot still names
         // it, so the copy is per chunk WRITTEN rather than per chunk held.
         let chunk = std::sync::Arc::make_mut(
             self.chunks
-                .entry(chunk_id)
+                .entry(page_id)
                 .or_insert_with(|| std::sync::Arc::new(PageState::empty())),
         );
         let end_index = usize::try_from(end).map_err(|_| {
@@ -67,18 +67,18 @@ impl MatrixReplicaService {
 
     pub fn write_chunk_fenced(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         data: &[u8],
         expected_control_checksum: Option<&str>,
     ) -> Result<(), ObjectError> {
         self.check_expected_control_checksum(expected_control_checksum)?;
-        self.write_chunk(chunk_id, offset, data)
+        self.write_chunk(page_id, offset, data)
     }
 
     pub fn write_chunk_idempotent(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
@@ -92,9 +92,9 @@ impl MatrixReplicaService {
         }
         let payload_checksum = etag(data);
         let request_checksum =
-            chunk_write_receipt_request_checksum(&chunk_id, offset, length, &payload_checksum);
+            chunk_write_receipt_request_checksum(&page_id, offset, length, &payload_checksum);
         if let Some(existing) = self.write_request_receipts.get(idempotency_key) {
-            if existing.chunk_id != chunk_id
+            if existing.page_id != page_id
                 || existing.offset != offset
                 || existing.length != length
                 || existing.request_checksum != request_checksum
@@ -108,9 +108,9 @@ impl MatrixReplicaService {
             receipt.deduped = true;
             return Ok(receipt);
         }
-        self.write_chunk(chunk_id.clone(), offset, data)?;
+        self.write_chunk(page_id.clone(), offset, data)?;
         let receipt = ReplicaWriteReceipt {
-            chunk_id,
+            page_id,
             offset,
             length,
             request_checksum,
@@ -126,33 +126,33 @@ impl MatrixReplicaService {
 
     pub fn write_chunk_ranges(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
     ) -> Result<ReplicaWriteBatchStats, ObjectError> {
-        self.write_chunk_ranges_internal(chunk_id, writes, true)
+        self.write_chunk_ranges_internal(page_id, writes, true)
     }
 
     pub fn write_chunk_ranges_borrowed(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: &[(u64, &[u8])],
     ) -> Result<ReplicaWriteBatchStats, ObjectError> {
-        self.write_chunk_ranges_borrowed_internal(chunk_id, writes, true)
+        self.write_chunk_ranges_borrowed_internal(page_id, writes, true)
     }
 
     pub fn write_chunk_ranges_fenced(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         expected_control_checksum: Option<&str>,
     ) -> Result<ReplicaWriteBatchStats, ObjectError> {
         self.check_expected_control_checksum(expected_control_checksum)?;
-        self.write_chunk_ranges(chunk_id, writes)
+        self.write_chunk_ranges(page_id, writes)
     }
 
     fn write_chunk_ranges_internal(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         record_internal_receipt: bool,
     ) -> Result<ReplicaWriteBatchStats, ObjectError> {
@@ -160,12 +160,12 @@ impl MatrixReplicaService {
         for (offset, data) in &writes {
             borrowed.push((*offset, data.as_slice()));
         }
-        self.write_chunk_ranges_borrowed_internal(chunk_id, &borrowed, record_internal_receipt)
+        self.write_chunk_ranges_borrowed_internal(page_id, &borrowed, record_internal_receipt)
     }
 
     fn write_chunk_ranges_borrowed_internal(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: &[(u64, &[u8])],
         record_internal_receipt: bool,
     ) -> Result<ReplicaWriteBatchStats, ObjectError> {
@@ -199,7 +199,7 @@ impl MatrixReplicaService {
         if selected.is_empty() {
             return Ok(stats);
         }
-        let request_checksum = chunk_batch_write_request_checksum_borrowed(&chunk_id, &selected);
+        let request_checksum = chunk_batch_write_request_checksum_borrowed(&page_id, &selected);
         let payload_checksum = chunk_batch_write_payload_checksum_borrowed(&selected);
         if !selected_strictly_ordered {
             selected.sort_by_key(|(offset, _)| *offset);
@@ -225,7 +225,7 @@ impl MatrixReplicaService {
         }
         let projected_len = coalesced.iter().try_fold(
             self.chunks
-                .get(&chunk_id)
+                .get(&page_id)
                 .map_or(0u64, |state| state.data.len() as u64),
             |acc, (offset, data)| -> Result<u64, ObjectError> {
                 Ok(acc.max(validate_pipeline_range(
@@ -235,7 +235,7 @@ impl MatrixReplicaService {
                 )?))
             },
         )?;
-        self.ensure_capacity_for_chunk_len(&chunk_id, projected_len)?;
+        self.ensure_capacity_for_chunk_len(&page_id, projected_len)?;
         let qos_write_ops = coalesced.len() as u64;
         let qos_write_bytes = coalesced.iter().try_fold(0u64, |acc, (_, data)| {
             acc.checked_add(data.len() as u64).ok_or_else(|| {
@@ -247,11 +247,11 @@ impl MatrixReplicaService {
         self.admit_mutation_qos(qos_write_ops, qos_write_bytes, 0, 0, now_millis())?;
         let coalesced_write_sequence_delta = coalesced.len() as u64;
         let mut invalidations = Vec::with_capacity(coalesced.len());
-        let cache_chunk_id = chunk_id.clone();
+        let cache_chunk_id = page_id.clone();
         {
             let chunk = std::sync::Arc::make_mut(
                 self.chunks
-                    .entry(chunk_id.clone())
+                    .entry(page_id.clone())
                     .or_insert_with(|| std::sync::Arc::new(PageState::empty())),
             );
             let projected_len_index = usize::try_from(projected_len).map_err(|_| {
@@ -315,7 +315,7 @@ impl MatrixReplicaService {
             idempotency_key.push_str(PREFIX);
             idempotency_key.push_str(&request_checksum);
             let receipt = ReplicaBatchWriteReceipt {
-                chunk_id,
+                page_id,
                 request_checksum,
                 payload_checksum,
                 idempotency_key: idempotency_key.clone(),
@@ -331,7 +331,7 @@ impl MatrixReplicaService {
 
     pub fn write_chunk_ranges_idempotent(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         idempotency_key: &str,
     ) -> Result<(ReplicaWriteBatchStats, ReplicaBatchWriteReceipt), ObjectError> {
@@ -359,10 +359,10 @@ impl MatrixReplicaService {
                         )
                     })?;
         }
-        let request_checksum = chunk_batch_write_request_checksum(&chunk_id, &selected);
+        let request_checksum = chunk_batch_write_request_checksum(&page_id, &selected);
         let payload_checksum = chunk_batch_write_payload_checksum(&selected);
         if let Some(existing) = self.batch_write_request_receipts.get(idempotency_key) {
-            if existing.chunk_id != chunk_id
+            if existing.page_id != page_id
                 || existing.request_checksum != request_checksum
                 || existing.payload_checksum != payload_checksum
             {
@@ -374,9 +374,9 @@ impl MatrixReplicaService {
             receipt.deduped = true;
             return Ok((receipt.stats.clone(), receipt));
         }
-        let stats = self.write_chunk_ranges_internal(chunk_id.clone(), selected, false)?;
+        let stats = self.write_chunk_ranges_internal(page_id.clone(), selected, false)?;
         let receipt = ReplicaBatchWriteReceipt {
-            chunk_id,
+            page_id,
             request_checksum,
             payload_checksum,
             idempotency_key: idempotency_key.to_string(),
@@ -391,7 +391,7 @@ impl MatrixReplicaService {
 
     pub fn write_chunk_ranges_idempotent_borrowed(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: &[(u64, &[u8])],
         idempotency_key: &str,
     ) -> Result<(ReplicaWriteBatchStats, ReplicaBatchWriteReceipt), ObjectError> {
@@ -419,10 +419,10 @@ impl MatrixReplicaService {
                         )
                     })?;
         }
-        let request_checksum = chunk_batch_write_request_checksum_borrowed(&chunk_id, &selected);
+        let request_checksum = chunk_batch_write_request_checksum_borrowed(&page_id, &selected);
         let payload_checksum = chunk_batch_write_payload_checksum_borrowed(&selected);
         if let Some(existing) = self.batch_write_request_receipts.get(idempotency_key) {
-            if existing.chunk_id != chunk_id
+            if existing.page_id != page_id
                 || existing.request_checksum != request_checksum
                 || existing.payload_checksum != payload_checksum
             {
@@ -434,9 +434,9 @@ impl MatrixReplicaService {
             receipt.deduped = true;
             return Ok((receipt.stats.clone(), receipt));
         }
-        let stats = self.write_chunk_ranges_borrowed_internal(chunk_id.clone(), &selected, false)?;
+        let stats = self.write_chunk_ranges_borrowed_internal(page_id.clone(), &selected, false)?;
         let receipt = ReplicaBatchWriteReceipt {
-            chunk_id,
+            page_id,
             request_checksum,
             payload_checksum,
             idempotency_key: idempotency_key.to_string(),

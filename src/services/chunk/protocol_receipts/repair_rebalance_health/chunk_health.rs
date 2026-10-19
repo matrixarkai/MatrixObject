@@ -35,7 +35,7 @@ impl ReplicaScrubReport {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReplicaRepairReport {
-    pub chunk_id: Option<PageId>,
+    pub page_id: Option<PageId>,
     pub checked_chunks: u64,
     pub healthy_chunks: u64,
     pub degraded_chunks: u64,
@@ -60,10 +60,10 @@ impl ReplicaRepairReport {
         let mut fields = BTreeMap::new();
         fields.insert(
             format!("{field_prefix}chunk_present"),
-            self.chunk_id.is_some().to_string(),
+            self.page_id.is_some().to_string(),
         );
-        if let Some(chunk_id) = &self.chunk_id {
-            fields.extend(chunk_id.to_control_fields(&format!("{field_prefix}chunk.")));
+        if let Some(page_id) = &self.page_id {
+            fields.extend(page_id.to_control_fields(&format!("{field_prefix}chunk.")));
         }
         append_chunk_health_control_fields(
             self.checked_chunks,

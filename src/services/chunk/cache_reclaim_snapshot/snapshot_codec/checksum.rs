@@ -46,9 +46,9 @@ impl ReplicaServiceSnapshot {
         append_chunk_mutation_qos_state(&mut material, &self.mutation_qos_state);
         append_u64(&mut material, self.receipt_retention as u64);
         append_u64(&mut material, self.chunks.len() as u64);
-        for (chunk_id, state) in &self.chunks {
-            append_slab_id(&mut material, &chunk_id.slab_id);
-            append_u64(&mut material, chunk_id.page_index);
+        for (page_id, state) in &self.chunks {
+            append_slab_id(&mut material, &page_id.slab_id);
+            append_u64(&mut material, page_id.page_index);
             append_u64(&mut material, state.logical_length);
             append_u64(&mut material, state.write_sequence);
             append_string(&mut material, &state.checksum);

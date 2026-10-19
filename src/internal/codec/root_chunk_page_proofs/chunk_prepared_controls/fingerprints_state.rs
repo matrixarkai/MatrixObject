@@ -28,7 +28,7 @@ pub(crate) fn append_replica_service_fingerprint(out: &mut Vec<u8>, service: &Ma
     append_u64(out, readiness.physical_bytes);
     append_u64(out, readiness.reclaimable_bytes);
     append_u64(out, readiness.trailing_trim_bytes);
-    append_u64(out, readiness.chunk_count);
+    append_u64(out, readiness.page_count);
     append_u64(out, readiness.write_receipt_count);
     append_u64(out, readiness.discard_receipt_count);
     append_u64(out, readiness.batch_write_receipt_count);

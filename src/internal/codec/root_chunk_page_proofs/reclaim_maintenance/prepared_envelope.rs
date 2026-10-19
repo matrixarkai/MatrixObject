@@ -45,8 +45,8 @@ pub(crate) fn append_prepared_storage_maintenance_envelope(
     append_u64(out, envelope.first_replica_index.is_some() as u64);
     append_u64(out, envelope.first_replica_index.unwrap_or_default() as u64);
     append_u64(out, envelope.first_chunk_id.is_some() as u64);
-    if let Some(chunk_id) = &envelope.first_chunk_id {
-        append_chunk_id(out, chunk_id);
+    if let Some(page_id) = &envelope.first_chunk_id {
+        append_chunk_id(out, page_id);
     }
     append_u64(out, envelope.first_estimated_bytes);
 }
@@ -149,7 +149,7 @@ pub(crate) fn make_prepared_storage_maintenance_envelope(
             .map(|action| action.reason.clone())
             .unwrap_or_default(),
         first_replica_index: first_action.and_then(|action| action.replica_index),
-        first_chunk_id: first_action.and_then(|action| action.chunk_id.clone()),
+        first_chunk_id: first_action.and_then(|action| action.page_id.clone()),
         first_estimated_bytes: first_action
             .map(|action| action.estimated_bytes)
             .unwrap_or_default(),

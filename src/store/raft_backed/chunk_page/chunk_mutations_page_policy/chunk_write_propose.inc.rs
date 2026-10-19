@@ -193,13 +193,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_batch_write_prepared(
         &mut self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         idempotency_key: &str,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self.prepare_chunk_batch_write_raft_entry(
             replica_index,
-            chunk_id,
+            page_id,
             writes,
             idempotency_key,
         )?;
@@ -209,14 +209,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_batch_write_prepared_bounded(
         &mut self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         idempotency_key: &str,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self.prepare_chunk_batch_write_raft_entry_bounded(
             replica_index,
-            chunk_id,
+            page_id,
             writes,
             max_write_bytes,
             idempotency_key,
@@ -227,7 +227,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_batch_write_prepared_bounded_fenced(
         &mut self,
         replica_index: usize,
-        chunk_id: PageId,
+        page_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         idempotency_key: &str,
@@ -236,7 +236,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let prepared = self
             .prepare_chunk_batch_write_raft_entry_bounded_with_read_proof_linearizable_fenced(
                 replica_index,
-                chunk_id,
+                page_id,
                 writes,
                 max_write_bytes,
                 idempotency_key,

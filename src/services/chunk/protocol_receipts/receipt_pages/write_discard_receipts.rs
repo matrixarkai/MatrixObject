@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaWriteReceipt {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub offset: u64,
     pub length: u64,
     pub request_checksum: String,
@@ -39,19 +39,19 @@ impl ReplicaWriteReceipt {
 
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .chunk_id
+            .page_id
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.chunk_id.slab_id.volume_id.to_string(),
+            self.page_id.slab_id.volume_id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.chunk_id.slab_id.id.to_string(),
+            self.page_id.slab_id.id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_id.page_index.to_string(),
+            self.page_id.page_index.to_string(),
         );
         fields.insert(format!("{field_prefix}offset"), self.offset.to_string());
         fields.insert(format!("{field_prefix}length"), self.length.to_string());
@@ -82,7 +82,7 @@ impl ReplicaWriteReceipt {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaDiscardReceipt {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub offset: u64,
     pub length: u64,
     pub request_checksum: String,
@@ -120,19 +120,19 @@ impl ReplicaDiscardReceipt {
 
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .chunk_id
+            .page_id
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.chunk_id.slab_id.volume_id.to_string(),
+            self.page_id.slab_id.volume_id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.chunk_id.slab_id.id.to_string(),
+            self.page_id.slab_id.id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_id.page_index.to_string(),
+            self.page_id.page_index.to_string(),
         );
         fields.insert(format!("{field_prefix}offset"), self.offset.to_string());
         fields.insert(format!("{field_prefix}length"), self.length.to_string());
@@ -159,7 +159,7 @@ impl ReplicaDiscardReceipt {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaBatchWriteReceipt {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub request_checksum: String,
     pub payload_checksum: String,
     pub idempotency_key: String,
@@ -197,19 +197,19 @@ impl ReplicaBatchWriteReceipt {
 
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .chunk_id
+            .page_id
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.chunk_id.slab_id.volume_id.to_string(),
+            self.page_id.slab_id.volume_id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.chunk_id.slab_id.id.to_string(),
+            self.page_id.slab_id.id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_id.page_index.to_string(),
+            self.page_id.page_index.to_string(),
         );
         fields.insert(
             format!("{field_prefix}request_checksum"),
@@ -242,7 +242,7 @@ impl ReplicaBatchWriteReceipt {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaBatchDiscardReceipt {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub request_checksum: String,
     pub idempotency_key: String,
     pub stats: ReplicaDiscardBatchStats,
@@ -279,19 +279,19 @@ impl ReplicaBatchDiscardReceipt {
 
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .chunk_id
+            .page_id
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.chunk_id.slab_id.volume_id.to_string(),
+            self.page_id.slab_id.volume_id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.chunk_id.slab_id.id.to_string(),
+            self.page_id.slab_id.id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_id.page_index.to_string(),
+            self.page_id.page_index.to_string(),
         );
         fields.insert(
             format!("{field_prefix}request_checksum"),

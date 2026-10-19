@@ -26,9 +26,9 @@ pub(crate) fn append_bounded_repair_report(out: &mut Vec<u8>, report: &BoundedRe
 }
 
 pub(crate) fn append_chunk_repair_report(out: &mut Vec<u8>, report: &ReplicaRepairReport) {
-    append_u64(out, report.chunk_id.is_some() as u64);
-    if let Some(chunk_id) = &report.chunk_id {
-        append_chunk_id(out, chunk_id);
+    append_u64(out, report.page_id.is_some() as u64);
+    if let Some(page_id) = &report.page_id {
+        append_chunk_id(out, page_id);
     }
     append_u64(out, report.checked_chunks);
     append_u64(out, report.healthy_chunks);
@@ -61,9 +61,9 @@ pub(crate) fn append_prepared_page_repair_envelope(
     if let Some(slab_id) = &envelope.slab_id {
         append_slab_id(out, slab_id);
     }
-    append_u64(out, envelope.chunk_id.is_some() as u64);
-    if let Some(chunk_id) = &envelope.chunk_id {
-        append_chunk_id(out, chunk_id);
+    append_u64(out, envelope.page_id.is_some() as u64);
+    if let Some(page_id) = &envelope.page_id {
+        append_chunk_id(out, page_id);
     }
     append_u64(out, envelope.offset);
     append_u64(out, envelope.length);
@@ -109,7 +109,7 @@ pub(crate) fn prepared_page_range_repair_envelope(
     let mut envelope = PreparedPageRepairEnvelope {
         operation: "range".to_string(),
         slab_id: Some(prepared.slab_id.clone()),
-        chunk_id: None,
+        page_id: None,
         offset: prepared.offset,
         length: prepared.length,
         max_repair_chunks: prepared.max_repair_chunks as u64,
@@ -152,18 +152,18 @@ pub(crate) fn prepared_page_chunk_repair_envelope(
 ) -> PreparedPageRepairEnvelope {
     let mut envelope = PreparedPageRepairEnvelope {
         operation: "chunk".to_string(),
-        slab_id: Some(prepared.chunk_id.slab_id.clone()),
-        chunk_id: Some(prepared.chunk_id.clone()),
+        slab_id: Some(prepared.page_id.slab_id.clone()),
+        page_id: Some(prepared.page_id.clone()),
         offset: 0,
         length: 0,
         max_repair_chunks: 1,
-        start_chunk_index: prepared.chunk_id.page_index,
+        start_chunk_index: prepared.page_id.page_index,
         total_chunk_count: prepared.report.checked_chunks,
         selected_chunk_count: prepared.report.degraded_chunks,
         skipped_chunk_count: 0,
         selected_repair_bytes: 0,
         has_more: false,
-        next_chunk_index: prepared.chunk_id.page_index.saturating_add(1),
+        next_chunk_index: prepared.page_id.page_index.saturating_add(1),
         checked_chunks: prepared.report.checked_chunks,
         degraded_chunks: prepared.report.degraded_chunks,
         repaired_chunks: prepared.report.repaired_chunks,

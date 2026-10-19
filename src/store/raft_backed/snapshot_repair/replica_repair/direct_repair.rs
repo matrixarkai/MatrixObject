@@ -82,14 +82,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_repair_page_chunk(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.propose_repair_page_chunk_fenced(chunk_id, "")
+        self.propose_repair_page_chunk_fenced(page_id, "")
     }
 
     pub fn propose_repair_page_chunk_fenced(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
@@ -98,14 +98,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_page_route_control_checksum,
         )?;
         self.propose(ObjectCommand::RepairPageChunk {
-            chunk_id,
+            page_id,
             expected_route_control_checksum: expected_page_route_control_checksum.to_string(),
         })
     }
 
     pub fn propose_repair_page_chunk_linearizable_fenced(
         &mut self,
-        chunk_id: PageId,
+        page_id: PageId,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.ensure_page_route_control_ready(
@@ -113,7 +113,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_page_route_control_checksum.as_ref(),
         )?;
         let command = ObjectCommand::RepairPageChunk {
-            chunk_id,
+            page_id,
             expected_route_control_checksum: expected_page_route_control_checksum
                 .as_ref()
                 .to_string(),

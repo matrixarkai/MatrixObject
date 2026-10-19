@@ -61,10 +61,10 @@ impl MatrixChunkService {
         let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for loc in &locations {
             discard_ranges
-                .entry(loc.chunk_id.clone())
+                .entry(loc.page_id.clone())
                 .or_default()
                 .push(DataRange {
-                    offset: loc.chunk_offset,
+                    offset: loc.page_offset,
                     length: loc.length,
                 });
         }
@@ -77,23 +77,23 @@ impl MatrixChunkService {
                     continue;
                 }
                 let discard_result = if let Some(base_key) = idempotency_key {
-                    let chunk_key = replica_receipt_key(
+                    let page_key = replica_receipt_key(
                         "sd",
                         base_key,
-                        &loc.chunk_id,
+                        &loc.page_id,
                         index,
-                        &(loc.chunk_offset, loc.length),
+                        &(loc.page_offset, loc.length),
                     );
                     replica
                         .discard_chunk_idempotent(
-                            &loc.chunk_id,
-                            loc.chunk_offset,
+                            &loc.page_id,
+                            loc.page_offset,
                             loc.length,
-                            &chunk_key,
+                            &page_key,
                         )
                         .map(|_| ())
                 } else {
-                    replica.discard_chunk(&loc.chunk_id, loc.chunk_offset, loc.length)
+                    replica.discard_chunk(&loc.page_id, loc.page_offset, loc.length)
                 };
                 match discard_result {
                     Ok(()) => ok += 1,

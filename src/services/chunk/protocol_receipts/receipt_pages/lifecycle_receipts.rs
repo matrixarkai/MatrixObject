@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaStateInstallReceipt {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub request_checksum: String,
     pub payload_checksum: String,
     pub state_checksum: String,
@@ -41,12 +41,12 @@ impl ReplicaStateInstallReceipt {
 
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .chunk_id
+            .page_id
             .to_control_fields(&format!("{field_prefix}chunk."));
         for (name, value) in [
-            ("volume_id", self.chunk_id.slab_id.volume_id),
-            ("segment_id", self.chunk_id.slab_id.id),
-            ("chunk_index", self.chunk_id.page_index),
+            ("volume_id", self.page_id.slab_id.volume_id),
+            ("segment_id", self.page_id.slab_id.id),
+            ("chunk_index", self.page_id.page_index),
             ("logical_length", self.logical_length),
             ("write_sequence", self.write_sequence),
             ("discard_range_count", self.discard_range_count),
@@ -155,7 +155,7 @@ impl ReplicaReclaimReceipt {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaRepairReceipt {
-    pub chunk_id: PageId,
+    pub page_id: PageId,
     pub request_checksum: String,
     pub idempotency_key: String,
     pub report: ReplicaRepairReport,
@@ -192,19 +192,19 @@ impl ReplicaRepairReceipt {
 
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .chunk_id
+            .page_id
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.chunk_id.slab_id.volume_id.to_string(),
+            self.page_id.slab_id.volume_id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.chunk_id.slab_id.id.to_string(),
+            self.page_id.slab_id.id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            self.chunk_id.page_index.to_string(),
+            self.page_id.page_index.to_string(),
         );
         fields.insert(
             format!("{field_prefix}request_checksum"),

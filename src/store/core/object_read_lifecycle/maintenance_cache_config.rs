@@ -39,7 +39,7 @@ impl MatrixObjectStore {
                 },
                 priority: if discard.compact_instead { 44 } else { 42 },
                 replica_index: None,
-                chunk_id: None,
+                page_id: None,
                 estimated_bytes: discard.discard_bytes,
             });
         }
@@ -51,7 +51,7 @@ impl MatrixObjectStore {
                 .then_with(|| left.action.cmp(&right.action))
                 .then_with(|| left.reason.cmp(&right.reason))
                 .then_with(|| left.replica_index.cmp(&right.replica_index))
-                .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+                .then_with(|| left.page_id.cmp(&right.page_id))
         });
         let truncated = max_actions > 0 && plan.actions.len() > max_actions;
         if truncated {

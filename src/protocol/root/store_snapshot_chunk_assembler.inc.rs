@@ -29,7 +29,7 @@ impl StoreSnapshotChunkAssembler {
                 "store snapshot total bytes must be positive".to_string(),
             ));
         }
-        if !etag_matches(&chunk.payload, &chunk.chunk_checksum) {
+        if !etag_matches(&chunk.payload, &chunk.page_checksum) {
             return Err(ObjectError::Corruption(
                 "store snapshot chunk checksum mismatch".to_string(),
             ));

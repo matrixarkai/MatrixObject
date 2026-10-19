@@ -47,7 +47,7 @@ pub struct StoreSnapshot {
 pub struct StoreSnapshotChunk {
     pub offset: u64,
     pub total_bytes: u64,
-    pub chunk_checksum: String,
+    pub page_checksum: String,
     pub full_checksum: String,
     pub last_applied_index: u64,
     pub term: u64,

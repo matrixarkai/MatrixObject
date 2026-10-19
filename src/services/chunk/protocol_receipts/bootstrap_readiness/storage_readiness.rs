@@ -9,7 +9,7 @@ pub struct ReplicaStorageReadiness {
     pub accepting_writes: bool,
     pub draining: bool,
     pub frozen: bool,
-    pub chunk_count: u64,
+    pub page_count: u64,
     pub physical_bytes: u64,
     pub capacity_bytes: u64,
     pub capacity_free_bytes: u64,
@@ -160,7 +160,7 @@ impl ReplicaStorageReadiness {
             self.last_partial_reclaim_failure_status.clone(),
         );
         for (name, value) in [
-            ("chunk_count", self.chunk_count),
+            ("chunk_count", self.page_count),
             ("physical_bytes", self.physical_bytes),
             ("capacity_bytes", self.capacity_bytes),
             ("capacity_free_bytes", self.capacity_free_bytes),
