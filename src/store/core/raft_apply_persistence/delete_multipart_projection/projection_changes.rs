@@ -34,11 +34,11 @@ impl MatrixObjectStore {
         self.object_changes.push(ObjectChangeRecord {
             sequence,
             previous_sequence,
-            operation: operation.to_string(),
+            operation: operation.into(),
             object_id: metadata.object_id.clone(),
             version: metadata.version,
             length: metadata.length,
-            etag: metadata.etag.to_string(),
+            etag: metadata.etag.clone(),
             deleted: metadata.deleted,
             event_time_ms: metadata.update_time_ms,
         });
@@ -76,12 +76,12 @@ impl MatrixObjectStore {
         let Some(change) = self.object_changes.last_mut() else {
             return;
         };
-        if change.operation != operation || change.object_id != metadata.object_id {
+        if &*change.operation != operation || change.object_id != metadata.object_id {
             return;
         }
         change.version = metadata.version;
         change.length = metadata.length;
-        change.etag = metadata.etag.to_string();
+        change.etag = metadata.etag.clone();
         change.deleted = metadata.deleted;
         change.event_time_ms = metadata.update_time_ms;
     }

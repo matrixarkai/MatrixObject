@@ -269,12 +269,12 @@ impl MatrixObjectStore {
         let mut changes_object_id = 0u64;
         for change in self.object_changes.iter() {
             changes_operation =
-                changes_operation.saturating_add(audit_string_heap(&change.operation));
+                changes_operation.saturating_add(audit_boxed_str_heap(&change.operation));
             // Charged through the pass ledger, so a feed entry naming an object
             // the store still holds costs nothing again for the key characters.
             changes_object_id = changes_object_id
                 .saturating_add(audit_object_id_heap(&mut ledger, &change.object_id));
-            changes_etag = changes_etag.saturating_add(audit_string_heap(&change.etag));
+            changes_etag = changes_etag.saturating_add(audit_boxed_str_heap(&change.etag));
         }
         let changes_bytes = changes_inline
             .saturating_add(changes_operation)
@@ -916,9 +916,9 @@ impl ObjectMutationRollback {
             .saturating_mul(std::mem::size_of::<ObjectChangeRecord>() as u64);
         for change in self.object_changes.iter() {
             changes_bytes = changes_bytes
-                .saturating_add(audit_string_heap(&change.operation))
+                .saturating_add(audit_boxed_str_heap(&change.operation))
                 .saturating_add(audit_object_id_heap(&mut ledger, &change.object_id))
-                .saturating_add(audit_string_heap(&change.etag));
+                .saturating_add(audit_boxed_str_heap(&change.etag));
         }
 
         let mut multipart_bytes = audit_bucket_keyed_inline_bytes(&self.multipart_complete_receipts)
