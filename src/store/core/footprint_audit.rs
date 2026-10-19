@@ -590,17 +590,17 @@ impl MatrixObjectStore {
             checksum_allocations.len() as u64,
         );
 
-        // The slab records. Their two range lists grow with how fragmented a
-        // slab becomes, and both are merged on every extend, so this is what
+        // The chunk records. Their two range lists grow with how fragmented a
+        // chunk becomes, and both are merged on every extend, so this is what
         // fragmentation costs rather than what deletion does.
         let mut slab_bytes = 0u64;
-        for slab in self.chunks.values() {
+        for chunk in self.chunks.values() {
             slab_bytes = slab_bytes
                 .saturating_add(
                     (std::mem::size_of::<ChunkId>() + std::mem::size_of::<ChunkInfo>()) as u64,
                 )
                 .saturating_add(
-                    ((slab.stale_ranges.capacity() + slab.discarded_ranges.capacity()) as u64)
+                    ((chunk.stale_ranges.capacity() + chunk.discarded_ranges.capacity()) as u64)
                         .saturating_mul(std::mem::size_of::<DataRange>() as u64),
                 );
         }
@@ -956,19 +956,19 @@ impl ObjectMutationRollback {
             .map_or(0u64, |service| service.footprint_bytes().total());
 
         let mut chunks_bytes = 0u64;
-        for slab in self.chunks.values() {
+        for chunk in self.chunks.values() {
             chunks_bytes = chunks_bytes
                 .saturating_add(
                     (std::mem::size_of::<ChunkId>() + std::mem::size_of::<ChunkInfo>()) as u64,
                 )
                 .saturating_add(
-                    ((slab.stale_ranges.capacity() + slab.discarded_ranges.capacity()) as u64)
+                    ((chunk.stale_ranges.capacity() + chunk.discarded_ranges.capacity()) as u64)
                         .saturating_mul(std::mem::size_of::<DataRange>() as u64),
                 );
         }
 
         // One entry per written payload, so this is the leg that grows with the
-        // stored objects. The key is a slab and an offset and the value is a
+        // stored objects. The key is a chunk and an offset and the value is a
         // length and a digest; neither owns anything below itself, which is why
         // the whole leg is arithmetic rather than a walk.
         let payloads_bytes = (self.payloads.len() as u64).saturating_mul(

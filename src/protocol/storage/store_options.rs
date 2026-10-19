@@ -9,7 +9,7 @@ pub struct StoreOptions {
     pub persistent_journal_path: String,
     pub replica_count: usize,
     pub write_quorum: usize,
-    /// Take the space a superseded object leaves instead of growing the slab.
+    /// Take the space a superseded object leaves instead of growing the chunk.
     ///
     /// Off by default: reclaiming immediately means an overwrite stops
     /// accumulating stale bytes for the collector, which changes what

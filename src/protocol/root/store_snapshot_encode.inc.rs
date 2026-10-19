@@ -122,9 +122,9 @@ impl StoreSnapshot {
             append_object_change_cursor(&mut out, change_cursor);
         }
         append_u64(&mut out, self.chunks.len() as u64);
-        for (chunk_id, slab) in &self.chunks {
+        for (chunk_id, chunk) in &self.chunks {
             append_slab_id(&mut out, chunk_id);
-            append_chunk_info(&mut out, slab);
+            append_chunk_info(&mut out, chunk);
         }
         append_u64(&mut out, self.payloads.len() as u64);
         for ((chunk_id, offset), payload) in &self.payloads {
@@ -218,11 +218,11 @@ impl StoreSnapshot {
                 .saturating_add(string_map_size(&metadata.tags))
                 .saturating_add(metadata.extents.len().saturating_mul(U64 * 4))
         }
-        fn chunk_size(slab: &ChunkInfo) -> usize {
-            U64 * 7 + slab
+        fn chunk_size(chunk: &ChunkInfo) -> usize {
+            U64 * 7 + chunk
                 .stale_ranges
                 .len()
-                .saturating_add(slab.discarded_ranges.len())
+                .saturating_add(chunk.discarded_ranges.len())
                 .saturating_mul(U64 * 2)
         }
         fn string_list_size(values: &[String]) -> usize {
@@ -335,8 +335,8 @@ impl StoreSnapshot {
                     version_total.saturating_add(metadata_size(metadata))
                 }))
         });
-        let slab_bytes = self.chunks.values().fold(0usize, |total, slab| {
-            total.saturating_add(U64 * 2).saturating_add(chunk_size(slab))
+        let slab_bytes = self.chunks.values().fold(0usize, |total, chunk| {
+            total.saturating_add(U64 * 2).saturating_add(chunk_size(chunk))
         });
         let applied_receipt_bytes = self
             .applied_raft_receipts

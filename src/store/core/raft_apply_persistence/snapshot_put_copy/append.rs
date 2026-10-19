@@ -12,7 +12,7 @@ impl MatrixObjectStore {
         // mutation batch is opened below and aborted before every restore, so
         // the page service owns its own undo, and an append writes one object
         // key, one metadata record and one change record. What it allocates is
-        // identified from the slab records the undo carries rather than by
+        // identified from the chunk records the undo carries rather than by
         // copying the payload index.
         let rollback = self.capture_targeted_mutation_rollback(&bucket, &key);
         let batch_material = format!(

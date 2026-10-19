@@ -24,17 +24,17 @@ impl MatrixObjectStore {
             }]);
         }
         let chunk_id = self.ensure_writable_chunk(page_len as u64)?;
-        let slab = self
+        let chunk = self
             .chunks
             .get_mut(&chunk_id)
             .ok_or_else(|| ObjectError::NotFound("allocated segment missing".to_string()))?;
-        let offset = slab.next_offset;
-        slab.next_offset = slab
+        let offset = chunk.next_offset;
+        chunk.next_offset = chunk
             .next_offset
             .checked_add(page_len as u64)
             .ok_or_else(|| ObjectError::InvalidArgument("segment offset overflow".to_string()))?;
-        slab.logical_bytes = slab.next_offset;
-        slab.live_bytes = saturating_add(slab.live_bytes, page_len as u64);
+        chunk.logical_bytes = chunk.next_offset;
+        chunk.live_bytes = saturating_add(chunk.live_bytes, page_len as u64);
         self.chunk_service
             .write_chunk_range(&chunk_id, offset, &data)?;
         self.payloads.insert(
@@ -65,19 +65,19 @@ impl MatrixObjectStore {
             let remaining = data.len() - cursor;
             let page_len = remaining.min(max_extent);
             let chunk_id = self.ensure_writable_chunk(page_len as u64)?;
-            let slab = self
+            let chunk = self
                 .chunks
                 .get_mut(&chunk_id)
                 .ok_or_else(|| ObjectError::NotFound("allocated segment missing".to_string()))?;
-            let offset = slab.next_offset;
-            slab.next_offset = slab
+            let offset = chunk.next_offset;
+            chunk.next_offset = chunk
                 .next_offset
                 .checked_add(page_len as u64)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument("segment offset overflow".to_string())
                 })?;
-            slab.logical_bytes = slab.next_offset;
-            slab.live_bytes = saturating_add(slab.live_bytes, page_len as u64);
+            chunk.logical_bytes = chunk.next_offset;
+            chunk.live_bytes = saturating_add(chunk.live_bytes, page_len as u64);
             self.chunk_service.write_chunk_range(
                 &chunk_id,
                 offset,
@@ -103,7 +103,7 @@ impl MatrixObjectStore {
     }
 
     /// Takes the first freed range that fits, so an overwrite reuses the space
-    /// its previous version left instead of growing the slab. Returns `None`
+    /// its previous version left instead of growing the chunk. Returns `None`
     /// unless the store was asked for this.
     fn take_reusable_stale_range(&mut self, length: u64) -> Option<(ChunkId, u64)> {
         if !self.options.reuse_stale_chunk_space || length == 0 {
@@ -200,22 +200,22 @@ impl MatrixObjectStore {
             if merged_ranges.is_empty() {
                 continue;
             }
-            let slab = self
+            let chunk = self
                 .chunks
                 .get_mut(&chunk_id)
                 .ok_or_else(|| ObjectError::NotFound("extent segment missing".to_string()))?;
             let stale_bytes = merged_ranges
                 .iter()
                 .fold(0u64, |acc, range| saturating_add(acc, range.length));
-            slab.live_bytes = slab.live_bytes.saturating_sub(stale_bytes);
-            slab.stale_bytes = saturating_add(slab.stale_bytes, stale_bytes);
+            chunk.live_bytes = chunk.live_bytes.saturating_sub(stale_bytes);
+            chunk.stale_bytes = saturating_add(chunk.stale_bytes, stale_bytes);
             discard_requests.extend(merged_ranges.iter().map(|range| ChunkRangeRequest {
                 chunk_id: chunk_id.clone(),
                 offset: range.offset,
                 length: range.length,
             }));
-            slab.stale_ranges.extend(merged_ranges);
-            slab.stale_ranges = merge_ranges(std::mem::take(&mut slab.stale_ranges));
+            chunk.stale_ranges.extend(merged_ranges);
+            chunk.stale_ranges = merge_ranges(std::mem::take(&mut chunk.stale_ranges));
         }
         if !discard_requests.is_empty() {
             self.chunk_service

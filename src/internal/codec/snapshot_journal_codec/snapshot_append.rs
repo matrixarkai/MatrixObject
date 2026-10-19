@@ -254,19 +254,19 @@ pub(crate) fn raft_membership_receipt_page_proof_checksum(
     etag(&material)
 }
 
-pub(crate) fn append_chunk_info(out: &mut Vec<u8>, slab: &ChunkInfo) {
-    append_slab_id(out, &slab.chunk_id);
-    append_u64(out, slab.logical_bytes);
-    append_u64(out, slab.live_bytes);
-    append_u64(out, slab.stale_bytes);
-    append_u64(out, slab.discarded_bytes);
-    append_u64(out, slab.next_offset);
-    append_u64(out, slab.stale_ranges.len() as u64);
-    for range in &slab.stale_ranges {
+pub(crate) fn append_chunk_info(out: &mut Vec<u8>, chunk: &ChunkInfo) {
+    append_slab_id(out, &chunk.chunk_id);
+    append_u64(out, chunk.logical_bytes);
+    append_u64(out, chunk.live_bytes);
+    append_u64(out, chunk.stale_bytes);
+    append_u64(out, chunk.discarded_bytes);
+    append_u64(out, chunk.next_offset);
+    append_u64(out, chunk.stale_ranges.len() as u64);
+    for range in &chunk.stale_ranges {
         append_range(out, range);
     }
-    append_u64(out, slab.discarded_ranges.len() as u64);
-    for range in &slab.discarded_ranges {
+    append_u64(out, chunk.discarded_ranges.len() as u64);
+    for range in &chunk.discarded_ranges {
         append_range(out, range);
     }
 }

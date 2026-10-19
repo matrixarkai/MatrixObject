@@ -68,16 +68,16 @@ impl MatrixChunkService {
         let mut chunks = Vec::new();
         let mut truncated = false;
         let mut next_marker = None;
-        for slab in &self.sealed_chunks {
-            if marker.map(|item| slab <= item).unwrap_or(false) {
+        for chunk in &self.sealed_chunks {
+            if marker.map(|item| chunk <= item).unwrap_or(false) {
                 continue;
             }
             if chunks.len() >= limit {
                 truncated = true;
                 break;
             }
-            next_marker = Some(slab.clone());
-            chunks.push(slab.clone());
+            next_marker = Some(chunk.clone());
+            chunks.push(chunk.clone());
         }
         Ok(SealedChunkPage {
             chunks,

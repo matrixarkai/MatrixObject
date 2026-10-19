@@ -25,35 +25,35 @@ impl MatrixObjectStore {
         let mut compaction_candidate_bytes = 0u64;
         let mut compaction_candidate_range_count = 0u64;
         let mut discard_ranges = Vec::new();
-        for slab in self.chunks.values() {
-            logical_bytes = saturating_add(logical_bytes, slab.logical_bytes);
-            live_bytes = saturating_add(live_bytes, slab.live_bytes);
-            stale_bytes = saturating_add(stale_bytes, slab.stale_bytes);
-            discarded_bytes = saturating_add(discarded_bytes, slab.discarded_bytes);
-            if slab.stale_bytes > 0 {
+        for chunk in self.chunks.values() {
+            logical_bytes = saturating_add(logical_bytes, chunk.logical_bytes);
+            live_bytes = saturating_add(live_bytes, chunk.live_bytes);
+            stale_bytes = saturating_add(stale_bytes, chunk.stale_bytes);
+            discarded_bytes = saturating_add(discarded_bytes, chunk.discarded_bytes);
+            if chunk.stale_bytes > 0 {
                 candidate_count += 1;
                 discard_candidate_bytes =
-                    saturating_add(discard_candidate_bytes, slab.stale_bytes);
+                    saturating_add(discard_candidate_bytes, chunk.stale_bytes);
             }
-            let pending_ranges = slab
+            let pending_ranges = chunk
                 .stale_ranges
                 .iter()
                 .filter(|range| range.length > 0)
                 .count();
             pending_discard_range_count =
                 saturating_add(pending_discard_range_count, pending_ranges as u64);
-            let merged_ranges = merge_range_slice(&slab.stale_ranges);
+            let merged_ranges = merge_range_slice(&chunk.stale_ranges);
             merged_discard_range_count =
                 saturating_add(merged_discard_range_count, merged_ranges.len() as u64);
             for range in &merged_ranges {
                 if range.length >= min_discard_bytes {
-                    discard_ranges.push((slab.chunk_id.clone(), range.clone()));
+                    discard_ranges.push((chunk.chunk_id.clone(), range.clone()));
                 }
             }
             if merged_ranges.len() > self.options.compaction_fragment_threshold {
                 compaction_candidate_count += 1;
                 compaction_candidate_bytes =
-                    saturating_add(compaction_candidate_bytes, slab.stale_bytes);
+                    saturating_add(compaction_candidate_bytes, chunk.stale_bytes);
                 compaction_candidate_range_count =
                     saturating_add(compaction_candidate_range_count, merged_ranges.len() as u64);
                 fragmented_range_count =

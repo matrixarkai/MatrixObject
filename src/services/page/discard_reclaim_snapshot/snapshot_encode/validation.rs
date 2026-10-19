@@ -246,8 +246,8 @@ impl ChunkServiceSnapshot {
         for replica in &self.replicas {
             replica.validate()?;
         }
-        for slab in &self.sealed_chunks {
-            if slab.volume_id != 0 || slab.id == 0 {
+        for chunk in &self.sealed_chunks {
+            if chunk.volume_id != 0 || chunk.id == 0 {
                 return Err(ObjectError::Corruption(
                     "block service snapshot sealed segment is invalid".to_string(),
                 ));

@@ -1,27 +1,27 @@
 impl StoreSnapshot {
     fn validate_chunks(&self) -> Result<(), ObjectError> {
         let mut max_chunk_id = 0u64;
-        for (chunk_id, slab) in &self.chunks {
-            if chunk_id != &slab.chunk_id {
+        for (chunk_id, chunk) in &self.chunks {
+            if chunk_id != &chunk.chunk_id {
                 return Err(ObjectError::Corruption(
                     "snapshot segment key does not match segment info".to_string(),
                 ));
             }
             max_chunk_id = max_chunk_id.max(chunk_id.id);
-            if slab.next_offset > self.options.chunk_size
-                || slab.live_bytes.saturating_add(slab.stale_bytes) < slab.live_bytes
-                || slab.discarded_bytes > slab.stale_bytes
+            if chunk.next_offset > self.options.chunk_size
+                || chunk.live_bytes.saturating_add(chunk.stale_bytes) < chunk.live_bytes
+                || chunk.discarded_bytes > chunk.stale_bytes
             {
                 return Err(ObjectError::Corruption(
                     "snapshot segment accounting is invalid".to_string(),
                 ));
             }
-            for range in slab
+            for range in chunk
                 .stale_ranges
                 .iter()
-                .chain(slab.discarded_ranges.iter())
+                .chain(chunk.discarded_ranges.iter())
             {
-                if range.end()? > slab.next_offset {
+                if range.end()? > chunk.next_offset {
                     return Err(ObjectError::Corruption(
                         "snapshot segment range exceeds segment length".to_string(),
                     ));

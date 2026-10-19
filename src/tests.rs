@@ -29584,15 +29584,15 @@ fn snapshot_round_trips_validated_versioned_state() {
             if message.contains("object version key")
     ));
     let mut corrupt_payload_range = chunk_restored.export_snapshot().unwrap();
-    let (chunk_id, slab) = corrupt_payload_range
+    let (chunk_id, chunk) = corrupt_payload_range
         .chunks
         .iter()
         .next()
-        .map(|(chunk_id, slab)| (chunk_id.clone(), slab.clone()))
+        .map(|(chunk_id, chunk)| (chunk_id.clone(), chunk.clone()))
         .unwrap();
     corrupt_payload_range
         .payloads
-        .insert((chunk_id, slab.next_offset), std::sync::Arc::new(b"x".to_vec()));
+        .insert((chunk_id, chunk.next_offset), std::sync::Arc::new(b"x".to_vec()));
     corrupt_payload_range.snapshot_checksum = corrupt_payload_range.checksum_material_hash();
     assert!(matches!(
         corrupt_payload_range.validate(),
@@ -32935,7 +32935,7 @@ fn metaserver_prefix_delete_and_change_checkpoints_are_durable() {
 fn a_put_that_fails_after_mutating_leaves_the_store_unchanged() {
     // The put path mutates the store before it can still reject the request.
     // An overwrite runs `mark_extents_stale`, which drops payload index
-    // entries, moves a slab's live and stale byte counters and discards chunk
+    // entries, moves a chunk's live and stale byte counters and discards chunk
     // ranges on every replica -- and only after that does
     // `verify_expected_object_checksum` get its chance to refuse. So an
     // overwrite carrying a wrong expected checksum drives the whole rollback.
@@ -36234,7 +36234,7 @@ fn what_a_put_undoes_by_hand_does_not_grow_with_the_store() {
 #[test]
 fn a_stale_range_holds_no_payload_entry() {
     // The invariant a targeted undo's payload arithmetic rests on. It
-    // identifies what a mutation inserted as "in a slab the undo never heard
+    // identifies what a mutation inserted as "in a chunk the undo never heard
     // of, or at or past the write cursor as it was, or inside a range that was
     // stale" -- and the last of those is only sound because a stale range
     // holds no entry. `mark_extents_stale` removes the entry for each extent
@@ -36260,8 +36260,8 @@ fn a_stale_range_holds_no_payload_entry() {
     }
     store.delete_object("bucket", "k1").unwrap();
     let mut stale_ranges_seen = 0usize;
-    for (chunk_id, slab) in store.chunks.iter() {
-        for range in slab.stale_ranges.iter() {
+    for (chunk_id, chunk) in store.chunks.iter() {
+        for range in chunk.stale_ranges.iter() {
             stale_ranges_seen += 1;
             for (key, _) in store.payloads.iter() {
                 if key.0 != *chunk_id {
@@ -36411,7 +36411,7 @@ fn an_append_that_fails_after_mutating_leaves_the_store_unchanged() {
     }
     // The raw snapshot bytes are deliberately NOT compared, and the reason is
     // worth stating because it looks like an omission. A refused append that
-    // allocated a slab leaves `next_chunk_id` advanced: no undo restores it,
+    // allocated a chunk leaves `next_chunk_id` advanced: no undo restores it,
     // because it is not a field of `ObjectMutationRollback` at all, and that
     // predates the narrowed undo -- the whole-store capture leaves it advanced
     // in exactly the same way, which is what this test showed when it was
@@ -37782,7 +37782,7 @@ fn a_rejection_names_the_setting_it_rejected() {
     );
 
     // And none of them may name a tier this store does not have. `segment` and
-    // `slab` were both tried as a name for a container above the chunk; there
+    // `chunk` were both tried as a name for a container above the chunk; there
     // is no such container, so a message mentioning one sends the reader
     // looking for a setting that was never there.
     for message in [&chunk_zero, &page_too_large, &extent_too_large] {
@@ -39285,7 +39285,7 @@ fn the_metadata_total_is_the_sum_of_the_legs_it_names() {
     // `ACCOUNTED.metadata_bytes` is the figure every per-object number in the
     // README divides. A structure can be left out of it in total silence: it
     // simply is not added, and every existing test still passes, which is how
-    // `applied_raft_receipts`, `metadata_route_cache` and the slab map sat
+    // `applied_raft_receipts`, `metadata_route_cache` and the chunk map sat
     // outside it while being reported as entry counts.
     //
     // So the total is asserted to BE its legs, not merely to be large. A new
@@ -39358,7 +39358,7 @@ fn the_metadata_total_is_the_sum_of_the_legs_it_names() {
     );
     assert!(
         at("chunks.bytes") > 0,
-        "the slab leg must be exercised, or it is asserted vacuously"
+        "the chunk leg must be exercised, or it is asserted vacuously"
     );
 }
 

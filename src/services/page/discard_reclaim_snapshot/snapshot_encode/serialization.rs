@@ -174,8 +174,8 @@ impl ChunkServiceSnapshot {
         append_page_route_qos_config(&mut out, &self.route_qos_config);
         append_page_route_qos_state(&mut out, &self.route_qos_state);
         append_u64(&mut out, self.sealed_chunks.len() as u64);
-        for slab in &self.sealed_chunks {
-            append_slab_id(&mut out, slab);
+        for chunk in &self.sealed_chunks {
+            append_slab_id(&mut out, chunk);
         }
         append_u64(&mut out, self.cumulative_quorum_write_degraded_chunks);
         append_u64(&mut out, self.cumulative_quorum_read_degraded_chunks);
