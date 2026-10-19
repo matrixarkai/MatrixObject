@@ -553,6 +553,20 @@ Set `receipt_retention` to cover the retry window you actually need rather than
 leaving it at the default. The trade is that an evicted receipt no longer
 deduplicates its retry.
 
+It is not a `StoreOptions` field — it is configured on a live store, because
+changing it is a control-plane change that each replica has to accept:
+
+```rust
+let (chunk_commit_index, page_commit_index) =
+    store.configure_chunk_receipt_retention(8)?;
+```
+
+`configure_chunk_replica_receipt_retention(replica_index, retention)` sets one
+replica instead of all of them.
+`the_documented_way_to_set_receipt_retention_works` exercises the call above and
+checks the retained receipts actually fall, so the advice cannot drift from the
+API that carries it out.
+
 This is a property of what the rollback snapshot carries rather than of
 receipts themselves, and it is tracked as an issue rather than accepted as the
 design.
