@@ -98,7 +98,7 @@ pub struct PageAuditRepairReceiptPage {
     pub limit: u64,
     pub truncated: bool,
     pub next_marker: Option<String>,
-    pub after_chunk_id: Option<ChunkId>,
+    pub after_chunk_id: Option<PageId>,
     pub skipped_after_chunk_count: u64,
 }
 

@@ -444,8 +444,8 @@ pub enum ObjectCommand {
         draining: Option<bool>,
         frozen: Option<bool>,
     },
-    ApplyPreparedChunkServiceMode {
-        prepared: PreparedChunkServiceModeConfig,
+    ApplyPreparedReplicaServiceMode {
+        prepared: PreparedReplicaServiceModeConfig,
     },
     ConfigureChunkTrimFlow {
         rate_bytes_per_sec: u64,
@@ -594,11 +594,11 @@ pub enum ObjectCommand {
         expected_route_control_checksum: String,
     },
     RepairPageChunk {
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         expected_route_control_checksum: String,
     },
     RepairAuditedPageReplicas {
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
     },

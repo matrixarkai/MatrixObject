@@ -88,7 +88,7 @@ impl RootSnapshot {
             append_u64(&mut out, node.page_health.chunk_capacity_rejected_writes);
             append_u64(
                 &mut out,
-                node.page_health.chunk_service_mode_rejected_mutations,
+                node.page_health.replica_service_mode_rejected_mutations,
             );
             append_u64(&mut out, node.page_health.chunk_physical_write_count);
             append_u64(&mut out, node.page_health.chunk_physical_write_bytes);

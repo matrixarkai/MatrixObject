@@ -41,7 +41,7 @@ impl MatrixPageService {
         idempotency_key: Option<&str>,
     ) -> Result<PageBatchStats, ObjectError> {
         let mut stats = PageBatchStats::default();
-        let mut grouped: BTreeMap<(SlabId, ChunkId), Vec<(u64, &[u8])>> = BTreeMap::new();
+        let mut grouped: BTreeMap<(SlabId, PageId), Vec<(u64, &[u8])>> = BTreeMap::new();
         for write in writes {
             if self.is_slab_sealed(&write.slab_id) {
                 return Err(ObjectError::PreconditionFailed(

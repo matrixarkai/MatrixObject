@@ -1,7 +1,7 @@
 pub(crate) fn page_chunk_receipt_key<T: std::fmt::Debug>(
     prefix: &str,
     base_key: &str,
-    chunk_id: &ChunkId,
+    chunk_id: &PageId,
     replica_index: usize,
     request: &T,
 ) -> String {

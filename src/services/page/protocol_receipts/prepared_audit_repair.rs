@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPageAuditRepair {
-    pub after_chunk_id: Option<ChunkId>,
+    pub after_chunk_id: Option<PageId>,
     pub max_chunks: usize,
     pub max_payload_bytes: u64,
     pub before_page_service_fingerprint: String,
@@ -75,7 +75,7 @@ impl PreparedPageAuditRepairApplyReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPageAuditRepairEnvelope {
     pub envelope_format: String,
-    pub after_chunk_id: Option<ChunkId>,
+    pub after_chunk_id: Option<PageId>,
     pub max_chunks: u64,
     pub max_payload_bytes: u64,
     pub expected_previous_commit_index: u64,
@@ -107,7 +107,7 @@ pub struct PreparedPageAuditRepairEnvelope {
     pub repair_needed: bool,
     pub repair_can_apply: bool,
     pub repair_reason: String,
-    pub first_candidate_chunk_id: Option<ChunkId>,
+    pub first_candidate_chunk_id: Option<PageId>,
     pub first_candidate_replica_index: Option<usize>,
     pub first_candidate_status: String,
     pub first_candidate_logical_length: u64,

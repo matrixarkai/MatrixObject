@@ -144,7 +144,7 @@ pub struct StorageMaintenanceAction {
     pub reason: String,
     pub priority: u64,
     pub replica_index: Option<usize>,
-    pub chunk_id: Option<ChunkId>,
+    pub chunk_id: Option<PageId>,
     pub estimated_bytes: u64,
 }
 
@@ -195,7 +195,7 @@ pub struct SealedSlabPage {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PageServiceSnapshot {
-    pub chunk_size: u64,
+    pub page_size: u64,
     pub write_quorum: usize,
     pub read_quorum: usize,
     pub allocator_slab_size: u64,
@@ -234,7 +234,7 @@ pub struct PageServiceSnapshot {
     pub cumulative_failed_repairs: u64,
     pub cumulative_replica_read_repairs: u64,
     pub cumulative_replica_read_repair_failures: u64,
-    pub replicas: Vec<ChunkServiceSnapshot>,
+    pub replicas: Vec<ReplicaServiceSnapshot>,
     pub checksum: String,
 }
 

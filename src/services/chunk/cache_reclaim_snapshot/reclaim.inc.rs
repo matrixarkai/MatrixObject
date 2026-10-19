@@ -1,4 +1,4 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn partial_reclaim_chunks(
         &mut self,
         max_chunks: usize,
@@ -10,7 +10,7 @@ impl MatrixChunkService {
 
     pub fn plan_reclaim_chunks(
         &self,
-        marker: Option<&ChunkId>,
+        marker: Option<&PageId>,
         max_chunks: usize,
         max_rewrite_bytes: u64,
         min_discarded_bytes: u64,

@@ -58,7 +58,7 @@ impl MatrixPageService {
     ) -> Result<(), ObjectError> {
         self.admit_page_route_qos(0, 0, 0, 0, 1, length, now_millis())?;
         let locations = self.map_range(slab_id, offset, length)?;
-        let mut discard_ranges: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
+        let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for loc in &locations {
             discard_ranges
                 .entry(loc.chunk_id.clone())

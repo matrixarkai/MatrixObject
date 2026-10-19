@@ -1,4 +1,4 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn set_capacity_bytes(&mut self, capacity_bytes: u64) -> Result<(), ObjectError> {
         if capacity_bytes > 0 && self.physical_bytes() > capacity_bytes {
             return Err(ObjectError::InvalidArgument(

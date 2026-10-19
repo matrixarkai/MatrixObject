@@ -1,7 +1,7 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn write_chunk(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         data: &[u8],
     ) -> Result<(), ObjectError> {
@@ -26,7 +26,7 @@ impl MatrixChunkService {
         let chunk = std::sync::Arc::make_mut(
             self.chunks
                 .entry(chunk_id)
-                .or_insert_with(|| std::sync::Arc::new(ChunkState::empty())),
+                .or_insert_with(|| std::sync::Arc::new(PageState::empty())),
         );
         let end_index = usize::try_from(end).map_err(|_| {
             ObjectError::InvalidArgument("chunk write range exceeds memory size".to_string())
@@ -67,7 +67,7 @@ impl MatrixChunkService {
 
     pub fn write_chunk_fenced(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         data: &[u8],
         expected_control_checksum: Option<&str>,
@@ -78,7 +78,7 @@ impl MatrixChunkService {
 
     pub fn write_chunk_idempotent(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
@@ -126,7 +126,7 @@ impl MatrixChunkService {
 
     pub fn write_chunk_ranges(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
     ) -> Result<ChunkWriteBatchStats, ObjectError> {
         self.write_chunk_ranges_internal(chunk_id, writes, true)
@@ -134,7 +134,7 @@ impl MatrixChunkService {
 
     pub fn write_chunk_ranges_borrowed(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: &[(u64, &[u8])],
     ) -> Result<ChunkWriteBatchStats, ObjectError> {
         self.write_chunk_ranges_borrowed_internal(chunk_id, writes, true)
@@ -142,7 +142,7 @@ impl MatrixChunkService {
 
     pub fn write_chunk_ranges_fenced(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         expected_control_checksum: Option<&str>,
     ) -> Result<ChunkWriteBatchStats, ObjectError> {
@@ -152,7 +152,7 @@ impl MatrixChunkService {
 
     fn write_chunk_ranges_internal(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         record_internal_receipt: bool,
     ) -> Result<ChunkWriteBatchStats, ObjectError> {
@@ -165,7 +165,7 @@ impl MatrixChunkService {
 
     fn write_chunk_ranges_borrowed_internal(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: &[(u64, &[u8])],
         record_internal_receipt: bool,
     ) -> Result<ChunkWriteBatchStats, ObjectError> {
@@ -252,7 +252,7 @@ impl MatrixChunkService {
             let chunk = std::sync::Arc::make_mut(
                 self.chunks
                     .entry(chunk_id.clone())
-                    .or_insert_with(|| std::sync::Arc::new(ChunkState::empty())),
+                    .or_insert_with(|| std::sync::Arc::new(PageState::empty())),
             );
             let projected_len_index = usize::try_from(projected_len).map_err(|_| {
                 ObjectError::InvalidArgument(
@@ -331,7 +331,7 @@ impl MatrixChunkService {
 
     pub fn write_chunk_ranges_idempotent(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         idempotency_key: &str,
     ) -> Result<(ChunkWriteBatchStats, ChunkBatchWriteReceipt), ObjectError> {
@@ -391,7 +391,7 @@ impl MatrixChunkService {
 
     pub fn write_chunk_ranges_idempotent_borrowed(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         writes: &[(u64, &[u8])],
         idempotency_key: &str,
     ) -> Result<(ChunkWriteBatchStats, ChunkBatchWriteReceipt), ObjectError> {

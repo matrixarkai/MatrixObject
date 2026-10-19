@@ -1,14 +1,14 @@
 impl MatrixObjectStore {
-    pub fn prepare_chunk_service_mode_raft_entry(
+    pub fn prepare_replica_service_mode_raft_entry(
         &self,
         replica_index: usize,
         accepting_writes: Option<bool>,
         draining: Option<bool>,
         frozen: Option<bool>,
         expected_previous_commit_index: u64,
-    ) -> Result<PreparedChunkServiceModeConfig, ObjectError> {
+    ) -> Result<PreparedReplicaServiceModeConfig, ObjectError> {
         let admitted_route_checksum = self.page_service.route_control_proof().state_checksum;
-        self.prepare_chunk_service_mode_raft_entry_fenced(
+        self.prepare_replica_service_mode_raft_entry_fenced(
             replica_index,
             accepting_writes,
             draining,
@@ -18,7 +18,7 @@ impl MatrixObjectStore {
         )
     }
 
-    pub fn prepare_chunk_service_mode_raft_entry_fenced(
+    pub fn prepare_replica_service_mode_raft_entry_fenced(
         &self,
         replica_index: usize,
         accepting_writes: Option<bool>,
@@ -26,7 +26,7 @@ impl MatrixObjectStore {
         frozen: Option<bool>,
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PreparedChunkServiceModeConfig, ObjectError> {
+    ) -> Result<PreparedReplicaServiceModeConfig, ObjectError> {
         self.page_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
@@ -37,7 +37,7 @@ impl MatrixObjectStore {
         let before_page_service_fingerprint =
             page_capacity_control_image_fingerprint(&self.page_service);
         let mut projected = self.page_service.clone();
-        if replica_index == PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
+        if replica_index == PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
             projected.configure_all_eligible_chunk_replica_service_mode(
                 accepting_writes,
                 draining,
@@ -53,8 +53,8 @@ impl MatrixObjectStore {
         }
         let after_page_service_fingerprint = page_capacity_control_image_fingerprint(&projected);
         let prepared_commit_index = expected_previous_commit_index.saturating_add(1);
-        let (chunk_service_mode_prepared_aggregate_checksum, chunk_prepared_replica_count) =
-            projected.chunk_service_mode_prepared_aggregate_checksum(
+        let (replica_service_mode_prepared_aggregate_checksum, chunk_prepared_replica_count) =
+            projected.replica_service_mode_prepared_aggregate_checksum(
                 replica_index,
                 accepting_writes,
                 draining,
@@ -65,14 +65,14 @@ impl MatrixObjectStore {
         let route_control_proof = self.page_service.route_control_proof();
         let expected_route_control_checksum =
             expected_route_control_checksum.unwrap_or("").to_string();
-        let mut prepared = PreparedChunkServiceModeConfig {
+        let mut prepared = PreparedReplicaServiceModeConfig {
             replica_index,
             accepting_writes,
             draining,
             frozen,
             before_page_service_fingerprint,
             after_page_service_fingerprint,
-            chunk_service_mode_prepared_aggregate_checksum,
+            replica_service_mode_prepared_aggregate_checksum,
             chunk_prepared_replica_count,
             expected_previous_commit_index,
             prepared_commit_index,
@@ -80,16 +80,16 @@ impl MatrixObjectStore {
             expected_route_control_checksum,
             raft_entry_checksum: String::new(),
         };
-        prepared.raft_entry_checksum = prepared_chunk_service_mode_config_checksum(&prepared);
+        prepared.raft_entry_checksum = prepared_replica_service_mode_config_checksum(&prepared);
         Ok(prepared)
     }
 
-    pub fn apply_prepared_chunk_service_mode(
+    pub fn apply_prepared_replica_service_mode(
         &mut self,
-        prepared: PreparedChunkServiceModeConfig,
+        prepared: PreparedReplicaServiceModeConfig,
     ) -> Result<(), ObjectError> {
         let expected_checksum =
-            prepared_chunk_service_mode_config_checksum(&PreparedChunkServiceModeConfig {
+            prepared_replica_service_mode_config_checksum(&PreparedReplicaServiceModeConfig {
                 raft_entry_checksum: String::new(),
                 ..prepared.clone()
             });
@@ -116,7 +116,7 @@ impl MatrixObjectStore {
             ));
         }
         let mut projected = self.page_service.clone();
-        if prepared.replica_index == PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
+        if prepared.replica_index == PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
             projected.configure_all_eligible_chunk_replica_service_mode(
                 prepared.accepting_writes,
                 prepared.draining,
@@ -131,7 +131,7 @@ impl MatrixObjectStore {
             )?;
         }
         let (expected_aggregate_checksum, expected_replica_count) = projected
-            .chunk_service_mode_prepared_aggregate_checksum(
+            .replica_service_mode_prepared_aggregate_checksum(
                 prepared.replica_index,
                 prepared.accepting_writes,
                 prepared.draining,
@@ -144,7 +144,7 @@ impl MatrixObjectStore {
                 "chunk prepared service-mode replica-count fence mismatch".to_string(),
             ));
         }
-        if prepared.chunk_service_mode_prepared_aggregate_checksum != expected_aggregate_checksum {
+        if prepared.replica_service_mode_prepared_aggregate_checksum != expected_aggregate_checksum {
             return Err(ObjectError::PreconditionFailed(
                 "chunk prepared service-mode aggregate checksum mismatch".to_string(),
             ));
@@ -163,7 +163,7 @@ impl MatrixObjectStore {
                 &prepared.route_control_proof,
                 "chunk prepared service-mode",
             )?;
-        if prepared.replica_index == PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
+        if prepared.replica_index == PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
             self.page_service
                 .configure_all_eligible_chunk_replica_service_mode(
                     prepared.accepting_writes,

@@ -6,7 +6,7 @@ struct ChunkMutationBatch {
     /// the batch holds the undo instead, which is what the page service does:
     /// its own batch snapshot already carries every replica, and its abort
     /// rebuilds the replicas from it, so a second copy here is never read.
-    snapshot: Option<Box<ChunkServiceSnapshot>>,
+    snapshot: Option<Box<ReplicaServiceSnapshot>>,
 }
 
 pub struct ChunkMutationBatchStatus {
@@ -29,11 +29,11 @@ pub struct ChunkMutationBatchStatus {
 pub struct PreparedChunkBatchWrite {
     pub replica_index: usize,
     pub writes: Vec<(u64, Vec<u8>)>,
-    pub state: ChunkState,
+    pub state: PageState,
     pub receipt: ChunkBatchWriteReceipt,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub control_proof: ChunkServiceControlProof,
+    pub control_proof: ReplicaServiceControlProof,
     pub expected_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -114,11 +114,11 @@ impl PreparedChunkBatchWriteApplyReport {
 pub struct PreparedChunkBatchDiscard {
     pub replica_index: usize,
     pub ranges: Vec<DataRange>,
-    pub state: ChunkState,
+    pub state: PageState,
     pub receipt: ChunkBatchDiscardReceipt,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub control_proof: ChunkServiceControlProof,
+    pub control_proof: ReplicaServiceControlProof,
     pub expected_control_checksum: String,
     pub raft_entry_checksum: String,
 }

@@ -1,5 +1,5 @@
-impl MatrixChunkService {
-    pub fn control_proof(&self) -> ChunkServiceControlProof {
+impl MatrixReplicaService {
+    pub fn control_proof(&self) -> ReplicaServiceControlProof {
         let snapshot_checksum = self.export_snapshot().checksum;
         let physical_bytes = self.physical_bytes();
         let capacity_free_bytes = if self.capacity_bytes == 0 {
@@ -108,7 +108,7 @@ impl MatrixChunkService {
         append_u64(&mut material, self.ec_reconstructed_reads());
         append_u64(&mut material, self.ec_reconstruction_failures());
         append_string(&mut material, &snapshot_checksum);
-        ChunkServiceControlProof {
+        ReplicaServiceControlProof {
             control_receipt: true,
             state_format: "MOSRSCHUNKCONTROL12".to_string(),
             state_bytes: material.len() as u64,

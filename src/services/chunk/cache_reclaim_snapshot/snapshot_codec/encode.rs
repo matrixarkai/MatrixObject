@@ -1,4 +1,4 @@
-impl ChunkServiceSnapshot {
+impl ReplicaServiceSnapshot {
     pub(crate) fn encoded_size_hint(&self) -> usize {
         const U64: usize = std::mem::size_of::<u64>();
         let mut bytes = encoded_string_len("MOSRSCHUNK22")
@@ -118,7 +118,7 @@ impl ChunkServiceSnapshot {
         append_u64(&mut out, self.chunks.len() as u64);
         for (chunk_id, state) in &self.chunks {
             append_slab_id(&mut out, &chunk_id.slab_id);
-            append_u64(&mut out, chunk_id.chunk_index);
+            append_u64(&mut out, chunk_id.page_index);
             append_u64(&mut out, state.logical_length);
             append_u64(&mut out, state.write_sequence);
             append_string(&mut out, &state.checksum);

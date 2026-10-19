@@ -151,7 +151,7 @@ impl MatrixPageService {
                 write_start_range_index, admission.input_ranges
             )));
         }
-        let mut grouped: BTreeMap<(SlabId, ChunkId), Vec<(u64, &[u8])>> = BTreeMap::new();
+        let mut grouped: BTreeMap<(SlabId, PageId), Vec<(u64, &[u8])>> = BTreeMap::new();
         let mut selected_writes = Vec::with_capacity(admission.input_ranges as usize);
         let mut selected_mapped_chunk_ranges = 0u64;
         let mut non_empty_index = 0u64;

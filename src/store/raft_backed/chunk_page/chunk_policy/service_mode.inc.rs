@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_proven_chunk_service_mode_fenced(
+    pub fn propose_proven_replica_service_mode_fenced(
         &mut self,
-        proven_prepared: ProvenStorageRead<PreparedChunkServiceModeConfig>,
+        proven_prepared: ProvenStorageRead<PreparedReplicaServiceModeConfig>,
         expected_route_control_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -33,7 +33,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 proven_prepared.proof.storage_applied_index
             )));
         }
-        self.propose_prepared_chunk_service_mode_linearizable_fenced(
+        self.propose_prepared_replica_service_mode_linearizable_fenced(
             proven_prepared.value,
             Some(expected_route_control_checksum),
         )
@@ -52,21 +52,21 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             draining,
             frozen,
         )?;
-        self.propose_prepared_chunk_service_mode(prepared)
+        self.propose_prepared_replica_service_mode(prepared)
     }
 
-    pub fn propose_configure_all_eligible_chunk_service_mode_prepared(
+    pub fn propose_configure_all_eligible_replica_service_mode_prepared(
         &mut self,
         accepting_writes: Option<bool>,
         draining: Option<bool>,
         frozen: Option<bool>,
     ) -> Result<ObjectMetadata, ObjectError> {
-        let prepared = self.prepare_configure_all_eligible_chunk_service_mode_raft_entry(
+        let prepared = self.prepare_configure_all_eligible_replica_service_mode_raft_entry(
             accepting_writes,
             draining,
             frozen,
         )?;
-        self.propose_prepared_chunk_service_mode(prepared)
+        self.propose_prepared_replica_service_mode(prepared)
     }
 
     pub fn propose_configure_chunk_replica_service_mode_prepared_linearizable(
@@ -106,19 +106,19 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             &prepared.expected_route_control_checksum,
             "configure chunk replica service-mode prepared linearizable",
         )?;
-        self.propose_prepared_chunk_service_mode_linearizable_fenced(
+        self.propose_prepared_replica_service_mode_linearizable_fenced(
             prepared,
             Some(route_checksum.as_str()),
         )
     }
 
-    pub fn propose_configure_all_eligible_chunk_service_mode_prepared_linearizable(
+    pub fn propose_configure_all_eligible_replica_service_mode_prepared_linearizable(
         &mut self,
         accepting_writes: Option<bool>,
         draining: Option<bool>,
         frozen: Option<bool>,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.propose_configure_all_eligible_chunk_service_mode_prepared_linearizable_fenced(
+        self.propose_configure_all_eligible_replica_service_mode_prepared_linearizable_fenced(
             accepting_writes,
             draining,
             frozen,
@@ -126,7 +126,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_configure_all_eligible_chunk_service_mode_prepared_linearizable_fenced(
+    pub fn propose_configure_all_eligible_replica_service_mode_prepared_linearizable_fenced(
         &mut self,
         accepting_writes: Option<bool>,
         draining: Option<bool>,
@@ -134,7 +134,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self
-            .prepare_configure_all_eligible_chunk_service_mode_raft_entry_linearizable_fenced(
+            .prepare_configure_all_eligible_replica_service_mode_raft_entry_linearizable_fenced(
                 accepting_writes,
                 draining,
                 frozen,
@@ -145,7 +145,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             &prepared.expected_route_control_checksum,
             "configure all-eligible chunk service-mode prepared linearizable",
         )?;
-        self.propose_prepared_chunk_service_mode_linearizable_fenced(
+        self.propose_prepared_replica_service_mode_linearizable_fenced(
             prepared,
             Some(route_checksum.as_str()),
         )

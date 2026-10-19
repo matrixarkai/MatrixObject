@@ -161,7 +161,7 @@ impl MatrixObjectStore {
     fn append_chunk_write_journal_record(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
@@ -188,7 +188,7 @@ impl MatrixObjectStore {
     fn append_chunk_batch_write_journal_record(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         writes: &[(u64, Vec<u8>)],
         idempotency_key: &str,
     ) -> Result<(), ObjectError> {
@@ -221,7 +221,7 @@ impl MatrixObjectStore {
     fn append_chunk_discard_journal_record(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
@@ -246,7 +246,7 @@ impl MatrixObjectStore {
     fn append_chunk_batch_discard_journal_record(
         &self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: &[DataRange],
         idempotency_key: &str,
     ) -> Result<(), ObjectError> {

@@ -14,8 +14,8 @@ pub(crate) fn append_prepared_chunk_reclaim_envelope(
     append_string(out, &envelope.plan_checksum);
     append_u64(out, envelope.expected_previous_commit_index);
     append_u64(out, envelope.prepared_commit_index);
-    append_string(out, &envelope.before_chunk_service_fingerprint);
-    append_string(out, &envelope.after_chunk_service_fingerprint);
+    append_string(out, &envelope.before_replica_service_fingerprint);
+    append_string(out, &envelope.after_replica_service_fingerprint);
     append_string(out, &envelope.route_control_proof_format);
     append_string(out, &envelope.route_control_proof_checksum);
     append_u64(out, envelope.route_control_proof_bytes);
@@ -72,8 +72,8 @@ pub(crate) fn make_prepared_chunk_reclaim_envelope(
         plan_checksum: prepared.plan.plan_checksum.clone(),
         expected_previous_commit_index: prepared.expected_previous_commit_index,
         prepared_commit_index: prepared.prepared_commit_index,
-        before_chunk_service_fingerprint: prepared.before_chunk_service_fingerprint.clone(),
-        after_chunk_service_fingerprint: prepared.after_chunk_service_fingerprint.clone(),
+        before_replica_service_fingerprint: prepared.before_replica_service_fingerprint.clone(),
+        after_replica_service_fingerprint: prepared.after_replica_service_fingerprint.clone(),
         route_control_proof_format: prepared.route_control_proof.state_format.clone(),
         route_control_proof_checksum: prepared.route_control_proof.state_checksum.clone(),
         route_control_proof_bytes: prepared.route_control_proof.state_bytes,

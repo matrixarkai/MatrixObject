@@ -1,6 +1,6 @@
 pub(crate) fn chunk_state_handoff_checksum(
-    chunk_id: &ChunkId,
-    state: &ChunkState,
+    chunk_id: &PageId,
+    state: &PageState,
     payload_checksum: &str,
 ) -> String {
     let mut material = Vec::with_capacity(
@@ -9,7 +9,7 @@ pub(crate) fn chunk_state_handoff_checksum(
             + state.discarded_ranges.len() * std::mem::size_of::<u64>() * 2,
     );
     append_slab_id(&mut material, &chunk_id.slab_id);
-    append_u64(&mut material, chunk_id.chunk_index);
+    append_u64(&mut material, chunk_id.page_index);
     append_u64(&mut material, state.logical_length);
     append_u64(&mut material, state.write_sequence);
     append_string(&mut material, payload_checksum);
@@ -20,7 +20,7 @@ pub(crate) fn chunk_state_handoff_checksum(
     etag(&material)
 }
 
-pub(crate) fn chunk_local_state_checksum(state: &ChunkState) -> String {
+pub(crate) fn chunk_local_state_checksum(state: &PageState) -> String {
     let data_checksum = etag(&state.data);
     let mut material = Vec::with_capacity(
         std::mem::size_of::<u64>() * 4
@@ -40,9 +40,9 @@ pub(crate) fn chunk_local_state_checksum(state: &ChunkState) -> String {
 }
 
 pub(crate) fn chunk_state_handoff_checksum_v2(
-    chunk_id: &ChunkId,
+    chunk_id: &PageId,
     handoff_token: &str,
-    state: &ChunkState,
+    state: &PageState,
     payload_checksum: &str,
 ) -> String {
     let legacy_checksum = chunk_state_handoff_checksum(chunk_id, state, payload_checksum);
@@ -69,7 +69,7 @@ pub(crate) fn chunk_state_handoff_payload_checksum(handoffs: &[ChunkStateHandoff
 }
 
 pub(crate) fn chunk_local_state_handoff_request_checksum(
-    chunk_id: &ChunkId,
+    chunk_id: &PageId,
     max_payload_bytes: u64,
 ) -> String {
     let mut material = Vec::with_capacity(

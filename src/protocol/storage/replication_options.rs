@@ -149,7 +149,7 @@ impl Default for StoreOptions {
         Self {
             slab_size: 64 * 1024 * 1024,
             max_extent_bytes: 4 * 1024 * 1024,
-            chunk_size: 1024 * 1024,
+            page_size: 1024 * 1024,
             volume_count: 1,
             persistent_snapshot_path: String::new(),
             persistent_snapshot_flush_on_commit: false,

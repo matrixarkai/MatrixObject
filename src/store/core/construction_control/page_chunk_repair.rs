@@ -1,7 +1,7 @@
 impl MatrixObjectStore {
     pub fn prepare_page_chunk_repair_raft_entry(
         &self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedPageChunkRepair, ObjectError> {
         if expected_previous_commit_index != self.last_applied_index() {

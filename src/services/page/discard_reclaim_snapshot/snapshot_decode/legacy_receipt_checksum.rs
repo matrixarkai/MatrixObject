@@ -1,7 +1,7 @@
 impl PageServiceSnapshot {
     fn legacy_receipt_checksum_material_hash(&self) -> String {
         let mut material = Vec::with_capacity(self.encoded_size_hint().min(4 * 1024 * 1024));
-        append_u64(&mut material, self.chunk_size);
+        append_u64(&mut material, self.page_size);
         append_u64(&mut material, self.write_quorum as u64);
         append_u64(&mut material, self.read_quorum as u64);
         append_u64(&mut material, self.allocator_slab_size);

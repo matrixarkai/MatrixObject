@@ -1,12 +1,12 @@
-impl MatrixChunkService {
-    pub fn remove_chunk_for_repair(&mut self, chunk_id: &ChunkId) -> bool {
+impl MatrixReplicaService {
+    pub fn remove_chunk_for_repair(&mut self, chunk_id: &PageId) -> bool {
         self.invalidate_chunk_cache(chunk_id, 0, u64::MAX);
         self.chunks.remove(chunk_id).is_some()
     }
 
     pub fn corrupt_chunk_payload_for_repair(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<(), ObjectError> {
         let chunk = self
             .chunks
@@ -23,14 +23,14 @@ impl MatrixChunkService {
     }
 
     #[deprecated(note = "use remove_chunk_for_repair")]
-    pub fn remove_chunk_for_repair_simulation(&mut self, chunk_id: &ChunkId) -> bool {
+    pub fn remove_chunk_for_repair_simulation(&mut self, chunk_id: &PageId) -> bool {
         self.remove_chunk_for_repair(chunk_id)
     }
 
     #[deprecated(note = "use corrupt_chunk_payload_for_repair")]
     pub fn corrupt_chunk_payload_for_repair_simulation(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<(), ObjectError> {
         self.corrupt_chunk_payload_for_repair(chunk_id)
     }

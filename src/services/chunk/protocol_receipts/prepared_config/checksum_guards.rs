@@ -18,7 +18,7 @@ impl_proven_prepared_chunk_config_control_fields!(PreparedChunkTrimFlowConfig);
 impl_proven_prepared_chunk_config_control_fields!(PreparedChunkReadCacheConfig);
 impl_proven_prepared_chunk_config_control_fields!(PreparedChunkReceiptRetentionConfig);
 impl_proven_prepared_chunk_config_control_fields!(PreparedChunkCapacityConfig);
-impl_proven_prepared_chunk_config_control_fields!(PreparedChunkServiceModeConfig);
+impl_proven_prepared_chunk_config_control_fields!(PreparedReplicaServiceModeConfig);
 
 macro_rules! impl_prepared_chunk_raft_entry_checksum_guard {
     ($ty:ty, $label:literal, $require_method:ident) => {
@@ -85,7 +85,7 @@ impl_prepared_chunk_raft_entry_checksum_guard!(
     require_chunk_capacity_raft_entry_checksum
 );
 impl_prepared_chunk_raft_entry_checksum_guard!(
-    PreparedChunkServiceModeConfig,
+    PreparedReplicaServiceModeConfig,
     "service-mode",
-    require_chunk_service_mode_raft_entry_checksum
+    require_replica_service_mode_raft_entry_checksum
 );

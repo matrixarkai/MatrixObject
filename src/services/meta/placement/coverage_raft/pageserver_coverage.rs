@@ -75,9 +75,9 @@ impl MatrixMetaService {
             coverage.total_chunk_capacity_rejected_writes = coverage
                 .total_chunk_capacity_rejected_writes
                 .saturating_add(node.page_health.chunk_capacity_rejected_writes);
-            coverage.total_chunk_service_mode_rejected_mutations = coverage
-                .total_chunk_service_mode_rejected_mutations
-                .saturating_add(node.page_health.chunk_service_mode_rejected_mutations);
+            coverage.total_replica_service_mode_rejected_mutations = coverage
+                .total_replica_service_mode_rejected_mutations
+                .saturating_add(node.page_health.replica_service_mode_rejected_mutations);
             coverage.total_chunk_physical_write_count = coverage
                 .total_chunk_physical_write_count
                 .saturating_add(node.page_health.chunk_physical_write_count);
@@ -278,7 +278,7 @@ impl MatrixMetaService {
                 );
                 append_u64(
                     &mut material,
-                    node.page_health.chunk_service_mode_rejected_mutations,
+                    node.page_health.replica_service_mode_rejected_mutations,
                 );
                 append_u64(&mut material, node.page_health.chunk_physical_write_count);
                 append_u64(&mut material, node.page_health.chunk_physical_write_bytes);
@@ -372,7 +372,7 @@ fn root_pageserver_health_summary(health: &RootPageHealth) -> RootPageServerHeal
     if health.chunk_capacity_rejected_writes != 0 {
         reasons.push("capacity_rejected_writes");
     }
-    if health.chunk_service_mode_rejected_mutations != 0 {
+    if health.replica_service_mode_rejected_mutations != 0 {
         reasons.push("service_mode_rejected_mutations");
     }
     let fault_tolerant = health.ready

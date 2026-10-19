@@ -45,21 +45,21 @@ fn page_receipt_page_common_control_fields(
 fn insert_page_chunk_filter_control_fields(
     fields: &mut BTreeMap<String, String>,
     field_prefix: &str,
-    chunk_index: Option<u64>,
-    chunk_size: Option<u64>,
+    page_index: Option<u64>,
+    page_size: Option<u64>,
     skipped_chunk_count: u64,
 ) {
-    if let Some(chunk_index) = chunk_index {
+    if let Some(page_index) = page_index {
         fields.insert(
             format!("{field_prefix}chunk_filter_present"),
             "true".to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
-            chunk_index.to_string(),
+            page_index.to_string(),
         );
-        if let Some(chunk_size) = chunk_size {
-            fields.insert(format!("{field_prefix}chunk_size"), chunk_size.to_string());
+        if let Some(page_size) = page_size {
+            fields.insert(format!("{field_prefix}chunk_size"), page_size.to_string());
         }
     } else {
         fields.insert(
@@ -80,7 +80,7 @@ fn page_audit_repair_receipt_page_common_control_fields(
     limit: u64,
     truncated: bool,
     next_marker: &Option<String>,
-    after_chunk_id: &Option<ChunkId>,
+    after_chunk_id: &Option<PageId>,
     skipped_after_chunk_count: u64,
     field_prefix: &str,
 ) -> BTreeMap<String, String> {

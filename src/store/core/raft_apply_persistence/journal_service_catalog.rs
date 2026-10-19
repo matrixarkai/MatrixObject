@@ -177,7 +177,7 @@ impl MatrixObjectStore {
         append_persistent_journal_frame(&self.persistent_journal_path, &payload)
     }
 
-    fn append_chunkserver_catalog_registration_journal_record(
+    fn append_replicaserver_catalog_registration_journal_record(
         &self,
         node_id: &str,
         endpoint: &str,
@@ -208,7 +208,7 @@ impl MatrixObjectStore {
         append_persistent_journal_frame(&self.persistent_journal_path, &payload)
     }
 
-    fn append_chunkserver_catalog_heartbeat_journal_record(
+    fn append_replicaserver_catalog_heartbeat_journal_record(
         &self,
         node_id: &str,
         replica_index: usize,
@@ -237,7 +237,7 @@ impl MatrixObjectStore {
         append_persistent_journal_frame(&self.persistent_journal_path, &payload)
     }
 
-    fn append_chunkserver_catalog_offline_journal_record(
+    fn append_replicaserver_catalog_offline_journal_record(
         &self,
         node_id: &str,
         replica_index: usize,

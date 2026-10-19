@@ -8,7 +8,7 @@ impl StoreSnapshot {
         append_string(&mut out, "MOSRSSTORE27");
         append_u64(&mut out, self.options.slab_size);
         append_u64(&mut out, self.options.max_extent_bytes);
-        append_u64(&mut out, self.options.chunk_size);
+        append_u64(&mut out, self.options.page_size);
         append_u64(&mut out, self.options.volume_count);
         append_u64(&mut out, self.options.replica_count as u64);
         append_u64(&mut out, self.options.write_quorum as u64);

@@ -64,7 +64,7 @@ impl ChunkPartialReclaimReport {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkReclaimCandidate {
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub logical_length: u64,
     pub discarded_bytes: u64,
     pub discarded_range_count: u64,
@@ -77,8 +77,8 @@ pub struct ChunkReclaimCandidate {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ChunkReclaimPlan {
-    pub marker: Option<ChunkId>,
-    pub next_marker: Option<ChunkId>,
+    pub marker: Option<PageId>,
+    pub next_marker: Option<PageId>,
     pub continuation_safe: bool,
     pub next_marker_advanced: bool,
     pub scanned_chunks: u64,
@@ -171,8 +171,8 @@ pub struct PreparedChunkReplicaReclaim {
     pub max_discard_ranges: usize,
     pub max_trim_bytes: u64,
     pub now_ms: u64,
-    pub before_chunk_service_fingerprint: String,
-    pub after_chunk_service_fingerprint: String,
+    pub before_replica_service_fingerprint: String,
+    pub after_replica_service_fingerprint: String,
     pub plan: ChunkReclaimPlan,
     pub report: ChunkPartialReclaimReport,
     pub expected_previous_commit_index: u64,
@@ -254,8 +254,8 @@ pub struct PreparedChunkReclaimEnvelope {
     pub plan_checksum: String,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub before_chunk_service_fingerprint: String,
-    pub after_chunk_service_fingerprint: String,
+    pub before_replica_service_fingerprint: String,
+    pub after_replica_service_fingerprint: String,
     pub route_control_proof_format: String,
     pub route_control_proof_checksum: String,
     pub route_control_proof_bytes: u64,
@@ -278,7 +278,7 @@ pub struct PreparedChunkReclaimEnvelope {
     pub truncated: bool,
     pub continuation_safe: bool,
     pub next_marker_advanced: bool,
-    pub first_reclaim_chunk_id: Option<ChunkId>,
+    pub first_reclaim_chunk_id: Option<PageId>,
     pub first_reclaim_discarded_bytes: u64,
     pub first_reclaim_discard_ratio_ppm: u64,
     pub first_reclaim_trim_bytes: u64,

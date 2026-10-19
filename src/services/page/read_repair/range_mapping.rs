@@ -33,14 +33,14 @@ impl MatrixPageService {
         let mut cursor = 0u64;
         while cursor < length {
             let absolute = offset + cursor;
-            let chunk_index = absolute / self.chunk_size;
-            let chunk_offset = absolute % self.chunk_size;
-            let available = self.chunk_size - chunk_offset;
+            let page_index = absolute / self.page_size;
+            let chunk_offset = absolute % self.page_size;
+            let available = self.page_size - chunk_offset;
             let n = available.min(length - cursor);
             out.push(PageLocation {
-                chunk_id: ChunkId {
+                chunk_id: PageId {
                     slab_id: slab_id.clone(),
-                    chunk_index,
+                    page_index,
                 },
                 chunk_offset,
                 length: n,
@@ -55,8 +55,8 @@ impl MatrixPageService {
         if length == 0 {
             return Ok(0);
         }
-        let first_chunk = offset / self.chunk_size;
-        let last_chunk = (offset + length - 1) / self.chunk_size;
+        let first_chunk = offset / self.page_size;
+        let last_chunk = (offset + length - 1) / self.page_size;
         Ok(last_chunk - first_chunk + 1)
     }
 

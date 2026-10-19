@@ -1,4 +1,4 @@
-impl ChunkServiceSnapshotAssembler {
+impl ReplicaServiceSnapshotAssembler {
     pub fn install_progress(&self) -> SnapshotInstallProgress {
         snapshot_install_progress(
             true,
@@ -13,7 +13,7 @@ impl ChunkServiceSnapshotAssembler {
 
     pub fn push_chunk(
         &mut self,
-        chunk: ChunkServiceSnapshotChunk,
+        chunk: ReplicaServiceSnapshotChunk,
     ) -> Result<Option<Vec<u8>>, ObjectError> {
         Ok(self
             .push_chunk_with_checksum(chunk)?
@@ -22,8 +22,8 @@ impl ChunkServiceSnapshotAssembler {
 
     pub(crate) fn push_chunk_with_checksum(
         &mut self,
-        chunk: ChunkServiceSnapshotChunk,
-    ) -> Result<Option<ChunkServiceSnapshotAssembledImage>, ObjectError> {
+        chunk: ReplicaServiceSnapshotChunk,
+    ) -> Result<Option<ReplicaServiceSnapshotAssembledImage>, ObjectError> {
         if chunk.total_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
                 "chunk service snapshot total bytes must be positive".to_string(),
@@ -108,7 +108,7 @@ impl ChunkServiceSnapshotAssembler {
             let image = chunk.payload;
             self.expected_total_bytes = None;
             self.expected_full_checksum = None;
-            return Ok(Some(ChunkServiceSnapshotAssembledImage {
+            return Ok(Some(ReplicaServiceSnapshotAssembledImage {
                 bytes: image,
                 full_checksum,
             }));
@@ -138,7 +138,7 @@ impl ChunkServiceSnapshotAssembler {
         let image = std::mem::take(&mut self.buffer);
         self.expected_total_bytes = None;
         self.expected_full_checksum = None;
-        Ok(Some(ChunkServiceSnapshotAssembledImage {
+        Ok(Some(ReplicaServiceSnapshotAssembledImage {
             bytes: image,
             full_checksum,
         }))
@@ -160,12 +160,12 @@ impl ChunkServiceSnapshotAssembler {
     }
 }
 
-fn export_chunk_service_snapshot_chunk_slice_with_checksum(
+fn export_replica_service_snapshot_chunk_slice_with_checksum(
     snapshot_bytes: &[u8],
     full_checksum: &str,
     offset: u64,
     max_payload_bytes: usize,
-) -> Result<ChunkServiceSnapshotChunk, ObjectError> {
+) -> Result<ReplicaServiceSnapshotChunk, ObjectError> {
     if max_payload_bytes == 0 {
         return Err(ObjectError::InvalidArgument(
             "chunk service snapshot chunk budget must be positive".to_string(),
@@ -195,7 +195,7 @@ fn export_chunk_service_snapshot_chunk_slice_with_checksum(
     } else {
         etag(payload_slice)
     };
-    Ok(ChunkServiceSnapshotChunk {
+    Ok(ReplicaServiceSnapshotChunk {
         offset,
         total_bytes,
         chunk_checksum,

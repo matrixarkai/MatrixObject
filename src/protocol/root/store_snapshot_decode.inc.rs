@@ -49,7 +49,7 @@ impl StoreSnapshot {
         let mut options = StoreOptions {
             slab_size: cursor.read_u64()?,
             max_extent_bytes: cursor.read_u64()?,
-            chunk_size: cursor.read_u64()?,
+            page_size: cursor.read_u64()?,
             volume_count: cursor.read_u64()?,
             persistent_snapshot_path: String::new(),
             persistent_snapshot_flush_on_commit: false,

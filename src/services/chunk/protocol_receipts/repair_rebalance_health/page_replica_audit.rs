@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PageReplicaAuditItem {
-    pub chunk_id: ChunkId,
+    pub chunk_id: PageId,
     pub replica_index: usize,
     pub status: String,
     pub logical_length: u64,
@@ -14,8 +14,8 @@ pub struct PageReplicaAuditItem {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PageReplicaAuditPage {
     pub items: Vec<PageReplicaAuditItem>,
-    pub marker: Option<ChunkId>,
-    pub next_marker: Option<ChunkId>,
+    pub marker: Option<PageId>,
+    pub next_marker: Option<PageId>,
     pub scanned_chunks: u64,
     pub healthy_chunks: u64,
     pub degraded_chunks: u64,

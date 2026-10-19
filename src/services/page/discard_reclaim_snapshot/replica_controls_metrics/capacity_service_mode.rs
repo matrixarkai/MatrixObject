@@ -59,7 +59,7 @@ impl MatrixPageService {
                 }
                 replica_count = replica_count.saturating_add(1);
                 append_u64(&mut material, index as u64);
-                append_chunk_service_control_proof(&mut material, &replica.control_proof());
+                append_replica_service_control_proof(&mut material, &replica.control_proof());
             }
             if replica_count == 0 {
                 return Err(ObjectError::InvalidArgument(
@@ -71,7 +71,7 @@ impl MatrixPageService {
         let replica = self.replicas.get(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index out of range".to_string())
         })?;
-        append_chunk_service_control_proof(&mut material, &replica.control_proof());
+        append_replica_service_control_proof(&mut material, &replica.control_proof());
         Ok((etag(&material), 1))
     }
 
@@ -108,7 +108,7 @@ impl MatrixPageService {
         Ok(applied)
     }
 
-    pub(crate) fn chunk_service_mode_prepared_aggregate_checksum(
+    pub(crate) fn replica_service_mode_prepared_aggregate_checksum(
         &self,
         replica_index: usize,
         accepting_writes: Option<bool>,
@@ -132,7 +132,7 @@ impl MatrixPageService {
         );
         append_u64(&mut material, draining.map_or(2, |value| value as u64));
         append_u64(&mut material, frozen.map_or(2, |value| value as u64));
-        if replica_index == PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
+        if replica_index == PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
             let quarantined = &self.quarantined_replicas;
             let disabled = &self.disabled_chunk_endpoints;
             let mut replica_count = 0_u64;
@@ -142,14 +142,14 @@ impl MatrixPageService {
                 }
                 replica_count = replica_count.saturating_add(1);
                 append_u64(&mut material, index as u64);
-                append_chunk_service_control_proof(&mut material, &replica.control_proof());
+                append_replica_service_control_proof(&mut material, &replica.control_proof());
             }
             return Ok((etag(&material), replica_count));
         }
         let replica = self.replicas.get(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index out of range".to_string())
         })?;
-        append_chunk_service_control_proof(&mut material, &replica.control_proof());
+        append_replica_service_control_proof(&mut material, &replica.control_proof());
         Ok((etag(&material), 1))
     }
 

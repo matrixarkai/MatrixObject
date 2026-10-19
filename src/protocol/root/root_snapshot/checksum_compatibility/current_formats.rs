@@ -52,7 +52,7 @@ impl RootSnapshot {
         include_root_leader_lease_receipt_proof: bool,
         include_page_extended_service_health: bool,
         include_page_reclaim_health: bool,
-        include_chunk_service_health: bool,
+        include_replica_service_health: bool,
     ) -> String {
         let mut material = Vec::with_capacity(self.encoded_size_hint());
         append_u64(&mut material, self.next_commit_index);
@@ -131,7 +131,7 @@ impl RootSnapshot {
                 );
                 append_u64(
                     &mut material,
-                    node.page_health.chunk_service_mode_rejected_mutations,
+                    node.page_health.replica_service_mode_rejected_mutations,
                 );
                 append_u64(&mut material, node.page_health.chunk_physical_write_count);
                 append_u64(&mut material, node.page_health.chunk_physical_write_bytes);
@@ -178,7 +178,7 @@ impl RootSnapshot {
                 &node.chunk_health,
                 include_chunk_control,
                 include_chunk_reclaim_health,
-                include_chunk_service_health,
+                include_replica_service_health,
             );
         }
         for (object_id, placement) in &self.placements {

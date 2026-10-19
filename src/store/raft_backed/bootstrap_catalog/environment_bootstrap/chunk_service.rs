@@ -1,10 +1,10 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn bootstrap_chunk_service_from_env_report(
+    pub fn bootstrap_replica_service_from_env_report(
         &mut self,
         now_ms: u64,
-    ) -> Result<ChunkServiceBootstrapReport, ObjectError> {
+    ) -> Result<ReplicaServiceBootstrapReport, ObjectError> {
         let replica_index_u64 =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_REPLICA_INDEX_ENV_NAMES)?.unwrap_or(0);
+            first_non_empty_env_u64(&MATRIX_REPLICASERVER_REPLICA_INDEX_ENV_NAMES)?.unwrap_or(0);
         let replica_index = usize::try_from(replica_index_u64).map_err(|_| {
             ObjectError::InvalidArgument(format!(
                 "chunkserver service bootstrap replica index is too large: {}",
@@ -19,14 +19,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let after_readiness =
             self.store
                 .local_chunk_storage_readiness(replica_index, 0, 0, now_ms)?;
-        let report = ChunkServiceBootstrapReport {
+        let report = ReplicaServiceBootstrapReport {
             replica_index,
             mutation_report,
             before_readiness,
             after_readiness,
         };
         if let Some(expected) =
-            first_non_empty_env(&MATRIX_CHUNKSERVER_SERVICE_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES)?
+            first_non_empty_env(&MATRIX_REPLICASERVER_SERVICE_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES)?
         {
             report.verify_expected_report_checksum(expected)?;
         }

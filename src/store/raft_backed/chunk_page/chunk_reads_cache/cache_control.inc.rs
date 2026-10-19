@@ -72,7 +72,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prewarm_chunk_read_cache_control_with_read_proof_linearizable_fenced(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -91,7 +91,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prewarm_chunk_read_cache_control_with_read_proof_linearizable_fenced_committed_at(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -155,7 +155,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn invalidate_chunk_read_cache_control_with_read_proof_linearizable_fenced(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -174,7 +174,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn invalidate_chunk_read_cache_control_with_read_proof_linearizable_fenced_committed_at(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,

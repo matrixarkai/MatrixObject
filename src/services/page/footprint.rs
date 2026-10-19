@@ -341,7 +341,7 @@ impl MatrixPageService {
 //
 // The figures separate what the snapshot copies from what it only names. A
 // chunk's payload is an `Arc<Vec<u8>>` and its state is now an
-// `Arc<ChunkState>`, so cloning the chunk map copies a chunk identity and a
+// `Arc<PageState>`, so cloning the chunk map copies a chunk identity and a
 // handle and names everything behind it. Reporting those together would read as
 // if a mutation copied every stored byte, which it does not; reporting only the
 // shared bytes would hide the part that does grow.
@@ -368,12 +368,12 @@ impl SharedPayloadLedger {
     /// handle rather than a state. Charging it at every holder would report
     /// copies that do not exist, which is the same rule the payload below
     /// follows.
-    fn charge_chunk_state(&mut self, state: &std::sync::Arc<ChunkState>) -> u64 {
+    fn charge_chunk_state(&mut self, state: &std::sync::Arc<PageState>) -> u64 {
         if self
             .charged
             .insert(std::sync::Arc::as_ptr(state) as *const u8 as usize)
         {
-            ((std::mem::size_of::<ChunkState>() + 2 * std::mem::size_of::<usize>()) as u64)
+            ((std::mem::size_of::<PageState>() + 2 * std::mem::size_of::<usize>()) as u64)
                 .saturating_add(state.checksum.capacity() as u64)
                 .saturating_add(
                     (state.discarded_ranges.capacity() as u64)
@@ -539,7 +539,7 @@ impl PageServiceSnapshot {
                     ),
                 ));
             replica_other = replica_other
-                .saturating_add(std::mem::size_of::<ChunkServiceSnapshot>() as u64)
+                .saturating_add(std::mem::size_of::<ReplicaServiceSnapshot>() as u64)
                 .saturating_add(replica.checksum.capacity() as u64)
                 .saturating_add(replica.last_partial_reclaim_failure_status.capacity() as u64);
             for (_, state) in replica.chunks.iter() {
@@ -548,8 +548,8 @@ impl PageServiceSnapshot {
                 // handle is named rather than copied, so it is charged below
                 // and once.
                 chunks_copied = chunks_copied.saturating_add(
-                    (std::mem::size_of::<ChunkId>()
-                        + std::mem::size_of::<std::sync::Arc<ChunkState>>()) as u64,
+                    (std::mem::size_of::<PageId>()
+                        + std::mem::size_of::<std::sync::Arc<PageState>>()) as u64,
                 );
                 chunks_shared = chunks_shared
                     .saturating_add(state_ledger.charge_chunk_state(state))

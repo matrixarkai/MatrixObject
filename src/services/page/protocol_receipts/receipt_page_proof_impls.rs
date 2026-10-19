@@ -135,11 +135,11 @@ macro_rules! impl_filtered_page_storage_receipt_page_source {
             }
 
             fn storage_receipt_page_chunk_filter(&self) -> Option<u64> {
-                self.chunk_index
+                self.page_index
             }
 
             fn storage_receipt_page_chunk_size(&self) -> Option<u64> {
-                self.chunk_size
+                self.page_size
             }
 
             fn storage_receipt_page_skipped_slab_count(&self) -> u64 {

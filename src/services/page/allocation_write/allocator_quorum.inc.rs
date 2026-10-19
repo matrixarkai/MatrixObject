@@ -1,6 +1,6 @@
 impl MatrixPageService {
     pub fn configure_allocator(&mut self, slab_size: u64) -> Result<(), ObjectError> {
-        if slab_size == 0 || slab_size < self.chunk_size {
+        if slab_size == 0 || slab_size < self.page_size {
             return Err(ObjectError::InvalidArgument(
                 "block allocator segment_size must be >= chunk_size".to_string(),
             ));

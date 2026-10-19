@@ -14,14 +14,14 @@ pub struct PreparedChunkCapacityConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedChunkServiceModeConfig {
+pub struct PreparedReplicaServiceModeConfig {
     pub replica_index: usize,
     pub accepting_writes: Option<bool>,
     pub draining: Option<bool>,
     pub frozen: Option<bool>,
     pub before_page_service_fingerprint: String,
     pub after_page_service_fingerprint: String,
-    pub chunk_service_mode_prepared_aggregate_checksum: String,
+    pub replica_service_mode_prepared_aggregate_checksum: String,
     pub chunk_prepared_replica_count: u64,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
@@ -65,7 +65,7 @@ impl PreparedChunkCapacityConfig {
     }
 }
 
-impl PreparedChunkServiceModeConfig {
+impl PreparedReplicaServiceModeConfig {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -86,7 +86,7 @@ impl PreparedChunkServiceModeConfig {
         }
         fields.insert(
             format!("{field_prefix}chunk_service_mode_prepared_aggregate_checksum"),
-            self.chunk_service_mode_prepared_aggregate_checksum.clone(),
+            self.replica_service_mode_prepared_aggregate_checksum.clone(),
         );
         append_prepared_chunk_page_fingerprint_fields(
             &mut fields,

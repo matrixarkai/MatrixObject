@@ -86,7 +86,7 @@ impl MatrixPageService {
         Ok(report)
     }
 
-    fn collect_metadata_head_admission_stats(&self, chunk_ids: &[ChunkId]) -> PageReadStats {
+    fn collect_metadata_head_admission_stats(&self, chunk_ids: &[PageId]) -> PageReadStats {
         let mut stats = PageReadStats::default();
         if chunk_ids.is_empty() {
             return stats;
@@ -249,7 +249,7 @@ impl MatrixPageService {
         max_repair_chunks: usize,
         start_chunk_index: u64,
     ) -> Result<BoundedRepairReport, ObjectError> {
-        let mut chunks: BTreeMap<ChunkId, u64> = BTreeMap::new();
+        let mut chunks: BTreeMap<PageId, u64> = BTreeMap::new();
         for loc in self.map_range(slab_id, offset, length)? {
             chunks
                 .entry(loc.chunk_id.clone())
@@ -273,14 +273,14 @@ impl MatrixPageService {
         };
         let mut selected = 0usize;
         for (chunk_id, bytes) in chunks {
-            if chunk_id.chunk_index < start_chunk_index {
+            if chunk_id.page_index < start_chunk_index {
                 continue;
             }
             if selected >= limit {
                 report.skipped_chunk_count = report.skipped_chunk_count.saturating_add(1);
                 report.skipped_repair_bytes = report.skipped_repair_bytes.saturating_add(bytes);
                 if !report.has_more {
-                    report.next_chunk_index = chunk_id.chunk_index;
+                    report.next_chunk_index = chunk_id.page_index;
                 }
                 report.has_more = true;
                 continue;
@@ -288,7 +288,7 @@ impl MatrixPageService {
             selected += 1;
             report.selected_chunk_count = report.selected_chunk_count.saturating_add(1);
             report.selected_repair_bytes = report.selected_repair_bytes.saturating_add(bytes);
-            report.next_chunk_index = chunk_id.chunk_index.saturating_add(1);
+            report.next_chunk_index = chunk_id.page_index.saturating_add(1);
             match self.repair_chunk_from_quorum(&chunk_id) {
                 Ok(stats) => merge_repair_stats(&mut report.stats, stats),
                 Err(_) => {

@@ -1,8 +1,8 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn install_chunk_state(
         &mut self,
-        chunk_id: ChunkId,
-        mut state: ChunkState,
+        chunk_id: PageId,
+        mut state: PageState,
     ) -> Result<(), ObjectError> {
         self.ensure_writable()?;
         if state.ec_parity_fragment.is_empty() {
@@ -21,8 +21,8 @@ impl MatrixChunkService {
 
     pub fn install_chunk_state_fenced(
         &mut self,
-        chunk_id: ChunkId,
-        state: ChunkState,
+        chunk_id: PageId,
+        state: PageState,
         expected_control_checksum: Option<&str>,
     ) -> Result<(), ObjectError> {
         self.check_expected_control_checksum(expected_control_checksum)?;
@@ -31,8 +31,8 @@ impl MatrixChunkService {
 
     pub fn install_chunk_state_idempotent(
         &mut self,
-        chunk_id: ChunkId,
-        state: ChunkState,
+        chunk_id: PageId,
+        state: PageState,
         idempotency_key: &str,
     ) -> Result<ChunkStateInstallReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
@@ -78,7 +78,7 @@ impl MatrixChunkService {
 
     pub fn repair_chunk_payload_from_ec(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<bool, ObjectError> {
         self.ensure_writable()?;
         let chunk = self
@@ -124,7 +124,7 @@ impl MatrixChunkService {
 
     pub fn prepare_chunk_state_handoff(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<ChunkStateHandoff, ObjectError> {
         let state = self.read_chunk_state_validated(chunk_id)?;
         let payload_checksum = etag(&state.data);
@@ -145,7 +145,7 @@ impl MatrixChunkService {
 
     pub fn prepare_chunk_state_handoff_envelope(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         max_payload_bytes: u64,
     ) -> Result<PreparedChunkLocalStateHandoff, ObjectError> {
         let handoff = self.prepare_chunk_state_handoff(chunk_id)?;

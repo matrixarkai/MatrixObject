@@ -4,26 +4,26 @@ pub struct ChunkMutationControlBootstrapReport {
     pub target_commit_index: u64,
     pub max_steps: u64,
     pub applied_steps: u64,
-    pub before_proof: ChunkServiceControlProof,
-    pub after_proof: ChunkServiceControlProof,
+    pub before_proof: ReplicaServiceControlProof,
+    pub after_proof: ReplicaServiceControlProof,
     pub last_metadata: Option<ObjectMetadata>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkServiceBootstrapReport {
+pub struct ReplicaServiceBootstrapReport {
     pub replica_index: usize,
     pub mutation_report: Option<ChunkMutationControlBootstrapReport>,
     pub before_readiness: ChunkStorageReadiness,
     pub after_readiness: ChunkStorageReadiness,
 }
 
-impl ChunkServiceBootstrapReport {
+impl ReplicaServiceBootstrapReport {
     pub fn report_checksum_format(&self) -> &'static str {
-        CHUNK_SERVICE_BOOTSTRAP_REPORT_FORMAT
+        REPLICA_SERVICE_BOOTSTRAP_REPORT_FORMAT
     }
 
     pub fn report_checksum(&self) -> String {
-        chunk_service_bootstrap_report_checksum(self)
+        replica_service_bootstrap_report_checksum(self)
     }
 
     pub fn verify_expected_report_checksum(
@@ -81,13 +81,13 @@ impl ChunkServiceBootstrapReport {
         fields.insert(
             format!("{field_prefix}before_chunkserver_control_proof_checksum"),
             self.before_readiness
-                .chunkserver_control_proof_checksum
+                .replicaserver_control_proof_checksum
                 .clone(),
         );
         fields.insert(
             format!("{field_prefix}after_chunkserver_control_proof_checksum"),
             self.after_readiness
-                .chunkserver_control_proof_checksum
+                .replicaserver_control_proof_checksum
                 .clone(),
         );
         fields.extend(

@@ -3,7 +3,7 @@ impl StoreSnapshot {
         let mut material = Vec::with_capacity(self.checksum_material_size_hint());
         append_u64(&mut material, self.options.slab_size);
         append_u64(&mut material, self.options.max_extent_bytes);
-        append_u64(&mut material, self.options.chunk_size);
+        append_u64(&mut material, self.options.page_size);
         append_u64(&mut material, self.options.volume_count);
         append_u64(&mut material, self.options.replica_count as u64);
         append_u64(&mut material, self.options.write_quorum as u64);

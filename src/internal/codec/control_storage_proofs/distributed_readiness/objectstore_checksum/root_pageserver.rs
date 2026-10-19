@@ -76,7 +76,7 @@ fn append_root_pageserver_topology(mut material: &mut Vec<u8>, report: &ObjectSt
     );
     append_u64(
         &mut material,
-        report.root_pageserver_total_chunk_service_mode_rejected_mutations,
+        report.root_pageserver_total_replica_service_mode_rejected_mutations,
     );
     append_u64(
         &mut material,

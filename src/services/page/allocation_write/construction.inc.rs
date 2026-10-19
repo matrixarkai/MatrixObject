@@ -1,10 +1,10 @@
 impl MatrixPageService {
     pub fn new(
-        chunk_size: u64,
+        page_size: u64,
         replica_count: usize,
         write_quorum: usize,
     ) -> Result<Self, ObjectError> {
-        if chunk_size == 0 {
+        if page_size == 0 {
             return Err(ObjectError::InvalidArgument(
                 "chunk_size must be positive".to_string(),
             ));
@@ -20,7 +20,7 @@ impl MatrixPageService {
             ));
         }
         Self::new_with_parallelism(
-            chunk_size,
+            page_size,
             replica_count,
             write_quorum,
             DEFAULT_PAGE_READ_PARALLELISM,
@@ -36,7 +36,7 @@ impl MatrixPageService {
 
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_parallelism(
-        chunk_size: u64,
+        page_size: u64,
         replica_count: usize,
         write_quorum: usize,
         page_read_parallelism: usize,
@@ -68,7 +68,7 @@ impl MatrixPageService {
             local_replica_store_parallelism,
             "local_replica_store_parallelism",
         )?;
-        if chunk_size == 0 {
+        if page_size == 0 {
             return Err(ObjectError::InvalidArgument(
                 "chunk_size must be positive".to_string(),
             ));
@@ -84,10 +84,10 @@ impl MatrixPageService {
             ));
         }
         Ok(Self {
-            chunk_size,
+            page_size,
             write_quorum,
             read_quorum: write_quorum,
-            allocator_slab_size: chunk_size.saturating_mul(1024).max(chunk_size),
+            allocator_slab_size: page_size.saturating_mul(1024).max(page_size),
             allocator_next_slab_id: 1,
             allocator_next_offset: 0,
             receipt_retention: DEFAULT_STORAGE_RECEIPT_RETENTION,
@@ -141,7 +141,7 @@ impl MatrixPageService {
             active_mutation_batch: None,
             replicas: (0..replica_count)
                 .map(|_| {
-                    let mut replica = MatrixChunkService::new();
+                    let mut replica = MatrixReplicaService::new();
                     // Uniform across the set, and only kept when this replica is the
                     // only copy of the data.
                     replica.keep_ec_sidecar = replica_count <= 1;

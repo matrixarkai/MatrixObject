@@ -18,7 +18,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         marker: Option<&str>,
         limit: usize,
         slab_id: Option<&SlabId>,
-        chunk_index: Option<u64>,
+        page_index: Option<u64>,
         now_ms: u64,
     ) -> Result<(PageWriteReceiptPage, MetadataRaftReadiness), ObjectError> {
         let readiness = self.ensure_receipt_read_index("block write", now_ms)?;
@@ -26,7 +26,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             marker,
             limit,
             slab_id,
-            chunk_index,
+            page_index,
         )?;
         Ok((page, readiness))
     }
@@ -48,14 +48,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         marker: Option<&str>,
         limit: usize,
         slab_id: Option<&SlabId>,
-        chunk_index: Option<u64>,
+        page_index: Option<u64>,
         now_ms: u64,
     ) -> Result<ProvenReceiptRead<PageWriteReceiptPage>, ObjectError> {
         let (page, readiness) = self.list_page_write_receipts_for_chunk_linearizable(
             marker,
             limit,
             slab_id,
-            chunk_index,
+            page_index,
             now_ms,
         )?;
         Ok(proven_storage_receipt_page_read(page, &readiness))
@@ -82,7 +82,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         marker: Option<&str>,
         limit: usize,
         slab_id: Option<&SlabId>,
-        chunk_index: Option<u64>,
+        page_index: Option<u64>,
         now_ms: u64,
         expected_page_write_receipt_page_proof_checksum: impl AsRef<str>,
     ) -> Result<ProvenReceiptRead<PageWriteReceiptPage>, ObjectError> {
@@ -90,7 +90,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             marker,
             limit,
             slab_id,
-            chunk_index,
+            page_index,
             now_ms,
         )?;
         proven.require_page_write_receipt_page_proof_checksum(

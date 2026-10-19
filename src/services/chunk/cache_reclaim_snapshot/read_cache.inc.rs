@@ -1,4 +1,4 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn set_read_cache_max_bytes(&self, max_bytes: u64) {
         self.max_read_cache_bytes.set(max_bytes);
         self.reserve_read_cache_for_capacity();
@@ -141,8 +141,8 @@ impl MatrixChunkService {
     /// recovery exactly as a whole-chunk mismatch did.
     fn chunk_pages_valid(
         &self,
-        chunk_id: &ChunkId,
-        chunk: &ChunkState,
+        chunk_id: &PageId,
+        chunk: &PageState,
         start: usize,
         end: usize,
     ) -> bool {

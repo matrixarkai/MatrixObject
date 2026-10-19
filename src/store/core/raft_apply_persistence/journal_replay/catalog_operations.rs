@@ -123,7 +123,7 @@ impl MatrixObjectStore {
                 let min_reclaimable_bytes = cursor.read_u64()?;
                 let now_ms = cursor.read_u64()?;
                 let catalog_source = cursor.read_string()?;
-                self.register_local_chunkserver_in_catalog(
+                self.register_local_replicaserver_in_catalog(
                     &node_id,
                     &endpoint,
                     &failure_domain,
@@ -143,7 +143,7 @@ impl MatrixObjectStore {
                 let now_ms = cursor.read_u64()?;
                 let catalog_source = cursor.read_string()?;
                 let online = cursor.read_bool()?;
-                self.heartbeat_local_chunkserver_in_catalog(
+                self.heartbeat_local_replicaserver_in_catalog(
                     &node_id,
                     replica_index,
                     min_capacity_free_bytes,
@@ -161,7 +161,7 @@ impl MatrixObjectStore {
                 let min_reclaimable_bytes = cursor.read_u64()?;
                 let now_ms = cursor.read_u64()?;
                 let catalog_source = cursor.read_string()?;
-                self.offline_local_chunkserver_in_catalog(
+                self.offline_local_replicaserver_in_catalog(
                     &node_id,
                     replica_index,
                     min_capacity_free_bytes,

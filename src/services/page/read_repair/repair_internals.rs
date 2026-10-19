@@ -14,14 +14,14 @@ impl MatrixPageService {
             .saturating_add(stats.failed_repairs);
     }
 
-    fn inspect_chunk_repair(&self, chunk_id: &ChunkId) -> Result<ChunkRepairReport, ObjectError> {
+    fn inspect_chunk_repair(&self, chunk_id: &PageId) -> Result<ChunkRepairReport, ObjectError> {
         let mut report = ChunkRepairReport {
             chunk_id: Some(chunk_id.clone()),
             checked_chunks: 1,
             route_control_proof: self.route_control_proof(),
             ..ChunkRepairReport::default()
         };
-        let mut states: Vec<(usize, ChunkState)> = Vec::with_capacity(self.replicas.len());
+        let mut states: Vec<(usize, PageState)> = Vec::with_capacity(self.replicas.len());
         let mut saw_chunk = false;
         let mut first_error: Option<String> = None;
         for (index, replica) in self.replicas.iter().enumerate() {
@@ -80,7 +80,7 @@ impl MatrixPageService {
             ));
         }
         let mut best_count = 0usize;
-        let mut best_state: Option<&ChunkState> = None;
+        let mut best_state: Option<&PageState> = None;
         for (_, candidate) in &states {
             let count = states
                 .iter()
@@ -140,7 +140,7 @@ impl MatrixPageService {
         Ok(report)
     }
 
-    fn repair_chunk_from_quorum(&mut self, chunk_id: &ChunkId) -> Result<RepairStats, ObjectError> {
+    fn repair_chunk_from_quorum(&mut self, chunk_id: &PageId) -> Result<RepairStats, ObjectError> {
         let mut stats = RepairStats {
             checked_chunks: 1,
             ..RepairStats::default()
@@ -163,7 +163,7 @@ impl MatrixPageService {
                 Err(err) => return Err(err),
             }
         }
-        let mut states: Vec<(usize, ChunkState)> = Vec::with_capacity(self.replicas.len());
+        let mut states: Vec<(usize, PageState)> = Vec::with_capacity(self.replicas.len());
         for (index, replica) in self.replicas.iter().enumerate() {
             if !self.replica_active(index) {
                 continue;
@@ -178,7 +178,7 @@ impl MatrixPageService {
             ));
         }
 
-        let mut selected: Option<ChunkState> = None;
+        let mut selected: Option<PageState> = None;
         let mut selected_count = 0usize;
         for (_, candidate) in &states {
             let count = states

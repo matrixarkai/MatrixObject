@@ -3,7 +3,7 @@ impl MatrixPageService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkRepairReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -87,7 +87,7 @@ impl MatrixPageService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        after_chunk_id: Option<&ChunkId>,
+        after_chunk_id: Option<&PageId>,
     ) -> Result<PageAuditRepairReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;

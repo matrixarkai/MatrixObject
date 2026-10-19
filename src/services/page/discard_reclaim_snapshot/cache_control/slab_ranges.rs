@@ -18,7 +18,7 @@ impl MatrixPageService {
         target_replica_index: Option<usize>,
         include_disabled_replicas: bool,
     ) -> Result<CacheControlStats, ObjectError> {
-        let mut grouped: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
+        let mut grouped: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for loc in self.map_range(slab_id, offset, length)? {
             grouped.entry(loc.chunk_id).or_default().push(DataRange {
                 offset: loc.chunk_offset,

@@ -65,7 +65,7 @@ impl MatrixPageService {
         idempotency_key: Option<&str>,
     ) -> Result<PageBatchStats, ObjectError> {
         let mut stats = PageBatchStats::default();
-        let mut grouped: BTreeMap<(SlabId, ChunkId), Vec<DataRange>> = BTreeMap::new();
+        let mut grouped: BTreeMap<(SlabId, PageId), Vec<DataRange>> = BTreeMap::new();
         for request in requests {
             validate_pipeline_range("block batch discard", request.offset, request.length)?;
             stats.input_ranges = stats.input_ranges.saturating_add(1);
@@ -101,8 +101,8 @@ impl MatrixPageService {
             stats.payload_bytes,
             now_millis(),
         )?;
-        let mut merged_grouped: BTreeMap<(SlabId, ChunkId), Vec<DataRange>> = BTreeMap::new();
-        let mut discard_ranges: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
+        let mut merged_grouped: BTreeMap<(SlabId, PageId), Vec<DataRange>> = BTreeMap::new();
+        let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for ((slab_id, chunk_id), ranges) in grouped {
             let merged = merge_ranges(ranges);
             if merged.is_empty() {

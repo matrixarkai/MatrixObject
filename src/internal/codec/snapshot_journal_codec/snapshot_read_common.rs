@@ -48,10 +48,10 @@ pub(crate) fn read_slab_id(
     })
 }
 
-pub(crate) fn read_chunk_id(cursor: &mut SnapshotByteCursor<'_>) -> Result<ChunkId, ObjectError> {
-    Ok(ChunkId {
+pub(crate) fn read_chunk_id(cursor: &mut SnapshotByteCursor<'_>) -> Result<PageId, ObjectError> {
+    Ok(PageId {
         slab_id: read_slab_id(cursor)?,
-        chunk_index: cursor.read_u64()?,
+        page_index: cursor.read_u64()?,
     })
 }
 

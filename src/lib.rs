@@ -62,7 +62,7 @@ const OBJECT_CHANGE_PAGE_PROOF_FORMAT: &str = "MXOS-OBJECT-CHANGE-PAGE-PROOF1";
 const CHUNK_HEAD_BATCH_PROOF_FORMAT: &str = "MXOS-CHUNK-HEAD-BATCH-PROOF1";
 const CHUNK_READ_BATCH_PROOF_FORMAT: &str = "MXOS-CHUNK-READ-BATCH-PROOF1";
 const PAGE_CHUNK_CAPACITY_ALL_ELIGIBLE_TARGET: usize = usize::MAX;
-const PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET: usize = usize::MAX;
+const PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET: usize = usize::MAX;
 const DEFAULT_LOCAL_REPLICA_STORE_PARALLELISM: usize = 8;
 const MAX_STORAGE_PARALLELISM: usize = 4096;
 const DEFAULT_STORAGE_RECEIPT_RETENTION: usize = 100_000;
@@ -229,9 +229,9 @@ mod root_protocol;
 pub use root_protocol::*;
 
 #[path = "services/chunk.rs"]
-mod chunk_service;
-pub use chunk_service::*;
-use chunk_service::{
+mod replica_service;
+pub use replica_service::*;
+use replica_service::{
     select_bounded_chunk_discard_ranges_from, select_bounded_chunk_write_ranges_from,
     trim_btree_map_to_retention, trim_vec_front_to_retention, validate_page_route_qos_config,
     validate_chunk_mutation_qos_config, validate_meta_retention_limit,

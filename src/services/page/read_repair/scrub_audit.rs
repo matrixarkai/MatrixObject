@@ -12,7 +12,7 @@ impl MatrixPageService {
         let mut report = ChunkScrubReport::default();
         for chunk_id in chunk_ids {
             report.checked_chunks = report.checked_chunks.saturating_add(1);
-            let mut valid_states: Vec<(usize, ChunkState)> =
+            let mut valid_states: Vec<(usize, PageState)> =
                 Vec::with_capacity(self.replicas.len());
             let mut missing = 0u64;
             let mut corrupt = 0u64;
@@ -30,7 +30,7 @@ impl MatrixPageService {
             report.missing_replicas = report.missing_replicas.saturating_add(missing);
             report.corrupt_replicas = report.corrupt_replicas.saturating_add(corrupt);
 
-            let mut best_state: Option<ChunkState> = None;
+            let mut best_state: Option<PageState> = None;
             let mut best_count = 0usize;
             for (_, candidate) in &valid_states {
                 let count = valid_states
@@ -75,14 +75,14 @@ impl MatrixPageService {
 
     pub fn plan_repair_chunk_replicas(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<ChunkRepairReport, ObjectError> {
         self.inspect_chunk_repair(chunk_id)
     }
 
     pub fn repair_chunk_replicas(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<ChunkRepairReport, ObjectError> {
         let mut report = self.inspect_chunk_repair(chunk_id)?;
         if report.degraded_chunks == 0 {
@@ -113,7 +113,7 @@ impl MatrixPageService {
 
     pub fn repair_chunk_replicas_idempotent(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         idempotency_key: &str,
     ) -> Result<(ChunkRepairReport, ChunkRepairReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
@@ -144,7 +144,7 @@ impl MatrixPageService {
 
     pub fn audit_chunk_replicas(
         &self,
-        after_chunk_id: Option<&ChunkId>,
+        after_chunk_id: Option<&PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
     ) -> Result<PageReplicaAuditPage, ObjectError> {
@@ -171,7 +171,7 @@ impl MatrixPageService {
                 page.has_more = true;
                 break;
             }
-            let mut states: Vec<(usize, ChunkState)> = Vec::with_capacity(self.replicas.len());
+            let mut states: Vec<(usize, PageState)> = Vec::with_capacity(self.replicas.len());
             let mut chunk_items = Vec::with_capacity(self.replicas.len());
             let mut missing_replicas = 0u64;
             let mut corrupt_replicas = 0u64;
@@ -313,7 +313,7 @@ impl MatrixPageService {
 
     pub fn repair_audited_chunk_replicas(
         &mut self,
-        after_chunk_id: Option<&ChunkId>,
+        after_chunk_id: Option<&PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
     ) -> Result<PageReplicaAuditRepairReport, ObjectError> {
@@ -355,7 +355,7 @@ impl MatrixPageService {
     pub fn remove_replica_chunk_for_repair(
         &mut self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<(), ObjectError> {
         let replica = self.replicas.get_mut(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index is out of range".to_string())
@@ -368,7 +368,7 @@ impl MatrixPageService {
     pub fn remove_replica_chunk_for_repair_simulation(
         &mut self,
         replica_index: usize,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
     ) -> Result<(), ObjectError> {
         self.remove_replica_chunk_for_repair(replica_index, chunk_id)
     }

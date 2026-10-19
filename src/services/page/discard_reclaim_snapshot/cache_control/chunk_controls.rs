@@ -44,7 +44,7 @@ impl MatrixPageService {
 
     pub fn prewarm_chunk_read_cache_control(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,
@@ -66,7 +66,7 @@ impl MatrixPageService {
     ) -> Result<ChunkReadCacheControlReport, ObjectError> {
         let before = self.read_cache_stats();
         let replica_indexes = self.cache_control_replica_indexes(None, false)?;
-        let mut grouped: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
+        let mut grouped: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for range in ranges {
             if range.length == 0 {
                 continue;
@@ -133,7 +133,7 @@ impl MatrixPageService {
 
     pub fn invalidate_chunk_read_cache_control(
         &mut self,
-        chunk_id: ChunkId,
+        chunk_id: PageId,
         offset: u64,
         length: u64,
         max_bytes: u64,

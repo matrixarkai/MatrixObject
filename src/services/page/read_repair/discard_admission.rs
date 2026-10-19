@@ -9,7 +9,7 @@ impl MatrixPageService {
         validate_pipeline_range("block discard", offset, length)?;
         let locations = self.map_range(slab_id, offset, length)?;
         let discard_budget_limited = max_discard_bytes > 0 && length > max_discard_bytes;
-        let mut discard_ranges: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
+        let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for loc in &locations {
             discard_ranges
                 .entry(loc.chunk_id.clone())
@@ -134,7 +134,7 @@ impl MatrixPageService {
             required_quorum: self.write_quorum as u64,
             ..PageRangeAdmission::default()
         };
-        let mut discard_ranges: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
+        let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         let mut selected_discard_bytes = 0u64;
         let mut skipped_discard_bytes = 0u64;
         let mut skipped_discard_range_count = 0u64;
@@ -181,7 +181,7 @@ impl MatrixPageService {
             }
         }
 
-        let mut merged_discard_ranges: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
+        let mut merged_discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for (chunk_id, ranges) in discard_ranges {
             let merged = merge_ranges(ranges);
             admission.coalesced_chunk_ranges = admission

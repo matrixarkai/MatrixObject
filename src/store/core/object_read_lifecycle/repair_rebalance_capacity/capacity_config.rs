@@ -3,7 +3,7 @@ impl MatrixObjectStore {
         &self,
         metadata: &ObjectMetadata,
     ) -> Result<(u64, u64), ObjectError> {
-        let mut chunks: BTreeMap<ChunkId, u64> = BTreeMap::new();
+        let mut chunks: BTreeMap<PageId, u64> = BTreeMap::new();
         for extent in &metadata.extents {
             for loc in
                 self.page_service

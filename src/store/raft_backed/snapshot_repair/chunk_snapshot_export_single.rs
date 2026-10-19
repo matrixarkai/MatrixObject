@@ -5,7 +5,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         offset: u64,
         max_payload_bytes: usize,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<ChunkServiceSnapshotChunk>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaServiceSnapshotChunk>, ObjectError> {
         self.export_chunk_replica_snapshot_chunk_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
             offset,
@@ -22,7 +22,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         offset: u64,
         max_payload_bytes: usize,
         expected_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>, ObjectError> {
+    ) -> Result<ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>, ObjectError> {
         self.export_chunk_replica_snapshot_chunk_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
             offset,
@@ -41,7 +41,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>, ObjectError> {
+    ) -> Result<ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>, ObjectError> {
         let expected_checksum = expected_control_checksum.as_ref().to_string();
         let control_proof = self
             .store
@@ -77,7 +77,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<ChunkServiceSnapshotChunk>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ReplicaServiceSnapshotChunk>, ObjectError> {
         let requested_read_index = self
             .raft
             .commit_index()

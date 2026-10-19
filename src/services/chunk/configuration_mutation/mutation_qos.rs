@@ -1,4 +1,4 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn configure_mutation_qos(
         &mut self,
         config: ChunkMutationQosConfig,

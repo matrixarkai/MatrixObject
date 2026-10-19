@@ -105,17 +105,17 @@ pub(crate) fn chunk_mutation_bootstrap_report_checksum(
     append_u64(&mut material, report.target_commit_index);
     append_u64(&mut material, report.max_steps);
     append_u64(&mut material, report.applied_steps);
-    append_chunk_service_control_proof(&mut material, &report.before_proof);
-    append_chunk_service_control_proof(&mut material, &report.after_proof);
+    append_replica_service_control_proof(&mut material, &report.before_proof);
+    append_replica_service_control_proof(&mut material, &report.after_proof);
     append_optional_metadata(&mut material, &report.last_metadata);
     etag(&material)
 }
 
-pub(crate) fn chunk_service_bootstrap_report_checksum(
-    report: &ChunkServiceBootstrapReport,
+pub(crate) fn replica_service_bootstrap_report_checksum(
+    report: &ReplicaServiceBootstrapReport,
 ) -> String {
     let mut material = Vec::new();
-    append_string(&mut material, CHUNK_SERVICE_BOOTSTRAP_REPORT_FORMAT);
+    append_string(&mut material, REPLICA_SERVICE_BOOTSTRAP_REPORT_FORMAT);
     append_u64(&mut material, report.replica_index as u64);
     append_chunk_storage_bootstrap_readiness(&mut material, &report.before_readiness);
     append_chunk_storage_bootstrap_readiness(&mut material, &report.after_readiness);

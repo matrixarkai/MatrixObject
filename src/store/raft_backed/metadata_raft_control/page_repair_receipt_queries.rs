@@ -45,7 +45,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         marker: Option<&str>,
         limit: usize,
-        after_chunk_id: Option<&ChunkId>,
+        after_chunk_id: Option<&PageId>,
         now_ms: u64,
     ) -> Result<(PageAuditRepairReceiptPage, MetadataRaftReadiness), ObjectError> {
         let readiness = self.ensure_receipt_read_index("block audit repair", now_ms)?;
@@ -59,7 +59,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         marker: Option<&str>,
         limit: usize,
-        after_chunk_id: Option<&ChunkId>,
+        after_chunk_id: Option<&PageId>,
         now_ms: u64,
     ) -> Result<ProvenReceiptRead<PageAuditRepairReceiptPage>, ObjectError> {
         let (page, readiness) = self.list_page_audit_repair_receipts_linearizable(
@@ -75,7 +75,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         marker: Option<&str>,
         limit: usize,
-        after_chunk_id: Option<&ChunkId>,
+        after_chunk_id: Option<&PageId>,
         now_ms: u64,
         expected_page_audit_repair_receipt_page_proof_checksum: impl AsRef<str>,
     ) -> Result<ProvenReceiptRead<PageAuditRepairReceiptPage>, ObjectError> {
@@ -94,7 +94,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
         now_ms: u64,
     ) -> Result<(ChunkRepairReceiptPage, MetadataRaftReadiness), ObjectError> {
         let readiness = self.ensure_receipt_read_index("block repair", now_ms)?;
@@ -108,7 +108,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
         now_ms: u64,
     ) -> Result<ProvenReceiptRead<ChunkRepairReceiptPage>, ObjectError> {
         let (page, readiness) =
@@ -120,7 +120,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
         now_ms: u64,
         expected_chunk_repair_receipt_page_proof_checksum: impl AsRef<str>,
     ) -> Result<ProvenReceiptRead<ChunkRepairReceiptPage>, ObjectError> {

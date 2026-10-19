@@ -80,7 +80,7 @@ impl MatrixObjectStore {
         replica_index: usize,
         offset: u64,
         max_payload_bytes: usize,
-    ) -> Result<ChunkServiceSnapshotChunk, ObjectError> {
+    ) -> Result<ReplicaServiceSnapshotChunk, ObjectError> {
         self.page_service.export_chunk_replica_snapshot_chunk(
             replica_index,
             offset,
@@ -95,7 +95,7 @@ impl MatrixObjectStore {
         emit: F,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        F: FnMut(ChunkServiceSnapshotChunk) -> Result<(), ObjectError>,
+        F: FnMut(ReplicaServiceSnapshotChunk) -> Result<(), ObjectError>,
     {
         self.page_service
             .export_chunk_replica_snapshot_chunk_stream(replica_index, max_payload_bytes, emit)
@@ -105,7 +105,7 @@ impl MatrixObjectStore {
         &self,
         replica_index: usize,
         max_payload_bytes: usize,
-    ) -> Result<Vec<ChunkServiceSnapshotChunk>, ObjectError> {
+    ) -> Result<Vec<ReplicaServiceSnapshotChunk>, ObjectError> {
         self.page_service
             .export_chunk_replica_snapshot_chunks(replica_index, max_payload_bytes)
     }
@@ -116,7 +116,7 @@ impl MatrixObjectStore {
         chunks: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = ChunkServiceSnapshotChunk>,
+        I: IntoIterator<Item = ReplicaServiceSnapshotChunk>,
     {
         self.page_service
             .install_chunk_replica_snapshot_chunks(replica_index, chunks)

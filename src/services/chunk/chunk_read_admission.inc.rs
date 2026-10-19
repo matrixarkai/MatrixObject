@@ -1,7 +1,7 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn can_accept_chunk_reads(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
     ) -> Result<ChunkReadAdmission, ObjectError> {

@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_repair_audited_page_replicas_raft_entry(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
     ) -> Result<PreparedPageAuditRepair, ObjectError> {
@@ -15,7 +15,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_audited_page_replicas_raft_entry_bounded(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
     ) -> Result<PreparedPageAuditRepair, ObjectError> {
@@ -29,7 +29,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_audited_page_replicas_raft_entry_linearizable(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
     ) -> Result<PreparedPageAuditRepair, ObjectError> {
@@ -43,7 +43,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_audited_page_replicas_raft_entry_linearizable_fenced(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
@@ -68,7 +68,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_audited_page_replicas_raft_entry_with_read_proof_linearizable_fenced(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
@@ -85,7 +85,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_audited_page_replicas_raft_entry_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
@@ -119,7 +119,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_audited_page_replicas_envelope_linearizable_fenced(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
@@ -135,7 +135,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_audited_page_replicas_envelope_with_read_proof_linearizable_fenced(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
@@ -152,7 +152,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_repair_audited_page_replicas_envelope_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        after_chunk_id: Option<ChunkId>,
+        after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,

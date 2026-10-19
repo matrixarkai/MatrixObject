@@ -4,7 +4,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_index: usize,
         max_payload_bytes: usize,
         expected_control_checksum: Option<&str>,
-    ) -> Result<Vec<ProvenStorageRead<ChunkServiceSnapshotChunk>>, ObjectError> {
+    ) -> Result<Vec<ProvenStorageRead<ReplicaServiceSnapshotChunk>>, ObjectError> {
         self.export_chunk_replica_snapshot_chunks_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
             max_payload_bytes,
@@ -19,7 +19,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_index: usize,
         max_payload_bytes: usize,
         expected_control_checksum: impl AsRef<str>,
-    ) -> Result<Vec<ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>>, ObjectError>
+    ) -> Result<Vec<ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>>, ObjectError>
     {
         self.export_chunk_replica_snapshot_chunks_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
@@ -37,7 +37,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<Vec<ProvenChunkControlFencedStorageRead<ChunkServiceSnapshotChunk>>, ObjectError>
+    ) -> Result<Vec<ProvenChunkControlFencedStorageRead<ReplicaServiceSnapshotChunk>>, ObjectError>
     {
         let mut chunks = Vec::new();
         self.export_chunk_replica_snapshot_chunk_stream_with_control_proof_linearizable_fenced_committed_at(
@@ -67,7 +67,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<Vec<ProvenStorageRead<ChunkServiceSnapshotChunk>>, ObjectError> {
+    ) -> Result<Vec<ProvenStorageRead<ReplicaServiceSnapshotChunk>>, ObjectError> {
         let mut chunks = Vec::new();
         self.export_chunk_replica_snapshot_chunk_stream_with_read_proof_linearizable_fenced_committed_at(
             replica_index,

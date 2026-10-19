@@ -2,7 +2,7 @@
 pub struct StoreOptions {
     pub slab_size: u64,
     pub max_extent_bytes: u64,
-    pub chunk_size: u64,
+    pub page_size: u64,
     pub volume_count: u64,
     pub persistent_snapshot_path: String,
     pub persistent_snapshot_flush_on_commit: bool,

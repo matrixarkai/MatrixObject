@@ -13,7 +13,7 @@ impl MatrixPageService {
         marker: Option<&str>,
         limit: usize,
         slab_id: Option<&SlabId>,
-        chunk_index: Option<u64>,
+        page_index: Option<u64>,
     ) -> Result<PageDiscardReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -23,8 +23,8 @@ impl MatrixPageService {
             total_receipt_count: self.discard_request_receipts.len() as u64,
             limit: limit as u64,
             slab_id: slab_id.cloned(),
-            chunk_index,
-            chunk_size: chunk_index.map(|_| self.chunk_size),
+            page_index,
+            page_size: page_index.map(|_| self.page_size),
             ..PageDiscardReceiptPage::default()
         };
         let iter: Box<dyn Iterator<Item = (&String, &PageDiscardReceipt)> + '_> =
@@ -42,12 +42,12 @@ impl MatrixPageService {
                 page.skipped_slab_count = page.skipped_slab_count.saturating_add(1);
                 continue;
             }
-            if chunk_index.is_some_and(|chunk_index| {
+            if page_index.is_some_and(|page_index| {
                 !page_range_overlaps_chunk(
                     receipt.offset,
                     receipt.length,
-                    chunk_index,
-                    self.chunk_size,
+                    page_index,
+                    self.page_size,
                 )
             }) {
                 page.skipped_chunk_count = page.skipped_chunk_count.saturating_add(1);

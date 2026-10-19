@@ -43,7 +43,7 @@ pub struct RootPageHealth {
     pub deferred_metadata_checkpoint_requests: u64,
     pub deferred_metadata_checkpoint_runs: u64,
     pub chunk_capacity_rejected_writes: u64,
-    pub chunk_service_mode_rejected_mutations: u64,
+    pub replica_service_mode_rejected_mutations: u64,
     pub chunk_physical_write_count: u64,
     pub chunk_physical_write_bytes: u64,
     pub chunk_physical_discard_range_count: u64,
@@ -245,7 +245,7 @@ pub(crate) fn service_read_write_readiness_label<'a>(
     }
 }
 
-pub(crate) fn chunkserver_coverage_status(
+pub(crate) fn replicaserver_coverage_status(
     active_count: u64,
     writable_count: u64,
     draining_count: u64,
@@ -285,7 +285,7 @@ pub(crate) fn chunkserver_coverage_status(
     }
 }
 
-pub(crate) fn chunkserver_readiness_label<'a>(
+pub(crate) fn replicaserver_readiness_label<'a>(
     writable_count: u64,
     draining_count: u64,
     capacity_blocked_count: u64,

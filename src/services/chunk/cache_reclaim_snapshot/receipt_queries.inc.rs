@@ -1,9 +1,9 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn list_write_receipts(
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkWriteReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -45,7 +45,7 @@ impl MatrixChunkService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkBatchWriteReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -87,7 +87,7 @@ impl MatrixChunkService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkDiscardReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -129,7 +129,7 @@ impl MatrixChunkService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkBatchDiscardReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -171,7 +171,7 @@ impl MatrixChunkService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        chunk_id: Option<&ChunkId>,
+        chunk_id: Option<&PageId>,
     ) -> Result<ChunkRepairReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;

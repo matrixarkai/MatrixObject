@@ -4,7 +4,7 @@ fn test_options() -> StoreOptions {
     StoreOptions {
         slab_size: 16,
         max_extent_bytes: 4,
-        chunk_size: 4,
+        page_size: 4,
         volume_count: 2,
         persistent_snapshot_path: String::new(),
         persistent_snapshot_flush_on_commit: false,
@@ -469,7 +469,7 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
             )
             .unwrap();
         store
-            .register_local_chunkserver_in_catalog(
+            .register_local_replicaserver_in_catalog(
                 "chunk-j",
                 "chunk-j.local:9400",
                 "rack-a",
@@ -481,13 +481,13 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
             )
             .unwrap();
         store
-            .heartbeat_local_chunkserver_in_catalog("chunk-j", 0, 0, 0, 70, "metaserver", true)
+            .heartbeat_local_replicaserver_in_catalog("chunk-j", 0, 0, 0, 70, "metaserver", true)
             .unwrap();
         store
-            .offline_local_chunkserver_in_catalog("chunk-j", 0, 0, 0, 80, "metaserver")
+            .offline_local_replicaserver_in_catalog("chunk-j", 0, 0, 0, 80, "metaserver")
             .unwrap();
         store
-            .register_local_chunkserver_in_catalog(
+            .register_local_replicaserver_in_catalog(
                 "chunk-live",
                 "chunk-live.local:9400",
                 "rack-b",
@@ -499,7 +499,7 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
             )
             .unwrap();
         store
-            .heartbeat_local_chunkserver_in_catalog("chunk-live", 1, 0, 0, 100, "metaserver", true)
+            .heartbeat_local_replicaserver_in_catalog("chunk-live", 1, 0, 0, 100, "metaserver", true)
             .unwrap();
         assert!(journal_path.exists());
     }
@@ -538,7 +538,7 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
     assert_eq!(page_discovery.catalog_source, "metaserver");
     assert_eq!(page_discovery.endpoints, vec!["block-live.local:9300"]);
     let chunk_discovery = reopened
-        .discover_chunkserver_endpoints_from_catalog(0)
+        .discover_replicaserver_endpoints_from_catalog(0)
         .unwrap();
     assert_eq!(chunk_discovery.catalog_source, "metaserver");
     assert_eq!(chunk_discovery.endpoints, vec!["chunk-live.local:9400"]);
@@ -1249,12 +1249,12 @@ fn persistent_journal_replays_direct_chunk_mutations() {
     let journal_path_string = journal_path.to_string_lossy().to_string();
     let mut options = test_options();
     options.persistent_journal_path = journal_path_string;
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 11,
         },
-        chunk_index: 3,
+        page_index: 3,
     };
     let replica_index = 1;
     {
@@ -2366,14 +2366,14 @@ fn object_inventory_pages_metadata_and_placement() {
 }
 
 #[test]
-fn chunkserver_recovers_corrupt_payload_from_ec_sidecars() {
-    let mut chunk = MatrixChunkService::new();
-    let chunk_id = ChunkId {
+fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
+    let mut chunk = MatrixReplicaService::new();
+    let chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 710,
         },
-        chunk_index: 0,
+        page_index: 0,
     };
     chunk
         .write_chunk(chunk_id.clone(), 0, b"abcdefghijkl")
@@ -2414,9 +2414,9 @@ fn chunkserver_recovers_corrupt_payload_from_ec_sidecars() {
         snapshot.chunks.get(&chunk_id).unwrap().ec_parity_fragment.len(),
         6
     );
-    let restored_snapshot = ChunkServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
+    let restored_snapshot = ReplicaServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
         .expect("chunk snapshot should preserve EC sidecars");
-    let mut restored = MatrixChunkService::new();
+    let mut restored = MatrixReplicaService::new();
     restored.install_snapshot(restored_snapshot).unwrap();
     assert_eq!(
         restored.read_chunk(&chunk_id, 0, 12).unwrap().data,
@@ -2433,14 +2433,14 @@ fn chunkserver_recovers_corrupt_payload_from_ec_sidecars() {
 }
 
 #[test]
-fn chunkserver_batch_admission_reports_continuation_cursors() {
-    let mut chunk = MatrixChunkService::new();
-    let chunk_id = ChunkId {
+fn replicaserver_batch_admission_reports_continuation_cursors() {
+    let mut chunk = MatrixReplicaService::new();
+    let chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 711,
         },
-        chunk_index: 0,
+        page_index: 0,
     };
     chunk
         .write_chunk(chunk_id.clone(), 0, b"abcdefghijkl")
@@ -2682,9 +2682,9 @@ fn page_service_preflights_chunk_write_admission_before_mutation() {
         volume_id: 0,
         id: 707,
     };
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
     let mut page = MatrixPageService::new(4, 3, 2).unwrap();
     for replica in &mut page.replicas {
@@ -2910,11 +2910,11 @@ fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
         volume_id: 0,
         id: 81,
     };
-    let mut chunk = MatrixChunkService::new();
+    let mut chunk = MatrixReplicaService::new();
     chunk.set_capacity_bytes(8).unwrap();
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
     chunk.write_chunk(chunk_id.clone(), 0, b"abcdefgh").unwrap();
     assert_eq!(chunk.physical_bytes(), 8);
@@ -2933,17 +2933,17 @@ fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
     assert_eq!(snapshot.capacity_bytes, 8);
     assert_eq!(snapshot.capacity_rejected_writes, 1);
     let bytes = snapshot.to_bytes().unwrap();
-    let mut restored_chunk = MatrixChunkService::new();
+    let mut restored_chunk = MatrixReplicaService::new();
     restored_chunk.install_snapshot_bytes(&bytes).unwrap();
     assert_eq!(restored_chunk.capacity_bytes(), 8);
     assert_eq!(restored_chunk.capacity_rejected_writes(), 1);
     assert!(matches!(
         restored_chunk.install_chunk_state(
-            ChunkId {
+            PageId {
                 slab_id: slab_id.clone(),
-                chunk_index: 1,
+                page_index: 1,
             },
-            ChunkState {
+            PageState {
                 logical_length: 1,
                 write_sequence: 1,
                 checksum: etag(b"x"),
@@ -2992,11 +2992,11 @@ fn chunk_replica_service_mode_gates_writes_and_survives_snapshot() {
         volume_id: 0,
         id: 82,
     };
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
-    let mut chunk = MatrixChunkService::new();
+    let mut chunk = MatrixReplicaService::new();
     chunk.configure_service_mode(Some(false), None, None);
     assert!(!chunk.accepting_writes());
     assert!(matches!(
@@ -3062,7 +3062,7 @@ fn chunk_replica_service_mode_gates_writes_and_survives_snapshot() {
     assert!(!snapshot.draining);
     assert!(snapshot.frozen);
     assert_eq!(snapshot.service_mode_rejected_mutations, 3);
-    let mut restored_chunk = MatrixChunkService::new();
+    let mut restored_chunk = MatrixReplicaService::new();
     restored_chunk
         .install_snapshot_bytes(&snapshot.to_bytes().unwrap())
         .unwrap();
@@ -3108,11 +3108,11 @@ fn chunk_state_handoff_proofs_gate_replica_repair_installs() {
         volume_id: 0,
         id: 83,
     };
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
-    let mut source = MatrixChunkService::new();
+    let mut source = MatrixReplicaService::new();
     source
         .write_chunk(chunk_id.clone(), 0, b"handoff-state")
         .unwrap();
@@ -3165,7 +3165,7 @@ fn chunk_state_handoff_proofs_gate_replica_repair_installs() {
         Err(ObjectError::InvalidArgument(message))
             if message.contains("payload exceeds budget")
     ));
-    let mut target = MatrixChunkService::new();
+    let mut target = MatrixReplicaService::new();
     target.install_chunk_state_handoff(handoff.clone()).unwrap();
     assert_eq!(
         target.read_chunk_state_validated(&chunk_id).unwrap(),
@@ -3185,28 +3185,28 @@ fn chunk_state_handoff_proofs_gate_replica_repair_installs() {
     let mut corrupt_payload = handoff.clone();
     std::sync::Arc::make_mut(&mut corrupt_payload.state.data)[0] ^= 0x7f;
     assert!(matches!(
-        MatrixChunkService::new().install_chunk_state_handoff(corrupt_payload),
+        MatrixReplicaService::new().install_chunk_state_handoff(corrupt_payload),
         Err(ObjectError::Corruption(message))
             if message.contains("payload checksum")
     ));
     let mut corrupt_envelope = handoff.clone();
     corrupt_envelope.state_checksum = "fnv1a64:0000000000000000".to_string();
     assert!(matches!(
-        MatrixChunkService::new().install_chunk_state_handoff(corrupt_envelope),
+        MatrixReplicaService::new().install_chunk_state_handoff(corrupt_envelope),
         Err(ObjectError::Corruption(message))
             if message.contains("envelope checksum")
     ));
     let mut retokened = handoff.clone();
     retokened.handoff_token = "different-rust-token".to_string();
     assert!(matches!(
-        MatrixChunkService::new().install_chunk_state_handoff(retokened),
+        MatrixReplicaService::new().install_chunk_state_handoff(retokened),
         Err(ObjectError::Corruption(message))
             if message.contains("token-bound envelope checksum")
     ));
     let mut future_proof = handoff.clone();
     future_proof.proof_version = 3;
     assert!(matches!(
-        MatrixChunkService::new().install_chunk_state_handoff(future_proof),
+        MatrixReplicaService::new().install_chunk_state_handoff(future_proof),
         Err(ObjectError::InvalidArgument(message))
             if message.contains("proof version")
     ));
@@ -3619,14 +3619,14 @@ fn page_service_repairs_from_replica_audit_page() {
 
 #[test]
 fn page_service_batches_coalesce_reads_and_discards() {
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 700,
         },
-        chunk_index: 0,
+        page_index: 0,
     };
-    let mut chunk = MatrixChunkService::new();
+    let mut chunk = MatrixReplicaService::new();
     let direct_write = chunk
         .write_chunk_ranges(
             chunk_id.clone(),
@@ -3839,15 +3839,15 @@ fn page_service_batches_coalesce_reads_and_discards() {
     assert!(chunk_ready.control_proof.state_bytes > 0);
     assert!(!chunk_ready.control_proof.state_checksum.is_empty());
     assert_eq!(
-        chunk_ready.chunkserver_control_proof_format,
+        chunk_ready.replicaserver_control_proof_format,
         chunk_ready.control_proof.state_format
     );
     assert_eq!(
-        chunk_ready.chunkserver_control_proof_bytes,
+        chunk_ready.replicaserver_control_proof_bytes,
         chunk_ready.control_proof.state_bytes
     );
     assert_eq!(
-        chunk_ready.chunkserver_control_proof_checksum,
+        chunk_ready.replicaserver_control_proof_checksum,
         chunk_ready.control_proof.state_checksum
     );
     assert!(chunk_ready.control_proof.accepting_writes);
@@ -3868,8 +3868,8 @@ fn page_service_batches_coalesce_reads_and_discards() {
     );
     assert!(!chunk_ready.control_proof.snapshot_checksum.is_empty());
     let restored_chunk_snapshot =
-        ChunkServiceSnapshot::from_bytes(&chunk.export_snapshot().to_bytes().unwrap()).unwrap();
-    let mut restored_chunk = MatrixChunkService::new();
+        ReplicaServiceSnapshot::from_bytes(&chunk.export_snapshot().to_bytes().unwrap()).unwrap();
+    let mut restored_chunk = MatrixReplicaService::new();
     restored_chunk
         .install_snapshot(restored_chunk_snapshot)
         .unwrap();
@@ -4295,16 +4295,16 @@ fn page_service_batches_coalesce_reads_and_discards() {
 }
 
 #[test]
-fn chunk_service_dedupes_idempotent_batch_mutations_across_snapshots() {
-    let chunk_id = ChunkId {
+fn replica_service_dedupes_idempotent_batch_mutations_across_snapshots() {
+    let chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 701,
         },
-        chunk_index: 0,
+        page_index: 0,
     };
     let writes = vec![(0, b"abcd".to_vec()), (4, b"efgh".to_vec())];
-    let mut chunk = MatrixChunkService::new();
+    let mut chunk = MatrixReplicaService::new();
     let (write_stats, first_write) = chunk
         .write_chunk_ranges_idempotent(chunk_id.clone(), writes.clone(), "chunk-batch-write-a")
         .unwrap();
@@ -4386,11 +4386,11 @@ fn chunk_service_dedupes_idempotent_batch_mutations_across_snapshots() {
         "chunk-batch-discard-a"
     );
     snapshot.validate().unwrap();
-    let restored_snapshot = ChunkServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
+    let restored_snapshot = ReplicaServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
         .expect("chunk snapshot with batch receipts should round trip");
     assert_eq!(restored_snapshot.batch_write_request_receipts.len(), 1);
     assert_eq!(restored_snapshot.batch_discard_request_receipts.len(), 1);
-    let mut restored = MatrixChunkService::new();
+    let mut restored = MatrixReplicaService::new();
     restored.install_snapshot(restored_snapshot).unwrap();
     assert_eq!(
         restored
@@ -4436,14 +4436,14 @@ fn chunk_service_dedupes_idempotent_batch_mutations_across_snapshots() {
 }
 
 #[test]
-fn chunk_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
-    let mut chunk = MatrixChunkService::new();
-    let chunk_id = ChunkId {
+fn replica_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
+    let mut chunk = MatrixReplicaService::new();
+    let chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 707,
         },
-        chunk_index: 0,
+        page_index: 0,
     };
     let first_write = chunk
         .write_chunk_idempotent(chunk_id.clone(), 0, b"abcdefgh", "chunk-write-a")
@@ -4485,12 +4485,12 @@ fn chunk_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
     assert_eq!(discard_page.receipt_count, 1);
     assert_eq!(discard_page.total_receipt_count, 1);
     assert_eq!(discard_page.receipts[0].idempotency_key, "chunk-discard-a");
-    let missing_chunk_id = ChunkId {
+    let missing_chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 708,
         },
-        chunk_index: 0,
+        page_index: 0,
     };
     let missing_write_page = chunk
         .list_write_receipts(None, 1, Some(&missing_chunk_id))
@@ -4498,11 +4498,11 @@ fn chunk_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
     assert_eq!(missing_write_page.receipt_count, 0);
     assert_eq!(missing_write_page.skipped_chunk_count, 1);
     snapshot.validate().unwrap();
-    let restored_snapshot = ChunkServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
+    let restored_snapshot = ReplicaServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
         .expect("chunk snapshot with scalar receipts should round trip");
     assert_eq!(restored_snapshot.write_request_receipts.len(), 1);
     assert_eq!(restored_snapshot.discard_request_receipts.len(), 1);
-    let mut restored = MatrixChunkService::new();
+    let mut restored = MatrixReplicaService::new();
     restored.install_snapshot(restored_snapshot).unwrap();
     assert_eq!(
         restored
@@ -4537,16 +4537,16 @@ fn chunk_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
 }
 
 #[test]
-fn chunk_service_dedupes_state_install_and_reclaim_receipts_across_snapshots() {
-    let mut chunk = MatrixChunkService::new();
-    let chunk_id = ChunkId {
+fn replica_service_dedupes_state_install_and_reclaim_receipts_across_snapshots() {
+    let mut chunk = MatrixReplicaService::new();
+    let chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 709,
         },
-        chunk_index: 0,
+        page_index: 0,
     };
-    let mut install_state = ChunkState {
+    let mut install_state = PageState {
         logical_length: 8,
         write_sequence: 7,
         checksum: etag(b"abcdefgh"),
@@ -4610,11 +4610,11 @@ fn chunk_service_dedupes_state_install_and_reclaim_receipts_across_snapshots() {
     assert_eq!(snapshot.state_install_request_receipts.len(), 1);
     assert_eq!(snapshot.reclaim_request_receipts.len(), 1);
     snapshot.validate().unwrap();
-    let restored_snapshot = ChunkServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
+    let restored_snapshot = ReplicaServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
         .expect("chunk snapshot with install/reclaim receipts should round trip");
     assert_eq!(restored_snapshot.state_install_request_receipts.len(), 1);
     assert_eq!(restored_snapshot.reclaim_request_receipts.len(), 1);
-    let mut restored = MatrixChunkService::new();
+    let mut restored = MatrixReplicaService::new();
     restored.install_snapshot(restored_snapshot).unwrap();
     let restored_install = restored
         .install_chunk_state_idempotent(chunk_id, install_state, "chunk-state-install-a")
@@ -4650,13 +4650,13 @@ fn page_service_partially_reclaims_chunk_discard_ranges() {
     assert_eq!(report.remaining_discard_bytes, 6);
     assert!(report.budget_limited);
 
-    let chunk0 = ChunkId {
+    let chunk0 = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
-    let chunk1 = ChunkId {
+    let chunk1 = PageId {
         slab_id,
-        chunk_index: 1,
+        page_index: 1,
     };
     let reclaimed = page.replicas[0].read_chunk_state(&chunk0).unwrap();
     assert!(reclaimed.discarded_ranges.is_empty());
@@ -4676,23 +4676,23 @@ fn page_service_partially_reclaims_chunk_discard_ranges() {
 }
 
 #[test]
-fn chunkserver_plans_reclaim_with_fragmentation_and_trim_budgets() {
-    let mut chunk = MatrixChunkService::new();
+fn replicaserver_plans_reclaim_with_fragmentation_and_trim_budgets() {
+    let mut chunk = MatrixReplicaService::new();
     let slab_id = SlabId {
         volume_id: 0,
         id: 72,
     };
-    let tail_chunk = ChunkId {
+    let tail_chunk = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
-    let fragmented_chunk = ChunkId {
+    let fragmented_chunk = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 1,
+        page_index: 1,
     };
-    let budget_chunk = ChunkId {
+    let budget_chunk = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 2,
+        page_index: 2,
     };
     chunk
         .write_chunk(tail_chunk.clone(), 0, b"abcdefgh")
@@ -4780,15 +4780,15 @@ fn chunkserver_plans_reclaim_with_fragmentation_and_trim_budgets() {
 }
 
 #[test]
-fn chunkserver_persists_trim_flow_and_throttles_reclaim() {
-    let mut chunk = MatrixChunkService::new();
+fn replicaserver_persists_trim_flow_and_throttles_reclaim() {
+    let mut chunk = MatrixReplicaService::new();
     let slab_id = SlabId {
         volume_id: 0,
         id: 721,
     };
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id,
-        chunk_index: 0,
+        page_index: 0,
     };
     chunk.write_chunk(chunk_id.clone(), 0, b"abcdefgh").unwrap();
     chunk.discard_chunk(&chunk_id, 4, 4).unwrap();
@@ -4798,9 +4798,9 @@ fn chunkserver_persists_trim_flow_and_throttles_reclaim() {
     assert_eq!(snapshot.trim_flow_rate_bytes_per_sec, 1);
     assert_eq!(snapshot.trim_flow_burst_bytes, 2);
     assert_eq!(snapshot.trim_flow_available_bytes, 2);
-    let restored_snapshot = ChunkServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
+    let restored_snapshot = ReplicaServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
         .expect("chunk snapshot should round trip");
-    let mut restored = MatrixChunkService::new();
+    let mut restored = MatrixReplicaService::new();
     restored.install_snapshot(restored_snapshot).unwrap();
     assert_eq!(restored.trim_flow_rate_bytes_per_sec(), 1);
     assert_eq!(restored.trim_flow_burst_bytes(), 2);
@@ -4878,9 +4878,9 @@ fn pageserver_plans_reclaim_across_active_replicas() {
     let report = page.reclaim_chunk_replicas_with_limits(10, 2, 1, 200_000, 2, 2);
     assert_eq!(report.reclaimed_chunks, 1);
     assert_eq!(report.rewritten_bytes, 2);
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id,
-        chunk_index: 1,
+        page_index: 1,
     };
     assert_eq!(
         page.replicas[1]
@@ -5247,9 +5247,9 @@ fn page_service_dedupes_idempotent_writes_across_snapshots() {
         page_write_page.receipts[0].idempotency_key,
         "block-write-a"
     );
-    let expected_chunk_id = ChunkId {
+    let expected_chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
     let chunk_write_page = page
         .list_chunk_write_receipts(0, None, 2, Some(&expected_chunk_id))
@@ -5387,9 +5387,9 @@ fn page_service_dedupes_idempotent_batch_writes_across_snapshots() {
         page_write_page.receipts[0].idempotency_key,
         "block-batch-write-a"
     );
-    let expected_chunk_id = ChunkId {
+    let expected_chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
     let chunk_write_page = page
         .list_chunk_batch_write_receipts(0, None, 2, Some(&expected_chunk_id))
@@ -5498,9 +5498,9 @@ fn page_service_dedupes_idempotent_discards_across_snapshots() {
         page_discard_page.receipts[0].idempotency_key,
         "block-discard-a"
     );
-    let expected_chunk_id = ChunkId {
+    let expected_chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
     let chunk_discard_page = page
         .list_chunk_discard_receipts(0, None, 2, Some(&expected_chunk_id))
@@ -5628,9 +5628,9 @@ fn page_service_dedupes_idempotent_batch_discards_across_snapshots() {
         page_discard_page.receipts[0].idempotency_key,
         "block-batch-discard-a"
     );
-    let expected_chunk_id = ChunkId {
+    let expected_chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
     let chunk_discard_page = page
         .list_chunk_batch_discard_receipts(0, None, 2, Some(&expected_chunk_id))
@@ -5685,20 +5685,20 @@ fn page_service_dedupes_idempotent_batch_discards_across_snapshots() {
 }
 
 #[test]
-fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
+fn replica_service_snapshot_chunks_restore_replacement_nodes() {
     let slab_id = SlabId {
         volume_id: 1,
         id: 99,
     };
-    let chunk_a = ChunkId {
+    let chunk_a = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
-    let chunk_b = ChunkId {
+    let chunk_b = PageId {
         slab_id,
-        chunk_index: 1,
+        page_index: 1,
     };
-    let mut source = MatrixChunkService::new();
+    let mut source = MatrixReplicaService::new();
     source
         .write_chunk(chunk_a.clone(), 0, b"abcdefghijklmnop")
         .unwrap();
@@ -5715,7 +5715,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
         )
         .unwrap();
 
-    let mut assembler = ChunkServiceSnapshotAssembler::default();
+    let mut assembler = ReplicaServiceSnapshotAssembler::default();
     let mut chunks = Vec::new();
     let mut offset = 0;
     loop {
@@ -5755,10 +5755,10 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
         &chunks.last().unwrap().full_checksum,
     );
     assert!(matches!(
-        ChunkServiceSnapshotAssembler::default().push_chunk(chunks[1].clone()),
+        ReplicaServiceSnapshotAssembler::default().push_chunk(chunks[1].clone()),
         Err(ObjectError::InvalidArgument(_))
     ));
-    let mut retry_assembler = ChunkServiceSnapshotAssembler::default();
+    let mut retry_assembler = ReplicaServiceSnapshotAssembler::default();
     assert!(retry_assembler
         .push_chunk(chunks[0].clone())
         .unwrap()
@@ -5805,7 +5805,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
     let mut corrupt = chunks[0].clone();
     corrupt.payload[0] ^= 0x01;
     assert!(matches!(
-        ChunkServiceSnapshotAssembler::default().push_chunk(corrupt),
+        ReplicaServiceSnapshotAssembler::default().push_chunk(corrupt),
         Err(ObjectError::Corruption(_))
     ));
 
@@ -5825,12 +5825,12 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
         );
     }
     let snapshot_bytes = assembled.expect("final chunk service snapshot");
-    let snapshot = ChunkServiceSnapshot::from_bytes(&snapshot_bytes).unwrap();
+    let snapshot = ReplicaServiceSnapshot::from_bytes(&snapshot_bytes).unwrap();
     assert_eq!(snapshot.chunks.len(), 2);
 
-    let mut replacement = MatrixChunkService::new();
+    let mut replacement = MatrixReplicaService::new();
     replacement.install_snapshot_bytes(&snapshot_bytes).unwrap();
-    let mut partial_replacement = MatrixChunkService::new();
+    let mut partial_replacement = MatrixReplicaService::new();
     let partial_progress = partial_replacement
         .install_snapshot_chunks(vec![chunks[0].clone()])
         .unwrap();
@@ -5858,7 +5858,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
         partial_replacement.read_chunk(&chunk_b, 4, 4).unwrap().data,
         b"qrst".to_vec()
     );
-    let mut streamed_replacement = MatrixChunkService::new();
+    let mut streamed_replacement = MatrixReplicaService::new();
     let install_progress = streamed_replacement
         .install_snapshot_chunks(chunks.clone())
         .unwrap();
@@ -6028,7 +6028,7 @@ fn page_service_snapshot_chunks_restore_replacement_nodes() {
     }
     let snapshot_bytes = assembled.expect("final block service snapshot");
     let snapshot = PageServiceSnapshot::from_bytes(&snapshot_bytes).unwrap();
-    assert_eq!(snapshot.chunk_size, 4);
+    assert_eq!(snapshot.page_size, 4);
     assert_eq!(snapshot.write_quorum, 2);
     assert_eq!(snapshot.read_quorum, 2);
     assert_eq!(snapshot.replicas.len(), 3);
@@ -6121,11 +6121,11 @@ fn page_and_object_cache_control_coalesce_ranges() {
         volume_id: 0,
         id: 8,
     };
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 99,
+        page_index: 99,
     };
-    let mut chunk = MatrixChunkService::new();
+    let mut chunk = MatrixReplicaService::new();
     chunk.write_chunk(chunk_id.clone(), 0, b"abcdefgh").unwrap();
     let coalesced = chunk
         .prewarm_chunk_ranges(
@@ -6174,11 +6174,11 @@ fn page_and_object_cache_control_coalesce_ranges() {
     assert!(direct_cache.direct_fill_pages > 0);
     assert!(chunk.control_proof().read_cache_invalidations >= 2);
 
-    let lru_chunk_id = ChunkId {
+    let lru_chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 100,
+        page_index: 100,
     };
-    let mut lru_chunk = MatrixChunkService::new();
+    let mut lru_chunk = MatrixReplicaService::new();
     lru_chunk
         .write_chunk(lru_chunk_id.clone(), 0, b"abcdefghijklmnop")
         .unwrap();
@@ -7511,12 +7511,12 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         healthy.root_pageserver_route_control_proof_checksum
     );
     assert_eq!(
-        module_status.root_chunkserver_control_proof_count,
-        healthy.root_chunkserver_control_proof_count
+        module_status.root_replicaserver_control_proof_count,
+        healthy.root_replicaserver_control_proof_count
     );
     assert_eq!(
-        module_status.root_chunkserver_control_proof_checksum,
-        healthy.root_chunkserver_control_proof_checksum
+        module_status.root_replicaserver_control_proof_checksum,
+        healthy.root_replicaserver_control_proof_checksum
     );
     assert_eq!(
         module_status.root_pageserver_route_control_min_commit_index,
@@ -7539,12 +7539,12 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         healthy.root_pageserver_total_release_allocation_receipt_count
     );
     assert_eq!(
-        module_status.root_chunkserver_control_min_raft_commit_index,
-        healthy.root_chunkserver_control_min_raft_commit_index
+        module_status.root_replicaserver_control_min_raft_commit_index,
+        healthy.root_replicaserver_control_min_raft_commit_index
     );
     assert_eq!(
-        module_status.root_chunkserver_control_max_raft_commit_index,
-        healthy.root_chunkserver_control_max_raft_commit_index
+        module_status.root_replicaserver_control_max_raft_commit_index,
+        healthy.root_replicaserver_control_max_raft_commit_index
     );
     assert_eq!(
         module_status.root_metadata_control_max_last_applied_mutation_commit_index,
@@ -7817,19 +7817,19 @@ fn rootserver_raft_status_exposes_service_coverage() {
         39
     );
     assert_eq!(status.root_pageserver_service_coverage_status, "healthy");
-    assert_eq!(status.root_active_chunkserver_count, 1);
-    assert_eq!(status.root_writable_chunkserver_count, 1);
-    assert_eq!(status.root_placement_eligible_chunkserver_count, 1);
-    assert_eq!(status.root_placement_ineligible_chunkserver_count, 0);
-    assert_eq!(status.root_chunkserver_control_proof_count, 1);
-    assert_eq!(status.root_chunkserver_control_min_raft_commit_index, 44);
-    assert_eq!(status.root_chunkserver_control_max_raft_commit_index, 44);
-    assert_eq!(status.root_chunkserver_coverage_status, "healthy");
+    assert_eq!(status.root_active_replicaserver_count, 1);
+    assert_eq!(status.root_writable_replicaserver_count, 1);
+    assert_eq!(status.root_placement_eligible_replicaserver_count, 1);
+    assert_eq!(status.root_placement_ineligible_replicaserver_count, 0);
+    assert_eq!(status.root_replicaserver_control_proof_count, 1);
+    assert_eq!(status.root_replicaserver_control_min_raft_commit_index, 44);
+    assert_eq!(status.root_replicaserver_control_max_raft_commit_index, 44);
+    assert_eq!(status.root_replicaserver_coverage_status, "healthy");
     assert!(!status.root_metadata_control_proof_checksum.is_empty());
     assert!(!status
         .root_pageserver_route_control_proof_checksum
         .is_empty());
-    assert!(!status.root_chunkserver_control_proof_checksum.is_empty());
+    assert!(!status.root_replicaserver_control_proof_checksum.is_empty());
     assert!(!status.control_checksum.is_empty());
 
     let mut blocked = root_node("chunk-a", "rack-c", 128);
@@ -7840,18 +7840,18 @@ fn rootserver_raft_status_exposes_service_coverage() {
     blocked.chunk_health.raft_commit_index = 45;
     root.register_node(blocked).unwrap();
     let blocked_status = root.raft_status(1, 8);
-    assert_eq!(blocked_status.root_writable_chunkserver_count, 0);
-    assert_eq!(blocked_status.root_placement_eligible_chunkserver_count, 0);
+    assert_eq!(blocked_status.root_writable_replicaserver_count, 0);
+    assert_eq!(blocked_status.root_placement_eligible_replicaserver_count, 0);
     assert_eq!(
-        blocked_status.root_placement_ineligible_chunkserver_count,
+        blocked_status.root_placement_ineligible_replicaserver_count,
         1
     );
     assert_eq!(
-        blocked_status.root_chunkserver_coverage_status,
+        blocked_status.root_replicaserver_coverage_status,
         "no_writable"
     );
     assert_eq!(
-        blocked_status.root_chunkserver_control_max_raft_commit_index,
+        blocked_status.root_replicaserver_control_max_raft_commit_index,
         45
     );
     assert_ne!(status.control_checksum, blocked_status.control_checksum);
@@ -8105,14 +8105,14 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
 }
 
 #[test]
-fn rootserver_tracks_chunkserver_coverage_for_write_routing() {
+fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
     let mut root = MatrixMetaService::new();
-    assert_eq!(root.chunkserver_coverage(8).status, "none");
+    assert_eq!(root.replicaserver_coverage(8).status, "none");
 
     let mut non_data = root_node("chunk-non-data", "rack-z", 64);
     non_data.data_eligible = false;
     root.register_node(non_data.clone()).unwrap();
-    assert_eq!(root.chunkserver_coverage(8).status, "none");
+    assert_eq!(root.replicaserver_coverage(8).status, "none");
     assert!(matches!(
         root.plan_object_placement(ObjectId::new("bucket", "non-data"), 1, 1),
         Err(ObjectError::PreconditionFailed(_))
@@ -8145,23 +8145,23 @@ fn rootserver_tracks_chunkserver_coverage_for_write_routing() {
     let mut draining = root_node("chunk-draining", "rack-a", 64);
     draining.draining = true;
     root.register_node(draining).unwrap();
-    let draining_only = root.chunkserver_coverage(8);
-    assert_eq!(draining_only.active_chunkserver_count, 1);
-    assert_eq!(draining_only.writable_chunkserver_count, 0);
-    assert_eq!(draining_only.placement_eligible_chunkserver_count, 0);
-    assert_eq!(draining_only.placement_ineligible_chunkserver_count, 1);
-    assert_eq!(draining_only.draining_chunkserver_count, 1);
+    let draining_only = root.replicaserver_coverage(8);
+    assert_eq!(draining_only.active_replicaserver_count, 1);
+    assert_eq!(draining_only.writable_replicaserver_count, 0);
+    assert_eq!(draining_only.placement_eligible_replicaserver_count, 0);
+    assert_eq!(draining_only.placement_ineligible_replicaserver_count, 1);
+    assert_eq!(draining_only.draining_replicaserver_count, 1);
     assert_eq!(draining_only.status, "draining_unwritable");
 
     let mut frozen = root_node("chunk-frozen", "rack-f", 64);
     frozen.chunk_health.frozen = true;
     frozen.chunk_health.capacity_free_bytes = 64;
     root.register_node(frozen).unwrap();
-    let frozen_coverage = root.chunkserver_coverage(8);
-    assert_eq!(frozen_coverage.active_chunkserver_count, 2);
-    assert_eq!(frozen_coverage.writable_chunkserver_count, 0);
-    assert_eq!(frozen_coverage.frozen_chunkserver_count, 1);
-    assert_eq!(frozen_coverage.draining_chunkserver_count, 2);
+    let frozen_coverage = root.replicaserver_coverage(8);
+    assert_eq!(frozen_coverage.active_replicaserver_count, 2);
+    assert_eq!(frozen_coverage.writable_replicaserver_count, 0);
+    assert_eq!(frozen_coverage.frozen_replicaserver_count, 1);
+    assert_eq!(frozen_coverage.draining_replicaserver_count, 2);
     assert_eq!(frozen_coverage.total_reported_free_bytes, 128);
     assert_eq!(frozen_coverage.status, "frozen_unwritable");
 
@@ -8170,41 +8170,41 @@ fn rootserver_tracks_chunkserver_coverage_for_write_routing() {
     read_only.chunk_health.service_mode = "read_only".to_string();
     read_only.chunk_health.capacity_free_bytes = 64;
     root.register_node(read_only).unwrap();
-    let read_only_coverage = root.chunkserver_coverage(8);
-    assert_eq!(read_only_coverage.active_chunkserver_count, 3);
-    assert_eq!(read_only_coverage.read_only_chunkserver_count, 1);
-    assert_eq!(read_only_coverage.draining_chunkserver_count, 3);
+    let read_only_coverage = root.replicaserver_coverage(8);
+    assert_eq!(read_only_coverage.active_replicaserver_count, 3);
+    assert_eq!(read_only_coverage.read_only_replicaserver_count, 1);
+    assert_eq!(read_only_coverage.draining_replicaserver_count, 3);
 
     let mut raft_blocked = root_node("chunk-raft-blocked", "rack-rf", 64);
     raft_blocked.chunk_health.raft_writable = false;
     raft_blocked.chunk_health.capacity_free_bytes = 64;
     root.register_node(raft_blocked).unwrap();
-    let raft_blocked_coverage = root.chunkserver_coverage(8);
-    assert_eq!(raft_blocked_coverage.active_chunkserver_count, 4);
-    assert_eq!(raft_blocked_coverage.raft_unwritable_chunkserver_count, 1);
-    assert_eq!(raft_blocked_coverage.draining_chunkserver_count, 4);
+    let raft_blocked_coverage = root.replicaserver_coverage(8);
+    assert_eq!(raft_blocked_coverage.active_replicaserver_count, 4);
+    assert_eq!(raft_blocked_coverage.raft_unwritable_replicaserver_count, 1);
+    assert_eq!(raft_blocked_coverage.draining_replicaserver_count, 4);
 
     let mut full = root_node("chunk-full", "rack-b", 64);
     full.used_bytes = 60;
     full.committed_bytes = 60;
     root.register_node(full).unwrap();
-    let no_writable = root.chunkserver_coverage(8);
-    assert_eq!(no_writable.active_chunkserver_count, 5);
-    assert_eq!(no_writable.writable_chunkserver_count, 0);
-    assert_eq!(no_writable.draining_chunkserver_count, 4);
-    assert_eq!(no_writable.capacity_floor_blocked_chunkserver_count, 1);
+    let no_writable = root.replicaserver_coverage(8);
+    assert_eq!(no_writable.active_replicaserver_count, 5);
+    assert_eq!(no_writable.writable_replicaserver_count, 0);
+    assert_eq!(no_writable.draining_replicaserver_count, 4);
+    assert_eq!(no_writable.capacity_floor_blocked_replicaserver_count, 1);
     assert_eq!(no_writable.min_free_bytes, 8);
     assert_eq!(no_writable.status, "frozen_unwritable");
 
     root.register_node(root_node("chunk-open", "rack-c", 64))
         .unwrap();
-    let degraded = root.chunkserver_coverage(8);
-    assert_eq!(degraded.active_chunkserver_count, 6);
-    assert_eq!(degraded.writable_chunkserver_count, 1);
-    assert_eq!(degraded.placement_eligible_chunkserver_count, 1);
-    assert_eq!(degraded.placement_ineligible_chunkserver_count, 5);
-    assert_eq!(degraded.draining_chunkserver_count, 4);
-    assert_eq!(degraded.capacity_floor_blocked_chunkserver_count, 1);
+    let degraded = root.replicaserver_coverage(8);
+    assert_eq!(degraded.active_replicaserver_count, 6);
+    assert_eq!(degraded.writable_replicaserver_count, 1);
+    assert_eq!(degraded.placement_eligible_replicaserver_count, 1);
+    assert_eq!(degraded.placement_ineligible_replicaserver_count, 5);
+    assert_eq!(degraded.draining_replicaserver_count, 4);
+    assert_eq!(degraded.capacity_floor_blocked_replicaserver_count, 1);
     assert_eq!(degraded.status, "frozen_degraded");
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
@@ -8247,20 +8247,20 @@ fn rootserver_tracks_chunkserver_coverage_for_write_routing() {
     let not_ready = store.distributed_readiness(0, 2, 8, 0, 1, 100, 0).unwrap();
     assert!(!not_ready.ready);
     assert_eq!(not_ready.reason, "root_chunkservers_frozen_unwritable");
-    assert_eq!(not_ready.root_active_chunkserver_count, 1);
-    assert_eq!(not_ready.root_writable_chunkserver_count, 0);
-    assert_eq!(not_ready.root_placement_eligible_chunkserver_count, 0);
-    assert_eq!(not_ready.root_placement_ineligible_chunkserver_count, 1);
-    assert_eq!(not_ready.root_capacity_floor_blocked_chunkserver_count, 0);
-    assert_eq!(not_ready.root_frozen_chunkserver_count, 1);
-    assert_eq!(not_ready.root_chunkserver_total_reported_free_bytes, 64);
-    assert_eq!(not_ready.root_chunkserver_min_free_bytes, 8);
-    assert_eq!(not_ready.root_chunkserver_control_proof_count, 1);
-    assert!(!not_ready.root_chunkserver_control_proof_checksum.is_empty());
-    assert_eq!(not_ready.root_chunkserver_control_min_raft_commit_index, 44);
-    assert_eq!(not_ready.root_chunkserver_control_max_raft_commit_index, 44);
+    assert_eq!(not_ready.root_active_replicaserver_count, 1);
+    assert_eq!(not_ready.root_writable_replicaserver_count, 0);
+    assert_eq!(not_ready.root_placement_eligible_replicaserver_count, 0);
+    assert_eq!(not_ready.root_placement_ineligible_replicaserver_count, 1);
+    assert_eq!(not_ready.root_capacity_floor_blocked_replicaserver_count, 0);
+    assert_eq!(not_ready.root_frozen_replicaserver_count, 1);
+    assert_eq!(not_ready.root_replicaserver_total_reported_free_bytes, 64);
+    assert_eq!(not_ready.root_replicaserver_min_free_bytes, 8);
+    assert_eq!(not_ready.root_replicaserver_control_proof_count, 1);
+    assert!(!not_ready.root_replicaserver_control_proof_checksum.is_empty());
+    assert_eq!(not_ready.root_replicaserver_control_min_raft_commit_index, 44);
+    assert_eq!(not_ready.root_replicaserver_control_max_raft_commit_index, 44);
     assert_eq!(
-        not_ready.root_chunkserver_coverage_status,
+        not_ready.root_replicaserver_coverage_status,
         "control_write_unready"
     );
 
@@ -8274,27 +8274,27 @@ fn rootserver_tracks_chunkserver_coverage_for_write_routing() {
     store.register_root_node(open).unwrap();
     let ready = store.distributed_readiness(0, 2, 8, 0, 1, 100, 0).unwrap();
     assert!(ready.ready);
-    assert_eq!(ready.root_active_chunkserver_count, 2);
-    assert_eq!(ready.root_writable_chunkserver_count, 1);
-    assert_eq!(ready.root_placement_eligible_chunkserver_count, 1);
-    assert_eq!(ready.root_placement_ineligible_chunkserver_count, 1);
-    assert_eq!(ready.root_capacity_floor_blocked_chunkserver_count, 0);
-    assert_eq!(ready.root_frozen_chunkserver_count, 1);
-    assert_eq!(ready.root_chunkserver_total_reported_free_bytes, 128);
-    assert_eq!(ready.root_chunkserver_control_proof_count, 2);
-    assert!(!ready.root_chunkserver_control_proof_checksum.is_empty());
+    assert_eq!(ready.root_active_replicaserver_count, 2);
+    assert_eq!(ready.root_writable_replicaserver_count, 1);
+    assert_eq!(ready.root_placement_eligible_replicaserver_count, 1);
+    assert_eq!(ready.root_placement_ineligible_replicaserver_count, 1);
+    assert_eq!(ready.root_capacity_floor_blocked_replicaserver_count, 0);
+    assert_eq!(ready.root_frozen_replicaserver_count, 1);
+    assert_eq!(ready.root_replicaserver_total_reported_free_bytes, 128);
+    assert_eq!(ready.root_replicaserver_control_proof_count, 2);
+    assert!(!ready.root_replicaserver_control_proof_checksum.is_empty());
     assert_ne!(
-        ready.root_chunkserver_control_proof_checksum,
-        not_ready.root_chunkserver_control_proof_checksum
+        ready.root_replicaserver_control_proof_checksum,
+        not_ready.root_replicaserver_control_proof_checksum
     );
-    assert_eq!(ready.root_chunkserver_control_min_raft_commit_index, 44);
-    assert_eq!(ready.root_chunkserver_control_max_raft_commit_index, 66);
-    assert_eq!(ready.root_chunkserver_coverage_status, "frozen_degraded");
+    assert_eq!(ready.root_replicaserver_control_min_raft_commit_index, 44);
+    assert_eq!(ready.root_replicaserver_control_max_raft_commit_index, 66);
+    assert_eq!(ready.root_replicaserver_coverage_status, "frozen_degraded");
     assert_ne!(not_ready.control_checksum, ready.control_checksum);
 }
 
 #[test]
-fn rootserver_placement_honors_chunkserver_service_health() {
+fn rootserver_placement_honors_replicaserver_service_health() {
     let mut root = MatrixMetaService::new();
     let mut frozen = root_node("chunk-frozen", "rack-a", 100);
     frozen.chunk_health.frozen = true;
@@ -8500,12 +8500,12 @@ fn rootserver_health_heartbeats_update_service_coverage() {
             .chunk_health,
         chunk_health
     );
-    let chunk_coverage = store.meta_service.chunkserver_coverage(8);
-    assert_eq!(chunk_coverage.active_chunkserver_count, 1);
-    assert_eq!(chunk_coverage.writable_chunkserver_count, 0);
-    assert_eq!(chunk_coverage.frozen_chunkserver_count, 1);
-    assert_eq!(chunk_coverage.read_only_chunkserver_count, 1);
-    assert_eq!(chunk_coverage.raft_unwritable_chunkserver_count, 1);
+    let chunk_coverage = store.meta_service.replicaserver_coverage(8);
+    assert_eq!(chunk_coverage.active_replicaserver_count, 1);
+    assert_eq!(chunk_coverage.writable_replicaserver_count, 0);
+    assert_eq!(chunk_coverage.frozen_replicaserver_count, 1);
+    assert_eq!(chunk_coverage.read_only_replicaserver_count, 1);
+    assert_eq!(chunk_coverage.raft_unwritable_replicaserver_count, 1);
     assert_eq!(chunk_coverage.total_reported_free_bytes, 80);
     assert_eq!(chunk_coverage.control_proof_count, 1);
     assert!(!chunk_coverage.control_proof_checksum.is_empty());
@@ -8702,7 +8702,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
     assert_eq!(page_heartbeat.node.node_id, "block-r");
 
     let chunk_registration = replicated
-        .propose_register_local_chunkserver_in_catalog(
+        .propose_register_local_replicaserver_in_catalog(
             "chunk-r",
             "chunk-r.local:9400",
             "rack-a",
@@ -8715,7 +8715,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
         .unwrap();
     assert_eq!(chunk_registration.replica_index, 0);
     let chunk_heartbeat = replicated
-        .propose_heartbeat_local_chunkserver_in_catalog("chunk-r", 0, 0, 0, 60, "metaserver", true)
+        .propose_heartbeat_local_replicaserver_in_catalog("chunk-r", 0, 0, 0, 60, "metaserver", true)
         .unwrap();
     assert_eq!(chunk_heartbeat.node.node_id, "chunk-r");
 
@@ -8758,7 +8758,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
     assert!(!page_offline.node.page_health.ready);
     assert!(!page_offline.node.page_health.read_ready);
     let chunk_offline_proven = replicated
-        .propose_offline_local_chunkserver_in_catalog_with_receipts(
+        .propose_offline_local_replicaserver_in_catalog_with_receipts(
             "chunk-r",
             0,
             0,
@@ -8826,8 +8826,8 @@ fn rootserver_expires_stale_node_heartbeats() {
     assert_eq!(
         store
             .meta_service
-            .chunkserver_coverage(1)
-            .active_chunkserver_count,
+            .replicaserver_coverage(1)
+            .active_replicaserver_count,
         2
     );
     assert_eq!(store.expire_root_node_heartbeats(10, 21).unwrap(), 1);
@@ -8846,8 +8846,8 @@ fn rootserver_expires_stale_node_heartbeats() {
     assert_eq!(
         store
             .meta_service
-            .chunkserver_coverage(1)
-            .active_chunkserver_count,
+            .replicaserver_coverage(1)
+            .active_replicaserver_count,
         1
     );
     let plan = store
@@ -9040,8 +9040,8 @@ fn raft_backed_store_replays_root_health_heartbeats() {
     assert_eq!(page_coverage.ready_pageserver_count, 1);
     assert_eq!(page_coverage.read_ready_pageserver_count, 1);
     assert_eq!(page_coverage.total_chunk_capacity_free_bytes, 300);
-    let chunk_coverage = replicated.store().meta_service.chunkserver_coverage(8);
-    assert_eq!(chunk_coverage.writable_chunkserver_count, 1);
+    let chunk_coverage = replicated.store().meta_service.replicaserver_coverage(8);
+    assert_eq!(chunk_coverage.writable_replicaserver_count, 1);
     assert_eq!(chunk_coverage.total_reported_free_bytes, 88);
     assert_eq!(chunk_coverage.control_proof_count, 1);
     assert!(!chunk_coverage.control_proof_checksum.is_empty());
@@ -11497,7 +11497,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
     );
 
     let chunk_registration = registration_store
-        .register_local_chunkserver_in_catalog(
+        .register_local_replicaserver_in_catalog(
             "chunk-reg-a",
             "chunk-reg-a.local:9400",
             "rack-a",
@@ -11544,7 +11544,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
     );
 
     let chunk_offline = registration_store
-        .offline_local_chunkserver_in_catalog("chunk-reg-a", 0, 0, 0, 40, "metaserver")
+        .offline_local_replicaserver_in_catalog("chunk-reg-a", 0, 0, 0, 40, "metaserver")
         .unwrap();
     assert!(!chunk_offline.node.online);
     assert!(chunk_offline.node.draining);
@@ -16020,12 +16020,12 @@ fn raft_backed_store_applies_prepared_chunk_batches() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 991,
         },
-        chunk_index: 0,
+        page_index: 0,
     };
     let writes = vec![(0, b"alpha".to_vec()), (5, b"-beta".to_vec())];
     let stale_chunk_control_checksum = replicated.store().page_service.replicas[0]
@@ -17819,7 +17819,7 @@ fn raft_backed_store_replays_metaserver_auto_shard_splits() {
         .route_control_proof()
         .state_checksum;
     let all_prepared = replicated
-        .prepare_configure_all_eligible_chunk_service_mode_raft_entry_linearizable_fenced(
+        .prepare_configure_all_eligible_replica_service_mode_raft_entry_linearizable_fenced(
             Some(false),
             Some(true),
             None,
@@ -17828,11 +17828,11 @@ fn raft_backed_store_replays_metaserver_auto_shard_splits() {
         .unwrap();
     assert_eq!(
         all_prepared.replica_index,
-        PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET
+        PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET
     );
     assert_eq!(all_prepared.chunk_prepared_replica_count, 3);
     let all_receipt = replicated
-        .propose_prepared_chunk_service_mode_linearizable_fenced(
+        .propose_prepared_replica_service_mode_linearizable_fenced(
             all_prepared,
             Some(&all_route_checksum),
         )
@@ -19135,7 +19135,7 @@ fn raft_backed_store_replays_chunk_replica_service_mode() {
         replicated
             .store()
             .clone()
-            .apply_command(ObjectCommand::ApplyPreparedChunkServiceMode { prepared: tampered }),
+            .apply_command(ObjectCommand::ApplyPreparedReplicaServiceMode { prepared: tampered }),
         Err(ObjectError::Corruption(_))
     ));
     let mut stale_source = replicated.store().clone();
@@ -19144,11 +19144,11 @@ fn raft_backed_store_replays_chunk_replica_service_mode() {
         .set_replica_frozen(1, true)
         .unwrap();
     assert!(matches!(
-        stale_source.apply_prepared_chunk_service_mode(prepared.clone()),
+        stale_source.apply_prepared_replica_service_mode(prepared.clone()),
         Err(ObjectError::PreconditionFailed(_)) | Err(ObjectError::Corruption(_))
     ));
     let receipt = replicated
-        .propose_prepared_chunk_service_mode_linearizable_fenced(
+        .propose_prepared_replica_service_mode_linearizable_fenced(
             prepared,
             Some(&current_route_checksum),
         )
@@ -19309,25 +19309,25 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
     assert_eq!(proven_mode.proof.control_checksum, proof.state_checksum);
     let mode = proven_mode.value;
     assert!(matches!(
-        replicated.propose_prepared_chunk_service_mode_linearizable_fenced(mode.clone(), None),
+        replicated.propose_prepared_replica_service_mode_linearizable_fenced(mode.clone(), None),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        replicated.propose_prepared_chunk_service_mode_linearizable_fenced(mode.clone(), Some("")),
+        replicated.propose_prepared_replica_service_mode_linearizable_fenced(mode.clone(), Some("")),
         Err(ObjectError::PreconditionFailed(_))
     ));
     let mut unfenced_mode = mode.clone();
     unfenced_mode.expected_route_control_checksum.clear();
-    unfenced_mode.raft_entry_checksum = prepared_chunk_service_mode_config_checksum(&unfenced_mode);
+    unfenced_mode.raft_entry_checksum = prepared_replica_service_mode_config_checksum(&unfenced_mode);
     assert!(matches!(
         replicated
             .store()
             .clone()
-            .apply_prepared_chunk_service_mode(unfenced_mode),
+            .apply_prepared_replica_service_mode(unfenced_mode),
         Err(ObjectError::PreconditionFailed(_))
     ));
     let mode_receipt = replicated
-        .propose_prepared_chunk_service_mode_linearizable_fenced(mode, Some(&proof.state_checksum))
+        .propose_prepared_replica_service_mode_linearizable_fenced(mode, Some(&proof.state_checksum))
         .unwrap();
     assert_eq!(
         mode_receipt.content_type,
@@ -19707,12 +19707,12 @@ fn raft_backed_store_replays_page_quorum_configuration() {
 fn raft_backed_store_replays_storage_receipt_retention_configuration() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 9901,
         },
-        chunk_index: 0,
+        page_index: 0,
     };
     store
         .page_service
@@ -21957,9 +21957,9 @@ fn raft_backed_store_gates_page_and_chunk_receipt_reads() {
         "raft-receipt-discard-a"
     );
 
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
     let (chunk_write_page, _) = replicated
         .list_chunk_write_receipts_linearizable(0, None, 10, Some(&chunk_id), 32)
@@ -22242,7 +22242,7 @@ fn raft_backed_store_replays_exact_page_chunk_repair() {
     assert_eq!(receipt.object_id.bucket, "_blockrepair");
     assert_eq!(receipt.content_type, "blockserver/exact-chunk-repair");
     assert_eq!(receipt.length, 1);
-    assert_eq!(receipt.update_time_ms, chunk_id.chunk_index);
+    assert_eq!(receipt.update_time_ms, chunk_id.page_index);
     assert_eq!(replicated.raft_commit_index(), 2);
     assert_eq!(
         replicated
@@ -23227,13 +23227,13 @@ fn raft_backed_store_replays_chunk_partial_reclaim() {
         volume_id: 0,
         id: 1,
     };
-    let chunk0 = ChunkId {
+    let chunk0 = PageId {
         slab_id: slab_id.clone(),
-        chunk_index: 0,
+        page_index: 0,
     };
-    let chunk1 = ChunkId {
+    let chunk1 = PageId {
         slab_id,
-        chunk_index: 1,
+        page_index: 1,
     };
     assert!(follower.page_service.replicas[0]
         .read_chunk_state(&chunk0)
@@ -23497,12 +23497,12 @@ fn raft_backed_store_replays_targeted_chunk_reclaim() {
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
-    let chunk1 = ChunkId {
+    let chunk1 = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 1,
         },
-        chunk_index: 1,
+        page_index: 1,
     };
     assert_eq!(
         follower.page_service.replicas[0]
@@ -23615,11 +23615,11 @@ fn raft_backed_store_replays_prepared_chunk_reclaim_with_compact_fences() {
         default_prepared.expected_route_control_checksum,
         current_route_checksum
     );
-    assert!(!prepared.before_chunk_service_fingerprint.is_empty());
-    assert!(!prepared.after_chunk_service_fingerprint.is_empty());
+    assert!(!prepared.before_replica_service_fingerprint.is_empty());
+    assert!(!prepared.after_replica_service_fingerprint.is_empty());
     assert_ne!(
-        prepared.before_chunk_service_fingerprint,
-        prepared.after_chunk_service_fingerprint
+        prepared.before_replica_service_fingerprint,
+        prepared.after_replica_service_fingerprint
     );
     let reclaim_envelope = replicated
         .prepare_reclaim_chunk_replica_envelope_with_read_proof_linearizable_fenced(
@@ -23737,12 +23737,12 @@ fn raft_backed_store_replays_prepared_chunk_reclaim_with_compact_fences() {
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
-    let chunk1 = ChunkId {
+    let chunk1 = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 1,
         },
-        chunk_index: 1,
+        page_index: 1,
     };
     assert_eq!(
         follower.page_service.replicas[0]
@@ -24003,12 +24003,12 @@ fn raft_backed_store_replays_chunk_trim_flow_throttling() {
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
-    let chunk_id = ChunkId {
+    let chunk_id = PageId {
         slab_id: SlabId {
             volume_id: 0,
             id: 1,
         },
-        chunk_index: 0,
+        page_index: 0,
     };
     let follower_replica = &follower.page_service.replicas[0];
     assert_eq!(follower_replica.trim_flow_rate_bytes_per_sec(), 1);
@@ -24591,12 +24591,12 @@ fn raft_backed_store_replays_page_chunk_endpoint_topology() {
         vec![4, 4, 0]
     );
     assert!(matches!(
-        replicated.store().page_service.replicas[2].read_chunk_state(&ChunkId {
+        replicated.store().page_service.replicas[2].read_chunk_state(&PageId {
             slab_id: SlabId {
                 volume_id: 0,
                 id: 1
             },
-            chunk_index: 0,
+            page_index: 0,
         }),
         Err(ObjectError::NotFound(_))
     ));
@@ -33520,6 +33520,112 @@ fn measure_what_a_metadata_record_value_actually_holds() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_how_much_of_a_record_value_is_scaffolding() {
+    // At 1 KiB objects the store sits at 3.93x where three-way replication
+    // allows 3.00x, and every byte of the difference is metadata: ~933 an
+    // object. The largest single piece is the metadata record's value, 227
+    // bytes of formatted text restating fields the `objects` map already holds
+    // structured.
+    //
+    // Before proposing anything, split those bytes into the part that VARIES
+    // between objects and the part that is the same characters every time --
+    // field names, separators and values that do not differ. The second part is
+    // what a structured representation would remove, and it is the only part
+    // worth a design change.
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let objects = env_usize("MEASURE_OBJECTS", 200);
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..objects {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+
+    // Every record value is a run of `name=value` pairs separated by spaces.
+    // The names and the separators are the same in all of them; so is a value
+    // that never differs between objects.
+    let mut total = 0u64;
+    let mut names_and_separators = 0u64;
+    let mut values_that_never_differ = 0u64;
+    let mut values_that_differ = 0u64;
+    let mut seen: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let mut records = 0u64;
+    for (_, record) in store.meta_service.records.iter() {
+        if !record.value.contains('=') {
+            continue;
+        }
+        records += 1;
+        total += record.value.len() as u64;
+        for (position, field) in record.value.split(' ').enumerate() {
+            let Some((name, value)) = field.split_once('=') else {
+                continue;
+            };
+            // the name, the '=', and the space before every field but the first
+            names_and_separators += name.len() as u64 + 1 + u64::from(position > 0);
+            seen.entry(name.to_string())
+                .or_default()
+                .insert(value.to_string());
+        }
+    }
+    for (_, record) in store.meta_service.records.iter() {
+        if !record.value.contains('=') {
+            continue;
+        }
+        for field in record.value.split(' ') {
+            let Some((name, value)) = field.split_once('=') else {
+                continue;
+            };
+            if seen.get(name).map(|set| set.len()) == Some(1) {
+                values_that_never_differ += value.len() as u64;
+            } else {
+                values_that_differ += value.len() as u64;
+            }
+        }
+    }
+    println!("RECORDSHAPE records={records} total={total} per_record={}", total / records.max(1));
+    println!(
+        "RECORDSHAPE names_and_separators={names_and_separators} per_record={}",
+        names_and_separators / records.max(1)
+    );
+    println!(
+        "RECORDSHAPE values_that_never_differ={values_that_never_differ} per_record={}",
+        values_that_never_differ / records.max(1)
+    );
+    println!(
+        "RECORDSHAPE values_that_differ={values_that_differ} per_record={}",
+        values_that_differ / records.max(1)
+    );
+    println!(
+        "RECORDSHAPE removable_per_record={}",
+        (names_and_separators + values_that_never_differ) / records.max(1)
+    );
+    for (name, values) in seen.iter() {
+        println!(
+            "RECORDSHAPE   field {name} distinct_values={} example={}",
+            values.len(),
+            values.iter().next().map(|v| v.as_str()).unwrap_or("")
+        );
+    }
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_space_amplification() {
     // What a stored byte costs in resident bytes, at several object sizes.
     //
@@ -33582,7 +33688,7 @@ fn measure_the_space_amplification() {
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_metadata_footprint() {
-    // `test_options` sets max_extent_bytes and chunk_size to 4 bytes, which
+    // `test_options` sets max_extent_bytes and page_size to 4 bytes, which
     // turns a 1 KiB object into 256 extents and makes every per-object figure
     // a property of the fixture. Measure on the shipped geometry instead.
     let mut store = MatrixObjectStore::new(StoreOptions {
@@ -35696,9 +35802,9 @@ fn a_write_reaches_every_replica_from_the_coordinator_in_one_hop() {
 
     // And every replica ends up holding the same bytes, which a forwarded write
     // is what would put at risk.
-    let mut contents: Vec<Vec<(ChunkId, Vec<u8>)>> = Vec::new();
+    let mut contents: Vec<Vec<(PageId, Vec<u8>)>> = Vec::new();
     for replica in store.page_service.replicas.iter() {
-        let mut held: Vec<(ChunkId, Vec<u8>)> = replica
+        let mut held: Vec<(PageId, Vec<u8>)> = replica
             .chunks
             .iter()
             .map(|(id, state)| (id.clone(), state.data.as_ref().clone()))

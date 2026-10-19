@@ -35,7 +35,7 @@ impl ChunkScrubReport {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ChunkRepairReport {
-    pub chunk_id: Option<ChunkId>,
+    pub chunk_id: Option<PageId>,
     pub checked_chunks: u64,
     pub healthy_chunks: u64,
     pub degraded_chunks: u64,

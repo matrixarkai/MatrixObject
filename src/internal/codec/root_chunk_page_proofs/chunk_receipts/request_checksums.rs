@@ -1,6 +1,6 @@
-pub(crate) fn append_chunk_id(out: &mut Vec<u8>, chunk_id: &ChunkId) {
+pub(crate) fn append_chunk_id(out: &mut Vec<u8>, chunk_id: &PageId) {
     append_slab_id(out, &chunk_id.slab_id);
-    append_u64(out, chunk_id.chunk_index);
+    append_u64(out, chunk_id.page_index);
 }
 
 fn request_slab_id_encoded_len() -> usize {
@@ -12,7 +12,7 @@ fn request_chunk_id_encoded_len() -> usize {
 }
 
 pub(crate) fn chunk_write_receipt_request_checksum(
-    chunk_id: &ChunkId,
+    chunk_id: &PageId,
     offset: u64,
     length: u64,
     payload_checksum: &str,
@@ -30,7 +30,7 @@ pub(crate) fn chunk_write_receipt_request_checksum(
 }
 
 pub(crate) fn chunk_discard_request_checksum(
-    chunk_id: &ChunkId,
+    chunk_id: &PageId,
     offset: u64,
     length: u64,
 ) -> String {
@@ -98,7 +98,7 @@ pub(crate) fn chunk_batch_write_payload_checksum_borrowed(writes: &[(u64, &[u8])
 }
 
 pub(crate) fn chunk_batch_write_request_checksum(
-    chunk_id: &ChunkId,
+    chunk_id: &PageId,
     writes: &[(u64, Vec<u8>)],
 ) -> String {
     let mut borrowed = Vec::with_capacity(writes.len());
@@ -107,7 +107,7 @@ pub(crate) fn chunk_batch_write_request_checksum(
 }
 
 pub(crate) fn chunk_batch_write_request_checksum_borrowed(
-    chunk_id: &ChunkId,
+    chunk_id: &PageId,
     writes: &[(u64, &[u8])],
 ) -> String {
     let payload_checksum = chunk_batch_write_payload_checksum_borrowed(writes);
@@ -120,7 +120,7 @@ pub(crate) fn chunk_batch_write_request_checksum_borrowed(
 }
 
 pub(crate) fn chunk_batch_discard_request_checksum(
-    chunk_id: &ChunkId,
+    chunk_id: &PageId,
     ranges: &[DataRange],
 ) -> String {
     let mut material = Vec::with_capacity(
@@ -137,7 +137,7 @@ pub(crate) fn chunk_batch_discard_request_checksum(
 }
 
 pub(crate) fn chunk_batch_discard_nonempty_request_checksum(
-    chunk_id: &ChunkId,
+    chunk_id: &PageId,
     ranges: &[DataRange],
 ) -> String {
     let nonempty_count = ranges.iter().filter(|range| range.length > 0).count();
@@ -157,8 +157,8 @@ pub(crate) fn chunk_batch_discard_nonempty_request_checksum(
 }
 
 pub(crate) fn chunk_state_install_request_checksum(
-    chunk_id: &ChunkId,
-    state: &ChunkState,
+    chunk_id: &PageId,
+    state: &PageState,
     payload_checksum: &str,
     state_checksum: &str,
 ) -> String {
@@ -195,7 +195,7 @@ pub(crate) fn chunk_reclaim_request_checksum(
     etag(&material)
 }
 
-pub(crate) fn chunk_repair_request_checksum(chunk_id: &ChunkId) -> String {
+pub(crate) fn chunk_repair_request_checksum(chunk_id: &PageId) -> String {
     let mut material = Vec::with_capacity(request_chunk_id_encoded_len());
     append_chunk_id(&mut material, chunk_id);
     etag(&material)
@@ -219,7 +219,7 @@ pub(crate) fn page_range_repair_request_checksum(
 }
 
 pub(crate) fn page_audit_repair_request_checksum(
-    after_chunk_id: &Option<ChunkId>,
+    after_chunk_id: &Option<PageId>,
     max_chunks: u64,
     max_payload_bytes: u64,
 ) -> String {

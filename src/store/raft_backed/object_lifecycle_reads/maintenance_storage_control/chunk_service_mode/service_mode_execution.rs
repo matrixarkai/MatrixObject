@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_prepared_chunk_service_mode(
+    pub fn propose_prepared_replica_service_mode(
         &mut self,
-        prepared: PreparedChunkServiceModeConfig,
+        prepared: PreparedReplicaServiceModeConfig,
     ) -> Result<ObjectMetadata, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -10,12 +10,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         self.store
             .clone()
-            .apply_command(ObjectCommand::ApplyPreparedChunkServiceMode {
+            .apply_command(ObjectCommand::ApplyPreparedReplicaServiceMode {
                 prepared: prepared.clone(),
             })?;
         let entry = self
             .raft
-            .append(ObjectCommand::ApplyPreparedChunkServiceMode { prepared })?;
+            .append(ObjectCommand::ApplyPreparedReplicaServiceMode { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
                 "prepared chunk service-mode raft index is not contiguous".to_string(),
@@ -24,9 +24,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store.apply_raft_entry(&entry)
     }
 
-    pub fn propose_prepared_chunk_service_mode_linearizable_fenced(
+    pub fn propose_prepared_replica_service_mode_linearizable_fenced(
         &mut self,
-        prepared: PreparedChunkServiceModeConfig,
+        prepared: PreparedReplicaServiceModeConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let expected_route_control_checksum = expected_route_control_checksum
@@ -52,6 +52,6 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     .to_string(),
             ));
         }
-        self.propose_prepared_chunk_service_mode(prepared)
+        self.propose_prepared_replica_service_mode(prepared)
     }
 }

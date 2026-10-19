@@ -94,7 +94,7 @@ impl ObjectCommand {
             | ObjectCommand::ConfigureChunkReplicaCapacity { .. }
             | ObjectCommand::ApplyPreparedChunkCapacity { .. }
             | ObjectCommand::ConfigureChunkReplicaServiceMode { .. }
-            | ObjectCommand::ApplyPreparedChunkServiceMode { .. }
+            | ObjectCommand::ApplyPreparedReplicaServiceMode { .. }
             | ObjectCommand::ConfigureChunkTrimFlow { .. } => CommandApplyFamily::ChunkControl,
             ObjectCommand::ConfigureChunkReplicaTrimFlow { .. }
             | ObjectCommand::ApplyPreparedChunkTrimFlow { .. }

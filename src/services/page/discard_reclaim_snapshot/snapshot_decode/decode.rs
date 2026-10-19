@@ -35,7 +35,7 @@ impl PageServiceSnapshot {
         let has_range_repair_receipts = version >= 21;
         let has_audit_repair_receipts = version >= 22;
         let has_sealed_slabs = version >= 23;
-        let chunk_size = cursor.read_u64()?;
+        let page_size = cursor.read_u64()?;
         let write_quorum = cursor.read_count("block service snapshot write quorum")?;
         let read_quorum = cursor.read_count("block service snapshot read quorum")?;
         let allocator_slab_size = cursor.read_u64()?;
@@ -261,7 +261,7 @@ impl PageServiceSnapshot {
         let mut replicas = Vec::with_capacity(replica_count);
         for _ in 0..replica_count {
             let replica_len = cursor.read_count("block service snapshot replica length")?;
-            replicas.push(ChunkServiceSnapshot::from_bytes(
+            replicas.push(ReplicaServiceSnapshot::from_bytes(
                 cursor.read_bytes(replica_len)?,
             )?);
         }
@@ -307,7 +307,7 @@ impl PageServiceSnapshot {
             ));
         }
         let mut snapshot = Self {
-            chunk_size,
+            page_size,
             write_quorum,
             read_quorum,
             allocator_slab_size,

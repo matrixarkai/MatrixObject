@@ -140,8 +140,8 @@ pub(crate) fn prepared_chunk_capacity_config_checksum(
     etag(&material)
 }
 
-pub(crate) fn prepared_chunk_service_mode_config_checksum(
-    prepared: &PreparedChunkServiceModeConfig,
+pub(crate) fn prepared_replica_service_mode_config_checksum(
+    prepared: &PreparedReplicaServiceModeConfig,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-PREPARED-CHUNK-SERVICE-MODE3");
@@ -164,7 +164,7 @@ pub(crate) fn prepared_chunk_service_mode_config_checksum(
     append_string(&mut material, &prepared.after_page_service_fingerprint);
     append_string(
         &mut material,
-        &prepared.chunk_service_mode_prepared_aggregate_checksum,
+        &prepared.replica_service_mode_prepared_aggregate_checksum,
     );
     append_u64(&mut material, prepared.chunk_prepared_replica_count);
     append_page_route_control_proof(&mut material, &prepared.route_control_proof);

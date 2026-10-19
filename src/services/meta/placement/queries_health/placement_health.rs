@@ -22,7 +22,7 @@ impl MatrixMetaService {
                     if !node.online {
                         offline_node_ids.push(node_id.clone());
                     }
-                    if node.draining || Self::chunk_service_pages_new_placement(node) {
+                    if node.draining || Self::replica_service_pages_new_placement(node) {
                         draining_node_ids.push(node_id.clone());
                     }
                     if Self::node_effective_free_bytes(node) < min_free_bytes {

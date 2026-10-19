@@ -1,6 +1,6 @@
-pub(crate) fn append_chunk_service_control_proof(
+pub(crate) fn append_replica_service_control_proof(
     out: &mut Vec<u8>,
-    proof: &ChunkServiceControlProof,
+    proof: &ReplicaServiceControlProof,
 ) {
     append_u64(out, proof.control_receipt as u64);
     append_string(out, &proof.state_format);

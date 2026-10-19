@@ -9,8 +9,8 @@ pub struct PageWriteReceiptPage {
     pub next_marker: Option<String>,
     pub slab_id: Option<SlabId>,
     pub skipped_slab_count: u64,
-    pub chunk_index: Option<u64>,
-    pub chunk_size: Option<u64>,
+    pub page_index: Option<u64>,
+    pub page_size: Option<u64>,
     pub skipped_chunk_count: u64,
 }
 
@@ -49,14 +49,14 @@ impl PageWriteReceiptPage {
                 ));
             }
         }
-        if let Some(chunk_index) = self.chunk_index {
-            let chunk_size = self.chunk_size.ok_or_else(|| {
+        if let Some(page_index) = self.page_index {
+            let page_size = self.page_size.ok_or_else(|| {
                 ObjectError::Corruption(
                     "block write receipt page chunk filter is missing chunk size".to_string(),
                 )
             })?;
             if self.receipts.iter().any(|receipt| {
-                !page_range_overlaps_chunk(receipt.offset, receipt.length, chunk_index, chunk_size)
+                !page_range_overlaps_chunk(receipt.offset, receipt.length, page_index, page_size)
             }) {
                 return Err(ObjectError::Corruption(
                     "block write receipt page contains receipt outside chunk filter".to_string(),
@@ -93,8 +93,8 @@ impl PageWriteReceiptPage {
         insert_page_chunk_filter_control_fields(
             &mut fields,
             field_prefix,
-            self.chunk_index,
-            self.chunk_size,
+            self.page_index,
+            self.page_size,
             self.skipped_chunk_count,
         );
         fields.insert(

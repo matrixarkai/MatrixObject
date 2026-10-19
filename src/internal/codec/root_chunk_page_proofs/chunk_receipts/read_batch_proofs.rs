@@ -1,5 +1,5 @@
 pub(crate) fn chunk_head_batch_read_proof_checksum(
-    chunk_ids: &[ChunkId],
+    chunk_ids: &[PageId],
     heads: &[ChunkHead],
     stats: &ChunkHeadBatchStats,
     proof: &StorageReadProof,
@@ -35,7 +35,7 @@ pub(crate) fn chunk_head_batch_read_proof_checksum(
 }
 
 pub(crate) fn chunk_read_batch_read_proof_checksum(
-    chunk_id: &ChunkId,
+    chunk_id: &PageId,
     ranges: &[ChunkRangeReadResult],
     stats: &ChunkReadBatchStats,
     proof: &StorageReadProof,

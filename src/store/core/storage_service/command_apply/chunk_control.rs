@@ -235,10 +235,10 @@ impl MatrixObjectStore {
                     draining,
                     frozen,
                 )?;
-                Ok(self.chunk_service_mode_control_metadata(
+                Ok(self.replica_service_mode_control_metadata(
                     replica_index,
                     None,
-                    if replica_index == PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
+                    if replica_index == PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
                         "chunkserver/all-eligible-service-mode"
                     } else {
                         "chunkserver/replica-service-mode"
@@ -246,12 +246,12 @@ impl MatrixObjectStore {
                     now_millis(),
                 ))
             }
-            ObjectCommand::ApplyPreparedChunkServiceMode { prepared } => {
-                self.apply_prepared_chunk_service_mode(prepared.clone())?;
-                Ok(self.chunk_service_mode_control_metadata(
+            ObjectCommand::ApplyPreparedReplicaServiceMode { prepared } => {
+                self.apply_prepared_replica_service_mode(prepared.clone())?;
+                Ok(self.replica_service_mode_control_metadata(
                     prepared.replica_index,
                     Some(prepared.chunk_prepared_replica_count),
-                    if prepared.replica_index == PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
+                    if prepared.replica_index == PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
                         "chunkserver/prepared-all-eligible-service-mode"
                     } else {
                         "chunkserver/prepared-replica-service-mode"

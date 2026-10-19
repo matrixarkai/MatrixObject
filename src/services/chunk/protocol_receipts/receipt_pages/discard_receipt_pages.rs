@@ -7,7 +7,7 @@ pub struct ChunkDiscardReceiptPage {
     pub limit: u64,
     pub truncated: bool,
     pub next_marker: Option<String>,
-    pub chunk_id: Option<ChunkId>,
+    pub chunk_id: Option<PageId>,
     pub skipped_chunk_count: u64,
 }
 
@@ -117,7 +117,7 @@ pub struct ChunkBatchDiscardReceiptPage {
     pub limit: u64,
     pub truncated: bool,
     pub next_marker: Option<String>,
-    pub chunk_id: Option<ChunkId>,
+    pub chunk_id: Option<PageId>,
     pub skipped_chunk_count: u64,
 }
 

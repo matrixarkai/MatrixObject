@@ -57,7 +57,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 .page_service
                 .map_range(&extent.slab_id, extent.offset + local_offset, local_len)?
                 .into_iter()
-                .filter(|loc| loc.chunk_id.chunk_index >= next_chunk_index)
+                .filter(|loc| loc.chunk_id.page_index >= next_chunk_index)
                 .map(|loc| loc.chunk_id)
                 .collect::<BTreeSet<_>>();
             let selected_chunk_count = selected_chunks.len();
@@ -68,7 +68,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             let proposed_next_chunk_index = selected_chunks
                 .iter()
                 .take(chunk_limit)
-                .map(|chunk_id| chunk_id.chunk_index)
+                .map(|chunk_id| chunk_id.page_index)
                 .max()
                 .unwrap_or(next_chunk_index)
                 .saturating_add(1);

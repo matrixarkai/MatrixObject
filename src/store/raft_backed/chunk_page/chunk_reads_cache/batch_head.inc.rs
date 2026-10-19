@@ -2,7 +2,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_linearizable(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<ChunkId>,
+        chunk_ids: Vec<PageId>,
     ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats, u64), ObjectError> {
         self.head_chunk_batch_linearizable_at(replica_index, chunk_ids, self.raft.commit_index())
     }
@@ -10,7 +10,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_linearizable_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<ChunkId>,
+        chunk_ids: Vec<PageId>,
         min_read_index: u64,
     ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats, u64), ObjectError> {
         self.head_chunk_batch_linearizable_committed_at(replica_index, chunk_ids, min_read_index, 0)
@@ -19,7 +19,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_linearizable_committed_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<ChunkId>,
+        chunk_ids: Vec<PageId>,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<(Vec<ChunkHead>, ChunkHeadBatchStats, u64), ObjectError> {
@@ -64,7 +64,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_with_read_proof_linearizable_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<ChunkId>,
+        chunk_ids: Vec<PageId>,
         min_read_index: u64,
     ) -> Result<ProvenStorageRead<ChunkHeadBatchRead>, ObjectError> {
         self.head_chunk_batch_with_read_proof_linearizable_committed_at(
@@ -78,7 +78,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_with_read_proof_linearizable_committed_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<ChunkId>,
+        chunk_ids: Vec<PageId>,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<ProvenStorageRead<ChunkHeadBatchRead>, ObjectError> {
@@ -113,7 +113,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_strict_linearizable(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<ChunkId>,
+        chunk_ids: Vec<PageId>,
         expected_chunk_head_batch_proof_checksum: impl AsRef<str>,
     ) -> Result<ProvenStorageRead<ChunkHeadBatchRead>, ObjectError> {
         self.head_chunk_batch_strict_linearizable_committed_at(
@@ -128,7 +128,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_strict_linearizable_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<ChunkId>,
+        chunk_ids: Vec<PageId>,
         expected_chunk_head_batch_proof_checksum: impl AsRef<str>,
         min_read_index: u64,
     ) -> Result<ProvenStorageRead<ChunkHeadBatchRead>, ObjectError> {
@@ -144,7 +144,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn head_chunk_batch_strict_linearizable_committed_at(
         &self,
         replica_index: usize,
-        chunk_ids: Vec<ChunkId>,
+        chunk_ids: Vec<PageId>,
         expected_chunk_head_batch_proof_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,

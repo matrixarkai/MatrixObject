@@ -33,10 +33,10 @@ fn merge_discard_ranges_in_place(existing: &mut Vec<DataRange>, additions: &[Dat
     }
 }
 
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn discard_chunk(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<(), ObjectError> {
@@ -75,7 +75,7 @@ impl MatrixChunkService {
 
     pub fn discard_chunk_fenced(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         expected_control_checksum: Option<&str>,
@@ -86,7 +86,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_chunk_discard(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: &[DataRange],
     ) -> Result<ChunkDiscardAdmission, ObjectError> {
         self.can_accept_chunk_discards_borrowed(chunk_id, ranges, 0)
@@ -94,7 +94,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_chunk_discards(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
     ) -> Result<ChunkDiscardAdmission, ObjectError> {
@@ -103,7 +103,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_chunk_discards_borrowed(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: &[DataRange],
         max_discard_bytes: u64,
     ) -> Result<ChunkDiscardAdmission, ObjectError> {
@@ -112,7 +112,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_chunk_discards_from(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -127,7 +127,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_chunk_discards_from_borrowed(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: &[DataRange],
         max_discard_bytes: u64,
         discard_start_range_index: u64,
@@ -227,7 +227,7 @@ impl MatrixChunkService {
 
     pub fn discard_chunk_idempotent(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
@@ -270,7 +270,7 @@ impl MatrixChunkService {
 
     pub fn discard_chunk_ranges(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
     ) -> Result<ChunkDiscardBatchStats, ObjectError> {
         self.discard_chunk_ranges_borrowed_internal(chunk_id, &ranges, true)
@@ -278,7 +278,7 @@ impl MatrixChunkService {
 
     pub fn discard_chunk_ranges_borrowed(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: &[DataRange],
     ) -> Result<ChunkDiscardBatchStats, ObjectError> {
         self.discard_chunk_ranges_borrowed_internal(chunk_id, ranges, true)
@@ -286,7 +286,7 @@ impl MatrixChunkService {
 
     pub fn discard_chunk_ranges_fenced(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         expected_control_checksum: Option<&str>,
     ) -> Result<ChunkDiscardBatchStats, ObjectError> {
@@ -296,7 +296,7 @@ impl MatrixChunkService {
 
     fn discard_chunk_ranges_borrowed_internal(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: &[DataRange],
         record_internal_receipt: bool,
     ) -> Result<ChunkDiscardBatchStats, ObjectError> {
@@ -382,7 +382,7 @@ impl MatrixChunkService {
 
     pub fn discard_chunk_ranges_idempotent(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         idempotency_key: &str,
     ) -> Result<(ChunkDiscardBatchStats, ChunkBatchDiscardReceipt), ObjectError> {
@@ -391,7 +391,7 @@ impl MatrixChunkService {
 
     pub fn discard_chunk_ranges_idempotent_borrowed(
         &mut self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: &[DataRange],
         idempotency_key: &str,
     ) -> Result<(ChunkDiscardBatchStats, ChunkBatchDiscardReceipt), ObjectError> {

@@ -14,8 +14,8 @@ fn append_readiness_identity(mut material: &mut Vec<u8>, report: &ObjectStoreDis
     append_u64(&mut material, report.root_metadata_write_ready as u64);
     append_u64(&mut material, report.root_pageserver_read_ready as u64);
     append_u64(&mut material, report.root_pageserver_write_ready as u64);
-    append_u64(&mut material, report.root_chunkserver_read_ready as u64);
-    append_u64(&mut material, report.root_chunkserver_write_ready as u64);
+    append_u64(&mut material, report.root_replicaserver_read_ready as u64);
+    append_u64(&mut material, report.root_replicaserver_write_ready as u64);
     append_u64(&mut material, report.root_readiness_gate_read_ready as u64);
     append_u64(&mut material, report.root_readiness_gate_write_ready as u64);
     append_string(&mut material, &report.metadata_state_fingerprint);

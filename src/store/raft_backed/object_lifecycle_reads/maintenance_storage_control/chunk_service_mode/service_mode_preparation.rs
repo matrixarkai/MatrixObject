@@ -65,8 +65,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         accepting_writes: Option<bool>,
         draining: Option<bool>,
         frozen: Option<bool>,
-    ) -> Result<PreparedChunkServiceModeConfig, ObjectError> {
-        self.store.prepare_chunk_service_mode_raft_entry(
+    ) -> Result<PreparedReplicaServiceModeConfig, ObjectError> {
+        self.store.prepare_replica_service_mode_raft_entry(
             replica_index,
             accepting_writes,
             draining,
@@ -75,14 +75,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn prepare_configure_all_eligible_chunk_service_mode_raft_entry(
+    pub fn prepare_configure_all_eligible_replica_service_mode_raft_entry(
         &self,
         accepting_writes: Option<bool>,
         draining: Option<bool>,
         frozen: Option<bool>,
-    ) -> Result<PreparedChunkServiceModeConfig, ObjectError> {
-        self.store.prepare_chunk_service_mode_raft_entry(
-            PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET,
+    ) -> Result<PreparedReplicaServiceModeConfig, ObjectError> {
+        self.store.prepare_replica_service_mode_raft_entry(
+            PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET,
             accepting_writes,
             draining,
             frozen,
@@ -96,7 +96,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         accepting_writes: Option<bool>,
         draining: Option<bool>,
         frozen: Option<bool>,
-    ) -> Result<PreparedChunkServiceModeConfig, ObjectError> {
+    ) -> Result<PreparedReplicaServiceModeConfig, ObjectError> {
         self.prepare_configure_chunk_replica_service_mode_raft_entry_linearizable_fenced(
             replica_index,
             accepting_writes,
@@ -113,14 +113,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         draining: Option<bool>,
         frozen: Option<bool>,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PreparedChunkServiceModeConfig, ObjectError> {
+    ) -> Result<PreparedReplicaServiceModeConfig, ObjectError> {
         let proof = self.ensure_storage_control_read_index(
             "prepare chunk replica service-mode",
             expected_route_control_checksum,
         )?;
         let route_checksum =
             expected_route_control_checksum.unwrap_or(proof.state_checksum.as_str());
-        self.store.prepare_chunk_service_mode_raft_entry_fenced(
+        self.store.prepare_replica_service_mode_raft_entry_fenced(
             replica_index,
             accepting_writes,
             draining,
@@ -130,15 +130,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn prepare_configure_all_eligible_chunk_service_mode_raft_entry_linearizable_fenced(
+    pub fn prepare_configure_all_eligible_replica_service_mode_raft_entry_linearizable_fenced(
         &self,
         accepting_writes: Option<bool>,
         draining: Option<bool>,
         frozen: Option<bool>,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PreparedChunkServiceModeConfig, ObjectError> {
+    ) -> Result<PreparedReplicaServiceModeConfig, ObjectError> {
         self.prepare_configure_chunk_replica_service_mode_raft_entry_linearizable_fenced(
-            PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET,
+            PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET,
             accepting_writes,
             draining,
             frozen,
@@ -153,7 +153,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         draining: Option<bool>,
         frozen: Option<bool>,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<PreparedChunkServiceModeConfig>, ObjectError> {
+    ) -> Result<ProvenStorageRead<PreparedReplicaServiceModeConfig>, ObjectError> {
         self.prepare_configure_chunk_replica_service_mode_raft_entry_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
             accepting_writes,
@@ -165,15 +165,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn prepare_configure_all_eligible_chunk_service_mode_raft_entry_with_read_proof_linearizable_fenced(
+    pub fn prepare_configure_all_eligible_replica_service_mode_raft_entry_with_read_proof_linearizable_fenced(
         &self,
         accepting_writes: Option<bool>,
         draining: Option<bool>,
         frozen: Option<bool>,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<PreparedChunkServiceModeConfig>, ObjectError> {
+    ) -> Result<ProvenStorageRead<PreparedReplicaServiceModeConfig>, ObjectError> {
         self.prepare_configure_chunk_replica_service_mode_raft_entry_with_read_proof_linearizable_fenced(
-            PAGE_CHUNK_SERVICE_MODE_ALL_ELIGIBLE_TARGET,
+            PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET,
             accepting_writes,
             draining,
             frozen,
@@ -190,7 +190,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<PreparedChunkServiceModeConfig>, ObjectError> {
+    ) -> Result<ProvenStorageRead<PreparedReplicaServiceModeConfig>, ObjectError> {
         let requested_read_index = self
             .raft
             .commit_index()
@@ -204,7 +204,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let route_checksum =
             expected_route_control_checksum.unwrap_or(proof.state_checksum.as_str());
-        let prepared = self.store.prepare_chunk_service_mode_raft_entry_fenced(
+        let prepared = self.store.prepare_replica_service_mode_raft_entry_fenced(
             replica_index,
             accepting_writes,
             draining,

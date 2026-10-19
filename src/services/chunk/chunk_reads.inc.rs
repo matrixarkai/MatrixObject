@@ -1,7 +1,7 @@
-impl MatrixChunkService {
+impl MatrixReplicaService {
     pub fn read_chunk(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<ChunkReadResult, ObjectError> {
@@ -10,7 +10,7 @@ impl MatrixChunkService {
 
     pub fn read_chunk_bounded(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -26,7 +26,7 @@ impl MatrixChunkService {
 
     pub fn read_chunk_ranges(
         &self,
-        chunk_id: &ChunkId,
+        chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
     ) -> Result<(Vec<ChunkRangeReadResult>, ChunkReadBatchStats), ObjectError> {

@@ -2,7 +2,7 @@
 pub struct PreparedPageRepairEnvelope {
     pub operation: String,
     pub slab_id: Option<SlabId>,
-    pub chunk_id: Option<ChunkId>,
+    pub chunk_id: Option<PageId>,
     pub offset: u64,
     pub length: u64,
     pub max_repair_chunks: u64,
