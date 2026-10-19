@@ -35697,7 +35697,9 @@ fn measure_what_the_payload_index_retains() {
     let after: std::collections::BTreeMap<String, u64> =
         store.footprint_audit().into_iter().collect();
     for (key, before) in before.iter() {
-        let now = after.get(key).copied().unwrap_or(0);
+        let now = after.get(key).copied().unwrap_or_else(|| {
+            panic!("the audit should still report {key} after retention")
+        });
         if *before != now {
             println!("RETAIN delta {key} {before} -> {now}");
         }
@@ -35781,7 +35783,9 @@ fn what_a_put_undoes_by_hand_does_not_grow_with_the_store() {
     let small = undo_at(40);
     let large = undo_at(80);
     for (key, small_value) in small.iter() {
-        let large_value = large.get(key).copied().unwrap_or(0);
+        let large_value = large.get(key).copied().unwrap_or_else(|| {
+            panic!("the larger store's audit should report {key} too")
+        });
         assert_eq!(
             *small_value, large_value,
             "{key} must not depend on how much is stored, but it moved from \
@@ -35791,12 +35795,19 @@ fn what_a_put_undoes_by_hand_does_not_grow_with_the_store() {
     // Including the total, and including the payload index, which was the one
     // leg that did scale until it stopped being copied.
     assert_eq!(
-        small.get("undo.payloads.bytes").copied().unwrap_or(0),
+        small
+            .get("undo.payloads.bytes")
+            .copied()
+            .expect("the audit should report undo.payloads.bytes"),
         0,
         "a targeted undo does not copy the payload index at all"
     );
     assert!(
-        small.get("undo.total_bytes").copied().unwrap_or(0) > 0,
+        small
+            .get("undo.total_bytes")
+            .copied()
+            .expect("the audit should report undo.total_bytes")
+            > 0,
         "a put's undo cannot be free"
     );
 }
@@ -37779,7 +37790,10 @@ fn the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk() {
             .collect()
     }
     let get = |audit: &std::collections::BTreeMap<String, u64>, key: &str| -> u64 {
-        audit.get(key).copied().unwrap_or(0)
+        audit
+            .get(key)
+            .copied()
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
     };
     let few_objects = batch_at(40, 1024);
     let more_objects = batch_at(80, 1024);
@@ -38235,13 +38249,13 @@ fn measure_which_receipt_maps_a_batch_actually_writes() {
             .into_iter()
             .find(|(k, _)| k == "replica.receipts")
             .map(|(_, v)| v)
-            .unwrap_or(0),
+            .unwrap_or_else(|| panic!("the audit should report replica.receipts")),
         store
             .footprint_audit()
             .into_iter()
             .find(|(k, _)| k == "page.receipts.bytes")
             .map(|(_, v)| v)
-            .unwrap_or(0)
+            .unwrap_or_else(|| panic!("the audit should report page.receipts.bytes"))
     );
 
     // One put.
@@ -38951,7 +38965,7 @@ fn keys_on_one_shard_share_one_cached_route() {
         audit
             .get("metadata_route_cache.route_allocations")
             .copied()
-            .unwrap_or(0),
+            .expect("the audit should report metadata_route_cache.route_allocations"),
         1,
         "{keys} keys on one shard must share one route allocation"
     );
@@ -38962,7 +38976,7 @@ fn keys_on_one_shard_share_one_cached_route() {
     let bytes = audit
         .get("metadata_route_cache.bytes")
         .copied()
-        .unwrap_or(0);
+        .expect("the audit should report metadata_route_cache.bytes");
     assert!(bytes > 0, "the cache must report bytes");
     assert!(
         bytes < (keys as u64) * 300,
