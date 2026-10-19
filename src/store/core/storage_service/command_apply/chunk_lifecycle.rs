@@ -1,6 +1,6 @@
-include!("slab_lifecycle/object_writes.rs");
-include!("slab_lifecycle/object_lifecycle.rs");
-include!("slab_lifecycle/slab_maintenance.rs");
+include!("chunk_lifecycle/object_writes.rs");
+include!("chunk_lifecycle/object_lifecycle.rs");
+include!("chunk_lifecycle/chunk_maintenance.rs");
 
 impl MatrixObjectStore {
     fn apply_chunk_lifecycle_command(

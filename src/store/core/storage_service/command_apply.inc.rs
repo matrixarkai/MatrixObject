@@ -304,4 +304,4 @@ include!("command_apply/storage_root_maintenance.rs");
 include!("command_apply/metadata_coordinator.rs");
 include!("command_apply/bucket_policy.rs");
 include!("command_apply/object_mutation.rs");
-include!("command_apply/slab_lifecycle.rs");
+include!("command_apply/chunk_lifecycle.rs");

@@ -2,7 +2,7 @@ include!("store_snapshot_validation/configuration.rs");
 include!("store_snapshot_validation/bucket_policies.rs");
 include!("store_snapshot_validation/raft_state.rs");
 include!("store_snapshot_validation/snapshot_checksum.rs");
-include!("store_snapshot_validation/slabs.rs");
+include!("store_snapshot_validation/chunks.rs");
 include!("store_snapshot_validation/objects.rs");
 include!("store_snapshot_validation/multipart_uploads.rs");
 include!("store_snapshot_validation/changefeed_state.rs");
