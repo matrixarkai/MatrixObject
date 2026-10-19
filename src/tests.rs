@@ -34182,6 +34182,43 @@ fn measure_how_much_of_the_metadata_projection_is_recomputable() {
          (value_slope={value_slope:.1} B/object)",
         100.0 * value_slope / slope
     );
+
+    // The value cannot be made LAZY: 14 of its 18 readers hold only a
+    // `&MetadataRecord` -- snapshot encode, three proof materials, payload
+    // sizing, shard handoff -- and the record is deliberately a self-contained
+    // travelling unit. Recomputing at those points would mean threading the
+    // objects map into the metadata protocol layer. And an empty value already
+    // means something at handoff_apply.rs:110, so it cannot double as "derive".
+    //
+    // What does not need the objects map is storing the twelve VALUES instead
+    // of their formatting, and producing the text at the boundary. Same bytes
+    // out, so the three proofs are untouched; the record stays self-contained.
+    // This is what that costs, from the real types rather than a guess.
+    let packed = std::mem::size_of::<u64>()        // version
+        + std::mem::size_of::<u64>()               // length
+        + std::mem::size_of::<u64>()               // etag, identity-derived
+        + std::mem::size_of::<SharedText>()        // content_type, already shared
+        + std::mem::size_of::<u32>()               // metadata_count
+        + std::mem::size_of::<SharedText>()        // storage_class, already shared
+        + std::mem::size_of::<u64>()               // restore_until_ms
+        + std::mem::size_of::<bool>()              // deleted
+        + std::mem::size_of::<u32>()               // extent_count
+        + std::mem::size_of::<u32>()               // tag_count
+        + std::mem::size_of::<bool>()              // legal_hold
+        + std::mem::size_of::<u64>(); // retention_until_ms
+    // What the text costs today: its characters plus the fat pointer holding
+    // them. `Box<str>` is two words.
+    let stored = 227 + std::mem::size_of::<Box<str>>();
+    println!(
+        "PROJECTION packed_fields={packed} B stored_text={stored} B saving={} B/object",
+        stored.saturating_sub(packed)
+    );
+    let (slope_total, _) = metadata_total_at(high);
+    let slope_per_object = slope_total as f64 / high as f64;
+    println!(
+        "PROJECTION packed_saving_of_slope={:.1}% at {high} objects (slope_per_object={slope_per_object:.1})",
+        100.0 * stored.saturating_sub(packed) as f64 / slope
+    );
 }
 
 #[test]
