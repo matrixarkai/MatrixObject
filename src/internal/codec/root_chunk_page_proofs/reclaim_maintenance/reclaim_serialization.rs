@@ -1,11 +1,11 @@
 pub(crate) fn append_chunk_reclaim_plan(out: &mut Vec<u8>, plan: &ReplicaReclaimPlan) {
     append_u64(out, plan.marker.is_some() as u64);
     if let Some(marker) = &plan.marker {
-        append_chunk_id(out, marker);
+        append_page_id(out, marker);
     }
     append_u64(out, plan.next_marker.is_some() as u64);
     if let Some(next_marker) = &plan.next_marker {
-        append_chunk_id(out, next_marker);
+        append_page_id(out, next_marker);
     }
     append_u64(out, plan.continuation_safe as u64);
     append_u64(out, plan.next_marker_advanced as u64);

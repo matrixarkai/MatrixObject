@@ -2,7 +2,7 @@ pub(crate) fn read_chunk_batch_write_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ReplicaBatchWriteReceipt, ObjectError> {
     Ok(ReplicaBatchWriteReceipt {
-        page_id: read_chunk_id(cursor)?,
+        page_id: read_page_id(cursor)?,
         request_checksum: cursor.read_string()?,
         payload_checksum: cursor.read_string()?,
         idempotency_key: cursor.read_string()?,
@@ -15,7 +15,7 @@ pub(crate) fn read_chunk_write_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ReplicaWriteReceipt, ObjectError> {
     Ok(ReplicaWriteReceipt {
-        page_id: read_chunk_id(cursor)?,
+        page_id: read_page_id(cursor)?,
         offset: cursor.read_u64()?,
         length: cursor.read_u64()?,
         request_checksum: cursor.read_string()?,
@@ -29,7 +29,7 @@ pub(crate) fn read_chunk_discard_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ReplicaDiscardReceipt, ObjectError> {
     Ok(ReplicaDiscardReceipt {
-        page_id: read_chunk_id(cursor)?,
+        page_id: read_page_id(cursor)?,
         offset: cursor.read_u64()?,
         length: cursor.read_u64()?,
         request_checksum: cursor.read_string()?,
@@ -42,7 +42,7 @@ pub(crate) fn read_chunk_batch_discard_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ReplicaBatchDiscardReceipt, ObjectError> {
     Ok(ReplicaBatchDiscardReceipt {
-        page_id: read_chunk_id(cursor)?,
+        page_id: read_page_id(cursor)?,
         request_checksum: cursor.read_string()?,
         idempotency_key: cursor.read_string()?,
         stats: read_chunk_discard_batch_stats(cursor)?,
@@ -54,7 +54,7 @@ pub(crate) fn read_chunk_state_install_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ReplicaStateInstallReceipt, ObjectError> {
     Ok(ReplicaStateInstallReceipt {
-        page_id: read_chunk_id(cursor)?,
+        page_id: read_page_id(cursor)?,
         request_checksum: cursor.read_string()?,
         payload_checksum: cursor.read_string()?,
         state_checksum: cursor.read_string()?,

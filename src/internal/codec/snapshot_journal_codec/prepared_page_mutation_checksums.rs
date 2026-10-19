@@ -17,7 +17,7 @@ pub(crate) fn prepared_page_batch_write_checksum(prepared: &PreparedPageBatchWri
     );
     append_u64(&mut material, prepared.writes.len() as u64);
     for write in &prepared.writes {
-        append_slab_id(&mut material, &write.chunk_id);
+        append_chunk_id(&mut material, &write.chunk_id);
         append_u64(&mut material, write.offset);
         append_u64(&mut material, write.data.len() as u64);
         append_string(&mut material, &etag(&write.data));
@@ -65,7 +65,7 @@ pub(crate) fn append_prepared_page_allocation_release_envelope(
     append_page_route_control_proof(out, &envelope.route_control_proof);
     append_string(out, &envelope.expected_route_control_checksum);
     append_string(out, &envelope.raft_entry_checksum);
-    append_slab_id(out, &envelope.allocation_chunk_id);
+    append_chunk_id(out, &envelope.allocation_chunk_id);
     append_u64(out, envelope.allocation_offset);
     append_u64(out, envelope.allocation_length);
     append_u64(out, envelope.allocation_create_time_ms);
@@ -133,7 +133,7 @@ pub(crate) fn prepared_page_batch_discard_checksum(
     );
     append_u64(&mut material, prepared.requests.len() as u64);
     for request in &prepared.requests {
-        append_slab_id(&mut material, &request.chunk_id);
+        append_chunk_id(&mut material, &request.chunk_id);
         append_u64(&mut material, request.offset);
         append_u64(&mut material, request.length);
     }
@@ -171,7 +171,7 @@ pub(crate) fn prepared_page_range_repair_checksum(prepared: &PreparedPageRangeRe
     append_string(&mut material, "MOS-RUST-PREPARED-BLOCK-RANGE-REPAIR2");
     append_u64(&mut material, prepared.expected_previous_commit_index);
     append_u64(&mut material, prepared.prepared_commit_index);
-    append_slab_id(&mut material, &prepared.chunk_id);
+    append_chunk_id(&mut material, &prepared.chunk_id);
     append_u64(&mut material, prepared.offset);
     append_u64(&mut material, prepared.length);
     append_u64(&mut material, prepared.max_repair_chunks as u64);
@@ -190,7 +190,7 @@ pub(crate) fn prepared_page_chunk_repair_checksum(prepared: &PreparedPageChunkRe
     append_string(&mut material, "MOS-RUST-PREPARED-BLOCK-CHUNK-REPAIR2");
     append_u64(&mut material, prepared.expected_previous_commit_index);
     append_u64(&mut material, prepared.prepared_commit_index);
-    append_chunk_id(&mut material, &prepared.page_id);
+    append_page_id(&mut material, &prepared.page_id);
     append_chunk_repair_report(&mut material, &prepared.report);
     append_string(&mut material, &prepared.before_page_service_fingerprint);
     append_string(&mut material, &prepared.after_page_service_fingerprint);
@@ -207,7 +207,7 @@ pub(crate) fn prepared_page_audit_repair_checksum(prepared: &PreparedPageAuditRe
     append_u64(&mut material, prepared.prepared_commit_index);
     append_u64(&mut material, prepared.after_chunk_id.is_some() as u64);
     if let Some(after_chunk_id) = &prepared.after_chunk_id {
-        append_chunk_id(&mut material, after_chunk_id);
+        append_page_id(&mut material, after_chunk_id);
     }
     append_u64(&mut material, prepared.max_chunks as u64);
     append_u64(&mut material, prepared.max_payload_bytes);

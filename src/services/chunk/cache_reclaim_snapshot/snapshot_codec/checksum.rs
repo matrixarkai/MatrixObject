@@ -47,7 +47,7 @@ impl ReplicaServiceSnapshot {
         append_u64(&mut material, self.receipt_retention as u64);
         append_u64(&mut material, self.pages.len() as u64);
         for (page_id, state) in &self.pages {
-            append_slab_id(&mut material, &page_id.chunk_id);
+            append_chunk_id(&mut material, &page_id.chunk_id);
             append_u64(&mut material, page_id.page_index);
             append_u64(&mut material, state.logical_length);
             append_u64(&mut material, state.write_sequence);

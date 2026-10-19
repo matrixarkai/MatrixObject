@@ -80,7 +80,7 @@ where
         page.storage_receipt_page_slab_filter().is_some() as u64,
     );
     if let Some(chunk_id) = page.storage_receipt_page_slab_filter() {
-        append_slab_id(&mut material, chunk_id);
+        append_chunk_id(&mut material, chunk_id);
     }
     append_u64(
         &mut material,
@@ -98,7 +98,7 @@ where
         page.storage_receipt_page_chunk_id_filter().is_some() as u64,
     );
     if let Some(page_id) = page.storage_receipt_page_chunk_id_filter() {
-        append_chunk_id(&mut material, page_id);
+        append_page_id(&mut material, page_id);
     }
     append_u64(
         &mut material,

@@ -249,13 +249,13 @@ impl StoreSnapshot {
         let mut chunks = BTreeMap::new();
         for _ in 0..cursor.read_count("store snapshot segment count")? {
             chunks.insert(
-                read_slab_id(&mut cursor)?,
+                read_chunk_id(&mut cursor)?,
                 read_chunk_info(&mut cursor)?,
             );
         }
         let mut payloads = BTreeMap::new();
         for _ in 0..cursor.read_count("store snapshot payload count")? {
-            let chunk_id = read_slab_id(&mut cursor)?;
+            let chunk_id = read_chunk_id(&mut cursor)?;
             let offset = cursor.read_u64()?;
             let len = bounded_snapshot_len(cursor.read_u64()?, "store snapshot payload bytes")?;
             let payload = cursor.read_bytes(len)?.to_vec();

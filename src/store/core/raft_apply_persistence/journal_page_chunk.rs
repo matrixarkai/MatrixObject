@@ -1,10 +1,10 @@
 impl MatrixObjectStore {
-    fn encoded_slab_id_len() -> usize {
+    fn encoded_chunk_id_len() -> usize {
         std::mem::size_of::<u64>() * 2
     }
 
-    fn encoded_chunk_id_len() -> usize {
-        Self::encoded_slab_id_len() + std::mem::size_of::<u64>()
+    fn encoded_page_id_len() -> usize {
+        Self::encoded_chunk_id_len() + std::mem::size_of::<u64>()
     }
 
     fn encoded_data_range_len() -> usize {
@@ -65,12 +65,12 @@ impl MatrixObjectStore {
         }
         let mut payload = Vec::with_capacity(
             std::mem::size_of::<u64>() * 3
-                + Self::encoded_slab_id_len()
+                + Self::encoded_chunk_id_len()
                 + data.len()
                 + encoded_string_len(idempotency_key),
         );
         append_u64(&mut payload, 55);
-        append_slab_id(&mut payload, chunk_id);
+        append_chunk_id(&mut payload, chunk_id);
         append_u64(&mut payload, offset);
         append_u64(&mut payload, data.len() as u64);
         payload.extend_from_slice(data);
@@ -89,7 +89,7 @@ impl MatrixObjectStore {
         let payload_bytes = writes
             .iter()
             .map(|write| {
-                Self::encoded_slab_id_len()
+                Self::encoded_chunk_id_len()
                     + std::mem::size_of::<u64>() * 2
                     + write.data.len()
             })
@@ -102,7 +102,7 @@ impl MatrixObjectStore {
         append_u64(&mut payload, 56);
         append_u64(&mut payload, writes.len() as u64);
         for write in writes {
-            append_slab_id(&mut payload, &write.chunk_id);
+            append_chunk_id(&mut payload, &write.chunk_id);
             append_u64(&mut payload, write.offset);
             append_u64(&mut payload, write.data.len() as u64);
             payload.extend_from_slice(&write.data);
@@ -123,11 +123,11 @@ impl MatrixObjectStore {
         }
         let mut payload = Vec::with_capacity(
             std::mem::size_of::<u64>() * 3
-                + Self::encoded_slab_id_len()
+                + Self::encoded_chunk_id_len()
                 + encoded_string_len(idempotency_key),
         );
         append_u64(&mut payload, 57);
-        append_slab_id(&mut payload, chunk_id);
+        append_chunk_id(&mut payload, chunk_id);
         append_u64(&mut payload, offset);
         append_u64(&mut payload, length);
         append_string(&mut payload, idempotency_key);
@@ -144,13 +144,13 @@ impl MatrixObjectStore {
         }
         let mut payload = Vec::with_capacity(
             std::mem::size_of::<u64>() * 2
-                + requests.len() * (Self::encoded_slab_id_len() + Self::encoded_data_range_len())
+                + requests.len() * (Self::encoded_chunk_id_len() + Self::encoded_data_range_len())
                 + encoded_string_len(idempotency_key),
         );
         append_u64(&mut payload, 58);
         append_u64(&mut payload, requests.len() as u64);
         for request in requests {
-            append_slab_id(&mut payload, &request.chunk_id);
+            append_chunk_id(&mut payload, &request.chunk_id);
             append_u64(&mut payload, request.offset);
             append_u64(&mut payload, request.length);
         }
@@ -171,13 +171,13 @@ impl MatrixObjectStore {
         }
         let mut payload = Vec::with_capacity(
             std::mem::size_of::<u64>() * 4
-                + Self::encoded_chunk_id_len()
+                + Self::encoded_page_id_len()
                 + data.len()
                 + encoded_string_len(idempotency_key),
         );
         append_u64(&mut payload, 59);
         append_u64(&mut payload, replica_index as u64);
-        append_chunk_id(&mut payload, page_id);
+        append_page_id(&mut payload, page_id);
         append_u64(&mut payload, offset);
         append_u64(&mut payload, data.len() as u64);
         payload.extend_from_slice(data);
@@ -201,13 +201,13 @@ impl MatrixObjectStore {
             .sum::<usize>();
         let mut payload = Vec::with_capacity(
             std::mem::size_of::<u64>() * 3
-                + Self::encoded_chunk_id_len()
+                + Self::encoded_page_id_len()
                 + payload_bytes
                 + encoded_string_len(idempotency_key),
         );
         append_u64(&mut payload, 60);
         append_u64(&mut payload, replica_index as u64);
-        append_chunk_id(&mut payload, page_id);
+        append_page_id(&mut payload, page_id);
         append_u64(&mut payload, writes.len() as u64);
         for (offset, data) in writes {
             append_u64(&mut payload, *offset);
@@ -231,12 +231,12 @@ impl MatrixObjectStore {
         }
         let mut payload = Vec::with_capacity(
             std::mem::size_of::<u64>() * 4
-                + Self::encoded_chunk_id_len()
+                + Self::encoded_page_id_len()
                 + encoded_string_len(idempotency_key),
         );
         append_u64(&mut payload, 61);
         append_u64(&mut payload, replica_index as u64);
-        append_chunk_id(&mut payload, page_id);
+        append_page_id(&mut payload, page_id);
         append_u64(&mut payload, offset);
         append_u64(&mut payload, length);
         append_string(&mut payload, idempotency_key);
@@ -255,13 +255,13 @@ impl MatrixObjectStore {
         }
         let mut payload = Vec::with_capacity(
             std::mem::size_of::<u64>() * 3
-                + Self::encoded_chunk_id_len()
+                + Self::encoded_page_id_len()
                 + ranges.len() * Self::encoded_data_range_len()
                 + encoded_string_len(idempotency_key),
         );
         append_u64(&mut payload, 62);
         append_u64(&mut payload, replica_index as u64);
-        append_chunk_id(&mut payload, page_id);
+        append_page_id(&mut payload, page_id);
         append_u64(&mut payload, ranges.len() as u64);
         for range in ranges {
             append_range(&mut payload, range);

@@ -151,11 +151,11 @@ impl StoreSnapshot {
             }
         }
         for (chunk_id, chunk) in &self.chunks {
-            append_slab_id(&mut material, chunk_id);
+            append_chunk_id(&mut material, chunk_id);
             append_chunk_info(&mut material, chunk);
         }
         for ((chunk_id, offset), payload) in &self.payloads {
-            append_slab_id(&mut material, chunk_id);
+            append_chunk_id(&mut material, chunk_id);
             append_u64(&mut material, *offset);
             append_u64(&mut material, payload.len() as u64);
             material.extend_from_slice(payload);

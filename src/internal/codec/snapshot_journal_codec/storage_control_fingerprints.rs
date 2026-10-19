@@ -158,7 +158,7 @@ pub(crate) fn append_repair_stats(out: &mut Vec<u8>, stats: &RepairStats) {
 }
 
 pub(crate) fn append_page_replica_audit_item(out: &mut Vec<u8>, item: &ChunkReplicaAuditItem) {
-    append_chunk_id(out, &item.page_id);
+    append_page_id(out, &item.page_id);
     append_u64(out, item.replica_index as u64);
     append_string(out, &item.status);
     append_u64(out, item.logical_length);
@@ -176,11 +176,11 @@ pub(crate) fn append_page_replica_audit_page(out: &mut Vec<u8>, page: &ChunkRepl
     }
     append_u64(out, page.marker.is_some() as u64);
     if let Some(marker) = &page.marker {
-        append_chunk_id(out, marker);
+        append_page_id(out, marker);
     }
     append_u64(out, page.next_marker.is_some() as u64);
     if let Some(next_marker) = &page.next_marker {
-        append_chunk_id(out, next_marker);
+        append_page_id(out, next_marker);
     }
     append_u64(out, page.scanned_chunks);
     append_u64(out, page.healthy_chunks);

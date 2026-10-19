@@ -12,7 +12,7 @@ pub(crate) fn replica_receipt_key<T: std::fmt::Debug>(
             + encoded_string_len(&request_debug),
     );
     append_string(&mut material, base_key);
-    append_chunk_id(&mut material, page_id);
+    append_page_id(&mut material, page_id);
     append_u64(&mut material, replica_index as u64);
     append_string(&mut material, &request_debug);
     format!("{prefix}:{}", etag(&material))
@@ -27,7 +27,7 @@ pub(crate) fn page_write_receipt_request_checksum(
     let mut material = Vec::with_capacity(
         std::mem::size_of::<u64>() * 4 + encoded_string_len(payload_checksum),
     );
-    append_slab_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, chunk_id);
     append_u64(&mut material, offset);
     append_u64(&mut material, length);
     append_string(&mut material, payload_checksum);
@@ -61,7 +61,7 @@ pub(crate) fn page_batch_write_request_checksum(writes: &[ChunkRangeWrite]) -> S
     );
     append_u64(&mut material, writes.len() as u64);
     for write in writes {
-        append_slab_id(&mut material, &write.chunk_id);
+        append_chunk_id(&mut material, &write.chunk_id);
         append_u64(&mut material, write.offset);
         append_u64(&mut material, write.data.len() as u64);
         append_string(&mut material, &etag(&write.data));
@@ -70,7 +70,7 @@ pub(crate) fn page_batch_write_request_checksum(writes: &[ChunkRangeWrite]) -> S
 }
 
 pub(crate) fn append_page_write_receipt(out: &mut Vec<u8>, receipt: &ChunkWriteReceipt) {
-    append_slab_id(out, &receipt.chunk_id);
+    append_chunk_id(out, &receipt.chunk_id);
     append_u64(out, receipt.offset);
     append_u64(out, receipt.length);
     append_string(out, &receipt.request_checksum);
@@ -94,7 +94,7 @@ pub(crate) fn page_write_receipt_proof_checksum(receipt: &ChunkWriteReceipt) -> 
             + encoded_string_len(&receipt.idempotency_key),
     );
     append_string(&mut material, "MXOS-BLOCK-WRITE-RECEIPT-PROOF1");
-    append_slab_id(&mut material, &receipt.chunk_id);
+    append_chunk_id(&mut material, &receipt.chunk_id);
     append_u64(&mut material, receipt.offset);
     append_u64(&mut material, receipt.length);
     append_string(&mut material, &receipt.request_checksum);
@@ -154,14 +154,14 @@ pub(crate) fn page_discard_request_checksum(
     length: u64,
 ) -> String {
     let mut material = Vec::with_capacity(std::mem::size_of::<u64>() * 4);
-    append_slab_id(&mut material, chunk_id);
+    append_chunk_id(&mut material, chunk_id);
     append_u64(&mut material, offset);
     append_u64(&mut material, length);
     etag(&material)
 }
 
 pub(crate) fn append_page_discard_receipt(out: &mut Vec<u8>, receipt: &ChunkDiscardReceipt) {
-    append_slab_id(out, &receipt.chunk_id);
+    append_chunk_id(out, &receipt.chunk_id);
     append_u64(out, receipt.offset);
     append_u64(out, receipt.length);
     append_string(out, &receipt.request_checksum);
@@ -182,7 +182,7 @@ pub(crate) fn page_discard_receipt_proof_checksum(receipt: &ChunkDiscardReceipt)
             + encoded_string_len(&receipt.idempotency_key),
     );
     append_string(&mut material, "MXOS-BLOCK-DISCARD-RECEIPT-PROOF1");
-    append_slab_id(&mut material, &receipt.chunk_id);
+    append_chunk_id(&mut material, &receipt.chunk_id);
     append_u64(&mut material, receipt.offset);
     append_u64(&mut material, receipt.length);
     append_string(&mut material, &receipt.request_checksum);
@@ -196,7 +196,7 @@ pub(crate) fn page_batch_discard_request_checksum(requests: &[ChunkRangeRequest]
     );
     append_u64(&mut material, requests.len() as u64);
     for request in requests {
-        append_slab_id(&mut material, &request.chunk_id);
+        append_chunk_id(&mut material, &request.chunk_id);
         append_u64(&mut material, request.offset);
         append_u64(&mut material, request.length);
     }

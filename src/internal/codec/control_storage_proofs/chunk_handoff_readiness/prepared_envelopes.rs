@@ -3,7 +3,7 @@ pub(crate) fn append_prepared_chunk_local_state_handoff_envelope(
     envelope: &PreparedChunkLocalStateHandoffEnvelope,
 ) {
     append_string(out, &envelope.envelope_format);
-    append_chunk_id(out, &envelope.page_id);
+    append_page_id(out, &envelope.page_id);
     append_u64(out, envelope.max_payload_bytes);
     append_string(out, &envelope.request_checksum);
     append_u64(out, envelope.payload_bytes);
@@ -69,7 +69,7 @@ pub(crate) fn append_prepared_chunk_state_handoff_envelope(
     envelope: &PreparedChunkStateHandoffEnvelope,
 ) {
     append_string(out, &envelope.envelope_format);
-    append_slab_id(out, &envelope.chunk_id);
+    append_chunk_id(out, &envelope.chunk_id);
     append_u64(out, envelope.offset);
     append_u64(out, envelope.length);
     append_u64(out, envelope.source_replica_index as u64);
@@ -86,7 +86,7 @@ pub(crate) fn append_prepared_chunk_state_handoff_envelope(
     append_u64(out, envelope.route_control_next_log_index);
     append_u64(out, envelope.first_handoff_chunk_id.is_some() as u64);
     if let Some(page_id) = &envelope.first_handoff_chunk_id {
-        append_chunk_id(out, page_id);
+        append_page_id(out, page_id);
     }
     append_string(out, &envelope.first_handoff_state_checksum);
     append_u64(out, envelope.first_handoff_payload_bytes);

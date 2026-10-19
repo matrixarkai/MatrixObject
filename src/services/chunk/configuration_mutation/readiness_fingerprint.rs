@@ -103,7 +103,7 @@ impl MatrixReplicaService {
             self.batch_discard_request_receipts.len() as u64,
         );
         for (page_id, state) in &self.pages {
-            append_chunk_id(&mut material, page_id);
+            append_page_id(&mut material, page_id);
             append_u64(&mut material, state.logical_length);
             append_u64(&mut material, state.write_sequence);
             append_string(&mut material, &state.checksum);

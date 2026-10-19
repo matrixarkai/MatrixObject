@@ -142,7 +142,7 @@ pub(crate) fn append_prepared_page_batch_allocation_reservation_envelope(
     append_u64(out, envelope.allocation_count);
     for i in 0..envelope.allocation_ids.len() {
         append_string(out, &envelope.allocation_ids[i]);
-        append_slab_id(out, &envelope.allocation_chunks[i]);
+        append_chunk_id(out, &envelope.allocation_chunks[i]);
         append_u64(out, envelope.allocation_offsets[i]);
         append_u64(out, envelope.allocation_lengths[i]);
         append_u64(out, envelope.allocation_create_time_ms[i]);
