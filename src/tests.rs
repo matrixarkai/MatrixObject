@@ -36621,6 +36621,82 @@ fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
 }
 
 #[test]
+fn only_the_first_write_in_a_batch_should_copy_its_page() {
+    // An open batch makes a write copy its page, because the batch's snapshot
+    // shares the page's data `Arc`. After that copy the live page should be the
+    // only holder -- the snapshot keeps the original -- so a SECOND write in
+    // the same batch ought to go in place.
+    //
+    // Whether it does decides what batching is worth. Measured on the
+    // benchmark, writing 400 objects costs the same per object at batch sizes
+    // 1, 8 and 64 (625,918 / 636,190 / 628,571 bytes), which says batching
+    // amortises nothing. Either each object still gets its own batch, or every
+    // write re-shares the page.
+    //
+    // Pointer identity settles which, and the answer is a property worth
+    // pinning either way.
+    fn data_pointer(service: &MatrixReplicaService, page: &PageId) -> *const Vec<u8> {
+        std::sync::Arc::as_ptr(&service.chunks.get(page).expect("the page exists").data)
+    }
+
+    let page = PageId {
+        chunk_id: ChunkId {
+            volume_id: 0,
+            id: 23,
+        },
+        page_index: 0,
+    };
+
+    let mut service = MatrixReplicaService::new();
+    service.write_chunk(page.clone(), 0, &[b'a'; 4096]).unwrap();
+    service.begin_mutation_batch("batch-two-writes").unwrap();
+
+    let before_first = data_pointer(&service, &page);
+    service.write_chunk(page.clone(), 0, &[b'b'; 1024]).unwrap();
+    let after_first = data_pointer(&service, &page);
+
+    service.write_chunk(page.clone(), 1024, &[b'c'; 1024]).unwrap();
+    let after_second = data_pointer(&service, &page);
+
+    service.write_chunk(page.clone(), 2048, &[b'd'; 1024]).unwrap();
+    let after_third = data_pointer(&service, &page);
+
+    println!(
+        "BATCHWRITES first_moved={} second_moved={} third_moved={}",
+        before_first != after_first,
+        after_first != after_second,
+        after_second != after_third
+    );
+
+    assert_ne!(
+        before_first, after_first,
+        "the first write in a batch copies the page, because the snapshot shares it"
+    );
+    assert_eq!(
+        after_first, after_second,
+        "the second write in the same batch should go in place: the snapshot \
+         holds the ORIGINAL, so the live page is the only holder of the copy. \
+         If this fails, something re-shares the page on every write and \
+         batching cannot amortise the copy -- which is what the benchmark \
+         measures, 625,918 bytes an object at batch size 1 against 628,571 at 64"
+    );
+    assert_eq!(
+        after_second, after_third,
+        "and the third, for the same reason"
+    );
+
+    // The batch must still restore everything when it aborts, whatever the
+    // copies did.
+    service.abort_mutation_batch("batch-two-writes").unwrap();
+    let restored = service.chunks.get(&page).unwrap();
+    assert_eq!(restored.data.len(), 4096, "the abort restores the length");
+    assert!(
+        restored.data.iter().all(|byte| *byte == b'a'),
+        "the abort restores every byte the three writes replaced"
+    );
+}
+
+#[test]
 fn an_open_batch_makes_every_write_copy_the_whole_page() {
     // A write takes the page state mutably through `Arc::make_mut`, and the
     // comment there accounts for copying `PageState`. But `PageState.data` is
