@@ -35541,6 +35541,56 @@ fn the_interned_storage_classes_are_the_valid_ones() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_each_record_value_representation_would_cost() {
+    // The projection text is 227 of the 355 bytes `meta.records` costs an
+    // object. Packing it is write-path only, because the text cannot be parsed
+    // back -- so a store that has just loaded a snapshot holds text and one
+    // that has written its records holds values. A representation has to be
+    // judged in BOTH states, and the enum's inline size is paid in both.
+    //
+    // This is what the candidates actually measure, rather than what they are
+    // assumed to measure: a niche-optimised enum can be smaller than the sum
+    // of its parts, and a fat pointer is two words where a thin one is one.
+    #[allow(dead_code)]
+    enum Inline {
+        Text(Box<str>),
+        Projection(ObjectProjection),
+    }
+    #[allow(dead_code)]
+    enum Boxed {
+        Text(Box<str>),
+        Projection(Box<ObjectProjection>),
+    }
+    let text_now = std::mem::size_of::<Box<str>>();
+    let inline = std::mem::size_of::<Inline>();
+    let boxed = std::mem::size_of::<Boxed>();
+    let proj = std::mem::size_of::<ObjectProjection>();
+    println!(
+        "REPR box_str_inline={text_now} projection={proj} enum_inline={inline} enum_boxed={boxed}"
+    );
+    // 227 is the measured text length for the common object; the heap figure
+    // is what each representation owns beyond its inline size.
+    const TEXT: usize = 227;
+    for (name, inline_size, packed_heap, text_heap) in [
+        ("today (Box<str>)", text_now, TEXT, TEXT),
+        ("enum, inline projection", inline, 0, TEXT),
+        ("enum, boxed projection", boxed, proj, TEXT),
+    ] {
+        println!(
+            "REPR {name:<26} packed={:<4} text={:<4} (inline {inline_size})",
+            inline_size + packed_heap,
+            inline_size + text_heap
+        );
+    }
+    println!(
+        "REPR a representation is only worth taking if its TEXT column does not \
+         exceed {} -- that is what a freshly loaded store pays",
+        text_now + TEXT
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_whether_a_projection_can_be_parsed_back() {
     // The packed projection spells the text exactly, which is half of what a
     // conversion needs. The other half is the DECODE: a snapshot stores the
