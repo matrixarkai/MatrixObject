@@ -4618,6 +4618,7 @@ fn run() -> Result<(), ObjectError> {
     println!("put_p999_ms={}", put_phase.p999_ms);
     println!("range_ops={}", range_phase.ops);
     println!("range_allocs={}", range_phase.allocs);
+    println!("range_largest_alloc_bytes={}", range_phase.largest_alloc_bytes);
     println!("range_alloc_bytes={}", range_phase.alloc_bytes);
     println!(
         "range_allocs_per_op={}",
@@ -4639,6 +4640,7 @@ fn run() -> Result<(), ObjectError> {
     println!("range_p999_ms={}", range_phase.p999_ms);
     println!("overwrite_ops={}", overwrite_phase.ops);
     println!("overwrite_allocs={}", overwrite_phase.allocs);
+    println!("overwrite_largest_alloc_bytes={}", overwrite_phase.largest_alloc_bytes);
     println!("overwrite_alloc_bytes={}", overwrite_phase.alloc_bytes);
     println!(
         "overwrite_allocs_per_op={}",
@@ -4653,6 +4655,7 @@ fn run() -> Result<(), ObjectError> {
     println!("overwrite_ops_per_sec={}", qps(&overwrite_phase));
     println!("delete_ops={}", delete_phase.ops);
     println!("delete_allocs={}", delete_phase.allocs);
+    println!("delete_largest_alloc_bytes={}", delete_phase.largest_alloc_bytes);
     println!("delete_alloc_bytes={}", delete_phase.alloc_bytes);
     println!(
         "delete_allocs_per_op={}",
