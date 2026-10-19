@@ -3,16 +3,16 @@ impl MatrixChunkService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
     ) -> Result<PageWriteReceiptPage, ObjectError> {
-        self.list_write_receipts_for_chunk(marker, limit, slab_id, None)
+        self.list_write_receipts_for_chunk(marker, limit, chunk_id, None)
     }
 
     pub fn list_write_receipts_for_chunk(
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
         page_index: Option<u64>,
     ) -> Result<PageWriteReceiptPage, ObjectError> {
         if let Some(marker) = marker {
@@ -22,7 +22,7 @@ impl MatrixChunkService {
         let mut page = PageWriteReceiptPage {
             total_receipt_count: self.write_request_receipts.len() as u64,
             limit: limit as u64,
-            slab_id: slab_id.cloned(),
+            chunk_id: chunk_id.cloned(),
             page_index,
             page_size: page_index.map(|_| self.page_size),
             ..PageWriteReceiptPage::default()
@@ -38,7 +38,7 @@ impl MatrixChunkService {
             };
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if slab_id.is_some_and(|slab_id| &receipt.slab_id != slab_id) {
+            if chunk_id.is_some_and(|chunk_id| &receipt.chunk_id != chunk_id) {
                 page.skipped_slab_count = page.skipped_slab_count.saturating_add(1);
                 continue;
             }

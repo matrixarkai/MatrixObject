@@ -16,11 +16,11 @@ struct DistributedObjectFootprintSnapshot {
     space_amplification_ppm: u64,
     discard_backlog_ppm: u64,
     discard_candidate_bytes: u64,
-    discard_candidate_slabs: u64,
+    discard_candidate_chunks: u64,
     pending_discard_range_count: u64,
     merged_discard_range_count: u64,
     fragmented_range_count: u64,
-    compaction_candidate_slabs: u64,
+    compaction_candidate_chunks: u64,
     compaction_candidate_bytes: u64,
     compaction_candidate_range_count: u64,
     compaction_recommended: bool,
@@ -45,7 +45,7 @@ impl DistributedObjectFootprintSnapshot {
             .fold(0u64, |total, object| total.saturating_add(object.length));
         let gc = store.gc_report();
         let pending_discard_bytes = gc.stale_bytes.saturating_sub(gc.discarded_bytes);
-        let compaction_candidate_slabs = gc.compaction_candidate_count;
+        let compaction_candidate_chunks = gc.compaction_candidate_count;
 
         Self {
             live_object_count,
@@ -69,14 +69,14 @@ impl DistributedObjectFootprintSnapshot {
             space_amplification_ppm: gc.space_amplification_ppm,
             discard_backlog_ppm: ratio_ppm(pending_discard_bytes, gc.stale_bytes),
             discard_candidate_bytes: gc.discard_candidate_bytes,
-            discard_candidate_slabs: gc.candidate_count,
+            discard_candidate_chunks: gc.candidate_count,
             pending_discard_range_count: gc.pending_discard_range_count,
             merged_discard_range_count: gc.merged_discard_range_count,
             fragmented_range_count: gc.fragmented_range_count,
-            compaction_candidate_slabs,
+            compaction_candidate_chunks,
             compaction_candidate_bytes: gc.compaction_candidate_bytes,
             compaction_candidate_range_count: gc.compaction_candidate_range_count,
-            compaction_recommended: compaction_candidate_slabs > 0,
+            compaction_recommended: compaction_candidate_chunks > 0,
         }
     }
 }

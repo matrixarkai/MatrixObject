@@ -3,13 +3,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
         now_ms: u64,
     ) -> Result<(PageRangeRepairReceiptPage, MetadataRaftReadiness), ObjectError> {
         let readiness = self.ensure_receipt_read_index("block range repair", now_ms)?;
         let page = self
             .store
-            .list_page_range_repair_receipts(marker, limit, slab_id)?;
+            .list_page_range_repair_receipts(marker, limit, chunk_id)?;
         Ok((page, readiness))
     }
 
@@ -17,11 +17,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
         now_ms: u64,
     ) -> Result<ProvenReceiptRead<PageRangeRepairReceiptPage>, ObjectError> {
         let (page, readiness) =
-            self.list_page_range_repair_receipts_linearizable(marker, limit, slab_id, now_ms)?;
+            self.list_page_range_repair_receipts_linearizable(marker, limit, chunk_id, now_ms)?;
         Ok(proven_storage_receipt_page_read(page, &readiness))
     }
 
@@ -29,12 +29,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
         now_ms: u64,
         expected_page_range_repair_receipt_page_proof_checksum: impl AsRef<str>,
     ) -> Result<ProvenReceiptRead<PageRangeRepairReceiptPage>, ObjectError> {
         let proven = self.list_page_range_repair_receipts_with_read_proof_linearizable(
-            marker, limit, slab_id, now_ms,
+            marker, limit, chunk_id, now_ms,
         )?;
         proven.require_page_range_repair_receipt_page_proof_checksum(
             expected_page_range_repair_receipt_page_proof_checksum,

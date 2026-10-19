@@ -12,7 +12,7 @@ impl MatrixChunkService {
             .sum::<usize>();
         let route_material_capacity = encoded_string_len("MOSRSBLOCKROUTE10")
             + endpoint_material_len
-            + self.sealed_slabs.len() * std::mem::size_of::<u64>()
+            + self.sealed_chunks.len() * std::mem::size_of::<u64>()
             + self.replicas.len() * std::mem::size_of::<u64>() * 13
             + std::mem::size_of::<u64>() * 20;
         let mut material = Vec::with_capacity(route_material_capacity);
@@ -36,8 +36,8 @@ impl MatrixChunkService {
         append_u64(&mut material, self.quarantined_replicas.len() as u64);
         append_page_route_qos_config(&mut material, &self.route_qos_config);
         append_u64(&mut material, self.receipt_retention as u64);
-        append_u64(&mut material, self.sealed_slabs.len() as u64);
-        for slab in &self.sealed_slabs {
+        append_u64(&mut material, self.sealed_chunks.len() as u64);
+        for slab in &self.sealed_chunks {
             append_slab_id(&mut material, slab);
         }
         append_u64(

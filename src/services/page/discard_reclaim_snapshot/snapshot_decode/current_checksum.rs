@@ -18,8 +18,8 @@ impl ChunkServiceSnapshot {
         append_u64(&mut material, self.page_size);
         append_u64(&mut material, self.write_quorum as u64);
         append_u64(&mut material, self.read_quorum as u64);
-        append_u64(&mut material, self.allocator_slab_size);
-        append_u64(&mut material, self.allocator_next_slab_id);
+        append_u64(&mut material, self.allocator_chunk_size);
+        append_u64(&mut material, self.allocator_next_chunk_id);
         append_u64(&mut material, self.allocator_next_offset);
         append_u64(&mut material, self.receipt_retention as u64);
         append_u64(&mut material, self.released_allocation_count);
@@ -27,7 +27,7 @@ impl ChunkServiceSnapshot {
         for (allocation_id, allocation) in &self.pending_allocations {
             append_string(&mut material, allocation_id);
             append_string(&mut material, &allocation.allocation_id);
-            append_slab_id(&mut material, &allocation.slab_id);
+            append_slab_id(&mut material, &allocation.chunk_id);
             append_u64(&mut material, allocation.offset);
             append_u64(&mut material, allocation.length);
             append_u64(&mut material, allocation.create_time_ms);
@@ -36,7 +36,7 @@ impl ChunkServiceSnapshot {
         for (idempotency_key, allocation) in &self.allocation_request_receipts {
             append_string(&mut material, idempotency_key);
             append_string(&mut material, &allocation.allocation_id);
-            append_slab_id(&mut material, &allocation.slab_id);
+            append_slab_id(&mut material, &allocation.chunk_id);
             append_u64(&mut material, allocation.offset);
             append_u64(&mut material, allocation.length);
             append_u64(&mut material, allocation.create_time_ms);
@@ -59,7 +59,7 @@ impl ChunkServiceSnapshot {
         for (idempotency_key, allocation) in &self.release_allocation_request_receipts {
             append_string(&mut material, idempotency_key);
             append_string(&mut material, &allocation.allocation_id);
-            append_slab_id(&mut material, &allocation.slab_id);
+            append_slab_id(&mut material, &allocation.chunk_id);
             append_u64(&mut material, allocation.offset);
             append_u64(&mut material, allocation.length);
             append_u64(&mut material, allocation.create_time_ms);
@@ -108,8 +108,8 @@ impl ChunkServiceSnapshot {
         append_u64(&mut material, self.chunk_route_control_next_log_index);
         append_page_route_qos_config(&mut material, &self.route_qos_config);
         append_page_route_qos_state(&mut material, &route_qos_state);
-        append_u64(&mut material, self.sealed_slabs.len() as u64);
-        for slab in &self.sealed_slabs {
+        append_u64(&mut material, self.sealed_chunks.len() as u64);
+        for slab in &self.sealed_chunks {
             append_slab_id(&mut material, slab);
         }
         append_u64(&mut material, self.cumulative_quorum_write_degraded_chunks);

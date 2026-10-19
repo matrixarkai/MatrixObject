@@ -7,7 +7,7 @@ impl MatrixObjectStore {
         for extent in &metadata.extents {
             for loc in
                 self.chunk_service
-                    .map_range(&extent.slab_id, extent.offset, extent.length)?
+                    .map_range(&extent.chunk_id, extent.offset, extent.length)?
             {
                 chunks
                     .entry(loc.page_id)

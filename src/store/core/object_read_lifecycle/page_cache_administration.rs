@@ -77,25 +77,25 @@ impl MatrixObjectStore {
             .storage_readiness(min_capacity_free_bytes, min_reclaimable_bytes, now_ms)
     }
 
-    pub fn seal_page_slab(&mut self, slab_id: SlabId) -> Result<bool, ObjectError> {
-        self.chunk_service.seal_slab(slab_id)
+    pub fn seal_page_chunk(&mut self, chunk_id: ChunkId) -> Result<bool, ObjectError> {
+        self.chunk_service.seal_chunk(chunk_id)
     }
 
-    pub fn seal_page_slab_fenced(
+    pub fn seal_page_chunk_fenced(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<bool, ObjectError> {
         self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
-        self.chunk_service.seal_slab(slab_id)
+        self.chunk_service.seal_chunk(chunk_id)
     }
 
-    pub fn list_page_sealed_slabs(
+    pub fn list_page_sealed_chunks(
         &self,
-        marker: Option<&SlabId>,
+        marker: Option<&ChunkId>,
         limit: usize,
-    ) -> Result<SealedSlabPage, ObjectError> {
-        self.chunk_service.list_sealed_slabs(marker, limit)
+    ) -> Result<SealedChunkPage, ObjectError> {
+        self.chunk_service.list_sealed_chunks(marker, limit)
     }
 }

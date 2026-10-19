@@ -85,7 +85,7 @@ pub struct PreparedPageBatchAllocationReservationEnvelope {
     pub raft_entry_checksum: String,
     pub allocation_count: u64,
     pub allocation_ids: Vec<String>,
-    pub allocation_slabs: Vec<SlabId>,
+    pub allocation_chunks: Vec<ChunkId>,
     pub allocation_offsets: Vec<u64>,
     pub allocation_lengths: Vec<u64>,
     pub allocation_create_time_ms: Vec<u64>,

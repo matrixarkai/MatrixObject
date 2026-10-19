@@ -14,14 +14,14 @@ impl MatrixObjectStore {
     /// Read every indexed payload back out of the page service.
     fn materialize_snapshot_payloads(
         &self,
-    ) -> Result<std::collections::BTreeMap<(SlabId, u64), std::sync::Arc<Vec<u8>>>, ObjectError>
+    ) -> Result<std::collections::BTreeMap<(ChunkId, u64), std::sync::Arc<Vec<u8>>>, ObjectError>
     {
         let mut out = std::collections::BTreeMap::new();
-        for ((slab_id, offset), stored) in &self.payloads {
+        for ((chunk_id, offset), stored) in &self.payloads {
             let (bytes, _) =
                 self.chunk_service
-                    .read_slab_range(slab_id, *offset, stored.len)?;
-            out.insert((slab_id.clone(), *offset), std::sync::Arc::new(bytes));
+                    .read_chunk_range(chunk_id, *offset, stored.len)?;
+            out.insert((chunk_id.clone(), *offset), std::sync::Arc::new(bytes));
         }
         Ok(out)
     }
@@ -74,7 +74,7 @@ impl MatrixObjectStore {
 
     fn export_snapshot_with_materialized_payloads(
         &self,
-        payloads: std::collections::BTreeMap<(SlabId, u64), std::sync::Arc<Vec<u8>>>,
+        payloads: std::collections::BTreeMap<(ChunkId, u64), std::sync::Arc<Vec<u8>>>,
     ) -> StoreSnapshot {
         let include_payloads = !payloads.is_empty() || self.payloads.is_empty();
         let multipart_uploads = if include_payloads {
@@ -129,7 +129,7 @@ impl MatrixObjectStore {
             payloads,
             meta_snapshot: self.meta_service.export_snapshot(),
             root_snapshot: self.meta_service.export_placement_snapshot(),
-            next_slab_id: self.next_slab_id,
+            next_chunk_id: self.next_chunk_id,
             next_upload_sequence: self.next_upload_sequence,
             logical_written_bytes: self.logical_written_bytes,
             physical_written_bytes: self.physical_written_bytes,
@@ -193,12 +193,12 @@ impl MatrixObjectStore {
             self.payloads.len(),
             snapshot_payload_bytes
         );
-        for ((slab_id, offset), payload) in &self.payloads {
+        for ((chunk_id, offset), payload) in &self.payloads {
             let _ = write!(
                 material,
                 "|p:{}/{}@{}:{}:",
-                slab_id.volume_id,
-                slab_id.id,
+                chunk_id.volume_id,
+                chunk_id.id,
                 offset,
                 payload.len
             );
@@ -228,7 +228,7 @@ impl MatrixObjectStore {
         let meta_snapshot = self.meta_service.export_snapshot();
         let root_snapshot = self.meta_service.export_placement_snapshot();
         let mut material = Vec::with_capacity(self.compact_metadata_checksum_size_hint());
-        append_u64(&mut material, self.options.slab_size);
+        append_u64(&mut material, self.options.chunk_size);
         append_u64(&mut material, self.options.max_extent_bytes);
         append_u64(&mut material, self.options.page_size);
         append_u64(&mut material, self.options.volume_count);
@@ -280,7 +280,7 @@ impl MatrixObjectStore {
         );
         append_string(&mut material, &self.options.metaserver_catalog_endpoints);
         append_string(&mut material, &self.options.rootserver_catalog_endpoint);
-        append_u64(&mut material, self.next_slab_id);
+        append_u64(&mut material, self.next_chunk_id);
         append_u64(&mut material, self.logical_written_bytes);
         append_u64(&mut material, self.physical_written_bytes);
         append_u64(&mut material, self.last_applied_index);
@@ -378,9 +378,9 @@ impl MatrixObjectStore {
                 append_metadata(&mut material, metadata);
             }
         }
-        for (slab_id, slab) in &self.slabs {
-            append_slab_id(&mut material, slab_id);
-            append_slab_info(&mut material, slab);
+        for (chunk_id, slab) in &self.slabs {
+            append_slab_id(&mut material, chunk_id);
+            append_chunk_info(&mut material, slab);
         }
         append_u64(&mut material, 0);
         for (upload_id, upload) in &self.multipart_uploads {
@@ -590,10 +590,10 @@ impl MatrixObjectStore {
             snapshot.options.local_replica_store_parallelism,
         )?;
         let mut payload_index = std::collections::BTreeMap::new();
-        for ((slab_id, offset), payload) in &snapshot.payloads {
-            chunk_service.write_slab_range(slab_id, *offset, payload)?;
+        for ((chunk_id, offset), payload) in &snapshot.payloads {
+            chunk_service.write_chunk_range(chunk_id, *offset, payload)?;
             payload_index.insert(
-                (slab_id.clone(), *offset),
+                (chunk_id.clone(), *offset),
                 StoredPayload {
                     len: payload.len() as u64,
                     etag_fnv1a64: fnv1a64(payload),
@@ -652,7 +652,7 @@ impl MatrixObjectStore {
         self.slabs = snapshot.slabs;
         self.payloads = payload_index;
         self.chunk_service = chunk_service;
-        self.next_slab_id = snapshot.next_slab_id;
+        self.next_chunk_id = snapshot.next_chunk_id;
         self.next_upload_sequence = snapshot.next_upload_sequence;
         self.logical_written_bytes = snapshot.logical_written_bytes;
         self.physical_written_bytes = snapshot.physical_written_bytes;

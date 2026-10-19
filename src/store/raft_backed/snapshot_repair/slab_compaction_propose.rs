@@ -1,14 +1,14 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_prepared_slab_compaction(
+    pub fn propose_prepared_chunk_compaction(
         &mut self,
-        prepared: PreparedSlabCompaction,
+        prepared: PreparedChunkCompaction,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.propose_prepared_slab_compaction_apply(prepared)
+        self.propose_prepared_chunk_compaction_apply(prepared)
     }
 
-    fn propose_prepared_slab_compaction_apply(
+    fn propose_prepared_chunk_compaction_apply(
         &mut self,
-        prepared: PreparedSlabCompaction,
+        prepared: PreparedChunkCompaction,
     ) -> Result<ObjectMetadata, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -17,12 +17,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         self.store
             .clone()
-            .apply_command(ObjectCommand::ApplyPreparedSlabCompaction {
+            .apply_command(ObjectCommand::ApplyPreparedChunkCompaction {
                 prepared: prepared.clone(),
             })?;
         let entry = self
             .raft
-            .append(ObjectCommand::ApplyPreparedSlabCompaction { prepared })?;
+            .append(ObjectCommand::ApplyPreparedChunkCompaction { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
                 "prepared segment compaction raft index is not contiguous".to_string(),
@@ -31,11 +31,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store.apply_raft_entry(&entry)
     }
 
-    fn prepared_slab_compaction_apply_report(
+    fn prepared_chunk_compaction_apply_report(
         &self,
-        prepared: &PreparedSlabCompaction,
+        prepared: &PreparedChunkCompaction,
         metadata: ObjectMetadata,
-    ) -> PreparedSlabCompactionApplyReport {
+    ) -> PreparedChunkCompactionApplyReport {
         let source_stale_bytes = prepared
             .source_stale_ranges
             .iter()
@@ -45,7 +45,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .iter()
             .fold(0u64, |sum, range| sum.saturating_add(range.length));
         let mutation_commit_index = self.raft.commit_index();
-        PreparedSlabCompactionApplyReport {
+        PreparedChunkCompactionApplyReport {
             mutation_id: prepared.raft_entry_checksum.clone(),
             mutation_request_checksum: prepared.request_checksum.clone(),
             mutation_commit_index,
@@ -54,7 +54,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             prepared: false,
             external_raft_required: false,
             deduped: false,
-            slab_id: prepared.slab_id.clone(),
+            chunk_id: prepared.chunk_id.clone(),
             min_stale_bytes: prepared.min_stale_bytes,
             live_object_count: prepared.live_objects.len() as u64,
             source_stale_range_count: prepared.source_stale_ranges.len() as u64,
@@ -68,18 +68,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
     }
 
-    pub fn propose_prepared_slab_compaction_with_status(
+    pub fn propose_prepared_chunk_compaction_with_status(
         &mut self,
-        prepared: PreparedSlabCompaction,
-    ) -> Result<PreparedSlabCompactionApplyReport, ObjectError> {
+        prepared: PreparedChunkCompaction,
+    ) -> Result<PreparedChunkCompactionApplyReport, ObjectError> {
         let report_source = prepared.clone();
-        let metadata = self.propose_prepared_slab_compaction_apply(prepared)?;
-        Ok(self.prepared_slab_compaction_apply_report(&report_source, metadata))
+        let metadata = self.propose_prepared_chunk_compaction_apply(prepared)?;
+        Ok(self.prepared_chunk_compaction_apply_report(&report_source, metadata))
     }
 
-    pub fn propose_prepared_slab_compaction_linearizable_fenced(
+    pub fn propose_prepared_chunk_compaction_linearizable_fenced(
         &mut self,
-        prepared: PreparedSlabCompaction,
+        prepared: PreparedChunkCompaction,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
@@ -103,14 +103,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     .to_string(),
             ));
         }
-        self.propose_prepared_slab_compaction(prepared)
+        self.propose_prepared_chunk_compaction(prepared)
     }
 
-    pub fn propose_prepared_slab_compaction_linearizable_fenced_with_status(
+    pub fn propose_prepared_chunk_compaction_linearizable_fenced_with_status(
         &mut self,
-        prepared: PreparedSlabCompaction,
+        prepared: PreparedChunkCompaction,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<PreparedSlabCompactionApplyReport, ObjectError> {
+    ) -> Result<PreparedChunkCompactionApplyReport, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "prepared segment compaction",
@@ -132,12 +132,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     .to_string(),
             ));
         }
-        self.propose_prepared_slab_compaction_with_status(prepared)
+        self.propose_prepared_chunk_compaction_with_status(prepared)
     }
 
-    pub fn propose_prepared_slab_compaction_linearizable_gc_proof_fenced(
+    pub fn propose_prepared_chunk_compaction_linearizable_gc_proof_fenced(
         &mut self,
-        prepared: PreparedSlabCompaction,
+        prepared: PreparedChunkCompaction,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_object_gc_report_proof_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -164,18 +164,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             Some(expected_page_route_control_checksum),
             expected_object_gc_report_proof_checksum,
         )?;
-        self.propose_prepared_slab_compaction_linearizable_fenced(
+        self.propose_prepared_chunk_compaction_linearizable_fenced(
             prepared,
             expected_page_route_control_checksum,
         )
     }
 
-    pub fn propose_prepared_slab_compaction_linearizable_gc_proof_fenced_with_status(
+    pub fn propose_prepared_chunk_compaction_linearizable_gc_proof_fenced_with_status(
         &mut self,
-        prepared: PreparedSlabCompaction,
+        prepared: PreparedChunkCompaction,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_object_gc_report_proof_checksum: impl AsRef<str>,
-    ) -> Result<PreparedSlabCompactionApplyReport, ObjectError> {
+    ) -> Result<PreparedChunkCompactionApplyReport, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         let expected_object_gc_report_proof_checksum =
             expected_object_gc_report_proof_checksum.as_ref();
@@ -199,7 +199,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             Some(expected_page_route_control_checksum),
             expected_object_gc_report_proof_checksum,
         )?;
-        self.propose_prepared_slab_compaction_linearizable_fenced_with_status(
+        self.propose_prepared_chunk_compaction_linearizable_fenced_with_status(
             prepared,
             expected_page_route_control_checksum,
         )

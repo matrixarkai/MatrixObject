@@ -105,7 +105,7 @@ pub(crate) fn page_batch_mutation_image_fingerprint(chunk_service: &MatrixChunkS
 
 pub(crate) fn append_page_allocation(out: &mut Vec<u8>, allocation: &ChunkAllocation) {
     append_string(out, &allocation.allocation_id);
-    append_slab_id(out, &allocation.slab_id);
+    append_slab_id(out, &allocation.chunk_id);
     append_u64(out, allocation.offset);
     append_u64(out, allocation.length);
     append_u64(out, allocation.create_time_ms);
@@ -150,7 +150,7 @@ pub(crate) fn page_allocation_receipt_page_proof_checksum(
         page.limit,
         page.truncated,
         &page.next_marker,
-        &page.slab_id,
+        &page.chunk_id,
         page.skipped_slab_count,
     );
     append_page_receipt_page_chunk_filter(
@@ -171,8 +171,8 @@ pub(crate) fn chunk_allocation_mutation_image_fingerprint(
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-BLOCK-ALLOCATION-MUTATION-IMAGE1");
-    append_u64(&mut material, chunk_service.allocator_slab_size);
-    append_u64(&mut material, chunk_service.allocator_next_slab_id);
+    append_u64(&mut material, chunk_service.allocator_chunk_size);
+    append_u64(&mut material, chunk_service.allocator_next_chunk_id);
     append_u64(&mut material, chunk_service.allocator_next_offset);
     append_u64(
         &mut material,

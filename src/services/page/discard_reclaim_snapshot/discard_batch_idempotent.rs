@@ -48,7 +48,7 @@ impl MatrixChunkService {
             return Ok((receipt.stats.clone(), receipt));
         }
         let stats =
-            self.discard_slab_ranges_with_chunk_receipts(requests, Some(idempotency_key))?;
+            self.discard_chunk_ranges_with_chunk_receipts(requests, Some(idempotency_key))?;
         let receipt = ChunkBatchDiscardReceipt {
             request_checksum,
             idempotency_key: idempotency_key.to_string(),
@@ -61,7 +61,7 @@ impl MatrixChunkService {
         Ok((stats, receipt))
     }
 
-    pub fn discard_slab_ranges_idempotent_bounded_from(
+    pub fn discard_chunk_ranges_idempotent_bounded_from(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
@@ -91,7 +91,7 @@ impl MatrixChunkService {
         Ok((stats, receipt, admission))
     }
 
-    pub fn discard_slab_ranges_idempotent_bounded(
+    pub fn discard_chunk_ranges_idempotent_bounded(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
@@ -104,7 +104,7 @@ impl MatrixChunkService {
         ),
         ObjectError,
     > {
-        self.discard_slab_ranges_idempotent_bounded_from(
+        self.discard_chunk_ranges_idempotent_bounded_from(
             requests,
             max_discard_bytes,
             0,
@@ -112,7 +112,7 @@ impl MatrixChunkService {
         )
     }
 
-    pub fn discard_slab_ranges_idempotent_fenced(
+    pub fn discard_chunk_ranges_idempotent_fenced(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         idempotency_key: &str,
@@ -129,13 +129,13 @@ impl MatrixChunkService {
         self.discard_slab_ranges_idempotent(requests, idempotency_key)
     }
 
-    pub fn discard_slab_ranges_idempotent_fenced_report(
+    pub fn discard_chunk_ranges_idempotent_fenced_report(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkIdempotentBatchDiscardReport, ObjectError> {
-        let (stats, receipt) = self.discard_slab_ranges_idempotent_fenced(
+        let (stats, receipt) = self.discard_chunk_ranges_idempotent_fenced(
             requests,
             idempotency_key,
             expected_route_control_checksum,
@@ -146,14 +146,14 @@ impl MatrixChunkService {
         })
     }
 
-    pub fn discard_slab_ranges_idempotent_strict_fenced_report(
+    pub fn discard_chunk_ranges_idempotent_strict_fenced_report(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
         expected_page_discard_batch_proof_checksum: impl AsRef<str>,
     ) -> Result<ChunkIdempotentBatchDiscardReport, ObjectError> {
-        let report = self.discard_slab_ranges_idempotent_fenced_report(
+        let report = self.discard_chunk_ranges_idempotent_fenced_report(
             requests,
             idempotency_key,
             expected_route_control_checksum,

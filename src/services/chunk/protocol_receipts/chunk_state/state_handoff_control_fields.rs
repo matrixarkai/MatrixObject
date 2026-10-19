@@ -128,7 +128,7 @@ impl PreparedChunkLocalStateHandoff {
 impl PreparedChunkStateHandoffEnvelope {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .slab_id
+            .chunk_id
             .to_control_fields(&format!("{field_prefix}segment."));
         for (name, value) in [
             ("offset", self.offset),

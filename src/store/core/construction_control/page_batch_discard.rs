@@ -141,7 +141,7 @@ impl MatrixObjectStore {
         }
         let admission = self
             .chunk_service
-            .can_accept_slab_discards_from_fenced_borrowed(
+            .can_accept_chunk_discards_from_fenced_borrowed(
                 &selected,
                 max_discard_bytes,
                 discard_start_range_index,

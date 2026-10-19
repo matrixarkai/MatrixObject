@@ -21,18 +21,18 @@ impl MatrixChunkService {
         &mut self,
         requests: Vec<ChunkRangeRequest>,
     ) -> Result<(Vec<ChunkRangeReadResult>, ChunkBatchStats), ObjectError> {
-        self.read_slab_ranges_bounded(requests, 0)
+        self.read_chunk_ranges_bounded(requests, 0)
     }
 
-    pub fn read_slab_ranges_bounded(
+    pub fn read_chunk_ranges_bounded(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
     ) -> Result<(Vec<ChunkRangeReadResult>, ChunkBatchStats), ObjectError> {
-        self.read_slab_ranges_bounded_by_chunks(requests, max_payload_bytes, 0)
+        self.read_chunk_ranges_bounded_by_chunks(requests, max_payload_bytes, 0)
     }
 
-    pub fn read_slab_ranges_bounded_by_chunks(
+    pub fn read_chunk_ranges_bounded_by_chunks(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
@@ -40,8 +40,8 @@ impl MatrixChunkService {
     ) -> Result<(Vec<ChunkRangeReadResult>, ChunkBatchStats), ObjectError> {
         if requests.len() == 1 {
             let request = &requests[0];
-            let (data, read_stats) = self.read_slab_range_bounded_by_chunks(
-                &request.slab_id,
+            let (data, read_stats) = self.read_chunk_range_bounded_by_chunks(
+                &request.chunk_id,
                 request.offset,
                 request.length,
                 max_payload_bytes,
@@ -85,7 +85,7 @@ impl MatrixChunkService {
                 ));
             }
             stats.payload_bytes = next_payload;
-            let locations = self.map_range(&request.slab_id, request.offset, request.length)?;
+            let locations = self.map_range(&request.chunk_id, request.offset, request.length)?;
             stats.mapped_chunk_ranges = stats
                 .mapped_chunk_ranges
                 .checked_add(locations.len() as u64)

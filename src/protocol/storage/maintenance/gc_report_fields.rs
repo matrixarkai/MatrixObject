@@ -1,7 +1,7 @@
 impl DiscardPlan {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .slab_id
+            .chunk_id
             .to_control_fields(&format!("{field_prefix}segment."));
         fields.insert(
             format!("{field_prefix}range_count"),
@@ -29,7 +29,7 @@ impl DiscardPlan {
 impl ObjectGcDiscardCandidate {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .slab_id
+            .chunk_id
             .to_control_fields(&format!("{field_prefix}segment."));
         fields.extend(
             self.range
@@ -37,11 +37,11 @@ impl ObjectGcDiscardCandidate {
         );
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.slab_id.volume_id.to_string(),
+            self.chunk_id.volume_id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.slab_id.id.to_string(),
+            self.chunk_id.id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}offset"),
@@ -55,29 +55,29 @@ impl ObjectGcDiscardCandidate {
     }
 }
 
-impl SlabDiscardRunReport {
+impl ChunkDiscardRunReport {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-RUST-SEGMENT-DISCARD-RUN-PROOF1"
     }
 
     pub fn proof_checksum(&self) -> String {
-        slab_discard_run_report_checksum(self)
+        chunk_discard_run_report_checksum(self)
     }
 
     pub fn verify_expected_proof_checksum(
         &self,
-        expected_slab_discard_run_proof_checksum: impl AsRef<str>,
+        expected_chunk_discard_run_proof_checksum: impl AsRef<str>,
     ) -> Result<(), ObjectError> {
-        let expected_slab_discard_run_proof_checksum =
-            expected_slab_discard_run_proof_checksum.as_ref();
-        if expected_slab_discard_run_proof_checksum.is_empty() {
+        let expected_chunk_discard_run_proof_checksum =
+            expected_chunk_discard_run_proof_checksum.as_ref();
+        if expected_chunk_discard_run_proof_checksum.is_empty() {
             return Ok(());
         }
         let actual = self.proof_checksum();
-        if actual != expected_slab_discard_run_proof_checksum {
+        if actual != expected_chunk_discard_run_proof_checksum {
             return Err(ObjectError::PreconditionFailed(format!(
                 "segment discard run proof checksum mismatch: expected {} got {}",
-                expected_slab_discard_run_proof_checksum, actual
+                expected_chunk_discard_run_proof_checksum, actual
             )));
         }
         Ok(())
@@ -94,24 +94,24 @@ impl SlabDiscardRunReport {
             self.proof_checksum(),
         );
         for (name, value) in [
-            ("planned_segments", self.planned_slabs),
+            ("planned_segments", self.planned_chunks),
             ("planned_discard_bytes", self.planned_discard_bytes),
             (
                 "skipped_compaction_segments",
-                self.skipped_compaction_slabs,
+                self.skipped_compaction_chunks,
             ),
-            ("skipped_limit_segments", self.skipped_limit_slabs),
-            ("attempted_segments", self.attempted_slabs),
-            ("discarded_segments", self.discarded_slabs),
-            ("failed_segments", self.failed_slabs),
+            ("skipped_limit_segments", self.skipped_limit_chunks),
+            ("attempted_segments", self.attempted_chunks),
+            ("discarded_segments", self.discarded_chunks),
+            ("failed_segments", self.failed_chunks),
             ("discard_bytes", self.discard_bytes),
             (
                 "discarded_segment_count",
-                self.discarded_slab_ids.len() as u64,
+                self.discarded_chunk_ids.len() as u64,
             ),
             (
                 "compaction_segment_count",
-                self.compaction_slab_ids.len() as u64,
+                self.compaction_chunk_ids.len() as u64,
             ),
         ] {
             fields.insert(format!("{field_prefix}{name}"), value.to_string());
@@ -126,14 +126,14 @@ impl SlabDiscardRunReport {
             field_prefix,
             &mut fields,
         );
-        for (index, slab_id) in self.discarded_slab_ids.iter().enumerate() {
+        for (index, chunk_id) in self.discarded_chunk_ids.iter().enumerate() {
             fields.extend(
-                slab_id.to_control_fields(&format!("{field_prefix}discarded_segment.{index}.")),
+                chunk_id.to_control_fields(&format!("{field_prefix}discarded_segment.{index}.")),
             );
         }
-        for (index, slab_id) in self.compaction_slab_ids.iter().enumerate() {
+        for (index, chunk_id) in self.compaction_chunk_ids.iter().enumerate() {
             fields.extend(
-                slab_id.to_control_fields(&format!("{field_prefix}compaction_segment.{index}.")),
+                chunk_id.to_control_fields(&format!("{field_prefix}compaction_segment.{index}.")),
             );
         }
         fields
@@ -171,7 +171,7 @@ impl GcReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
-            ("segment_count", self.slab_count),
+            ("segment_count", self.chunk_count),
             ("logical_bytes", self.logical_bytes),
             ("live_bytes", self.live_bytes),
             ("stale_bytes", self.stale_bytes),
@@ -306,9 +306,9 @@ impl FullCompactionPlan {
             field_prefix,
             &mut fields,
         );
-        for (index, slab_id) in self.candidate_slab_ids.iter().enumerate() {
+        for (index, chunk_id) in self.candidate_chunk_ids.iter().enumerate() {
             fields
-                .extend(slab_id.to_control_fields(&format!("{field_prefix}candidate.{index}.")));
+                .extend(chunk_id.to_control_fields(&format!("{field_prefix}candidate.{index}.")));
         }
         fields
     }

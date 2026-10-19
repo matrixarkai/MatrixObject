@@ -7,7 +7,7 @@ pub struct PageRangeRepairReceiptPage {
     pub limit: u64,
     pub truncated: bool,
     pub next_marker: Option<String>,
-    pub slab_id: Option<SlabId>,
+    pub chunk_id: Option<ChunkId>,
     pub skipped_slab_count: u64,
 }
 
@@ -35,11 +35,11 @@ impl PageRangeRepairReceiptPage {
             self.receipts.len(),
             self.skipped_slab_count,
         )?;
-        if let Some(slab_id) = &self.slab_id {
+        if let Some(chunk_id) = &self.chunk_id {
             if self
                 .receipts
                 .iter()
-                .any(|receipt| &receipt.slab_id != slab_id)
+                .any(|receipt| &receipt.chunk_id != chunk_id)
             {
                 return Err(ObjectError::Corruption(
                     "block range repair receipt page contains receipt outside segment filter"
@@ -70,7 +70,7 @@ impl PageRangeRepairReceiptPage {
             self.limit,
             self.truncated,
             &self.next_marker,
-            self.slab_id.as_ref(),
+            self.chunk_id.as_ref(),
             self.skipped_slab_count,
             field_prefix,
         );

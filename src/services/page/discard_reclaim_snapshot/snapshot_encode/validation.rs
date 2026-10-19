@@ -39,10 +39,10 @@ impl ChunkServiceSnapshot {
                 "block service route control log watermark is invalid".to_string(),
             ));
         }
-        if self.allocator_slab_size == 0
-            || self.allocator_slab_size < self.page_size
-            || self.allocator_next_slab_id == 0
-            || self.allocator_next_offset > self.allocator_slab_size
+        if self.allocator_chunk_size == 0
+            || self.allocator_chunk_size < self.page_size
+            || self.allocator_next_chunk_id == 0
+            || self.allocator_next_offset > self.allocator_chunk_size
         {
             return Err(ObjectError::Corruption(
                 "block service snapshot allocator cursor is invalid".to_string(),
@@ -51,9 +51,9 @@ impl ChunkServiceSnapshot {
         for (allocation_id, allocation) in &self.pending_allocations {
             if allocation_id != &allocation.allocation_id
                 || allocation.length == 0
-                || allocation.slab_id.volume_id != 0
-                || allocation.slab_id.id == 0
-                || allocation.offset.saturating_add(allocation.length) > self.allocator_slab_size
+                || allocation.chunk_id.volume_id != 0
+                || allocation.chunk_id.id == 0
+                || allocation.offset.saturating_add(allocation.length) > self.allocator_chunk_size
             {
                 return Err(ObjectError::Corruption(
                     "block service snapshot pending allocation is invalid".to_string(),
@@ -63,9 +63,9 @@ impl ChunkServiceSnapshot {
         for (idempotency_key, allocation) in &self.allocation_request_receipts {
             validate_idempotency_key(idempotency_key)?;
             if allocation.length == 0
-                || allocation.slab_id.volume_id != 0
-                || allocation.slab_id.id == 0
-                || allocation.offset.saturating_add(allocation.length) > self.allocator_slab_size
+                || allocation.chunk_id.volume_id != 0
+                || allocation.chunk_id.id == 0
+                || allocation.offset.saturating_add(allocation.length) > self.allocator_chunk_size
             {
                 return Err(ObjectError::Corruption(
                     "block service snapshot allocation receipt is invalid".to_string(),
@@ -81,10 +81,10 @@ impl ChunkServiceSnapshot {
             }
             for allocation in allocations {
                 if allocation.length == 0
-                    || allocation.slab_id.volume_id != 0
-                    || allocation.slab_id.id == 0
+                    || allocation.chunk_id.volume_id != 0
+                    || allocation.chunk_id.id == 0
                     || allocation.offset.saturating_add(allocation.length)
-                        > self.allocator_slab_size
+                        > self.allocator_chunk_size
                 {
                     return Err(ObjectError::Corruption(
                         "block service snapshot batch allocation receipt is invalid".to_string(),
@@ -95,9 +95,9 @@ impl ChunkServiceSnapshot {
         for (idempotency_key, allocation) in &self.release_allocation_request_receipts {
             validate_idempotency_key(idempotency_key)?;
             if allocation.length == 0
-                || allocation.slab_id.volume_id != 0
-                || allocation.slab_id.id == 0
-                || allocation.offset.saturating_add(allocation.length) > self.allocator_slab_size
+                || allocation.chunk_id.volume_id != 0
+                || allocation.chunk_id.id == 0
+                || allocation.offset.saturating_add(allocation.length) > self.allocator_chunk_size
             {
                 return Err(ObjectError::Corruption(
                     "block service snapshot release allocation receipt is invalid".to_string(),
@@ -108,11 +108,11 @@ impl ChunkServiceSnapshot {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.length == 0
-                || receipt.slab_id.volume_id != 0
-                || receipt.slab_id.id == 0
+                || receipt.chunk_id.volume_id != 0
+                || receipt.chunk_id.id == 0
                 || receipt.request_checksum
                     != page_write_receipt_request_checksum(
-                        &receipt.slab_id,
+                        &receipt.chunk_id,
                         receipt.offset,
                         receipt.length,
                         &receipt.payload_checksum,
@@ -141,11 +141,11 @@ impl ChunkServiceSnapshot {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.length == 0
-                || receipt.slab_id.volume_id != 0
-                || receipt.slab_id.id == 0
+                || receipt.chunk_id.volume_id != 0
+                || receipt.chunk_id.id == 0
                 || receipt.request_checksum
                     != page_discard_request_checksum(
-                        &receipt.slab_id,
+                        &receipt.chunk_id,
                         receipt.offset,
                         receipt.length,
                     )
@@ -184,7 +184,7 @@ impl ChunkServiceSnapshot {
                 || receipt.request_checksum.is_empty()
                 || receipt.request_checksum
                     != page_range_repair_request_checksum(
-                        &receipt.slab_id,
+                        &receipt.chunk_id,
                         receipt.offset,
                         receipt.length,
                         receipt.max_repair_chunks,
@@ -246,19 +246,19 @@ impl ChunkServiceSnapshot {
         for replica in &self.replicas {
             replica.validate()?;
         }
-        for slab in &self.sealed_slabs {
+        for slab in &self.sealed_chunks {
             if slab.volume_id != 0 || slab.id == 0 {
                 return Err(ObjectError::Corruption(
                     "block service snapshot sealed segment is invalid".to_string(),
                 ));
             }
         }
-        let active_slab = SlabId {
+        let active_chunk = ChunkId {
             volume_id: 0,
-            id: self.allocator_next_slab_id,
+            id: self.allocator_next_chunk_id,
         };
-        if self.sealed_slabs.contains(&active_slab)
-            && self.allocator_next_offset < self.allocator_slab_size
+        if self.sealed_chunks.contains(&active_chunk)
+            && self.allocator_next_offset < self.allocator_chunk_size
         {
             return Err(ObjectError::Corruption(
                 "block service snapshot allocator cursor points into sealed segment".to_string(),

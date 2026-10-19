@@ -267,7 +267,7 @@ impl MatrixChunkService {
             ),
         )
         .saturating_add(
-            (self.sealed_slabs.len() as u64).saturating_mul(std::mem::size_of::<SlabId>() as u64),
+            (self.sealed_chunks.len() as u64).saturating_mul(std::mem::size_of::<ChunkId>() as u64),
         )
     }
 
@@ -457,7 +457,7 @@ impl ChunkServiceSnapshot {
                     .saturating_mul(std::mem::size_of::<usize>() as u64),
             )
             .saturating_add(
-                (self.sealed_slabs.len() as u64).saturating_mul(std::mem::size_of::<SlabId>() as u64),
+                (self.sealed_chunks.len() as u64).saturating_mul(std::mem::size_of::<ChunkId>() as u64),
             );
         for endpoint in &self.chunk_endpoints {
             page_other = page_other

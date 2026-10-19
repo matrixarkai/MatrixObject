@@ -120,7 +120,7 @@ impl MatrixObjectStore {
             .map(|previous| {
                 let mut captured = Vec::with_capacity(previous.extents.len());
                 for extent in previous.extents.iter() {
-                    let key = (extent.slab_id.clone(), extent.offset);
+                    let key = (extent.chunk_id.clone(), extent.offset);
                     if let Some(payload) = self.payloads.get(&key) {
                         captured.push((key, payload.clone()));
                     }
@@ -162,11 +162,11 @@ impl MatrixObjectStore {
     /// the index ran on every mutation that succeeded.
     fn restore_targeted_payloads(
         &mut self,
-        slabs_before: &BTreeMap<SlabId, SlabInfo>,
-        previous_payloads: Vec<((SlabId, u64), StoredPayload)>,
+        chunks_before: &BTreeMap<ChunkId, ChunkInfo>,
+        previous_payloads: Vec<((ChunkId, u64), StoredPayload)>,
     ) {
-        self.payloads.retain(|(slab_id, offset), _| {
-            let Some(before) = slabs_before.get(slab_id) else {
+        self.payloads.retain(|(chunk_id, offset), _| {
+            let Some(before) = chunks_before.get(chunk_id) else {
                 return false;
             };
             if *offset >= before.next_offset {

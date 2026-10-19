@@ -69,7 +69,7 @@ pub(crate) fn append_prepared_chunk_state_handoff_envelope(
     envelope: &PreparedChunkStateHandoffEnvelope,
 ) {
     append_string(out, &envelope.envelope_format);
-    append_slab_id(out, &envelope.slab_id);
+    append_slab_id(out, &envelope.chunk_id);
     append_u64(out, envelope.offset);
     append_u64(out, envelope.length);
     append_u64(out, envelope.source_replica_index as u64);
@@ -124,7 +124,7 @@ pub(crate) fn prepared_chunk_state_handoff_envelope_checksum(
 }
 
 pub(crate) fn make_prepared_chunk_state_handoff_envelope(
-    slab_id: &SlabId,
+    chunk_id: &ChunkId,
     offset: u64,
     length: u64,
     source_replica_index: usize,
@@ -144,13 +144,13 @@ pub(crate) fn make_prepared_chunk_state_handoff_envelope(
     );
     let mut envelope = PreparedChunkStateHandoffEnvelope {
         envelope_format: "MXOSBLOCK-CHUNK-HANDOFF-ENVELOPE1".to_string(),
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         offset,
         length,
         source_replica_index,
         max_payload_bytes,
         request_checksum: replica_state_handoff_request_checksum(
-            slab_id,
+            chunk_id,
             offset,
             length,
             source_replica_index,

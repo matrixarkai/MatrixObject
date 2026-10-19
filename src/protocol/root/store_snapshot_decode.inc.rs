@@ -47,7 +47,7 @@ impl StoreSnapshot {
             ));
         }
         let mut options = StoreOptions {
-            slab_size: cursor.read_u64()?,
+            chunk_size: cursor.read_u64()?,
             max_extent_bytes: cursor.read_u64()?,
             page_size: cursor.read_u64()?,
             volume_count: cursor.read_u64()?,
@@ -56,7 +56,7 @@ impl StoreSnapshot {
             persistent_journal_path: String::new(),
             replica_count: cursor.read_count("store snapshot replica count")?,
             write_quorum: cursor.read_count("store snapshot write quorum")?,
-            reuse_stale_slab_space: StoreOptions::default().reuse_stale_slab_space,
+            reuse_stale_chunk_space: StoreOptions::default().reuse_stale_chunk_space,
         compaction_fragment_threshold: cursor
                 .read_count("store snapshot compaction fragment threshold")?,
             object_manifest_checkpoint_interval: 1,
@@ -113,7 +113,7 @@ impl StoreSnapshot {
         if snapshot_version >= 17 {
             options.rootserver_catalog_endpoint = cursor.read_string()?;
         }
-        let next_slab_id = cursor.read_u64()?;
+        let next_chunk_id = cursor.read_u64()?;
         let next_upload_sequence = cursor.read_u64()?;
         let next_object_change_sequence = cursor.read_u64()?;
         let logical_written_bytes = cursor.read_u64()?;
@@ -250,16 +250,16 @@ impl StoreSnapshot {
         for _ in 0..cursor.read_count("store snapshot segment count")? {
             slabs.insert(
                 read_slab_id(&mut cursor)?,
-                read_slab_info(&mut cursor)?,
+                read_chunk_info(&mut cursor)?,
             );
         }
         let mut payloads = BTreeMap::new();
         for _ in 0..cursor.read_count("store snapshot payload count")? {
-            let slab_id = read_slab_id(&mut cursor)?;
+            let chunk_id = read_slab_id(&mut cursor)?;
             let offset = cursor.read_u64()?;
             let len = bounded_snapshot_len(cursor.read_u64()?, "store snapshot payload bytes")?;
             let payload = cursor.read_bytes(len)?.to_vec();
-            payloads.insert((slab_id, offset), std::sync::Arc::new(payload));
+            payloads.insert((chunk_id, offset), std::sync::Arc::new(payload));
         }
         let meta_len = bounded_snapshot_len(cursor.read_u64()?, "store metadata snapshot bytes")?;
         let meta_snapshot = MetaSnapshot::from_bytes(cursor.read_bytes(meta_len)?)?;
@@ -367,7 +367,7 @@ impl StoreSnapshot {
             payloads,
             meta_snapshot,
             root_snapshot,
-            next_slab_id,
+            next_chunk_id,
             next_upload_sequence,
             logical_written_bytes,
             physical_written_bytes,

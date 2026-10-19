@@ -1,12 +1,12 @@
 impl MatrixChunkService {
-    pub fn read_slab_range_repairing(
+    pub fn read_chunk_range_repairing(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
     ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         self.admit_page_route_qos(1, length, 0, 0, 0, 0, now_millis())?;
-        let locations = self.map_range(slab_id, offset, length)?;
+        let locations = self.map_range(chunk_id, offset, length)?;
         let capacity = usize::try_from(length).map_err(|_| {
             ObjectError::InvalidArgument("block repair read range exceeds memory size".to_string())
         })?;
@@ -48,16 +48,16 @@ impl MatrixChunkService {
         Ok((out, stats))
     }
 
-    pub fn read_slab_range_repair_report(
+    pub fn read_chunk_range_repair_report(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
     ) -> Result<ChunkReadRepairReport, ObjectError> {
         let route_control_proof = self.route_control_proof();
-        let (data, stats) = self.read_slab_range_repairing(slab_id, offset, length)?;
+        let (data, stats) = self.read_chunk_range_repairing(chunk_id, offset, length)?;
         Ok(ChunkReadRepairReport {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset,
             length,
             payload_checksum: etag(&data),
@@ -71,15 +71,15 @@ impl MatrixChunkService {
         })
     }
 
-    pub fn read_slab_range_repair_report_fenced(
+    pub fn read_chunk_range_repair_report_fenced(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkReadRepairReport, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let mut report = self.read_slab_range_repair_report(slab_id, offset, length)?;
+        let mut report = self.read_chunk_range_repair_report(chunk_id, offset, length)?;
         report.expected_route_control_checksum = expected_route_control_checksum
             .unwrap_or_default()
             .to_string();
@@ -120,15 +120,15 @@ impl MatrixChunkService {
         stats
     }
 
-    pub fn repair_slab_range(
+    pub fn repair_chunk_range(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
     ) -> Result<RepairStats, ObjectError> {
         let mut aggregate = RepairStats::default();
         let mut seen = BTreeSet::new();
-        for loc in self.map_range(slab_id, offset, length)? {
+        for loc in self.map_range(chunk_id, offset, length)? {
             if seen.insert(loc.page_id.clone()) {
                 merge_repair_stats(
                     &mut aggregate,
@@ -141,7 +141,7 @@ impl MatrixChunkService {
 
     pub fn prepare_chunk_state_handoffs(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         source_replica_index: usize,
@@ -157,7 +157,7 @@ impl MatrixChunkService {
                 "source replica is quarantined".to_string(),
             ));
         }
-        let locations = self.map_range(slab_id, offset, length)?;
+        let locations = self.map_range(chunk_id, offset, length)?;
         let mut out = Vec::with_capacity(locations.len());
         let mut seen = BTreeSet::new();
         let mut payload_bytes = 0u64;
@@ -241,16 +241,16 @@ impl MatrixChunkService {
         Ok(stats)
     }
 
-    pub fn repair_slab_range_bounded(
+    pub fn repair_chunk_range_bounded(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_repair_chunks: usize,
         start_chunk_index: u64,
     ) -> Result<BoundedRepairReport, ObjectError> {
         let mut chunks: BTreeMap<PageId, u64> = BTreeMap::new();
-        for loc in self.map_range(slab_id, offset, length)? {
+        for loc in self.map_range(chunk_id, offset, length)? {
             chunks
                 .entry(loc.page_id.clone())
                 .and_modify(|bytes| *bytes = bytes.saturating_add(loc.length))

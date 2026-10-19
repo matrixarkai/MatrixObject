@@ -1,7 +1,7 @@
 impl MatrixObjectStore {
     pub fn prepare_page_range_repair_raft_entry(
         &self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         length: u64,
         max_repair_chunks: usize,
@@ -16,8 +16,8 @@ impl MatrixObjectStore {
         let before_page_service_fingerprint =
             page_audit_repair_image_fingerprint(&self.chunk_service);
         let mut projected = self.chunk_service.clone();
-        let report = projected.repair_slab_range_bounded(
-            &slab_id,
+        let report = projected.repair_chunk_range_bounded(
+            &chunk_id,
             offset,
             length,
             max_repair_chunks,
@@ -25,7 +25,7 @@ impl MatrixObjectStore {
         )?;
         let after_page_service_fingerprint = page_audit_repair_image_fingerprint(&projected);
         let mut prepared = PreparedPageRangeRepair {
-            slab_id,
+            chunk_id,
             offset,
             length,
             max_repair_chunks,
@@ -98,7 +98,7 @@ impl MatrixObjectStore {
             .range_repair_request_receipts
             .get(&prepared.raft_entry_checksum)
         {
-            if existing.slab_id != prepared.slab_id
+            if existing.chunk_id != prepared.chunk_id
                 || existing.offset != prepared.offset
                 || existing.length != prepared.length
                 || existing.max_repair_chunks != prepared.max_repair_chunks as u64
@@ -116,13 +116,13 @@ impl MatrixObjectStore {
         let current_fingerprint = page_audit_repair_image_fingerprint(&self.chunk_service);
         if current_fingerprint == prepared.after_page_service_fingerprint {
             let receipt = ChunkRangeRepairReceipt {
-                slab_id: prepared.slab_id.clone(),
+                chunk_id: prepared.chunk_id.clone(),
                 offset: prepared.offset,
                 length: prepared.length,
                 max_repair_chunks: prepared.max_repair_chunks as u64,
                 start_chunk_index: prepared.start_chunk_index,
                 request_checksum: page_range_repair_request_checksum(
-                    &prepared.slab_id,
+                    &prepared.chunk_id,
                     prepared.offset,
                     prepared.length,
                     prepared.max_repair_chunks as u64,
@@ -159,7 +159,7 @@ impl MatrixObjectStore {
             ));
         }
         let mut current = self.prepare_page_range_repair_raft_entry(
-            prepared.slab_id.clone(),
+            prepared.chunk_id.clone(),
             prepared.offset,
             prepared.length,
             prepared.max_repair_chunks,
@@ -180,8 +180,8 @@ impl MatrixObjectStore {
                 "block prepared range repair no longer matches current state".to_string(),
             ));
         }
-        let mut report = self.chunk_service.repair_slab_range_bounded(
-            &prepared.slab_id,
+        let mut report = self.chunk_service.repair_chunk_range_bounded(
+            &prepared.chunk_id,
             prepared.offset,
             prepared.length,
             prepared.max_repair_chunks,
@@ -198,13 +198,13 @@ impl MatrixObjectStore {
             ));
         }
         let receipt = ChunkRangeRepairReceipt {
-            slab_id: prepared.slab_id.clone(),
+            chunk_id: prepared.chunk_id.clone(),
             offset: prepared.offset,
             length: prepared.length,
             max_repair_chunks: prepared.max_repair_chunks as u64,
             start_chunk_index: prepared.start_chunk_index,
             request_checksum: page_range_repair_request_checksum(
-                &prepared.slab_id,
+                &prepared.chunk_id,
                 prepared.offset,
                 prepared.length,
                 prepared.max_repair_chunks as u64,

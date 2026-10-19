@@ -47,7 +47,7 @@ impl MatrixObjectStore {
                 saturating_add(merged_discard_range_count, merged_ranges.len() as u64);
             for range in &merged_ranges {
                 if range.length >= min_discard_bytes {
-                    discard_ranges.push((slab.slab_id.clone(), range.clone()));
+                    discard_ranges.push((slab.chunk_id.clone(), range.clone()));
                 }
             }
             if merged_ranges.len() > self.options.compaction_fragment_threshold {
@@ -81,7 +81,7 @@ impl MatrixObjectStore {
         let mut budget_skipped_discard_range_count = 0u64;
         let mut discard_budget_limited = false;
         let mut discard_candidates = Vec::new();
-        for (slab_id, range) in discard_ranges {
+        for (chunk_id, range) in discard_ranges {
             if max_discard_bytes > 0
                 && range.length > max_discard_bytes.saturating_sub(selected_discard_bytes)
             {
@@ -92,10 +92,10 @@ impl MatrixObjectStore {
             }
             selected_discard_bytes = saturating_add(selected_discard_bytes, range.length);
             selected_discard_range_count = selected_discard_range_count.saturating_add(1);
-            discard_candidates.push(ObjectGcDiscardCandidate { slab_id, range });
+            discard_candidates.push(ObjectGcDiscardCandidate { chunk_id, range });
         }
         GcReport {
-            slab_count: self.slabs.len() as u64,
+            chunk_count: self.slabs.len() as u64,
             logical_bytes,
             live_bytes,
             stale_bytes,

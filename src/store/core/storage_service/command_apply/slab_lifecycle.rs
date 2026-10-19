@@ -3,7 +3,7 @@ include!("slab_lifecycle/object_lifecycle.rs");
 include!("slab_lifecycle/slab_maintenance.rs");
 
 impl MatrixObjectStore {
-    fn apply_slab_lifecycle_command(
+    fn apply_chunk_lifecycle_command(
         &mut self,
         command: ObjectCommand,
         _raft_entry_index: Option<u64>,
@@ -48,12 +48,12 @@ impl MatrixObjectStore {
         if matches!(
             &command,
             ObjectCommand::ApplyDiscard { .. }
-                | ObjectCommand::ApplyPreparedSlabDiscard { .. }
-                | ObjectCommand::CompactSlab { .. }
+                | ObjectCommand::ApplyPreparedChunkDiscard { .. }
+                | ObjectCommand::CompactChunk { .. }
                 | ObjectCommand::CompactAll { .. }
-                | ObjectCommand::ApplyPreparedSlabCompaction { .. }
+                | ObjectCommand::ApplyPreparedChunkCompaction { .. }
         ) {
-            return self.apply_slab_maintenance_command(command);
+            return self.apply_chunk_maintenance_command(command);
         }
         unreachable!("command classified outside SegmentLifecycle")
     }

@@ -9,14 +9,14 @@ impl MatrixObjectStore {
 
     pub fn can_accept_page_write(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.chunk_service.can_accept_slab_write(
-            slab_id,
+            chunk_id,
             offset,
             length,
             max_write_bytes,
@@ -26,7 +26,7 @@ impl MatrixObjectStore {
 
     pub fn can_accept_page_write_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_write_bytes: u64,
@@ -34,7 +34,7 @@ impl MatrixObjectStore {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.chunk_service.can_accept_slab_write_fenced(
-            slab_id,
+            chunk_id,
             offset,
             length,
             max_write_bytes,
@@ -91,7 +91,7 @@ impl MatrixObjectStore {
         write_start_range_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.chunk_service.can_accept_slab_writes_fenced_from(
+        self.chunk_service.can_accept_chunk_writes_fenced_from(
             writes,
             max_write_bytes,
             max_chunk_write_count,

@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GcReport {
-    pub slab_count: u64,
+    pub chunk_count: u64,
     pub logical_bytes: u64,
     pub live_bytes: u64,
     pub stale_bytes: u64,
@@ -28,7 +28,7 @@ pub struct GcReport {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectGcDiscardCandidate {
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub range: DataRange,
 }
 
@@ -39,7 +39,7 @@ pub struct FullCompactionPlan {
     pub candidate_stale_bytes: u64,
     pub candidate_live_bytes: u64,
     pub candidate_logical_bytes: u64,
-    pub candidate_slab_ids: Vec<SlabId>,
+    pub candidate_chunk_ids: Vec<ChunkId>,
     pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub object_gc_report_proof_checksum: String,

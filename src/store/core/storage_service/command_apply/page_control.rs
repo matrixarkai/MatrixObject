@@ -153,7 +153,7 @@ impl MatrixObjectStore {
                     "_chunkwrite",
                     &format!(
                         "{}:{}",
-                        receipt.page_id.slab_id.id, receipt.page_id.page_index
+                        receipt.page_id.chunk_id.id, receipt.page_id.page_index
                     ),
                     receipt.stats.physical_write_bytes,
                     receipt.deduped as u64,
@@ -171,7 +171,7 @@ impl MatrixObjectStore {
                     "_chunkdiscard",
                     &format!(
                         "{}:{}",
-                        receipt.page_id.slab_id.id, receipt.page_id.page_index
+                        receipt.page_id.chunk_id.id, receipt.page_id.page_index
                     ),
                     receipt.stats.physical_discard_bytes,
                     receipt.deduped as u64,
@@ -287,20 +287,20 @@ impl MatrixObjectStore {
                         .saturating_add(config.max_discard_bytes_per_window),
                 ))
             }
-            ObjectCommand::SealPageSlab {
-                slab_id,
+            ObjectCommand::SealPageChunk {
+                chunk_id,
                 expected_route_control_checksum,
             } => {
                 self.chunk_service.check_expected_route_control_checksum(
                     (!expected_route_control_checksum.is_empty())
                         .then_some(expected_route_control_checksum.as_str()),
                 )?;
-                let inserted = self.chunk_service.seal_slab(slab_id.clone())?;
+                let inserted = self.chunk_service.seal_chunk(chunk_id.clone())?;
                 let proof = self.chunk_service.route_control_proof();
                 Ok(metadata_control_metadata(
                     "_blockseal",
-                    &format!("{}:{}", slab_id.volume_id, slab_id.id),
-                    self.chunk_service.sealed_slab_count(),
+                    &format!("{}:{}", chunk_id.volume_id, chunk_id.id),
+                    self.chunk_service.sealed_chunk_count(),
                     inserted as u64,
                     "blockserver/seal-segment",
                     proof.chunk_route_control_commit_index,

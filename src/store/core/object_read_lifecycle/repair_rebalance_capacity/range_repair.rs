@@ -26,8 +26,8 @@ impl MatrixObjectStore {
             let read_end = range_end.min(extent_end);
             let local_offset = read_start - extent_start;
             let local_len = read_end - read_start;
-            let stats = self.chunk_service.repair_slab_range(
-                &extent.slab_id,
+            let stats = self.chunk_service.repair_chunk_range(
+                &extent.chunk_id,
                 extent.offset + local_offset,
                 local_len,
             )?;
@@ -77,7 +77,7 @@ impl MatrixObjectStore {
             let local_offset = read_start - extent_start;
             let local_len = read_end - read_start;
             let extent_locations = self.chunk_service.map_range(
-                &extent.slab_id,
+                &extent.chunk_id,
                 extent.offset + local_offset,
                 local_len,
             )?;
@@ -116,14 +116,14 @@ impl MatrixObjectStore {
                 continue;
             }
             let local_start_chunk_index = start_chunk_index.saturating_sub(object_chunk_cursor);
-            let slab_start_chunk_index =
+            let chunk_start_chunk_index =
                 extent_start_chunk_index.saturating_add(local_start_chunk_index);
-            let report = self.chunk_service.repair_slab_range_bounded(
-                &extent.slab_id,
+            let report = self.chunk_service.repair_chunk_range_bounded(
+                &extent.chunk_id,
                 extent.offset + local_offset,
                 local_len,
                 remaining_chunks,
-                slab_start_chunk_index,
+                chunk_start_chunk_index,
             )?;
             let selected_chunk_count = report.selected_chunk_count;
             let mut object_report = report;

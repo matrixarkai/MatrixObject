@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_proven_slab_compaction_fenced(
+    pub fn propose_proven_chunk_compaction_fenced(
         &mut self,
-        proven_prepared: ProvenStorageRead<PreparedSlabCompaction>,
+        proven_prepared: ProvenStorageRead<PreparedChunkCompaction>,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -41,15 +41,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     .to_string(),
             ));
         }
-        self.propose_prepared_slab_compaction_linearizable_fenced(
+        self.propose_prepared_chunk_compaction_linearizable_fenced(
             proven_prepared.value,
             expected_page_route_control_checksum,
         )
     }
 
-    pub fn propose_proven_slab_compaction_envelope_fenced(
+    pub fn propose_proven_chunk_compaction_envelope_fenced(
         &mut self,
-        proven_envelope: ProvenStorageRead<PreparedSlabCompactionEnvelope>,
+        proven_envelope: ProvenStorageRead<PreparedChunkCompactionEnvelope>,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
@@ -99,15 +99,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .expected_object_gc_report_proof_checksum
             .is_empty()
         {
-            self.prepare_compact_slab_raft_entry_linearizable_fenced(
-                &proven_envelope.value.slab_id,
+            self.prepare_compact_chunk_raft_entry_linearizable_fenced(
+                &proven_envelope.value.chunk_id,
                 proven_envelope.value.min_stale_bytes,
                 proven_envelope.value.update_time_ms,
                 expected_page_route_control_checksum,
             )?
         } else {
-            self.prepare_compact_slab_raft_entry_linearizable_gc_proof_fenced(
-                &proven_envelope.value.slab_id,
+            self.prepare_compact_chunk_raft_entry_linearizable_gc_proof_fenced(
+                &proven_envelope.value.chunk_id,
                 proven_envelope.value.min_stale_bytes,
                 proven_envelope.value.update_time_ms,
                 expected_page_route_control_checksum,
@@ -116,7 +116,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     .expected_object_gc_report_proof_checksum,
             )?
         };
-        let actual_envelope = make_prepared_slab_compaction_envelope(&prepared);
+        let actual_envelope = make_prepared_chunk_compaction_envelope(&prepared);
         if actual_envelope != proven_envelope.value {
             return Err(ObjectError::PreconditionFailed(
                 "proven segment compaction envelope changed before proposal".to_string(),
@@ -127,12 +127,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .expected_object_gc_report_proof_checksum
             .is_empty()
         {
-            self.propose_prepared_slab_compaction_linearizable_fenced(
+            self.propose_prepared_chunk_compaction_linearizable_fenced(
                 prepared,
                 expected_page_route_control_checksum,
             )
         } else {
-            self.propose_prepared_slab_compaction_linearizable_gc_proof_fenced(
+            self.propose_prepared_chunk_compaction_linearizable_gc_proof_fenced(
                 prepared,
                 expected_page_route_control_checksum,
                 &proven_envelope
@@ -142,40 +142,40 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
     }
 
-    pub fn propose_compact_slab_prepared(
+    pub fn propose_compact_chunk_prepared(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         min_stale_bytes: u64,
         update_time_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared =
-            self.prepare_compact_slab_raft_entry(slab_id, min_stale_bytes, update_time_ms)?;
-        self.propose_prepared_slab_compaction(prepared)
+            self.prepare_compact_chunk_raft_entry(chunk_id, min_stale_bytes, update_time_ms)?;
+        self.propose_prepared_chunk_compaction(prepared)
     }
 
-    pub fn propose_compact_slab_prepared_linearizable_fenced(
+    pub fn propose_compact_chunk_prepared_linearizable_fenced(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         min_stale_bytes: u64,
         update_time_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
-        let prepared = self.prepare_compact_slab_raft_entry_linearizable_fenced(
-            slab_id,
+        let prepared = self.prepare_compact_chunk_raft_entry_linearizable_fenced(
+            chunk_id,
             min_stale_bytes,
             update_time_ms,
             expected_page_route_control_checksum,
         )?;
-        self.propose_prepared_slab_compaction_linearizable_fenced(
+        self.propose_prepared_chunk_compaction_linearizable_fenced(
             prepared,
             expected_page_route_control_checksum,
         )
     }
 
-    pub fn propose_compact_slab_prepared_linearizable_gc_proof_fenced(
+    pub fn propose_compact_chunk_prepared_linearizable_gc_proof_fenced(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         min_stale_bytes: u64,
         update_time_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
@@ -184,14 +184,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         let expected_object_gc_report_proof_checksum =
             expected_object_gc_report_proof_checksum.as_ref();
-        let prepared = self.prepare_compact_slab_raft_entry_linearizable_gc_proof_fenced(
-            slab_id,
+        let prepared = self.prepare_compact_chunk_raft_entry_linearizable_gc_proof_fenced(
+            chunk_id,
             min_stale_bytes,
             update_time_ms,
             expected_page_route_control_checksum,
             expected_object_gc_report_proof_checksum,
         )?;
-        self.propose_prepared_slab_compaction_linearizable_gc_proof_fenced(
+        self.propose_prepared_chunk_compaction_linearizable_gc_proof_fenced(
             prepared,
             expected_page_route_control_checksum,
             expected_object_gc_report_proof_checksum,

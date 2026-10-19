@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_prepared_slab_discard(
+    pub fn propose_prepared_chunk_discard(
         &mut self,
-        prepared: PreparedSlabDiscard,
+        prepared: PreparedChunkDiscard,
     ) -> Result<ObjectMetadata, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -10,12 +10,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         self.store
             .clone()
-            .apply_command(ObjectCommand::ApplyPreparedSlabDiscard {
+            .apply_command(ObjectCommand::ApplyPreparedChunkDiscard {
                 prepared: prepared.clone(),
             })?;
         let entry = self
             .raft
-            .append(ObjectCommand::ApplyPreparedSlabDiscard { prepared })?;
+            .append(ObjectCommand::ApplyPreparedChunkDiscard { prepared })?;
         if entry.index != self.store.last_applied_index().saturating_add(1) {
             return Err(ObjectError::PreconditionFailed(
                 "prepared segment discard raft index is not contiguous".to_string(),
@@ -24,9 +24,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store.apply_raft_entry(&entry)
     }
 
-    pub fn propose_prepared_slab_discard_linearizable_fenced(
+    pub fn propose_prepared_chunk_discard_linearizable_fenced(
         &mut self,
-        prepared: PreparedSlabDiscard,
+        prepared: PreparedChunkDiscard,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
@@ -49,12 +49,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 "prepared segment discard route checksum does not match caller fence".to_string(),
             ));
         }
-        self.propose_prepared_slab_discard(prepared)
+        self.propose_prepared_chunk_discard(prepared)
     }
 
-    pub fn propose_proven_slab_discard_fenced(
+    pub fn propose_proven_chunk_discard_fenced(
         &mut self,
-        proven_prepared: ProvenStorageRead<PreparedSlabDiscard>,
+        proven_prepared: ProvenStorageRead<PreparedChunkDiscard>,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -94,15 +94,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     .to_string(),
             ));
         }
-        self.propose_prepared_slab_discard_linearizable_fenced(
+        self.propose_prepared_chunk_discard_linearizable_fenced(
             proven_prepared.value,
             expected_page_route_control_checksum,
         )
     }
 
-    pub fn propose_proven_slab_discard_envelope_fenced(
+    pub fn propose_proven_chunk_discard_envelope_fenced(
         &mut self,
-        proven_envelope: ProvenStorageRead<PreparedSlabDiscardEnvelope>,
+        proven_envelope: ProvenStorageRead<PreparedChunkDiscardEnvelope>,
         ranges: Vec<DataRange>,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_envelope_checksum: impl AsRef<str>,
@@ -148,48 +148,48 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 "proven segment discard envelope raft entry checksum mismatch".to_string(),
             ));
         }
-        let prepared = self.prepare_slab_discard_raft_entry_linearizable_fenced(
-            &proven_envelope.value.slab_id,
+        let prepared = self.prepare_chunk_discard_raft_entry_linearizable_fenced(
+            &proven_envelope.value.chunk_id,
             ranges,
             expected_page_route_control_checksum,
         )?;
-        let actual_envelope = make_prepared_slab_discard_envelope(&prepared);
+        let actual_envelope = make_prepared_chunk_discard_envelope(&prepared);
         if actual_envelope != proven_envelope.value {
             return Err(ObjectError::PreconditionFailed(
                 "proven segment discard envelope changed before proposal".to_string(),
             ));
         }
-        self.propose_prepared_slab_discard_linearizable_fenced(
+        self.propose_prepared_chunk_discard_linearizable_fenced(
             prepared,
             expected_page_route_control_checksum,
         )
     }
 
-    pub fn propose_slab_discard_prepared_linearizable_fenced(
+    pub fn propose_chunk_discard_prepared_linearizable_fenced(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
-        let prepared = self.prepare_slab_discard_raft_entry_linearizable_fenced(
-            slab_id,
+        let prepared = self.prepare_chunk_discard_raft_entry_linearizable_fenced(
+            chunk_id,
             ranges,
             expected_page_route_control_checksum,
         )?;
-        self.propose_prepared_slab_discard_linearizable_fenced(
+        self.propose_prepared_chunk_discard_linearizable_fenced(
             prepared,
             expected_page_route_control_checksum,
         )
     }
 
-    pub fn propose_slab_discards_prepared_linearizable_fenced(
+    pub fn propose_chunk_discards_prepared_linearizable_fenced(
         &mut self,
         min_stale_bytes: u64,
-        max_ranges_per_slab: usize,
+        max_ranges_per_chunk: usize,
         max_slabs: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<SlabDiscardRunReport, ObjectError> {
+    ) -> Result<ChunkDiscardRunReport, ObjectError> {
         let mut route_checksum = expected_page_route_control_checksum.as_ref().to_string();
         if route_checksum.is_empty() {
             route_checksum = self
@@ -206,55 +206,55 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let plans = self
             .store
-            .plan_discard(min_stale_bytes, max_ranges_per_slab);
-        let mut report = SlabDiscardRunReport {
-            planned_slabs: plans.len() as u64,
+            .plan_discard(min_stale_bytes, max_ranges_per_chunk);
+        let mut report = ChunkDiscardRunReport {
+            planned_chunks: plans.len() as u64,
             planned_discard_bytes: plans
                 .iter()
                 .map(|plan| plan.discard_bytes)
                 .fold(0u64, saturating_add),
             route_control_proof: self.store.chunk_service.route_control_proof(),
             expected_route_control_checksum: route_checksum.clone(),
-            ..SlabDiscardRunReport::default()
+            ..ChunkDiscardRunReport::default()
         };
         for plan in plans {
             if plan.compact_instead {
-                report.skipped_compaction_slabs =
-                    report.skipped_compaction_slabs.saturating_add(1);
-                report.compaction_slab_ids.push(plan.slab_id);
+                report.skipped_compaction_chunks =
+                    report.skipped_compaction_chunks.saturating_add(1);
+                report.compaction_chunk_ids.push(plan.chunk_id);
                 continue;
             }
-            if max_slabs > 0 && report.attempted_slabs >= max_slabs as u64 {
-                report.skipped_limit_slabs = report.skipped_limit_slabs.saturating_add(1);
+            if max_slabs > 0 && report.attempted_chunks >= max_slabs as u64 {
+                report.skipped_limit_chunks = report.skipped_limit_chunks.saturating_add(1);
                 continue;
             }
-            report.attempted_slabs = report.attempted_slabs.saturating_add(1);
-            let prepared = match self.prepare_slab_discard_raft_entry_linearizable_fenced(
-                &plan.slab_id,
+            report.attempted_chunks = report.attempted_chunks.saturating_add(1);
+            let prepared = match self.prepare_chunk_discard_raft_entry_linearizable_fenced(
+                &plan.chunk_id,
                 plan.ranges,
                 &route_checksum,
             ) {
                 Ok(prepared) => prepared,
                 Err(err) => {
-                    report.failed_slabs = report.failed_slabs.saturating_add(1);
+                    report.failed_chunks = report.failed_chunks.saturating_add(1);
                     if report.first_error.is_empty() {
                         report.first_error = err.to_string();
                     }
                     continue;
                 }
             };
-            let slab_id = prepared.slab_id.clone();
+            let chunk_id = prepared.chunk_id.clone();
             let discard_bytes = prepared.discard_bytes;
             match self
-                .propose_prepared_slab_discard_linearizable_fenced(prepared, &route_checksum)
+                .propose_prepared_chunk_discard_linearizable_fenced(prepared, &route_checksum)
             {
                 Ok(_) => {
-                    report.discarded_slabs = report.discarded_slabs.saturating_add(1);
+                    report.discarded_chunks = report.discarded_chunks.saturating_add(1);
                     report.discard_bytes = report.discard_bytes.saturating_add(discard_bytes);
-                    report.discarded_slab_ids.push(slab_id);
+                    report.discarded_chunk_ids.push(chunk_id);
                 }
                 Err(err) => {
-                    report.failed_slabs = report.failed_slabs.saturating_add(1);
+                    report.failed_chunks = report.failed_chunks.saturating_add(1);
                     if report.first_error.is_empty() {
                         report.first_error = err.to_string();
                     }
@@ -264,14 +264,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(report)
     }
 
-    pub fn propose_slab_discards_prepared_linearizable_gc_proof_fenced(
+    pub fn propose_chunk_discards_prepared_linearizable_gc_proof_fenced(
         &mut self,
         min_stale_bytes: u64,
-        max_ranges_per_slab: usize,
+        max_ranges_per_chunk: usize,
         max_slabs: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_object_gc_report_proof_checksum: impl AsRef<str>,
-    ) -> Result<SlabDiscardRunReport, ObjectError> {
+    ) -> Result<ChunkDiscardRunReport, ObjectError> {
         let mut route_checksum = expected_page_route_control_checksum.as_ref().to_string();
         if route_checksum.is_empty() {
             route_checksum = self
@@ -286,9 +286,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             Some(&route_checksum),
             expected_object_gc_report_proof_checksum,
         )?;
-        self.propose_slab_discards_prepared_linearizable_fenced(
+        self.propose_chunk_discards_prepared_linearizable_fenced(
             min_stale_bytes,
-            max_ranges_per_slab,
+            max_ranges_per_chunk,
             max_slabs,
             route_checksum,
         )

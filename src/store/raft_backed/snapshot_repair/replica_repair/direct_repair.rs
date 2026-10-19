@@ -8,14 +8,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_repair_page_range_bounded(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         length: u64,
         max_repair_chunks: usize,
         start_chunk_index: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose_repair_page_range_bounded_fenced(
-            slab_id,
+            chunk_id,
             offset,
             length,
             max_repair_chunks,
@@ -26,7 +26,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_repair_page_range_bounded_fenced(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         length: u64,
         max_repair_chunks: usize,
@@ -39,7 +39,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_page_route_control_checksum,
         )?;
         self.propose(ObjectCommand::RepairPageRangeBounded {
-            slab_id,
+            chunk_id,
             offset,
             length,
             max_repair_chunks,
@@ -50,7 +50,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_repair_page_range_bounded_linearizable_fenced(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         length: u64,
         max_repair_chunks: usize,
@@ -62,7 +62,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_page_route_control_checksum.as_ref(),
         )?;
         let command = ObjectCommand::RepairPageRangeBounded {
-            slab_id,
+            chunk_id,
             offset,
             length,
             max_repair_chunks,

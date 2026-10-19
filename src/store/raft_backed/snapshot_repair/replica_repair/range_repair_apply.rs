@@ -58,7 +58,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_repair_page_range_prepared_linearizable_fenced(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         length: u64,
         max_repair_chunks: usize,
@@ -67,7 +67,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_raft_entry_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self.prepare_repair_page_range_raft_entry_linearizable_fenced(
-            slab_id,
+            chunk_id,
             offset,
             length,
             max_repair_chunks,
@@ -181,13 +181,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 "proven block range repair envelope raft entry checksum mismatch".to_string(),
             ));
         }
-        let slab_id = proven_envelope.envelope.slab_id.clone().ok_or_else(|| {
+        let chunk_id = proven_envelope.envelope.chunk_id.clone().ok_or_else(|| {
             ObjectError::InvalidArgument(
                 "proven block range repair envelope missing segment id".to_string(),
             )
         })?;
         let prepared = self.prepare_repair_page_range_raft_entry_linearizable_fenced(
-            slab_id,
+            chunk_id,
             proven_envelope.envelope.offset,
             proven_envelope.envelope.length,
             proven_envelope.envelope.max_repair_chunks as usize,

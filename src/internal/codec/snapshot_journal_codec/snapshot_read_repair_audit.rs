@@ -122,7 +122,7 @@ pub(crate) fn read_page_range_repair_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ChunkRangeRepairReceipt, ObjectError> {
     Ok(ChunkRangeRepairReceipt {
-        slab_id: read_slab_id(cursor)?,
+        chunk_id: read_slab_id(cursor)?,
         offset: cursor.read_u64()?,
         length: cursor.read_u64()?,
         max_repair_chunks: cursor.read_u64()?,

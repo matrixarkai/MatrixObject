@@ -28,9 +28,9 @@ pub(crate) fn append_prepared_storage_maintenance_envelope(
     append_u64(out, envelope.scheduled_trim_ops);
     append_u64(out, envelope.scheduled_trim_bytes);
     append_u64(out, envelope.candidate_discarded_bytes);
-    append_u64(out, envelope.planned_slab_discards);
-    append_u64(out, envelope.planned_slab_discard_bytes);
-    append_u64(out, envelope.planned_slab_compaction_fallbacks);
+    append_u64(out, envelope.planned_chunk_discards);
+    append_u64(out, envelope.planned_chunk_discard_bytes);
+    append_u64(out, envelope.planned_chunk_compaction_fallbacks);
     append_u64(out, envelope.budget_limited as u64);
     append_u64(out, envelope.trim_flow_limited as u64);
     append_u64(out, envelope.truncated as u64);
@@ -115,19 +115,19 @@ pub(crate) fn make_prepared_storage_maintenance_envelope(
         scheduled_trim_ops: plan.reclaim.scheduled_trim_ops,
         scheduled_trim_bytes: plan.reclaim.scheduled_trim_bytes,
         candidate_discarded_bytes: plan.reclaim.candidate_discarded_bytes,
-        planned_slab_discards: plan
-            .slab_discards
+        planned_chunk_discards: plan
+            .chunk_discards
             .iter()
             .filter(|discard| !discard.compact_instead)
             .count() as u64,
-        planned_slab_discard_bytes: plan
-            .slab_discards
+        planned_chunk_discard_bytes: plan
+            .chunk_discards
             .iter()
             .filter(|discard| !discard.compact_instead)
             .map(|discard| discard.discard_bytes)
             .sum(),
-        planned_slab_compaction_fallbacks: plan
-            .slab_discards
+        planned_chunk_compaction_fallbacks: plan
+            .chunk_discards
             .iter()
             .filter(|discard| discard.compact_instead)
             .count() as u64,

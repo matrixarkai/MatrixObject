@@ -17,7 +17,7 @@ pub(crate) fn prepared_page_batch_write_checksum(prepared: &PreparedPageBatchWri
     );
     append_u64(&mut material, prepared.writes.len() as u64);
     for write in &prepared.writes {
-        append_slab_id(&mut material, &write.slab_id);
+        append_slab_id(&mut material, &write.chunk_id);
         append_u64(&mut material, write.offset);
         append_u64(&mut material, write.data.len() as u64);
         append_string(&mut material, &etag(&write.data));
@@ -65,7 +65,7 @@ pub(crate) fn append_prepared_page_allocation_release_envelope(
     append_page_route_control_proof(out, &envelope.route_control_proof);
     append_string(out, &envelope.expected_route_control_checksum);
     append_string(out, &envelope.raft_entry_checksum);
-    append_slab_id(out, &envelope.allocation_slab_id);
+    append_slab_id(out, &envelope.allocation_chunk_id);
     append_u64(out, envelope.allocation_offset);
     append_u64(out, envelope.allocation_length);
     append_u64(out, envelope.allocation_create_time_ms);
@@ -98,7 +98,7 @@ pub(crate) fn make_prepared_page_allocation_release_envelope(
         route_control_proof: prepared.route_control_proof.clone(),
         expected_route_control_checksum: prepared.expected_route_control_checksum.clone(),
         raft_entry_checksum: prepared.raft_entry_checksum.clone(),
-        allocation_slab_id: prepared.receipt.allocation.slab_id.clone(),
+        allocation_chunk_id: prepared.receipt.allocation.chunk_id.clone(),
         allocation_offset: prepared.receipt.allocation.offset,
         allocation_length: prepared.receipt.allocation.length,
         allocation_create_time_ms: prepared.receipt.allocation.create_time_ms,
@@ -133,7 +133,7 @@ pub(crate) fn prepared_page_batch_discard_checksum(
     );
     append_u64(&mut material, prepared.requests.len() as u64);
     for request in &prepared.requests {
-        append_slab_id(&mut material, &request.slab_id);
+        append_slab_id(&mut material, &request.chunk_id);
         append_u64(&mut material, request.offset);
         append_u64(&mut material, request.length);
     }
@@ -171,7 +171,7 @@ pub(crate) fn prepared_page_range_repair_checksum(prepared: &PreparedPageRangeRe
     append_string(&mut material, "MOS-RUST-PREPARED-BLOCK-RANGE-REPAIR2");
     append_u64(&mut material, prepared.expected_previous_commit_index);
     append_u64(&mut material, prepared.prepared_commit_index);
-    append_slab_id(&mut material, &prepared.slab_id);
+    append_slab_id(&mut material, &prepared.chunk_id);
     append_u64(&mut material, prepared.offset);
     append_u64(&mut material, prepared.length);
     append_u64(&mut material, prepared.max_repair_chunks as u64);

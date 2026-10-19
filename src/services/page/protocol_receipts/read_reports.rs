@@ -61,7 +61,7 @@ impl ChunkReadStats {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkReadRepairReport {
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub offset: u64,
     pub length: u64,
     pub data: Vec<u8>,

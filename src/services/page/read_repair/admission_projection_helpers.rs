@@ -14,7 +14,7 @@ impl MatrixChunkService {
     }
 
     fn projected_chunk_lengths_for_grouped_write_views(
-        grouped: &BTreeMap<(SlabId, PageId), Vec<(u64, &[u8])>>,
+        grouped: &BTreeMap<(ChunkId, PageId), Vec<(u64, &[u8])>>,
     ) -> Result<BTreeMap<PageId, u64>, ObjectError> {
         let mut projected = BTreeMap::new();
         for ((_, page_id), writes) in grouped {

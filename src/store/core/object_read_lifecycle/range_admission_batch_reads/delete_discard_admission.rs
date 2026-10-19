@@ -52,7 +52,7 @@ impl MatrixObjectStore {
                 }
             }
             let admission = self.chunk_service.can_accept_slab_discard(
-                &extent.slab_id,
+                &extent.chunk_id,
                 extent.offset,
                 admitted_extent_len,
                 0,

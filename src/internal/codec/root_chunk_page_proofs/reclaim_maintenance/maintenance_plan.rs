@@ -48,9 +48,9 @@ pub(crate) fn storage_maintenance_plan_checksum(plan: &StorageMaintenancePlan) -
         append_string(&mut material, &replica.reason);
     }
     append_page_replica_reclaim_plan(&mut material, &plan.reclaim);
-    append_u64(&mut material, plan.slab_discards.len() as u64);
-    for discard in &plan.slab_discards {
-        append_slab_id(&mut material, &discard.slab_id);
+    append_u64(&mut material, plan.chunk_discards.len() as u64);
+    for discard in &plan.chunk_discards {
+        append_slab_id(&mut material, &discard.chunk_id);
         append_u64(&mut material, discard.discard_bytes);
         append_u64(&mut material, discard.fragmented as u64);
         append_u64(&mut material, discard.compact_instead as u64);

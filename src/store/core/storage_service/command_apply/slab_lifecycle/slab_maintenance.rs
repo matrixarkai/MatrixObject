@@ -1,12 +1,12 @@
 impl MatrixObjectStore {
-    fn apply_slab_maintenance_command(&mut self, command: ObjectCommand) -> Result<ObjectMetadata, ObjectError> {
+    fn apply_chunk_maintenance_command(&mut self, command: ObjectCommand) -> Result<ObjectMetadata, ObjectError> {
         match command {
-            ObjectCommand::ApplyDiscard { slab_id, ranges } => {
-                self.apply_discard(&slab_id, ranges)?;
+            ObjectCommand::ApplyDiscard { chunk_id, ranges } => {
+                self.apply_discard(&chunk_id, ranges)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new(
                         "_segment",
-                        format!("{}:{}", slab_id.volume_id, slab_id.id),
+                        format!("{}:{}", chunk_id.volume_id, chunk_id.id),
                     ),
                     version: 0,
                     length: 0,
@@ -21,13 +21,13 @@ impl MatrixObjectStore {
                     deleted: false,
                 })
             }
-            ObjectCommand::ApplyPreparedSlabDiscard { prepared } => {
-                let slab_id = prepared.slab_id.clone();
-                self.apply_prepared_slab_discard(prepared)?;
+            ObjectCommand::ApplyPreparedChunkDiscard { prepared } => {
+                let chunk_id = prepared.chunk_id.clone();
+                self.apply_prepared_chunk_discard(prepared)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new(
                         "_segment",
-                        format!("{}:{}", slab_id.volume_id, slab_id.id),
+                        format!("{}:{}", chunk_id.volume_id, chunk_id.id),
                     ),
                     version: 0,
                     length: 0,
@@ -42,15 +42,15 @@ impl MatrixObjectStore {
                     deleted: false,
                 })
             }
-            ObjectCommand::CompactSlab {
-                slab_id,
+            ObjectCommand::CompactChunk {
+                chunk_id,
                 update_time_ms,
             } => {
-                self.compact_slab_at(&slab_id, update_time_ms)?;
+                self.compact_chunk_at(&chunk_id, update_time_ms)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new(
                         "_segment",
-                        format!("{}:{}", slab_id.volume_id, slab_id.id),
+                        format!("{}:{}", chunk_id.volume_id, chunk_id.id),
                     ),
                     version: 0,
                     length: 0,
@@ -101,11 +101,11 @@ impl MatrixObjectStore {
                     &expected_object_gc_report_proof_checksum,
                 )?
                 .verify_expected_proof_checksum(&expected_full_compaction_plan_checksum)?;
-                let compacted_slabs = self.compact_all_at(min_stale_bytes, update_time_ms)?;
+                let compacted_chunks = self.compact_all_at(min_stale_bytes, update_time_ms)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new("_compact", "all"),
                     version: 0,
-                    length: compacted_slabs,
+                    length: compacted_chunks,
                     etag: String::new().into(),
                     content_type: "segment/full-compaction".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
@@ -117,14 +117,14 @@ impl MatrixObjectStore {
                     deleted: false,
                 })
             }
-            ObjectCommand::ApplyPreparedSlabCompaction { prepared } => {
-                let slab_id = prepared.slab_id.clone();
+            ObjectCommand::ApplyPreparedChunkCompaction { prepared } => {
+                let chunk_id = prepared.chunk_id.clone();
                 let update_time_ms = prepared.update_time_ms;
-                self.apply_prepared_slab_compaction(prepared)?;
+                self.apply_prepared_chunk_compaction(prepared)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new(
                         "_segment",
-                        format!("{}:{}", slab_id.volume_id, slab_id.id),
+                        format!("{}:{}", chunk_id.volume_id, chunk_id.id),
                     ),
                     version: 0,
                     length: 0,

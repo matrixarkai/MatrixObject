@@ -202,8 +202,8 @@ impl MatrixObjectStore {
             let read_end = range_end.min(extent_end);
             let local_offset = read_start - extent_start;
             let local_len = read_end - read_start;
-            let stats = self.chunk_service.invalidate_slab_range_cache_routed(
-                &extent.slab_id,
+            let stats = self.chunk_service.invalidate_chunk_range_cache_routed(
+                &extent.chunk_id,
                 extent.offset + local_offset,
                 local_len,
                 budget_left,

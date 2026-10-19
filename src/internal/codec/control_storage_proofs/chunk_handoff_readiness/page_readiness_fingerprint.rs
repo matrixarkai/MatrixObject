@@ -23,10 +23,10 @@ pub(crate) fn page_storage_readiness_fingerprint_material(
     append_u64(&mut material, readiness.total_physical_bytes);
     append_u64(&mut material, readiness.total_capacity_bytes);
     append_u64(&mut material, readiness.total_capacity_free_bytes);
-    append_u64(&mut material, readiness.sealed_slab_count);
+    append_u64(&mut material, readiness.sealed_chunk_count);
     append_u64(
         &mut material,
-        readiness.allocator_active_slab_sealed as u64,
+        readiness.allocator_active_chunk_sealed as u64,
     );
     append_u64(&mut material, readiness.metadata_dirty_replicas);
     append_u64(&mut material, readiness.metadata_dirty_mutations);

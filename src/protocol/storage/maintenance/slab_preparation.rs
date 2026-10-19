@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscardPlan {
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub ranges: Vec<DataRange>,
     pub discard_bytes: u64,
     pub fragmented: bool,
@@ -8,8 +8,8 @@ pub struct DiscardPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedSlabDiscard {
-    pub slab_id: SlabId,
+pub struct PreparedChunkDiscard {
+    pub chunk_id: ChunkId,
     pub ranges: Vec<DataRange>,
     pub discard_bytes: u64,
     pub source_stale_ranges: Vec<DataRange>,
@@ -24,7 +24,7 @@ pub struct PreparedSlabDiscard {
     pub raft_entry_checksum: String,
 }
 
-impl PreparedSlabDiscard {
+impl PreparedChunkDiscard {
     pub fn verify_expected_raft_entry_checksum(
         &self,
         expected_raft_entry_checksum: impl AsRef<str>,
@@ -44,9 +44,9 @@ impl PreparedSlabDiscard {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedSlabDiscardEnvelope {
+pub struct PreparedChunkDiscardEnvelope {
     pub envelope_format: String,
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub range_count: u64,
     pub discard_bytes: u64,
     pub source_stale_range_count: u64,
@@ -69,25 +69,25 @@ pub struct PreparedSlabDiscardEnvelope {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct SlabDiscardRunReport {
-    pub planned_slabs: u64,
+pub struct ChunkDiscardRunReport {
+    pub planned_chunks: u64,
     pub planned_discard_bytes: u64,
-    pub skipped_compaction_slabs: u64,
-    pub skipped_limit_slabs: u64,
-    pub attempted_slabs: u64,
-    pub discarded_slabs: u64,
-    pub failed_slabs: u64,
+    pub skipped_compaction_chunks: u64,
+    pub skipped_limit_chunks: u64,
+    pub attempted_chunks: u64,
+    pub discarded_chunks: u64,
+    pub failed_chunks: u64,
     pub discard_bytes: u64,
     pub first_error: String,
-    pub discarded_slab_ids: Vec<SlabId>,
-    pub compaction_slab_ids: Vec<SlabId>,
+    pub discarded_chunk_ids: Vec<ChunkId>,
+    pub compaction_chunk_ids: Vec<ChunkId>,
     pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedSlabCompaction {
-    pub slab_id: SlabId,
+pub struct PreparedChunkCompaction {
+    pub chunk_id: ChunkId,
     pub min_stale_bytes: u64,
     pub update_time_ms: u64,
     pub live_objects: Vec<ObjectId>,
@@ -105,7 +105,7 @@ pub struct PreparedSlabCompaction {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedSlabCompactionApplyReport {
+pub struct PreparedChunkCompactionApplyReport {
     pub mutation_id: String,
     pub mutation_request_checksum: String,
     pub mutation_commit_index: u64,
@@ -114,7 +114,7 @@ pub struct PreparedSlabCompactionApplyReport {
     pub prepared: bool,
     pub external_raft_required: bool,
     pub deduped: bool,
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub min_stale_bytes: u64,
     pub live_object_count: u64,
     pub source_stale_range_count: u64,
@@ -125,10 +125,10 @@ pub struct PreparedSlabCompactionApplyReport {
     pub metadata: ObjectMetadata,
 }
 
-impl PreparedSlabCompactionApplyReport {
+impl PreparedChunkCompactionApplyReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .slab_id
+            .chunk_id
             .to_control_fields(&format!("{field_prefix}segment."));
         for (name, value) in [
             ("mutation_commit_index", self.mutation_commit_index),
@@ -175,7 +175,7 @@ impl PreparedSlabCompactionApplyReport {
     }
 }
 
-impl PreparedSlabCompaction {
+impl PreparedChunkCompaction {
     pub fn verify_expected_raft_entry_checksum(
         &self,
         expected_raft_entry_checksum: impl AsRef<str>,
@@ -195,9 +195,9 @@ impl PreparedSlabCompaction {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedSlabCompactionEnvelope {
+pub struct PreparedChunkCompactionEnvelope {
     pub envelope_format: String,
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub min_stale_bytes: u64,
     pub update_time_ms: u64,
     pub live_object_count: u64,
