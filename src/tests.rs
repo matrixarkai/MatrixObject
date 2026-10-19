@@ -33756,6 +33756,62 @@ fn measure_what_an_object_change_record_holds() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_where_the_per_object_metadata_goes() {
+    // Metadata is the whole distance between 3.93x amplification at 1 KiB and
+    // the 3.00x three-way replication allows. Each component has now been taken
+    // apart on its own; this checks that the parts account for the total rather
+    // than deriving one from the others.
+    let objects = 200u64;
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..objects {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let get = |k: &str| -> u64 { audit.get(k).copied().unwrap_or(0) };
+
+    let parts = [
+        ("meta.records.bytes", get("meta.records.bytes")),
+        ("objects.bytes", get("objects.bytes")),
+        ("object_changes.bytes", get("object_changes.bytes")),
+        ("meta.change_log.bytes", get("meta.change_log.bytes")),
+        ("meta.receipts.bytes", get("meta.receipts.bytes")),
+        ("meta.entities.bytes", get("meta.entities.bytes")),
+        ("versions.bytes", get("versions.bytes")),
+        ("segments.bytes", get("segments.bytes")),
+        ("metadata_route_cache.bytes", get("metadata_route_cache.bytes")),
+        ("payloads.key_bytes", get("payloads.key_bytes")),
+        ("multipart.metadata_bytes", get("multipart.metadata_bytes")),
+    ];
+    let mut named = 0u64;
+    for (name, value) in parts {
+        println!("METABREAK {name}={value} per_object={}", value / objects);
+        named += value;
+    }
+    let total = get("ACCOUNTED.metadata_bytes");
+    println!("METABREAK named_sum={named} per_object={}", named / objects);
+    println!("METABREAK ACCOUNTED.metadata_bytes={total} per_object={}", total / objects);
+    println!(
+        "METABREAK unnamed_remainder={} per_object={}",
+        total.saturating_sub(named),
+        total.saturating_sub(named) / objects
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_space_amplification() {
     // What a stored byte costs in resident bytes, at several object sizes.
     //
