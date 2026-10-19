@@ -12167,7 +12167,7 @@ fn object_changefeed_tracks_mutations_cursors_and_snapshots() {
     assert_eq!(
         changes
             .iter()
-            .map(|change| change.operation.as_str())
+            .map(|change| &*change.operation)
             .collect::<Vec<_>>(),
         vec![
             "put_object",
@@ -12217,7 +12217,7 @@ fn object_changefeed_tracks_mutations_cursors_and_snapshots() {
             .list_object_changes_after(0, 16)
             .unwrap()
             .iter()
-            .map(|change| change.operation.as_str())
+            .map(|change| &*change.operation)
             .collect::<Vec<_>>(),
         vec![
             "put_object",
@@ -13169,7 +13169,7 @@ fn raft_backed_store_replays_object_changefeed_cursors() {
         .unwrap();
     let changes = replicated.store().list_object_changes_after(0, 10).unwrap();
     assert_eq!(changes.len(), 2);
-    assert_eq!(changes[1].operation, "delete_object");
+    assert_eq!(&*changes[1].operation, "delete_object");
 
     let cursor_meta = replicated
         .propose_commit_object_change_cursor("mirror-a", changes[1].sequence, 3)
@@ -13184,7 +13184,7 @@ fn raft_backed_store_replays_object_changefeed_cursors() {
             .list_object_changes_after(0, 10)
             .unwrap()
             .iter()
-            .map(|change| change.operation.as_str())
+            .map(|change| &*change.operation)
             .collect::<Vec<_>>(),
         vec!["put_object", "delete_object"]
     );

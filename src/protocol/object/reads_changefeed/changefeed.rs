@@ -3,11 +3,22 @@
 pub struct ObjectChangeRecord {
     pub sequence: u64,
     pub previous_sequence: u64,
-    pub operation: String,
+    /// One of a fixed set of twelve operation names, and a `Box<str>` rather
+    /// than a `String` because it is written once and never grown: a `String`
+    /// carries a capacity word the feed has no use for.
+    ///
+    /// An enum would be smaller still -- one byte against sixteen -- but the
+    /// snapshot stores this as text, so an enum would have to decide what a
+    /// decode does with a name it does not know. That is a compatibility
+    /// decision rather than a representation one, and it is in the issue
+    /// rather than here.
+    pub operation: Box<str>,
     pub object_id: ObjectId,
     pub version: u64,
     pub length: u64,
-    pub etag: String,
+    /// The object metadata holds this too, and the metadata record's value
+    /// restates it a third time. Boxed for the same reason as the operation.
+    pub etag: Box<str>,
     pub deleted: bool,
     pub event_time_ms: u64,
 }
@@ -22,7 +33,10 @@ impl ObjectChangeRecord {
         );
         fields.insert(format!("{field_prefix}record_id"), String::new());
         fields.insert(format!("{field_prefix}record_crc64"), String::new());
-        fields.insert(format!("{field_prefix}operation"), self.operation.clone());
+        fields.insert(
+            format!("{field_prefix}operation"),
+            self.operation.to_string(),
+        );
         fields.insert(
             format!("{field_prefix}bucket"),
             self.object_id.bucket.to_string(),
@@ -34,7 +48,7 @@ impl ObjectChangeRecord {
             self.sequence.to_string(),
         );
         fields.insert(format!("{field_prefix}length"), self.length.to_string());
-        fields.insert(format!("{field_prefix}etag"), self.etag.clone());
+        fields.insert(format!("{field_prefix}etag"), self.etag.to_string());
         fields.insert(format!("{field_prefix}deleted"), self.deleted.to_string());
         fields.insert(
             format!("{field_prefix}event_time_ms"),
