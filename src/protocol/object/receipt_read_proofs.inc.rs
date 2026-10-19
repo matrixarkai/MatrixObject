@@ -85,10 +85,10 @@ pub trait StorageReceiptPageProofSource {
     fn storage_receipt_page_chunk_size(&self) -> Option<u64> {
         None
     }
-    fn storage_receipt_page_skipped_slab_count(&self) -> u64 {
+    fn storage_receipt_page_skipped_chunk_count(&self) -> u64 {
         0
     }
-    fn storage_receipt_page_skipped_chunk_count(&self) -> u64 {
+    fn storage_receipt_page_skipped_page_count(&self) -> u64 {
         0
     }
     fn storage_receipt_page_typed_proof_checksum(&self) -> String;

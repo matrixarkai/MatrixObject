@@ -142,12 +142,12 @@ macro_rules! impl_filtered_page_storage_receipt_page_source {
                 self.page_size
             }
 
-            fn storage_receipt_page_skipped_slab_count(&self) -> u64 {
-                self.skipped_slab_count
-            }
-
             fn storage_receipt_page_skipped_chunk_count(&self) -> u64 {
                 self.skipped_chunk_count
+            }
+
+            fn storage_receipt_page_skipped_page_count(&self) -> u64 {
+                self.skipped_page_count
             }
 
             fn storage_receipt_page_typed_proof_checksum(&self) -> String {

@@ -6,7 +6,7 @@ fn page_receipt_page_common_control_fields(
     truncated: bool,
     next_marker: &Option<String>,
     chunk_id: Option<&ChunkId>,
-    skipped_slab_count: u64,
+    skipped_chunk_count: u64,
     field_prefix: &str,
 ) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
@@ -37,7 +37,7 @@ fn page_receipt_page_common_control_fields(
     }
     fields.insert(
         format!("{field_prefix}skipped_segment_count"),
-        skipped_slab_count.to_string(),
+        skipped_chunk_count.to_string(),
     );
     fields
 }
@@ -47,7 +47,7 @@ fn insert_page_chunk_filter_control_fields(
     field_prefix: &str,
     page_index: Option<u64>,
     page_size: Option<u64>,
-    skipped_chunk_count: u64,
+    skipped_page_count: u64,
 ) {
     if let Some(page_index) = page_index {
         fields.insert(
@@ -69,7 +69,7 @@ fn insert_page_chunk_filter_control_fields(
     }
     fields.insert(
         format!("{field_prefix}skipped_chunk_count"),
-        skipped_chunk_count.to_string(),
+        skipped_page_count.to_string(),
     );
 }
 

@@ -4496,7 +4496,7 @@ fn replica_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
         .list_write_receipts(None, 1, Some(&missing_chunk_id))
         .unwrap();
     assert_eq!(missing_write_page.receipt_count, 0);
-    assert_eq!(missing_write_page.skipped_chunk_count, 1);
+    assert_eq!(missing_write_page.skipped_page_count, 1);
     snapshot.validate().unwrap();
     let restored_snapshot = ReplicaServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
         .expect("chunk snapshot with scalar receipts should round trip");
@@ -5257,7 +5257,7 @@ fn chunk_service_dedupes_idempotent_writes_across_snapshots() {
     assert_eq!(chunk_write_page.receipt_count, 1);
     assert_eq!(chunk_write_page.total_receipt_count, 2);
     assert_eq!(chunk_write_page.page_id, Some(expected_chunk_id.clone()));
-    assert_eq!(chunk_write_page.skipped_chunk_count, 1);
+    assert_eq!(chunk_write_page.skipped_page_count, 1);
     assert!(chunk_write_page.receipts[0]
         .idempotency_key
         .starts_with("sw:"));
@@ -5397,7 +5397,7 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
     assert_eq!(chunk_write_page.receipt_count, 1);
     assert_eq!(chunk_write_page.total_receipt_count, 2);
     assert_eq!(chunk_write_page.page_id, Some(expected_chunk_id.clone()));
-    assert_eq!(chunk_write_page.skipped_chunk_count, 1);
+    assert_eq!(chunk_write_page.skipped_page_count, 1);
     assert_eq!(
         snapshot
             .replicas
@@ -5507,7 +5507,7 @@ fn chunk_service_dedupes_idempotent_discards_across_snapshots() {
         .unwrap();
     assert_eq!(chunk_discard_page.receipt_count, 1);
     assert_eq!(chunk_discard_page.total_receipt_count, 2);
-    assert_eq!(chunk_discard_page.skipped_chunk_count, 1);
+    assert_eq!(chunk_discard_page.skipped_page_count, 1);
     assert_eq!(
         snapshot
             .replicas
@@ -5637,7 +5637,7 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
         .unwrap();
     assert_eq!(chunk_discard_page.receipt_count, 1);
     assert_eq!(chunk_discard_page.total_receipt_count, 2);
-    assert_eq!(chunk_discard_page.skipped_chunk_count, 1);
+    assert_eq!(chunk_discard_page.skipped_page_count, 1);
     assert_eq!(
         snapshot
             .replicas
@@ -6684,7 +6684,7 @@ fn page_and_object_repair_large_ranges_with_cursors() {
         .unwrap();
     assert_eq!(first.total_chunk_count, 3);
     assert_eq!(first.selected_chunk_count, 1);
-    assert_eq!(first.skipped_chunk_count, 2);
+    assert_eq!(first.skipped_page_count, 2);
     assert_eq!(first.candidate_repair_bytes, 12);
     assert_eq!(first.selected_repair_bytes, 4);
     assert_eq!(first.skipped_repair_bytes, 8);

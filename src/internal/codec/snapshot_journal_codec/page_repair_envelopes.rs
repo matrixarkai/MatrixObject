@@ -13,7 +13,7 @@ pub(crate) fn append_page_chunk_control_proof(out: &mut Vec<u8>, proof: &Replica
 pub(crate) fn append_bounded_repair_report(out: &mut Vec<u8>, report: &BoundedRepairReport) {
     append_u64(out, report.total_chunk_count);
     append_u64(out, report.selected_chunk_count);
-    append_u64(out, report.skipped_chunk_count);
+    append_u64(out, report.skipped_page_count);
     append_u64(out, report.candidate_repair_bytes);
     append_u64(out, report.selected_repair_bytes);
     append_u64(out, report.skipped_repair_bytes);
@@ -71,7 +71,7 @@ pub(crate) fn append_prepared_page_repair_envelope(
     append_u64(out, envelope.start_chunk_index);
     append_u64(out, envelope.total_chunk_count);
     append_u64(out, envelope.selected_chunk_count);
-    append_u64(out, envelope.skipped_chunk_count);
+    append_u64(out, envelope.skipped_page_count);
     append_u64(out, envelope.selected_repair_bytes);
     append_u64(out, envelope.has_more as u64);
     append_u64(out, envelope.next_chunk_index);
@@ -116,7 +116,7 @@ pub(crate) fn prepared_page_range_repair_envelope(
         start_chunk_index: prepared.start_chunk_index,
         total_chunk_count: prepared.report.total_chunk_count,
         selected_chunk_count: prepared.report.selected_chunk_count,
-        skipped_chunk_count: prepared.report.skipped_chunk_count,
+        skipped_page_count: prepared.report.skipped_page_count,
         selected_repair_bytes: prepared.report.selected_repair_bytes,
         has_more: prepared.report.has_more,
         next_chunk_index: prepared.report.next_chunk_index,
@@ -160,7 +160,7 @@ pub(crate) fn prepared_page_chunk_repair_envelope(
         start_chunk_index: prepared.page_id.page_index,
         total_chunk_count: prepared.report.checked_chunks,
         selected_chunk_count: prepared.report.degraded_chunks,
-        skipped_chunk_count: 0,
+        skipped_page_count: 0,
         selected_repair_bytes: 0,
         has_more: false,
         next_chunk_index: prepared.page_id.page_index.saturating_add(1),

@@ -102,11 +102,11 @@ where
     }
     append_u64(
         &mut material,
-        page.storage_receipt_page_skipped_slab_count(),
+        page.storage_receipt_page_skipped_chunk_count(),
     );
     append_u64(
         &mut material,
-        page.storage_receipt_page_skipped_chunk_count(),
+        page.storage_receipt_page_skipped_page_count(),
     );
     append_string(
         &mut material,

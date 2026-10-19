@@ -60,13 +60,13 @@ pub(crate) fn page_batch_allocation_receipt_page_proof_checksum(
         page.truncated,
         &page.next_marker,
         &page.chunk_id,
-        page.skipped_slab_count,
+        page.skipped_chunk_count,
     );
     append_page_receipt_page_chunk_filter(
         &mut material,
         page.page_index,
         page.page_size,
-        page.skipped_chunk_count,
+        page.skipped_page_count,
     );
     append_u64(&mut material, page.receipts.len() as u64);
     for receipt in &page.receipts {

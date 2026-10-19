@@ -106,8 +106,8 @@ impl MatrixObjectStore {
             }
             if remaining_chunks == 0 {
                 aggregate.has_more = true;
-                aggregate.skipped_chunk_count = aggregate
-                    .skipped_chunk_count
+                aggregate.skipped_page_count = aggregate
+                    .skipped_page_count
                     .saturating_add(extent_chunk_count);
                 aggregate.skipped_repair_bytes = aggregate
                     .skipped_repair_bytes
