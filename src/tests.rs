@@ -33886,6 +33886,77 @@ fn measure_how_many_places_hold_one_object_key() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_the_read_cache_costs_beside_the_bytes_it_caches() {
+    // The read cache is bounded by a configured size per replica rather than by
+    // anything the data implies, which is the same shape as the metadata route
+    // cache -- and that one turned out to be 598 bytes an entry before anyone
+    // weighed it.
+    //
+    // `replica.read_cache.payload_bytes` is the cached chunk payload and is the
+    // number the cache enforces its bound on. `overhead_bytes` is everything
+    // beside it: the entry and key of each cached range, the checksum string,
+    // the by-chunk index and the eviction queue. The question is what that
+    // overhead is as a share of what the bound actually admits.
+    fn env_usize(name: &str, fallback: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(fallback)
+    }
+    let objects = env_usize("MEASURE_OBJECTS", 200);
+    let size = env_usize("MEASURE_SIZE", 4096);
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    let keys: Vec<String> = (0..objects)
+        .map(|index| format!("prefix/{index:08}/kkkkkkkkkk"))
+        .collect();
+    for key in keys.iter() {
+        store
+            .put_object("bucket", key, vec![b'x'; size], "application/octet-stream")
+            .unwrap();
+    }
+    let read = |store: &MatrixObjectStore, wanted: &str| -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == wanted)
+            .map(|(_, value)| value)
+            .unwrap_or(0)
+    };
+    println!(
+        "READCACHE after_writes payload={} overhead={}",
+        read(&store, "replica.read_cache.payload_bytes"),
+        read(&store, "replica.read_cache.overhead_bytes")
+    );
+
+    // Read everything back, which is what fills a read cache.
+    for key in keys.iter() {
+        let _ = store.get_object("bucket", key).unwrap();
+    }
+    let payload = read(&store, "replica.read_cache.payload_bytes");
+    let overhead = read(&store, "replica.read_cache.overhead_bytes");
+    let validation = read(&store, "replica.page_validation.bytes");
+    println!("READCACHE after_reads payload={payload} overhead={overhead} validation={validation}");
+    if payload > 0 {
+        println!(
+            "READCACHE overhead_as_share_of_payload={:.1}%",
+            overhead as f64 * 100.0 / payload as f64
+        );
+    }
+    println!(
+        "READCACHE per_object payload={} overhead={} validation={}",
+        payload / objects as u64,
+        overhead / objects as u64,
+        validation / objects as u64
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_space_amplification() {
     // What a stored byte costs in resident bytes, at several object sizes.
     //
