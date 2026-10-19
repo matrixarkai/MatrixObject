@@ -149,7 +149,7 @@ pub(crate) fn validate_metadata_route_cache_config(
 }
 
 pub(crate) fn validate_page_route_qos_config(
-    config: &PageRouteQosConfig,
+    config: &ChunkRouteQosConfig,
 ) -> Result<(), ObjectError> {
     let enabled = config.max_read_ops_per_window > 0
         || config.max_read_bytes_per_window > 0
@@ -171,7 +171,7 @@ pub(crate) fn validate_page_route_qos_config(
 }
 
 pub(crate) fn validate_chunk_mutation_qos_config(
-    config: &ChunkMutationQosConfig,
+    config: &ReplicaMutationQosConfig,
 ) -> Result<(), ObjectError> {
     let enabled = config.max_write_ops_per_window > 0
         || config.max_write_bytes_per_window > 0

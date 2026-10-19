@@ -72,7 +72,7 @@ pub struct ObjectBatchCacheControlReport {
     pub stats: CacheControlStats,
     pub budget_limited: bool,
     pub read_proof: ObjectReadProof,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub cache_batch_proof_format: String,
     pub cache_batch_proof_checksum: String,

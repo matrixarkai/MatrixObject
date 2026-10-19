@@ -7,13 +7,13 @@ pub struct ProvenPreparedChunkReclaimEnvelope {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedChunkMutationQosConfig {
     pub target_replica_index: Option<usize>,
-    pub config: ChunkMutationQosConfig,
-    pub page_service: MatrixPageService,
+    pub config: ReplicaMutationQosConfig,
+    pub chunk_service: MatrixChunkService,
     pub chunk_mutation_qos_prepared_aggregate_checksum: String,
     pub chunk_prepared_replica_count: u64,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -32,7 +32,7 @@ pub struct PreparedChunkTrimFlowConfig {
     pub chunk_prepared_replica_count: u64,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -48,7 +48,7 @@ pub struct PreparedChunkReadCacheConfig {
     pub chunk_prepared_replica_count: u64,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -63,7 +63,7 @@ pub struct PreparedChunkReceiptRetentionConfig {
     pub after_page_service_fingerprint: String,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }

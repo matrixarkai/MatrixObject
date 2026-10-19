@@ -17,7 +17,7 @@ impl MatrixObjectStore {
             min_ready_replica_count: 0,
             partial_status: "not_modified".to_string(),
             storage_admission_reason: "not_modified".to_string(),
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..ObjectRangeAdmission::default()
         };
         self.attach_storage_admission_context(&mut report, now_millis());
@@ -45,7 +45,7 @@ impl MatrixObjectStore {
             min_ready_replica_count: 0,
             partial_status: "not_modified".to_string(),
             storage_admission_reason: "not_modified".to_string(),
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..ObjectRangeAdmission::default()
         };
         self.attach_storage_admission_context(&mut report, now_millis());

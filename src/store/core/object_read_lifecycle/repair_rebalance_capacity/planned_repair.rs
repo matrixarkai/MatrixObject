@@ -9,7 +9,7 @@ impl MatrixObjectStore {
         start_chunk_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<BoundedRepairReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report = self.repair_object_range_bounded(
             bucket,
@@ -80,7 +80,7 @@ impl MatrixObjectStore {
         let plan = self.plan_object_replica_repairs(max_objects, marker)?;
         let mut report = ObjectReplicaRepairRunReport {
             plan,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..ObjectReplicaRepairRunReport::default()
         };
         let items = report.plan.items.clone();
@@ -144,7 +144,7 @@ impl MatrixObjectStore {
         max_repair_chunks_per_object: usize,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectReplicaRepairRunReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report =
             self.repair_planned_object_replicas(max_objects, marker, max_repair_chunks_per_object)?;

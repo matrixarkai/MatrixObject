@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkDiscardBatchStats {
+pub struct ReplicaDiscardBatchStats {
     pub input_ranges: u64,
     pub input_bytes: u64,
     pub coalesced_ranges: u64,
@@ -9,7 +9,7 @@ pub struct ChunkDiscardBatchStats {
     pub invalidated_cache_entries: u64,
 }
 
-impl ChunkDiscardBatchStats {
+impl ReplicaDiscardBatchStats {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -28,7 +28,7 @@ impl ChunkDiscardBatchStats {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkWriteBatchStats {
+pub struct ReplicaWriteBatchStats {
     pub input_ranges: u64,
     pub input_bytes: u64,
     pub coalesced_ranges: u64,
@@ -38,7 +38,7 @@ pub struct ChunkWriteBatchStats {
     pub invalidated_cache_entries: u64,
 }
 
-impl ChunkWriteBatchStats {
+impl ReplicaWriteBatchStats {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -57,7 +57,7 @@ impl ChunkWriteBatchStats {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkReadBatchStats {
+pub struct ReplicaReadBatchStats {
     pub input_ranges: u64,
     pub input_bytes: u64,
     pub coalesced_ranges: u64,
@@ -69,9 +69,9 @@ pub struct ChunkReadBatchStats {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkReadAdmission {
+pub struct ReplicaReadAdmission {
     pub can_accept: bool,
-    pub stats: ChunkReadBatchStats,
+    pub stats: ReplicaReadBatchStats,
     pub max_payload_bytes: u64,
     pub min_read_index: u64,
     pub min_commit_index: u64,
@@ -81,7 +81,7 @@ pub struct ChunkReadAdmission {
     pub partial_status: String,
 }
 
-impl ChunkReadBatchStats {
+impl ReplicaReadBatchStats {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -103,7 +103,7 @@ impl ChunkReadBatchStats {
     }
 }
 
-impl ChunkReadAdmission {
+impl ReplicaReadAdmission {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.extend(

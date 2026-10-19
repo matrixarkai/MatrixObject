@@ -17,7 +17,7 @@ impl MatrixObjectStore {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectBatchPutReport, ObjectError> {
         self.ensure_put_requests_read_fence("batch object put", &requests)?;
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if self.persistent_journal_path.is_empty() {
             return self.batch_put_objects_at(
@@ -106,7 +106,7 @@ impl MatrixObjectStore {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectBatchPutReport, ObjectError> {
         self.ensure_put_requests_read_fence("batch object put with root placement", &requests)?;
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if self.persistent_journal_path.is_empty() {
             return self.batch_put_objects_with_root_placement_at(
@@ -230,7 +230,7 @@ impl MatrixObjectStore {
             requested_objects: requests.len() as u64,
             payload_bytes: requested_payload_bytes,
             max_payload_bytes,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             expected_route_control_checksum: expected_route_control_checksum
                 .unwrap_or_default()
                 .to_string(),
@@ -356,7 +356,7 @@ impl MatrixObjectStore {
             requested_objects: requests.len() as u64,
             payload_bytes: requested_payload_bytes,
             max_payload_bytes,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             expected_route_control_checksum: expected_route_control_checksum
                 .unwrap_or_default()
                 .to_string(),

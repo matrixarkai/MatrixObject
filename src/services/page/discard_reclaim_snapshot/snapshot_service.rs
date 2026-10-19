@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     fn snapshot_cache_stamp_size_hint(&self) -> usize {
         let mut bytes = 1024usize;
         bytes = bytes.saturating_add(self.pending_allocations.len().saturating_mul(96));
@@ -59,8 +59,8 @@ impl MatrixPageService {
             self.allocator_next_offset,
             self.receipt_retention,
             self.released_allocation_count,
-            self.page_route_control_commit_index,
-            self.page_route_control_next_log_index,
+            self.chunk_route_control_commit_index,
+            self.chunk_route_control_next_log_index,
             self.cumulative_quorum_write_degraded_chunks,
             self.cumulative_quorum_read_degraded_chunks,
             self.cumulative_quorum_discard_degraded_chunks,
@@ -79,7 +79,7 @@ impl MatrixPageService {
             self.page_batch_write_parallelism,
             self.page_batch_discard_parallelism,
             self.page_repair_parallelism,
-            self.page_chunk_fanout_parallelism
+            self.replica_fanout_parallelism
         );
         let _ = write!(
             stamp,
@@ -151,7 +151,7 @@ impl MatrixPageService {
         stamp
     }
 
-    fn export_snapshot_image(&self) -> Result<PageSnapshotExportCache, ObjectError> {
+    fn export_snapshot_image(&self) -> Result<ChunkSnapshotExportCache, ObjectError> {
         let stamp = self.snapshot_cache_stamp();
         if let Some(cache) = self.snapshot_export_cache.borrow().as_ref() {
             if cache.stamp == stamp {
@@ -159,7 +159,7 @@ impl MatrixPageService {
             }
         }
         let bytes = self.export_snapshot().to_bytes()?;
-        let cache = PageSnapshotExportCache {
+        let cache = ChunkSnapshotExportCache {
             stamp,
             checksum: etag(&bytes),
             bytes: std::sync::Arc::from(bytes.into_boxed_slice()),
@@ -168,7 +168,7 @@ impl MatrixPageService {
         Ok(cache)
     }
 
-    pub fn export_snapshot(&self) -> PageServiceSnapshot {
+    pub fn export_snapshot(&self) -> ChunkServiceSnapshot {
         let mut snapshot = self.export_snapshot_unsealed();
         snapshot.seal_checksum();
         snapshot
@@ -176,8 +176,8 @@ impl MatrixPageService {
 
     /// Builds the snapshot without computing any checksum, its replicas'
     /// included. See `MatrixReplicaService::export_snapshot_unsealed`.
-    pub fn export_snapshot_unsealed(&self) -> PageServiceSnapshot {
-        PageServiceSnapshot {
+    pub fn export_snapshot_unsealed(&self) -> ChunkServiceSnapshot {
+        ChunkServiceSnapshot {
             page_size: self.page_size,
             write_quorum: self.write_quorum,
             read_quorum: self.read_quorum,
@@ -200,8 +200,8 @@ impl MatrixPageService {
             quarantined_replicas: self.quarantined_replicas.clone(),
             chunk_endpoints: self.chunk_endpoints.clone(),
             disabled_chunk_endpoints: self.disabled_chunk_endpoints.clone(),
-            page_route_control_commit_index: self.page_route_control_commit_index,
-            page_route_control_next_log_index: self.page_route_control_next_log_index,
+            chunk_route_control_commit_index: self.chunk_route_control_commit_index,
+            chunk_route_control_next_log_index: self.chunk_route_control_next_log_index,
             route_qos_config: self.route_qos_config.clone(),
             route_qos_state: self.route_qos_state(),
             sealed_slabs: self.sealed_slabs.clone(),
@@ -231,7 +231,7 @@ impl MatrixPageService {
         &self,
         offset: u64,
         max_payload_bytes: usize,
-    ) -> Result<PageServiceSnapshotChunk, ObjectError> {
+    ) -> Result<ChunkServiceSnapshotChunk, ObjectError> {
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
                 "block service snapshot chunk budget must be positive".to_string(),
@@ -263,7 +263,7 @@ impl MatrixPageService {
         mut emit: F,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        F: FnMut(PageServiceSnapshotChunk) -> Result<(), ObjectError>,
+        F: FnMut(ChunkServiceSnapshotChunk) -> Result<(), ObjectError>,
     {
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
@@ -305,7 +305,7 @@ impl MatrixPageService {
     pub fn export_snapshot_chunks(
         &self,
         max_payload_bytes: usize,
-    ) -> Result<Vec<PageServiceSnapshotChunk>, ObjectError> {
+    ) -> Result<Vec<ChunkServiceSnapshotChunk>, ObjectError> {
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
                 "block service snapshot chunk budget must be positive".to_string(),
@@ -347,7 +347,7 @@ impl MatrixPageService {
         Ok(chunks)
     }
 
-    pub fn install_snapshot(&mut self, snapshot: PageServiceSnapshot) -> Result<(), ObjectError> {
+    pub fn install_snapshot(&mut self, snapshot: ChunkServiceSnapshot) -> Result<(), ObjectError> {
         snapshot.validate()?;
         self.snapshot_assembler.reset();
         let restored_replica_count = snapshot.replicas.len();
@@ -384,8 +384,8 @@ impl MatrixPageService {
         self.quarantined_replicas = snapshot.quarantined_replicas;
         self.chunk_endpoints = snapshot.chunk_endpoints;
         self.disabled_chunk_endpoints = snapshot.disabled_chunk_endpoints;
-        self.page_route_control_commit_index = snapshot.page_route_control_commit_index;
-        self.page_route_control_next_log_index = snapshot.page_route_control_next_log_index;
+        self.chunk_route_control_commit_index = snapshot.chunk_route_control_commit_index;
+        self.chunk_route_control_next_log_index = snapshot.chunk_route_control_next_log_index;
         self.route_qos_config = snapshot.route_qos_config;
         *self.route_qos_state.borrow_mut() = snapshot.route_qos_state;
         self.sealed_slabs = snapshot.sealed_slabs;
@@ -416,14 +416,14 @@ impl MatrixPageService {
     pub fn install_snapshot_bytes(
         &mut self,
         bytes: &[u8],
-    ) -> Result<PageServiceSnapshot, ObjectError> {
-        let snapshot = PageServiceSnapshot::from_bytes(bytes)?;
+    ) -> Result<ChunkServiceSnapshot, ObjectError> {
+        let snapshot = ChunkServiceSnapshot::from_bytes(bytes)?;
         self.install_snapshot(snapshot.clone())?;
         Ok(snapshot)
     }
 
     pub fn install_snapshot_bytes_in_place(&mut self, bytes: &[u8]) -> Result<(), ObjectError> {
-        self.install_snapshot(PageServiceSnapshot::from_bytes(bytes)?)
+        self.install_snapshot(ChunkServiceSnapshot::from_bytes(bytes)?)
     }
 
     pub fn install_snapshot_chunks<I>(
@@ -431,7 +431,7 @@ impl MatrixPageService {
         chunks: I,
     ) -> Result<SnapshotInstallProgress, ObjectError>
     where
-        I: IntoIterator<Item = PageServiceSnapshotChunk>,
+        I: IntoIterator<Item = ChunkServiceSnapshotChunk>,
     {
         let mut progress = self.snapshot_assembler.install_progress();
         for chunk in chunks {

@@ -1,25 +1,25 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_configure_chunk_mutation_qos(
         &mut self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose_configure_chunk_mutation_qos_fenced(config, None)
     }
 
     pub fn propose_configure_chunk_mutation_qos_fenced(
         &mut self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.store
-            .page_service
+            .chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.propose(ObjectCommand::ConfigureChunkMutationQos { config })
     }
 
     pub fn propose_configure_chunk_mutation_qos_linearizable_fenced(
         &mut self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
@@ -36,7 +36,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_configure_chunk_replica_mutation_qos(
         &mut self,
         replica_index: usize,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose_configure_chunk_replica_mutation_qos_fenced(replica_index, config, None)
     }
@@ -44,11 +44,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_configure_chunk_replica_mutation_qos_fenced(
         &mut self,
         replica_index: usize,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.store
-            .page_service
+            .chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.propose(ObjectCommand::ConfigureChunkReplicaMutationQos {
             replica_index,
@@ -59,7 +59,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_configure_chunk_replica_mutation_qos_linearizable_fenced(
         &mut self,
         replica_index: usize,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,

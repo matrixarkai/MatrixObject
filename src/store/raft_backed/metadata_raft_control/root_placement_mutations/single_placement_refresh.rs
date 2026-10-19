@@ -76,7 +76,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "refresh object root placement route proof",
             &expected_checksum,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
             .propose_refresh_object_root_placement_with_read_proof_linearizable_committed_at(
                 bucket,

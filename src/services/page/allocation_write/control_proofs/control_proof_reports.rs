@@ -1,5 +1,5 @@
-impl MatrixPageService {
-    pub fn route_control_proof(&self) -> PageRouteControlProof {
+impl MatrixChunkService {
+    pub fn route_control_proof(&self) -> ChunkRouteControlProof {
         let route_qos_state = self.route_qos_state();
         let write_quorum = self.write_quorum as u64;
         let configured_write_quorum = self.write_quorum as u64;
@@ -17,8 +17,8 @@ impl MatrixPageService {
             + std::mem::size_of::<u64>() * 20;
         let mut material = Vec::with_capacity(route_material_capacity);
         append_string(&mut material, "MOSRSBLOCKROUTE10");
-        append_u64(&mut material, self.page_route_control_commit_index);
-        append_u64(&mut material, self.page_route_control_next_log_index);
+        append_u64(&mut material, self.chunk_route_control_commit_index);
+        append_u64(&mut material, self.chunk_route_control_next_log_index);
         append_u64(&mut material, write_quorum);
         append_u64(&mut material, configured_write_quorum);
         append_u64(&mut material, read_quorum);
@@ -74,13 +74,13 @@ impl MatrixPageService {
                     || replica.is_frozen()
             })
             .count() as u64;
-        PageRouteControlProof {
+        ChunkRouteControlProof {
             control_receipt: true,
             state_format: "MOSRSBLOCKROUTE10".to_string(),
             state_bytes: material.len() as u64,
             state_checksum: etag(&material),
-            page_route_control_commit_index: self.page_route_control_commit_index,
-            page_route_control_next_log_index: self.page_route_control_next_log_index,
+            chunk_route_control_commit_index: self.chunk_route_control_commit_index,
+            chunk_route_control_next_log_index: self.chunk_route_control_next_log_index,
             chunk_endpoint_count: self.chunk_endpoints.len() as u64,
             disabled_chunk_endpoint_count: self.disabled_chunk_endpoints.len() as u64,
             write_quorum,
@@ -116,7 +116,7 @@ impl MatrixPageService {
         }
     }
 
-    pub fn chunk_control_proof(&self) -> PageChunkControlProof {
+    pub fn chunk_control_proof(&self) -> ReplicaControlProof {
         let mut material = Vec::with_capacity(
             encoded_string_len("MOSRSBLOCK-CHUNK-CONTROL-PROOF1")
                 + self.replicas.len() * (std::mem::size_of::<u64>() * 7 + 128),
@@ -153,9 +153,9 @@ impl MatrixPageService {
             proof_count = proof_count.saturating_add(1);
         }
         if proof_count == 0 {
-            return PageChunkControlProof::default();
+            return ReplicaControlProof::default();
         }
-        PageChunkControlProof {
+        ReplicaControlProof {
             proof_count,
             proof_checksum: etag(&material),
             min_raft_commit_index,

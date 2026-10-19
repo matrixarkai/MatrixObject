@@ -1,4 +1,4 @@
-impl PageServiceSnapshot {
+impl ChunkServiceSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
         validate_storage_receipt_retention(self.receipt_retention)?;
         if self.page_size == 0 {
@@ -34,7 +34,7 @@ impl PageServiceSnapshot {
         validate_page_route_qos_config(&self.route_qos_config).map_err(|err| {
             ObjectError::Corruption(format!("block service route qos is invalid: {err}"))
         })?;
-        if self.page_route_control_next_log_index <= self.page_route_control_commit_index {
+        if self.chunk_route_control_next_log_index <= self.chunk_route_control_commit_index {
             return Err(ObjectError::Corruption(
                 "block service route control log watermark is invalid".to_string(),
             ));

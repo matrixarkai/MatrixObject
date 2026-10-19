@@ -1,5 +1,5 @@
 pub(crate) fn page_storage_readiness_fingerprint_material(
-    readiness: &PageStorageReadiness,
+    readiness: &ChunkStorageReadiness,
 ) -> Vec<u8> {
     let mut material = Vec::new();
     append_string(&mut material, PAGE_STORAGE_READINESS_FINGERPRINT_FORMAT);
@@ -111,7 +111,7 @@ pub(crate) fn page_storage_readiness_fingerprint_material(
     append_u64(&mut material, readiness.page_batch_write_parallelism);
     append_u64(&mut material, readiness.page_batch_discard_parallelism);
     append_u64(&mut material, readiness.page_repair_parallelism);
-    append_u64(&mut material, readiness.page_chunk_fanout_parallelism);
+    append_u64(&mut material, readiness.replica_fanout_parallelism);
     append_u64(
         &mut material,
         readiness.primary_batch_read_repair_probe_limit,

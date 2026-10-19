@@ -179,7 +179,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         self.store
-            .page_service
+            .chunk_service
             .replicas
             .get_mut(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?

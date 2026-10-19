@@ -7,7 +7,7 @@ impl MatrixObjectStore {
         frozen: Option<bool>,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedReplicaServiceModeConfig, ObjectError> {
-        let admitted_route_checksum = self.page_service.route_control_proof().state_checksum;
+        let admitted_route_checksum = self.chunk_service.route_control_proof().state_checksum;
         self.prepare_replica_service_mode_raft_entry_fenced(
             replica_index,
             accepting_writes,
@@ -27,7 +27,7 @@ impl MatrixObjectStore {
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<PreparedReplicaServiceModeConfig, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -35,8 +35,8 @@ impl MatrixObjectStore {
             ));
         }
         let before_page_service_fingerprint =
-            page_capacity_control_image_fingerprint(&self.page_service);
-        let mut projected = self.page_service.clone();
+            page_capacity_control_image_fingerprint(&self.chunk_service);
+        let mut projected = self.chunk_service.clone();
         if replica_index == PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
             projected.configure_all_eligible_chunk_replica_service_mode(
                 accepting_writes,
@@ -62,7 +62,7 @@ impl MatrixObjectStore {
                 expected_previous_commit_index,
                 prepared_commit_index,
             )?;
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let expected_route_control_checksum =
             expected_route_control_checksum.unwrap_or("").to_string();
         let mut prepared = PreparedReplicaServiceModeConfig {
@@ -115,7 +115,7 @@ impl MatrixObjectStore {
                 "chunk prepared service-mode commit index must be adjacent".to_string(),
             ));
         }
-        let mut projected = self.page_service.clone();
+        let mut projected = self.chunk_service.clone();
         if prepared.replica_index == PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
             projected.configure_all_eligible_chunk_replica_service_mode(
                 prepared.accepting_writes,
@@ -149,7 +149,7 @@ impl MatrixObjectStore {
                 "chunk prepared service-mode aggregate checksum mismatch".to_string(),
             ));
         }
-        let current_fingerprint = page_capacity_control_image_fingerprint(&self.page_service);
+        let current_fingerprint = page_capacity_control_image_fingerprint(&self.chunk_service);
         if current_fingerprint == prepared.after_page_service_fingerprint {
             return Ok(());
         }
@@ -158,27 +158,27 @@ impl MatrixObjectStore {
                 "chunk prepared service-mode previous commit fence mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "chunk prepared service-mode",
             )?;
         if prepared.replica_index == PAGE_REPLICA_SERVICE_MODE_ALL_ELIGIBLE_TARGET {
-            self.page_service
+            self.chunk_service
                 .configure_all_eligible_chunk_replica_service_mode(
                     prepared.accepting_writes,
                     prepared.draining,
                     prepared.frozen,
                 )?;
         } else {
-            self.page_service.configure_chunk_replica_service_mode(
+            self.chunk_service.configure_chunk_replica_service_mode(
                 prepared.replica_index,
                 prepared.accepting_writes,
                 prepared.draining,
                 prepared.frozen,
             )?;
         }
-        if page_capacity_control_image_fingerprint(&self.page_service)
+        if page_capacity_control_image_fingerprint(&self.chunk_service)
             != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(

@@ -9,7 +9,7 @@ impl MatrixObjectStore {
         validate_idempotency_key(idempotency_key)?;
         validate_page_allocation_batch_lengths(
             &lengths,
-            self.page_service.allocator_slab_size,
+            self.chunk_service.allocator_slab_size,
         )?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -18,8 +18,8 @@ impl MatrixObjectStore {
             ));
         }
         let before_page_service_fingerprint =
-            page_allocation_mutation_image_fingerprint(&self.page_service);
-        let mut projected = self.page_service.clone();
+            chunk_allocation_mutation_image_fingerprint(&self.chunk_service);
+        let mut projected = self.chunk_service.clone();
         let (allocations, deduped) = if let Some(existing) = projected
             .batch_allocation_request_receipts
             .get(idempotency_key)
@@ -47,10 +47,10 @@ impl MatrixObjectStore {
             (allocations, false)
         };
         let after_page_service_fingerprint =
-            page_allocation_mutation_image_fingerprint(&projected);
+            chunk_allocation_mutation_image_fingerprint(&projected);
         let request_checksum =
             page_batch_allocation_reservation_request_checksum(&lengths, now_ms, idempotency_key);
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let mut prepared = PreparedPageBatchAllocationReservation {
             lengths,
             now_ms,
@@ -60,7 +60,7 @@ impl MatrixObjectStore {
             after_page_service_fingerprint,
             expected_route_control_checksum: route_control_proof.state_checksum.clone(),
             route_control_proof,
-            receipt: PageBatchAllocationReceipt {
+            receipt: ChunkBatchAllocationReceipt {
                 allocations,
                 idempotency_key: idempotency_key.to_string(),
                 deduped,
@@ -80,11 +80,11 @@ impl MatrixObjectStore {
     pub fn apply_prepared_page_batch_allocation_reservation(
         &mut self,
         prepared: PreparedPageBatchAllocationReservation,
-    ) -> Result<PageBatchAllocationReceipt, ObjectError> {
+    ) -> Result<ChunkBatchAllocationReceipt, ObjectError> {
         validate_idempotency_key(&prepared.idempotency_key)?;
         validate_page_allocation_batch_lengths(
             &prepared.lengths,
-            self.page_service.allocator_slab_size,
+            self.chunk_service.allocator_slab_size,
         )?;
         if prepared.request_checksum
             != page_batch_allocation_reservation_request_checksum(
@@ -143,7 +143,7 @@ impl MatrixObjectStore {
             }
         }
         if let Some(existing) = self
-            .page_service
+            .chunk_service
             .batch_allocation_request_receipts
             .get(&prepared.idempotency_key)
         {
@@ -153,13 +153,13 @@ impl MatrixObjectStore {
                         .to_string(),
                 ));
             }
-            return Ok(PageBatchAllocationReceipt {
+            return Ok(ChunkBatchAllocationReceipt {
                 allocations: existing.clone(),
                 idempotency_key: prepared.idempotency_key,
                 deduped: true,
             });
         }
-        let current_fingerprint = page_allocation_mutation_image_fingerprint(&self.page_service);
+        let current_fingerprint = chunk_allocation_mutation_image_fingerprint(&self.chunk_service);
         if current_fingerprint == prepared.after_page_service_fingerprint {
             return Ok(prepared.receipt);
         }
@@ -169,7 +169,7 @@ impl MatrixObjectStore {
                     .to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "block prepared batch allocation reservation",
@@ -183,25 +183,25 @@ impl MatrixObjectStore {
         let mut allocations = Vec::with_capacity(prepared.lengths.len());
         for length in &prepared.lengths {
             allocations.push(
-                self.page_service
+                self.chunk_service
                     .allocate_page_range(*length, prepared.now_ms)?,
             );
         }
-        self.page_service
+        self.chunk_service
             .batch_allocation_request_receipts
             .insert(prepared.idempotency_key.clone(), allocations.clone());
-        self.page_service.trim_receipts_to_retention();
-        let receipt = PageBatchAllocationReceipt {
+        self.chunk_service.trim_receipts_to_retention();
+        let receipt = ChunkBatchAllocationReceipt {
             allocations,
             idempotency_key: prepared.idempotency_key.clone(),
             deduped: false,
         };
         if receipt != prepared.receipt
-            || page_allocation_mutation_image_fingerprint(&self.page_service)
+            || chunk_allocation_mutation_image_fingerprint(&self.chunk_service)
                 != prepared.after_page_service_fingerprint
-            || self.page_service.pending_allocations.len() as u64
+            || self.chunk_service.pending_allocations.len() as u64
                 != prepared.pending_allocation_count_after
-            || self.page_service.batch_allocation_request_receipts.len() as u64
+            || self.chunk_service.batch_allocation_request_receipts.len() as u64
                 != prepared.allocation_receipt_count_after
         {
             return Err(ObjectError::Corruption(

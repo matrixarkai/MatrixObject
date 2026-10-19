@@ -5,12 +5,12 @@ pub struct PreparedPageAuditRepair {
     pub max_payload_bytes: u64,
     pub before_page_service_fingerprint: String,
     pub after_page_service_fingerprint: String,
-    pub report: PageReplicaAuditRepairReport,
+    pub report: ChunkReplicaAuditRepairReport,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
-    pub chunk_control_proof: PageChunkControlProof,
+    pub chunk_control_proof: ReplicaControlProof,
     pub raft_entry_checksum: String,
 }
 
@@ -24,8 +24,8 @@ pub struct PreparedPageAuditRepairApplyReport {
     pub prepared: bool,
     pub external_raft_required: bool,
     pub deduped: bool,
-    pub report: PageReplicaAuditRepairReport,
-    pub receipt: PageAuditRepairReceipt,
+    pub report: ChunkReplicaAuditRepairReport,
+    pub receipt: ChunkAuditRepairReceipt,
     pub metadata: ObjectMetadata,
 }
 

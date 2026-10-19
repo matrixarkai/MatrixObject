@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn list_write_receipts(
         &self,
         marker: Option<&str>,
@@ -27,7 +27,7 @@ impl MatrixPageService {
             page_size: page_index.map(|_| self.page_size),
             ..PageWriteReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &PageWriteReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ChunkWriteReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.write_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -78,7 +78,7 @@ impl MatrixPageService {
             limit: limit as u64,
             ..PageBatchWriteReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &PageBatchWriteReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ChunkBatchWriteReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.batch_write_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),

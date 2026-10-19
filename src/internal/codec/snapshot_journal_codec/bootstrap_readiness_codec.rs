@@ -30,7 +30,7 @@ pub(crate) fn append_metadata_bootstrap_readiness(
 
 pub(crate) fn append_chunk_storage_bootstrap_readiness(
     out: &mut Vec<u8>,
-    readiness: &ChunkStorageReadiness,
+    readiness: &ReplicaStorageReadiness,
 ) {
     append_u64(out, readiness.readable as u64);
     append_u64(out, readiness.writable as u64);

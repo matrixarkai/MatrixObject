@@ -38,7 +38,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn propose_prepared_page_reclaim_apply(
         &mut self,
         prepared: PreparedPageReplicaReclaim,
-    ) -> Result<(ObjectMetadata, ChunkPartialReclaimReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ReplicaPartialReclaimReport), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
                 "prepared block reclaim requires raft/store commit alignment".to_string(),
@@ -101,7 +101,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         prepared: PreparedPageReplicaReclaim,
         expected_route_control_checksum: Option<&str>,
         expected_raft_entry_checksum: &str,
-    ) -> Result<(ObjectMetadata, ChunkPartialReclaimReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ReplicaPartialReclaimReport), ObjectError> {
         if expected_raft_entry_checksum.is_empty() {
             return Err(ObjectError::PreconditionFailed(
                 "prepared block reclaim requires expected raft entry checksum".to_string(),

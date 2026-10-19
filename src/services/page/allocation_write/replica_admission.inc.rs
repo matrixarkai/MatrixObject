@@ -1,11 +1,11 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn can_accept_chunk_replica_batch_write(
         &self,
         replica_index: usize,
         chunk_id: &PageId,
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         self.can_accept_chunk_replica_batch_write_from(
             replica_index,
             chunk_id,
@@ -22,7 +22,7 @@ impl MatrixPageService {
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         write_start_range_index: u64,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let mut borrowed = Vec::with_capacity(writes.len());
         for (offset, data) in &writes {
             borrowed.push((*offset, data.as_slice()));
@@ -43,7 +43,7 @@ impl MatrixPageService {
         writes: &[(u64, &[u8])],
         max_write_bytes: u64,
         write_start_range_index: u64,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let replica = self.replicas.get(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index out of range".to_string())
         })?;
@@ -67,7 +67,7 @@ impl MatrixPageService {
         writes: Vec<(u64, Vec<u8>)>,
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let replica = self.replicas.get(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index out of range".to_string())
         })?;
@@ -92,7 +92,7 @@ impl MatrixPageService {
         writes: &[(u64, &[u8])],
         max_write_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkWriteAdmission, ObjectError> {
+    ) -> Result<ReplicaWriteAdmission, ObjectError> {
         let replica = self.replicas.get(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index out of range".to_string())
         })?;
@@ -112,7 +112,7 @@ impl MatrixPageService {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         self.can_accept_chunk_replica_batch_discard_from(
             replica_index,
             chunk_id,
@@ -129,7 +129,7 @@ impl MatrixPageService {
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         self.can_accept_chunk_replica_batch_discard_from_borrowed(
             replica_index,
             chunk_id,
@@ -146,7 +146,7 @@ impl MatrixPageService {
         ranges: &[DataRange],
         max_discard_bytes: u64,
         discard_start_range_index: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         let replica = self.replicas.get(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index out of range".to_string())
         })?;
@@ -170,7 +170,7 @@ impl MatrixPageService {
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         let replica = self.replicas.get(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index out of range".to_string())
         })?;
@@ -190,7 +190,7 @@ impl MatrixPageService {
         ranges: &[DataRange],
         max_discard_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         let replica = self.replicas.get(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index out of range".to_string())
         })?;
@@ -210,7 +210,7 @@ impl MatrixPageService {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
-    ) -> Result<ChunkReadAdmission, ObjectError> {
+    ) -> Result<ReplicaReadAdmission, ObjectError> {
         let replica = self.replicas.get(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index out of range".to_string())
         })?;
@@ -229,7 +229,7 @@ impl MatrixPageService {
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkReadAdmission, ObjectError> {
+    ) -> Result<ReplicaReadAdmission, ObjectError> {
         let replica = self.replicas.get(replica_index).ok_or_else(|| {
             ObjectError::InvalidArgument("replica index out of range".to_string())
         })?;

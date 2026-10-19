@@ -1,6 +1,6 @@
 pub(crate) fn page_range_admission_proof_checksum(
     operation: &str,
-    admission: &PageRangeAdmission,
+    admission: &ChunkRangeAdmission,
 ) -> String {
     let mut material = Vec::with_capacity(
         std::mem::size_of::<u64>() * 48
@@ -85,7 +85,7 @@ pub(crate) fn page_range_admission_proof_checksum(
 
 pub(crate) fn stamp_page_range_admission_proof(
     operation: &str,
-    admission: &mut PageRangeAdmission,
+    admission: &mut ChunkRangeAdmission,
 ) {
     admission.admission_proof_format = STORAGE_ADMISSION_PROOF_FORMAT.to_string();
     admission.admission_proof_checksum = page_range_admission_proof_checksum(operation, admission);

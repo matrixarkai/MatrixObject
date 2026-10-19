@@ -48,7 +48,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
     ) -> Result<ProvenPageRouteFencedStorageRead<CacheControlStats>, ObjectError> {
         let expected_checksum = expected_route_control_checksum.as_ref().to_string();
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
             .invalidate_slab_range_cache_with_read_proof_linearizable_fenced_committed_at(
                 slab_id,
@@ -104,11 +104,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             )));
         }
         self.store
-            .page_service
+            .chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let value = self
             .store
-            .page_service
+            .chunk_service
             .invalidate_slab_range_cache_bounded(slab_id, offset, length, max_bytes)?;
         let proof = self.page_storage_read_proof_committed(requested_read_index, min_commit_index);
         Ok(ProvenStorageRead { value, proof })

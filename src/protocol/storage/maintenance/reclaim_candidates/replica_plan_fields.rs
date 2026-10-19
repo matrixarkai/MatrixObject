@@ -1,4 +1,4 @@
-impl PageReplicaReclaimCandidate {
+impl ChunkReplicaReclaimCandidate {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -13,7 +13,7 @@ impl PageReplicaReclaimCandidate {
     }
 }
 
-impl PageReplicaReclaimPlan {
+impl ChunkReplicaReclaimPlan {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [

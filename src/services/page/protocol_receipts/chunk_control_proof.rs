@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageChunkControlProof {
+pub struct ReplicaControlProof {
     pub proof_count: u64,
     pub proof_checksum: String,
     pub min_raft_commit_index: u64,
@@ -7,7 +7,7 @@ pub struct PageChunkControlProof {
     pub replica_service_state_checksums: BTreeMap<usize, String>,
 }
 
-impl PageChunkControlProof {
+impl ReplicaControlProof {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(

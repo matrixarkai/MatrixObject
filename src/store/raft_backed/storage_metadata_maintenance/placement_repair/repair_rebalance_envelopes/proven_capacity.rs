@@ -122,7 +122,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "proven root capacity rebalance route proof",
             &expected_checksum,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
             .propose_proven_root_capacity_rebalance_envelope_fenced_with_read_proof_linearizable_committed_at(
                 proven_envelope,

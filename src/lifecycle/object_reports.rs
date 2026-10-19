@@ -2,7 +2,7 @@
 pub struct ObjectLegalHoldMutationReport {
     pub metadata: ObjectMetadata,
     pub enabled: bool,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 
@@ -24,7 +24,7 @@ impl ObjectLegalHoldMutationReport {
 pub struct ObjectRetentionMutationReport {
     pub metadata: ObjectMetadata,
     pub retention_until_ms: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 
@@ -49,7 +49,7 @@ impl ObjectRetentionMutationReport {
 pub struct ObjectTagsMutationReport {
     pub metadata: ObjectMetadata,
     pub tags: BTreeMap<String, String>,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 
@@ -74,7 +74,7 @@ impl ObjectTagsMutationReport {
 pub struct ObjectTransitionMutationReport {
     pub metadata: ObjectMetadata,
     pub storage_class: String,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 
@@ -99,7 +99,7 @@ impl ObjectTransitionMutationReport {
 pub struct ObjectRestoreMutationReport {
     pub metadata: ObjectMetadata,
     pub restore_until_ms: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 

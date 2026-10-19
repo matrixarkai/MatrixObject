@@ -133,7 +133,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "copy object with root placement route proof",
             &expected_checksum,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
             .propose_copy_object_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
                 source_bucket,

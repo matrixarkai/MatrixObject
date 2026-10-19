@@ -57,7 +57,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let report = ObjectRestoreMutationReport {
             restore_until_ms: metadata.lock.restore_until_ms,
             metadata,
-            route_control_proof: PageRouteControlProof::default(),
+            route_control_proof: ChunkRouteControlProof::default(),
             expected_route_control_checksum: String::new(),
         };
         Ok(proven_metadata_read(report, &readiness))
@@ -120,7 +120,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let report = ObjectRestoreMutationReport {
             restore_until_ms: metadata.lock.restore_until_ms,
             metadata,
-            route_control_proof: PageRouteControlProof::default(),
+            route_control_proof: ChunkRouteControlProof::default(),
             expected_route_control_checksum: String::new(),
         };
         Ok(proven_metadata_read(report, &readiness))
@@ -289,7 +289,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let metadata = self.propose_restore_object_version_with_root_placement_fenced(
             bucket,
             key,

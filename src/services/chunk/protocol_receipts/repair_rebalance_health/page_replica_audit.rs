@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageReplicaAuditItem {
+pub struct ChunkReplicaAuditItem {
     pub chunk_id: PageId,
     pub replica_index: usize,
     pub status: String,
@@ -12,8 +12,8 @@ pub struct PageReplicaAuditItem {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageReplicaAuditPage {
-    pub items: Vec<PageReplicaAuditItem>,
+pub struct ChunkReplicaAuditChunk {
+    pub items: Vec<ChunkReplicaAuditItem>,
     pub marker: Option<PageId>,
     pub next_marker: Option<PageId>,
     pub scanned_chunks: u64,
@@ -30,8 +30,8 @@ pub struct PageReplicaAuditPage {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageReplicaAuditRepairReport {
-    pub audit: PageReplicaAuditPage,
+pub struct ChunkReplicaAuditRepairReport {
+    pub audit: ChunkReplicaAuditChunk,
     pub candidate_chunks: u64,
     pub repaired_chunks: u64,
     pub unrepaired_chunks: u64,
@@ -39,6 +39,6 @@ pub struct PageReplicaAuditRepairReport {
     pub repair_needed: bool,
     pub repair_can_apply: bool,
     pub repair_reason: String,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }

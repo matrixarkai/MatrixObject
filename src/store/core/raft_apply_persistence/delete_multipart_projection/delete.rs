@@ -9,22 +9,22 @@ impl MatrixObjectStore {
         let batch_material = format!("delete_object:{bucket}/{key}:{update_time_ms}");
         let batch_id = format!("object-delete-{}", etag(batch_material.as_bytes()));
         let rollback = self.capture_targeted_mutation_rollback(&bucket, &key);
-        if let Err(err) = self.page_service.begin_mutation_batch(batch_id.clone()) {
+        if let Err(err) = self.chunk_service.begin_mutation_batch(batch_id.clone()) {
             self.restore_object_mutation_rollback(rollback);
             return Err(err);
         }
         let result = self.apply_delete_inner(bucket, key, update_time_ms, if_match_etag);
         match result {
-            Ok(metadata) => match self.page_service.end_mutation_batch(&batch_id) {
+            Ok(metadata) => match self.chunk_service.end_mutation_batch(&batch_id) {
                 Ok(_) => Ok(metadata),
                 Err(err) => {
-                    let _ = self.page_service.abort_mutation_batch(&batch_id);
+                    let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                     self.restore_object_mutation_rollback(rollback);
                     Err(err)
                 }
             },
             Err(err) => {
-                let _ = self.page_service.abort_mutation_batch(&batch_id);
+                let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                 self.restore_object_mutation_rollback(rollback);
                 Err(err)
             }
@@ -107,23 +107,23 @@ impl MatrixObjectStore {
             format!("delete_object_with_root_release:{bucket}/{key}:{update_time_ms}");
         let batch_id = format!("object-delete-root-{}", etag(batch_material.as_bytes()));
         let rollback = self.capture_object_mutation_rollback();
-        if let Err(err) = self.page_service.begin_mutation_batch(batch_id.clone()) {
+        if let Err(err) = self.chunk_service.begin_mutation_batch(batch_id.clone()) {
             self.restore_object_mutation_rollback(rollback);
             return Err(err);
         }
         let result =
             self.apply_delete_with_root_release_inner(bucket, key, update_time_ms, if_match_etag);
         match result {
-            Ok(metadata) => match self.page_service.end_mutation_batch(&batch_id) {
+            Ok(metadata) => match self.chunk_service.end_mutation_batch(&batch_id) {
                 Ok(_) => Ok(metadata),
                 Err(err) => {
-                    let _ = self.page_service.abort_mutation_batch(&batch_id);
+                    let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                     self.restore_object_mutation_rollback(rollback);
                     Err(err)
                 }
             },
             Err(err) => {
-                let _ = self.page_service.abort_mutation_batch(&batch_id);
+                let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                 self.restore_object_mutation_rollback(rollback);
                 Err(err)
             }
@@ -156,22 +156,22 @@ impl MatrixObjectStore {
             format!("delete_object_version:{bucket}/{key}:{version}:{update_time_ms}");
         let batch_id = format!("object-delete-version-{}", etag(batch_material.as_bytes()));
         let rollback = self.capture_object_mutation_rollback();
-        if let Err(err) = self.page_service.begin_mutation_batch(batch_id.clone()) {
+        if let Err(err) = self.chunk_service.begin_mutation_batch(batch_id.clone()) {
             self.restore_object_mutation_rollback(rollback);
             return Err(err);
         }
         let result = self.apply_delete_object_version_inner(bucket, key, version, update_time_ms);
         match result {
-            Ok(metadata) => match self.page_service.end_mutation_batch(&batch_id) {
+            Ok(metadata) => match self.chunk_service.end_mutation_batch(&batch_id) {
                 Ok(_) => Ok(metadata),
                 Err(err) => {
-                    let _ = self.page_service.abort_mutation_batch(&batch_id);
+                    let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                     self.restore_object_mutation_rollback(rollback);
                     Err(err)
                 }
             },
             Err(err) => {
-                let _ = self.page_service.abort_mutation_batch(&batch_id);
+                let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                 self.restore_object_mutation_rollback(rollback);
                 Err(err)
             }

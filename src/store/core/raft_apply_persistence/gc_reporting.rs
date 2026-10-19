@@ -117,7 +117,7 @@ impl MatrixObjectStore {
             compaction_candidate_bytes,
             compaction_candidate_range_count,
             discard_candidates,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             expected_route_control_checksum: String::new(),
         }
     }
@@ -147,7 +147,7 @@ impl MatrixObjectStore {
         max_discard_bytes: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<GcReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report = self.gc_report_with_discard_policy(min_discard_bytes, max_discard_bytes);
         report.expected_route_control_checksum = expected_route_control_checksum

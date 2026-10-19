@@ -180,7 +180,7 @@ impl MatrixObjectStore {
         // class already matches. Capturing on entry made a rejected or no-op transition
         // copy every map in the store and throw the copy away.
         let rollback = self.capture_object_mutation_rollback();
-        if let Err(err) = self.page_service.begin_mutation_batch(batch_id.clone()) {
+        if let Err(err) = self.chunk_service.begin_mutation_batch(batch_id.clone()) {
             self.restore_object_mutation_rollback(rollback);
             return Err(err);
         }
@@ -188,7 +188,7 @@ impl MatrixObjectStore {
         let data = match self.read_extents(&current.extents, 0, current.length) {
             Ok(data) => data,
             Err(err) => {
-                let _ = self.page_service.abort_mutation_batch(&batch_id);
+                let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                 self.restore_object_mutation_rollback(rollback);
                 return Err(err);
             }
@@ -196,13 +196,13 @@ impl MatrixObjectStore {
         let new_extents = match self.allocate_extents(&data) {
             Ok(extents) => extents,
             Err(err) => {
-                let _ = self.page_service.abort_mutation_batch(&batch_id);
+                let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                 self.restore_object_mutation_rollback(rollback);
                 return Err(err);
             }
         };
         if let Err(err) = self.mark_extents_stale(&current.extents) {
-            let _ = self.page_service.abort_mutation_batch(&batch_id);
+            let _ = self.chunk_service.abort_mutation_batch(&batch_id);
             self.restore_object_mutation_rollback(rollback);
             return Err(err);
         }
@@ -221,13 +221,13 @@ impl MatrixObjectStore {
             None,
             update_time_ms,
         ) {
-            let _ = self.page_service.abort_mutation_batch(&batch_id);
+            let _ = self.chunk_service.abort_mutation_batch(&batch_id);
             self.restore_object_mutation_rollback(rollback);
             return Err(err);
         }
         self.append_object_change("transition_object_with_root_placement", &metadata);
-        if let Err(err) = self.page_service.end_mutation_batch(&batch_id) {
-            let _ = self.page_service.abort_mutation_batch(&batch_id);
+        if let Err(err) = self.chunk_service.end_mutation_batch(&batch_id) {
+            let _ = self.chunk_service.abort_mutation_batch(&batch_id);
             self.restore_object_mutation_rollback(rollback);
             return Err(err);
         }

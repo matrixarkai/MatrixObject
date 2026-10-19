@@ -1,4 +1,4 @@
-fn merge_page_range_result_fault_stats(target: &mut PageReadStats, source: &PageReadStats) {
+fn merge_page_range_result_fault_stats(target: &mut ChunkReadStats, source: &ChunkReadStats) {
     target.replica_fallback_reads = target
         .replica_fallback_reads
         .saturating_add(source.replica_fallback_reads);
@@ -16,28 +16,28 @@ fn merge_page_range_result_fault_stats(target: &mut PageReadStats, source: &Page
         .saturating_add(source.quorum_read_degraded_chunks);
 }
 
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn read_slab_ranges(
         &mut self,
-        requests: Vec<PageRangeRequest>,
-    ) -> Result<(Vec<PageRangeReadResult>, PageBatchStats), ObjectError> {
+        requests: Vec<ChunkRangeRequest>,
+    ) -> Result<(Vec<ChunkRangeReadResult>, ChunkBatchStats), ObjectError> {
         self.read_slab_ranges_bounded(requests, 0)
     }
 
     pub fn read_slab_ranges_bounded(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
-    ) -> Result<(Vec<PageRangeReadResult>, PageBatchStats), ObjectError> {
+    ) -> Result<(Vec<ChunkRangeReadResult>, ChunkBatchStats), ObjectError> {
         self.read_slab_ranges_bounded_by_chunks(requests, max_payload_bytes, 0)
     }
 
     pub fn read_slab_ranges_bounded_by_chunks(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
-    ) -> Result<(Vec<PageRangeReadResult>, PageBatchStats), ObjectError> {
+    ) -> Result<(Vec<ChunkRangeReadResult>, ChunkBatchStats), ObjectError> {
         if requests.len() == 1 {
             let request = &requests[0];
             let (data, read_stats) = self.read_slab_range_bounded_by_chunks(
@@ -50,21 +50,21 @@ impl MatrixPageService {
             let mapped_chunk_ranges = read_stats.chunk_reads;
             let coalesced_chunk_ranges = read_stats.coalesced_chunk_read_count;
             return Ok((
-                vec![PageRangeReadResult {
+                vec![ChunkRangeReadResult {
                     data,
                     stats: read_stats.clone(),
                 }],
-                PageBatchStats {
+                ChunkBatchStats {
                     input_ranges: 1,
                     mapped_chunk_ranges,
                     coalesced_chunk_ranges,
                     payload_bytes: request.length,
                     read_stats,
-                    ..PageBatchStats::default()
+                    ..ChunkBatchStats::default()
                 },
             ));
         }
-        let mut stats = PageBatchStats::default();
+        let mut stats = ChunkBatchStats::default();
         let mut request_locations = Vec::with_capacity(requests.len());
         let mut grouped: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for request in &requests {
@@ -133,7 +133,7 @@ impl MatrixPageService {
             offset: u64,
             length: u64,
             ref_count: usize,
-            stats: PageReadStats,
+            stats: ChunkReadStats,
             payload: Option<Vec<u8>>,
         }
 
@@ -197,7 +197,7 @@ impl MatrixPageService {
         for (request, locations) in requests.iter().zip(&request_locations) {
             let mut data = Vec::new();
             let mut data_reserved = false;
-            let mut result_stats = PageReadStats::default();
+            let mut result_stats = ChunkReadStats::default();
             for loc in locations {
                 let loc_end = loc.chunk_offset.checked_add(loc.length).ok_or_else(|| {
                     ObjectError::InvalidArgument("batch read location overflows".to_string())
@@ -310,7 +310,7 @@ impl MatrixPageService {
                 }
                 result_stats.chunk_reads = result_stats.chunk_reads.saturating_add(1);
             }
-            results.push(PageRangeReadResult {
+            results.push(ChunkRangeReadResult {
                 data,
                 stats: result_stats,
             });
@@ -322,15 +322,15 @@ impl MatrixPageService {
     fn probe_batch_read_repairs(
         &mut self,
         chunk_ids: &[PageId],
-        stats: &mut PageReadStats,
-    ) -> BTreeMap<PageId, PageReadStats> {
+        stats: &mut ChunkReadStats,
+    ) -> BTreeMap<PageId, ChunkReadStats> {
         let mut repair_stats_by_chunk = BTreeMap::new();
         if self.primary_batch_read_repair_probe_limit == 0 || self.replicas.len() <= 1 {
             return repair_stats_by_chunk;
         }
         let mut probes = 0usize;
         for chunk_id in chunk_ids {
-            let mut chunk_repair_stats = PageReadStats::default();
+            let mut chunk_repair_stats = ChunkReadStats::default();
             match self.repair_chunk_from_quorum(chunk_id) {
                 Ok(repair) => {
                     chunk_repair_stats.replica_read_repairs = repair.repaired_replicas;

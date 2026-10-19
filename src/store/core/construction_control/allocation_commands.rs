@@ -3,14 +3,14 @@ impl MatrixObjectStore {
         &mut self,
         allocation_id: &str,
         idempotency_key: &str,
-    ) -> Result<PageAllocationReceipt, ObjectError> {
+    ) -> Result<ChunkAllocationReceipt, ObjectError> {
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
             Some(self.capture_object_mutation_rollback())
         };
         let receipt = self
-            .page_service
+            .chunk_service
             .release_page_allocation_idempotent(allocation_id, idempotency_key)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
@@ -36,13 +36,13 @@ impl MatrixObjectStore {
         lengths: Vec<u64>,
         now_ms: u64,
         idempotency_key: &str,
-    ) -> Result<PageBatchAllocationReceipt, ObjectError> {
+    ) -> Result<ChunkBatchAllocationReceipt, ObjectError> {
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let receipt = self.page_service.allocate_page_ranges_idempotent(
+        let receipt = self.chunk_service.allocate_page_ranges_idempotent(
             lengths.clone(),
             now_ms,
             idempotency_key,

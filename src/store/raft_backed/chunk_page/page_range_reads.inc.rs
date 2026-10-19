@@ -7,7 +7,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<(Vec<u8>, PageReadStats)>, ObjectError> {
+    ) -> Result<ProvenStorageRead<(Vec<u8>, ChunkReadStats)>, ObjectError> {
         self.read_slab_range_with_read_proof_linearizable_fenced_committed_at(
             slab_id,
             offset,
@@ -28,7 +28,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenPageRouteFencedStorageRead<(Vec<u8>, PageReadStats)>, ObjectError> {
+    ) -> Result<ProvenPageRouteFencedStorageRead<(Vec<u8>, ChunkReadStats)>, ObjectError> {
         self.read_slab_range_with_route_proof_linearizable_fenced_committed_at(
             slab_id,
             offset,
@@ -51,9 +51,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenPageRouteFencedStorageRead<(Vec<u8>, PageReadStats)>, ObjectError> {
+    ) -> Result<ProvenPageRouteFencedStorageRead<(Vec<u8>, ChunkReadStats)>, ObjectError> {
         let expected_checksum = expected_route_control_checksum.as_ref().to_string();
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self.read_slab_range_with_read_proof_linearizable_fenced_committed_at(
             slab_id,
             offset,
@@ -82,13 +82,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<(Vec<u8>, PageReadStats)>, ObjectError> {
+    ) -> Result<ProvenStorageRead<(Vec<u8>, ChunkReadStats)>, ObjectError> {
         let requested_read_index = self
             .raft
             .commit_index()
             .max(min_read_index)
             .max(min_commit_index);
-        let request = PageRangeRequest {
+        let request = ChunkRangeRequest {
             slab_id: slab_id.clone(),
             offset,
             length,
@@ -103,7 +103,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let value = self
             .store
-            .page_service
+            .chunk_service
             .read_slab_range_bounded_by_chunks(
                 slab_id,
                 offset,
@@ -117,11 +117,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn read_slab_ranges_with_read_proof_linearizable_fenced(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<ProvenStorageRead<(Vec<PageRangeReadResult>, PageBatchStats)>, ObjectError> {
+    ) -> Result<ProvenStorageRead<(Vec<ChunkRangeReadResult>, ChunkBatchStats)>, ObjectError> {
         self.read_slab_ranges_with_read_proof_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
@@ -134,12 +134,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn read_slab_ranges_with_route_proof_linearizable_fenced(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: impl AsRef<str>,
     ) -> Result<
-        ProvenPageRouteFencedStorageRead<(Vec<PageRangeReadResult>, PageBatchStats)>,
+        ProvenPageRouteFencedStorageRead<(Vec<ChunkRangeReadResult>, ChunkBatchStats)>,
         ObjectError,
     > {
         self.read_slab_ranges_with_route_proof_linearizable_fenced_committed_at(
@@ -154,18 +154,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn read_slab_ranges_with_route_proof_linearizable_fenced_committed_at(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<
-        ProvenPageRouteFencedStorageRead<(Vec<PageRangeReadResult>, PageBatchStats)>,
+        ProvenPageRouteFencedStorageRead<(Vec<ChunkRangeReadResult>, ChunkBatchStats)>,
         ObjectError,
     > {
         let expected_checksum = expected_route_control_checksum.as_ref().to_string();
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self.read_slab_ranges_with_read_proof_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
@@ -184,13 +184,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn read_slab_ranges_with_read_proof_linearizable_fenced_committed_at(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<(Vec<PageRangeReadResult>, PageBatchStats)>, ObjectError> {
+    ) -> Result<ProvenStorageRead<(Vec<ChunkRangeReadResult>, ChunkBatchStats)>, ObjectError> {
         let requested_read_index = self
             .raft
             .commit_index()
@@ -206,7 +206,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let value = self
             .store
-            .page_service
+            .chunk_service
             .read_slab_ranges_bounded_by_chunks(
                 requests,
                 max_payload_bytes,

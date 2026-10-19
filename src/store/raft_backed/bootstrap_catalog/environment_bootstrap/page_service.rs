@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn bootstrap_page_route_control_from_env(
         &mut self,
-    ) -> Result<Option<PageRouteControlBootstrapReport>, ObjectError> {
+    ) -> Result<Option<ChunkRouteControlBootstrapReport>, ObjectError> {
         let Some(target_commit_index) =
             first_non_empty_env_u64(&MATRIX_PAGESERVER_ROUTE_CONTROL_COMMIT_INDEX_ENV_NAMES)?
         else {
@@ -16,20 +16,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             &MATRIX_PAGESERVER_ROUTE_CONTROL_BOOTSTRAP_MAX_STEPS_ENV_NAMES,
         )?
         .unwrap_or(65_536);
-        let before_proof = self.store.page_service.route_control_proof();
-        if before_proof.page_route_control_commit_index > target_commit_index {
+        let before_proof = self.store.chunk_service.route_control_proof();
+        if before_proof.chunk_route_control_commit_index > target_commit_index {
             return Err(ObjectError::PreconditionFailed(format!(
                 "block route-control bootstrap target is behind local state: target={} local={}",
-                target_commit_index, before_proof.page_route_control_commit_index
+                target_commit_index, before_proof.chunk_route_control_commit_index
             )));
         }
         let mut applied_steps = 0;
         let mut last_metadata = None;
         while self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
-            .page_route_control_commit_index
+            .chunk_route_control_commit_index
             < target_commit_index
         {
             if applied_steps >= max_steps {
@@ -53,10 +53,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             }
             let route_checksum = self
                 .store
-                .page_service
+                .chunk_service
                 .route_control_proof()
                 .state_checksum;
-            let config = self.store.page_route_qos_config();
+            let config = self.store.chunk_route_qos_config();
             let metadata = self.propose_configure_page_route_qos_prepared_linearizable_fenced(
                 config,
                 Some(route_checksum.as_str()),
@@ -64,8 +64,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             last_metadata = Some(metadata);
             applied_steps += 1;
         }
-        let after_proof = self.store.page_service.route_control_proof();
-        let report = PageRouteControlBootstrapReport {
+        let after_proof = self.store.chunk_service.route_control_proof();
+        let report = ChunkRouteControlBootstrapReport {
             target_commit_index,
             max_steps,
             applied_steps,
@@ -84,12 +84,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn bootstrap_page_service_from_env_report(
         &mut self,
         now_ms: u64,
-    ) -> Result<PageServiceBootstrapReport, ObjectError> {
+    ) -> Result<ChunkServiceBootstrapReport, ObjectError> {
         let before_readiness = self.store.page_storage_readiness(0, 0, now_ms);
         let route_report = self.bootstrap_page_route_control_from_env()?;
         self.bootstrap_page_chunk_trim_flow_from_env(now_ms)?;
         let after_readiness = self.store.page_storage_readiness(0, 0, now_ms);
-        let report = PageServiceBootstrapReport {
+        let report = ChunkServiceBootstrapReport {
             route_report,
             before_readiness,
             after_readiness,
@@ -150,7 +150,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         {
             let route_checksum = self
                 .store
-                .page_service
+                .chunk_service
                 .route_control_proof()
                 .state_checksum;
             self.propose_configure_chunk_trim_flow_prepared_full_linearizable_fenced(
@@ -163,7 +163,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             )?;
         }
         if include_disabled {
-            let disabled_indices = self.store.page_service.disabled_chunk_endpoint_indices();
+            let disabled_indices = self.store.chunk_service.disabled_chunk_endpoint_indices();
             for replica_index in disabled_indices {
                 if requested_rate.is_some()
                     || requested_burst.is_some()
@@ -172,7 +172,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 {
                     let route_checksum = self
                         .store
-                        .page_service
+                        .chunk_service
                         .route_control_proof()
                         .state_checksum;
                     self.propose_configure_chunk_replica_trim_flow_prepared_full_linearizable_fenced(

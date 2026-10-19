@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageDiscardReceipt {
+pub struct ChunkDiscardReceipt {
     pub slab_id: SlabId,
     pub offset: u64,
     pub length: u64,
@@ -8,7 +8,7 @@ pub struct PageDiscardReceipt {
     pub deduped: bool,
 }
 
-impl PageDiscardReceipt {
+impl ChunkDiscardReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-BLOCK-DISCARD-RECEIPT-PROOF1"
     }
@@ -72,14 +72,14 @@ impl PageDiscardReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageBatchDiscardReceipt {
+pub struct ChunkBatchDiscardReceipt {
     pub request_checksum: String,
     pub idempotency_key: String,
-    pub stats: PageBatchStats,
+    pub stats: ChunkBatchStats,
     pub deduped: bool,
 }
 
-impl PageBatchDiscardReceipt {
+impl ChunkBatchDiscardReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-BLOCK-DISCARD-BATCH-PROOF1"
     }

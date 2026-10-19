@@ -1,11 +1,11 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn can_accept_slab_discard(
         &self,
         slab_id: &SlabId,
         offset: u64,
         length: u64,
         max_discard_bytes: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         validate_pipeline_range("block discard", offset, length)?;
         let locations = self.map_range(slab_id, offset, length)?;
         let discard_budget_limited = max_discard_bytes > 0 && length > max_discard_bytes;
@@ -52,7 +52,7 @@ impl MatrixPageService {
         } else {
             "write_quorum_unavailable"
         };
-        let mut admission = PageRangeAdmission {
+        let mut admission = ChunkRangeAdmission {
             can_accept,
             input_ranges: if length == 0 { 0 } else { 1 },
             mapped_chunk_ranges: locations.len() as u64,
@@ -69,7 +69,7 @@ impl MatrixPageService {
             write_quorum_limited: !discard_budget_limited
                 && ready_replica_count < self.write_quorum as u64,
             discard_budget_limited,
-            ..PageRangeAdmission::default()
+            ..ChunkRangeAdmission::default()
         };
         stamp_page_range_admission_proof("CanDiscardBlock", &mut admission);
         Ok(admission)
@@ -82,7 +82,7 @@ impl MatrixPageService {
         length: u64,
         max_discard_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission =
             self.can_accept_slab_discard(slab_id, offset, length, max_discard_bytes)?;
@@ -93,26 +93,26 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_discards(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_discards_borrowed(&requests, max_discard_bytes)
     }
 
     pub fn can_accept_slab_discards_borrowed(
         &self,
-        requests: &[PageRangeRequest],
+        requests: &[ChunkRangeRequest],
         max_discard_bytes: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_discards_from_borrowed(requests, max_discard_bytes, 0)
     }
 
     pub fn can_accept_slab_discards_from(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_discards_from_borrowed(
             &requests,
             max_discard_bytes,
@@ -122,17 +122,17 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_discards_from_borrowed(
         &self,
-        requests: &[PageRangeRequest],
+        requests: &[ChunkRangeRequest],
         max_discard_bytes: u64,
         discard_start_range_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        let mut admission = PageRangeAdmission {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        let mut admission = ChunkRangeAdmission {
             input_ranges: requests.iter().filter(|request| request.length > 0).count() as u64,
             max_discard_bytes,
             discard_start_range_index,
             next_discard_range_index: discard_start_range_index.min(requests.len() as u64),
             required_quorum: self.write_quorum as u64,
-            ..PageRangeAdmission::default()
+            ..ChunkRangeAdmission::default()
         };
         let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         let mut selected_discard_bytes = 0u64;
@@ -247,10 +247,10 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_discards_fenced(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission = self.can_accept_slab_discards_borrowed(&requests, max_discard_bytes)?;
         self.stamp_route_control_admission(&mut admission, expected_route_control_checksum);
@@ -260,11 +260,11 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_discards_from_fenced(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_discards_from_fenced_borrowed(
             &requests,
             max_discard_bytes,
@@ -275,11 +275,11 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_discards_from_fenced_borrowed(
         &self,
-        requests: &[PageRangeRequest],
+        requests: &[ChunkRangeRequest],
         max_discard_bytes: u64,
         discard_start_range_index: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission = self.can_accept_slab_discards_from_borrowed(
             requests,

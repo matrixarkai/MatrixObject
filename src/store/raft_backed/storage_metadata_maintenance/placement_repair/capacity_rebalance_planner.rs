@@ -31,7 +31,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 .plan_object_capacity_rebalance(max_objects, min_free_bytes, marker.as_ref());
         let mut report = ObjectCapacityRebalanceRunReport {
             plan,
-            route_control_proof: self.store.page_service.route_control_proof(),
+            route_control_proof: self.store.chunk_service.route_control_proof(),
             ..ObjectCapacityRebalanceRunReport::default()
         };
         if marker.is_none() {
@@ -98,7 +98,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> ObjectCapacityRebalanceRunReport {
         let mut report = ObjectCapacityRebalanceRunReport {
             plan,
-            route_control_proof: self.store.page_service.route_control_proof(),
+            route_control_proof: self.store.chunk_service.route_control_proof(),
             ..ObjectCapacityRebalanceRunReport::default()
         };
         self.propose_rebalance_object_capacity_plan_items(&mut report);

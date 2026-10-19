@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkMutationControlBootstrapReport {
+pub struct ReplicaMutationControlBootstrapReport {
     pub replica_index: usize,
     pub target_commit_index: u64,
     pub max_steps: u64,
@@ -12,9 +12,9 @@ pub struct ChunkMutationControlBootstrapReport {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReplicaServiceBootstrapReport {
     pub replica_index: usize,
-    pub mutation_report: Option<ChunkMutationControlBootstrapReport>,
-    pub before_readiness: ChunkStorageReadiness,
-    pub after_readiness: ChunkStorageReadiness,
+    pub mutation_report: Option<ReplicaMutationControlBootstrapReport>,
+    pub before_readiness: ReplicaStorageReadiness,
+    pub after_readiness: ReplicaStorageReadiness,
 }
 
 impl ReplicaServiceBootstrapReport {
@@ -105,7 +105,7 @@ impl ReplicaServiceBootstrapReport {
     }
 }
 
-impl ChunkMutationControlBootstrapReport {
+impl ReplicaMutationControlBootstrapReport {
     pub fn report_checksum_format(&self) -> &'static str {
         CHUNK_MUTATION_BOOTSTRAP_REPORT_FORMAT
     }

@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkWriteReceipt {
+pub struct ReplicaWriteReceipt {
     pub chunk_id: PageId,
     pub offset: u64,
     pub length: u64,
@@ -9,7 +9,7 @@ pub struct ChunkWriteReceipt {
     pub deduped: bool,
 }
 
-impl ChunkWriteReceipt {
+impl ReplicaWriteReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-CHUNK-WRITE-RECEIPT-PROOF1"
     }
@@ -81,7 +81,7 @@ impl ChunkWriteReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkDiscardReceipt {
+pub struct ReplicaDiscardReceipt {
     pub chunk_id: PageId,
     pub offset: u64,
     pub length: u64,
@@ -90,7 +90,7 @@ pub struct ChunkDiscardReceipt {
     pub deduped: bool,
 }
 
-impl ChunkDiscardReceipt {
+impl ReplicaDiscardReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-CHUNK-DISCARD-RECEIPT-PROOF1"
     }
@@ -158,16 +158,16 @@ impl ChunkDiscardReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkBatchWriteReceipt {
+pub struct ReplicaBatchWriteReceipt {
     pub chunk_id: PageId,
     pub request_checksum: String,
     pub payload_checksum: String,
     pub idempotency_key: String,
-    pub stats: ChunkWriteBatchStats,
+    pub stats: ReplicaWriteBatchStats,
     pub deduped: bool,
 }
 
-impl ChunkBatchWriteReceipt {
+impl ReplicaBatchWriteReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-CHUNK-WRITE-BATCH-PROOF1"
     }
@@ -241,15 +241,15 @@ impl ChunkBatchWriteReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkBatchDiscardReceipt {
+pub struct ReplicaBatchDiscardReceipt {
     pub chunk_id: PageId,
     pub request_checksum: String,
     pub idempotency_key: String,
-    pub stats: ChunkDiscardBatchStats,
+    pub stats: ReplicaDiscardBatchStats,
     pub deduped: bool,
 }
 
-impl ChunkBatchDiscardReceipt {
+impl ReplicaBatchDiscardReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-CHUNK-DISCARD-BATCH-PROOF1"
     }

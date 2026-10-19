@@ -5,7 +5,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         self.can_accept_chunk_batch_discard_linearizable_committed_at(
             replica_index,
             chunk_id,
@@ -24,7 +24,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_discard_bytes: u64,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         self.can_accept_chunk_batch_discard_linearizable_fenced_committed_at(
             replica_index,
             chunk_id,
@@ -43,7 +43,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         self.can_accept_chunk_batch_discard_linearizable_fenced_committed_at(
             replica_index,
             chunk_id,
@@ -64,7 +64,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ChunkDiscardAdmission, ObjectError> {
+    ) -> Result<ReplicaDiscardAdmission, ObjectError> {
         let required_read_index = self
             .raft
             .commit_index()
@@ -110,7 +110,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ProvenAdmissionRead<ChunkDiscardAdmission>, ObjectError> {
+    ) -> Result<ProvenAdmissionRead<ReplicaDiscardAdmission>, ObjectError> {
         self.can_accept_chunk_batch_discard_with_read_proof_linearizable_fenced_committed_at(
             replica_index,
             chunk_id,
@@ -129,7 +129,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ranges: Vec<DataRange>,
         max_discard_bytes: u64,
         expected_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenChunkControlFencedAdmissionRead<ChunkDiscardAdmission>, ObjectError> {
+    ) -> Result<ProvenChunkControlFencedAdmissionRead<ReplicaDiscardAdmission>, ObjectError> {
         self.can_accept_chunk_batch_discard_with_control_proof_linearizable_fenced_committed_at(
             replica_index,
             chunk_id,
@@ -150,11 +150,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenChunkControlFencedAdmissionRead<ChunkDiscardAdmission>, ObjectError> {
+    ) -> Result<ProvenChunkControlFencedAdmissionRead<ReplicaDiscardAdmission>, ObjectError> {
         let expected_checksum = expected_control_checksum.as_ref().to_string();
         let control_proof = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -188,7 +188,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenAdmissionRead<ChunkDiscardAdmission>, ObjectError> {
+    ) -> Result<ProvenAdmissionRead<ReplicaDiscardAdmission>, ObjectError> {
         let requested_read_index = self
             .raft
             .commit_index()

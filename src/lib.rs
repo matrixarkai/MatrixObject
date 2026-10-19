@@ -241,9 +241,9 @@ use replica_service::{
 };
 
 #[path = "services/page.rs"]
-mod page_service;
-pub use page_service::*;
-use page_service::{
+mod chunk_service;
+pub use chunk_service::*;
+use chunk_service::{
     default_chunk_endpoints, select_admitted_page_discard_requests,
     validate_page_chunk_endpoint_topology,
 };

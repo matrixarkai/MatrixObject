@@ -4,7 +4,7 @@ impl MatrixReplicaService {
         max_chunks: usize,
         max_rewrite_bytes: u64,
         min_discarded_bytes: u64,
-    ) -> ChunkPartialReclaimReport {
+    ) -> ReplicaPartialReclaimReport {
         self.reclaim_chunks_with_limits(max_chunks, max_rewrite_bytes, min_discarded_bytes, 0, 0, 0)
     }
 
@@ -17,7 +17,7 @@ impl MatrixReplicaService {
         min_discard_ratio_ppm: u64,
         max_discard_ranges: usize,
         max_trim_bytes: u64,
-    ) -> Result<ChunkReclaimPlan, ObjectError> {
+    ) -> Result<ReplicaReclaimPlan, ObjectError> {
         if let Some(marker) = marker {
             validate_slab_id(&marker.slab_id)?;
         }
@@ -26,9 +26,9 @@ impl MatrixReplicaService {
         } else {
             max_chunks
         };
-        let mut plan = ChunkReclaimPlan {
+        let mut plan = ReplicaReclaimPlan {
             marker: marker.cloned(),
-            ..ChunkReclaimPlan::default()
+            ..ReplicaReclaimPlan::default()
         };
         let mut budget_left = max_rewrite_bytes;
         for (chunk_id, state) in &self.chunks {
@@ -74,7 +74,7 @@ impl MatrixReplicaService {
             } else {
                 "rewrite_reclaim"
             };
-            let candidate = ChunkReclaimCandidate {
+            let candidate = ReplicaReclaimCandidate {
                 chunk_id: chunk_id.clone(),
                 logical_length: state.logical_length,
                 discarded_bytes: discarded,

@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkStorageReadiness {
+pub struct ReplicaStorageReadiness {
     pub readable: bool,
     pub writable: bool,
     pub reclaimable: bool,
@@ -95,7 +95,7 @@ pub struct RepairStats {
     pub degraded_chunks: u64,
 }
 
-impl ChunkStorageReadiness {
+impl ReplicaStorageReadiness {
     pub fn read_cache_lookup_count(&self) -> u64 {
         self.read_cache_hits.saturating_add(self.read_cache_misses)
     }

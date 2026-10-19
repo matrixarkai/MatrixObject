@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkWriteAdmission {
+pub struct ReplicaWriteAdmission {
     pub can_accept: bool,
     pub write_count: u64,
     pub coalesced_ranges: u64,
@@ -22,7 +22,7 @@ pub struct ChunkWriteAdmission {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkDiscardAdmission {
+pub struct ReplicaDiscardAdmission {
     pub can_accept: bool,
     pub discard_count: u64,
     pub coalesced_ranges: u64,
@@ -43,7 +43,7 @@ pub struct ChunkDiscardAdmission {
     pub range_invalid: bool,
 }
 
-impl ChunkWriteAdmission {
+impl ReplicaWriteAdmission {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -83,7 +83,7 @@ impl ChunkWriteAdmission {
     }
 }
 
-impl ChunkDiscardAdmission {
+impl ReplicaDiscardAdmission {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -120,7 +120,7 @@ impl ChunkDiscardAdmission {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkMutationQosConfig {
+pub struct ReplicaMutationQosConfig {
     pub window_ms: u64,
     pub max_write_ops_per_window: u64,
     pub max_write_bytes_per_window: u64,
@@ -128,7 +128,7 @@ pub struct ChunkMutationQosConfig {
     pub max_discard_bytes_per_window: u64,
 }
 
-impl Default for ChunkMutationQosConfig {
+impl Default for ReplicaMutationQosConfig {
     fn default() -> Self {
         Self {
             window_ms: DEFAULT_CHUNK_MUTATION_QOS_WINDOW_MS,
@@ -141,7 +141,7 @@ impl Default for ChunkMutationQosConfig {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkMutationQosState {
+pub struct ReplicaMutationQosState {
     pub window_start_ms: u64,
     pub write_ops_in_window: u64,
     pub write_bytes_in_window: u64,

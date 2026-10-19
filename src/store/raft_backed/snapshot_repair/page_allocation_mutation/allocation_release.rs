@@ -51,7 +51,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn propose_prepared_page_allocation_release_apply(
         &mut self,
         prepared: PreparedPageAllocationRelease,
-    ) -> Result<(ObjectMetadata, PageAllocationReceipt), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkAllocationReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
                 "prepared block allocation release requires raft/store commit alignment"

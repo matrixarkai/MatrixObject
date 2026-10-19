@@ -6,7 +6,7 @@
 // size per replica rather than by anything the data implies.
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct PageServiceFootprint {
+pub(crate) struct ChunkServiceFootprint {
     pub(crate) read_cache_payload: u64,
     pub(crate) read_cache_overhead: u64,
     pub(crate) page_validation: u64,
@@ -22,7 +22,7 @@ pub(crate) struct PageServiceFootprint {
     pub(crate) receipt_matching_keys: u64,
 }
 
-impl PageServiceFootprint {
+impl ChunkServiceFootprint {
     pub(crate) fn total(&self) -> u64 {
         self.read_cache_payload
             .saturating_add(self.read_cache_overhead)
@@ -32,9 +32,9 @@ impl PageServiceFootprint {
     }
 }
 
-impl MatrixPageService {
-    pub(crate) fn footprint_bytes(&self) -> PageServiceFootprint {
-        let mut total = PageServiceFootprint {
+impl MatrixChunkService {
+    pub(crate) fn footprint_bytes(&self) -> ChunkServiceFootprint {
+        let mut total = ChunkServiceFootprint {
             export_caches: self
                 .snapshot_export_cache
                 .borrow()
@@ -45,7 +45,7 @@ impl MatrixPageService {
             receipts: self.receipt_bytes(),
             receipt_duplicate_keys: self.receipt_duplicate_key_bytes(),
             receipt_matching_keys: self.receipt_matching_key_count(),
-            ..PageServiceFootprint::default()
+            ..ChunkServiceFootprint::default()
         };
         for replica in &self.replicas {
             let replica = replica.footprint_bytes();
@@ -69,7 +69,7 @@ impl MatrixPageService {
     }
 }
 
-impl PageSnapshotExportCache {
+impl ChunkSnapshotExportCache {
     fn footprint_bytes(&self) -> u64 {
         (self.bytes.len() as u64)
             .saturating_add(self.stamp.capacity() as u64)
@@ -81,7 +81,7 @@ impl PageSnapshotExportCache {
 // There are eleven, each bounded by `receipt_retention`, which defaults to
 // 100,000. The audit reported the entry counts and none of the bytes.
 
-fn page_receipt_map_bytes<V, F>(map: &BTreeMap<String, V>, value_heap: F) -> u64
+fn chunk_receipt_map_bytes<V, F>(map: &BTreeMap<String, V>, value_heap: F) -> u64
 where
     F: Fn(&V) -> u64,
 {
@@ -101,7 +101,7 @@ where
 /// second allocation. The field is in the receipt's proof, so it cannot be
 /// dropped without a migration -- but the allocation can be shared, and this
 /// says what that is worth before anything changes.
-fn page_receipt_duplicate_key_bytes<V, F>(map: &BTreeMap<String, V>, key_of: F) -> u64
+fn chunk_receipt_duplicate_key_bytes<V, F>(map: &BTreeMap<String, V>, key_of: F) -> u64
 where
     F: Fn(&V) -> &String,
 {
@@ -120,7 +120,7 @@ where
 /// Reported next to the bytes because sharing one allocation between the two is
 /// only sound while they agree, and a receipt filed under a key it does not
 /// carry would make that substitution lose the field's value silently.
-fn page_receipt_matching_key_count<V, F>(map: &BTreeMap<String, V>, key_of: F) -> u64
+fn chunk_receipt_matching_key_count<V, F>(map: &BTreeMap<String, V>, key_of: F) -> u64
 where
     F: Fn(&V) -> &String,
 {
@@ -133,39 +133,39 @@ where
     })
 }
 
-fn page_batch_allocation_heap(allocations: &[PageAllocation]) -> u64 {
+fn page_batch_allocation_heap(allocations: &[ChunkAllocation]) -> u64 {
     allocations.iter().fold(
-        (allocations.len() as u64).saturating_mul(std::mem::size_of::<PageAllocation>() as u64),
-        |total, allocation| total.saturating_add(page_allocation_bytes(allocation)),
+        (allocations.len() as u64).saturating_mul(std::mem::size_of::<ChunkAllocation>() as u64),
+        |total, allocation| total.saturating_add(chunk_allocation_bytes(allocation)),
     )
 }
 
-fn page_write_receipt_heap(receipt: &PageWriteReceipt) -> u64 {
+fn page_write_receipt_heap(receipt: &ChunkWriteReceipt) -> u64 {
     (receipt.request_checksum.capacity()
         + receipt.payload_checksum.capacity()
         + receipt.idempotency_key.capacity()) as u64
 }
 
-fn page_batch_write_receipt_heap(receipt: &PageBatchWriteReceipt) -> u64 {
+fn page_batch_write_receipt_heap(receipt: &ChunkBatchWriteReceipt) -> u64 {
     (receipt.request_checksum.capacity()
         + receipt.payload_checksum.capacity()
         + receipt.idempotency_key.capacity()) as u64
 }
 
-fn page_discard_receipt_heap(receipt: &PageDiscardReceipt) -> u64 {
+fn page_discard_receipt_heap(receipt: &ChunkDiscardReceipt) -> u64 {
     (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
 }
 
-fn page_batch_discard_receipt_heap(receipt: &PageBatchDiscardReceipt) -> u64 {
+fn page_batch_discard_receipt_heap(receipt: &ChunkBatchDiscardReceipt) -> u64 {
     (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
 }
 
-fn page_range_repair_receipt_heap(receipt: &PageRangeRepairReceipt) -> u64 {
+fn page_range_repair_receipt_heap(receipt: &ChunkRangeRepairReceipt) -> u64 {
     (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
         + bounded_repair_report_bytes(&receipt.report)
 }
 
-fn page_audit_repair_receipt_heap(receipt: &PageAuditRepairReceipt) -> u64 {
+fn page_audit_repair_receipt_heap(receipt: &ChunkAuditRepairReceipt) -> u64 {
     (receipt.request_checksum.capacity() + receipt.idempotency_key.capacity()) as u64
         + audit_repair_report_bytes(&receipt.report)
 }
@@ -175,47 +175,47 @@ fn page_audit_repair_receipt_heap(receipt: &PageAuditRepairReceipt) -> u64 {
 /// A snapshot holds the same eleven with the same types, and it is a clone, so
 /// it costs the same. One function, so the two cannot drift.
 #[allow(clippy::too_many_arguments)]
-fn page_receipt_maps_bytes(
-    pending: &BTreeMap<String, PageAllocation>,
-    allocation: &BTreeMap<String, PageAllocation>,
-    batch_allocation: &BTreeMap<String, Vec<PageAllocation>>,
-    release: &BTreeMap<String, PageAllocation>,
-    write: &BTreeMap<String, PageWriteReceipt>,
-    batch_write: &BTreeMap<String, PageBatchWriteReceipt>,
-    discard: &BTreeMap<String, PageDiscardReceipt>,
-    batch_discard: &BTreeMap<String, PageBatchDiscardReceipt>,
-    repair: &BTreeMap<String, ChunkRepairReceipt>,
-    range_repair: &BTreeMap<String, PageRangeRepairReceipt>,
-    audit_repair: &BTreeMap<String, PageAuditRepairReceipt>,
+fn chunk_receipt_maps_bytes(
+    pending: &BTreeMap<String, ChunkAllocation>,
+    allocation: &BTreeMap<String, ChunkAllocation>,
+    batch_allocation: &BTreeMap<String, Vec<ChunkAllocation>>,
+    release: &BTreeMap<String, ChunkAllocation>,
+    write: &BTreeMap<String, ChunkWriteReceipt>,
+    batch_write: &BTreeMap<String, ChunkBatchWriteReceipt>,
+    discard: &BTreeMap<String, ChunkDiscardReceipt>,
+    batch_discard: &BTreeMap<String, ChunkBatchDiscardReceipt>,
+    repair: &BTreeMap<String, ReplicaRepairReceipt>,
+    range_repair: &BTreeMap<String, ChunkRangeRepairReceipt>,
+    audit_repair: &BTreeMap<String, ChunkAuditRepairReceipt>,
 ) -> u64 {
-    page_receipt_map_bytes(pending, page_allocation_bytes)
-        .saturating_add(page_receipt_map_bytes(allocation, page_allocation_bytes))
-        .saturating_add(page_receipt_map_bytes(batch_allocation, |allocations| {
+    chunk_receipt_map_bytes(pending, chunk_allocation_bytes)
+        .saturating_add(chunk_receipt_map_bytes(allocation, chunk_allocation_bytes))
+        .saturating_add(chunk_receipt_map_bytes(batch_allocation, |allocations| {
             page_batch_allocation_heap(allocations)
         }))
-        .saturating_add(page_receipt_map_bytes(release, page_allocation_bytes))
-        .saturating_add(page_receipt_map_bytes(write, page_write_receipt_heap))
-        .saturating_add(page_receipt_map_bytes(
+        .saturating_add(chunk_receipt_map_bytes(release, chunk_allocation_bytes))
+        .saturating_add(chunk_receipt_map_bytes(write, page_write_receipt_heap))
+        .saturating_add(chunk_receipt_map_bytes(
             batch_write,
             page_batch_write_receipt_heap,
         ))
-        .saturating_add(page_receipt_map_bytes(discard, page_discard_receipt_heap))
-        .saturating_add(page_receipt_map_bytes(
+        .saturating_add(chunk_receipt_map_bytes(discard, page_discard_receipt_heap))
+        .saturating_add(chunk_receipt_map_bytes(
             batch_discard,
             page_batch_discard_receipt_heap,
         ))
-        .saturating_add(page_receipt_map_bytes(repair, chunk_repair_receipt_heap))
-        .saturating_add(page_receipt_map_bytes(
+        .saturating_add(chunk_receipt_map_bytes(repair, replica_repair_receipt_heap))
+        .saturating_add(chunk_receipt_map_bytes(
             range_repair,
             page_range_repair_receipt_heap,
         ))
-        .saturating_add(page_receipt_map_bytes(
+        .saturating_add(chunk_receipt_map_bytes(
             audit_repair,
             page_audit_repair_receipt_heap,
         ))
 }
 
-fn page_allocation_bytes(allocation: &PageAllocation) -> u64 {
+fn chunk_allocation_bytes(allocation: &ChunkAllocation) -> u64 {
     allocation.allocation_id.capacity() as u64
 }
 
@@ -224,10 +224,10 @@ fn bounded_repair_report_bytes(report: &BoundedRepairReport) -> u64 {
         .saturating_add(route_control_proof_bytes(&report.route_control_proof))
 }
 
-fn audit_repair_report_bytes(report: &PageReplicaAuditRepairReport) -> u64 {
+fn audit_repair_report_bytes(report: &ChunkReplicaAuditRepairReport) -> u64 {
     let items = report.audit.items.iter().fold(
         (report.audit.items.capacity() as u64)
-            .saturating_mul(std::mem::size_of::<PageReplicaAuditItem>() as u64),
+            .saturating_mul(std::mem::size_of::<ChunkReplicaAuditItem>() as u64),
         |total, item| {
             total.saturating_add((item.status.capacity() + item.checksum.capacity()) as u64)
         },
@@ -238,7 +238,7 @@ fn audit_repair_report_bytes(report: &PageReplicaAuditRepairReport) -> u64 {
         .saturating_add(route_control_proof_bytes(&report.route_control_proof))
 }
 
-impl MatrixPageService {
+impl MatrixChunkService {
     /// The eleven receipt maps, in bytes rather than entries. The pending
     /// allocations are counted here too: they are the same shape and the same
     /// growth, differing only in that a commit removes them.
@@ -246,7 +246,7 @@ impl MatrixPageService {
     /// The endpoints and the sealed slabs ride along because they grow with the
     /// same configuration rather than with the data.
     pub(crate) fn receipt_bytes(&self) -> u64 {
-        page_receipt_maps_bytes(
+        chunk_receipt_maps_bytes(
             &self.pending_allocations,
             &self.allocation_request_receipts,
             &self.batch_allocation_request_receipts,
@@ -274,56 +274,56 @@ impl MatrixPageService {
     /// Of `receipt_bytes`, the part that is one receipt holding its own map key
     /// twice. Measured across the maps whose receipts carry the field.
     pub(crate) fn receipt_duplicate_key_bytes(&self) -> u64 {
-        page_receipt_duplicate_key_bytes(&self.write_request_receipts, |r| &r.idempotency_key)
-            .saturating_add(page_receipt_duplicate_key_bytes(
+        chunk_receipt_duplicate_key_bytes(&self.write_request_receipts, |r| &r.idempotency_key)
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
                 &self.batch_write_request_receipts,
                 |r| &r.idempotency_key,
             ))
-            .saturating_add(page_receipt_duplicate_key_bytes(
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
                 &self.discard_request_receipts,
                 |r| &r.idempotency_key,
             ))
-            .saturating_add(page_receipt_duplicate_key_bytes(
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
                 &self.batch_discard_request_receipts,
                 |r| &r.idempotency_key,
             ))
-            .saturating_add(page_receipt_duplicate_key_bytes(
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
                 &self.repair_request_receipts,
                 |r| &r.idempotency_key,
             ))
-            .saturating_add(page_receipt_duplicate_key_bytes(
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
                 &self.range_repair_request_receipts,
                 |r| &r.idempotency_key,
             ))
-            .saturating_add(page_receipt_duplicate_key_bytes(
+            .saturating_add(chunk_receipt_duplicate_key_bytes(
                 &self.audit_repair_request_receipts,
                 |r| &r.idempotency_key,
             ))
     }
 
     pub(crate) fn receipt_matching_key_count(&self) -> u64 {
-        page_receipt_matching_key_count(&self.write_request_receipts, |r| &r.idempotency_key)
-            .saturating_add(page_receipt_matching_key_count(
+        chunk_receipt_matching_key_count(&self.write_request_receipts, |r| &r.idempotency_key)
+            .saturating_add(chunk_receipt_matching_key_count(
                 &self.batch_write_request_receipts,
                 |r| &r.idempotency_key,
             ))
-            .saturating_add(page_receipt_matching_key_count(
+            .saturating_add(chunk_receipt_matching_key_count(
                 &self.discard_request_receipts,
                 |r| &r.idempotency_key,
             ))
-            .saturating_add(page_receipt_matching_key_count(
+            .saturating_add(chunk_receipt_matching_key_count(
                 &self.batch_discard_request_receipts,
                 |r| &r.idempotency_key,
             ))
-            .saturating_add(page_receipt_matching_key_count(
+            .saturating_add(chunk_receipt_matching_key_count(
                 &self.repair_request_receipts,
                 |r| &r.idempotency_key,
             ))
-            .saturating_add(page_receipt_matching_key_count(
+            .saturating_add(chunk_receipt_matching_key_count(
                 &self.range_repair_request_receipts,
                 |r| &r.idempotency_key,
             ))
-            .saturating_add(page_receipt_matching_key_count(
+            .saturating_add(chunk_receipt_matching_key_count(
                 &self.audit_repair_request_receipts,
                 |r| &r.idempotency_key,
             ))
@@ -410,7 +410,7 @@ impl SharedPayloadLedger {
     }
 }
 
-impl MatrixPageService {
+impl MatrixChunkService {
     /// What an OPEN mutation batch holds, or nothing when none is open.
     ///
     /// `begin_mutation_batch` boxes a whole page-service snapshot and holds it
@@ -426,13 +426,13 @@ impl MatrixPageService {
     }
 }
 
-impl PageServiceSnapshot {
+impl ChunkServiceSnapshot {
     /// The PAGE service's half of the footprint, reached through
     /// `open_mutation_batch_footprint_audit` so that `Store::footprint_audit`
     /// reports what an open batch holds. Every total that audit reported before
     /// excluded all of it.
     pub(crate) fn footprint_audit(&self) -> Vec<(String, u64)> {
-        let page_receipts = page_receipt_maps_bytes(
+        let chunk_receipts = chunk_receipt_maps_bytes(
             &self.pending_allocations,
             &self.allocation_request_receipts,
             &self.batch_allocation_request_receipts,
@@ -446,7 +446,7 @@ impl PageServiceSnapshot {
             &self.audit_repair_request_receipts,
         );
 
-        let mut page_other = (std::mem::size_of::<PageServiceSnapshot>() as u64)
+        let mut page_other = (std::mem::size_of::<ChunkServiceSnapshot>() as u64)
             .saturating_add(self.checksum.capacity() as u64)
             .saturating_add(
                 (self.quarantined_replicas.len() as u64)
@@ -491,51 +491,51 @@ impl PageServiceSnapshot {
             replica_receipts_shared = replica_receipts_shared
                 .saturating_add(map_ledger.charge_allocation(
                     std::sync::Arc::as_ptr(&replica.write_request_receipts) as *const u8,
-                    chunk_receipt_map_bytes(
+                    replica_receipt_map_bytes(
                         &replica.write_request_receipts,
-                        chunk_write_receipt_heap,
+                        replica_write_receipt_heap,
                     ),
                 ))
                 .saturating_add(map_ledger.charge_allocation(
                     std::sync::Arc::as_ptr(&replica.discard_request_receipts) as *const u8,
-                    chunk_receipt_map_bytes(
+                    replica_receipt_map_bytes(
                         &replica.discard_request_receipts,
-                        chunk_discard_receipt_heap,
+                        replica_discard_receipt_heap,
                     ),
                 ))
                 .saturating_add(map_ledger.charge_allocation(
                     std::sync::Arc::as_ptr(&replica.batch_write_request_receipts) as *const u8,
-                    chunk_receipt_map_bytes(
+                    replica_receipt_map_bytes(
                         &replica.batch_write_request_receipts,
-                        chunk_batch_write_receipt_heap,
+                        replica_batch_write_receipt_heap,
                     ),
                 ))
                 .saturating_add(map_ledger.charge_allocation(
                     std::sync::Arc::as_ptr(&replica.batch_discard_request_receipts) as *const u8,
-                    chunk_receipt_map_bytes(
+                    replica_receipt_map_bytes(
                         &replica.batch_discard_request_receipts,
-                        chunk_batch_discard_receipt_heap,
+                        replica_batch_discard_receipt_heap,
                     ),
                 ))
                 .saturating_add(map_ledger.charge_allocation(
                     std::sync::Arc::as_ptr(&replica.state_install_request_receipts) as *const u8,
-                    chunk_receipt_map_bytes(
+                    replica_receipt_map_bytes(
                         &replica.state_install_request_receipts,
-                        chunk_state_install_receipt_heap,
+                        replica_state_install_receipt_heap,
                     ),
                 ))
                 .saturating_add(map_ledger.charge_allocation(
                     std::sync::Arc::as_ptr(&replica.reclaim_request_receipts) as *const u8,
-                    chunk_receipt_map_bytes(
+                    replica_receipt_map_bytes(
                         &replica.reclaim_request_receipts,
-                        chunk_reclaim_receipt_heap,
+                        replica_reclaim_receipt_heap,
                     ),
                 ))
                 .saturating_add(map_ledger.charge_allocation(
                     std::sync::Arc::as_ptr(&replica.repair_request_receipts) as *const u8,
-                    chunk_receipt_map_bytes(
+                    replica_receipt_map_bytes(
                         &replica.repair_request_receipts,
-                        chunk_repair_receipt_heap,
+                        replica_repair_receipt_heap,
                     ),
                 ));
             replica_other = replica_other
@@ -558,13 +558,13 @@ impl PageServiceSnapshot {
             }
         }
 
-        let copied = page_receipts
+        let copied = chunk_receipts
             .saturating_add(page_other)
             .saturating_add(replica_receipts)
             .saturating_add(replica_other)
             .saturating_add(chunks_copied);
         vec![
-            ("batch.page_receipts.bytes".to_string(), page_receipts),
+            ("batch.page_receipts.bytes".to_string(), chunk_receipts),
             ("batch.page_other.bytes".to_string(), page_other),
             (
                 "batch.replica_receipts.copied_bytes".to_string(),

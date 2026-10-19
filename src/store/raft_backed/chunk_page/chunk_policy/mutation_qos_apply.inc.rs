@@ -97,7 +97,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_configure_chunk_mutation_qos_prepared(
         &mut self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self.prepare_configure_chunk_mutation_qos_raft_entry(config)?;
         self.propose_prepared_chunk_mutation_qos(prepared)
@@ -106,7 +106,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_configure_chunk_replica_mutation_qos_prepared(
         &mut self,
         replica_index: usize,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared =
             self.prepare_configure_chunk_replica_mutation_qos_raft_entry(replica_index, config)?;
@@ -115,14 +115,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_configure_chunk_mutation_qos_prepared_linearizable(
         &mut self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose_configure_chunk_mutation_qos_prepared_linearizable_fenced(config, None)
     }
 
     pub fn propose_configure_chunk_mutation_qos_prepared_linearizable_fenced(
         &mut self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self.prepare_configure_chunk_mutation_qos_raft_entry_linearizable_fenced(
@@ -143,7 +143,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_configure_chunk_replica_mutation_qos_prepared_linearizable(
         &mut self,
         replica_index: usize,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose_configure_chunk_replica_mutation_qos_prepared_linearizable_fenced(
             replica_index,
@@ -155,7 +155,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_configure_chunk_replica_mutation_qos_prepared_linearizable_fenced(
         &mut self,
         replica_index: usize,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared = self

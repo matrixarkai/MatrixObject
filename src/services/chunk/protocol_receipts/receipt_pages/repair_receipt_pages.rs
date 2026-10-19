@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkRepairReceiptPage {
-    pub receipts: Vec<ChunkRepairReceipt>,
+pub struct ReplicaRepairReceiptPage {
+    pub receipts: Vec<ReplicaRepairReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,
@@ -11,7 +11,7 @@ pub struct ChunkRepairReceiptPage {
     pub skipped_chunk_count: u64,
 }
 
-impl ChunkRepairReceiptPage {
+impl ReplicaRepairReceiptPage {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-CHUNK-REPAIR-RECEIPT-PAGE-PROOF1"
     }
@@ -88,7 +88,7 @@ impl ChunkRepairReceiptPage {
     }
 }
 
-impl ProvenReceiptRead<ChunkRepairReceiptPage> {
+impl ProvenReceiptRead<ReplicaRepairReceiptPage> {
     pub fn verify_expected_chunk_repair_receipt_page_proof_checksum(
         &self,
         expected_chunk_repair_receipt_page_proof_checksum: impl AsRef<str>,
@@ -154,11 +154,11 @@ macro_rules! impl_chunk_storage_receipt_page_source {
     };
 }
 
-impl_chunk_storage_receipt_page_source!(ChunkWriteReceiptPage, "chunk.write");
-impl_chunk_storage_receipt_page_source!(ChunkBatchWriteReceiptPage, "chunk.batch_write");
-impl_chunk_storage_receipt_page_source!(ChunkDiscardReceiptPage, "chunk.discard");
-impl_chunk_storage_receipt_page_source!(ChunkBatchDiscardReceiptPage, "chunk.batch_discard");
-impl_chunk_storage_receipt_page_source!(ChunkRepairReceiptPage, "chunk.repair");
+impl_chunk_storage_receipt_page_source!(ReplicaWriteReceiptPage, "chunk.write");
+impl_chunk_storage_receipt_page_source!(ReplicaBatchWriteReceiptPage, "chunk.batch_write");
+impl_chunk_storage_receipt_page_source!(ReplicaDiscardReceiptPage, "chunk.discard");
+impl_chunk_storage_receipt_page_source!(ReplicaBatchDiscardReceiptPage, "chunk.batch_discard");
+impl_chunk_storage_receipt_page_source!(ReplicaRepairReceiptPage, "chunk.repair");
 
 fn chunk_receipt_page_common_control_fields(
     receipt_count: u64,

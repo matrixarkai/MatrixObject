@@ -81,7 +81,7 @@ impl MatrixObjectStore {
         )?;
         validate_storage_parallelism(options.page_repair_parallelism, "block_repair_parallelism")?;
         validate_storage_parallelism(
-            options.page_chunk_fanout_parallelism,
+            options.replica_fanout_parallelism,
             "block_chunk_fanout_parallelism",
         )?;
         validate_storage_parallelism(
@@ -127,7 +127,7 @@ impl MatrixObjectStore {
                 }
             }
         }
-        let page_service = MatrixPageService::new_with_parallelism(
+        let chunk_service = MatrixChunkService::new_with_parallelism(
             options.page_size,
             options.replica_count,
             options.write_quorum,
@@ -137,7 +137,7 @@ impl MatrixObjectStore {
             options.page_batch_write_parallelism,
             options.page_batch_discard_parallelism,
             options.page_repair_parallelism,
-            options.page_chunk_fanout_parallelism,
+            options.replica_fanout_parallelism,
             options.local_replica_store_parallelism,
         )?;
         let mut store = Self {
@@ -175,7 +175,7 @@ impl MatrixObjectStore {
             metadata_route_cache_sequence: 0,
             slabs: BTreeMap::new(),
             payloads: BTreeMap::new(),
-            page_service,
+            chunk_service,
             next_slab_id: 1,
             next_upload_sequence: 1,
             logical_written_bytes: 0,

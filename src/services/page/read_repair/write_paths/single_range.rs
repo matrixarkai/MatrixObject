@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn write_slab_range(
         &mut self,
         slab_id: &SlabId,
@@ -28,7 +28,7 @@ impl MatrixPageService {
         data: &[u8],
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
-    ) -> Result<PageStorageMutationReport, ObjectError> {
+    ) -> Result<ChunkStorageMutationReport, ObjectError> {
         self.write_slab_range_storage_fenced(
             slab_id,
             offset,
@@ -36,11 +36,11 @@ impl MatrixPageService {
             expected_route_control_checksum,
             expected_chunk_control_proof_checksum,
         )?;
-        let stats = PageBatchStats {
+        let stats = ChunkBatchStats {
             input_ranges: if data.is_empty() { 0 } else { 1 },
             mapped_chunk_ranges: self.mapped_chunk_count(offset, data.len() as u64)?,
             payload_bytes: data.len() as u64,
-            ..PageBatchStats::default()
+            ..ChunkBatchStats::default()
         };
         Ok(self.storage_mutation_report(
             stats,
@@ -86,7 +86,7 @@ impl MatrixPageService {
                     continue;
                 }
                 let write_result = if let Some(base_key) = idempotency_key {
-                    let chunk_key = page_chunk_receipt_key(
+                    let chunk_key = replica_receipt_key(
                         "sw",
                         base_key,
                         &loc.chunk_id,
@@ -131,7 +131,7 @@ impl MatrixPageService {
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
-    ) -> Result<PageWriteReceipt, ObjectError> {
+    ) -> Result<ChunkWriteReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         let length = data.len() as u64;
         if length == 0 {
@@ -162,7 +162,7 @@ impl MatrixPageService {
             data,
             Some(idempotency_key),
         )?;
-        let receipt = PageWriteReceipt {
+        let receipt = ChunkWriteReceipt {
             slab_id: slab_id.clone(),
             offset,
             length,
@@ -184,7 +184,7 @@ impl MatrixPageService {
         data: &[u8],
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageWriteReceipt, ObjectError> {
+    ) -> Result<ChunkWriteReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         if self.write_request_receipts.contains_key(idempotency_key) {
             return self.write_slab_range_idempotent(slab_id, offset, data, idempotency_key);
@@ -200,7 +200,7 @@ impl MatrixPageService {
         data: &[u8],
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageIdempotentWriteReport, ObjectError> {
+    ) -> Result<ChunkIdempotentWriteReport, ObjectError> {
         let receipt = self.write_slab_range_idempotent_fenced(
             slab_id,
             offset,
@@ -208,13 +208,13 @@ impl MatrixPageService {
             idempotency_key,
             expected_route_control_checksum,
         )?;
-        let stats = PageBatchStats {
+        let stats = ChunkBatchStats {
             input_ranges: if receipt.length == 0 { 0 } else { 1 },
             mapped_chunk_ranges: self.mapped_chunk_count(receipt.offset, receipt.length)?,
             payload_bytes: receipt.length,
-            ..PageBatchStats::default()
+            ..ChunkBatchStats::default()
         };
-        Ok(PageIdempotentWriteReport {
+        Ok(ChunkIdempotentWriteReport {
             receipt,
             mutation: self.storage_mutation_report(stats, expected_route_control_checksum, None),
         })

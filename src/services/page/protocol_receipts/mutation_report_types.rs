@@ -1,54 +1,54 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageStorageMutationReport {
-    pub stats: PageBatchStats,
-    pub route_control_proof: PageRouteControlProof,
+pub struct ChunkStorageMutationReport {
+    pub stats: ChunkBatchStats,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub route_control_fenced: bool,
     pub route_control_fence_matched: bool,
-    pub chunk_control_proof: PageChunkControlProof,
+    pub chunk_control_proof: ReplicaControlProof,
     pub expected_chunk_control_proof_checksum: String,
     pub chunk_control_fenced: bool,
     pub chunk_control_fence_matched: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageIdempotentAllocationReport {
-    pub receipt: PageBatchAllocationReceipt,
-    pub mutation: PageStorageMutationReport,
+pub struct ChunkIdempotentAllocationReport {
+    pub receipt: ChunkBatchAllocationReceipt,
+    pub mutation: ChunkStorageMutationReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageIdempotentAllocationReleaseReport {
-    pub receipt: PageAllocationReceipt,
-    pub mutation: PageStorageMutationReport,
+pub struct ChunkIdempotentAllocationReleaseReport {
+    pub receipt: ChunkAllocationReceipt,
+    pub mutation: ChunkStorageMutationReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageIdempotentWriteReport {
-    pub receipt: PageWriteReceipt,
-    pub mutation: PageStorageMutationReport,
+pub struct ChunkIdempotentWriteReport {
+    pub receipt: ChunkWriteReceipt,
+    pub mutation: ChunkStorageMutationReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageIdempotentBatchWriteReport {
-    pub receipt: PageBatchWriteReceipt,
-    pub mutation: PageStorageMutationReport,
+pub struct ChunkIdempotentBatchWriteReport {
+    pub receipt: ChunkBatchWriteReceipt,
+    pub mutation: ChunkStorageMutationReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageIdempotentDiscardReport {
-    pub receipt: PageDiscardReceipt,
-    pub mutation: PageStorageMutationReport,
+pub struct ChunkIdempotentDiscardReport {
+    pub receipt: ChunkDiscardReceipt,
+    pub mutation: ChunkStorageMutationReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageIdempotentBatchDiscardReport {
-    pub receipt: PageBatchDiscardReceipt,
-    pub mutation: PageStorageMutationReport,
+pub struct ChunkIdempotentBatchDiscardReport {
+    pub receipt: ChunkBatchDiscardReceipt,
+    pub mutation: ChunkStorageMutationReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageRangeRepairReceipt {
+pub struct ChunkRangeRepairReceipt {
     pub slab_id: SlabId,
     pub offset: u64,
     pub length: u64,
@@ -60,7 +60,7 @@ pub struct PageRangeRepairReceipt {
     pub deduped: bool,
 }
 
-impl PageRangeRepairReceipt {
+impl ChunkRangeRepairReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-BLOCK-RANGE-REPAIR-RECEIPT1"
     }

@@ -60,7 +60,7 @@ impl MatrixObjectStore {
             min_ready_replica_count: u64::MAX,
             partial_status: "ok".to_string(),
             storage_admission_reason: "read_ready".to_string(),
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..ObjectRangeAdmission::default()
         };
         self.attach_storage_admission_context(&mut report, now_millis());
@@ -90,7 +90,7 @@ impl MatrixObjectStore {
             let read_end = range_end.min(extent_end);
             let local_offset = read_start - extent_start;
             let local_len = read_end - read_start;
-            let admission = self.page_service.can_accept_slab_read_bounded(
+            let admission = self.chunk_service.can_accept_slab_read_bounded(
                 &extent.slab_id,
                 extent.offset + local_offset,
                 local_len,

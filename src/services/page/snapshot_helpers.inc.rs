@@ -3,7 +3,7 @@ fn export_page_service_snapshot_chunk_slice_with_checksum(
     full_checksum: &str,
     offset: u64,
     max_payload_bytes: usize,
-) -> Result<PageServiceSnapshotChunk, ObjectError> {
+) -> Result<ChunkServiceSnapshotChunk, ObjectError> {
     if max_payload_bytes == 0 {
         return Err(ObjectError::InvalidArgument(
             "max_payload_bytes must be positive".to_string(),
@@ -29,7 +29,7 @@ fn export_page_service_snapshot_chunk_slice_with_checksum(
     } else {
         etag(payload_slice)
     };
-    Ok(PageServiceSnapshotChunk {
+    Ok(ChunkServiceSnapshotChunk {
         offset,
         total_bytes,
         chunk_checksum,

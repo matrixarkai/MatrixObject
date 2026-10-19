@@ -1,7 +1,7 @@
 pub(crate) fn read_chunk_batch_write_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkBatchWriteReceipt, ObjectError> {
-    Ok(ChunkBatchWriteReceipt {
+) -> Result<ReplicaBatchWriteReceipt, ObjectError> {
+    Ok(ReplicaBatchWriteReceipt {
         chunk_id: read_chunk_id(cursor)?,
         request_checksum: cursor.read_string()?,
         payload_checksum: cursor.read_string()?,
@@ -13,8 +13,8 @@ pub(crate) fn read_chunk_batch_write_receipt(
 
 pub(crate) fn read_chunk_write_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkWriteReceipt, ObjectError> {
-    Ok(ChunkWriteReceipt {
+) -> Result<ReplicaWriteReceipt, ObjectError> {
+    Ok(ReplicaWriteReceipt {
         chunk_id: read_chunk_id(cursor)?,
         offset: cursor.read_u64()?,
         length: cursor.read_u64()?,
@@ -27,8 +27,8 @@ pub(crate) fn read_chunk_write_receipt(
 
 pub(crate) fn read_chunk_discard_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkDiscardReceipt, ObjectError> {
-    Ok(ChunkDiscardReceipt {
+) -> Result<ReplicaDiscardReceipt, ObjectError> {
+    Ok(ReplicaDiscardReceipt {
         chunk_id: read_chunk_id(cursor)?,
         offset: cursor.read_u64()?,
         length: cursor.read_u64()?,
@@ -40,8 +40,8 @@ pub(crate) fn read_chunk_discard_receipt(
 
 pub(crate) fn read_chunk_batch_discard_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkBatchDiscardReceipt, ObjectError> {
-    Ok(ChunkBatchDiscardReceipt {
+) -> Result<ReplicaBatchDiscardReceipt, ObjectError> {
+    Ok(ReplicaBatchDiscardReceipt {
         chunk_id: read_chunk_id(cursor)?,
         request_checksum: cursor.read_string()?,
         idempotency_key: cursor.read_string()?,
@@ -52,8 +52,8 @@ pub(crate) fn read_chunk_batch_discard_receipt(
 
 pub(crate) fn read_chunk_state_install_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<ChunkStateInstallReceipt, ObjectError> {
-    Ok(ChunkStateInstallReceipt {
+) -> Result<ReplicaStateInstallReceipt, ObjectError> {
+    Ok(ReplicaStateInstallReceipt {
         chunk_id: read_chunk_id(cursor)?,
         request_checksum: cursor.read_string()?,
         payload_checksum: cursor.read_string()?,
@@ -69,8 +69,8 @@ pub(crate) fn read_chunk_state_install_receipt(
 pub(crate) fn read_chunk_partial_reclaim_report(
     cursor: &mut SnapshotByteCursor<'_>,
     snapshot_version: u64,
-) -> Result<ChunkPartialReclaimReport, ObjectError> {
-    Ok(ChunkPartialReclaimReport {
+) -> Result<ReplicaPartialReclaimReport, ObjectError> {
+    Ok(ReplicaPartialReclaimReport {
         scanned_chunks: cursor.read_u64()?,
         candidate_chunks: cursor.read_u64()?,
         reclaimed_chunks: cursor.read_u64()?,
@@ -107,8 +107,8 @@ pub(crate) fn read_chunk_partial_reclaim_report(
 pub(crate) fn read_chunk_reclaim_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
     snapshot_version: u64,
-) -> Result<ChunkReclaimReceipt, ObjectError> {
-    Ok(ChunkReclaimReceipt {
+) -> Result<ReplicaReclaimReceipt, ObjectError> {
+    Ok(ReplicaReclaimReceipt {
         request_checksum: cursor.read_string()?,
         idempotency_key: cursor.read_string()?,
         max_chunks: cursor.read_u64()?,

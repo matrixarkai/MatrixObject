@@ -33,7 +33,7 @@ impl MatrixObjectStore {
             ));
         }
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -120,7 +120,7 @@ impl MatrixObjectStore {
         for (offset, data) in &selected {
             borrowed_selected.push((*offset, data.as_slice()));
         }
-        let admission = self.page_service.can_accept_chunk_replica_batch_write_from_borrowed(
+        let admission = self.chunk_service.can_accept_chunk_replica_batch_write_from_borrowed(
             replica_index,
             &chunk_id,
             &borrowed_selected,
@@ -194,7 +194,7 @@ impl MatrixObjectStore {
             borrowed_selected.push((*offset, data.as_slice()));
         }
         let admission = self
-            .page_service
+            .chunk_service
             .can_accept_chunk_replica_batch_write_fenced_borrowed(
             replica_index,
             &chunk_id,
@@ -229,7 +229,7 @@ impl MatrixObjectStore {
     pub fn apply_prepared_chunk_batch_write(
         &mut self,
         prepared: PreparedChunkBatchWrite,
-    ) -> Result<ChunkBatchWriteReceipt, ObjectError> {
+    ) -> Result<ReplicaBatchWriteReceipt, ObjectError> {
         validate_idempotency_key(&prepared.receipt.idempotency_key)?;
         validate_chunk_state(&prepared.state)?;
         let expected_checksum = prepared_chunk_batch_write_checksum(&prepared);
@@ -267,7 +267,7 @@ impl MatrixObjectStore {
         }
         let last_applied_index = self.last_applied_index();
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get_mut(prepared.replica_index)
             .ok_or_else(|| {

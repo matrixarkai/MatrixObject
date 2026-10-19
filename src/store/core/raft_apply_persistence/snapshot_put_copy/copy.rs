@@ -22,7 +22,7 @@ impl MatrixObjectStore {
             "copy_object:{source_bucket}/{source_key}->{destination_bucket}/{destination_key}:{update_time_ms}"
         );
         let batch_id = format!("object-copy-{}", etag(batch_material.as_bytes()));
-        if let Err(err) = self.page_service.begin_mutation_batch(batch_id.clone()) {
+        if let Err(err) = self.chunk_service.begin_mutation_batch(batch_id.clone()) {
             self.restore_object_mutation_rollback(rollback);
             return Err(err);
         }
@@ -37,16 +37,16 @@ impl MatrixObjectStore {
             options,
         );
         match result {
-            Ok(metadata) => match self.page_service.end_mutation_batch(&batch_id) {
+            Ok(metadata) => match self.chunk_service.end_mutation_batch(&batch_id) {
                 Ok(_) => Ok(metadata),
                 Err(err) => {
-                    let _ = self.page_service.abort_mutation_batch(&batch_id);
+                    let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                     self.restore_object_mutation_rollback(rollback);
                     Err(err)
                 }
             },
             Err(err) => {
-                let _ = self.page_service.abort_mutation_batch(&batch_id);
+                let _ = self.chunk_service.abort_mutation_batch(&batch_id);
                 self.restore_object_mutation_rollback(rollback);
                 Err(err)
             }

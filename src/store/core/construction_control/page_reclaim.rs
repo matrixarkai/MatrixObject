@@ -11,7 +11,7 @@ impl MatrixObjectStore {
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<PreparedPageReplicaReclaim, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -19,8 +19,8 @@ impl MatrixObjectStore {
             ));
         }
         let before_page_service_fingerprint =
-            page_batch_mutation_image_fingerprint(&self.page_service);
-        let plan = self.page_service.plan_chunk_replica_reclaim(
+            page_batch_mutation_image_fingerprint(&self.chunk_service);
+        let plan = self.chunk_service.plan_chunk_replica_reclaim(
             None,
             max_chunks,
             max_rewrite_bytes,
@@ -29,7 +29,7 @@ impl MatrixObjectStore {
             max_discard_ranges,
             max_trim_bytes,
         )?;
-        let mut projected = self.page_service.clone();
+        let mut projected = self.chunk_service.clone();
         let report = projected.reclaim_chunk_replicas_with_limits_at(
             max_chunks,
             max_rewrite_bytes,
@@ -54,7 +54,7 @@ impl MatrixObjectStore {
             report,
             expected_previous_commit_index,
             prepared_commit_index: expected_previous_commit_index.saturating_add(1),
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             expected_route_control_checksum: expected_route_control_checksum
                 .unwrap_or_default()
                 .to_string(),
@@ -67,7 +67,7 @@ impl MatrixObjectStore {
     pub fn apply_prepared_page_reclaim(
         &mut self,
         prepared: PreparedPageReplicaReclaim,
-    ) -> Result<ChunkPartialReclaimReport, ObjectError> {
+    ) -> Result<ReplicaPartialReclaimReport, ObjectError> {
         let expected_checksum = prepared_page_reclaim_checksum(&PreparedPageReplicaReclaim {
             raft_entry_checksum: String::new(),
             ..prepared.clone()
@@ -94,7 +94,7 @@ impl MatrixObjectStore {
                 "block prepared reclaim commit index must be adjacent".to_string(),
             ));
         }
-        let current_fingerprint = page_batch_mutation_image_fingerprint(&self.page_service);
+        let current_fingerprint = page_batch_mutation_image_fingerprint(&self.chunk_service);
         if current_fingerprint == prepared.after_page_service_fingerprint {
             return Ok(prepared.report);
         }
@@ -103,7 +103,7 @@ impl MatrixObjectStore {
                 "block prepared reclaim previous commit fence mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "block prepared reclaim",
@@ -134,7 +134,7 @@ impl MatrixObjectStore {
                 "block prepared reclaim no longer matches current state".to_string(),
             ));
         }
-        let report = self.page_service.reclaim_chunk_replicas_with_limits_at(
+        let report = self.chunk_service.reclaim_chunk_replicas_with_limits_at(
             prepared.max_chunks,
             prepared.max_rewrite_bytes,
             prepared.min_discarded_bytes,
@@ -144,7 +144,7 @@ impl MatrixObjectStore {
             prepared.now_ms,
         );
         if report != prepared.report
-            || page_batch_mutation_image_fingerprint(&self.page_service)
+            || page_batch_mutation_image_fingerprint(&self.chunk_service)
                 != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(

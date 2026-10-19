@@ -1,5 +1,5 @@
-impl MatrixPageService {
-    pub fn scrub_chunk_replicas(&mut self, repair: bool) -> Result<ChunkScrubReport, ObjectError> {
+impl MatrixChunkService {
+    pub fn scrub_chunk_replicas(&mut self, repair: bool) -> Result<ReplicaScrubReport, ObjectError> {
         let mut chunk_ids = BTreeSet::new();
         for (index, replica) in self.replicas.iter().enumerate() {
             if !self.replica_active(index) {
@@ -9,7 +9,7 @@ impl MatrixPageService {
                 chunk_ids.insert(chunk_id);
             }
         }
-        let mut report = ChunkScrubReport::default();
+        let mut report = ReplicaScrubReport::default();
         for chunk_id in chunk_ids {
             report.checked_chunks = report.checked_chunks.saturating_add(1);
             let mut valid_states: Vec<(usize, PageState)> =
@@ -76,14 +76,14 @@ impl MatrixPageService {
     pub fn plan_repair_chunk_replicas(
         &self,
         chunk_id: &PageId,
-    ) -> Result<ChunkRepairReport, ObjectError> {
+    ) -> Result<ReplicaRepairReport, ObjectError> {
         self.inspect_chunk_repair(chunk_id)
     }
 
     pub fn repair_chunk_replicas(
         &mut self,
         chunk_id: &PageId,
-    ) -> Result<ChunkRepairReport, ObjectError> {
+    ) -> Result<ReplicaRepairReport, ObjectError> {
         let mut report = self.inspect_chunk_repair(chunk_id)?;
         if report.degraded_chunks == 0 {
             report.committed = true;
@@ -115,7 +115,7 @@ impl MatrixPageService {
         &mut self,
         chunk_id: &PageId,
         idempotency_key: &str,
-    ) -> Result<(ChunkRepairReport, ChunkRepairReceipt), ObjectError> {
+    ) -> Result<(ReplicaRepairReport, ReplicaRepairReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         let request_checksum = chunk_repair_request_checksum(chunk_id);
         if let Some(existing) = self.repair_request_receipts.get(idempotency_key) {
@@ -129,7 +129,7 @@ impl MatrixPageService {
             return Ok((receipt.report.clone(), receipt));
         }
         let report = self.repair_chunk_replicas(chunk_id)?;
-        let receipt = ChunkRepairReceipt {
+        let receipt = ReplicaRepairReceipt {
             chunk_id: chunk_id.clone(),
             request_checksum,
             idempotency_key: idempotency_key.to_string(),
@@ -147,7 +147,7 @@ impl MatrixPageService {
         after_chunk_id: Option<&PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
-    ) -> Result<PageReplicaAuditPage, ObjectError> {
+    ) -> Result<ChunkReplicaAuditChunk, ObjectError> {
         if max_chunks == 0 {
             return Err(ObjectError::InvalidArgument(
                 "block replica audit max_chunks must be positive".to_string(),
@@ -159,9 +159,9 @@ impl MatrixPageService {
                 chunk_ids.insert(chunk_id);
             }
         }
-        let mut page = PageReplicaAuditPage {
+        let mut page = ChunkReplicaAuditChunk {
             marker: after_chunk_id.cloned(),
-            ..PageReplicaAuditPage::default()
+            ..ChunkReplicaAuditChunk::default()
         };
         for chunk_id in chunk_ids {
             if after_chunk_id.map_or(false, |marker| &chunk_id <= marker) {
@@ -183,7 +183,7 @@ impl MatrixPageService {
                     || self.replica_endpoint_disabled(index);
                 if self.replica_endpoint_disabled(index) {
                     quarantined_replicas = quarantined_replicas.saturating_add(1);
-                    chunk_items.push(PageReplicaAuditItem {
+                    chunk_items.push(ChunkReplicaAuditItem {
                         chunk_id: chunk_id.clone(),
                         replica_index: index,
                         status: "disabled".to_string(),
@@ -199,7 +199,7 @@ impl MatrixPageService {
                 match replica.read_chunk_state_validated(&chunk_id) {
                     Ok(state) => {
                         states.push((index, state.clone()));
-                        chunk_items.push(PageReplicaAuditItem {
+                        chunk_items.push(ChunkReplicaAuditItem {
                             chunk_id: chunk_id.clone(),
                             replica_index: index,
                             status: "present".to_string(),
@@ -213,7 +213,7 @@ impl MatrixPageService {
                     }
                     Err(ObjectError::NotFound(_)) => {
                         missing_replicas = missing_replicas.saturating_add(1);
-                        chunk_items.push(PageReplicaAuditItem {
+                        chunk_items.push(ChunkReplicaAuditItem {
                             chunk_id: chunk_id.clone(),
                             replica_index: index,
                             status: "missing".to_string(),
@@ -227,7 +227,7 @@ impl MatrixPageService {
                     }
                     Err(ObjectError::Corruption(_)) => {
                         corrupt_replicas = corrupt_replicas.saturating_add(1);
-                        chunk_items.push(PageReplicaAuditItem {
+                        chunk_items.push(ChunkReplicaAuditItem {
                             chunk_id: chunk_id.clone(),
                             replica_index: index,
                             status: "corrupt".to_string(),
@@ -279,7 +279,7 @@ impl MatrixPageService {
             let mut next_payload = page.payload_bytes;
             for item in &chunk_items {
                 next_payload =
-                    next_payload.saturating_add(page_replica_audit_item_payload_bytes(item));
+                    next_payload.saturating_add(chunk_replica_audit_item_payload_bytes(item));
             }
             if max_payload_bytes > 0 && next_payload > max_payload_bytes {
                 page.budget_limited = true;
@@ -316,7 +316,7 @@ impl MatrixPageService {
         after_chunk_id: Option<&PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
-    ) -> Result<PageReplicaAuditRepairReport, ObjectError> {
+    ) -> Result<ChunkReplicaAuditRepairReport, ObjectError> {
         let route_control_proof = self.route_control_proof();
         let audit = self.audit_chunk_replicas(after_chunk_id, max_chunks, max_payload_bytes)?;
         let mut candidate_chunks = BTreeSet::new();
@@ -325,11 +325,11 @@ impl MatrixPageService {
                 candidate_chunks.insert(item.chunk_id.clone());
             }
         }
-        let mut report = PageReplicaAuditRepairReport {
+        let mut report = ChunkReplicaAuditRepairReport {
             candidate_chunks: candidate_chunks.len() as u64,
             audit,
             route_control_proof,
-            ..PageReplicaAuditRepairReport::default()
+            ..ChunkReplicaAuditRepairReport::default()
         };
         for chunk_id in candidate_chunks {
             match self.repair_chunk_from_quorum(&chunk_id) {

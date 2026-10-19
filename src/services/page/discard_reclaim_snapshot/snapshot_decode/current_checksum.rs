@@ -1,4 +1,4 @@
-impl PageServiceSnapshot {
+impl ChunkServiceSnapshot {
     /// Computes the checksum an unsealed snapshot is missing, so `validate`
     /// accepts it. Paired with the `export_snapshot_unsealed` constructors,
     /// which skip this because it copies every payload byte before hashing.
@@ -104,8 +104,8 @@ impl PageServiceSnapshot {
         for index in &self.disabled_chunk_endpoints {
             append_u64(&mut material, *index as u64);
         }
-        append_u64(&mut material, self.page_route_control_commit_index);
-        append_u64(&mut material, self.page_route_control_next_log_index);
+        append_u64(&mut material, self.chunk_route_control_commit_index);
+        append_u64(&mut material, self.chunk_route_control_next_log_index);
         append_page_route_qos_config(&mut material, &self.route_qos_config);
         append_page_route_qos_state(&mut material, &route_qos_state);
         append_u64(&mut material, self.sealed_slabs.len() as u64);

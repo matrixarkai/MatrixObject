@@ -8,7 +8,7 @@ impl MatrixObjectStore {
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectRangeAdmission, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report =
             self.can_accept_object_range_read(bucket, key, offset, length, max_payload_bytes)?;
@@ -29,7 +29,7 @@ impl MatrixObjectStore {
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectRangeAdmission, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report = self.can_accept_object_range_read_bounded(
             bucket,

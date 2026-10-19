@@ -1,4 +1,4 @@
-impl PageServiceSnapshotAssembler {
+impl ChunkServiceSnapshotAssembler {
     pub fn install_progress(&self) -> SnapshotInstallProgress {
         snapshot_install_progress(
             true,
@@ -13,7 +13,7 @@ impl PageServiceSnapshotAssembler {
 
     pub fn push_chunk(
         &mut self,
-        chunk: PageServiceSnapshotChunk,
+        chunk: ChunkServiceSnapshotChunk,
     ) -> Result<Option<Vec<u8>>, ObjectError> {
         Ok(self
             .push_chunk_with_checksum(chunk)?
@@ -22,8 +22,8 @@ impl PageServiceSnapshotAssembler {
 
     pub(crate) fn push_chunk_with_checksum(
         &mut self,
-        chunk: PageServiceSnapshotChunk,
-    ) -> Result<Option<PageServiceSnapshotAssembledImage>, ObjectError> {
+        chunk: ChunkServiceSnapshotChunk,
+    ) -> Result<Option<ChunkServiceSnapshotAssembledImage>, ObjectError> {
         if chunk.total_bytes == 0 {
             return Err(ObjectError::Corruption(
                 "block service snapshot chunk has zero total bytes".to_string(),
@@ -105,7 +105,7 @@ impl PageServiceSnapshotAssembler {
             let image = chunk.payload;
             self.expected_total_bytes = None;
             self.expected_full_checksum = None;
-            return Ok(Some(PageServiceSnapshotAssembledImage {
+            return Ok(Some(ChunkServiceSnapshotAssembledImage {
                 bytes: image,
                 full_checksum,
             }));
@@ -133,7 +133,7 @@ impl PageServiceSnapshotAssembler {
             let image = std::mem::take(&mut self.buffer);
             self.expected_total_bytes = None;
             self.expected_full_checksum = None;
-            return Ok(Some(PageServiceSnapshotAssembledImage {
+            return Ok(Some(ChunkServiceSnapshotAssembledImage {
                 bytes: image,
                 full_checksum,
             }));

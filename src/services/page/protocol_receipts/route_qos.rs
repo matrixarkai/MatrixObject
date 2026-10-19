@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageRouteQosConfig {
+pub struct ChunkRouteQosConfig {
     pub window_ms: u64,
     pub max_read_ops_per_window: u64,
     pub max_read_bytes_per_window: u64,
@@ -9,7 +9,7 @@ pub struct PageRouteQosConfig {
     pub max_discard_bytes_per_window: u64,
 }
 
-impl Default for PageRouteQosConfig {
+impl Default for ChunkRouteQosConfig {
     fn default() -> Self {
         Self {
             window_ms: DEFAULT_PAGE_ROUTE_QOS_WINDOW_MS,

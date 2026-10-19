@@ -108,7 +108,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             &expected_checksum,
             &options,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self.propose_append_object_fenced_with_read_proof_linearizable_committed_at(
             bucket,
             key,

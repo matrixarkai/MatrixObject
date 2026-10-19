@@ -1,12 +1,12 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_page_batch_write_raft_entry(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
     ) -> Result<PreparedPageBatchWrite, ObjectError> {
         let expected_route_control_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         self.store.prepare_page_batch_write_raft_entry_fenced(
@@ -19,7 +19,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_write_raft_entry_bounded(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         idempotency_key: &str,
@@ -35,7 +35,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_write_raft_entry_bounded_from(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
@@ -54,7 +54,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_page_batch_write_raft_entry_bounded_fenced_from(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,

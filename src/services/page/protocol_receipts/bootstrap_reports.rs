@@ -1,27 +1,27 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageRouteControlBootstrapReport {
+pub struct ChunkRouteControlBootstrapReport {
     pub target_commit_index: u64,
     pub max_steps: u64,
     pub applied_steps: u64,
-    pub before_proof: PageRouteControlProof,
-    pub after_proof: PageRouteControlProof,
+    pub before_proof: ChunkRouteControlProof,
+    pub after_proof: ChunkRouteControlProof,
     pub last_metadata: Option<ObjectMetadata>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageServiceBootstrapReport {
-    pub route_report: Option<PageRouteControlBootstrapReport>,
-    pub before_readiness: PageStorageReadiness,
-    pub after_readiness: PageStorageReadiness,
+pub struct ChunkServiceBootstrapReport {
+    pub route_report: Option<ChunkRouteControlBootstrapReport>,
+    pub before_readiness: ChunkStorageReadiness,
+    pub after_readiness: ChunkStorageReadiness,
 }
 
-impl PageServiceBootstrapReport {
+impl ChunkServiceBootstrapReport {
     pub fn report_checksum_format(&self) -> &'static str {
         PAGE_SERVICE_BOOTSTRAP_REPORT_FORMAT
     }
 
     pub fn report_checksum(&self) -> String {
-        page_service_bootstrap_report_checksum(self)
+        chunk_service_bootstrap_report_checksum(self)
     }
 
     pub fn verify_expected_report_checksum(
@@ -75,13 +75,13 @@ impl PageServiceBootstrapReport {
         fields.insert(
             format!("{field_prefix}before_block_route_control_proof_checksum"),
             self.before_readiness
-                .page_route_control_proof_checksum
+                .chunk_route_control_proof_checksum
                 .clone(),
         );
         fields.insert(
             format!("{field_prefix}after_block_route_control_proof_checksum"),
             self.after_readiness
-                .page_route_control_proof_checksum
+                .chunk_route_control_proof_checksum
                 .clone(),
         );
         fields.extend(
@@ -99,13 +99,13 @@ impl PageServiceBootstrapReport {
     }
 }
 
-impl PageRouteControlBootstrapReport {
+impl ChunkRouteControlBootstrapReport {
     pub fn report_checksum_format(&self) -> &'static str {
         PAGE_ROUTE_BOOTSTRAP_REPORT_FORMAT
     }
 
     pub fn report_checksum(&self) -> String {
-        page_route_bootstrap_report_checksum(self)
+        chunk_route_bootstrap_report_checksum(self)
     }
 
     pub fn verify_expected_report_checksum(

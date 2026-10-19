@@ -30,7 +30,7 @@ impl MatrixObjectStore {
                 "chunk prepared read-cache commit index must be adjacent".to_string(),
             ));
         }
-        let projected = self.page_service.clone();
+        let projected = self.chunk_service.clone();
         if let Some(replica_index) = prepared.target_replica_index {
             projected.set_read_cache_max_bytes_for_replica(
                 replica_index,
@@ -64,7 +64,7 @@ impl MatrixObjectStore {
                 "chunk prepared read-cache aggregate checksum mismatch".to_string(),
             ));
         }
-        let current_fingerprint = page_read_cache_control_image_fingerprint(&self.page_service);
+        let current_fingerprint = page_read_cache_control_image_fingerprint(&self.chunk_service);
         if current_fingerprint == prepared.after_page_service_fingerprint {
             if prepared.target_replica_index.is_none() {
                 self.chunk_read_cache_max_bytes_per_replica = prepared.max_bytes_per_replica;
@@ -78,7 +78,7 @@ impl MatrixObjectStore {
                 "chunk prepared read-cache previous commit fence mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "chunk prepared read-cache",
@@ -89,11 +89,11 @@ impl MatrixObjectStore {
             ));
         }
         if let Some(replica_index) = prepared.target_replica_index {
-            self.page_service.set_read_cache_max_bytes_for_replica(
+            self.chunk_service.set_read_cache_max_bytes_for_replica(
                 replica_index,
                 prepared.max_bytes_per_replica,
             )?;
-            self.page_service
+            self.chunk_service
                 .set_read_cache_max_cacheable_read_bytes_for_replica(
                     replica_index,
                     prepared.max_cacheable_read_bytes_per_replica,
@@ -102,14 +102,14 @@ impl MatrixObjectStore {
             self.chunk_read_cache_max_bytes_per_replica = prepared.max_bytes_per_replica;
             self.chunk_read_cache_max_cacheable_read_bytes_per_replica =
                 prepared.max_cacheable_read_bytes_per_replica;
-            self.page_service
+            self.chunk_service
                 .set_read_cache_max_bytes_per_replica(prepared.max_bytes_per_replica);
-            self.page_service
+            self.chunk_service
                 .set_read_cache_max_cacheable_read_bytes_per_replica(
                     prepared.max_cacheable_read_bytes_per_replica,
                 );
         }
-        if page_read_cache_control_image_fingerprint(&self.page_service)
+        if page_read_cache_control_image_fingerprint(&self.chunk_service)
             != prepared.after_page_service_fingerprint
         {
             return Err(ObjectError::Corruption(

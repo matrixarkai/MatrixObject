@@ -15,7 +15,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             control_kind: "block-route".to_string(),
             control_checksum: self
                 .store
-                .page_service
+                .chunk_service
                 .route_control_proof()
                 .state_checksum,
         }
@@ -29,7 +29,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<AdmissionReadProof, ObjectError> {
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -68,7 +68,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             control_kind: "block-route".to_string(),
             control_checksum: self
                 .store
-                .page_service
+                .chunk_service
                 .route_control_proof()
                 .state_checksum,
         }
@@ -82,7 +82,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<StorageReadProof, ObjectError> {
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {

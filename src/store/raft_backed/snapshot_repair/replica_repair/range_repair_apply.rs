@@ -10,7 +10,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn propose_prepared_repair_page_range_apply(
         &mut self,
         prepared: PreparedPageRangeRepair,
-    ) -> Result<(ObjectMetadata, BoundedRepairReport, PageRangeRepairReceipt), ObjectError> {
+    ) -> Result<(ObjectMetadata, BoundedRepairReport, ChunkRangeRepairReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
                 "prepared block range repair requires raft/store commit alignment".to_string(),

@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn write_quorum(&self) -> usize {
         self.write_quorum
     }

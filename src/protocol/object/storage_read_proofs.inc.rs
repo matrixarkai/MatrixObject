@@ -55,7 +55,7 @@ impl<T> ProvenStorageRead<T> {
 pub struct ProvenPageRouteFencedStorageRead<T> {
     pub value: T,
     pub proof: StorageReadProof,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 

@@ -8,7 +8,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<MultipartCompleteReport, ObjectError> {
         let expected_route_control_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         self.propose_complete_multipart_upload_with_route_report_linearizable_fenced(
@@ -52,7 +52,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "multipart complete",
             expected_page_route_control_checksum.as_ref(),
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let command = ObjectCommand::CompleteMultipartUpload {
             upload_id: upload_id.to_string(),
             expected_size,

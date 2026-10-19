@@ -23,8 +23,8 @@ impl StoreSnapshot {
             || self.options.page_batch_discard_parallelism > MAX_STORAGE_PARALLELISM
             || self.options.page_repair_parallelism == 0
             || self.options.page_repair_parallelism > MAX_STORAGE_PARALLELISM
-            || self.options.page_chunk_fanout_parallelism == 0
-            || self.options.page_chunk_fanout_parallelism > MAX_STORAGE_PARALLELISM
+            || self.options.replica_fanout_parallelism == 0
+            || self.options.replica_fanout_parallelism > MAX_STORAGE_PARALLELISM
             || self.options.local_replica_store_parallelism == 0
             || self.options.local_replica_store_parallelism > MAX_STORAGE_PARALLELISM
         {
@@ -48,7 +48,7 @@ impl StoreSnapshot {
             ));
         }
         validate_page_chunk_endpoint_topology(
-            &self.page_chunk_endpoints,
+            &self.replica_endpoints,
             &self.page_disabled_chunk_endpoints,
             self.page_write_quorum,
             self.page_read_quorum,

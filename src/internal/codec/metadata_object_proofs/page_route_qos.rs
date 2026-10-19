@@ -1,4 +1,4 @@
-pub(crate) fn append_page_route_qos_config(out: &mut Vec<u8>, config: &PageRouteQosConfig) {
+pub(crate) fn append_page_route_qos_config(out: &mut Vec<u8>, config: &ChunkRouteQosConfig) {
     append_u64(out, config.window_ms);
     append_u64(out, config.max_read_ops_per_window);
     append_u64(out, config.max_read_bytes_per_window);
@@ -11,8 +11,8 @@ pub(crate) fn append_page_route_qos_config(out: &mut Vec<u8>, config: &PageRoute
 pub(crate) fn read_page_route_qos_config(
     cursor: &mut SnapshotByteCursor<'_>,
     has_read_limits: bool,
-) -> Result<PageRouteQosConfig, ObjectError> {
-    let config = PageRouteQosConfig {
+) -> Result<ChunkRouteQosConfig, ObjectError> {
+    let config = ChunkRouteQosConfig {
         window_ms: cursor.read_u64()?,
         max_read_ops_per_window: if has_read_limits {
             cursor.read_u64()?
@@ -33,7 +33,7 @@ pub(crate) fn read_page_route_qos_config(
     Ok(config)
 }
 
-pub(crate) fn append_page_route_qos_state(out: &mut Vec<u8>, state: &PageRouteQosState) {
+pub(crate) fn append_page_route_qos_state(out: &mut Vec<u8>, state: &ChunkRouteQosState) {
     append_u64(out, state.window_start_ms);
     append_u64(out, state.read_ops_in_window);
     append_u64(out, state.read_bytes_in_window);
@@ -48,8 +48,8 @@ pub(crate) fn append_page_route_qos_state(out: &mut Vec<u8>, state: &PageRouteQo
 pub(crate) fn read_page_route_qos_state(
     cursor: &mut SnapshotByteCursor<'_>,
     has_read_limits: bool,
-) -> Result<PageRouteQosState, ObjectError> {
-    Ok(PageRouteQosState {
+) -> Result<ChunkRouteQosState, ObjectError> {
+    Ok(ChunkRouteQosState {
         window_start_ms: cursor.read_u64()?,
         read_ops_in_window: if has_read_limits {
             cursor.read_u64()?

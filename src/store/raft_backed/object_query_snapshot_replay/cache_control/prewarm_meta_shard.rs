@@ -110,7 +110,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenCacheControlStats, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let (stats, readiness) = self.prewarm_object_range_cache_from_meta_shard_fenced(
@@ -144,7 +144,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenCacheControlStats, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let (stats, readiness) = self.prewarm_object_range_cache_routed_from_meta_shard_fenced(
@@ -283,7 +283,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenCacheControlStats, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let (stats, readiness) = self.prewarm_object_version_range_cache_from_meta_shard_fenced(
@@ -319,7 +319,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenCacheControlStats, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let (stats, readiness) = self

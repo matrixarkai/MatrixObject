@@ -9,8 +9,8 @@ impl MatrixReplicaService {
         self.max_cacheable_read_bytes.set(max_bytes);
     }
 
-    pub fn read_cache_stats(&self) -> ChunkReadCacheStats {
-        ChunkReadCacheStats {
+    pub fn read_cache_stats(&self) -> ReplicaReadCacheStats {
+        ReplicaReadCacheStats {
             entries: self.read_cache.borrow().len() as u64,
             bytes: self.read_cache_bytes.get(),
             max_bytes: self.max_read_cache_bytes.get(),
@@ -66,7 +66,7 @@ impl MatrixReplicaService {
         self.read_cache_bytes.set(0);
     }
 
-    fn insert_read_cache(&self, key: ChunkReadCacheKey, result: ChunkReadResult) {
+    fn insert_read_cache(&self, key: ReplicaReadCacheKey, result: ReplicaReadResult) {
         let bytes = result.data.len() as u64;
         if !self.can_insert_read_cache_payload(bytes) {
             return;
@@ -82,7 +82,7 @@ impl MatrixReplicaService {
         let mut cache = self.read_cache.borrow_mut();
         if let Some(previous) = cache.insert(
             key,
-            ChunkReadCacheEntry {
+            ReplicaReadCacheEntry {
                 range_checksum: etag(&result.data),
                 result,
                 last_access_sequence,
@@ -196,7 +196,7 @@ impl MatrixReplicaService {
             && (max_cacheable == 0 || bytes <= max_cacheable)
     }
 
-    fn remove_read_cache_entry(&self, key: &ChunkReadCacheKey) -> Option<ChunkReadCacheEntry> {
+    fn remove_read_cache_entry(&self, key: &ReplicaReadCacheKey) -> Option<ReplicaReadCacheEntry> {
         let removed = self.read_cache.borrow_mut().remove(key);
         if let Some(entry) = &removed {
             let mut by_chunk = self.read_cache_by_chunk.borrow_mut();
@@ -263,7 +263,7 @@ impl MatrixReplicaService {
         next
     }
 
-    fn record_read_cache_access(&self, last_access_sequence: u64, key: ChunkReadCacheKey) {
+    fn record_read_cache_access(&self, last_access_sequence: u64, key: ReplicaReadCacheKey) {
         let mut lru = self.read_cache_lru.borrow_mut();
         lru.push_back((last_access_sequence, key));
         let cache_len = self.read_cache.borrow().len();

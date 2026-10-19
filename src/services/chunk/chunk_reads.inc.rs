@@ -4,7 +4,7 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         offset: u64,
         length: u64,
-    ) -> Result<ChunkReadResult, ObjectError> {
+    ) -> Result<ReplicaReadResult, ObjectError> {
         self.read_chunk_bounded(chunk_id, offset, length, 0)
     }
 
@@ -14,7 +14,7 @@ impl MatrixReplicaService {
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
-    ) -> Result<ChunkReadResult, ObjectError> {
+    ) -> Result<ReplicaReadResult, ObjectError> {
         if max_payload_bytes > 0 && length > max_payload_bytes {
             return Err(ObjectError::PreconditionFailed(
                 "chunk read payload budget exceeded".to_string(),
@@ -29,8 +29,8 @@ impl MatrixReplicaService {
         chunk_id: &PageId,
         ranges: Vec<DataRange>,
         max_payload_bytes: u64,
-    ) -> Result<(Vec<ChunkRangeReadResult>, ChunkReadBatchStats), ObjectError> {
-        let mut stats = ChunkReadBatchStats::default();
+    ) -> Result<(Vec<ReplicaRangeReadResult>, ReplicaReadBatchStats), ObjectError> {
+        let mut stats = ReplicaReadBatchStats::default();
         let mut selected: Vec<DataRange> = Vec::with_capacity(ranges.len());
         let mut selected_in_merge_order = true;
         for range in ranges {
@@ -84,7 +84,7 @@ impl MatrixReplicaService {
                 stats.physical_reads = 1;
             }
             return Ok((
-                vec![ChunkRangeReadResult {
+                vec![ReplicaRangeReadResult {
                     range,
                     data: read.data,
                     cache_hit,
@@ -224,7 +224,7 @@ impl MatrixReplicaService {
                 })?;
                 payload[start..end].to_vec()
             };
-            out.push(ChunkRangeReadResult {
+            out.push(ReplicaRangeReadResult {
                 range,
                 data,
                 cache_hit: merged.cache_hit,

@@ -51,7 +51,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "multipart create",
             expected_page_route_control_checksum.as_ref(),
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let upload_id = upload_id.into();
         let command = ObjectCommand::CreateMultipartUpload {
             upload_id: upload_id.clone(),

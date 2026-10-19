@@ -67,9 +67,9 @@ impl MatrixObjectStore {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<MultipartPartReport, ObjectError> {
         self.multipart_upload(upload_id)?;
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let part = self.upload_part(upload_id, part_number, data)?;
         let received_bytes = self.multipart_upload(upload_id)?.total_bytes;
         let mut report = MultipartPartReport {

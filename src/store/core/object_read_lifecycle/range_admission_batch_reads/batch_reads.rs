@@ -24,7 +24,7 @@ impl MatrixObjectStore {
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectBatchReadReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report =
             self.batch_get_objects_internal(requests, max_items, max_payload_bytes, true, None)?;
@@ -136,7 +136,7 @@ impl MatrixObjectStore {
             requested_objects: requests.len() as u64,
             max_payload_bytes,
             max_chunk_read_count,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..AdmittedObjectBatchReadReport::default()
         };
         if let Some(options) = metadata_read_options.as_ref() {

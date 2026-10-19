@@ -1,10 +1,10 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn read_slab_range_repairing(
         &mut self,
         slab_id: &SlabId,
         offset: u64,
         length: u64,
-    ) -> Result<(Vec<u8>, PageReadStats), ObjectError> {
+    ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         self.admit_page_route_qos(1, length, 0, 0, 0, 0, now_millis())?;
         let locations = self.map_range(slab_id, offset, length)?;
         let capacity = usize::try_from(length).map_err(|_| {
@@ -53,10 +53,10 @@ impl MatrixPageService {
         slab_id: &SlabId,
         offset: u64,
         length: u64,
-    ) -> Result<PageReadRepairReport, ObjectError> {
+    ) -> Result<ChunkReadRepairReport, ObjectError> {
         let route_control_proof = self.route_control_proof();
         let (data, stats) = self.read_slab_range_repairing(slab_id, offset, length)?;
-        Ok(PageReadRepairReport {
+        Ok(ChunkReadRepairReport {
             slab_id: slab_id.clone(),
             offset,
             length,
@@ -77,7 +77,7 @@ impl MatrixPageService {
         offset: u64,
         length: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageReadRepairReport, ObjectError> {
+    ) -> Result<ChunkReadRepairReport, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report = self.read_slab_range_repair_report(slab_id, offset, length)?;
         report.expected_route_control_checksum = expected_route_control_checksum
@@ -86,8 +86,8 @@ impl MatrixPageService {
         Ok(report)
     }
 
-    fn collect_metadata_head_admission_stats(&self, chunk_ids: &[PageId]) -> PageReadStats {
-        let mut stats = PageReadStats::default();
+    fn collect_metadata_head_admission_stats(&self, chunk_ids: &[PageId]) -> ChunkReadStats {
+        let mut stats = ChunkReadStats::default();
         if chunk_ids.is_empty() {
             return stats;
         }
@@ -146,7 +146,7 @@ impl MatrixPageService {
         length: u64,
         source_replica_index: usize,
         max_payload_bytes: u64,
-    ) -> Result<Vec<ChunkStateHandoff>, ObjectError> {
+    ) -> Result<Vec<ReplicaStateHandoff>, ObjectError> {
         if source_replica_index >= self.replicas.len() {
             return Err(ObjectError::InvalidArgument(
                 "source replica index out of range".to_string(),
@@ -190,7 +190,7 @@ impl MatrixPageService {
     pub fn apply_chunk_state_handoffs(
         &mut self,
         target_replica_index: usize,
-        handoffs: Vec<ChunkStateHandoff>,
+        handoffs: Vec<ReplicaStateHandoff>,
     ) -> Result<RepairStats, ObjectError> {
         self.apply_chunk_state_handoffs_fenced(target_replica_index, handoffs, None)
     }
@@ -198,7 +198,7 @@ impl MatrixPageService {
     pub fn apply_chunk_state_handoffs_fenced(
         &mut self,
         target_replica_index: usize,
-        handoffs: Vec<ChunkStateHandoff>,
+        handoffs: Vec<ReplicaStateHandoff>,
         expected_control_checksum: Option<&str>,
     ) -> Result<RepairStats, ObjectError> {
         if target_replica_index >= self.replicas.len() {

@@ -45,7 +45,7 @@ fn root_chunk_receipt_page_proof_capacity(
         + receipt_count.saturating_mul(encoded_string_len("0000000000000000"))
 }
 
-pub(crate) fn chunk_write_receipt_page_proof_checksum(page: &ChunkWriteReceiptPage) -> String {
+pub(crate) fn chunk_write_receipt_page_proof_checksum(page: &ReplicaWriteReceiptPage) -> String {
     const PROOF_FORMAT: &str = "MXOS-CHUNK-WRITE-RECEIPT-PAGE-PROOF1";
     let mut material = Vec::with_capacity(root_chunk_receipt_page_proof_capacity(
         PROOF_FORMAT,
@@ -73,7 +73,7 @@ pub(crate) fn chunk_write_receipt_page_proof_checksum(page: &ChunkWriteReceiptPa
 }
 
 pub(crate) fn chunk_batch_write_receipt_page_proof_checksum(
-    page: &ChunkBatchWriteReceiptPage,
+    page: &ReplicaBatchWriteReceiptPage,
 ) -> String {
     const PROOF_FORMAT: &str = "MXOS-CHUNK-WRITE-BATCH-RECEIPT-PAGE-PROOF1";
     let mut material = Vec::with_capacity(root_chunk_receipt_page_proof_capacity(
@@ -101,7 +101,7 @@ pub(crate) fn chunk_batch_write_receipt_page_proof_checksum(
     etag(&material)
 }
 
-pub(crate) fn chunk_discard_receipt_page_proof_checksum(page: &ChunkDiscardReceiptPage) -> String {
+pub(crate) fn chunk_discard_receipt_page_proof_checksum(page: &ReplicaDiscardReceiptPage) -> String {
     const PROOF_FORMAT: &str = "MXOS-CHUNK-DISCARD-RECEIPT-PAGE-PROOF1";
     let mut material = Vec::with_capacity(root_chunk_receipt_page_proof_capacity(
         PROOF_FORMAT,
@@ -129,7 +129,7 @@ pub(crate) fn chunk_discard_receipt_page_proof_checksum(page: &ChunkDiscardRecei
 }
 
 pub(crate) fn chunk_batch_discard_receipt_page_proof_checksum(
-    page: &ChunkBatchDiscardReceiptPage,
+    page: &ReplicaBatchDiscardReceiptPage,
 ) -> String {
     const PROOF_FORMAT: &str = "MXOS-CHUNK-DISCARD-BATCH-RECEIPT-PAGE-PROOF1";
     let mut material = Vec::with_capacity(root_chunk_receipt_page_proof_capacity(
@@ -157,7 +157,7 @@ pub(crate) fn chunk_batch_discard_receipt_page_proof_checksum(
     etag(&material)
 }
 
-pub(crate) fn chunk_repair_receipt_page_proof_checksum(page: &ChunkRepairReceiptPage) -> String {
+pub(crate) fn chunk_repair_receipt_page_proof_checksum(page: &ReplicaRepairReceiptPage) -> String {
     const PROOF_FORMAT: &str = "MXOS-CHUNK-REPAIR-RECEIPT-PAGE-PROOF1";
     let mut material = Vec::with_capacity(root_chunk_receipt_page_proof_capacity(
         PROOF_FORMAT,

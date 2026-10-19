@@ -15,7 +15,7 @@ impl MatrixObjectStore {
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ConditionalObjectBatchReadReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report = self.batch_get_objects_conditional_internal(
             requests,

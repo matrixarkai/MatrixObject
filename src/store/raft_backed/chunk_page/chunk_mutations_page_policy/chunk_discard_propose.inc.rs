@@ -10,7 +10,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn propose_prepared_chunk_batch_discard_apply(
         &mut self,
         prepared: PreparedChunkBatchDiscard,
-    ) -> Result<(ObjectMetadata, ChunkBatchDiscardReceipt), ObjectError> {
+    ) -> Result<(ObjectMetadata, ReplicaBatchDiscardReceipt), ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
                 "prepared chunk batch discard requires raft/store commit alignment".to_string(),
@@ -89,7 +89,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(prepared.replica_index)
             .ok_or_else(|| {
@@ -142,7 +142,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(prepared.replica_index)
             .ok_or_else(|| {

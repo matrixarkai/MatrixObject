@@ -22,7 +22,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<PreparedChunkTrimFlowConfig, ObjectError> {
         let admitted_route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         self.store

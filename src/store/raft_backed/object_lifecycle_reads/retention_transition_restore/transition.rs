@@ -92,7 +92,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let metadata =
             self.propose_transition_object(bucket, key, storage_class, update_time_ms)?;
         let readiness = self.ensure_metadata_read_index_committed_at(
@@ -273,7 +273,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let metadata = self.propose_transition_object_with_root_placement_fenced(
             bucket,
             key,

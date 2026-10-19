@@ -8,13 +8,13 @@ pub(crate) fn append_object_read_proof(material: &mut Vec<u8>, proof: &ObjectRea
 
 pub(crate) fn append_route_control_proof_material(
     material: &mut Vec<u8>,
-    proof: &PageRouteControlProof,
+    proof: &ChunkRouteControlProof,
 ) {
     append_u64(material, proof.control_receipt as u64);
     append_string(material, &proof.state_format);
     append_string(material, &proof.state_checksum);
-    append_u64(material, proof.page_route_control_commit_index);
-    append_u64(material, proof.page_route_control_next_log_index);
+    append_u64(material, proof.chunk_route_control_commit_index);
+    append_u64(material, proof.chunk_route_control_next_log_index);
     append_u64(material, proof.write_quorum);
     append_u64(material, proof.read_quorum);
 }

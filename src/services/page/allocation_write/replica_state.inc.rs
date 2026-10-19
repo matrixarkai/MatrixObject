@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     fn replica_active(&self, replica_index: usize) -> bool {
         !self.quarantined_replicas.contains(&replica_index)
             && !self.replica_endpoint_disabled(replica_index)

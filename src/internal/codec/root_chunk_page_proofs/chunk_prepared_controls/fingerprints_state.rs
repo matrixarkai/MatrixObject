@@ -1,6 +1,6 @@
 pub(crate) fn append_chunk_partial_reclaim_report(
     out: &mut Vec<u8>,
-    report: &ChunkPartialReclaimReport,
+    report: &ReplicaPartialReclaimReport,
 ) {
     append_u64(out, report.scanned_chunks);
     append_u64(out, report.candidate_chunks);

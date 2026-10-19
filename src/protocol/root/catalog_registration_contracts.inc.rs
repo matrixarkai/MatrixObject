@@ -1,7 +1,7 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootCatalogChunkRegistration {
     pub node: RootNode,
-    pub readiness: ChunkStorageReadiness,
+    pub readiness: ReplicaStorageReadiness,
     pub replica_index: usize,
     pub catalog_source: String,
     pub catalog_endpoint: String,
@@ -11,7 +11,7 @@ pub struct RootCatalogChunkRegistration {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootCatalogPageRegistration {
     pub node: RootNode,
-    pub readiness: PageStorageReadiness,
+    pub readiness: ChunkStorageReadiness,
     pub allocator_shard_index: u64,
     pub allocator_shard_count: u64,
     pub catalog_source: String,

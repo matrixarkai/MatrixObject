@@ -36,7 +36,7 @@ pub(crate) fn prepared_chunk_local_state_handoff_envelope_checksum(
 }
 
 pub(crate) fn make_prepared_chunk_local_state_handoff_envelope(
-    handoff: &ChunkStateHandoff,
+    handoff: &ReplicaStateHandoff,
     max_payload_bytes: u64,
 ) -> PreparedChunkLocalStateHandoffEnvelope {
     let payload_bytes = handoff.state.data.len() as u64;
@@ -129,8 +129,8 @@ pub(crate) fn make_prepared_chunk_state_handoff_envelope(
     length: u64,
     source_replica_index: usize,
     max_payload_bytes: u64,
-    handoffs: &[ChunkStateHandoff],
-    route_control_proof: &PageRouteControlProof,
+    handoffs: &[ReplicaStateHandoff],
+    route_control_proof: &ChunkRouteControlProof,
 ) -> PreparedChunkStateHandoffEnvelope {
     let payload_bytes = handoffs.iter().fold(0u64, |sum, handoff| {
         sum.saturating_add(handoff.state.data.len() as u64)
@@ -149,7 +149,7 @@ pub(crate) fn make_prepared_chunk_state_handoff_envelope(
         length,
         source_replica_index,
         max_payload_bytes,
-        request_checksum: page_chunk_state_handoff_request_checksum(
+        request_checksum: replica_state_handoff_request_checksum(
             slab_id,
             offset,
             length,
@@ -164,8 +164,8 @@ pub(crate) fn make_prepared_chunk_state_handoff_envelope(
         route_control_proof_format: route_control_proof.state_format.clone(),
         route_control_proof_checksum: route_control_proof.state_checksum.clone(),
         route_control_proof_bytes: route_control_proof.state_bytes,
-        route_control_commit_index: route_control_proof.page_route_control_commit_index,
-        route_control_next_log_index: route_control_proof.page_route_control_next_log_index,
+        route_control_commit_index: route_control_proof.chunk_route_control_commit_index,
+        route_control_next_log_index: route_control_proof.chunk_route_control_next_log_index,
         first_handoff_chunk_id: first_handoff.map(|handoff| handoff.chunk_id.clone()),
         first_handoff_state_checksum: first_handoff
             .map(|handoff| handoff.state_checksum.clone())

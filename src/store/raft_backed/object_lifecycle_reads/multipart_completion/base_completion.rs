@@ -87,7 +87,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "multipart complete idempotent",
             expected_page_route_control_checksum.as_ref(),
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         if let Some(existing) = self.store.multipart_complete_receipts.get(idempotency_key) {
             if existing.upload_id == upload_id && existing.request_checksum == request_checksum {
                 let mut report = MultipartCompleteReport {

@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_configure_chunk_mutation_qos_raft_entry(
         &self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     ) -> Result<PreparedChunkMutationQosConfig, ObjectError> {
         self.store
             .prepare_chunk_mutation_qos_raft_entry(config, self.store.last_applied_index())
@@ -10,11 +10,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_configure_chunk_replica_mutation_qos_raft_entry(
         &self,
         replica_index: usize,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     ) -> Result<PreparedChunkMutationQosConfig, ObjectError> {
         let admitted_route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         self.store
@@ -28,14 +28,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_configure_chunk_mutation_qos_raft_entry_linearizable(
         &self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
     ) -> Result<PreparedChunkMutationQosConfig, ObjectError> {
         self.prepare_configure_chunk_mutation_qos_raft_entry_linearizable_fenced(config, None)
     }
 
     pub fn prepare_configure_chunk_mutation_qos_raft_entry_linearizable_fenced(
         &self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<PreparedChunkMutationQosConfig, ObjectError> {
         let proof = self.ensure_storage_control_read_index(
@@ -54,7 +54,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_configure_chunk_replica_mutation_qos_raft_entry_linearizable_fenced(
         &self,
         replica_index: usize,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<PreparedChunkMutationQosConfig, ObjectError> {
         let proof = self.ensure_storage_control_read_index(
@@ -74,7 +74,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_configure_chunk_mutation_qos_raft_entry_with_read_proof_linearizable_fenced(
         &self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ProvenStorageRead<PreparedChunkMutationQosConfig>, ObjectError> {
         self.prepare_configure_chunk_mutation_qos_raft_entry_with_read_proof_linearizable_fenced_committed_at(
@@ -88,7 +88,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_configure_chunk_replica_mutation_qos_raft_entry_with_read_proof_linearizable_fenced(
         &self,
         replica_index: usize,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ProvenStorageRead<PreparedChunkMutationQosConfig>, ObjectError> {
         let requested_read_index = self.raft.commit_index();
@@ -117,7 +117,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_configure_chunk_mutation_qos_raft_entry_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        config: ChunkMutationQosConfig,
+        config: ReplicaMutationQosConfig,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,

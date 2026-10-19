@@ -79,10 +79,10 @@ pub(crate) fn make_prepared_chunk_reclaim_envelope(
         route_control_proof_bytes: prepared.route_control_proof.state_bytes,
         route_control_commit_index: prepared
             .route_control_proof
-            .page_route_control_commit_index,
+            .chunk_route_control_commit_index,
         route_control_next_log_index: prepared
             .route_control_proof
-            .page_route_control_next_log_index,
+            .chunk_route_control_next_log_index,
         expected_route_control_checksum: prepared.expected_route_control_checksum.clone(),
         raft_entry_checksum: prepared.raft_entry_checksum.clone(),
         candidate_chunks: prepared.plan.candidate_chunks,

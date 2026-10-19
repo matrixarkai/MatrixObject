@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn new(
         page_size: u64,
         replica_count: usize,
@@ -45,7 +45,7 @@ impl MatrixPageService {
         page_batch_write_parallelism: usize,
         page_batch_discard_parallelism: usize,
         page_repair_parallelism: usize,
-        page_chunk_fanout_parallelism: usize,
+        replica_fanout_parallelism: usize,
         local_replica_store_parallelism: usize,
     ) -> Result<Self, ObjectError> {
         validate_storage_parallelism(page_read_parallelism, "block_read_parallelism")?;
@@ -61,7 +61,7 @@ impl MatrixPageService {
         )?;
         validate_storage_parallelism(page_repair_parallelism, "block_repair_parallelism")?;
         validate_storage_parallelism(
-            page_chunk_fanout_parallelism,
+            replica_fanout_parallelism,
             "block_chunk_fanout_parallelism",
         )?;
         validate_storage_parallelism(
@@ -106,10 +106,10 @@ impl MatrixPageService {
             quarantined_replicas: BTreeSet::new(),
             chunk_endpoints: default_chunk_endpoints(replica_count),
             disabled_chunk_endpoints: BTreeSet::new(),
-            page_route_control_commit_index: 0,
-            page_route_control_next_log_index: 1,
-            route_qos_config: PageRouteQosConfig::default(),
-            route_qos_state: RefCell::new(PageRouteQosState::default()),
+            chunk_route_control_commit_index: 0,
+            chunk_route_control_next_log_index: 1,
+            route_qos_config: ChunkRouteQosConfig::default(),
+            route_qos_state: RefCell::new(ChunkRouteQosState::default()),
             sealed_slabs: BTreeSet::new(),
             cumulative_quorum_write_degraded_chunks: 0,
             cumulative_quorum_read_degraded_chunks: 0,
@@ -133,11 +133,11 @@ impl MatrixPageService {
             page_batch_write_parallelism,
             page_batch_discard_parallelism,
             page_repair_parallelism,
-            page_chunk_fanout_parallelism,
+            replica_fanout_parallelism,
             primary_batch_read_repair_probe_limit: DEFAULT_PRIMARY_BATCH_READ_REPAIR_PROBE_LIMIT,
             local_replica_store_parallelism,
             snapshot_export_cache: RefCell::new(None),
-            snapshot_assembler: PageServiceSnapshotAssembler::default(),
+            snapshot_assembler: ChunkServiceSnapshotAssembler::default(),
             active_mutation_batch: None,
             replicas: (0..replica_count)
                 .map(|_| {

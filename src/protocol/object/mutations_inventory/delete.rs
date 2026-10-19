@@ -30,7 +30,7 @@ pub struct ObjectDeleteReport {
     pub metadata: ObjectMetadata,
     pub deleted_bytes: u64,
     pub read_proof: ObjectReadProof,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 
@@ -96,7 +96,7 @@ pub struct ObjectBatchDeleteReport {
     pub failed_objects: u64,
     pub deleted_bytes: u64,
     pub read_proof: ObjectReadProof,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub delete_batch_proof_format: String,
     pub delete_batch_proof_checksum: String,

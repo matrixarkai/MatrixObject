@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageReadStats {
+pub struct ChunkReadStats {
     pub chunk_reads: u64,
     pub cache_hits: u64,
     pub coalesced_chunk_read_count: u64,
@@ -16,7 +16,7 @@ pub struct PageReadStats {
     pub quorum_read_degraded_chunks: u64,
 }
 
-impl PageReadStats {
+impl ChunkReadStats {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -60,16 +60,16 @@ impl PageReadStats {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageReadRepairReport {
+pub struct ChunkReadRepairReport {
     pub slab_id: SlabId,
     pub offset: u64,
     pub length: u64,
     pub data: Vec<u8>,
     pub payload_checksum: String,
-    pub stats: PageReadStats,
+    pub stats: ChunkReadStats,
     pub repaired_replicas: u64,
     pub failed_repairs: u64,
     pub degraded_chunks: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }

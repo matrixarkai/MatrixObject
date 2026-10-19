@@ -297,7 +297,7 @@ struct PerformanceSloSummary {
 }
 
 #[derive(Clone, Debug, Default)]
-struct ChunkMetadataJournalMetrics {
+struct ReplicaMetadataJournalMetrics {
     fsync_every_records: u64,
     fsync_every_bytes: u64,
     fsync_max_unsynced_ms: u64,
@@ -2836,12 +2836,12 @@ fn failure_status(failures: u64) -> &'static str {
 
 fn chunk_metadata_journal_metrics(
     readiness: &ObjectStoreDistributedReadiness,
-) -> ChunkMetadataJournalMetrics {
+) -> ReplicaMetadataJournalMetrics {
     let fsync_every_records = readiness
         .root_pageserver_max_chunk_metadata_checkpoint_interval
         .max(1);
     let pending_fsync_records = readiness.root_pageserver_total_chunk_metadata_dirty_mutations;
-    ChunkMetadataJournalMetrics {
+    ReplicaMetadataJournalMetrics {
         fsync_every_records,
         fsync_every_bytes: 0,
         fsync_max_unsynced_ms: 0,

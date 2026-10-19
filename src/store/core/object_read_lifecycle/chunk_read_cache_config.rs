@@ -17,9 +17,9 @@ impl MatrixObjectStore {
         self.chunk_read_cache_max_bytes_per_replica = max_bytes_per_replica;
         self.chunk_read_cache_max_cacheable_read_bytes_per_replica =
             max_cacheable_read_bytes_per_replica;
-        self.page_service
+        self.chunk_service
             .set_read_cache_max_bytes_per_replica(max_bytes_per_replica);
-        self.page_service
+        self.chunk_service
             .set_read_cache_max_cacheable_read_bytes_per_replica(
                 max_cacheable_read_bytes_per_replica,
             );
@@ -44,9 +44,9 @@ impl MatrixObjectStore {
         max_bytes_per_replica: u64,
         max_cacheable_read_bytes_per_replica: u64,
     ) -> Result<(), ObjectError> {
-        self.page_service
+        self.chunk_service
             .set_read_cache_max_bytes_for_replica(replica_index, max_bytes_per_replica)?;
-        self.page_service
+        self.chunk_service
             .set_read_cache_max_cacheable_read_bytes_for_replica(
                 replica_index,
                 max_cacheable_read_bytes_per_replica,

@@ -108,10 +108,10 @@ pub(crate) fn make_prepared_slab_compaction_envelope(
         route_control_proof_bytes: prepared.route_control_proof.state_bytes,
         route_control_commit_index: prepared
             .route_control_proof
-            .page_route_control_commit_index,
+            .chunk_route_control_commit_index,
         route_control_next_log_index: prepared
             .route_control_proof
-            .page_route_control_next_log_index,
+            .chunk_route_control_next_log_index,
         expected_route_control_checksum: prepared.expected_route_control_checksum.clone(),
         expected_object_gc_report_proof_checksum: prepared
             .expected_object_gc_report_proof_checksum

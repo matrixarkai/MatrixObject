@@ -1,4 +1,4 @@
-pub(crate) fn validate_chunk_state_handoff(handoff: &ChunkStateHandoff) -> Result<(), ObjectError> {
+pub(crate) fn validate_chunk_state_handoff(handoff: &ReplicaStateHandoff) -> Result<(), ObjectError> {
     if handoff.payload_checksum != etag(&handoff.state.data) {
         return Err(ObjectError::Corruption(
             "chunk state handoff payload checksum mismatch".to_string(),

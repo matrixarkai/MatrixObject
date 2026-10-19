@@ -1,14 +1,14 @@
-pub(crate) type ChunkReadCacheKey = (PageId, u64, u64);
-pub(crate) type ChunkReadCacheRangeKey = (u64, u64);
+pub(crate) type ReplicaReadCacheKey = (PageId, u64, u64);
+pub(crate) type ReplicaReadCacheRangeKey = (u64, u64);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ChunkReadCacheEntry {
-    pub(crate) result: ChunkReadResult,
+pub(crate) struct ReplicaReadCacheEntry {
+    pub(crate) result: ReplicaReadResult,
     range_checksum: String,
     last_access_sequence: u64,
 }
 
-impl ChunkReadCacheEntry {
+impl ReplicaReadCacheEntry {
     /// The checksum string beside each cached range. Private to this module,
     /// so the footprint audit asks for it rather than reaching in.
     pub(crate) fn range_checksum_capacity(&self) -> u64 {
@@ -61,14 +61,14 @@ impl CacheControlStats {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkReadCacheRange {
+pub struct ReplicaReadCacheRange {
     pub chunk_id: PageId,
     pub offset: u64,
     pub length: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkReadCacheControlReport {
+pub struct ReplicaReadCacheControlReport {
     pub stats: CacheControlStats,
     pub previous_read_cache_bytes: u64,
     pub previous_read_cache_entries: u64,
@@ -85,7 +85,7 @@ pub struct ChunkReadCacheControlReport {
     pub selected_chunk_endpoint: Option<String>,
 }
 
-impl ChunkReadCacheControlReport {
+impl ReplicaReadCacheControlReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.extend(

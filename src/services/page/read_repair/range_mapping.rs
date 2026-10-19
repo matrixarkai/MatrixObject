@@ -1,9 +1,9 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn write_allocated_range(
         &mut self,
         allocation_id: &str,
         data: &[u8],
-    ) -> Result<PageAllocation, ObjectError> {
+    ) -> Result<ChunkAllocation, ObjectError> {
         let allocation = self
             .pending_allocations
             .get(allocation_id)
@@ -24,7 +24,7 @@ impl MatrixPageService {
         slab_id: &SlabId,
         offset: u64,
         length: u64,
-    ) -> Result<Vec<PageLocation>, ObjectError> {
+    ) -> Result<Vec<ChunkLocation>, ObjectError> {
         validate_pipeline_range("block range", offset, length)?;
         let capacity = usize::try_from(self.mapped_chunk_count(offset, length)?).map_err(|_| {
             ObjectError::InvalidArgument("block range maps too many chunks".to_string())
@@ -37,7 +37,7 @@ impl MatrixPageService {
             let chunk_offset = absolute % self.page_size;
             let available = self.page_size - chunk_offset;
             let n = available.min(length - cursor);
-            out.push(PageLocation {
+            out.push(ChunkLocation {
                 chunk_id: PageId {
                     slab_id: slab_id.clone(),
                     page_index,

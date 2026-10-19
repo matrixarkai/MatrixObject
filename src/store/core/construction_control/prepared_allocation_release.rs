@@ -17,18 +17,18 @@ impl MatrixObjectStore {
             ));
         }
         let before_page_service_fingerprint =
-            page_allocation_mutation_image_fingerprint(&self.page_service);
-        let mut projected = self.page_service.clone();
+            chunk_allocation_mutation_image_fingerprint(&self.chunk_service);
+        let mut projected = self.chunk_service.clone();
         let receipt =
             projected.release_page_allocation_idempotent(allocation_id, idempotency_key)?;
         let request_checksum =
-            page_allocation_release_request_checksum(allocation_id, idempotency_key);
+            chunk_allocation_release_request_checksum(allocation_id, idempotency_key);
         let after_page_service_fingerprint =
-            page_allocation_mutation_image_fingerprint(&projected);
+            chunk_allocation_mutation_image_fingerprint(&projected);
         let pending_allocation_count_after = projected.pending_allocations.len() as u64;
         let release_receipt_count_after =
             projected.release_allocation_request_receipts.len() as u64;
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let mut prepared = PreparedPageAllocationRelease {
             allocation_id: allocation_id.to_string(),
             idempotency_key: idempotency_key.to_string(),
@@ -51,7 +51,7 @@ impl MatrixObjectStore {
     pub fn apply_prepared_page_allocation_release(
         &mut self,
         prepared: PreparedPageAllocationRelease,
-    ) -> Result<PageAllocationReceipt, ObjectError> {
+    ) -> Result<ChunkAllocationReceipt, ObjectError> {
         validate_idempotency_key(&prepared.idempotency_key)?;
         if prepared.allocation_id.is_empty() {
             return Err(ObjectError::InvalidArgument(
@@ -59,7 +59,7 @@ impl MatrixObjectStore {
             ));
         }
         if prepared.request_checksum
-            != page_allocation_release_request_checksum(
+            != chunk_allocation_release_request_checksum(
                 &prepared.allocation_id,
                 &prepared.idempotency_key,
             )
@@ -104,7 +104,7 @@ impl MatrixObjectStore {
             ));
         }
         if let Some(existing) = self
-            .page_service
+            .chunk_service
             .release_allocation_request_receipts
             .get(&prepared.idempotency_key)
         {
@@ -119,14 +119,14 @@ impl MatrixObjectStore {
                     "block prepared allocation release receipt image mismatch".to_string(),
                 ));
             }
-            return Ok(PageAllocationReceipt {
+            return Ok(ChunkAllocationReceipt {
                 allocation: existing.clone(),
                 idempotency_key: prepared.idempotency_key,
                 released: true,
                 deduped: true,
             });
         }
-        let current_fingerprint = page_allocation_mutation_image_fingerprint(&self.page_service);
+        let current_fingerprint = chunk_allocation_mutation_image_fingerprint(&self.chunk_service);
         if current_fingerprint == prepared.after_page_service_fingerprint {
             return Ok(prepared.receipt);
         }
@@ -135,7 +135,7 @@ impl MatrixObjectStore {
                 "block prepared allocation release previous commit fence mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "block prepared allocation release",
@@ -145,16 +145,16 @@ impl MatrixObjectStore {
                 "block prepared allocation release source fingerprint mismatch".to_string(),
             ));
         }
-        let receipt = self.page_service.release_page_allocation_idempotent(
+        let receipt = self.chunk_service.release_page_allocation_idempotent(
             &prepared.allocation_id,
             &prepared.idempotency_key,
         )?;
         if receipt != prepared.receipt
-            || page_allocation_mutation_image_fingerprint(&self.page_service)
+            || chunk_allocation_mutation_image_fingerprint(&self.chunk_service)
                 != prepared.after_page_service_fingerprint
-            || self.page_service.pending_allocations.len() as u64
+            || self.chunk_service.pending_allocations.len() as u64
                 != prepared.pending_allocation_count_after
-            || self.page_service.release_allocation_request_receipts.len() as u64
+            || self.chunk_service.release_allocation_request_receipts.len() as u64
                 != prepared.release_receipt_count_after
         {
             return Err(ObjectError::Corruption(

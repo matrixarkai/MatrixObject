@@ -26,13 +26,13 @@ pub(crate) fn storage_maintenance_plan_checksum(plan: &StorageMaintenancePlan) -
         &mut material,
         plan.readiness
             .route_control_proof
-            .page_route_control_commit_index,
+            .chunk_route_control_commit_index,
     );
     append_u64(
         &mut material,
         plan.readiness
             .route_control_proof
-            .page_route_control_next_log_index,
+            .chunk_route_control_next_log_index,
     );
     append_u64(&mut material, plan.readiness.readable as u64);
     append_u64(&mut material, plan.readiness.writable as u64);

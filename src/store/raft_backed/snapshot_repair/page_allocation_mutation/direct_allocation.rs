@@ -19,12 +19,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectMetadata, ObjectError> {
         if !self
             .store
-            .page_service
+            .chunk_service
             .release_allocation_request_receipts
             .contains_key(idempotency_key)
         {
             self.store
-                .page_service
+                .chunk_service
                 .check_expected_route_control_checksum(expected_route_control_checksum)?;
         }
         self.propose(ObjectCommand::ReleasePageAllocationIdempotent {
@@ -38,10 +38,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         allocation_id: &str,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<(ObjectMetadata, PageIdempotentAllocationReleaseReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkIdempotentAllocationReleaseReport), ObjectError> {
         let deduped = self
             .store
-            .page_service
+            .chunk_service
             .release_allocation_request_receipts
             .contains_key(idempotency_key);
         let metadata = self.propose_release_page_allocation_idempotent_fenced(
@@ -51,7 +51,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let allocation = self
             .store
-            .page_service
+            .chunk_service
             .release_allocation_request_receipts
             .get(idempotency_key)
             .cloned()
@@ -61,24 +61,24 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         .to_string(),
                 )
             })?;
-        let receipt = PageAllocationReceipt {
+        let receipt = ChunkAllocationReceipt {
             allocation,
             idempotency_key: idempotency_key.to_string(),
             released: true,
             deduped,
         };
-        let stats = PageBatchStats {
+        let stats = ChunkBatchStats {
             input_ranges: if receipt.allocation.length == 0 { 0 } else { 1 },
             mapped_chunk_ranges: self
                 .store
-                .page_service
+                .chunk_service
                 .mapped_chunk_count(receipt.allocation.offset, receipt.allocation.length)?,
             payload_bytes: receipt.allocation.length,
-            ..PageBatchStats::default()
+            ..ChunkBatchStats::default()
         };
-        let report = PageIdempotentAllocationReleaseReport {
+        let report = ChunkIdempotentAllocationReleaseReport {
             receipt,
-            mutation: self.store.page_service.storage_mutation_report(
+            mutation: self.store.chunk_service.storage_mutation_report(
                 stats,
                 expected_route_control_checksum,
                 None,
@@ -93,7 +93,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
         expected_page_allocation_release_receipt_proof_checksum: impl AsRef<str>,
-    ) -> Result<(ObjectMetadata, PageIdempotentAllocationReleaseReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkIdempotentAllocationReleaseReport), ObjectError> {
         let (metadata, report) = self.propose_release_page_allocation_idempotent_fenced_report(
             allocation_id,
             idempotency_key,
@@ -133,7 +133,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<(ObjectMetadata, PageIdempotentAllocationReleaseReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkIdempotentAllocationReleaseReport), ObjectError> {
         self.ensure_storage_control_read_index_committed_at(
             "release block allocation",
             expected_route_control_checksum,
@@ -165,12 +165,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectMetadata, ObjectError> {
         if !self
             .store
-            .page_service
+            .chunk_service
             .batch_allocation_request_receipts
             .contains_key(idempotency_key)
         {
             self.store
-                .page_service
+                .chunk_service
                 .check_expected_route_control_checksum(expected_route_control_checksum)?;
         }
         self.propose(ObjectCommand::AllocatePageRangesIdempotent {
@@ -186,10 +186,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<(ObjectMetadata, PageIdempotentAllocationReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkIdempotentAllocationReport), ObjectError> {
         let deduped = self
             .store
-            .page_service
+            .chunk_service
             .batch_allocation_request_receipts
             .contains_key(idempotency_key);
         let metadata = self.propose_allocate_page_ranges_idempotent_fenced(
@@ -200,11 +200,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let receipt = self
             .store
-            .page_service
+            .chunk_service
             .batch_allocation_request_receipts
             .get(idempotency_key)
             .cloned()
-            .map(|allocations| PageBatchAllocationReceipt {
+            .map(|allocations| ChunkBatchAllocationReceipt {
                 allocations,
                 idempotency_key: idempotency_key.to_string(),
                 deduped,
@@ -220,7 +220,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .iter()
             .map(|allocation| allocation.length)
             .sum();
-        let stats = PageBatchStats {
+        let stats = ChunkBatchStats {
             input_ranges: receipt
                 .allocations
                 .iter()
@@ -231,18 +231,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 .iter()
                 .map(|allocation| {
                     self.store
-                        .page_service
+                        .chunk_service
                         .mapped_chunk_count(allocation.offset, allocation.length)
                 })
                 .try_fold(0u64, |total, count| {
                     count.map(|count| total.saturating_add(count))
                 })?,
             payload_bytes,
-            ..PageBatchStats::default()
+            ..ChunkBatchStats::default()
         };
-        let report = PageIdempotentAllocationReport {
+        let report = ChunkIdempotentAllocationReport {
             receipt,
-            mutation: self.store.page_service.storage_mutation_report(
+            mutation: self.store.chunk_service.storage_mutation_report(
                 stats,
                 expected_route_control_checksum,
                 None,
@@ -258,7 +258,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
         expected_page_batch_allocation_receipt_proof_checksum: impl AsRef<str>,
-    ) -> Result<(ObjectMetadata, PageIdempotentAllocationReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkIdempotentAllocationReport), ObjectError> {
         let (metadata, report) = self.propose_allocate_page_ranges_idempotent_fenced_report(
             lengths,
             now_ms,
@@ -302,7 +302,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<(ObjectMetadata, PageIdempotentAllocationReport), ObjectError> {
+    ) -> Result<(ObjectMetadata, ChunkIdempotentAllocationReport), ObjectError> {
         self.ensure_storage_control_read_index_committed_at(
             "allocate block ranges",
             expected_route_control_checksum,

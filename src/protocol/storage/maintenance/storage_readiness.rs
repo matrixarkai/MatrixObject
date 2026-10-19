@@ -1,4 +1,4 @@
-impl PageStorageReadiness {
+impl ChunkStorageReadiness {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -184,7 +184,7 @@ impl PageStorageReadiness {
             ("block_repair_parallelism", self.page_repair_parallelism),
             (
                 "block_chunk_fanout_parallelism",
-                self.page_chunk_fanout_parallelism,
+                self.replica_fanout_parallelism,
             ),
             (
                 "primary_batch_read_repair_probe_limit",
@@ -311,7 +311,7 @@ impl PageStorageReadiness {
             ),
             (
                 "block_route_control_proof_bytes",
-                self.page_route_control_proof_bytes,
+                self.chunk_route_control_proof_bytes,
             ),
             (
                 "replica_readiness_count",
@@ -328,11 +328,11 @@ impl PageStorageReadiness {
             ),
             (
                 "block_route_control_proof_format",
-                &self.page_route_control_proof_format,
+                &self.chunk_route_control_proof_format,
             ),
             (
                 "block_route_control_proof_checksum",
-                &self.page_route_control_proof_checksum,
+                &self.chunk_route_control_proof_checksum,
             ),
         ] {
             fields.insert(format!("{field_prefix}{name}"), value.clone());

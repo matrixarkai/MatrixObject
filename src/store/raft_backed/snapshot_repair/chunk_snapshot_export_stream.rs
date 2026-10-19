@@ -60,7 +60,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_checksum = expected_control_checksum.as_ref().to_string();
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -100,7 +100,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         self.store
-            .page_service
+            .chunk_service
             .export_chunk_replica_snapshot_chunk_stream(
                 replica_index,
                 max_payload_bytes,
@@ -133,7 +133,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     {
         let replica = self
             .store
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -172,7 +172,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         self.store
-            .page_service
+            .chunk_service
             .export_chunk_replica_snapshot_chunk_stream(
                 replica_index,
                 max_payload_bytes,

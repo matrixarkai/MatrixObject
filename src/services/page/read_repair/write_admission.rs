@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn can_accept_slab_write(
         &self,
         slab_id: &SlabId,
@@ -6,7 +6,7 @@ impl MatrixPageService {
         length: u64,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         let mapped_chunk_ranges = self.mapped_chunk_count(offset, length)?;
         let byte_budget_limited = max_write_bytes > 0 && length > max_write_bytes;
         let chunk_budget_limited =
@@ -49,7 +49,7 @@ impl MatrixPageService {
         } else {
             "write_quorum_unavailable"
         };
-        let mut admission = PageRangeAdmission {
+        let mut admission = ChunkRangeAdmission {
             can_accept,
             input_ranges: if length == 0 { 0 } else { 1 },
             mapped_chunk_ranges,
@@ -63,7 +63,7 @@ impl MatrixPageService {
             partial_status,
             admission_reason: admission_reason.to_string(),
             write_quorum_limited: !budget_limited && ready_replica_count < self.write_quorum as u64,
-            ..PageRangeAdmission::default()
+            ..ChunkRangeAdmission::default()
         };
         stamp_page_range_admission_proof("CanWriteBlock", &mut admission);
         Ok(admission)
@@ -77,7 +77,7 @@ impl MatrixPageService {
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission = self.can_accept_slab_write(
             slab_id,
@@ -93,19 +93,19 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_writes(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_writes_borrowed(&writes, max_write_bytes, max_chunk_write_count)
     }
 
     pub fn can_accept_slab_writes_borrowed(
         &self,
-        writes: &[PageRangeWrite],
+        writes: &[ChunkRangeWrite],
         max_write_bytes: u64,
         max_chunk_write_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_writes_from_borrowed(
             writes,
             max_write_bytes,
@@ -116,11 +116,11 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_writes_from(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_writes_from_borrowed(
             &writes,
             max_write_bytes,
@@ -131,19 +131,19 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_writes_from_borrowed(
         &self,
-        writes: &[PageRangeWrite],
+        writes: &[ChunkRangeWrite],
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        let mut admission = PageRangeAdmission {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        let mut admission = ChunkRangeAdmission {
             input_ranges: writes.iter().filter(|write| !write.data.is_empty()).count() as u64,
             max_write_bytes,
             max_chunk_write_count,
             required_quorum: self.write_quorum as u64,
             write_start_range_index,
             next_write_range_index: write_start_range_index,
-            ..PageRangeAdmission::default()
+            ..ChunkRangeAdmission::default()
         };
         if write_start_range_index > admission.input_ranges {
             return Err(ObjectError::InvalidArgument(format!(
@@ -307,11 +307,11 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_writes_fenced(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_writes_fenced_from(
             writes,
             max_write_bytes,
@@ -323,12 +323,12 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_writes_fenced_from(
         &self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_writes_fenced_from_borrowed(
             &writes,
             max_write_bytes,
@@ -340,12 +340,12 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_writes_fenced_from_borrowed(
         &self,
-        writes: &[PageRangeWrite],
+        writes: &[ChunkRangeWrite],
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         write_start_range_index: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission = self.can_accept_slab_writes_from_borrowed(
             writes,

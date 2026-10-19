@@ -1,7 +1,7 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultipartCreateReport {
     pub upload: MultipartUpload,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub multipart_create_proof_format: String,
     pub multipart_create_proof_checksum: String,
@@ -33,7 +33,7 @@ impl MultipartCreateReport {
 pub struct MultipartPartReport {
     pub part: MultipartPart,
     pub received_bytes: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub multipart_part_proof_format: String,
     pub multipart_part_proof_checksum: String,
@@ -69,7 +69,7 @@ impl MultipartPartReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultipartCompleteReport {
     pub metadata: ObjectMetadata,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub multipart_complete_proof_format: String,
     pub multipart_complete_proof_checksum: String,
@@ -120,7 +120,7 @@ pub struct MultipartAbortReceipt {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultipartAbortReport {
     pub upload: MultipartUpload,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub multipart_abort_proof_format: String,
     pub multipart_abort_proof_checksum: String,
@@ -157,7 +157,7 @@ impl MultipartAbortReport {
 }
 
 pub(crate) fn append_route_control_fields(
-    route_control_proof: &PageRouteControlProof,
+    route_control_proof: &ChunkRouteControlProof,
     expected_route_control_checksum: &str,
     field_prefix: &str,
     fields: &mut BTreeMap<String, String>,

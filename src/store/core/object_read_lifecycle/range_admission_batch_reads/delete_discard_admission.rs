@@ -23,7 +23,7 @@ impl MatrixObjectStore {
             min_ready_replica_count: u64::MAX,
             partial_status: "ok".to_string(),
             storage_admission_reason: "discard_ready".to_string(),
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..ObjectRangeAdmission::default()
         };
         self.attach_storage_admission_context(&mut report, now_millis());
@@ -51,7 +51,7 @@ impl MatrixObjectStore {
                         .saturating_add(extent.length - admitted_extent_len);
                 }
             }
-            let admission = self.page_service.can_accept_slab_discard(
+            let admission = self.chunk_service.can_accept_slab_discard(
                 &extent.slab_id,
                 extent.offset,
                 admitted_extent_len,
@@ -108,7 +108,7 @@ impl MatrixObjectStore {
         max_discard_bytes: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectRangeAdmission, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report = self.can_accept_object_delete_discard(bucket, key, max_discard_bytes)?;
         report.expected_route_control_checksum = expected_route_control_checksum

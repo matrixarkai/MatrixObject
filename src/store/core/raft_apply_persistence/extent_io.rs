@@ -6,7 +6,7 @@ impl MatrixObjectStore {
         }
         let chunk_len = data.len();
         if let Some((slab_id, offset)) = self.take_reusable_stale_range(chunk_len as u64) {
-            self.page_service
+            self.chunk_service
                 .write_slab_range(&slab_id, offset, &data)?;
             self.payloads.insert(
                 (slab_id.clone(), offset),
@@ -35,7 +35,7 @@ impl MatrixObjectStore {
             .ok_or_else(|| ObjectError::InvalidArgument("segment offset overflow".to_string()))?;
         slab.logical_bytes = slab.next_offset;
         slab.live_bytes = saturating_add(slab.live_bytes, chunk_len as u64);
-        self.page_service
+        self.chunk_service
             .write_slab_range(&slab_id, offset, &data)?;
         self.payloads.insert(
             (slab_id.clone(), offset),
@@ -78,7 +78,7 @@ impl MatrixObjectStore {
                 })?;
             slab.logical_bytes = slab.next_offset;
             slab.live_bytes = saturating_add(slab.live_bytes, chunk_len as u64);
-            self.page_service.write_slab_range(
+            self.chunk_service.write_slab_range(
                 &slab_id,
                 offset,
                 &data[cursor..cursor + chunk_len],
@@ -209,7 +209,7 @@ impl MatrixObjectStore {
                 .fold(0u64, |acc, range| saturating_add(acc, range.length));
             slab.live_bytes = slab.live_bytes.saturating_sub(stale_bytes);
             slab.stale_bytes = saturating_add(slab.stale_bytes, stale_bytes);
-            discard_requests.extend(merged_ranges.iter().map(|range| PageRangeRequest {
+            discard_requests.extend(merged_ranges.iter().map(|range| ChunkRangeRequest {
                 slab_id: slab_id.clone(),
                 offset: range.offset,
                 length: range.length,
@@ -218,7 +218,7 @@ impl MatrixObjectStore {
             slab.stale_ranges = merge_ranges(std::mem::take(&mut slab.stale_ranges));
         }
         if !discard_requests.is_empty() {
-            self.page_service
+            self.chunk_service
                 .discard_slab_ranges(discard_requests)?;
         }
         Ok(())
@@ -273,7 +273,7 @@ impl MatrixObjectStore {
         extents: &[ObjectExtent],
         range_offset: u64,
         range_length: u64,
-    ) -> Result<(Vec<u8>, PageReadStats), ObjectError> {
+    ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         self.read_extents_with_stats_bounded(extents, range_offset, range_length, 0)
     }
 
@@ -283,7 +283,7 @@ impl MatrixObjectStore {
         range_offset: u64,
         range_length: u64,
         max_payload_bytes: u64,
-    ) -> Result<(Vec<u8>, PageReadStats), ObjectError> {
+    ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         self.read_extents_with_stats_bounded_by_chunks(
             extents,
             range_offset,
@@ -300,14 +300,14 @@ impl MatrixObjectStore {
         range_length: u64,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
-    ) -> Result<(Vec<u8>, PageReadStats), ObjectError> {
+    ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         if max_payload_bytes > 0 && range_length > max_payload_bytes {
             return Err(ObjectError::PreconditionFailed(
                 "object extent read payload budget exceeded".to_string(),
             ));
         }
         if range_length == 0 {
-            return Ok((Vec::new(), PageReadStats::default()));
+            return Ok((Vec::new(), ChunkReadStats::default()));
         }
         let range_end = range_offset
             .checked_add(range_length)
@@ -319,7 +319,7 @@ impl MatrixObjectStore {
                 ObjectError::InvalidArgument("object extent overflows".to_string())
             })?;
             if range_offset >= extent_start && range_end <= extent_end {
-                return self.page_service.read_slab_range_bounded_by_chunks(
+                return self.chunk_service.read_slab_range_bounded_by_chunks(
                     &extent.slab_id,
                     extent.offset + (range_offset - extent_start),
                     range_length,
@@ -335,7 +335,7 @@ impl MatrixObjectStore {
         let capacity = usize::try_from(range_length)
             .map_err(|_| ObjectError::InvalidArgument("read range exceeds memory size".to_string()))?;
         let mut out = Vec::with_capacity(capacity);
-        let mut stats = PageReadStats::default();
+        let mut stats = ChunkReadStats::default();
         let mut chunk_reads = 0u64;
         let mut object_cursor = 0u64;
         for extent in extents {
@@ -361,7 +361,7 @@ impl MatrixObjectStore {
             } else {
                 max_chunk_read_count.saturating_sub(chunk_reads)
             };
-            let (payload, read_stats) = self.page_service.read_slab_range_bounded_by_chunks(
+            let (payload, read_stats) = self.chunk_service.read_slab_range_bounded_by_chunks(
                 &extent.slab_id,
                 extent.offset + local_offset,
                 local_len,

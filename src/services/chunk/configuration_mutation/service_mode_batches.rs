@@ -20,7 +20,7 @@ impl MatrixReplicaService {
     pub fn begin_mutation_batch(
         &mut self,
         batch_id: impl Into<String>,
-    ) -> Result<ChunkMutationBatchStatus, ObjectError> {
+    ) -> Result<ReplicaMutationBatchStatus, ObjectError> {
         self.begin_mutation_batch_inner(batch_id, true)
     }
 
@@ -32,7 +32,7 @@ impl MatrixReplicaService {
     pub fn begin_mutation_batch_without_undo(
         &mut self,
         batch_id: impl Into<String>,
-    ) -> Result<ChunkMutationBatchStatus, ObjectError> {
+    ) -> Result<ReplicaMutationBatchStatus, ObjectError> {
         self.begin_mutation_batch_inner(batch_id, false)
     }
 
@@ -40,7 +40,7 @@ impl MatrixReplicaService {
         &mut self,
         batch_id: impl Into<String>,
         capture_undo: bool,
-    ) -> Result<ChunkMutationBatchStatus, ObjectError> {
+    ) -> Result<ReplicaMutationBatchStatus, ObjectError> {
         self.ensure_writable()?;
         let batch_id = batch_id.into();
         if !batch_id.is_empty() {
@@ -59,7 +59,7 @@ impl MatrixReplicaService {
         } else {
             None
         };
-        self.active_mutation_batch = Some(ChunkMutationBatch {
+        self.active_mutation_batch = Some(ReplicaMutationBatch {
             batch_id,
             started_control_commit_index: self.chunk_mutation_control_commit_index,
             snapshot,
@@ -70,7 +70,7 @@ impl MatrixReplicaService {
     pub fn end_mutation_batch(
         &mut self,
         batch_id: impl AsRef<str>,
-    ) -> Result<ChunkMutationBatchStatus, ObjectError> {
+    ) -> Result<ReplicaMutationBatchStatus, ObjectError> {
         let active = self.active_mutation_batch.take().ok_or_else(|| {
             ObjectError::PreconditionFailed("chunk mutation batch is not active".to_string())
         })?;
@@ -91,7 +91,7 @@ impl MatrixReplicaService {
     pub fn abort_mutation_batch(
         &mut self,
         batch_id: impl AsRef<str>,
-    ) -> Result<ChunkMutationBatchStatus, ObjectError> {
+    ) -> Result<ReplicaMutationBatchStatus, ObjectError> {
         let active = self.active_mutation_batch.take().ok_or_else(|| {
             ObjectError::PreconditionFailed("chunk mutation batch is not active".to_string())
         })?;
@@ -118,9 +118,9 @@ impl MatrixReplicaService {
         Ok(status)
     }
 
-    pub fn mutation_batch_status(&self) -> ChunkMutationBatchStatus {
+    pub fn mutation_batch_status(&self) -> ReplicaMutationBatchStatus {
         let active = self.active_mutation_batch.as_ref();
-        ChunkMutationBatchStatus {
+        ReplicaMutationBatchStatus {
             active: active.is_some(),
             batch_id: active.map_or_else(String::new, |batch| batch.batch_id.clone()),
             started_control_commit_index: active

@@ -4,18 +4,18 @@ impl MatrixReplicaService {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkWriteReceiptPage, ObjectError> {
+    ) -> Result<ReplicaWriteReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
         }
         let limit = limit.clamp(1, k_max_storage_receipt_list_limit());
-        let mut page = ChunkWriteReceiptPage {
+        let mut page = ReplicaWriteReceiptPage {
             total_receipt_count: self.write_request_receipts.len() as u64,
             limit: limit as u64,
             chunk_id: chunk_id.cloned(),
-            ..ChunkWriteReceiptPage::default()
+            ..ReplicaWriteReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &ChunkWriteReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ReplicaWriteReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.write_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -46,18 +46,18 @@ impl MatrixReplicaService {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkBatchWriteReceiptPage, ObjectError> {
+    ) -> Result<ReplicaBatchWriteReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
         }
         let limit = limit.clamp(1, k_max_storage_receipt_list_limit());
-        let mut page = ChunkBatchWriteReceiptPage {
+        let mut page = ReplicaBatchWriteReceiptPage {
             total_receipt_count: self.batch_write_request_receipts.len() as u64,
             limit: limit as u64,
             chunk_id: chunk_id.cloned(),
-            ..ChunkBatchWriteReceiptPage::default()
+            ..ReplicaBatchWriteReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &ChunkBatchWriteReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ReplicaBatchWriteReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.batch_write_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -88,18 +88,18 @@ impl MatrixReplicaService {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkDiscardReceiptPage, ObjectError> {
+    ) -> Result<ReplicaDiscardReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
         }
         let limit = limit.clamp(1, k_max_storage_receipt_list_limit());
-        let mut page = ChunkDiscardReceiptPage {
+        let mut page = ReplicaDiscardReceiptPage {
             total_receipt_count: self.discard_request_receipts.len() as u64,
             limit: limit as u64,
             chunk_id: chunk_id.cloned(),
-            ..ChunkDiscardReceiptPage::default()
+            ..ReplicaDiscardReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &ChunkDiscardReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ReplicaDiscardReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.discard_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -130,18 +130,18 @@ impl MatrixReplicaService {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkBatchDiscardReceiptPage, ObjectError> {
+    ) -> Result<ReplicaBatchDiscardReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
         }
         let limit = limit.clamp(1, k_max_storage_receipt_list_limit());
-        let mut page = ChunkBatchDiscardReceiptPage {
+        let mut page = ReplicaBatchDiscardReceiptPage {
             total_receipt_count: self.batch_discard_request_receipts.len() as u64,
             limit: limit as u64,
             chunk_id: chunk_id.cloned(),
-            ..ChunkBatchDiscardReceiptPage::default()
+            ..ReplicaBatchDiscardReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &ChunkBatchDiscardReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ReplicaBatchDiscardReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.batch_discard_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -172,18 +172,18 @@ impl MatrixReplicaService {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkRepairReceiptPage, ObjectError> {
+    ) -> Result<ReplicaRepairReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
         }
         let limit = limit.clamp(1, k_max_storage_receipt_list_limit());
-        let mut page = ChunkRepairReceiptPage {
+        let mut page = ReplicaRepairReceiptPage {
             total_receipt_count: self.repair_request_receipts.len() as u64,
             limit: limit as u64,
             chunk_id: chunk_id.cloned(),
-            ..ChunkRepairReceiptPage::default()
+            ..ReplicaRepairReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &ChunkRepairReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &ReplicaRepairReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.repair_request_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),

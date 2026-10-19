@@ -792,10 +792,10 @@ impl MatrixObjectStore {
                 .cumulative_repair_degraded_chunks,
             storage_cumulative_repaired_replicas: storage_operations.cumulative_repaired_replicas,
             storage_cumulative_failed_repairs: storage_operations.cumulative_failed_repairs,
-            storage_compressed_chunk_count: self.page_service.compressed_chunk_count(),
-            storage_compression_saved_bytes: self.page_service.compression_saved_bytes(),
-            storage_ec_reconstructed_reads: self.page_service.ec_reconstructed_reads(),
-            storage_ec_reconstruction_failures: self.page_service.ec_reconstruction_failures(),
+            storage_compressed_chunk_count: self.chunk_service.compressed_chunk_count(),
+            storage_compression_saved_bytes: self.chunk_service.compression_saved_bytes(),
+            storage_ec_reconstructed_reads: self.chunk_service.ec_reconstructed_reads(),
+            storage_ec_reconstruction_failures: self.chunk_service.ec_reconstruction_failures(),
             storage_partial_reclaim_chunks: storage_operations.partial_reclaim_chunks,
             storage_partial_reclaim_bytes: storage_operations.partial_reclaim_bytes,
             storage_partial_reclaim_failures: storage_operations.partial_reclaim_failures,
@@ -827,7 +827,7 @@ impl MatrixObjectStore {
                 .page_batch_discard_parallelism,
             storage_page_repair_parallelism: storage_operations.page_repair_parallelism,
             storage_page_chunk_fanout_parallelism: storage_operations
-                .page_chunk_fanout_parallelism,
+                .replica_fanout_parallelism,
             storage_effective_chunk_fanout_parallelism: storage_operations
                 .effective_chunk_fanout_parallelism,
             storage_local_replica_store_parallelism: storage_operations

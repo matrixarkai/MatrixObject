@@ -1,46 +1,46 @@
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageLocation {
+pub struct ChunkLocation {
     pub chunk_id: PageId,
     pub chunk_offset: u64,
     pub length: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageRangeWrite {
+pub struct ChunkRangeWrite {
     pub slab_id: SlabId,
     pub offset: u64,
     pub data: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageRangeRequest {
+pub struct ChunkRangeRequest {
     pub slab_id: SlabId,
     pub offset: u64,
     pub length: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageRangeReadResult {
+pub struct ChunkRangeReadResult {
     pub data: Vec<u8>,
-    pub stats: PageReadStats,
+    pub stats: ChunkReadStats,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PageRangeReadReport {
+pub struct ChunkRangeReadReport {
     pub data: Vec<u8>,
-    pub stats: PageReadStats,
+    pub stats: ChunkReadStats,
     pub payload_bytes: u64,
     pub max_payload_bytes: u64,
     pub max_chunk_read_count: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub route_control_fenced: bool,
     pub route_control_fence_matched: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageAllocation {
+pub struct ChunkAllocation {
     pub allocation_id: String,
     pub slab_id: SlabId,
     pub offset: u64,
@@ -48,7 +48,7 @@ pub struct PageAllocation {
     pub create_time_ms: u64,
 }
 
-impl PageAllocation {
+impl ChunkAllocation {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .slab_id
@@ -76,7 +76,7 @@ impl PageAllocation {
 }
 
 fn allocation_overlaps_chunk(
-    allocation: &PageAllocation,
+    allocation: &ChunkAllocation,
     page_index: u64,
     page_size: u64,
 ) -> bool {

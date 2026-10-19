@@ -4,7 +4,7 @@ impl MatrixObjectStore {
         slab_id: &SlabId,
         offset: u64,
         length: u64,
-    ) -> Result<(Vec<u8>, PageReadStats), ObjectError> {
+    ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         self.read_direct_page_range_bounded(slab_id, offset, length, 0)
     }
 
@@ -14,8 +14,8 @@ impl MatrixObjectStore {
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
-    ) -> Result<(Vec<u8>, PageReadStats), ObjectError> {
-        self.page_service
+    ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
+        self.chunk_service
             .read_slab_range_bounded(slab_id, offset, length, max_payload_bytes)
     }
 
@@ -26,8 +26,8 @@ impl MatrixObjectStore {
         length: u64,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
-    ) -> Result<(Vec<u8>, PageReadStats), ObjectError> {
-        self.page_service.read_slab_range_bounded_by_chunks(
+    ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
+        self.chunk_service.read_slab_range_bounded_by_chunks(
             slab_id,
             offset,
             length,
@@ -38,10 +38,10 @@ impl MatrixObjectStore {
 
     pub fn read_direct_page_ranges(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
-    ) -> Result<(Vec<PageRangeReadResult>, PageBatchStats), ObjectError> {
-        self.page_service
+    ) -> Result<(Vec<ChunkRangeReadResult>, ChunkBatchStats), ObjectError> {
+        self.chunk_service
             .read_slab_ranges_bounded(requests, max_payload_bytes)
     }
 
@@ -51,13 +51,13 @@ impl MatrixObjectStore {
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
-    ) -> Result<PageWriteReceipt, ObjectError> {
+    ) -> Result<ChunkWriteReceipt, ObjectError> {
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let receipt = self.page_service.write_slab_range_idempotent(
+        let receipt = self.chunk_service.write_slab_range_idempotent(
             slab_id,
             offset,
             data,
@@ -84,16 +84,16 @@ impl MatrixObjectStore {
 
     pub fn write_page_ranges_idempotent(
         &mut self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
-    ) -> Result<(PageBatchStats, PageBatchWriteReceipt), ObjectError> {
+    ) -> Result<(ChunkBatchStats, ChunkBatchWriteReceipt), ObjectError> {
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
             Some(self.capture_object_mutation_rollback())
         };
         let (stats, receipt) = self
-            .page_service
+            .chunk_service
             .write_slab_ranges_idempotent_borrowed(&writes, idempotency_key)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
@@ -118,13 +118,13 @@ impl MatrixObjectStore {
         offset: u64,
         length: u64,
         idempotency_key: &str,
-    ) -> Result<PageDiscardReceipt, ObjectError> {
+    ) -> Result<ChunkDiscardReceipt, ObjectError> {
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let receipt = self.page_service.discard_slab_range_idempotent(
+        let receipt = self.chunk_service.discard_slab_range_idempotent(
             slab_id,
             offset,
             length,
@@ -151,16 +151,16 @@ impl MatrixObjectStore {
 
     pub fn discard_page_ranges_idempotent(
         &mut self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         idempotency_key: &str,
-    ) -> Result<(PageBatchStats, PageBatchDiscardReceipt), ObjectError> {
+    ) -> Result<(ChunkBatchStats, ChunkBatchDiscardReceipt), ObjectError> {
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
             Some(self.capture_object_mutation_rollback())
         };
         let (stats, receipt) = self
-            .page_service
+            .chunk_service
             .discard_slab_ranges_idempotent_borrowed(&requests, idempotency_key)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {

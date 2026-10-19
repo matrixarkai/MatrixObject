@@ -37,8 +37,8 @@ impl ReplicaServiceSnapshot {
                 || self.ec_reconstruction_failures != 0
                 || self.chunk_mutation_control_commit_index != 0
                 || self.chunk_mutation_control_next_log_index != 1
-                || self.mutation_qos_config != ChunkMutationQosConfig::default()
-                || self.mutation_qos_state != ChunkMutationQosState::default()
+                || self.mutation_qos_config != ReplicaMutationQosConfig::default()
+                || self.mutation_qos_state != ReplicaMutationQosState::default()
                 || self.receipt_retention != DEFAULT_STORAGE_RECEIPT_RETENTION
                 || !self.write_request_receipts.is_empty()
                 || !self.discard_request_receipts.is_empty()

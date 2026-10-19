@@ -1,12 +1,12 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkReadResult {
+pub struct ReplicaReadResult {
     pub data: Vec<u8>,
     pub write_sequence: u64,
     pub checksum: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkHead {
+pub struct ReplicaHead {
     pub logical_length: u64,
     pub write_sequence: u64,
     pub checksum: String,
@@ -15,23 +15,23 @@ pub struct ChunkHead {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkRangeReadResult {
+pub struct ReplicaRangeReadResult {
     pub range: DataRange,
     pub data: Vec<u8>,
     pub cache_hit: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkReadBatchRead {
-    pub ranges: Vec<ChunkRangeReadResult>,
-    pub stats: ChunkReadBatchStats,
+pub struct ReplicaReadBatchRead {
+    pub ranges: Vec<ReplicaRangeReadResult>,
+    pub stats: ReplicaReadBatchStats,
     pub min_read_index: u64,
     pub min_commit_index: u64,
     pub proof_format: String,
     pub proof_checksum: String,
 }
 
-impl ChunkReadBatchRead {
+impl ReplicaReadBatchRead {
     pub fn verify_storage_fence(
         &self,
         expected_min_read_index: u64,
@@ -78,7 +78,7 @@ impl ChunkReadBatchRead {
     }
 }
 
-impl ProvenStorageRead<ChunkReadBatchRead> {
+impl ProvenStorageRead<ReplicaReadBatchRead> {
     pub fn require_chunk_read_batch_storage_fence(
         self,
         expected_min_read_index: u64,

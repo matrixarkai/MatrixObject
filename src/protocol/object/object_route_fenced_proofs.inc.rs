@@ -2,7 +2,7 @@
 pub struct ProvenRouteFencedMetadataRead<T> {
     pub value: T,
     pub proof: ObjectReadProof,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 
@@ -64,7 +64,7 @@ impl ProvenRouteFencedMetadataRead<AdmittedConditionalObjectData> {
 
 fn append_route_fenced_read_control_fields(
     proof: &ObjectReadProof,
-    route_control_proof: &PageRouteControlProof,
+    route_control_proof: &ChunkRouteControlProof,
     expected_route_control_checksum: &str,
     field_prefix: &str,
     fields: &mut BTreeMap<String, String>,

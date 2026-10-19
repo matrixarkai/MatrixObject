@@ -1,11 +1,11 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn list_chunk_write_receipts(
         &self,
         replica_index: usize,
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkWriteReceiptPage, ObjectError> {
+    ) -> Result<ReplicaWriteReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
@@ -18,7 +18,7 @@ impl MatrixPageService {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkBatchWriteReceiptPage, ObjectError> {
+    ) -> Result<ReplicaBatchWriteReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
@@ -31,7 +31,7 @@ impl MatrixPageService {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkDiscardReceiptPage, ObjectError> {
+    ) -> Result<ReplicaDiscardReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
@@ -44,7 +44,7 @@ impl MatrixPageService {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkBatchDiscardReceiptPage, ObjectError> {
+    ) -> Result<ReplicaBatchDiscardReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?
@@ -57,7 +57,7 @@ impl MatrixPageService {
         marker: Option<&str>,
         limit: usize,
         chunk_id: Option<&PageId>,
-    ) -> Result<ChunkRepairReceiptPage, ObjectError> {
+    ) -> Result<ReplicaRepairReceiptPage, ObjectError> {
         self.replicas
             .get(replica_index)
             .ok_or_else(|| ObjectError::InvalidArgument("replica index out of range".to_string()))?

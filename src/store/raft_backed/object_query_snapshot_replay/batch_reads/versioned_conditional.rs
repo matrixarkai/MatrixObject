@@ -57,7 +57,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenVersionedConditionalObjectBatchReadReport, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let report = self.batch_get_object_versions_conditional_linearizable_fenced(
@@ -215,7 +215,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenAdmittedVersionedConditionalObjectBatchReadReport, ObjectError> {
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         self.batch_get_object_versions_conditional_with_bounded_read_admission_linearizable_fenced(

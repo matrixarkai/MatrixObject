@@ -1,5 +1,5 @@
 pub(crate) fn chunk_storage_readiness_fingerprint_material(
-    replicas: &[ChunkStorageReadiness],
+    replicas: &[ReplicaStorageReadiness],
 ) -> Vec<u8> {
     let mut material = Vec::new();
     append_string(&mut material, CHUNK_STORAGE_READINESS_FINGERPRINT_FORMAT);

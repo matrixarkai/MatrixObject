@@ -57,7 +57,7 @@ pub(crate) fn chunk_state_handoff_checksum_v2(
     etag(&material)
 }
 
-pub(crate) fn chunk_state_handoff_payload_checksum(handoffs: &[ChunkStateHandoff]) -> String {
+pub(crate) fn chunk_state_handoff_payload_checksum(handoffs: &[ReplicaStateHandoff]) -> String {
     let payload_bytes = handoffs.iter().fold(0usize, |sum, handoff| {
         sum.saturating_add(handoff.state.data.len())
     });
@@ -82,7 +82,7 @@ pub(crate) fn chunk_local_state_handoff_request_checksum(
     etag(&material)
 }
 
-pub(crate) fn page_chunk_state_handoff_request_checksum(
+pub(crate) fn replica_state_handoff_request_checksum(
     slab_id: &SlabId,
     offset: u64,
     length: u64,

@@ -26,7 +26,7 @@ pub struct StoreOptions {
     pub page_batch_write_parallelism: usize,
     pub page_batch_discard_parallelism: usize,
     pub page_repair_parallelism: usize,
-    pub page_chunk_fanout_parallelism: usize,
+    pub replica_fanout_parallelism: usize,
     pub local_replica_store_parallelism: usize,
     pub control_plane_mode: ControlPlaneMode,
     pub metaserver_catalog_endpoints: String,

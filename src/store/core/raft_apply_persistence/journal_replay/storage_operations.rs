@@ -35,7 +35,7 @@ impl MatrixObjectStore {
                     let offset = cursor.read_u64()?;
                     let data_len = cursor.read_u64()? as usize;
                     let data = cursor.read_bytes(data_len)?.to_vec();
-                    writes.push(PageRangeWrite {
+                    writes.push(ChunkRangeWrite {
                         slab_id,
                         offset,
                         data,
@@ -55,7 +55,7 @@ impl MatrixObjectStore {
                 let count = cursor.read_count("persistent journal block discard count")?;
                 let mut requests = Vec::with_capacity(count);
                 for _ in 0..count {
-                    requests.push(PageRangeRequest {
+                    requests.push(ChunkRangeRequest {
                         slab_id: read_slab_id(&mut cursor)?,
                         offset: cursor.read_u64()?,
                         length: cursor.read_u64()?,

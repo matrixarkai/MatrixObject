@@ -41,7 +41,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<MultipartPartReport, ObjectError> {
         let expected_route_control_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         self.propose_upload_part_with_route_report_linearizable_fenced(
@@ -66,7 +66,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "multipart upload part",
             expected_page_route_control_checksum.as_ref(),
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let command = ObjectCommand::UploadPart {
             upload_id: upload_id.to_string(),
             part_number,
@@ -116,7 +116,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "multipart upload part idempotent",
             expected_page_route_control_checksum.as_ref(),
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         if let Some(existing) = existing_upload.parts.get(&part_number) {
             let same_payload = existing_upload
                 .part_payloads

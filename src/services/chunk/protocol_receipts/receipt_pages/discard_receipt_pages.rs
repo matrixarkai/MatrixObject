@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkDiscardReceiptPage {
-    pub receipts: Vec<ChunkDiscardReceipt>,
+pub struct ReplicaDiscardReceiptPage {
+    pub receipts: Vec<ReplicaDiscardReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,
@@ -11,7 +11,7 @@ pub struct ChunkDiscardReceiptPage {
     pub skipped_chunk_count: u64,
 }
 
-impl ChunkDiscardReceiptPage {
+impl ReplicaDiscardReceiptPage {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-CHUNK-DISCARD-RECEIPT-PAGE-PROOF1"
     }
@@ -88,7 +88,7 @@ impl ChunkDiscardReceiptPage {
     }
 }
 
-impl ProvenReceiptRead<ChunkDiscardReceiptPage> {
+impl ProvenReceiptRead<ReplicaDiscardReceiptPage> {
     pub fn verify_expected_chunk_discard_receipt_page_proof_checksum(
         &self,
         expected_chunk_discard_receipt_page_proof_checksum: impl AsRef<str>,
@@ -109,8 +109,8 @@ impl ProvenReceiptRead<ChunkDiscardReceiptPage> {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkBatchDiscardReceiptPage {
-    pub receipts: Vec<ChunkBatchDiscardReceipt>,
+pub struct ReplicaBatchDiscardReceiptPage {
+    pub receipts: Vec<ReplicaBatchDiscardReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,
@@ -121,7 +121,7 @@ pub struct ChunkBatchDiscardReceiptPage {
     pub skipped_chunk_count: u64,
 }
 
-impl ChunkBatchDiscardReceiptPage {
+impl ReplicaBatchDiscardReceiptPage {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-CHUNK-DISCARD-BATCH-RECEIPT-PAGE-PROOF1"
     }
@@ -199,7 +199,7 @@ impl ChunkBatchDiscardReceiptPage {
     }
 }
 
-impl ProvenReceiptRead<ChunkBatchDiscardReceiptPage> {
+impl ProvenReceiptRead<ReplicaBatchDiscardReceiptPage> {
     pub fn verify_expected_chunk_batch_discard_receipt_page_proof_checksum(
         &self,
         expected_chunk_batch_discard_receipt_page_proof_checksum: impl AsRef<str>,

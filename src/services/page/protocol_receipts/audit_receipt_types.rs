@@ -1,15 +1,15 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageAuditRepairReceipt {
+pub struct ChunkAuditRepairReceipt {
     pub after_chunk_id: Option<PageId>,
     pub max_chunks: u64,
     pub max_payload_bytes: u64,
     pub request_checksum: String,
     pub idempotency_key: String,
-    pub report: PageReplicaAuditRepairReport,
+    pub report: ChunkReplicaAuditRepairReport,
     pub deduped: bool,
 }
 
-impl PageAuditRepairReceipt {
+impl ChunkAuditRepairReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-BLOCK-AUDIT-REPAIR-RECEIPT1"
     }

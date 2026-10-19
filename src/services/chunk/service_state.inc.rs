@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ChunkSnapshotExportCache {
+pub(crate) struct ReplicaSnapshotExportCache {
     stamp: String,
     bytes: std::sync::Arc<[u8]>,
     checksum: String,
@@ -28,13 +28,13 @@ pub struct MatrixReplicaService {
     /// open batch copies the maps it WRITES rather than all seven.
     ///
     /// Measured: an ordinary put writes none of them.
-    pub(crate) write_request_receipts: std::sync::Arc<BTreeMap<String, ChunkWriteReceipt>>,
-    pub(crate) discard_request_receipts: std::sync::Arc<BTreeMap<String, ChunkDiscardReceipt>>,
-    pub(crate) batch_write_request_receipts: std::sync::Arc<BTreeMap<String, ChunkBatchWriteReceipt>>,
-    pub(crate) batch_discard_request_receipts: std::sync::Arc<BTreeMap<String, ChunkBatchDiscardReceipt>>,
-    state_install_request_receipts: std::sync::Arc<BTreeMap<String, ChunkStateInstallReceipt>>,
-    reclaim_request_receipts: std::sync::Arc<BTreeMap<String, ChunkReclaimReceipt>>,
-    repair_request_receipts: std::sync::Arc<BTreeMap<String, ChunkRepairReceipt>>,
+    pub(crate) write_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaWriteReceipt>>,
+    pub(crate) discard_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaDiscardReceipt>>,
+    pub(crate) batch_write_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaBatchWriteReceipt>>,
+    pub(crate) batch_discard_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaBatchDiscardReceipt>>,
+    state_install_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaStateInstallReceipt>>,
+    reclaim_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaReclaimReceipt>>,
+    repair_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaRepairReceipt>>,
     accepting_writes: bool,
     draining: bool,
     frozen: bool,
@@ -68,15 +68,15 @@ pub struct MatrixReplicaService {
     ec_reconstruction_failures: Cell<u64>,
     chunk_mutation_control_commit_index: u64,
     pub(crate) chunk_mutation_control_next_log_index: u64,
-    mutation_qos_config: ChunkMutationQosConfig,
-    mutation_qos_state: ChunkMutationQosState,
-    pub(crate) read_cache: RefCell<HashMap<ChunkReadCacheKey, ChunkReadCacheEntry>>,
+    mutation_qos_config: ReplicaMutationQosConfig,
+    mutation_qos_state: ReplicaMutationQosState,
+    pub(crate) read_cache: RefCell<HashMap<ReplicaReadCacheKey, ReplicaReadCacheEntry>>,
     /// Runtime-only: (write_sequence, checksum, per-page fnv1a64) for chunks whose
     /// payload has been fully validated once, so later reads verify only their own
     /// pages instead of re-hashing the whole chunk. Never persisted.
     page_validation: RefCell<HashMap<PageId, (u64, String, Vec<u64>)>>,
-    read_cache_by_chunk: RefCell<HashMap<PageId, HashSet<ChunkReadCacheRangeKey>>>,
-    read_cache_lru: RefCell<VecDeque<(u64, ChunkReadCacheKey)>>,
+    read_cache_by_chunk: RefCell<HashMap<PageId, HashSet<ReplicaReadCacheRangeKey>>>,
+    read_cache_lru: RefCell<VecDeque<(u64, ReplicaReadCacheKey)>>,
     read_cache_bytes: Cell<u64>,
     max_read_cache_bytes: Cell<u64>,
     max_cacheable_read_bytes: Cell<u64>,
@@ -100,7 +100,7 @@ pub struct MatrixReplicaService {
     read_cache_uncacheable_read_pages: Cell<u64>,
     read_cache_uncacheable_read_bytes: Cell<u64>,
     read_cache_access_sequence: Cell<u64>,
-    snapshot_export_cache: RefCell<Option<ChunkSnapshotExportCache>>,
+    snapshot_export_cache: RefCell<Option<ReplicaSnapshotExportCache>>,
     snapshot_assembler: ReplicaServiceSnapshotAssembler,
-    active_mutation_batch: Option<ChunkMutationBatch>,
+    active_mutation_batch: Option<ReplicaMutationBatch>,
 }

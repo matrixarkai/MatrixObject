@@ -131,7 +131,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
             .propose_batch_put_objects_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
                 requests,

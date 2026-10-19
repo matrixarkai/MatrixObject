@@ -7,7 +7,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         chunk_id: Option<&PageId>,
         now_ms: u64,
         expected_chunk_discard_receipt_page_proof_checksum: impl AsRef<str>,
-    ) -> Result<ProvenReceiptRead<ChunkDiscardReceiptPage>, ObjectError> {
+    ) -> Result<ProvenReceiptRead<ReplicaDiscardReceiptPage>, ObjectError> {
         let proven = self.list_chunk_discard_receipts_with_read_proof_linearizable(
             replica_index,
             marker,
@@ -27,7 +27,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         limit: usize,
         chunk_id: Option<&PageId>,
         now_ms: u64,
-    ) -> Result<(ChunkBatchDiscardReceiptPage, MetadataRaftReadiness), ObjectError> {
+    ) -> Result<(ReplicaBatchDiscardReceiptPage, MetadataRaftReadiness), ObjectError> {
         let readiness = self.ensure_receipt_read_index("chunk batch discard", now_ms)?;
         let page =
             self.store
@@ -42,7 +42,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         limit: usize,
         chunk_id: Option<&PageId>,
         now_ms: u64,
-    ) -> Result<ProvenReceiptRead<ChunkBatchDiscardReceiptPage>, ObjectError> {
+    ) -> Result<ProvenReceiptRead<ReplicaBatchDiscardReceiptPage>, ObjectError> {
         let (page, readiness) = self.list_chunk_batch_discard_receipts_linearizable(
             replica_index,
             marker,
@@ -61,7 +61,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         chunk_id: Option<&PageId>,
         now_ms: u64,
         expected_chunk_batch_discard_receipt_page_proof_checksum: impl AsRef<str>,
-    ) -> Result<ProvenReceiptRead<ChunkBatchDiscardReceiptPage>, ObjectError> {
+    ) -> Result<ProvenReceiptRead<ReplicaBatchDiscardReceiptPage>, ObjectError> {
         let proven = self.list_chunk_batch_discard_receipts_with_read_proof_linearizable(
             replica_index,
             marker,
@@ -81,7 +81,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         limit: usize,
         chunk_id: Option<&PageId>,
         now_ms: u64,
-    ) -> Result<(ChunkRepairReceiptPage, MetadataRaftReadiness), ObjectError> {
+    ) -> Result<(ReplicaRepairReceiptPage, MetadataRaftReadiness), ObjectError> {
         let readiness = self.ensure_receipt_read_index("chunk repair", now_ms)?;
         let page = self
             .store
@@ -96,7 +96,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         limit: usize,
         chunk_id: Option<&PageId>,
         now_ms: u64,
-    ) -> Result<ProvenReceiptRead<ChunkRepairReceiptPage>, ObjectError> {
+    ) -> Result<ProvenReceiptRead<ReplicaRepairReceiptPage>, ObjectError> {
         let (page, readiness) = self.list_chunk_repair_receipts_linearizable(
             replica_index,
             marker,
@@ -115,7 +115,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         chunk_id: Option<&PageId>,
         now_ms: u64,
         expected_chunk_repair_receipt_page_proof_checksum: impl AsRef<str>,
-    ) -> Result<ProvenReceiptRead<ChunkRepairReceiptPage>, ObjectError> {
+    ) -> Result<ProvenReceiptRead<ReplicaRepairReceiptPage>, ObjectError> {
         let proven = self.list_chunk_repair_receipts_with_read_proof_linearizable(
             replica_index,
             marker,

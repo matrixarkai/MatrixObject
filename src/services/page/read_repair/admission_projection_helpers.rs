@@ -1,6 +1,6 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     fn projected_chunk_lengths_for_locations(
-        locations: &[PageLocation],
+        locations: &[ChunkLocation],
     ) -> Result<BTreeMap<PageId, u64>, ObjectError> {
         let mut projected = BTreeMap::new();
         for loc in locations {

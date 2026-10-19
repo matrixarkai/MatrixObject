@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn discard_slab_range(
         &mut self,
         slab_id: &SlabId,
@@ -28,7 +28,7 @@ impl MatrixPageService {
         length: u64,
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
-    ) -> Result<PageStorageMutationReport, ObjectError> {
+    ) -> Result<ChunkStorageMutationReport, ObjectError> {
         self.discard_slab_range_storage_fenced(
             slab_id,
             offset,
@@ -36,11 +36,11 @@ impl MatrixPageService {
             expected_route_control_checksum,
             expected_chunk_control_proof_checksum,
         )?;
-        let stats = PageBatchStats {
+        let stats = ChunkBatchStats {
             input_ranges: if length == 0 { 0 } else { 1 },
             mapped_chunk_ranges: self.mapped_chunk_count(offset, length)?,
             payload_bytes: length,
-            ..PageBatchStats::default()
+            ..ChunkBatchStats::default()
         };
         Ok(self.storage_mutation_report(
             stats,
@@ -77,7 +77,7 @@ impl MatrixPageService {
                     continue;
                 }
                 let discard_result = if let Some(base_key) = idempotency_key {
-                    let chunk_key = page_chunk_receipt_key(
+                    let chunk_key = replica_receipt_key(
                         "sd",
                         base_key,
                         &loc.chunk_id,

@@ -1,4 +1,4 @@
-impl PageServiceSnapshot {
+impl ChunkServiceSnapshot {
     pub fn from_bytes(data: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = SnapshotByteCursor::new(data);
         let magic = cursor.read_string()?;
@@ -55,7 +55,7 @@ impl PageServiceSnapshot {
                 volume_id: cursor.read_u64()?,
                 id: cursor.read_u64()?,
             };
-            let allocation = PageAllocation {
+            let allocation = ChunkAllocation {
                 allocation_id,
                 slab_id,
                 offset: cursor.read_u64()?,
@@ -73,7 +73,7 @@ impl PageServiceSnapshot {
                     volume_id: cursor.read_u64()?,
                     id: cursor.read_u64()?,
                 };
-                let allocation = PageAllocation {
+                let allocation = ChunkAllocation {
                     allocation_id,
                     slab_id,
                     offset: cursor.read_u64()?,
@@ -98,7 +98,7 @@ impl PageServiceSnapshot {
                         volume_id: cursor.read_u64()?,
                         id: cursor.read_u64()?,
                     };
-                    allocations.push(PageAllocation {
+                    allocations.push(ChunkAllocation {
                         allocation_id,
                         slab_id,
                         offset: cursor.read_u64()?,
@@ -120,7 +120,7 @@ impl PageServiceSnapshot {
                     volume_id: cursor.read_u64()?,
                     id: cursor.read_u64()?,
                 };
-                let allocation = PageAllocation {
+                let allocation = ChunkAllocation {
                     allocation_id,
                     slab_id,
                     offset: cursor.read_u64()?,
@@ -189,7 +189,7 @@ impl PageServiceSnapshot {
         } else {
             (Vec::new(), BTreeSet::new())
         };
-        let (page_route_control_commit_index, page_route_control_next_log_index) =
+        let (chunk_route_control_commit_index, chunk_route_control_next_log_index) =
             if has_route_control_watermarks {
                 (cursor.read_u64()?, cursor.read_u64()?)
             } else {
@@ -202,8 +202,8 @@ impl PageServiceSnapshot {
             )
         } else {
             (
-                PageRouteQosConfig::default(),
-                PageRouteQosState::default(),
+                ChunkRouteQosConfig::default(),
+                ChunkRouteQosState::default(),
             )
         };
         let mut sealed_slabs = BTreeSet::new();
@@ -329,8 +329,8 @@ impl PageServiceSnapshot {
             quarantined_replicas,
             chunk_endpoints,
             disabled_chunk_endpoints,
-            page_route_control_commit_index,
-            page_route_control_next_log_index,
+            chunk_route_control_commit_index,
+            chunk_route_control_next_log_index,
             route_qos_config,
             route_qos_state,
             sealed_slabs,

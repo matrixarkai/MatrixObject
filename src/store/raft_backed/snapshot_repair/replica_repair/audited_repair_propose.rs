@@ -13,8 +13,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<
         (
             ObjectMetadata,
-            PageReplicaAuditRepairReport,
-            PageAuditRepairReceipt,
+            ChunkReplicaAuditRepairReport,
+            ChunkAuditRepairReceipt,
         ),
         ObjectError,
     > {

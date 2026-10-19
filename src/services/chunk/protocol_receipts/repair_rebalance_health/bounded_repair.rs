@@ -25,7 +25,7 @@ pub struct BoundedRepairReport {
     pub next_chunk_index: u64,
     pub has_more: bool,
     pub stats: RepairStats,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 

@@ -120,7 +120,7 @@ impl MatrixReplicaService {
         min_capacity_free_bytes: u64,
         min_reclaimable_bytes: u64,
         now_ms: u64,
-    ) -> ChunkStorageReadiness {
+    ) -> ReplicaStorageReadiness {
         let mut discarded_range_count = 0u64;
         let mut reclaimable_bytes = 0u64;
         let mut trailing_trim_bytes = 0u64;
@@ -172,7 +172,7 @@ impl MatrixReplicaService {
         .to_string();
         let cache = self.read_cache_stats();
         let control_proof = self.control_proof();
-        ChunkStorageReadiness {
+        ReplicaStorageReadiness {
             readable,
             writable,
             reclaimable,

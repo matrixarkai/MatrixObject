@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageWriteReceipt {
+pub struct ChunkWriteReceipt {
     pub slab_id: SlabId,
     pub offset: u64,
     pub length: u64,
@@ -9,7 +9,7 @@ pub struct PageWriteReceipt {
     pub deduped: bool,
 }
 
-impl PageWriteReceipt {
+impl ChunkWriteReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-BLOCK-WRITE-RECEIPT-PROOF1"
     }
@@ -77,15 +77,15 @@ impl PageWriteReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PageBatchWriteReceipt {
+pub struct ChunkBatchWriteReceipt {
     pub request_checksum: String,
     pub payload_checksum: String,
     pub idempotency_key: String,
-    pub stats: PageBatchStats,
+    pub stats: ChunkBatchStats,
     pub deduped: bool,
 }
 
-impl PageBatchWriteReceipt {
+impl ChunkBatchWriteReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-BLOCK-WRITE-BATCH-PROOF1"
     }

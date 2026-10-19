@@ -1,4 +1,4 @@
-pub(crate) fn append_chunk_reclaim_plan(out: &mut Vec<u8>, plan: &ChunkReclaimPlan) {
+pub(crate) fn append_chunk_reclaim_plan(out: &mut Vec<u8>, plan: &ReplicaReclaimPlan) {
     append_u64(out, plan.marker.is_some() as u64);
     if let Some(marker) = &plan.marker {
         append_chunk_id(out, marker);
@@ -54,7 +54,7 @@ pub(crate) fn append_chunk_reclaim_plan(out: &mut Vec<u8>, plan: &ChunkReclaimPl
     append_string(out, &plan.expected_plan_checksum);
 }
 
-pub(crate) fn append_page_replica_reclaim_plan(out: &mut Vec<u8>, plan: &PageReplicaReclaimPlan) {
+pub(crate) fn append_page_replica_reclaim_plan(out: &mut Vec<u8>, plan: &ChunkReplicaReclaimPlan) {
     append_u64(out, plan.continuation_safe as u64);
     append_u64(out, plan.next_marker_advanced as u64);
     append_u64(out, plan.scanned_replicas);

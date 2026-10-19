@@ -12,7 +12,7 @@ pub(crate) fn append_admitted_batch_common(
     max_chunk_read_count: u64,
     budget_limited: bool,
     read_proof: &ObjectReadProof,
-    route_control_proof: &PageRouteControlProof,
+    route_control_proof: &ChunkRouteControlProof,
     expected_route_control_checksum: &str,
 ) {
     append_string(material, STORAGE_ADMISSION_PROOF_FORMAT);
@@ -37,11 +37,11 @@ pub(crate) fn append_admitted_batch_common(
     append_string(material, &route_control_proof.state_checksum);
     append_u64(
         material,
-        route_control_proof.page_route_control_commit_index,
+        route_control_proof.chunk_route_control_commit_index,
     );
     append_u64(
         material,
-        route_control_proof.page_route_control_next_log_index,
+        route_control_proof.chunk_route_control_next_log_index,
     );
     append_u64(material, route_control_proof.write_quorum);
     append_u64(material, route_control_proof.read_quorum);

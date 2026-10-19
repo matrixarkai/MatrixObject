@@ -1,13 +1,13 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn storage_readiness(
         &self,
         min_capacity_free_bytes: u64,
         min_reclaimable_bytes: u64,
         now_ms: u64,
-    ) -> PageStorageReadiness {
+    ) -> ChunkStorageReadiness {
         let route_qos_state = self.route_qos_state();
         let route_control_proof = self.route_control_proof();
-        let mut readiness = PageStorageReadiness {
+        let mut readiness = ChunkStorageReadiness {
             replica_count: self.replicas.len() as u64,
             write_quorum: self.write_quorum as u64,
             read_quorum: self.read_quorum as u64,
@@ -20,11 +20,11 @@ impl MatrixPageService {
             page_batch_write_parallelism: self.page_batch_write_parallelism as u64,
             page_batch_discard_parallelism: self.page_batch_discard_parallelism as u64,
             page_repair_parallelism: self.page_repair_parallelism as u64,
-            page_chunk_fanout_parallelism: self.page_chunk_fanout_parallelism as u64,
+            replica_fanout_parallelism: self.replica_fanout_parallelism as u64,
             primary_batch_read_repair_probe_limit: self.primary_batch_read_repair_probe_limit
                 as u64,
             effective_chunk_fanout_parallelism: bounded_parallelism(
-                self.page_chunk_fanout_parallelism,
+                self.replica_fanout_parallelism,
                 self.replicas.len(),
             ) as u64,
             local_replica_store_parallelism: self.local_replica_store_parallelism as u64,
@@ -75,14 +75,14 @@ impl MatrixPageService {
             route_qos_discard_bytes_in_window: route_qos_state.discard_bytes_in_window,
             route_qos_throttled_ops: route_qos_state.throttled_ops,
             route_qos_throttled_bytes: route_qos_state.throttled_bytes,
-            route_qos_pressure: self.page_route_qos_pressure(),
-            page_route_control_proof_format: route_control_proof.state_format.clone(),
-            page_route_control_proof_checksum: route_control_proof.state_checksum.clone(),
-            page_route_control_proof_bytes: route_control_proof.state_bytes,
+            route_qos_pressure: self.chunk_route_qos_pressure(),
+            chunk_route_control_proof_format: route_control_proof.state_format.clone(),
+            chunk_route_control_proof_checksum: route_control_proof.state_checksum.clone(),
+            chunk_route_control_proof_bytes: route_control_proof.state_bytes,
             sealed_slab_count: self.sealed_slabs.len() as u64,
             allocator_active_slab_sealed: self.allocator_active_slab_sealed(),
             route_control_proof,
-            ..PageStorageReadiness::default()
+            ..ChunkStorageReadiness::default()
         };
         for (index, replica) in self.replicas.iter().enumerate() {
             let replica_ready =

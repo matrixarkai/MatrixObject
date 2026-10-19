@@ -12,7 +12,7 @@ impl MatrixObjectStore {
         max_trim_bytes: u64,
         now_ms: u64,
     ) -> Result<StorageMaintenancePlan, ObjectError> {
-        let mut plan = self.page_service.plan_storage_maintenance(
+        let mut plan = self.chunk_service.plan_storage_maintenance(
             max_actions,
             min_capacity_free_bytes,
             min_reclaimable_bytes,

@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn configure_chunk_endpoints(
         &mut self,
         endpoints: Vec<String>,
@@ -22,42 +22,42 @@ impl MatrixPageService {
 
     pub fn configure_route_qos(
         &mut self,
-        config: PageRouteQosConfig,
-    ) -> Result<PageRouteQosConfig, ObjectError> {
+        config: ChunkRouteQosConfig,
+    ) -> Result<ChunkRouteQosConfig, ObjectError> {
         let commit_index = self
-            .page_route_control_next_log_index
-            .max(self.page_route_control_commit_index.saturating_add(1));
+            .chunk_route_control_next_log_index
+            .max(self.chunk_route_control_commit_index.saturating_add(1));
         self.configure_route_qos_at_commit(config, commit_index)
     }
 
     pub(crate) fn configure_route_qos_at_commit(
         &mut self,
-        config: PageRouteQosConfig,
+        config: ChunkRouteQosConfig,
         commit_index: u64,
-    ) -> Result<PageRouteQosConfig, ObjectError> {
+    ) -> Result<ChunkRouteQosConfig, ObjectError> {
         validate_page_route_qos_config(&config)?;
         if commit_index == 0 {
             return Err(ObjectError::InvalidArgument(
                 "block route control commit index must be positive".to_string(),
             ));
         }
-        if commit_index <= self.page_route_control_commit_index {
+        if commit_index <= self.chunk_route_control_commit_index {
             return Err(ObjectError::PreconditionFailed(
                 "block route control commit index is stale".to_string(),
             ));
         }
         self.route_qos_config = config.clone();
-        *self.route_qos_state.borrow_mut() = PageRouteQosState::default();
-        self.page_route_control_commit_index = commit_index;
-        self.page_route_control_next_log_index = commit_index.saturating_add(1);
+        *self.route_qos_state.borrow_mut() = ChunkRouteQosState::default();
+        self.chunk_route_control_commit_index = commit_index;
+        self.chunk_route_control_next_log_index = commit_index.saturating_add(1);
         Ok(config)
     }
 
-    pub fn route_qos_config(&self) -> PageRouteQosConfig {
+    pub fn route_qos_config(&self) -> ChunkRouteQosConfig {
         self.route_qos_config.clone()
     }
 
-    pub fn route_qos_state(&self) -> PageRouteQosState {
+    pub fn route_qos_state(&self) -> ChunkRouteQosState {
         self.route_qos_state.borrow().clone()
     }
 
@@ -73,7 +73,7 @@ impl MatrixPageService {
         self.disabled_chunk_endpoints.contains(&replica_index)
     }
 
-    fn page_route_qos_enabled(&self) -> bool {
+    fn chunk_route_qos_enabled(&self) -> bool {
         self.route_qos_config.max_read_ops_per_window > 0
             || self.route_qos_config.max_read_bytes_per_window > 0
             || self.route_qos_config.max_write_ops_per_window > 0
@@ -82,9 +82,9 @@ impl MatrixPageService {
             || self.route_qos_config.max_discard_bytes_per_window > 0
     }
 
-    fn page_route_qos_pressure(&self) -> bool {
+    fn chunk_route_qos_pressure(&self) -> bool {
         let state = self.route_qos_state.borrow();
-        self.page_route_qos_enabled()
+        self.chunk_route_qos_enabled()
             && ((self.route_qos_config.max_read_ops_per_window > 0
                 && state.read_ops_in_window >= self.route_qos_config.max_read_ops_per_window)
                 || (self.route_qos_config.max_read_bytes_per_window > 0
@@ -113,7 +113,7 @@ impl MatrixPageService {
         discard_bytes: u64,
         now_ms: u64,
     ) -> Result<(), ObjectError> {
-        if !self.page_route_qos_enabled() {
+        if !self.chunk_route_qos_enabled() {
             return Ok(());
         }
         let window_ms = self.route_qos_config.window_ms;

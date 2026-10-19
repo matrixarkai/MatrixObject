@@ -6,7 +6,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<MultipartAbortReport, ObjectError> {
         let expected_route_control_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         self.propose_abort_multipart_upload_with_route_report_linearizable_fenced(
@@ -27,7 +27,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "multipart abort",
             expected_page_route_control_checksum.as_ref(),
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         let command = ObjectCommand::AbortMultipartUpload {
             upload_id: upload_id.to_string(),
             update_time_ms,
@@ -66,7 +66,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "multipart abort idempotent",
             expected_page_route_control_checksum.as_ref(),
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         if let Some(existing) = self.store.multipart_abort_receipts.get(idempotency_key) {
             if existing.upload_id == upload_id && existing.request_checksum == request_checksum {
                 let mut report = MultipartAbortReport {

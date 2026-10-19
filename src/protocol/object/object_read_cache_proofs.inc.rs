@@ -14,7 +14,7 @@ pub struct ProvenConditionalObjectBatchReadReport {
 pub struct ProvenCacheControlStats {
     pub stats: CacheControlStats,
     pub proof: ObjectReadProof,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 

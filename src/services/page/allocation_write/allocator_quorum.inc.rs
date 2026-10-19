@@ -1,4 +1,4 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn configure_allocator(&mut self, slab_size: u64) -> Result<(), ObjectError> {
         if slab_size == 0 || slab_size < self.page_size {
             return Err(ObjectError::InvalidArgument(
@@ -124,7 +124,7 @@ impl MatrixPageService {
         &mut self,
         length: u64,
         now_ms: u64,
-    ) -> Result<PageAllocation, ObjectError> {
+    ) -> Result<ChunkAllocation, ObjectError> {
         if length == 0 {
             return Err(ObjectError::InvalidArgument(
                 "block allocation length must be positive".to_string(),
@@ -172,7 +172,7 @@ impl MatrixPageService {
                 "block allocation id collision".to_string(),
             ));
         }
-        let allocation = PageAllocation {
+        let allocation = ChunkAllocation {
             allocation_id: allocation_id.clone(),
             slab_id,
             offset,
@@ -189,7 +189,7 @@ impl MatrixPageService {
         length: u64,
         now_ms: u64,
         idempotency_key: &str,
-    ) -> Result<PageAllocationReceipt, ObjectError> {
+    ) -> Result<ChunkAllocationReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         if let Some(existing) = self.allocation_request_receipts.get(idempotency_key) {
             if existing.length != length {
@@ -197,7 +197,7 @@ impl MatrixPageService {
                     "block allocation idempotency key length mismatch".to_string(),
                 ));
             }
-            return Ok(PageAllocationReceipt {
+            return Ok(ChunkAllocationReceipt {
                 allocation: existing.clone(),
                 idempotency_key: idempotency_key.to_string(),
                 released: false,
@@ -208,7 +208,7 @@ impl MatrixPageService {
         self.allocation_request_receipts
             .insert(idempotency_key.to_string(), allocation.clone());
         self.trim_receipts_to_retention();
-        Ok(PageAllocationReceipt {
+        Ok(ChunkAllocationReceipt {
             allocation,
             idempotency_key: idempotency_key.to_string(),
             released: false,
@@ -221,7 +221,7 @@ impl MatrixPageService {
         lengths: Vec<u64>,
         now_ms: u64,
         idempotency_key: &str,
-    ) -> Result<PageBatchAllocationReceipt, ObjectError> {
+    ) -> Result<ChunkBatchAllocationReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         validate_page_allocation_batch_lengths(&lengths, self.allocator_slab_size)?;
         if let Some(existing) = self.batch_allocation_request_receipts.get(idempotency_key) {
@@ -235,7 +235,7 @@ impl MatrixPageService {
                     "block batch allocation idempotency key image mismatch".to_string(),
                 ));
             }
-            return Ok(PageBatchAllocationReceipt {
+            return Ok(ChunkBatchAllocationReceipt {
                 allocations: existing.clone(),
                 idempotency_key: idempotency_key.to_string(),
                 deduped: true,
@@ -248,14 +248,14 @@ impl MatrixPageService {
         self.batch_allocation_request_receipts
             .insert(idempotency_key.to_string(), allocations.clone());
         self.trim_receipts_to_retention();
-        Ok(PageBatchAllocationReceipt {
+        Ok(ChunkBatchAllocationReceipt {
             allocations,
             idempotency_key: idempotency_key.to_string(),
             deduped: false,
         })
     }
 
-    pub fn pending_page_allocations(&self) -> Vec<PageAllocation> {
+    pub fn pending_page_allocations(&self) -> Vec<ChunkAllocation> {
         self.pending_allocations.values().cloned().collect()
     }
 

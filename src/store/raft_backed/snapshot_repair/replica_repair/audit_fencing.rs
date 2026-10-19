@@ -17,7 +17,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         after_chunk_id: Option<PageId>,
         max_chunks: usize,
         max_payload_bytes: u64,
-    ) -> Result<PageReplicaAuditPage, ObjectError> {
+    ) -> Result<ChunkReplicaAuditChunk, ObjectError> {
         self.audit_page_replicas_linearizable_fenced(
             after_chunk_id,
             max_chunks,
@@ -32,7 +32,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<PageReplicaAuditPage, ObjectError> {
+    ) -> Result<ChunkReplicaAuditChunk, ObjectError> {
         self.ensure_page_route_control_ready(
             "block replica audit",
             expected_page_route_control_checksum.as_ref(),
@@ -47,7 +47,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_chunks: usize,
         max_payload_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenStorageRead<PageReplicaAuditPage>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ChunkReplicaAuditChunk>, ObjectError> {
         self.audit_page_replicas_with_read_proof_linearizable_fenced_committed_at(
             after_chunk_id,
             max_chunks,
@@ -66,7 +66,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_page_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<PageReplicaAuditPage>, ObjectError> {
+    ) -> Result<ProvenStorageRead<ChunkReplicaAuditChunk>, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         let requested_read_index = self
             .raft
@@ -142,7 +142,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         if !expected_page_route_control_checksum.is_empty() {
             let actual_checksum = self
                 .store
-                .page_service
+                .chunk_service
                 .route_control_proof()
                 .state_checksum;
             if expected_page_route_control_checksum != actual_checksum {
@@ -164,7 +164,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ProvenRouteFencedMetadataRead {
             value,
             proof: object_read_proof_from_readiness(readiness),
-            route_control_proof: self.store.page_service.route_control_proof(),
+            route_control_proof: self.store.chunk_service.route_control_proof(),
             expected_route_control_checksum: expected_page_route_control_checksum.to_string(),
         }
     }

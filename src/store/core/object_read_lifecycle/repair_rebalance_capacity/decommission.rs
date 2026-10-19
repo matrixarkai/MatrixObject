@@ -9,7 +9,7 @@ impl MatrixObjectStore {
             .plan_draining_placement_repairs(max_objects);
         let mut report = ObjectReplicaDecommissionReport {
             plan,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..ObjectReplicaDecommissionReport::default()
         };
         let items = report.plan.items.clone();
@@ -107,7 +107,7 @@ impl MatrixObjectStore {
         max_repair_chunks_per_object: usize,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectReplicaDecommissionReport, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut report =
             self.decommission_draining_replicas(max_objects, max_repair_chunks_per_object);

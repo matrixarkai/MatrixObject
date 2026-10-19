@@ -16,7 +16,7 @@ pub(crate) fn prepared_chunk_mutation_qos_config_checksum(
             .map_or(0, |index| index as u64),
     );
     append_chunk_mutation_qos_config(&mut material, &prepared.config);
-    append_page_service_fingerprint(&mut material, &prepared.page_service);
+    append_page_service_fingerprint(&mut material, &prepared.chunk_service);
     append_string(
         &mut material,
         &prepared.chunk_mutation_qos_prepared_aggregate_checksum,

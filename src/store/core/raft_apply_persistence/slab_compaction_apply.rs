@@ -96,7 +96,7 @@ impl MatrixObjectStore {
         expected_route_control_checksum: Option<&str>,
         expected_object_gc_report_proof_checksum: impl AsRef<str>,
     ) -> Result<FullCompactionPlan, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let gc_report = self.gc_report_with_discard_policy_proof_fenced(
             min_stale_bytes,
@@ -125,7 +125,7 @@ impl MatrixObjectStore {
             candidate_live_bytes,
             candidate_logical_bytes,
             candidate_slab_ids,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             expected_route_control_checksum: expected_route_control_checksum
                 .unwrap_or("")
                 .to_string(),
@@ -140,7 +140,7 @@ impl MatrixObjectStore {
         update_time_ms: u64,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedSlabCompaction, ObjectError> {
-        let admitted_route_checksum = self.page_service.route_control_proof().state_checksum;
+        let admitted_route_checksum = self.chunk_service.route_control_proof().state_checksum;
         self.prepare_slab_compaction_raft_entry_fenced(
             slab_id,
             min_stale_bytes,
@@ -160,7 +160,7 @@ impl MatrixObjectStore {
         expected_route_control_checksum: Option<&str>,
         expected_object_gc_report_proof_checksum: Option<&str>,
     ) -> Result<PreparedSlabCompaction, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let expected_object_gc_report_proof_checksum =
             expected_object_gc_report_proof_checksum.unwrap_or("");
@@ -195,7 +195,7 @@ impl MatrixObjectStore {
         let after_state_fingerprint = projected.state_fingerprint_without_payload_clones();
         let request_checksum =
             slab_compaction_request_checksum(slab_id, min_stale_bytes, update_time_ms);
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let expected_route_control_checksum =
             expected_route_control_checksum.unwrap_or("").to_string();
         let mut prepared = PreparedSlabCompaction {
@@ -264,7 +264,7 @@ impl MatrixObjectStore {
                 "prepared segment compaction route proof checksum mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "prepared segment compaction",

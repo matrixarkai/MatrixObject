@@ -6,7 +6,7 @@ impl MatrixObjectStore {
         draining: Option<bool>,
         frozen: Option<bool>,
     ) -> Result<(), ObjectError> {
-        self.page_service.configure_chunk_replica_service_mode(
+        self.chunk_service.configure_chunk_replica_service_mode(
             replica_index,
             accepting_writes,
             draining,
@@ -20,7 +20,7 @@ impl MatrixObjectStore {
         draining: Option<bool>,
         frozen: Option<bool>,
     ) -> Result<u64, ObjectError> {
-        self.page_service
+        self.chunk_service
             .configure_all_eligible_chunk_replica_service_mode(accepting_writes, draining, frozen)
     }
 }

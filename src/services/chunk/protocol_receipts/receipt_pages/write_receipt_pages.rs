@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkWriteReceiptPage {
-    pub receipts: Vec<ChunkWriteReceipt>,
+pub struct ReplicaWriteReceiptPage {
+    pub receipts: Vec<ReplicaWriteReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,
@@ -11,7 +11,7 @@ pub struct ChunkWriteReceiptPage {
     pub skipped_chunk_count: u64,
 }
 
-impl ChunkWriteReceiptPage {
+impl ReplicaWriteReceiptPage {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-CHUNK-WRITE-RECEIPT-PAGE-PROOF1"
     }
@@ -88,7 +88,7 @@ impl ChunkWriteReceiptPage {
     }
 }
 
-impl ProvenReceiptRead<ChunkWriteReceiptPage> {
+impl ProvenReceiptRead<ReplicaWriteReceiptPage> {
     pub fn verify_expected_chunk_write_receipt_page_proof_checksum(
         &self,
         expected_chunk_write_receipt_page_proof_checksum: impl AsRef<str>,
@@ -109,8 +109,8 @@ impl ProvenReceiptRead<ChunkWriteReceiptPage> {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ChunkBatchWriteReceiptPage {
-    pub receipts: Vec<ChunkBatchWriteReceipt>,
+pub struct ReplicaBatchWriteReceiptPage {
+    pub receipts: Vec<ReplicaBatchWriteReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,
@@ -121,7 +121,7 @@ pub struct ChunkBatchWriteReceiptPage {
     pub skipped_chunk_count: u64,
 }
 
-impl ChunkBatchWriteReceiptPage {
+impl ReplicaBatchWriteReceiptPage {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-CHUNK-WRITE-BATCH-RECEIPT-PAGE-PROOF1"
     }
@@ -199,7 +199,7 @@ impl ChunkBatchWriteReceiptPage {
     }
 }
 
-impl ProvenReceiptRead<ChunkBatchWriteReceiptPage> {
+impl ProvenReceiptRead<ReplicaBatchWriteReceiptPage> {
     pub fn verify_expected_chunk_batch_write_receipt_page_proof_checksum(
         &self,
         expected_chunk_batch_write_receipt_page_proof_checksum: impl AsRef<str>,

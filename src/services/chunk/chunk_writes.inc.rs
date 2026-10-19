@@ -82,7 +82,7 @@ impl MatrixReplicaService {
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
-    ) -> Result<ChunkWriteReceipt, ObjectError> {
+    ) -> Result<ReplicaWriteReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         let length = data.len() as u64;
         if length == 0 {
@@ -109,7 +109,7 @@ impl MatrixReplicaService {
             return Ok(receipt);
         }
         self.write_chunk(chunk_id.clone(), offset, data)?;
-        let receipt = ChunkWriteReceipt {
+        let receipt = ReplicaWriteReceipt {
             chunk_id,
             offset,
             length,
@@ -128,7 +128,7 @@ impl MatrixReplicaService {
         &mut self,
         chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
-    ) -> Result<ChunkWriteBatchStats, ObjectError> {
+    ) -> Result<ReplicaWriteBatchStats, ObjectError> {
         self.write_chunk_ranges_internal(chunk_id, writes, true)
     }
 
@@ -136,7 +136,7 @@ impl MatrixReplicaService {
         &mut self,
         chunk_id: PageId,
         writes: &[(u64, &[u8])],
-    ) -> Result<ChunkWriteBatchStats, ObjectError> {
+    ) -> Result<ReplicaWriteBatchStats, ObjectError> {
         self.write_chunk_ranges_borrowed_internal(chunk_id, writes, true)
     }
 
@@ -145,7 +145,7 @@ impl MatrixReplicaService {
         chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         expected_control_checksum: Option<&str>,
-    ) -> Result<ChunkWriteBatchStats, ObjectError> {
+    ) -> Result<ReplicaWriteBatchStats, ObjectError> {
         self.check_expected_control_checksum(expected_control_checksum)?;
         self.write_chunk_ranges(chunk_id, writes)
     }
@@ -155,7 +155,7 @@ impl MatrixReplicaService {
         chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         record_internal_receipt: bool,
-    ) -> Result<ChunkWriteBatchStats, ObjectError> {
+    ) -> Result<ReplicaWriteBatchStats, ObjectError> {
         let mut borrowed = Vec::with_capacity(writes.len());
         for (offset, data) in &writes {
             borrowed.push((*offset, data.as_slice()));
@@ -168,10 +168,10 @@ impl MatrixReplicaService {
         chunk_id: PageId,
         writes: &[(u64, &[u8])],
         record_internal_receipt: bool,
-    ) -> Result<ChunkWriteBatchStats, ObjectError> {
+    ) -> Result<ReplicaWriteBatchStats, ObjectError> {
         self.ensure_writable()?;
         let mut selected = Vec::with_capacity(writes.len());
-        let mut stats = ChunkWriteBatchStats::default();
+        let mut stats = ReplicaWriteBatchStats::default();
         let mut selected_strictly_ordered = true;
         let mut last_selected_offset: Option<u64> = None;
         for (offset, data) in writes.iter().copied() {
@@ -314,7 +314,7 @@ impl MatrixReplicaService {
                 String::with_capacity(PREFIX.len() + request_checksum.len());
             idempotency_key.push_str(PREFIX);
             idempotency_key.push_str(&request_checksum);
-            let receipt = ChunkBatchWriteReceipt {
+            let receipt = ReplicaBatchWriteReceipt {
                 chunk_id,
                 request_checksum,
                 payload_checksum,
@@ -334,7 +334,7 @@ impl MatrixReplicaService {
         chunk_id: PageId,
         writes: Vec<(u64, Vec<u8>)>,
         idempotency_key: &str,
-    ) -> Result<(ChunkWriteBatchStats, ChunkBatchWriteReceipt), ObjectError> {
+    ) -> Result<(ReplicaWriteBatchStats, ReplicaBatchWriteReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         let mut selected = Vec::with_capacity(writes.len());
         for (offset, data) in writes {
@@ -375,7 +375,7 @@ impl MatrixReplicaService {
             return Ok((receipt.stats.clone(), receipt));
         }
         let stats = self.write_chunk_ranges_internal(chunk_id.clone(), selected, false)?;
-        let receipt = ChunkBatchWriteReceipt {
+        let receipt = ReplicaBatchWriteReceipt {
             chunk_id,
             request_checksum,
             payload_checksum,
@@ -394,7 +394,7 @@ impl MatrixReplicaService {
         chunk_id: PageId,
         writes: &[(u64, &[u8])],
         idempotency_key: &str,
-    ) -> Result<(ChunkWriteBatchStats, ChunkBatchWriteReceipt), ObjectError> {
+    ) -> Result<(ReplicaWriteBatchStats, ReplicaBatchWriteReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         let mut selected = Vec::with_capacity(writes.len());
         for (offset, data) in writes.iter().copied() {
@@ -435,7 +435,7 @@ impl MatrixReplicaService {
             return Ok((receipt.stats.clone(), receipt));
         }
         let stats = self.write_chunk_ranges_borrowed_internal(chunk_id.clone(), &selected, false)?;
-        let receipt = ChunkBatchWriteReceipt {
+        let receipt = ReplicaBatchWriteReceipt {
             chunk_id,
             request_checksum,
             payload_checksum,

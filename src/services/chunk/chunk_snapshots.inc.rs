@@ -136,7 +136,7 @@ impl MatrixReplicaService {
         receipt_key_bytes.saturating_add(chunk_bytes)
     }
 
-    fn export_snapshot_image(&self) -> Result<ChunkSnapshotExportCache, ObjectError> {
+    fn export_snapshot_image(&self) -> Result<ReplicaSnapshotExportCache, ObjectError> {
         let stamp = self.snapshot_cache_stamp();
         if let Some(cache) = self.snapshot_export_cache.borrow().as_ref() {
             if cache.stamp == stamp {
@@ -144,7 +144,7 @@ impl MatrixReplicaService {
             }
         }
         let bytes = self.export_snapshot().to_bytes()?;
-        let cache = ChunkSnapshotExportCache {
+        let cache = ReplicaSnapshotExportCache {
             stamp,
             checksum: etag(&bytes),
             bytes: std::sync::Arc::from(bytes.into_boxed_slice()),

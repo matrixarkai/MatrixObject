@@ -1,17 +1,17 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn write_slab_ranges(
         &mut self,
-        writes: Vec<PageRangeWrite>,
-    ) -> Result<PageBatchStats, ObjectError> {
+        writes: Vec<ChunkRangeWrite>,
+    ) -> Result<ChunkBatchStats, ObjectError> {
         self.write_slab_ranges_with_chunk_receipts(&writes, None)
     }
 
     pub fn write_slab_ranges_storage_fenced(
         &mut self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
-    ) -> Result<PageBatchStats, ObjectError> {
+    ) -> Result<ChunkBatchStats, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.check_expected_chunk_control_proof_checksum(expected_chunk_control_proof_checksum)?;
         self.write_slab_ranges(writes)
@@ -19,10 +19,10 @@ impl MatrixPageService {
 
     pub fn write_slab_ranges_storage_fenced_report(
         &mut self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
-    ) -> Result<PageStorageMutationReport, ObjectError> {
+    ) -> Result<ChunkStorageMutationReport, ObjectError> {
         let stats = self.write_slab_ranges_storage_fenced(
             writes,
             expected_route_control_checksum,
@@ -37,10 +37,10 @@ impl MatrixPageService {
 
     fn write_slab_ranges_with_chunk_receipts(
         &mut self,
-        writes: &[PageRangeWrite],
+        writes: &[ChunkRangeWrite],
         idempotency_key: Option<&str>,
-    ) -> Result<PageBatchStats, ObjectError> {
-        let mut stats = PageBatchStats::default();
+    ) -> Result<ChunkBatchStats, ObjectError> {
+        let mut stats = ChunkBatchStats::default();
         let mut grouped: BTreeMap<(SlabId, PageId), Vec<(u64, &[u8])>> = BTreeMap::new();
         for write in writes {
             if self.is_slab_sealed(&write.slab_id) {
@@ -117,7 +117,7 @@ impl MatrixPageService {
                 }
                 let write_result = if let Some(base_key) = idempotency_key {
                     let chunk_key =
-                        page_chunk_receipt_key("bw", base_key, &chunk_id, index, &chunk_writes);
+                        replica_receipt_key("bw", base_key, &chunk_id, index, &chunk_writes);
                     replica
                         .write_chunk_ranges_idempotent_borrowed(
                             chunk_id.clone(),
@@ -168,17 +168,17 @@ impl MatrixPageService {
 
     pub fn write_slab_ranges_idempotent(
         &mut self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
-    ) -> Result<(PageBatchStats, PageBatchWriteReceipt), ObjectError> {
+    ) -> Result<(ChunkBatchStats, ChunkBatchWriteReceipt), ObjectError> {
         self.write_slab_ranges_idempotent_borrowed(&writes, idempotency_key)
     }
 
     pub fn write_slab_ranges_idempotent_borrowed(
         &mut self,
-        writes: &[PageRangeWrite],
+        writes: &[ChunkRangeWrite],
         idempotency_key: &str,
-    ) -> Result<(PageBatchStats, PageBatchWriteReceipt), ObjectError> {
+    ) -> Result<(ChunkBatchStats, ChunkBatchWriteReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         if writes.is_empty() {
             return Err(ObjectError::InvalidArgument(
@@ -225,7 +225,7 @@ impl MatrixPageService {
             return Ok((receipt.stats.clone(), receipt));
         }
         let stats = self.write_slab_ranges_with_chunk_receipts(writes, Some(idempotency_key))?;
-        let receipt = PageBatchWriteReceipt {
+        let receipt = ChunkBatchWriteReceipt {
             request_checksum,
             payload_checksum,
             idempotency_key: idempotency_key.to_string(),
@@ -240,10 +240,10 @@ impl MatrixPageService {
 
     pub fn write_slab_ranges_idempotent_fenced(
         &mut self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<(PageBatchStats, PageBatchWriteReceipt), ObjectError> {
+    ) -> Result<(ChunkBatchStats, ChunkBatchWriteReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         if self
             .batch_write_request_receipts
@@ -257,16 +257,16 @@ impl MatrixPageService {
 
     pub fn write_slab_ranges_idempotent_fenced_report(
         &mut self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageIdempotentBatchWriteReport, ObjectError> {
+    ) -> Result<ChunkIdempotentBatchWriteReport, ObjectError> {
         let (stats, receipt) = self.write_slab_ranges_idempotent_fenced(
             writes,
             idempotency_key,
             expected_route_control_checksum,
         )?;
-        Ok(PageIdempotentBatchWriteReport {
+        Ok(ChunkIdempotentBatchWriteReport {
             receipt,
             mutation: self.storage_mutation_report(stats, expected_route_control_checksum, None),
         })
@@ -274,11 +274,11 @@ impl MatrixPageService {
 
     pub fn write_slab_ranges_idempotent_strict_fenced_report(
         &mut self,
-        writes: Vec<PageRangeWrite>,
+        writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
         expected_page_write_batch_proof_checksum: impl AsRef<str>,
-    ) -> Result<PageIdempotentBatchWriteReport, ObjectError> {
+    ) -> Result<ChunkIdempotentBatchWriteReport, ObjectError> {
         let report = self.write_slab_ranges_idempotent_fenced_report(
             writes,
             idempotency_key,

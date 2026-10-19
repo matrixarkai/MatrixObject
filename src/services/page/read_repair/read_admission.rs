@@ -1,11 +1,11 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn can_accept_slab_read(
         &self,
         slab_id: &SlabId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_read_bounded(slab_id, offset, length, max_payload_bytes, 0)
     }
 
@@ -16,13 +16,13 @@ impl MatrixPageService {
         length: u64,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         let mapped_chunk_ranges = self.mapped_chunk_count(offset, length)?;
         let byte_budget_limited = max_payload_bytes > 0 && length > max_payload_bytes;
         let chunk_budget_limited =
             max_chunk_read_count > 0 && mapped_chunk_ranges > max_chunk_read_count;
         let budget_limited = byte_budget_limited || chunk_budget_limited;
-        let mut read_stats = PageReadStats::default();
+        let mut read_stats = ChunkReadStats::default();
         let mut readable_chunk_count = 0u64;
         let mut failed_chunk_count = 0u64;
         let mut min_ready = u64::MAX;
@@ -83,7 +83,7 @@ impl MatrixPageService {
         } else {
             "read_quorum_unavailable"
         };
-        let mut admission = PageRangeAdmission {
+        let mut admission = ChunkRangeAdmission {
             can_accept,
             input_ranges: if length == 0 { 0 } else { 1 },
             mapped_chunk_ranges,
@@ -101,7 +101,7 @@ impl MatrixPageService {
             read_quorum_limited: !budget_limited && failed_chunk_count != 0,
             route_control_proof: self.route_control_proof(),
             route_control_fence_matched: true,
-            ..PageRangeAdmission::default()
+            ..ChunkRangeAdmission::default()
         };
         stamp_page_range_admission_proof("CanReadBlock", &mut admission);
         Ok(admission)
@@ -115,7 +115,7 @@ impl MatrixPageService {
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission = self.can_accept_slab_read_bounded(
             slab_id,
@@ -131,18 +131,18 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_reads(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_reads_bounded(requests, max_payload_bytes, 0)
     }
 
     pub fn can_accept_slab_reads_bounded(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_reads_bounded_borrowed(
             &requests,
             max_payload_bytes,
@@ -152,16 +152,16 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_reads_bounded_borrowed(
         &self,
-        requests: &[PageRangeRequest],
+        requests: &[ChunkRangeRequest],
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        let mut admission = PageRangeAdmission {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        let mut admission = ChunkRangeAdmission {
             input_ranges: requests.iter().filter(|request| request.length > 0).count() as u64,
             max_payload_bytes,
             max_chunk_read_count,
             required_quorum: self.read_quorum as u64,
-            ..PageRangeAdmission::default()
+            ..ChunkRangeAdmission::default()
         };
         let mut grouped: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for request in requests {
@@ -284,10 +284,10 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_reads_fenced(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission = self.can_accept_slab_reads(requests, max_payload_bytes)?;
         self.stamp_route_control_admission(&mut admission, expected_route_control_checksum);
@@ -297,11 +297,11 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_reads_bounded_fenced(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_slab_reads_bounded_fenced_borrowed(
             &requests,
             max_payload_bytes,
@@ -312,11 +312,11 @@ impl MatrixPageService {
 
     pub fn can_accept_slab_reads_bounded_fenced_borrowed(
         &self,
-        requests: &[PageRangeRequest],
+        requests: &[ChunkRangeRequest],
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission = self.can_accept_slab_reads_bounded_borrowed(
             requests,

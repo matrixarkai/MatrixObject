@@ -1,4 +1,4 @@
-impl PageServiceSnapshot {
+impl ChunkServiceSnapshot {
     fn legacy_checksum_material_hash(&self) -> String {
         let mut material = Vec::with_capacity(self.encoded_size_hint().min(2 * 1024 * 1024));
         append_u64(&mut material, self.page_size);

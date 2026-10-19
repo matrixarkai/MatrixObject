@@ -1,11 +1,11 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn partial_reclaim_chunk_replicas(
         &mut self,
         max_chunks: usize,
         max_rewrite_bytes: u64,
         min_discarded_bytes: u64,
-    ) -> ChunkPartialReclaimReport {
-        let mut aggregate = ChunkPartialReclaimReport::default();
+    ) -> ReplicaPartialReclaimReport {
+        let mut aggregate = ReplicaPartialReclaimReport::default();
         let quarantined = &self.quarantined_replicas;
         let disabled = &self.disabled_chunk_endpoints;
         for (index, replica) in self.replicas.iter_mut().enumerate() {
@@ -28,8 +28,8 @@ impl MatrixPageService {
         min_discard_ratio_ppm: u64,
         max_discard_ranges: usize,
         max_trim_bytes: u64,
-    ) -> Result<PageReplicaReclaimPlan, ObjectError> {
-        let mut aggregate = PageReplicaReclaimPlan::default();
+    ) -> Result<ChunkReplicaReclaimPlan, ObjectError> {
+        let mut aggregate = ChunkReplicaReclaimPlan::default();
         aggregate.global_reclaim_budget_enforced = max_chunks > 0 || max_rewrite_bytes > 0;
         aggregate.global_reclaim_budget_basis = if aggregate.global_reclaim_budget_enforced {
             "scheduled".to_string()
@@ -89,7 +89,7 @@ impl MatrixPageService {
             aggregate.truncated |= plan.truncated;
             if aggregate.first_budget_skipped_candidate.is_none() {
                 if let Some(candidate) = plan.first_budget_skipped_candidate.clone() {
-                    aggregate.first_budget_skipped_candidate = Some(PageReplicaReclaimCandidate {
+                    aggregate.first_budget_skipped_candidate = Some(ChunkReplicaReclaimCandidate {
                         replica_index: index,
                         candidate,
                     });
@@ -98,7 +98,7 @@ impl MatrixPageService {
             if aggregate.first_trim_budget_skipped_candidate.is_none() {
                 if let Some(candidate) = plan.first_trim_budget_skipped_candidate.clone() {
                     aggregate.first_trim_budget_skipped_candidate =
-                        Some(PageReplicaReclaimCandidate {
+                        Some(ChunkReplicaReclaimCandidate {
                             replica_index: index,
                             candidate,
                         });
@@ -108,7 +108,7 @@ impl MatrixPageService {
                 let chunk_budget_exhausted = max_chunks > 0 && remaining_chunks == 0;
                 let byte_budget_exhausted =
                     max_rewrite_bytes > 0 && candidate.rewrite_bytes > remaining_rewrite_bytes;
-                let replica_candidate = PageReplicaReclaimCandidate {
+                let replica_candidate = ChunkReplicaReclaimCandidate {
                     replica_index: index,
                     candidate,
                 };
@@ -161,7 +161,7 @@ impl MatrixPageService {
         min_discard_ratio_ppm: u64,
         max_discard_ranges: usize,
         max_trim_bytes: u64,
-    ) -> ChunkPartialReclaimReport {
+    ) -> ReplicaPartialReclaimReport {
         self.reclaim_chunk_replicas_with_limits_at(
             max_chunks,
             max_rewrite_bytes,
@@ -182,7 +182,7 @@ impl MatrixPageService {
         max_discard_ranges: usize,
         max_trim_bytes: u64,
         now_ms: u64,
-    ) -> ChunkPartialReclaimReport {
+    ) -> ReplicaPartialReclaimReport {
         let Ok(plan) = self.plan_chunk_replica_reclaim(
             None,
             max_chunks,
@@ -192,7 +192,7 @@ impl MatrixPageService {
             max_discard_ranges,
             max_trim_bytes,
         ) else {
-            return ChunkPartialReclaimReport::default();
+            return ReplicaPartialReclaimReport::default();
         };
         let mut scheduled_by_replica: BTreeMap<usize, (usize, u64)> = BTreeMap::new();
         for candidate in &plan.candidates {
@@ -202,7 +202,7 @@ impl MatrixPageService {
             entry.0 = entry.0.saturating_add(1);
             entry.1 = entry.1.saturating_add(candidate.candidate.rewrite_bytes);
         }
-        let mut aggregate = ChunkPartialReclaimReport::default();
+        let mut aggregate = ReplicaPartialReclaimReport::default();
         let quarantined = &self.quarantined_replicas;
         let disabled = &self.disabled_chunk_endpoints;
         for (index, replica) in self.replicas.iter_mut().enumerate() {

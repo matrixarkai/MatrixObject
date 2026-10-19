@@ -159,7 +159,7 @@ impl MatrixObjectStore {
         ranges: Vec<DataRange>,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedSlabDiscard, ObjectError> {
-        let admitted_route_checksum = self.page_service.route_control_proof().state_checksum;
+        let admitted_route_checksum = self.chunk_service.route_control_proof().state_checksum;
         self.prepare_slab_discard_raft_entry_fenced(
             slab_id,
             ranges,
@@ -190,7 +190,7 @@ impl MatrixObjectStore {
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<PreparedSlabDiscard, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
@@ -223,7 +223,7 @@ impl MatrixObjectStore {
         projected.apply_discard_borrowed(slab_id, &ranges)?;
         let after_state_fingerprint = projected.state_fingerprint_without_payload_clones();
         let request_checksum = slab_discard_request_checksum(slab_id, &ranges);
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let expected_route_control_checksum =
             expected_route_control_checksum.unwrap_or("").to_string();
         let mut prepared = PreparedSlabDiscard {
@@ -282,7 +282,7 @@ impl MatrixObjectStore {
                 "prepared segment discard route proof checksum mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "prepared segment discard",

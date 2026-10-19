@@ -63,7 +63,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let readiness = self.ensure_metadata_read_index("object range read repair", now_ms)?;
         let route_checksum = self
             .store
-            .page_service
+            .chunk_service
             .route_control_proof()
             .state_checksum;
         let report = self.propose_get_object_range_repair_report_fenced(

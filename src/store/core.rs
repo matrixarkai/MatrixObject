@@ -26,7 +26,7 @@ struct PersistentSnapshotDurableStamp {
 /// not its bytes.
 ///
 /// The bytes live in the page service, which is where the read path already
-/// goes - `allocate_extents`/`read` paths all call `page_service` directly.
+/// goes - `allocate_extents`/`read` paths all call `chunk_service` directly.
 /// Keeping a second copy here cost one extra copy of every byte written, about
 /// 1.00x of the store's resident footprint, and nothing ever looked this map up
 /// by key: its only consumers are the snapshot export, the state fingerprint and
@@ -91,7 +91,7 @@ pub struct MatrixObjectStore {
     // undo derives from -- a stale range holds no payload entry -- can be
     // asserted from a test rather than argued for in a comment.
     pub(crate) payloads: BTreeMap<(SlabId, u64), StoredPayload>,
-    pub(crate) page_service: MatrixPageService,
+    pub(crate) chunk_service: MatrixChunkService,
     next_slab_id: u64,
     next_upload_sequence: u64,
     logical_written_bytes: u64,
@@ -165,14 +165,14 @@ pub(crate) struct ObjectMutationRollback {
     payloads: BTreeMap<(SlabId, u64), StoredPayload>,
     /// Absent on the put path, where the page service's own mutation batch
     /// holds the undo and the put drives its abort.
-    page_service: Option<MatrixPageService>,
+    chunk_service: Option<MatrixChunkService>,
     logical_written_bytes: u64,
     physical_written_bytes: u64,
     last_object_manifest_checkpoint_index: u64,
     last_object_metadata_checkpoint_index: u64,
 }
 
-fn chunk_catalog_service_mode(readiness: &ChunkStorageReadiness) -> String {
+fn chunk_catalog_service_mode(readiness: &ReplicaStorageReadiness) -> String {
     if readiness.draining {
         "draining".to_string()
     } else if !readiness.accepting_writes {
@@ -182,11 +182,11 @@ fn chunk_catalog_service_mode(readiness: &ChunkStorageReadiness) -> String {
     }
 }
 
-fn catalog_chunk_draining(readiness: &ChunkStorageReadiness) -> bool {
+fn catalog_chunk_draining(readiness: &ReplicaStorageReadiness) -> bool {
     readiness.draining || !readiness.accepting_writes || readiness.frozen
 }
 
-fn catalog_capacity_bytes(readiness: &ChunkStorageReadiness) -> u64 {
+fn catalog_capacity_bytes(readiness: &ReplicaStorageReadiness) -> u64 {
     if readiness.capacity_bytes == 0 {
         u64::MAX
     } else {
@@ -194,7 +194,7 @@ fn catalog_capacity_bytes(readiness: &ChunkStorageReadiness) -> u64 {
     }
 }
 
-fn root_chunk_health_from_readiness(readiness: &ChunkStorageReadiness) -> RootChunkHealth {
+fn root_chunk_health_from_readiness(readiness: &ReplicaStorageReadiness) -> RootChunkHealth {
     let mut service_health_reasons = Vec::new();
     if !readiness.ready && !readiness.reason.is_empty() && readiness.reason != "ok" {
         service_health_reasons.push(readiness.reason.clone());
@@ -278,11 +278,11 @@ fn root_chunk_health_from_readiness(readiness: &ChunkStorageReadiness) -> RootCh
     }
 }
 
-fn catalog_page_draining(readiness: &PageStorageReadiness) -> bool {
+fn catalog_page_draining(readiness: &ChunkStorageReadiness) -> bool {
     !readiness.writable || readiness.quarantined_replicas >= readiness.replica_count
 }
 
-fn catalog_page_capacity_bytes(readiness: &PageStorageReadiness) -> u64 {
+fn catalog_page_capacity_bytes(readiness: &ChunkStorageReadiness) -> u64 {
     if readiness.total_capacity_bytes == 0 {
         u64::MAX
     } else {
@@ -290,14 +290,14 @@ fn catalog_page_capacity_bytes(readiness: &PageStorageReadiness) -> u64 {
     }
 }
 
-fn root_page_health_from_readiness(readiness: &PageStorageReadiness) -> RootPageHealth {
+fn root_page_health_from_readiness(readiness: &ChunkStorageReadiness) -> RootPageHealth {
     RootPageHealth {
         ready: readiness.writable,
         read_ready: readiness.readable,
-        route_control_checksum: readiness.page_route_control_proof_checksum.clone(),
+        route_control_checksum: readiness.chunk_route_control_proof_checksum.clone(),
         route_control_commit_index: readiness
             .route_control_proof
-            .page_route_control_commit_index,
+            .chunk_route_control_commit_index,
         chunk_endpoint_count: readiness.chunk_endpoint_count,
         write_quorum: readiness.write_quorum,
         read_quorum: readiness.read_quorum,

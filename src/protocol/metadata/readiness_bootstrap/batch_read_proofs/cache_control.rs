@@ -43,13 +43,13 @@ pub(crate) fn object_batch_cache_control_proof_checksum(
     append_string(&mut material, &report.route_control_proof.state_checksum);
     append_u64(
         &mut material,
-        report.route_control_proof.page_route_control_commit_index,
+        report.route_control_proof.chunk_route_control_commit_index,
     );
     append_u64(
         &mut material,
         report
             .route_control_proof
-            .page_route_control_next_log_index,
+            .chunk_route_control_next_log_index,
     );
     append_u64(&mut material, report.route_control_proof.write_quorum);
     append_u64(&mut material, report.route_control_proof.read_quorum);

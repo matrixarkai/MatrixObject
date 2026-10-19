@@ -1,10 +1,10 @@
-impl MatrixPageService {
+impl MatrixChunkService {
     pub fn read_slab_range(
         &self,
         slab_id: &SlabId,
         offset: u64,
         length: u64,
-    ) -> Result<(Vec<u8>, PageReadStats), ObjectError> {
+    ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         self.read_slab_range_bounded(slab_id, offset, length, 0)
     }
 
@@ -14,7 +14,7 @@ impl MatrixPageService {
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
-    ) -> Result<(Vec<u8>, PageReadStats), ObjectError> {
+    ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         self.read_slab_range_bounded_by_chunks(slab_id, offset, length, max_payload_bytes, 0)
     }
 
@@ -25,7 +25,7 @@ impl MatrixPageService {
         length: u64,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
-    ) -> Result<(Vec<u8>, PageReadStats), ObjectError> {
+    ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         if max_payload_bytes > 0 && length > max_payload_bytes {
             return Err(ObjectError::PreconditionFailed(
                 "block read payload budget exceeded".to_string(),
@@ -41,7 +41,7 @@ impl MatrixPageService {
         }
         self.admit_page_route_qos(1, length, 0, 0, 0, 0, now_millis())?;
         let locations = self.map_range(slab_id, offset, length)?;
-        let mut stats = PageReadStats::default();
+        let mut stats = ChunkReadStats::default();
         if locations.len() == 1 {
             let loc = &locations[0];
             merge_page_read_stats(
@@ -86,7 +86,7 @@ impl MatrixPageService {
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeReadReport, ObjectError> {
+    ) -> Result<ChunkRangeReadReport, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let route_control_proof = self.route_control_proof();
         let (data, stats) = self.read_slab_range_bounded_by_chunks(
@@ -96,7 +96,7 @@ impl MatrixPageService {
             max_payload_bytes,
             max_chunk_read_count,
         )?;
-        Ok(PageRangeReadReport {
+        Ok(ChunkRangeReadReport {
             payload_bytes: data.len() as u64,
             data,
             stats,
@@ -113,7 +113,7 @@ impl MatrixPageService {
         })
     }
 
-    fn record_page_read_stats(&self, stats: &PageReadStats) {
+    fn record_page_read_stats(&self, stats: &ChunkReadStats) {
         self.cumulative_physical_chunk_read_count.set(
             self.cumulative_physical_chunk_read_count
                 .get()
@@ -131,8 +131,8 @@ impl MatrixPageService {
         chunk_id: &PageId,
         offset: u64,
         length: u64,
-    ) -> Result<(ChunkReadResult, PageReadStats), ObjectError> {
-        let mut stats = PageReadStats::default();
+    ) -> Result<(ReplicaReadResult, ChunkReadStats), ObjectError> {
+        let mut stats = ChunkReadStats::default();
         let mut successful =
             Vec::with_capacity(self.replicas.len().min(self.read_quorum.max(1)));
         let mut first_error: Option<ObjectError> = None;

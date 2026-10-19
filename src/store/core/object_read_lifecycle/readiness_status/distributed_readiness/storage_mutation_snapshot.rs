@@ -16,7 +16,7 @@ struct DistributedStorageMutationSnapshot {
 }
 
 impl DistributedStorageMutationSnapshot {
-    fn capture(page: &PageStorageReadiness) -> Self {
+    fn capture(page: &ChunkStorageReadiness) -> Self {
         let mut snapshot = Self {
             allocation_receipt_count: page.allocation_receipt_count,
             batch_allocation_receipt_count: page.batch_allocation_receipt_count,

@@ -7,7 +7,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         source_replica_index: usize,
         max_payload_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<Vec<ChunkStateHandoff>, ObjectError> {
+    ) -> Result<Vec<ReplicaStateHandoff>, ObjectError> {
         self.ensure_page_route_control_ready(
             "chunk state handoff prepare",
             expected_page_route_control_checksum.as_ref(),
@@ -29,7 +29,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         source_replica_index: usize,
         max_payload_bytes: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenStorageRead<Vec<ChunkStateHandoff>>, ObjectError> {
+    ) -> Result<ProvenStorageRead<Vec<ReplicaStateHandoff>>, ObjectError> {
         let requested_read_index = self.raft.commit_index();
         let handoffs = self.prepare_chunk_state_handoffs_linearizable_fenced(
             slab_id,
@@ -65,7 +65,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             max_payload_bytes,
             &expected_page_route_control_checksum,
         )?;
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         if !expected_page_route_control_checksum.is_empty()
             && route_control_proof.state_checksum != expected_page_route_control_checksum
         {
@@ -110,7 +110,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_state_handoffs_linearizable_fenced(
         &mut self,
         target_replica_index: usize,
-        handoffs: Vec<ChunkStateHandoff>,
+        handoffs: Vec<ReplicaStateHandoff>,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose_chunk_state_handoffs_linearizable_fenced_apply(
@@ -124,7 +124,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn propose_chunk_state_handoffs_linearizable_fenced_apply(
         &mut self,
         target_replica_index: usize,
-        handoffs: Vec<ChunkStateHandoff>,
+        handoffs: Vec<ReplicaStateHandoff>,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<(ObjectMetadata, RepairStats), ObjectError> {
         let expected_page_route_control_checksum =
@@ -162,9 +162,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_chunk_state_handoffs_linearizable_fenced_with_status(
         &mut self,
         target_replica_index: usize,
-        handoffs: Vec<ChunkStateHandoff>,
+        handoffs: Vec<ReplicaStateHandoff>,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<ChunkStateHandoffApplyReport, ObjectError> {
+    ) -> Result<ReplicaStateHandoffApplyReport, ObjectError> {
         let handoff_count = handoffs.len() as u64;
         let payload_bytes = handoffs.iter().fold(0u64, |sum, handoff| {
             sum.saturating_add(handoff.state.data.len() as u64)
@@ -178,7 +178,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_page_route_control_checksum,
         )?;
         let mutation_commit_index = self.raft.commit_index();
-        Ok(ChunkStateHandoffApplyReport {
+        Ok(ReplicaStateHandoffApplyReport {
             mutation_id,
             mutation_request_checksum,
             mutation_commit_index,
@@ -199,7 +199,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_proven_chunk_state_handoffs_linearizable_fenced(
         &mut self,
         target_replica_index: usize,
-        proven_handoffs: ProvenStorageRead<Vec<ChunkStateHandoff>>,
+        proven_handoffs: ProvenStorageRead<Vec<ReplicaStateHandoff>>,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
@@ -232,7 +232,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &mut self,
         target_replica_index: usize,
         proven_envelope: ProvenPreparedChunkStateHandoffEnvelope,
-        handoffs: Vec<ChunkStateHandoff>,
+        handoffs: Vec<ReplicaStateHandoff>,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_envelope_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -266,7 +266,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 "proven chunk state handoff envelope checksum mismatch".to_string(),
             ));
         }
-        let route_control_proof = self.store.page_service.route_control_proof();
+        let route_control_proof = self.store.chunk_service.route_control_proof();
         if route_control_proof.state_checksum != expected_page_route_control_checksum {
             return Err(ObjectError::PreconditionFailed(
                 "proven chunk state handoff envelope current route checksum mismatch".to_string(),

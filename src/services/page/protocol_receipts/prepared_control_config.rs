@@ -1,11 +1,11 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPageRouteQosConfig {
-    pub config: PageRouteQosConfig,
+    pub config: ChunkRouteQosConfig,
     pub before_page_service_fingerprint: String,
     pub after_page_service_fingerprint: String,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -18,7 +18,7 @@ pub struct PreparedPageReceiptRetentionConfig {
     pub after_page_service_fingerprint: String,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }
@@ -70,7 +70,7 @@ pub struct PreparedPageQuorumConfig {
     pub after_page_service_fingerprint: String,
     pub expected_previous_commit_index: u64,
     pub prepared_commit_index: u64,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
 }

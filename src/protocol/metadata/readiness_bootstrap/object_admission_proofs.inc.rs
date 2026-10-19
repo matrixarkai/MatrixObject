@@ -110,13 +110,13 @@ pub(crate) fn object_range_admission_proof_checksum(
         &mut material,
         admission
             .route_control_proof
-            .page_route_control_commit_index,
+            .chunk_route_control_commit_index,
     );
     append_u64(
         &mut material,
         admission
             .route_control_proof
-            .page_route_control_next_log_index,
+            .chunk_route_control_next_log_index,
     );
     append_u64(&mut material, admission.route_control_proof.write_quorum);
     append_u64(&mut material, admission.route_control_proof.read_quorum);

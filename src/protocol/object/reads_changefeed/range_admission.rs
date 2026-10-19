@@ -49,9 +49,9 @@ pub struct ObjectRangeAdmission {
     pub storage_discard_budget_limited: bool,
     pub selected_discard_bytes: u64,
     pub skipped_discard_bytes: u64,
-    pub read_stats: PageReadStats,
+    pub read_stats: ChunkReadStats,
     pub partial_status: String,
-    pub route_control_proof: PageRouteControlProof,
+    pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
 }
 

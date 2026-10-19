@@ -8,7 +8,7 @@ fn append_page_readiness(mut material: &mut Vec<u8>, report: &ObjectStoreDistrib
     append_u64(&mut material, report.page.page_batch_write_parallelism);
     append_u64(&mut material, report.page.page_batch_discard_parallelism);
     append_u64(&mut material, report.page.page_repair_parallelism);
-    append_u64(&mut material, report.page.page_chunk_fanout_parallelism);
+    append_u64(&mut material, report.page.replica_fanout_parallelism);
     append_u64(
         &mut material,
         report.page.effective_chunk_fanout_parallelism,

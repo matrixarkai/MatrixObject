@@ -183,7 +183,7 @@ impl MatrixObjectStore {
         push("meta.batch_receipts", self.meta_service.batch_request_receipts.len() as u64);
 
         // ---- page service: receipt maps ------------------------------------
-        let b = &self.page_service;
+        let b = &self.chunk_service;
         push("block.pending_allocations", b.pending_allocations.len() as u64);
         push("block.alloc_receipts", b.allocation_request_receipts.len() as u64);
         push("block.batch_alloc_receipts", b.batch_allocation_request_receipts.len() as u64);
@@ -203,7 +203,7 @@ impl MatrixObjectStore {
         let mut shard_count = 0u64;
         let mut checksum_bytes = 0u64;
         let mut discard_rows = 0u64;
-        let mut chunk_receipts = 0u64;
+        let mut replica_receipts = 0u64;
         for replica in &b.replicas {
             chunks = chunks.saturating_add(replica.chunks.len() as u64);
             for state in replica.chunks.values() {
@@ -215,7 +215,7 @@ impl MatrixObjectStore {
                 shard_len = shard_len.saturating_add(state.ec_parity_fragment.len() as u64);
                 shard_cap = shard_cap.saturating_add(state.ec_parity_fragment.capacity() as u64);
             }
-            chunk_receipts = chunk_receipts
+            replica_receipts = replica_receipts
                 .saturating_add(replica.write_request_receipts.len() as u64)
                 .saturating_add(replica.discard_request_receipts.len() as u64)
                 .saturating_add(replica.batch_write_request_receipts.len() as u64)
@@ -229,7 +229,7 @@ impl MatrixObjectStore {
         push("replica.ec_shards.capacity", shard_cap);
         push("replica.checksum.capacity", checksum_bytes);
         push("replica.discard_rows", discard_rows);
-        push("replica.receipts", chunk_receipts);
+        push("replica.receipts", replica_receipts);
 
         // ---- the metadata, which the byte-buffer headline excludes -----------
         // One ledger for the whole pass: the holders below name the same
@@ -592,7 +592,7 @@ impl MatrixObjectStore {
         // validation hashes beside each cache, and for a cached encoded
         // snapshot, of which the store, the page service and every replica keep
         // one.
-        let page = self.page_service.footprint_bytes();
+        let page = self.chunk_service.footprint_bytes();
         push("replica.read_cache.payload_bytes", page.read_cache_payload);
         push("replica.read_cache.overhead_bytes", page.read_cache_overhead);
         push("replica.page_validation.bytes", page.page_validation);
@@ -629,7 +629,7 @@ impl MatrixObjectStore {
         // Zero when no batch is open, which is how a store looks between
         // mutations and why these legs leave every existing total unmoved there.
         let mut open_batch_copied = 0u64;
-        for (leg, value) in self.page_service.open_mutation_batch_footprint_audit() {
+        for (leg, value) in self.chunk_service.open_mutation_batch_footprint_audit() {
             if leg == "batch.COPIED_bytes" {
                 open_batch_copied = value;
             }
@@ -916,8 +916,8 @@ impl ObjectMutationRollback {
             .meta_service
             .as_ref()
             .map_or(0u64, |service| service.footprint_bytes(&mut ledger).total());
-        let page_service_bytes = self
-            .page_service
+        let chunk_service_bytes = self
+            .chunk_service
             .as_ref()
             .map_or(0u64, |service| service.footprint_bytes().total());
 
@@ -950,7 +950,7 @@ impl ObjectMutationRollback {
             ("undo.object_changes.bytes", changes_bytes),
             ("undo.multipart.bytes", multipart_bytes),
             ("undo.meta_service.bytes", meta_service_bytes),
-            ("undo.page_service.bytes", page_service_bytes),
+            ("undo.page_service.bytes", chunk_service_bytes),
             ("undo.slabs.bytes", slabs_bytes),
             ("undo.payloads.bytes", payloads_bytes),
         ];

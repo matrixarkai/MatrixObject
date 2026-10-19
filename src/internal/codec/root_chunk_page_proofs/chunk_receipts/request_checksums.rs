@@ -42,7 +42,7 @@ pub(crate) fn chunk_discard_request_checksum(
     etag(&material)
 }
 
-pub(crate) fn chunk_write_receipt_proof_checksum(receipt: &ChunkWriteReceipt) -> String {
+pub(crate) fn chunk_write_receipt_proof_checksum(receipt: &ReplicaWriteReceipt) -> String {
     let mut material = Vec::with_capacity(
         encoded_string_len("MXOS-CHUNK-WRITE-RECEIPT-PROOF1")
             + request_chunk_id_encoded_len()
@@ -61,7 +61,7 @@ pub(crate) fn chunk_write_receipt_proof_checksum(receipt: &ChunkWriteReceipt) ->
     etag(&material)
 }
 
-pub(crate) fn chunk_discard_receipt_proof_checksum(receipt: &ChunkDiscardReceipt) -> String {
+pub(crate) fn chunk_discard_receipt_proof_checksum(receipt: &ReplicaDiscardReceipt) -> String {
     let mut material = Vec::with_capacity(
         encoded_string_len("MXOS-CHUNK-DISCARD-RECEIPT-PROOF1")
             + request_chunk_id_encoded_len()
@@ -240,7 +240,7 @@ pub(crate) fn page_audit_repair_request_checksum(
 }
 
 pub(crate) fn chunk_state_install_receipt_request_checksum(
-    receipt: &ChunkStateInstallReceipt,
+    receipt: &ReplicaStateInstallReceipt,
 ) -> String {
     let mut material = Vec::with_capacity(
         request_chunk_id_encoded_len()

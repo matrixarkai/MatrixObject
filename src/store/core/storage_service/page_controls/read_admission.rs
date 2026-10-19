@@ -5,7 +5,7 @@ impl MatrixObjectStore {
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_read_bounded(slab_id, offset, length, max_payload_bytes, 0)
     }
 
@@ -16,8 +16,8 @@ impl MatrixObjectStore {
         length: u64,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        self.page_service.can_accept_slab_read_bounded(
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.chunk_service.can_accept_slab_read_bounded(
             slab_id,
             offset,
             length,
@@ -33,7 +33,7 @@ impl MatrixObjectStore {
         length: u64,
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_read_bounded_fenced(
             slab_id,
             offset,
@@ -52,8 +52,8 @@ impl MatrixObjectStore {
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        self.page_service.can_accept_slab_read_bounded_fenced(
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.chunk_service.can_accept_slab_read_bounded_fenced(
             slab_id,
             offset,
             length,
@@ -65,18 +65,18 @@ impl MatrixObjectStore {
 
     pub fn can_accept_page_batch_read(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_bounded(requests, max_payload_bytes, 0)
     }
 
     pub fn can_accept_page_batch_read_bounded(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_bounded_borrowed(
             &requests,
             max_payload_bytes,
@@ -86,11 +86,11 @@ impl MatrixObjectStore {
 
     pub fn can_accept_page_batch_read_bounded_borrowed(
         &self,
-        requests: &[PageRangeRequest],
+        requests: &[ChunkRangeRequest],
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        self.page_service.can_accept_slab_reads_bounded_borrowed(
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.chunk_service.can_accept_slab_reads_bounded_borrowed(
             requests,
             max_payload_bytes,
             max_chunk_read_count,
@@ -99,10 +99,10 @@ impl MatrixObjectStore {
 
     pub fn can_accept_page_batch_read_fenced(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_bounded_fenced(
             requests,
             max_payload_bytes,
@@ -113,11 +113,11 @@ impl MatrixObjectStore {
 
     pub fn can_accept_page_batch_read_bounded_fenced(
         &self,
-        requests: Vec<PageRangeRequest>,
+        requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.can_accept_page_batch_read_bounded_fenced_borrowed(
             &requests,
             max_payload_bytes,
@@ -128,12 +128,12 @@ impl MatrixObjectStore {
 
     pub fn can_accept_page_batch_read_bounded_fenced_borrowed(
         &self,
-        requests: &[PageRangeRequest],
+        requests: &[ChunkRangeRequest],
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PageRangeAdmission, ObjectError> {
-        self.page_service.can_accept_slab_reads_bounded_fenced_borrowed(
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.chunk_service.can_accept_slab_reads_bounded_fenced_borrowed(
             requests,
             max_payload_bytes,
             max_chunk_read_count,

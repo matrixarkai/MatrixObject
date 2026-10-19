@@ -1,5 +1,5 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkStateHandoff {
+pub struct ReplicaStateHandoff {
     pub chunk_id: PageId,
     pub state: PageState,
     pub payload_checksum: String,
@@ -30,7 +30,7 @@ pub struct PreparedChunkLocalStateHandoffEnvelope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedChunkLocalStateHandoff {
-    pub handoff: ChunkStateHandoff,
+    pub handoff: ReplicaStateHandoff,
     pub envelope: PreparedChunkLocalStateHandoffEnvelope,
 }
 
@@ -66,7 +66,7 @@ pub struct ProvenPreparedChunkStateHandoffEnvelope {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChunkStateHandoffApplyReport {
+pub struct ReplicaStateHandoffApplyReport {
     pub mutation_id: String,
     pub mutation_request_checksum: String,
     pub mutation_commit_index: u64,

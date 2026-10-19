@@ -11,7 +11,7 @@ impl MatrixObjectStore {
         now_ms: u64,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedChunkReplicaReclaim, ObjectError> {
-        let admitted_route_checksum = self.page_service.route_control_proof().state_checksum;
+        let admitted_route_checksum = self.chunk_service.route_control_proof().state_checksum;
         self.prepare_chunk_reclaim_raft_entry_fenced(
             replica_index,
             max_chunks,
@@ -39,7 +39,7 @@ impl MatrixObjectStore {
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<PreparedChunkReplicaReclaim, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -47,7 +47,7 @@ impl MatrixObjectStore {
             ));
         }
         let service = self
-            .page_service
+            .chunk_service
             .replicas
             .get(replica_index)
             .ok_or_else(|| {
@@ -74,7 +74,7 @@ impl MatrixObjectStore {
             now_ms,
         );
         let after_replica_service_fingerprint = replica_service_fingerprint(&projected);
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let expected_route_control_checksum =
             expected_route_control_checksum.unwrap_or("").to_string();
         let mut prepared = PreparedChunkReplicaReclaim {
@@ -127,7 +127,7 @@ impl MatrixObjectStore {
                 "chunk prepared reclaim max_discard_ranges must be positive".to_string(),
             ));
         }
-        let admitted_route_checksum = self.page_service.route_control_proof().state_checksum;
+        let admitted_route_checksum = self.chunk_service.route_control_proof().state_checksum;
         self.prepare_chunk_reclaim_raft_entry_fenced(
             replica_index,
             max_chunks,
@@ -188,7 +188,7 @@ impl MatrixObjectStore {
         &mut self,
         replica_index: usize,
         prepared: PreparedChunkReplicaReclaim,
-    ) -> Result<ChunkPartialReclaimReport, ObjectError> {
+    ) -> Result<ReplicaPartialReclaimReport, ObjectError> {
         if prepared.replica_index != replica_index {
             return Err(ObjectError::PreconditionFailed(
                 "chunk prepared reclaim replica fence mismatch".to_string(),
@@ -222,7 +222,7 @@ impl MatrixObjectStore {
         }
         {
             let replica = self
-                .page_service
+                .chunk_service
                 .replicas
                 .get(replica_index)
                 .ok_or_else(|| {
@@ -237,7 +237,7 @@ impl MatrixObjectStore {
                 "chunk prepared reclaim previous commit fence mismatch".to_string(),
             ));
         }
-        self.page_service
+        self.chunk_service
             .check_prepared_route_control_proof_cursor(
                 &prepared.route_control_proof,
                 "chunk prepared reclaim",
@@ -264,7 +264,7 @@ impl MatrixObjectStore {
             ));
         }
         let replica = self
-            .page_service
+            .chunk_service
             .replicas
             .get_mut(replica_index)
             .ok_or_else(|| {

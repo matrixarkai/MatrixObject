@@ -18,7 +18,7 @@ impl MatrixObjectStore {
         }
         let mut report = VersionedConditionalObjectBatchReadReport {
             requested_objects: requests.len() as u64,
-            route_control_proof: self.page_service.route_control_proof(),
+            route_control_proof: self.chunk_service.route_control_proof(),
             ..VersionedConditionalObjectBatchReadReport::default()
         };
         if let Some(options) = metadata_read_options.as_ref() {
@@ -36,7 +36,7 @@ impl MatrixObjectStore {
                 report.items.push(VersionedConditionalObjectReadItem {
                     request,
                     object: None,
-                    stats: PageReadStats::default(),
+                    stats: ChunkReadStats::default(),
                     error_code: Some("PreconditionFailed".to_string()),
                     error_message: Some(
                         "versioned conditional batch object read payload budget exceeded"
@@ -59,7 +59,7 @@ impl MatrixObjectStore {
                         report.items.push(VersionedConditionalObjectReadItem {
                             request,
                             object: None,
-                            stats: PageReadStats::default(),
+                            stats: ChunkReadStats::default(),
                             error_code: Some("PreconditionFailed".to_string()),
                             error_message: Some(
                                 "versioned conditional batch object read payload budget exceeded"
@@ -77,7 +77,7 @@ impl MatrixObjectStore {
                     report.items.push(VersionedConditionalObjectReadItem {
                         request,
                         object: Some(object),
-                        stats: PageReadStats::default(),
+                        stats: ChunkReadStats::default(),
                         error_code: None,
                         error_message: None,
                     });
@@ -87,7 +87,7 @@ impl MatrixObjectStore {
                     report.items.push(VersionedConditionalObjectReadItem {
                         request,
                         object: None,
-                        stats: PageReadStats::default(),
+                        stats: ChunkReadStats::default(),
                         error_code: Some(object_error_code(&err).to_string()),
                         error_message: Some(err.to_string()),
                     });

@@ -17,7 +17,7 @@ impl MatrixObjectStore {
         max_cacheable_read_bytes_per_replica: u64,
         expected_previous_commit_index: u64,
     ) -> Result<PreparedChunkReadCacheConfig, ObjectError> {
-        let admitted_route_checksum = self.page_service.route_control_proof().state_checksum;
+        let admitted_route_checksum = self.chunk_service.route_control_proof().state_checksum;
         self.prepare_chunk_read_cache_raft_entry_fenced(
             max_bytes_per_replica,
             max_cacheable_read_bytes_per_replica,
@@ -66,7 +66,7 @@ impl MatrixObjectStore {
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<PreparedChunkReadCacheConfig, ObjectError> {
-        self.page_service
+        self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -74,8 +74,8 @@ impl MatrixObjectStore {
             ));
         }
         let before_page_service_fingerprint =
-            page_read_cache_control_image_fingerprint(&self.page_service);
-        let projected = self.page_service.clone();
+            page_read_cache_control_image_fingerprint(&self.chunk_service);
+        let projected = self.chunk_service.clone();
         if let Some(replica_index) = target_replica_index {
             projected.set_read_cache_max_bytes_for_replica(replica_index, max_bytes_per_replica)?;
             projected.set_read_cache_max_cacheable_read_bytes_for_replica(
@@ -99,7 +99,7 @@ impl MatrixObjectStore {
                 expected_previous_commit_index,
                 prepared_commit_index,
             )?;
-        let route_control_proof = self.page_service.route_control_proof();
+        let route_control_proof = self.chunk_service.route_control_proof();
         let expected_route_control_checksum =
             expected_route_control_checksum.unwrap_or("").to_string();
         let mut prepared = PreparedChunkReadCacheConfig {
