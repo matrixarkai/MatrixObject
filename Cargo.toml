@@ -8,6 +8,12 @@ description = "Rust MatrixObjectStore core with object semantics, segment GC acc
 [features]
 default = ["raft-rs"]
 raft-rs = ["dep:raft"]
+# The HTTP front door (`src/net`, and the `object_server` binary).
+#
+# Off by default, and it adds NO dependencies -- it is written on the standard library alone, for
+# the reason given at the top of `src/net/http.rs`. What the feature gates is the listener and its
+# thread pool: a crate linked for its object semantics should not grow either unasked.
+http-server = []
 matrix-raft = ["dep:matrixraft"]
 
 [dependencies]

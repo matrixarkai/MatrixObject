@@ -290,5 +290,12 @@ impl std::error::Error for ObjectError {}
 mod internal_codec;
 pub use internal_codec::*;
 
+/// An HTTP front door, so this store can be reached from another process or another machine.
+///
+/// Off by default: it is a listener and a thread pool, and a crate that is linked for its object
+/// semantics should not grow either without being asked. Build with `--features http-server`.
+#[cfg(feature = "http-server")]
+pub mod net;
+
 #[cfg(test)]
 mod tests;
