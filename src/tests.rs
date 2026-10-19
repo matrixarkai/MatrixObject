@@ -36866,6 +36866,39 @@ fn the_documented_way_to_set_receipt_retention_works() {
 }
 
 #[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_formatting_a_command_for_its_checksum_costs() {
+    // `object_command_checksum` is `etag(format!("{:?}", command))`, and a
+    // `PutObject` carries the object's bytes. `Vec<u8>` formats as a decimal
+    // list, so each byte becomes up to four characters plus a separator -- the
+    // checksum that deduplicates a retried raft entry therefore allocates a
+    // text rendering of the whole payload on every apply.
+    //
+    // This is on the raft apply path, not the direct one, so the benchmark's
+    // default mode does not pay it and the per-phase figures do not include it.
+    // Measured here rather than reasoned about, because the multiplier depends
+    // on the byte values: 0 is one character, 120 is three, 255 is three.
+    for size in [1024usize, 4096, 65536] {
+        for (label, byte) in [("zeros", 0u8), ("ascii", b'x'), ("high", 255u8)] {
+            let command = ObjectCommand::PutObject {
+                bucket: "bucket".to_string(),
+                key: "prefix/key".to_string(),
+                data: vec![byte; size],
+                content_type: "application/octet-stream".to_string(),
+                update_time_ms: 1,
+                options: PutOptions::default(),
+            };
+            let formatted = format!("{command:?}");
+            println!(
+                "DEBUGCOST size={size} bytes={label} formatted={} ratio={:.2}",
+                formatted.len(),
+                formatted.len() as f64 / size as f64
+            );
+        }
+    }
+}
+
+#[test]
 fn a_raft_apply_receipt_is_keyed_on_the_debug_formatting_of_its_command() {
     // `object_command_checksum` is `etag(format!("{:?}", command))` -- a hash of
     // the command's DEBUG OUTPUT. That checksum is stored in a
