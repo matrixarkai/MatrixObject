@@ -6,7 +6,7 @@ impl StoreSnapshot {
             self.root_snapshot.encoded_size_hint(),
         ));
         append_string(&mut out, "MOSRSSTORE27");
-        append_u64(&mut out, self.options.slab_size);
+        append_u64(&mut out, self.options.chunk_size);
         append_u64(&mut out, self.options.max_extent_bytes);
         append_u64(&mut out, self.options.page_size);
         append_u64(&mut out, self.options.volume_count);
@@ -34,7 +34,7 @@ impl StoreSnapshot {
         append_u64(&mut out, self.options.object_metadata_checkpoint_interval);
         append_string(&mut out, &self.options.metaserver_catalog_endpoints);
         append_string(&mut out, &self.options.rootserver_catalog_endpoint);
-        append_u64(&mut out, self.next_slab_id);
+        append_u64(&mut out, self.next_chunk_id);
         append_u64(&mut out, self.next_upload_sequence);
         append_u64(&mut out, self.next_object_change_sequence);
         append_u64(&mut out, self.logical_written_bytes);
@@ -122,13 +122,13 @@ impl StoreSnapshot {
             append_object_change_cursor(&mut out, change_cursor);
         }
         append_u64(&mut out, self.slabs.len() as u64);
-        for (slab_id, slab) in &self.slabs {
-            append_slab_id(&mut out, slab_id);
-            append_slab_info(&mut out, slab);
+        for (chunk_id, slab) in &self.slabs {
+            append_slab_id(&mut out, chunk_id);
+            append_chunk_info(&mut out, slab);
         }
         append_u64(&mut out, self.payloads.len() as u64);
-        for ((slab_id, offset), payload) in &self.payloads {
-            append_slab_id(&mut out, slab_id);
+        for ((chunk_id, offset), payload) in &self.payloads {
+            append_slab_id(&mut out, chunk_id);
             append_u64(&mut out, *offset);
             append_u64(&mut out, payload.len() as u64);
             out.extend_from_slice(payload);
@@ -218,7 +218,7 @@ impl StoreSnapshot {
                 .saturating_add(string_map_size(&metadata.tags))
                 .saturating_add(metadata.extents.len().saturating_mul(U64 * 4))
         }
-        fn slab_size(slab: &SlabInfo) -> usize {
+        fn chunk_size(slab: &ChunkInfo) -> usize {
             U64 * 7 + slab
                 .stale_ranges
                 .len()
@@ -336,7 +336,7 @@ impl StoreSnapshot {
                 }))
         });
         let slab_bytes = self.slabs.values().fold(0usize, |total, slab| {
-            total.saturating_add(U64 * 2).saturating_add(slab_size(slab))
+            total.saturating_add(U64 * 2).saturating_add(chunk_size(slab))
         });
         let applied_receipt_bytes = self
             .applied_raft_receipts

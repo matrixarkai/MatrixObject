@@ -181,7 +181,7 @@ impl MatrixChunkService {
         let mut plan = StorageMaintenancePlan {
             readiness,
             reclaim,
-            slab_discards: Vec::new(),
+            chunk_discards: Vec::new(),
             actions,
             plan_checksum: String::new(),
             reclaim_continuation_safe,
@@ -344,7 +344,7 @@ impl MatrixChunkService {
             plan,
             repair,
             reclaim,
-            slab_discard: SlabDiscardRunReport::default(),
+            chunk_discard: ChunkDiscardRunReport::default(),
             post_readiness,
             route_control_proof,
             expected_route_control_checksum: expected_route_control_checksum.to_string(),

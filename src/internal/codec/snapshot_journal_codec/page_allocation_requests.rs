@@ -82,7 +82,7 @@ pub(crate) fn append_prepared_page_allocation_reservation_envelope(
     append_string(out, &envelope.expected_route_control_checksum);
     append_string(out, &envelope.raft_entry_checksum);
     append_string(out, &envelope.allocation_id);
-    append_slab_id(out, &envelope.allocation_slab_id);
+    append_slab_id(out, &envelope.allocation_chunk_id);
     append_u64(out, envelope.allocation_offset);
     append_u64(out, envelope.allocation_length);
     append_u64(out, envelope.allocation_create_time_ms);
@@ -116,7 +116,7 @@ pub(crate) fn make_prepared_page_allocation_reservation_envelope(
         expected_route_control_checksum: prepared.expected_route_control_checksum.clone(),
         raft_entry_checksum: prepared.raft_entry_checksum.clone(),
         allocation_id: prepared.receipt.allocation.allocation_id.clone(),
-        allocation_slab_id: prepared.receipt.allocation.slab_id.clone(),
+        allocation_chunk_id: prepared.receipt.allocation.chunk_id.clone(),
         allocation_offset: prepared.receipt.allocation.offset,
         allocation_length: prepared.receipt.allocation.length,
         allocation_create_time_ms: prepared.receipt.allocation.create_time_ms,
@@ -131,7 +131,7 @@ pub(crate) fn make_prepared_page_allocation_reservation_envelope(
 
 pub(crate) fn validate_page_allocation_batch_lengths(
     lengths: &[u64],
-    allocator_slab_size: u64,
+    allocator_chunk_size: u64,
 ) -> Result<(), ObjectError> {
     if lengths.is_empty() || lengths.len() > 100_000 {
         return Err(ObjectError::InvalidArgument(
@@ -144,7 +144,7 @@ pub(crate) fn validate_page_allocation_batch_lengths(
                 "block batch allocation length must be positive".to_string(),
             ));
         }
-        if *length > allocator_slab_size {
+        if *length > allocator_chunk_size {
             return Err(ObjectError::InvalidArgument(
                 "block batch allocation length exceeds allocator segment size".to_string(),
             ));

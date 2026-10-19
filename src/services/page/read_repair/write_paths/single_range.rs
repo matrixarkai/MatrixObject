@@ -1,16 +1,16 @@
 impl MatrixChunkService {
-    pub fn write_slab_range(
+    pub fn write_chunk_range(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         data: &[u8],
     ) -> Result<(), ObjectError> {
-        self.write_slab_range_with_chunk_receipts(slab_id, offset, data, None)
+        self.write_chunk_range_with_chunk_receipts(chunk_id, offset, data, None)
     }
 
-    pub fn write_slab_range_storage_fenced(
+    pub fn write_chunk_range_storage_fenced(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         data: &[u8],
         expected_route_control_checksum: Option<&str>,
@@ -18,19 +18,19 @@ impl MatrixChunkService {
     ) -> Result<(), ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.check_expected_chunk_control_proof_checksum(expected_chunk_control_proof_checksum)?;
-        self.write_slab_range(slab_id, offset, data)
+        self.write_chunk_range(chunk_id, offset, data)
     }
 
-    pub fn write_slab_range_storage_fenced_report(
+    pub fn write_chunk_range_storage_fenced_report(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         data: &[u8],
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
     ) -> Result<ChunkStorageMutationReport, ObjectError> {
-        self.write_slab_range_storage_fenced(
-            slab_id,
+        self.write_chunk_range_storage_fenced(
+            chunk_id,
             offset,
             data,
             expected_route_control_checksum,
@@ -49,20 +49,20 @@ impl MatrixChunkService {
         ))
     }
 
-    fn write_slab_range_with_chunk_receipts(
+    fn write_chunk_range_with_chunk_receipts(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         data: &[u8],
         idempotency_key: Option<&str>,
     ) -> Result<(), ObjectError> {
-        if self.is_slab_sealed(slab_id) {
+        if self.is_chunk_sealed(chunk_id) {
             return Err(ObjectError::PreconditionFailed(
                 "block segment is sealed".to_string(),
             ));
         }
         self.admit_page_route_qos(0, 0, 1, data.len() as u64, 0, 0, now_millis())?;
-        let locations = self.map_range(slab_id, offset, data.len() as u64)?;
+        let locations = self.map_range(chunk_id, offset, data.len() as u64)?;
         let projected_lengths = Self::projected_chunk_lengths_for_locations(&locations)?;
         let accepted_replicas = self.admissible_write_replicas(&projected_lengths)?;
         let mut cursor = 0usize;
@@ -125,9 +125,9 @@ impl MatrixChunkService {
         Ok(())
     }
 
-    pub fn write_slab_range_idempotent(
+    pub fn write_chunk_range_idempotent(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
@@ -139,10 +139,10 @@ impl MatrixChunkService {
                 "block idempotent write length must be positive".to_string(),
             ));
         }
-        let request_checksum = page_write_request_checksum(slab_id, offset, data);
+        let request_checksum = page_write_request_checksum(chunk_id, offset, data);
         let payload_checksum = etag(data);
         if let Some(existing) = self.write_request_receipts.get(idempotency_key) {
-            if existing.slab_id != *slab_id
+            if existing.chunk_id != *chunk_id
                 || existing.offset != offset
                 || existing.length != length
                 || existing.request_checksum != request_checksum
@@ -156,14 +156,14 @@ impl MatrixChunkService {
             receipt.deduped = true;
             return Ok(receipt);
         }
-        self.write_slab_range_with_chunk_receipts(
-            slab_id,
+        self.write_chunk_range_with_chunk_receipts(
+            chunk_id,
             offset,
             data,
             Some(idempotency_key),
         )?;
         let receipt = ChunkWriteReceipt {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset,
             length,
             request_checksum,
@@ -177,9 +177,9 @@ impl MatrixChunkService {
         Ok(receipt)
     }
 
-    pub fn write_slab_range_idempotent_fenced(
+    pub fn write_chunk_range_idempotent_fenced(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
@@ -187,22 +187,22 @@ impl MatrixChunkService {
     ) -> Result<ChunkWriteReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         if self.write_request_receipts.contains_key(idempotency_key) {
-            return self.write_slab_range_idempotent(slab_id, offset, data, idempotency_key);
+            return self.write_chunk_range_idempotent(chunk_id, offset, data, idempotency_key);
         }
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
-        self.write_slab_range_idempotent(slab_id, offset, data, idempotency_key)
+        self.write_chunk_range_idempotent(chunk_id, offset, data, idempotency_key)
     }
 
-    pub fn write_slab_range_idempotent_fenced_report(
+    pub fn write_chunk_range_idempotent_fenced_report(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkIdempotentWriteReport, ObjectError> {
-        let receipt = self.write_slab_range_idempotent_fenced(
-            slab_id,
+        let receipt = self.write_chunk_range_idempotent_fenced(
+            chunk_id,
             offset,
             data,
             idempotency_key,

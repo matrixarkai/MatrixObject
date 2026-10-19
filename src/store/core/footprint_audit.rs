@@ -270,9 +270,9 @@ impl MatrixObjectStore {
         let meta = self.meta_service.footprint_bytes(&mut ledger);
         let meta_record_bytes = meta.records;
         // The payload headline counts only the value struct; the key is a
-        // `(SlabId, u64)` and was never in the figure.
+        // `(ChunkId, u64)` and was never in the figure.
         let payload_key_bytes = (self.payloads.len() as u64)
-            .saturating_mul(std::mem::size_of::<(SlabId, u64)>() as u64);
+            .saturating_mul(std::mem::size_of::<(ChunkId, u64)>() as u64);
         push("objects.bytes", objects_bytes);
         // The two largest metadata line items, broken into their parts. Both
         // sums are asserted against the totals above by
@@ -563,7 +563,7 @@ impl MatrixObjectStore {
         for slab in self.slabs.values() {
             slab_bytes = slab_bytes
                 .saturating_add(
-                    (std::mem::size_of::<SlabId>() + std::mem::size_of::<SlabInfo>()) as u64,
+                    (std::mem::size_of::<ChunkId>() + std::mem::size_of::<ChunkInfo>()) as u64,
                 )
                 .saturating_add(
                     ((slab.stale_ranges.capacity() + slab.discarded_ranges.capacity()) as u64)
@@ -841,7 +841,7 @@ impl ObjectMutationRollback {
                 // slack as long as the undo lives.
                 .saturating_add(
                     (targeted.previous_payloads.capacity() as u64).saturating_mul(
-                        std::mem::size_of::<((SlabId, u64), StoredPayload)>() as u64,
+                        std::mem::size_of::<((ChunkId, u64), StoredPayload)>() as u64,
                     ),
                 )
         });
@@ -921,11 +921,11 @@ impl ObjectMutationRollback {
             .as_ref()
             .map_or(0u64, |service| service.footprint_bytes().total());
 
-        let mut slabs_bytes = 0u64;
+        let mut chunks_bytes = 0u64;
         for slab in self.slabs.values() {
-            slabs_bytes = slabs_bytes
+            chunks_bytes = chunks_bytes
                 .saturating_add(
-                    (std::mem::size_of::<SlabId>() + std::mem::size_of::<SlabInfo>()) as u64,
+                    (std::mem::size_of::<ChunkId>() + std::mem::size_of::<ChunkInfo>()) as u64,
                 )
                 .saturating_add(
                     ((slab.stale_ranges.capacity() + slab.discarded_ranges.capacity()) as u64)
@@ -938,7 +938,7 @@ impl ObjectMutationRollback {
         // length and a digest; neither owns anything below itself, which is why
         // the whole leg is arithmetic rather than a walk.
         let payloads_bytes = (self.payloads.len() as u64).saturating_mul(
-            (std::mem::size_of::<(SlabId, u64)>() + std::mem::size_of::<StoredPayload>()) as u64,
+            (std::mem::size_of::<(ChunkId, u64)>() + std::mem::size_of::<StoredPayload>()) as u64,
         );
 
         let legs: [(&str, u64); 11] = [
@@ -951,7 +951,7 @@ impl ObjectMutationRollback {
             ("undo.multipart.bytes", multipart_bytes),
             ("undo.meta_service.bytes", meta_service_bytes),
             ("undo.page_service.bytes", chunk_service_bytes),
-            ("undo.slabs.bytes", slabs_bytes),
+            ("undo.slabs.bytes", chunks_bytes),
             ("undo.payloads.bytes", payloads_bytes),
         ];
         let mut out: Vec<(String, u64)> = legs

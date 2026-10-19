@@ -1,26 +1,26 @@
 impl MatrixChunkService {
-    pub fn read_slab_range(
+    pub fn read_chunk_range(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
     ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
-        self.read_slab_range_bounded(slab_id, offset, length, 0)
+        self.read_chunk_range_bounded(chunk_id, offset, length, 0)
     }
 
-    pub fn read_slab_range_bounded(
+    pub fn read_chunk_range_bounded(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
     ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
-        self.read_slab_range_bounded_by_chunks(slab_id, offset, length, max_payload_bytes, 0)
+        self.read_chunk_range_bounded_by_chunks(chunk_id, offset, length, max_payload_bytes, 0)
     }
 
-    pub fn read_slab_range_bounded_by_chunks(
+    pub fn read_chunk_range_bounded_by_chunks(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -40,7 +40,7 @@ impl MatrixChunkService {
             }
         }
         self.admit_page_route_qos(1, length, 0, 0, 0, 0, now_millis())?;
-        let locations = self.map_range(slab_id, offset, length)?;
+        let locations = self.map_range(chunk_id, offset, length)?;
         let mut stats = ChunkReadStats::default();
         if locations.len() == 1 {
             let loc = &locations[0];
@@ -78,9 +78,9 @@ impl MatrixChunkService {
         Ok((out, stats))
     }
 
-    pub fn read_slab_range_bounded_by_chunks_fenced(
+    pub fn read_chunk_range_bounded_by_chunks_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
@@ -89,8 +89,8 @@ impl MatrixChunkService {
     ) -> Result<ChunkRangeReadReport, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let route_control_proof = self.route_control_proof();
-        let (data, stats) = self.read_slab_range_bounded_by_chunks(
-            slab_id,
+        let (data, stats) = self.read_chunk_range_bounded_by_chunks(
+            chunk_id,
             offset,
             length,
             max_payload_bytes,

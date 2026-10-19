@@ -5,7 +5,7 @@ fn page_receipt_page_common_control_fields(
     limit: u64,
     truncated: bool,
     next_marker: &Option<String>,
-    slab_id: Option<&SlabId>,
+    chunk_id: Option<&ChunkId>,
     skipped_slab_count: u64,
     field_prefix: &str,
 ) -> BTreeMap<String, String> {
@@ -30,10 +30,10 @@ fn page_receipt_page_common_control_fields(
     );
     fields.insert(
         format!("{field_prefix}segment_filter_present"),
-        slab_id.is_some().to_string(),
+        chunk_id.is_some().to_string(),
     );
-    if let Some(slab_id) = slab_id {
-        fields.extend(slab_id.to_control_fields(&format!("{field_prefix}segment_filter.")));
+    if let Some(chunk_id) = chunk_id {
+        fields.extend(chunk_id.to_control_fields(&format!("{field_prefix}segment_filter.")));
     }
     fields.insert(
         format!("{field_prefix}skipped_segment_count"),

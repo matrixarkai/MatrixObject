@@ -128,7 +128,7 @@ impl MatrixChunkService {
             opened_replica_batch_count: active
                 .map_or(0, |batch| batch.replica_indices.len() as u64),
             chunk_batch_active_replica_count,
-            slab_allocation_receipt_count: self.allocation_request_receipts.len() as u64,
+            chunk_allocation_receipt_count: self.allocation_request_receipts.len() as u64,
             batch_allocation_receipt_count: self.batch_allocation_request_receipts.len() as u64,
             release_allocation_receipt_count: self.release_allocation_request_receipts.len() as u64,
             write_receipt_count: self.write_request_receipts.len() as u64,

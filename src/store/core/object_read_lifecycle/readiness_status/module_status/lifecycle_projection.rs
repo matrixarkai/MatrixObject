@@ -16,11 +16,11 @@ fn populate_lifecycle_module_status(
     status.space_amplification_ppm = readiness.space_amplification_ppm;
     status.discard_backlog_ppm = readiness.discard_backlog_ppm;
     status.discard_candidate_bytes = readiness.discard_candidate_bytes;
-    status.discard_candidate_slabs = readiness.discard_candidate_slabs;
+    status.discard_candidate_chunks = readiness.discard_candidate_chunks;
     status.pending_discard_range_count = readiness.pending_discard_range_count;
     status.merged_discard_range_count = readiness.merged_discard_range_count;
     status.fragmented_range_count = readiness.fragmented_range_count;
-    status.compaction_candidate_slabs = readiness.compaction_candidate_slabs;
+    status.compaction_candidate_chunks = readiness.compaction_candidate_chunks;
     status.compaction_candidate_bytes = readiness.compaction_candidate_bytes;
     status.compaction_candidate_range_count = readiness.compaction_candidate_range_count;
     status.compaction_recommended = readiness.compaction_recommended;
@@ -28,7 +28,7 @@ fn populate_lifecycle_module_status(
     status.object_count = readiness.object_count;
     status.live_object_count = readiness.live_object_count;
     status.deleted_object_count = readiness.deleted_object_count;
-    status.slab_count = readiness.slab_count;
+    status.chunk_count = readiness.chunk_count;
     status.page_count = readiness.page_count;
     status.logical_written_bytes = readiness.logical_written_bytes;
     status.physical_written_bytes = readiness.physical_written_bytes;

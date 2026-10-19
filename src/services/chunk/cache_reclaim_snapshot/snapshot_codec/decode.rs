@@ -156,12 +156,12 @@ impl ReplicaServiceSnapshot {
         };
         let mut chunks = BTreeMap::new();
         for _ in 0..cursor.read_count("chunk service snapshot chunk count")? {
-            let slab_id = SlabId {
+            let chunk_id = ChunkId {
                 volume_id: cursor.read_u64()?,
                 id: cursor.read_u64()?,
             };
             let page_id = PageId {
-                slab_id,
+                chunk_id,
                 page_index: cursor.read_u64()?,
             };
             let logical_length = cursor.read_u64()?;

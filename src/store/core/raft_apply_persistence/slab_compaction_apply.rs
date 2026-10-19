@@ -1,10 +1,10 @@
 impl MatrixObjectStore {
-    fn collect_slab_compaction_live_objects(
+    fn collect_chunk_compaction_live_objects(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
     ) -> Result<Vec<ObjectId>, ObjectError> {
-        if !self.slabs.contains_key(slab_id) {
-            return Err(ObjectError::NotFound(format!("segment {:?}", slab_id)));
+        if !self.slabs.contains_key(chunk_id) {
+            return Err(ObjectError::NotFound(format!("segment {:?}", chunk_id)));
         }
         let mut live_objects = Vec::new();
         for metadata in self.objects.values() {
@@ -14,7 +14,7 @@ impl MatrixObjectStore {
             if metadata
                 .extents
                 .iter()
-                .any(|extent| &extent.slab_id == slab_id)
+                .any(|extent| &extent.chunk_id == chunk_id)
             {
                 live_objects.push(metadata.object_id.clone());
             }
@@ -22,12 +22,12 @@ impl MatrixObjectStore {
         Ok(live_objects)
     }
 
-    pub fn compact_slab_at(
+    pub fn compact_chunk_at(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         update_time_ms: u64,
     ) -> Result<(), ObjectError> {
-        let live_objects = self.collect_slab_compaction_live_objects(slab_id)?;
+        let live_objects = self.collect_chunk_compaction_live_objects(chunk_id)?;
         for object_id in live_objects {
             let object = self.get_object(&object_id.bucket, &object_id.key)?;
             self.apply_put_storage_batched(
@@ -40,7 +40,7 @@ impl MatrixObjectStore {
                 "compact_segment_put",
             )?;
         }
-        if let Some(slab) = self.slabs.get_mut(slab_id) {
+        if let Some(slab) = self.slabs.get_mut(chunk_id) {
             slab.stale_ranges.push(DataRange {
                 offset: 0,
                 length: slab.next_offset,
@@ -52,8 +52,8 @@ impl MatrixObjectStore {
         Ok(())
     }
 
-    pub fn compact_slab(&mut self, slab_id: &SlabId) -> Result<(), ObjectError> {
-        self.compact_slab_at(slab_id, now_millis())
+    pub fn compact_chunk(&mut self, chunk_id: &ChunkId) -> Result<(), ObjectError> {
+        self.compact_chunk_at(chunk_id, now_millis())
     }
 
     pub fn compact_all_at(
@@ -64,18 +64,18 @@ impl MatrixObjectStore {
         let mut candidates = self
             .slabs
             .iter()
-            .filter_map(|(slab_id, slab)| {
+            .filter_map(|(chunk_id, slab)| {
                 if slab.stale_bytes >= min_stale_bytes && slab.next_offset > 0 {
-                    Some(slab_id.clone())
+                    Some(chunk_id.clone())
                 } else {
                     None
                 }
             })
             .collect::<Vec<_>>();
-        candidates.sort_by_key(|slab_id| (slab_id.volume_id, slab_id.id));
+        candidates.sort_by_key(|chunk_id| (chunk_id.volume_id, chunk_id.id));
         let mut compacted = 0u64;
-        for slab_id in candidates {
-            self.compact_slab_at(&slab_id, update_time_ms)?;
+        for chunk_id in candidates {
+            self.compact_chunk_at(&chunk_id, update_time_ms)?;
             compacted = compacted.saturating_add(1);
         }
         Ok(compacted)
@@ -104,27 +104,27 @@ impl MatrixObjectStore {
             expected_route_control_checksum,
             expected_object_gc_report_proof_checksum.as_ref(),
         )?;
-        let mut candidate_slab_ids = Vec::new();
+        let mut candidate_chunk_ids = Vec::new();
         let mut candidate_stale_bytes = 0u64;
         let mut candidate_live_bytes = 0u64;
         let mut candidate_logical_bytes = 0u64;
-        for (slab_id, slab) in &self.slabs {
+        for (chunk_id, slab) in &self.slabs {
             if slab.stale_bytes >= min_stale_bytes && slab.next_offset > 0 {
-                candidate_slab_ids.push(slab_id.clone());
+                candidate_chunk_ids.push(chunk_id.clone());
                 candidate_stale_bytes = saturating_add(candidate_stale_bytes, slab.stale_bytes);
                 candidate_live_bytes = saturating_add(candidate_live_bytes, slab.live_bytes);
                 candidate_logical_bytes =
                     saturating_add(candidate_logical_bytes, slab.logical_bytes);
             }
         }
-        candidate_slab_ids.sort_by_key(|slab_id| (slab_id.volume_id, slab_id.id));
+        candidate_chunk_ids.sort_by_key(|chunk_id| (chunk_id.volume_id, chunk_id.id));
         Ok(FullCompactionPlan {
             min_stale_bytes,
-            candidate_count: candidate_slab_ids.len() as u64,
+            candidate_count: candidate_chunk_ids.len() as u64,
             candidate_stale_bytes,
             candidate_live_bytes,
             candidate_logical_bytes,
-            candidate_slab_ids,
+            candidate_chunk_ids,
             route_control_proof: self.chunk_service.route_control_proof(),
             expected_route_control_checksum: expected_route_control_checksum
                 .unwrap_or("")
@@ -133,16 +133,16 @@ impl MatrixObjectStore {
         })
     }
 
-    pub fn prepare_slab_compaction_raft_entry(
+    pub fn prepare_chunk_compaction_raft_entry(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         min_stale_bytes: u64,
         update_time_ms: u64,
         expected_previous_commit_index: u64,
-    ) -> Result<PreparedSlabCompaction, ObjectError> {
+    ) -> Result<PreparedChunkCompaction, ObjectError> {
         let admitted_route_checksum = self.chunk_service.route_control_proof().state_checksum;
-        self.prepare_slab_compaction_raft_entry_fenced(
-            slab_id,
+        self.prepare_chunk_compaction_raft_entry_fenced(
+            chunk_id,
             min_stale_bytes,
             update_time_ms,
             expected_previous_commit_index,
@@ -151,15 +151,15 @@ impl MatrixObjectStore {
         )
     }
 
-    pub fn prepare_slab_compaction_raft_entry_fenced(
+    pub fn prepare_chunk_compaction_raft_entry_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         min_stale_bytes: u64,
         update_time_ms: u64,
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
         expected_object_gc_report_proof_checksum: Option<&str>,
-    ) -> Result<PreparedSlabCompaction, ObjectError> {
+    ) -> Result<PreparedChunkCompaction, ObjectError> {
         self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         let expected_object_gc_report_proof_checksum =
@@ -180,26 +180,26 @@ impl MatrixObjectStore {
         }
         let slab = self
             .slabs
-            .get(slab_id)
-            .ok_or_else(|| ObjectError::NotFound(format!("segment {:?}", slab_id)))?;
+            .get(chunk_id)
+            .ok_or_else(|| ObjectError::NotFound(format!("segment {:?}", chunk_id)))?;
         if slab.stale_bytes < min_stale_bytes {
             return Err(ObjectError::PreconditionFailed(format!(
                 "segment stale bytes {} below compaction threshold {}",
                 slab.stale_bytes, min_stale_bytes
             )));
         }
-        let live_objects = self.collect_slab_compaction_live_objects(slab_id)?;
+        let live_objects = self.collect_chunk_compaction_live_objects(chunk_id)?;
         let before_state_fingerprint = self.state_fingerprint_without_payload_clones();
         let mut projected = self.clone();
-        projected.compact_slab_at(slab_id, update_time_ms)?;
+        projected.compact_chunk_at(chunk_id, update_time_ms)?;
         let after_state_fingerprint = projected.state_fingerprint_without_payload_clones();
         let request_checksum =
-            slab_compaction_request_checksum(slab_id, min_stale_bytes, update_time_ms);
+            chunk_compaction_request_checksum(chunk_id, min_stale_bytes, update_time_ms);
         let route_control_proof = self.chunk_service.route_control_proof();
         let expected_route_control_checksum =
             expected_route_control_checksum.unwrap_or("").to_string();
-        let mut prepared = PreparedSlabCompaction {
-            slab_id: slab_id.clone(),
+        let mut prepared = PreparedChunkCompaction {
+            chunk_id: chunk_id.clone(),
             min_stale_bytes,
             update_time_ms,
             live_objects,
@@ -216,15 +216,15 @@ impl MatrixObjectStore {
                 .to_string(),
             raft_entry_checksum: String::new(),
         };
-        prepared.raft_entry_checksum = prepared_slab_compaction_checksum(&prepared);
+        prepared.raft_entry_checksum = prepared_chunk_compaction_checksum(&prepared);
         Ok(prepared)
     }
 
-    pub fn apply_prepared_slab_compaction(
+    pub fn apply_prepared_chunk_compaction(
         &mut self,
-        prepared: PreparedSlabCompaction,
+        prepared: PreparedChunkCompaction,
     ) -> Result<(), ObjectError> {
-        let expected_checksum = prepared_slab_compaction_checksum(&PreparedSlabCompaction {
+        let expected_checksum = prepared_chunk_compaction_checksum(&PreparedChunkCompaction {
             raft_entry_checksum: String::new(),
             ..prepared.clone()
         });
@@ -234,8 +234,8 @@ impl MatrixObjectStore {
             ));
         }
         if prepared.request_checksum
-            != slab_compaction_request_checksum(
-                &prepared.slab_id,
+            != chunk_compaction_request_checksum(
+                &prepared.chunk_id,
                 prepared.min_stale_bytes,
                 prepared.update_time_ms,
             )
@@ -269,8 +269,8 @@ impl MatrixObjectStore {
                 &prepared.route_control_proof,
                 "prepared segment compaction",
             )?;
-        let current = self.prepare_slab_compaction_raft_entry_fenced(
-            &prepared.slab_id,
+        let current = self.prepare_chunk_compaction_raft_entry_fenced(
+            &prepared.chunk_id,
             prepared.min_stale_bytes,
             prepared.update_time_ms,
             prepared.expected_previous_commit_index,
@@ -291,7 +291,7 @@ impl MatrixObjectStore {
                 "prepared segment compaction no longer matches current state".to_string(),
             ));
         }
-        self.compact_slab_at(&prepared.slab_id, prepared.update_time_ms)?;
+        self.compact_chunk_at(&prepared.chunk_id, prepared.update_time_ms)?;
         if self.state_fingerprint_without_payload_clones() != prepared.after_state_fingerprint {
             return Err(ObjectError::Corruption(
                 "prepared segment compaction post-state checksum mismatch".to_string(),

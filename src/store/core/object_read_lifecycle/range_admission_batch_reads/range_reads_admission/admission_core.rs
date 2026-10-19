@@ -90,8 +90,8 @@ impl MatrixObjectStore {
             let read_end = range_end.min(extent_end);
             let local_offset = read_start - extent_start;
             let local_len = read_end - read_start;
-            let admission = self.chunk_service.can_accept_slab_read_bounded(
-                &extent.slab_id,
+            let admission = self.chunk_service.can_accept_chunk_read_bounded(
+                &extent.chunk_id,
                 extent.offset + local_offset,
                 local_len,
                 max_payload_bytes,

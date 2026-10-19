@@ -79,8 +79,8 @@ where
         &mut material,
         page.storage_receipt_page_slab_filter().is_some() as u64,
     );
-    if let Some(slab_id) = page.storage_receipt_page_slab_filter() {
-        append_slab_id(&mut material, slab_id);
+    if let Some(chunk_id) = page.storage_receipt_page_slab_filter() {
+        append_slab_id(&mut material, chunk_id);
     }
     append_u64(
         &mut material,

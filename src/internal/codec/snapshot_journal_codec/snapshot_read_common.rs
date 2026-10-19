@@ -41,8 +41,8 @@ pub(crate) fn read_object_id(cursor: &mut SnapshotByteCursor<'_>) -> Result<Obje
 
 pub(crate) fn read_slab_id(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<SlabId, ObjectError> {
-    Ok(SlabId {
+) -> Result<ChunkId, ObjectError> {
+    Ok(ChunkId {
         volume_id: cursor.read_u64()?,
         id: cursor.read_u64()?,
     })
@@ -50,7 +50,7 @@ pub(crate) fn read_slab_id(
 
 pub(crate) fn read_chunk_id(cursor: &mut SnapshotByteCursor<'_>) -> Result<PageId, ObjectError> {
     Ok(PageId {
-        slab_id: read_slab_id(cursor)?,
+        chunk_id: read_slab_id(cursor)?,
         page_index: cursor.read_u64()?,
     })
 }

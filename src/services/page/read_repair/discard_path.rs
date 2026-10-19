@@ -1,16 +1,16 @@
 impl MatrixChunkService {
-    pub fn discard_slab_range(
+    pub fn discard_chunk_range(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
     ) -> Result<(), ObjectError> {
-        self.discard_slab_range_with_chunk_receipts(slab_id, offset, length, None)
+        self.discard_chunk_range_with_chunk_receipts(chunk_id, offset, length, None)
     }
 
-    pub fn discard_slab_range_storage_fenced(
+    pub fn discard_chunk_range_storage_fenced(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         expected_route_control_checksum: Option<&str>,
@@ -18,19 +18,19 @@ impl MatrixChunkService {
     ) -> Result<(), ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.check_expected_chunk_control_proof_checksum(expected_chunk_control_proof_checksum)?;
-        self.discard_slab_range(slab_id, offset, length)
+        self.discard_chunk_range(chunk_id, offset, length)
     }
 
-    pub fn discard_slab_range_storage_fenced_report(
+    pub fn discard_chunk_range_storage_fenced_report(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
     ) -> Result<ChunkStorageMutationReport, ObjectError> {
-        self.discard_slab_range_storage_fenced(
-            slab_id,
+        self.discard_chunk_range_storage_fenced(
+            chunk_id,
             offset,
             length,
             expected_route_control_checksum,
@@ -49,15 +49,15 @@ impl MatrixChunkService {
         ))
     }
 
-    fn discard_slab_range_with_chunk_receipts(
+    fn discard_chunk_range_with_chunk_receipts(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         idempotency_key: Option<&str>,
     ) -> Result<(), ObjectError> {
         self.admit_page_route_qos(0, 0, 0, 0, 1, length, now_millis())?;
-        let locations = self.map_range(slab_id, offset, length)?;
+        let locations = self.map_range(chunk_id, offset, length)?;
         let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for loc in &locations {
             discard_ranges

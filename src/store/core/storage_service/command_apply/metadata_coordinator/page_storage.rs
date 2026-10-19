@@ -69,7 +69,7 @@ impl MatrixObjectStore {
                 ))
             }
             ObjectCommand::RepairPageRangeBounded {
-                slab_id,
+                chunk_id,
                 offset,
                 length,
                 max_repair_chunks,
@@ -80,8 +80,8 @@ impl MatrixObjectStore {
                     (!expected_route_control_checksum.is_empty())
                         .then_some(expected_route_control_checksum.as_str()),
                 )?;
-                let mut report = self.chunk_service.repair_slab_range_bounded(
-                    &slab_id,
+                let mut report = self.chunk_service.repair_chunk_range_bounded(
+                    &chunk_id,
                     offset,
                     length,
                     max_repair_chunks,
@@ -90,7 +90,7 @@ impl MatrixObjectStore {
                 report.expected_route_control_checksum = expected_route_control_checksum.clone();
                 Ok(metadata_control_metadata(
                     "_blockrepair",
-                    &format!("{}:{}", slab_id.volume_id, slab_id.id),
+                    &format!("{}:{}", chunk_id.volume_id, chunk_id.id),
                     report.selected_chunk_count,
                     report.stats.repaired_replicas,
                     if report.has_more {
@@ -114,7 +114,7 @@ impl MatrixObjectStore {
                     "_blockrepair",
                     &format!(
                         "{}:{}:{}",
-                        page_id.slab_id.volume_id, page_id.slab_id.id, page_id.page_index
+                        page_id.chunk_id.volume_id, page_id.chunk_id.id, page_id.page_index
                     ),
                     report.checked_chunks,
                     report.repaired_replicas,

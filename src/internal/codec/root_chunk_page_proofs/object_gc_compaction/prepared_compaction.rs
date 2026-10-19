@@ -1,20 +1,20 @@
-pub(crate) fn slab_compaction_request_checksum(
-    slab_id: &SlabId,
+pub(crate) fn chunk_compaction_request_checksum(
+    chunk_id: &ChunkId,
     min_stale_bytes: u64,
     update_time_ms: u64,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-SEGMENT-COMPACTION-REQUEST1");
-    append_slab_id(&mut material, slab_id);
+    append_slab_id(&mut material, chunk_id);
     append_u64(&mut material, min_stale_bytes);
     append_u64(&mut material, update_time_ms);
     etag(&material)
 }
 
-pub(crate) fn prepared_slab_compaction_checksum(prepared: &PreparedSlabCompaction) -> String {
+pub(crate) fn prepared_chunk_compaction_checksum(prepared: &PreparedChunkCompaction) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-PREPARED-SEGMENT-COMPACTION3");
-    append_slab_id(&mut material, &prepared.slab_id);
+    append_slab_id(&mut material, &prepared.chunk_id);
     append_u64(&mut material, prepared.min_stale_bytes);
     append_u64(&mut material, prepared.update_time_ms);
     append_u64(&mut material, prepared.expected_previous_commit_index);
@@ -43,12 +43,12 @@ pub(crate) fn prepared_slab_compaction_checksum(prepared: &PreparedSlabCompactio
     etag(&material)
 }
 
-pub(crate) fn append_prepared_slab_compaction_envelope(
+pub(crate) fn append_prepared_chunk_compaction_envelope(
     out: &mut Vec<u8>,
-    envelope: &PreparedSlabCompactionEnvelope,
+    envelope: &PreparedChunkCompactionEnvelope,
 ) {
     append_string(out, &envelope.envelope_format);
-    append_slab_id(out, &envelope.slab_id);
+    append_slab_id(out, &envelope.chunk_id);
     append_u64(out, envelope.min_stale_bytes);
     append_u64(out, envelope.update_time_ms);
     append_u64(out, envelope.live_object_count);
@@ -71,22 +71,22 @@ pub(crate) fn append_prepared_slab_compaction_envelope(
     append_string(out, &envelope.raft_entry_checksum);
 }
 
-pub(crate) fn prepared_slab_compaction_envelope_checksum(
-    envelope: &PreparedSlabCompactionEnvelope,
+pub(crate) fn prepared_chunk_compaction_envelope_checksum(
+    envelope: &PreparedChunkCompactionEnvelope,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-SEGMENT-COMPACTION-ENVELOPE2");
-    append_prepared_slab_compaction_envelope(&mut material, envelope);
+    append_prepared_chunk_compaction_envelope(&mut material, envelope);
     etag(&material)
 }
 
-pub(crate) fn make_prepared_slab_compaction_envelope(
-    prepared: &PreparedSlabCompaction,
-) -> PreparedSlabCompactionEnvelope {
+pub(crate) fn make_prepared_chunk_compaction_envelope(
+    prepared: &PreparedChunkCompaction,
+) -> PreparedChunkCompactionEnvelope {
     let first_live_object = prepared.live_objects.first();
-    let mut envelope = PreparedSlabCompactionEnvelope {
+    let mut envelope = PreparedChunkCompactionEnvelope {
         envelope_format: "MXOSSEGMENT-COMPACTION-ENVELOPE2".to_string(),
-        slab_id: prepared.slab_id.clone(),
+        chunk_id: prepared.chunk_id.clone(),
         min_stale_bytes: prepared.min_stale_bytes,
         update_time_ms: prepared.update_time_ms,
         live_object_count: prepared.live_objects.len() as u64,
@@ -119,6 +119,6 @@ pub(crate) fn make_prepared_slab_compaction_envelope(
         raft_entry_checksum: prepared.raft_entry_checksum.clone(),
         envelope_checksum: String::new(),
     };
-    envelope.envelope_checksum = prepared_slab_compaction_envelope_checksum(&envelope);
+    envelope.envelope_checksum = prepared_chunk_compaction_envelope_checksum(&envelope);
     envelope
 }

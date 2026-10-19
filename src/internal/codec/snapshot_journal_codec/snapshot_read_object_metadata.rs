@@ -31,7 +31,7 @@ pub(crate) fn read_metadata(
     let mut extents = Vec::with_capacity(extent_count);
     for _ in 0..extent_count {
         extents.push(ObjectExtent {
-            slab_id: read_slab_id(cursor)?,
+            chunk_id: read_slab_id(cursor)?,
             offset: cursor.read_u64()?,
             length: cursor.read_u64()?,
         });
@@ -89,10 +89,10 @@ pub(crate) fn read_raft_membership_receipt(
     })
 }
 
-pub(crate) fn read_slab_info(
+pub(crate) fn read_chunk_info(
     cursor: &mut SnapshotByteCursor<'_>,
-) -> Result<SlabInfo, ObjectError> {
-    let slab_id = read_slab_id(cursor)?;
+) -> Result<ChunkInfo, ObjectError> {
+    let chunk_id = read_slab_id(cursor)?;
     let logical_bytes = cursor.read_u64()?;
     let live_bytes = cursor.read_u64()?;
     let stale_bytes = cursor.read_u64()?;
@@ -108,8 +108,8 @@ pub(crate) fn read_slab_info(
     for _ in 0..discarded_range_count {
         discarded_ranges.push(read_range(cursor)?);
     }
-    Ok(SlabInfo {
-        slab_id,
+    Ok(ChunkInfo {
+        chunk_id,
         logical_bytes,
         live_bytes,
         stale_bytes,

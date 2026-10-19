@@ -102,7 +102,7 @@ impl MatrixObjectStore {
     pub fn plan_discard(
         &self,
         min_stale_bytes: u64,
-        max_ranges_per_slab: usize,
+        max_ranges_per_chunk: usize,
     ) -> Vec<DiscardPlan> {
         let mut plans = Vec::new();
         for slab in self.slabs.values() {
@@ -113,9 +113,9 @@ impl MatrixObjectStore {
             let discard_bytes = ranges.iter().map(|range| range.length).sum();
             let fragmented = ranges.len() > self.options.compaction_fragment_threshold;
             let compact_instead =
-                fragmented || (max_ranges_per_slab > 0 && ranges.len() > max_ranges_per_slab);
+                fragmented || (max_ranges_per_chunk > 0 && ranges.len() > max_ranges_per_chunk);
             plans.push(DiscardPlan {
-                slab_id: slab.slab_id.clone(),
+                chunk_id: slab.chunk_id.clone(),
                 ranges,
                 discard_bytes,
                 fragmented,
@@ -128,22 +128,22 @@ impl MatrixObjectStore {
 
     pub fn apply_discard(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
     ) -> Result<(), ObjectError> {
-        self.apply_discard_borrowed(slab_id, &ranges)
+        self.apply_discard_borrowed(chunk_id, &ranges)
     }
 
     pub fn apply_discard_borrowed(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: &[DataRange],
     ) -> Result<(), ObjectError> {
         let merged = merge_range_slice(ranges);
         let slab = self
             .slabs
-            .get_mut(slab_id)
-            .ok_or_else(|| ObjectError::NotFound(format!("segment {:?}", slab_id)))?;
+            .get_mut(chunk_id)
+            .ok_or_else(|| ObjectError::NotFound(format!("segment {:?}", chunk_id)))?;
         for range in merged {
             range.end()?;
             slab.discarded_bytes = saturating_add(slab.discarded_bytes, range.length);
@@ -153,43 +153,43 @@ impl MatrixObjectStore {
         Ok(())
     }
 
-    pub fn prepare_slab_discard_raft_entry(
+    pub fn prepare_chunk_discard_raft_entry(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
         expected_previous_commit_index: u64,
-    ) -> Result<PreparedSlabDiscard, ObjectError> {
+    ) -> Result<PreparedChunkDiscard, ObjectError> {
         let admitted_route_checksum = self.chunk_service.route_control_proof().state_checksum;
-        self.prepare_slab_discard_raft_entry_fenced(
-            slab_id,
+        self.prepare_chunk_discard_raft_entry_fenced(
+            chunk_id,
             ranges,
             expected_previous_commit_index,
             Some(&admitted_route_checksum),
         )
     }
 
-    pub fn prepare_slab_discard_raft_entry_fenced(
+    pub fn prepare_chunk_discard_raft_entry_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PreparedSlabDiscard, ObjectError> {
-        self.prepare_slab_discard_raft_entry_fenced_borrowed(
-            slab_id,
+    ) -> Result<PreparedChunkDiscard, ObjectError> {
+        self.prepare_chunk_discard_raft_entry_fenced_borrowed(
+            chunk_id,
             &ranges,
             expected_previous_commit_index,
             expected_route_control_checksum,
         )
     }
 
-    pub fn prepare_slab_discard_raft_entry_fenced_borrowed(
+    pub fn prepare_chunk_discard_raft_entry_fenced_borrowed(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: &[DataRange],
         expected_previous_commit_index: u64,
         expected_route_control_checksum: Option<&str>,
-    ) -> Result<PreparedSlabDiscard, ObjectError> {
+    ) -> Result<PreparedChunkDiscard, ObjectError> {
         self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if expected_previous_commit_index != self.last_applied_index {
@@ -209,8 +209,8 @@ impl MatrixObjectStore {
         }
         let slab = self
             .slabs
-            .get(slab_id)
-            .ok_or_else(|| ObjectError::NotFound(format!("segment {:?}", slab_id)))?;
+            .get(chunk_id)
+            .ok_or_else(|| ObjectError::NotFound(format!("segment {:?}", chunk_id)))?;
         let source_stale_ranges = merge_range_slice(&slab.stale_ranges);
         if !ranges_covered_by(&ranges, &source_stale_ranges) {
             return Err(ObjectError::PreconditionFailed(
@@ -220,14 +220,14 @@ impl MatrixObjectStore {
         let source_discarded_ranges = merge_range_slice(&slab.discarded_ranges);
         let before_state_fingerprint = self.state_fingerprint_without_payload_clones();
         let mut projected = self.clone();
-        projected.apply_discard_borrowed(slab_id, &ranges)?;
+        projected.apply_discard_borrowed(chunk_id, &ranges)?;
         let after_state_fingerprint = projected.state_fingerprint_without_payload_clones();
-        let request_checksum = slab_discard_request_checksum(slab_id, &ranges);
+        let request_checksum = slab_discard_request_checksum(chunk_id, &ranges);
         let route_control_proof = self.chunk_service.route_control_proof();
         let expected_route_control_checksum =
             expected_route_control_checksum.unwrap_or("").to_string();
-        let mut prepared = PreparedSlabDiscard {
-            slab_id: slab_id.clone(),
+        let mut prepared = PreparedChunkDiscard {
+            chunk_id: chunk_id.clone(),
             discard_bytes: ranges.iter().map(|range| range.length).sum(),
             ranges,
             source_stale_ranges,
@@ -241,22 +241,22 @@ impl MatrixObjectStore {
             expected_route_control_checksum,
             raft_entry_checksum: String::new(),
         };
-        prepared.raft_entry_checksum = prepared_slab_discard_checksum(&prepared);
+        prepared.raft_entry_checksum = prepared_chunk_discard_checksum(&prepared);
         Ok(prepared)
     }
 
-    pub fn apply_prepared_slab_discard(
+    pub fn apply_prepared_chunk_discard(
         &mut self,
-        prepared: PreparedSlabDiscard,
+        prepared: PreparedChunkDiscard,
     ) -> Result<(), ObjectError> {
-        let expected_checksum = prepared_slab_discard_checksum(&prepared);
+        let expected_checksum = prepared_chunk_discard_checksum(&prepared);
         if prepared.raft_entry_checksum != expected_checksum {
             return Err(ObjectError::Corruption(
                 "prepared segment discard checksum mismatch".to_string(),
             ));
         }
         if prepared.request_checksum
-            != slab_discard_request_checksum(&prepared.slab_id, &prepared.ranges)
+            != slab_discard_request_checksum(&prepared.chunk_id, &prepared.ranges)
         {
             return Err(ObjectError::Corruption(
                 "prepared segment discard request checksum mismatch".to_string(),
@@ -287,8 +287,8 @@ impl MatrixObjectStore {
                 &prepared.route_control_proof,
                 "prepared segment discard",
             )?;
-        let current = self.prepare_slab_discard_raft_entry_fenced_borrowed(
-            &prepared.slab_id,
+        let current = self.prepare_chunk_discard_raft_entry_fenced_borrowed(
+            &prepared.chunk_id,
             &prepared.ranges,
             prepared.expected_previous_commit_index,
             Some(prepared.route_control_proof.state_checksum.as_str()),
@@ -303,7 +303,7 @@ impl MatrixObjectStore {
                 "prepared segment discard no longer matches current state".to_string(),
             ));
         }
-        self.apply_discard_borrowed(&prepared.slab_id, &prepared.ranges)?;
+        self.apply_discard_borrowed(&prepared.chunk_id, &prepared.ranges)?;
         if self.state_fingerprint_without_payload_clones() != prepared.after_state_fingerprint {
             return Err(ObjectError::Corruption(
                 "prepared segment discard post-state checksum mismatch".to_string(),

@@ -57,9 +57,9 @@ pub(crate) fn append_prepared_page_repair_envelope(
     envelope: &PreparedPageRepairEnvelope,
 ) {
     append_string(out, &envelope.operation);
-    append_u64(out, envelope.slab_id.is_some() as u64);
-    if let Some(slab_id) = &envelope.slab_id {
-        append_slab_id(out, slab_id);
+    append_u64(out, envelope.chunk_id.is_some() as u64);
+    if let Some(chunk_id) = &envelope.chunk_id {
+        append_slab_id(out, chunk_id);
     }
     append_u64(out, envelope.page_id.is_some() as u64);
     if let Some(page_id) = &envelope.page_id {
@@ -108,7 +108,7 @@ pub(crate) fn prepared_page_range_repair_envelope(
 ) -> PreparedPageRepairEnvelope {
     let mut envelope = PreparedPageRepairEnvelope {
         operation: "range".to_string(),
-        slab_id: Some(prepared.slab_id.clone()),
+        chunk_id: Some(prepared.chunk_id.clone()),
         page_id: None,
         offset: prepared.offset,
         length: prepared.length,
@@ -152,7 +152,7 @@ pub(crate) fn prepared_page_chunk_repair_envelope(
 ) -> PreparedPageRepairEnvelope {
     let mut envelope = PreparedPageRepairEnvelope {
         operation: "chunk".to_string(),
-        slab_id: Some(prepared.page_id.slab_id.clone()),
+        chunk_id: Some(prepared.page_id.chunk_id.clone()),
         page_id: Some(prepared.page_id.clone()),
         offset: 0,
         length: 0,

@@ -1,7 +1,7 @@
 impl MatrixChunkService {
-    pub fn discard_slab_range_idempotent(
+    pub fn discard_chunk_range_idempotent(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
@@ -12,9 +12,9 @@ impl MatrixChunkService {
                 "block idempotent discard length must be positive".to_string(),
             ));
         }
-        let request_checksum = page_discard_request_checksum(slab_id, offset, length);
+        let request_checksum = page_discard_request_checksum(chunk_id, offset, length);
         if let Some(existing) = self.discard_request_receipts.get(idempotency_key) {
-            if existing.slab_id != *slab_id
+            if existing.chunk_id != *chunk_id
                 || existing.offset != offset
                 || existing.length != length
                 || existing.request_checksum != request_checksum
@@ -27,14 +27,14 @@ impl MatrixChunkService {
             receipt.deduped = true;
             return Ok(receipt);
         }
-        self.discard_slab_range_with_chunk_receipts(
-            slab_id,
+        self.discard_chunk_range_with_chunk_receipts(
+            chunk_id,
             offset,
             length,
             Some(idempotency_key),
         )?;
         let receipt = ChunkDiscardReceipt {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset,
             length,
             request_checksum,
@@ -47,9 +47,9 @@ impl MatrixChunkService {
         Ok(receipt)
     }
 
-    pub fn discard_slab_range_idempotent_fenced(
+    pub fn discard_chunk_range_idempotent_fenced(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
@@ -57,27 +57,27 @@ impl MatrixChunkService {
     ) -> Result<ChunkDiscardReceipt, ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         if self.discard_request_receipts.contains_key(idempotency_key) {
-            return self.discard_slab_range_idempotent(
-                slab_id,
+            return self.discard_chunk_range_idempotent(
+                chunk_id,
                 offset,
                 length,
                 idempotency_key,
             );
         }
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
-        self.discard_slab_range_idempotent(slab_id, offset, length, idempotency_key)
+        self.discard_chunk_range_idempotent(chunk_id, offset, length, idempotency_key)
     }
 
-    pub fn discard_slab_range_idempotent_fenced_report(
+    pub fn discard_chunk_range_idempotent_fenced_report(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkIdempotentDiscardReport, ObjectError> {
-        let receipt = self.discard_slab_range_idempotent_fenced(
-            slab_id,
+        let receipt = self.discard_chunk_range_idempotent_fenced(
+            chunk_id,
             offset,
             length,
             idempotency_key,

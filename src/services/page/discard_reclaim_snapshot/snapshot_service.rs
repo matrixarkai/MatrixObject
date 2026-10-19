@@ -39,7 +39,7 @@ impl MatrixChunkService {
         bytes = bytes.saturating_add(self.chunk_endpoints.len().saturating_mul(96));
         bytes = bytes.saturating_add(self.disabled_chunk_endpoints.len().saturating_mul(24));
         bytes = bytes.saturating_add(self.quarantined_replicas.len().saturating_mul(24));
-        bytes = bytes.saturating_add(self.sealed_slabs.len().saturating_mul(48));
+        bytes = bytes.saturating_add(self.sealed_chunks.len().saturating_mul(48));
         bytes = bytes.saturating_add(self.replicas.len().saturating_mul(128));
         bytes.min(8 * 1024 * 1024)
     }
@@ -54,8 +54,8 @@ impl MatrixChunkService {
             self.page_size,
             self.write_quorum,
             self.read_quorum,
-            self.allocator_slab_size,
-            self.allocator_next_slab_id,
+            self.allocator_chunk_size,
+            self.allocator_next_chunk_id,
             self.allocator_next_offset,
             self.receipt_retention,
             self.released_allocation_count,
@@ -141,7 +141,7 @@ impl MatrixChunkService {
         for index in &self.quarantined_replicas {
             let _ = write!(stamp, "|qr:{index}");
         }
-        for slab in &self.sealed_slabs {
+        for slab in &self.sealed_chunks {
             let _ = write!(stamp, "|ss:{}/{}", slab.volume_id, slab.id);
         }
         for replica in &self.replicas {
@@ -181,8 +181,8 @@ impl MatrixChunkService {
             page_size: self.page_size,
             write_quorum: self.write_quorum,
             read_quorum: self.read_quorum,
-            allocator_slab_size: self.allocator_slab_size,
-            allocator_next_slab_id: self.allocator_next_slab_id,
+            allocator_chunk_size: self.allocator_chunk_size,
+            allocator_next_chunk_id: self.allocator_next_chunk_id,
             allocator_next_offset: self.allocator_next_offset,
             receipt_retention: self.receipt_retention,
             pending_allocations: self.pending_allocations.clone(),
@@ -204,7 +204,7 @@ impl MatrixChunkService {
             chunk_route_control_next_log_index: self.chunk_route_control_next_log_index,
             route_qos_config: self.route_qos_config.clone(),
             route_qos_state: self.route_qos_state(),
-            sealed_slabs: self.sealed_slabs.clone(),
+            sealed_chunks: self.sealed_chunks.clone(),
             cumulative_quorum_write_degraded_chunks: self.cumulative_quorum_write_degraded_chunks,
             cumulative_quorum_read_degraded_chunks: self.cumulative_quorum_read_degraded_chunks,
             cumulative_quorum_discard_degraded_chunks: self
@@ -365,8 +365,8 @@ impl MatrixChunkService {
         self.page_size = snapshot.page_size;
         self.write_quorum = snapshot.write_quorum;
         self.read_quorum = snapshot.read_quorum;
-        self.allocator_slab_size = snapshot.allocator_slab_size;
-        self.allocator_next_slab_id = snapshot.allocator_next_slab_id;
+        self.allocator_chunk_size = snapshot.allocator_chunk_size;
+        self.allocator_next_chunk_id = snapshot.allocator_next_chunk_id;
         self.allocator_next_offset = snapshot.allocator_next_offset;
         self.receipt_retention = snapshot.receipt_retention;
         self.pending_allocations = snapshot.pending_allocations;
@@ -388,7 +388,7 @@ impl MatrixChunkService {
         self.chunk_route_control_next_log_index = snapshot.chunk_route_control_next_log_index;
         self.route_qos_config = snapshot.route_qos_config;
         *self.route_qos_state.borrow_mut() = snapshot.route_qos_state;
-        self.sealed_slabs = snapshot.sealed_slabs;
+        self.sealed_chunks = snapshot.sealed_chunks;
         self.cumulative_quorum_write_degraded_chunks =
             snapshot.cumulative_quorum_write_degraded_chunks;
         self.cumulative_quorum_read_degraded_chunks =

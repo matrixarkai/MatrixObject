@@ -3,10 +3,10 @@ impl MatrixChunkService {
         &mut self,
         writes: Vec<ChunkRangeWrite>,
     ) -> Result<ChunkBatchStats, ObjectError> {
-        self.write_slab_ranges_with_chunk_receipts(&writes, None)
+        self.write_chunk_ranges_with_chunk_receipts(&writes, None)
     }
 
-    pub fn write_slab_ranges_storage_fenced(
+    pub fn write_chunk_ranges_storage_fenced(
         &mut self,
         writes: Vec<ChunkRangeWrite>,
         expected_route_control_checksum: Option<&str>,
@@ -17,13 +17,13 @@ impl MatrixChunkService {
         self.write_slab_ranges(writes)
     }
 
-    pub fn write_slab_ranges_storage_fenced_report(
+    pub fn write_chunk_ranges_storage_fenced_report(
         &mut self,
         writes: Vec<ChunkRangeWrite>,
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
     ) -> Result<ChunkStorageMutationReport, ObjectError> {
-        let stats = self.write_slab_ranges_storage_fenced(
+        let stats = self.write_chunk_ranges_storage_fenced(
             writes,
             expected_route_control_checksum,
             expected_chunk_control_proof_checksum,
@@ -35,15 +35,15 @@ impl MatrixChunkService {
         ))
     }
 
-    fn write_slab_ranges_with_chunk_receipts(
+    fn write_chunk_ranges_with_chunk_receipts(
         &mut self,
         writes: &[ChunkRangeWrite],
         idempotency_key: Option<&str>,
     ) -> Result<ChunkBatchStats, ObjectError> {
         let mut stats = ChunkBatchStats::default();
-        let mut grouped: BTreeMap<(SlabId, PageId), Vec<(u64, &[u8])>> = BTreeMap::new();
+        let mut grouped: BTreeMap<(ChunkId, PageId), Vec<(u64, &[u8])>> = BTreeMap::new();
         for write in writes {
-            if self.is_slab_sealed(&write.slab_id) {
+            if self.is_chunk_sealed(&write.chunk_id) {
                 return Err(ObjectError::PreconditionFailed(
                     "block segment is sealed".to_string(),
                 ));
@@ -69,7 +69,7 @@ impl MatrixChunkService {
                     )
                 })?;
             let locations =
-                self.map_range(&write.slab_id, write.offset, write.data.len() as u64)?;
+                self.map_range(&write.chunk_id, write.offset, write.data.len() as u64)?;
             let mut cursor = 0usize;
             for loc in locations {
                 let loc_length = usize::try_from(loc.length).map_err(|_| {
@@ -88,7 +88,7 @@ impl MatrixChunkService {
                     ));
                 }
                 grouped
-                    .entry((write.slab_id.clone(), loc.page_id))
+                    .entry((write.chunk_id.clone(), loc.page_id))
                     .or_default()
                     .push((loc.page_offset, &write.data[cursor..next]));
                 cursor = next;
@@ -224,7 +224,7 @@ impl MatrixChunkService {
             receipt.deduped = true;
             return Ok((receipt.stats.clone(), receipt));
         }
-        let stats = self.write_slab_ranges_with_chunk_receipts(writes, Some(idempotency_key))?;
+        let stats = self.write_chunk_ranges_with_chunk_receipts(writes, Some(idempotency_key))?;
         let receipt = ChunkBatchWriteReceipt {
             request_checksum,
             payload_checksum,
@@ -238,7 +238,7 @@ impl MatrixChunkService {
         Ok((stats, receipt))
     }
 
-    pub fn write_slab_ranges_idempotent_fenced(
+    pub fn write_chunk_ranges_idempotent_fenced(
         &mut self,
         writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
@@ -255,13 +255,13 @@ impl MatrixChunkService {
         self.write_slab_ranges_idempotent(writes, idempotency_key)
     }
 
-    pub fn write_slab_ranges_idempotent_fenced_report(
+    pub fn write_chunk_ranges_idempotent_fenced_report(
         &mut self,
         writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkIdempotentBatchWriteReport, ObjectError> {
-        let (stats, receipt) = self.write_slab_ranges_idempotent_fenced(
+        let (stats, receipt) = self.write_chunk_ranges_idempotent_fenced(
             writes,
             idempotency_key,
             expected_route_control_checksum,
@@ -272,14 +272,14 @@ impl MatrixChunkService {
         })
     }
 
-    pub fn write_slab_ranges_idempotent_strict_fenced_report(
+    pub fn write_chunk_ranges_idempotent_strict_fenced_report(
         &mut self,
         writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
         expected_page_write_batch_proof_checksum: impl AsRef<str>,
     ) -> Result<ChunkIdempotentBatchWriteReport, ObjectError> {
-        let report = self.write_slab_ranges_idempotent_fenced_report(
+        let report = self.write_chunk_ranges_idempotent_fenced_report(
             writes,
             idempotency_key,
             expected_route_control_checksum,

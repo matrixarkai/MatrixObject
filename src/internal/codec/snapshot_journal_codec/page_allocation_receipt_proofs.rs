@@ -59,7 +59,7 @@ pub(crate) fn page_batch_allocation_receipt_page_proof_checksum(
         page.limit,
         page.truncated,
         &page.next_marker,
-        &page.slab_id,
+        &page.chunk_id,
         page.skipped_slab_count,
     );
     append_page_receipt_page_chunk_filter(
@@ -142,7 +142,7 @@ pub(crate) fn append_prepared_page_batch_allocation_reservation_envelope(
     append_u64(out, envelope.allocation_count);
     for i in 0..envelope.allocation_ids.len() {
         append_string(out, &envelope.allocation_ids[i]);
-        append_slab_id(out, &envelope.allocation_slabs[i]);
+        append_slab_id(out, &envelope.allocation_chunks[i]);
         append_u64(out, envelope.allocation_offsets[i]);
         append_u64(out, envelope.allocation_lengths[i]);
         append_u64(out, envelope.allocation_create_time_ms[i]);
@@ -199,11 +199,11 @@ pub(crate) fn make_prepared_page_batch_allocation_reservation_envelope(
             .iter()
             .map(|item| item.allocation_id.clone())
             .collect(),
-        allocation_slabs: prepared
+        allocation_chunks: prepared
             .receipt
             .allocations
             .iter()
-            .map(|item| item.slab_id.clone())
+            .map(|item| item.chunk_id.clone())
             .collect(),
         allocation_offsets: prepared
             .receipt

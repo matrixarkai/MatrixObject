@@ -84,7 +84,7 @@ pub struct PreparedPageAllocationReservationEnvelope {
     pub expected_route_control_checksum: String,
     pub raft_entry_checksum: String,
     pub allocation_id: String,
-    pub allocation_slab_id: SlabId,
+    pub allocation_chunk_id: ChunkId,
     pub allocation_offset: u64,
     pub allocation_length: u64,
     pub allocation_create_time_ms: u64,

@@ -55,7 +55,7 @@ impl MatrixObjectStore {
 
     fn append_page_write_journal_record(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
@@ -70,7 +70,7 @@ impl MatrixObjectStore {
                 + encoded_string_len(idempotency_key),
         );
         append_u64(&mut payload, 55);
-        append_slab_id(&mut payload, slab_id);
+        append_slab_id(&mut payload, chunk_id);
         append_u64(&mut payload, offset);
         append_u64(&mut payload, data.len() as u64);
         payload.extend_from_slice(data);
@@ -102,7 +102,7 @@ impl MatrixObjectStore {
         append_u64(&mut payload, 56);
         append_u64(&mut payload, writes.len() as u64);
         for write in writes {
-            append_slab_id(&mut payload, &write.slab_id);
+            append_slab_id(&mut payload, &write.chunk_id);
             append_u64(&mut payload, write.offset);
             append_u64(&mut payload, write.data.len() as u64);
             payload.extend_from_slice(&write.data);
@@ -113,7 +113,7 @@ impl MatrixObjectStore {
 
     fn append_page_discard_journal_record(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
@@ -127,7 +127,7 @@ impl MatrixObjectStore {
                 + encoded_string_len(idempotency_key),
         );
         append_u64(&mut payload, 57);
-        append_slab_id(&mut payload, slab_id);
+        append_slab_id(&mut payload, chunk_id);
         append_u64(&mut payload, offset);
         append_u64(&mut payload, length);
         append_string(&mut payload, idempotency_key);
@@ -150,7 +150,7 @@ impl MatrixObjectStore {
         append_u64(&mut payload, 58);
         append_u64(&mut payload, requests.len() as u64);
         for request in requests {
-            append_slab_id(&mut payload, &request.slab_id);
+            append_slab_id(&mut payload, &request.chunk_id);
             append_u64(&mut payload, request.offset);
             append_u64(&mut payload, request.length);
         }

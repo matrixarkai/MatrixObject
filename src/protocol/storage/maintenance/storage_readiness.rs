@@ -300,10 +300,10 @@ impl ChunkStorageReadiness {
             ),
             ("route_qos_throttled_ops", self.route_qos_throttled_ops),
             ("route_qos_throttled_bytes", self.route_qos_throttled_bytes),
-            ("sealed_segment_count", self.sealed_slab_count),
+            ("sealed_segment_count", self.sealed_chunk_count),
             (
                 "allocator_active_segment_sealed",
-                self.allocator_active_slab_sealed as u64,
+                self.allocator_active_chunk_sealed as u64,
             ),
             (
                 "block_state_fingerprint_bytes",

@@ -3,16 +3,16 @@ impl MatrixChunkService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
     ) -> Result<PageAllocationReceiptPage, ObjectError> {
-        self.list_allocation_receipts_for_chunk(marker, limit, slab_id, None)
+        self.list_allocation_receipts_for_chunk(marker, limit, chunk_id, None)
     }
 
     pub fn list_allocation_receipts_for_chunk(
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
         page_index: Option<u64>,
     ) -> Result<PageAllocationReceiptPage, ObjectError> {
         if let Some(marker) = marker {
@@ -22,7 +22,7 @@ impl MatrixChunkService {
         let mut page = PageAllocationReceiptPage {
             total_receipt_count: self.allocation_request_receipts.len() as u64,
             limit: limit as u64,
-            slab_id: slab_id.cloned(),
+            chunk_id: chunk_id.cloned(),
             page_index,
             page_size: page_index.map(|_| self.page_size),
             ..PageAllocationReceiptPage::default()
@@ -38,7 +38,7 @@ impl MatrixChunkService {
             };
         for (idempotency_key, allocation) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if slab_id.is_some_and(|slab_id| &allocation.slab_id != slab_id) {
+            if chunk_id.is_some_and(|chunk_id| &allocation.chunk_id != chunk_id) {
                 page.skipped_slab_count = page.skipped_slab_count.saturating_add(1);
                 continue;
             }
@@ -68,16 +68,16 @@ impl MatrixChunkService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
     ) -> Result<PageReleaseAllocationReceiptPage, ObjectError> {
-        self.list_release_allocation_receipts_for_chunk(marker, limit, slab_id, None)
+        self.list_release_allocation_receipts_for_chunk(marker, limit, chunk_id, None)
     }
 
     pub fn list_release_allocation_receipts_for_chunk(
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
         page_index: Option<u64>,
     ) -> Result<PageReleaseAllocationReceiptPage, ObjectError> {
         if let Some(marker) = marker {
@@ -87,7 +87,7 @@ impl MatrixChunkService {
         let mut page = PageReleaseAllocationReceiptPage {
             total_receipt_count: self.release_allocation_request_receipts.len() as u64,
             limit: limit as u64,
-            slab_id: slab_id.cloned(),
+            chunk_id: chunk_id.cloned(),
             page_index,
             page_size: page_index.map(|_| self.page_size),
             ..PageReleaseAllocationReceiptPage::default()
@@ -103,7 +103,7 @@ impl MatrixChunkService {
             };
         for (idempotency_key, allocation) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if slab_id.is_some_and(|slab_id| &allocation.slab_id != slab_id) {
+            if chunk_id.is_some_and(|chunk_id| &allocation.chunk_id != chunk_id) {
                 page.skipped_slab_count = page.skipped_slab_count.saturating_add(1);
                 continue;
             }
@@ -133,16 +133,16 @@ impl MatrixChunkService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
     ) -> Result<PageBatchAllocationReceiptPage, ObjectError> {
-        self.list_batch_allocation_receipts_for_chunk(marker, limit, slab_id, None)
+        self.list_batch_allocation_receipts_for_chunk(marker, limit, chunk_id, None)
     }
 
     pub fn list_batch_allocation_receipts_for_chunk(
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
         page_index: Option<u64>,
     ) -> Result<PageBatchAllocationReceiptPage, ObjectError> {
         if let Some(marker) = marker {
@@ -152,7 +152,7 @@ impl MatrixChunkService {
         let mut page = PageBatchAllocationReceiptPage {
             total_receipt_count: self.batch_allocation_request_receipts.len() as u64,
             limit: limit as u64,
-            slab_id: slab_id.cloned(),
+            chunk_id: chunk_id.cloned(),
             page_index,
             page_size: page_index.map(|_| self.page_size),
             ..PageBatchAllocationReceiptPage::default()
@@ -168,10 +168,10 @@ impl MatrixChunkService {
             };
         for (idempotency_key, allocations) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if slab_id.is_some_and(|slab_id| {
+            if chunk_id.is_some_and(|chunk_id| {
                 !allocations
                     .iter()
-                    .any(|allocation| &allocation.slab_id == slab_id)
+                    .any(|allocation| &allocation.chunk_id == chunk_id)
             }) {
                 page.skipped_slab_count = page.skipped_slab_count.saturating_add(1);
                 continue;

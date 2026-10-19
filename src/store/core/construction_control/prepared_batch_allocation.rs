@@ -9,7 +9,7 @@ impl MatrixObjectStore {
         validate_idempotency_key(idempotency_key)?;
         validate_page_allocation_batch_lengths(
             &lengths,
-            self.chunk_service.allocator_slab_size,
+            self.chunk_service.allocator_chunk_size,
         )?;
         if expected_previous_commit_index != self.last_applied_index() {
             return Err(ObjectError::PreconditionFailed(
@@ -84,7 +84,7 @@ impl MatrixObjectStore {
         validate_idempotency_key(&prepared.idempotency_key)?;
         validate_page_allocation_batch_lengths(
             &prepared.lengths,
-            self.chunk_service.allocator_slab_size,
+            self.chunk_service.allocator_chunk_size,
         )?;
         if prepared.request_checksum
             != page_batch_allocation_reservation_request_checksum(

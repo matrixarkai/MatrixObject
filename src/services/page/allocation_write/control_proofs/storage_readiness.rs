@@ -79,8 +79,8 @@ impl MatrixChunkService {
             chunk_route_control_proof_format: route_control_proof.state_format.clone(),
             chunk_route_control_proof_checksum: route_control_proof.state_checksum.clone(),
             chunk_route_control_proof_bytes: route_control_proof.state_bytes,
-            sealed_slab_count: self.sealed_slabs.len() as u64,
-            allocator_active_slab_sealed: self.allocator_active_slab_sealed(),
+            sealed_chunk_count: self.sealed_chunks.len() as u64,
+            allocator_active_chunk_sealed: self.allocator_active_chunk_sealed(),
             route_control_proof,
             ..ChunkStorageReadiness::default()
         };

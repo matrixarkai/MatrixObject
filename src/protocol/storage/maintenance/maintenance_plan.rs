@@ -38,7 +38,7 @@ impl StorageMaintenancePlan {
             self.reclaim
                 .to_control_fields(&format!("{field_prefix}reclaim.")),
         );
-        for (index, discard) in self.slab_discards.iter().enumerate() {
+        for (index, discard) in self.chunk_discards.iter().enumerate() {
             fields.extend(
                 discard.to_control_fields(&format!("{field_prefix}segment_discard.{index}.")),
             );
@@ -48,7 +48,7 @@ impl StorageMaintenancePlan {
         }
         fields.insert(
             format!("{field_prefix}segment_discard_count"),
-            self.slab_discards.len().to_string(),
+            self.chunk_discards.len().to_string(),
         );
         fields.insert(
             format!("{field_prefix}action_count"),
@@ -92,7 +92,7 @@ impl StorageMaintenanceRunReport {
                 .to_control_fields(&format!("{field_prefix}reclaim.")),
         );
         fields.extend(
-            self.slab_discard
+            self.chunk_discard
                 .to_control_fields(&format!("{field_prefix}segment_discard.")),
         );
         fields.extend(

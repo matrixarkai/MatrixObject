@@ -1,43 +1,43 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn prepare_slab_discard_raft_entry(
+    pub fn prepare_chunk_discard_raft_entry(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
-    ) -> Result<PreparedSlabDiscard, ObjectError> {
-        self.store.prepare_slab_discard_raft_entry(
-            slab_id,
+    ) -> Result<PreparedChunkDiscard, ObjectError> {
+        self.store.prepare_chunk_discard_raft_entry(
+            chunk_id,
             ranges,
             self.store.last_applied_index(),
         )
     }
 
-    pub fn prepare_slab_discard_raft_entry_linearizable_fenced(
+    pub fn prepare_chunk_discard_raft_entry_linearizable_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<PreparedSlabDiscard, ObjectError> {
+    ) -> Result<PreparedChunkDiscard, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "segment discard",
             expected_page_route_control_checksum,
         )?;
-        self.store.prepare_slab_discard_raft_entry_fenced(
-            slab_id,
+        self.store.prepare_chunk_discard_raft_entry_fenced(
+            chunk_id,
             ranges,
             self.store.last_applied_index(),
             Some(expected_page_route_control_checksum),
         )
     }
 
-    pub fn prepare_slab_discard_raft_entry_with_read_proof_linearizable_fenced(
+    pub fn prepare_chunk_discard_raft_entry_with_read_proof_linearizable_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenStorageRead<PreparedSlabDiscard>, ObjectError> {
-        self.prepare_slab_discard_raft_entry_with_read_proof_linearizable_fenced_committed_at(
-            slab_id,
+    ) -> Result<ProvenStorageRead<PreparedChunkDiscard>, ObjectError> {
+        self.prepare_chunk_discard_raft_entry_with_read_proof_linearizable_fenced_committed_at(
+            chunk_id,
             ranges,
             expected_page_route_control_checksum,
             self.raft.commit_index(),
@@ -45,14 +45,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn prepare_slab_discard_raft_entry_with_read_proof_linearizable_fenced_committed_at(
+    pub fn prepare_chunk_discard_raft_entry_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
         expected_page_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<PreparedSlabDiscard>, ObjectError> {
+    ) -> Result<ProvenStorageRead<PreparedChunkDiscard>, ObjectError> {
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         let requested_read_index = self
             .raft
@@ -65,8 +65,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let prepared = self.prepare_slab_discard_raft_entry_linearizable_fenced(
-            slab_id,
+        let prepared = self.prepare_chunk_discard_raft_entry_linearizable_fenced(
+            chunk_id,
             ranges,
             expected_page_route_control_checksum,
         )?;
@@ -77,28 +77,28 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn prepare_slab_discard_envelope_linearizable_fenced(
+    pub fn prepare_chunk_discard_envelope_linearizable_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<PreparedSlabDiscardEnvelope, ObjectError> {
-        let prepared = self.prepare_slab_discard_raft_entry_linearizable_fenced(
-            slab_id,
+    ) -> Result<PreparedChunkDiscardEnvelope, ObjectError> {
+        let prepared = self.prepare_chunk_discard_raft_entry_linearizable_fenced(
+            chunk_id,
             ranges,
             expected_page_route_control_checksum,
         )?;
-        Ok(make_prepared_slab_discard_envelope(&prepared))
+        Ok(make_prepared_chunk_discard_envelope(&prepared))
     }
 
-    pub fn prepare_slab_discard_envelope_with_read_proof_linearizable_fenced(
+    pub fn prepare_chunk_discard_envelope_with_read_proof_linearizable_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenStorageRead<PreparedSlabDiscardEnvelope>, ObjectError> {
-        self.prepare_slab_discard_envelope_with_read_proof_linearizable_fenced_committed_at(
-            slab_id,
+    ) -> Result<ProvenStorageRead<PreparedChunkDiscardEnvelope>, ObjectError> {
+        self.prepare_chunk_discard_envelope_with_read_proof_linearizable_fenced_committed_at(
+            chunk_id,
             ranges,
             expected_page_route_control_checksum,
             self.raft.commit_index(),
@@ -106,47 +106,47 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn prepare_slab_discard_envelope_with_read_proof_linearizable_fenced_committed_at(
+    pub fn prepare_chunk_discard_envelope_with_read_proof_linearizable_fenced_committed_at(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         ranges: Vec<DataRange>,
         expected_page_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenStorageRead<PreparedSlabDiscardEnvelope>, ObjectError> {
+    ) -> Result<ProvenStorageRead<PreparedChunkDiscardEnvelope>, ObjectError> {
         let proven_prepared = self
-            .prepare_slab_discard_raft_entry_with_read_proof_linearizable_fenced_committed_at(
-                slab_id,
+            .prepare_chunk_discard_raft_entry_with_read_proof_linearizable_fenced_committed_at(
+                chunk_id,
                 ranges,
                 expected_page_route_control_checksum,
                 min_read_index,
                 min_commit_index,
             )?;
         Ok(ProvenStorageRead {
-            value: make_prepared_slab_discard_envelope(&proven_prepared.value),
+            value: make_prepared_chunk_discard_envelope(&proven_prepared.value),
             proof: proven_prepared.proof,
         })
     }
 
-    pub fn plan_slab_discards_with_read_proof_linearizable_fenced(
+    pub fn plan_chunk_discards_with_read_proof_linearizable_fenced(
         &self,
         min_stale_bytes: u64,
-        max_ranges_per_slab: usize,
+        max_ranges_per_chunk: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenStorageRead<Vec<DiscardPlan>>, ObjectError> {
-        self.plan_slab_discards_with_read_proof_linearizable_fenced_committed_at(
+        self.plan_chunk_discards_with_read_proof_linearizable_fenced_committed_at(
             min_stale_bytes,
-            max_ranges_per_slab,
+            max_ranges_per_chunk,
             expected_page_route_control_checksum,
             self.raft.commit_index(),
             0,
         )
     }
 
-    pub fn plan_slab_discards_with_read_proof_linearizable_fenced_committed_at(
+    pub fn plan_chunk_discards_with_read_proof_linearizable_fenced_committed_at(
         &self,
         min_stale_bytes: u64,
-        max_ranges_per_slab: usize,
+        max_ranges_per_chunk: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
@@ -167,7 +167,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(ProvenStorageRead {
             value: self
                 .store
-                .plan_discard(min_stale_bytes, max_ranges_per_slab),
+                .plan_discard(min_stale_bytes, max_ranges_per_chunk),
             proof,
         })
     }

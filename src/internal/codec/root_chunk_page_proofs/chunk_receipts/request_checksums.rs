@@ -1,5 +1,5 @@
 pub(crate) fn append_chunk_id(out: &mut Vec<u8>, page_id: &PageId) {
-    append_slab_id(out, &page_id.slab_id);
+    append_slab_id(out, &page_id.chunk_id);
     append_u64(out, page_id.page_index);
 }
 
@@ -202,7 +202,7 @@ pub(crate) fn chunk_repair_request_checksum(page_id: &PageId) -> String {
 }
 
 pub(crate) fn page_range_repair_request_checksum(
-    slab_id: &SlabId,
+    chunk_id: &ChunkId,
     offset: u64,
     length: u64,
     max_repair_chunks: u64,
@@ -210,7 +210,7 @@ pub(crate) fn page_range_repair_request_checksum(
 ) -> String {
     let mut material =
         Vec::with_capacity(request_slab_id_encoded_len() + std::mem::size_of::<u64>() * 4);
-    append_slab_id(&mut material, slab_id);
+    append_slab_id(&mut material, chunk_id);
     append_u64(&mut material, offset);
     append_u64(&mut material, length);
     append_u64(&mut material, max_repair_chunks);

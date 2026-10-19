@@ -154,7 +154,7 @@ impl MatrixObjectStore {
                 "block prepared batch write must contain at least one range".to_string(),
             ));
         }
-        let admission = self.chunk_service.can_accept_slab_writes_fenced_from_borrowed(
+        let admission = self.chunk_service.can_accept_chunk_writes_fenced_from_borrowed(
             &selected,
             max_write_bytes,
             max_chunk_write_count,

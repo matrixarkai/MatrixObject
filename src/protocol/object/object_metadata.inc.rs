@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectExtent {
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub offset: u64,
     pub length: u64,
 }
@@ -94,11 +94,11 @@ impl ObjectMetadata {
             let prefix = format!("{field_prefix}extent.{index}.");
             fields.insert(
                 format!("{prefix}segment_volume_id"),
-                extent.slab_id.volume_id.to_string().into(),
+                extent.chunk_id.volume_id.to_string().into(),
             );
             fields.insert(
                 format!("{prefix}segment_id"),
-                extent.slab_id.id.to_string().into(),
+                extent.chunk_id.id.to_string().into(),
             );
             fields.insert(format!("{prefix}offset"), extent.offset.to_string().into());
             fields.insert(format!("{prefix}length"), extent.length.to_string().into());

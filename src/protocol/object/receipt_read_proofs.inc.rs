@@ -73,7 +73,7 @@ pub trait StorageReceiptPageProofSource {
     fn storage_receipt_page_limit(&self) -> u64;
     fn storage_receipt_page_truncated(&self) -> bool;
     fn storage_receipt_page_next_marker(&self) -> Option<&str>;
-    fn storage_receipt_page_slab_filter(&self) -> Option<&SlabId> {
+    fn storage_receipt_page_slab_filter(&self) -> Option<&ChunkId> {
         None
     }
     fn storage_receipt_page_chunk_filter(&self) -> Option<u64> {

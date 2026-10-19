@@ -1,10 +1,10 @@
 impl StoreSnapshot {
     fn validate_configuration(&self) -> Result<(), ObjectError> {
-        if self.options.slab_size == 0
+        if self.options.chunk_size == 0
             || self.options.max_extent_bytes == 0
-            || self.options.max_extent_bytes > self.options.slab_size
+            || self.options.max_extent_bytes > self.options.chunk_size
             || self.options.page_size == 0
-            || self.options.page_size > self.options.slab_size
+            || self.options.page_size > self.options.chunk_size
             || self.options.volume_count == 0
             || self.options.replica_count == 0
             || self.options.write_quorum == 0
@@ -32,7 +32,7 @@ impl StoreSnapshot {
                 "snapshot store options are invalid".to_string(),
             ));
         }
-        if self.next_slab_id == 0 {
+        if self.next_chunk_id == 0 {
             return Err(ObjectError::Corruption(
                 "snapshot next segment id is invalid".to_string(),
             ));

@@ -1,11 +1,11 @@
 impl MatrixObjectStore {
     pub fn new(options: StoreOptions) -> Result<Self, ObjectError> {
-        if options.slab_size == 0 {
+        if options.chunk_size == 0 {
             return Err(ObjectError::InvalidArgument(
                 "segment_size must be positive".to_string(),
             ));
         }
-        if options.max_extent_bytes == 0 || options.max_extent_bytes > options.slab_size {
+        if options.max_extent_bytes == 0 || options.max_extent_bytes > options.chunk_size {
             return Err(ObjectError::InvalidArgument(
                 "max_extent_bytes must be 1..segment_size".to_string(),
             ));
@@ -15,7 +15,7 @@ impl MatrixObjectStore {
                 "volume_count must be positive".to_string(),
             ));
         }
-        if options.page_size == 0 || options.page_size > options.slab_size {
+        if options.page_size == 0 || options.page_size > options.chunk_size {
             return Err(ObjectError::InvalidArgument(
                 "chunk_size must be 1..segment_size".to_string(),
             ));
@@ -176,7 +176,7 @@ impl MatrixObjectStore {
             slabs: BTreeMap::new(),
             payloads: BTreeMap::new(),
             chunk_service,
-            next_slab_id: 1,
+            next_chunk_id: 1,
             next_upload_sequence: 1,
             logical_written_bytes: 0,
             physical_written_bytes: 0,

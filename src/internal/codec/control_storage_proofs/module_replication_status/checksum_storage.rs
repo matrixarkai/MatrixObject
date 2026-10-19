@@ -13,11 +13,11 @@ fn append_storage_status(mut material: &mut Vec<u8>, status: &ObjectStoreModuleS
     append_u64(&mut material, status.space_amplification_ppm);
     append_u64(&mut material, status.discard_backlog_ppm);
     append_u64(&mut material, status.discard_candidate_bytes);
-    append_u64(&mut material, status.discard_candidate_slabs);
+    append_u64(&mut material, status.discard_candidate_chunks);
     append_u64(&mut material, status.pending_discard_range_count);
     append_u64(&mut material, status.merged_discard_range_count);
     append_u64(&mut material, status.fragmented_range_count);
-    append_u64(&mut material, status.compaction_candidate_slabs);
+    append_u64(&mut material, status.compaction_candidate_chunks);
     append_u64(&mut material, status.compaction_candidate_bytes);
     append_u64(&mut material, status.compaction_candidate_range_count);
     append_u64(&mut material, status.compaction_recommended as u64);
@@ -25,7 +25,7 @@ fn append_storage_status(mut material: &mut Vec<u8>, status: &ObjectStoreModuleS
     append_u64(&mut material, status.object_count);
     append_u64(&mut material, status.live_object_count);
     append_u64(&mut material, status.deleted_object_count);
-    append_u64(&mut material, status.slab_count);
+    append_u64(&mut material, status.chunk_count);
     append_u64(&mut material, status.page_count);
     append_u64(&mut material, status.logical_written_bytes);
     append_u64(&mut material, status.physical_written_bytes);

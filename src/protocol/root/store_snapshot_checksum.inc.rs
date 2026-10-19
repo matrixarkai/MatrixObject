@@ -1,7 +1,7 @@
 impl StoreSnapshot {
     pub(crate) fn checksum_material_hash(&self) -> String {
         let mut material = Vec::with_capacity(self.checksum_material_size_hint());
-        append_u64(&mut material, self.options.slab_size);
+        append_u64(&mut material, self.options.chunk_size);
         append_u64(&mut material, self.options.max_extent_bytes);
         append_u64(&mut material, self.options.page_size);
         append_u64(&mut material, self.options.volume_count);
@@ -53,7 +53,7 @@ impl StoreSnapshot {
         );
         append_string(&mut material, &self.options.metaserver_catalog_endpoints);
         append_string(&mut material, &self.options.rootserver_catalog_endpoint);
-        append_u64(&mut material, self.next_slab_id);
+        append_u64(&mut material, self.next_chunk_id);
         append_u64(&mut material, self.logical_written_bytes);
         append_u64(&mut material, self.physical_written_bytes);
         append_u64(&mut material, self.last_applied_index);
@@ -150,12 +150,12 @@ impl StoreSnapshot {
                 append_metadata(&mut material, metadata);
             }
         }
-        for (slab_id, slab) in &self.slabs {
-            append_slab_id(&mut material, slab_id);
-            append_slab_info(&mut material, slab);
+        for (chunk_id, slab) in &self.slabs {
+            append_slab_id(&mut material, chunk_id);
+            append_chunk_info(&mut material, slab);
         }
-        for ((slab_id, offset), payload) in &self.payloads {
-            append_slab_id(&mut material, slab_id);
+        for ((chunk_id, offset), payload) in &self.payloads {
+            append_slab_id(&mut material, chunk_id);
             append_u64(&mut material, *offset);
             append_u64(&mut material, payload.len() as u64);
             material.extend_from_slice(payload);

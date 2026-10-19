@@ -1,7 +1,7 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPageRepairEnvelope {
     pub operation: String,
-    pub slab_id: Option<SlabId>,
+    pub chunk_id: Option<ChunkId>,
     pub page_id: Option<PageId>,
     pub offset: u64,
     pub length: u64,
@@ -103,8 +103,8 @@ impl PreparedPageRepairEnvelope {
             fields.insert(format!("{field_prefix}{name}"), value.clone());
         }
         fields.insert(format!("{field_prefix}has_more"), self.has_more.to_string());
-        if let Some(slab_id) = &self.slab_id {
-            fields.extend(slab_id.to_control_fields(&format!("{field_prefix}segment.")));
+        if let Some(chunk_id) = &self.chunk_id {
+            fields.extend(chunk_id.to_control_fields(&format!("{field_prefix}segment.")));
         }
         if let Some(page_id) = &self.page_id {
             fields.extend(page_id.to_control_fields(&format!("{field_prefix}chunk.")));

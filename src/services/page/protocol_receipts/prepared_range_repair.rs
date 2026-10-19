@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPageRangeRepair {
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub offset: u64,
     pub length: u64,
     pub max_repair_chunks: usize,

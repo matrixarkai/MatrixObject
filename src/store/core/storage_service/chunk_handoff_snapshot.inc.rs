@@ -1,14 +1,14 @@
 impl MatrixObjectStore {
     pub fn prepare_chunk_state_handoffs(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         source_replica_index: usize,
         max_payload_bytes: u64,
     ) -> Result<Vec<ReplicaStateHandoff>, ObjectError> {
         self.chunk_service.prepare_chunk_state_handoffs(
-            slab_id,
+            chunk_id,
             offset,
             length,
             source_replica_index,

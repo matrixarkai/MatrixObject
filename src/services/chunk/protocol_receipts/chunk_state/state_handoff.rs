@@ -37,7 +37,7 @@ pub struct PreparedChunkLocalStateHandoff {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedChunkStateHandoffEnvelope {
     pub envelope_format: String,
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub offset: u64,
     pub length: u64,
     pub source_replica_index: usize,

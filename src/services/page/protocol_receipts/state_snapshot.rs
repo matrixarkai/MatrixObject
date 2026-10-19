@@ -132,8 +132,8 @@ pub struct ChunkStorageReadiness {
     pub chunk_route_control_proof_format: String,
     pub chunk_route_control_proof_checksum: String,
     pub chunk_route_control_proof_bytes: u64,
-    pub sealed_slab_count: u64,
-    pub allocator_active_slab_sealed: bool,
+    pub sealed_chunk_count: u64,
+    pub allocator_active_chunk_sealed: bool,
     pub route_control_proof: ChunkRouteControlProof,
     pub replica_readiness: Vec<ReplicaStorageReadiness>,
 }
@@ -152,7 +152,7 @@ pub struct StorageMaintenanceAction {
 pub struct StorageMaintenancePlan {
     pub readiness: ChunkStorageReadiness,
     pub reclaim: ChunkReplicaReclaimPlan,
-    pub slab_discards: Vec<DiscardPlan>,
+    pub chunk_discards: Vec<DiscardPlan>,
     pub actions: Vec<StorageMaintenanceAction>,
     pub plan_checksum: String,
     pub reclaim_continuation_safe: bool,
@@ -170,7 +170,7 @@ pub struct StorageMaintenanceRunReport {
     pub plan: StorageMaintenancePlan,
     pub repair: ChunkReplicaAuditRepairReport,
     pub reclaim: ReplicaPartialReclaimReport,
-    pub slab_discard: SlabDiscardRunReport,
+    pub chunk_discard: ChunkDiscardRunReport,
     pub post_readiness: ChunkStorageReadiness,
     pub route_control_proof: ChunkRouteControlProof,
     pub expected_route_control_checksum: String,
@@ -185,12 +185,12 @@ pub struct StorageMaintenanceRunReport {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct SealedSlabPage {
-    pub slabs: Vec<SlabId>,
-    pub sealed_slab_count: u64,
+pub struct SealedChunkPage {
+    pub slabs: Vec<ChunkId>,
+    pub sealed_chunk_count: u64,
     pub limit: u64,
     pub truncated: bool,
-    pub next_marker: Option<SlabId>,
+    pub next_marker: Option<ChunkId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -198,8 +198,8 @@ pub struct ChunkServiceSnapshot {
     pub page_size: u64,
     pub write_quorum: usize,
     pub read_quorum: usize,
-    pub allocator_slab_size: u64,
-    pub allocator_next_slab_id: u64,
+    pub allocator_chunk_size: u64,
+    pub allocator_next_chunk_id: u64,
     pub allocator_next_offset: u64,
     pub receipt_retention: usize,
     pub pending_allocations: BTreeMap<String, ChunkAllocation>,
@@ -221,7 +221,7 @@ pub struct ChunkServiceSnapshot {
     pub chunk_route_control_next_log_index: u64,
     pub route_qos_config: ChunkRouteQosConfig,
     pub route_qos_state: ChunkRouteQosState,
-    pub sealed_slabs: BTreeSet<SlabId>,
+    pub sealed_chunks: BTreeSet<ChunkId>,
     pub cumulative_quorum_write_degraded_chunks: u64,
     pub cumulative_quorum_read_degraded_chunks: u64,
     pub cumulative_quorum_discard_degraded_chunks: u64,
@@ -290,7 +290,7 @@ pub struct ChunkMutationBatchStatus {
     pub active_replica_count: u64,
     pub opened_replica_batch_count: u64,
     pub chunk_batch_active_replica_count: u64,
-    pub slab_allocation_receipt_count: u64,
+    pub chunk_allocation_receipt_count: u64,
     pub batch_allocation_receipt_count: u64,
     pub release_allocation_receipt_count: u64,
     pub write_receipt_count: u64,

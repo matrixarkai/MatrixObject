@@ -3,10 +3,10 @@ impl MatrixChunkService {
         &mut self,
         requests: Vec<ChunkRangeRequest>,
     ) -> Result<ChunkBatchStats, ObjectError> {
-        self.discard_slab_ranges_with_chunk_receipts(&requests, None)
+        self.discard_chunk_ranges_with_chunk_receipts(&requests, None)
     }
 
-    pub fn discard_slab_ranges_bounded_from(
+    pub fn discard_chunk_ranges_bounded_from(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
@@ -22,15 +22,15 @@ impl MatrixChunkService {
         Ok((stats, admission))
     }
 
-    pub fn discard_slab_ranges_bounded(
+    pub fn discard_chunk_ranges_bounded(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
     ) -> Result<(ChunkBatchStats, ChunkRangeAdmission), ObjectError> {
-        self.discard_slab_ranges_bounded_from(requests, max_discard_bytes, 0)
+        self.discard_chunk_ranges_bounded_from(requests, max_discard_bytes, 0)
     }
 
-    pub fn discard_slab_ranges_storage_fenced(
+    pub fn discard_chunk_ranges_storage_fenced(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         expected_route_control_checksum: Option<&str>,
@@ -41,13 +41,13 @@ impl MatrixChunkService {
         self.discard_slab_ranges(requests)
     }
 
-    pub fn discard_slab_ranges_storage_fenced_report(
+    pub fn discard_chunk_ranges_storage_fenced_report(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         expected_route_control_checksum: Option<&str>,
         expected_chunk_control_proof_checksum: Option<&str>,
     ) -> Result<ChunkStorageMutationReport, ObjectError> {
-        let stats = self.discard_slab_ranges_storage_fenced(
+        let stats = self.discard_chunk_ranges_storage_fenced(
             requests,
             expected_route_control_checksum,
             expected_chunk_control_proof_checksum,
@@ -59,13 +59,13 @@ impl MatrixChunkService {
         ))
     }
 
-    fn discard_slab_ranges_with_chunk_receipts(
+    fn discard_chunk_ranges_with_chunk_receipts(
         &mut self,
         requests: &[ChunkRangeRequest],
         idempotency_key: Option<&str>,
     ) -> Result<ChunkBatchStats, ObjectError> {
         let mut stats = ChunkBatchStats::default();
-        let mut grouped: BTreeMap<(SlabId, PageId), Vec<DataRange>> = BTreeMap::new();
+        let mut grouped: BTreeMap<(ChunkId, PageId), Vec<DataRange>> = BTreeMap::new();
         for request in requests {
             validate_pipeline_range("block batch discard", request.offset, request.length)?;
             stats.input_ranges = stats.input_ranges.saturating_add(1);
@@ -78,13 +78,13 @@ impl MatrixChunkService {
                             "block batch discard byte count overflows".to_string(),
                         )
                     })?;
-            let locations = self.map_range(&request.slab_id, request.offset, request.length)?;
+            let locations = self.map_range(&request.chunk_id, request.offset, request.length)?;
             stats.mapped_chunk_ranges = stats
                 .mapped_chunk_ranges
                 .saturating_add(locations.len() as u64);
             for loc in locations {
                 grouped
-                    .entry((request.slab_id.clone(), loc.page_id))
+                    .entry((request.chunk_id.clone(), loc.page_id))
                     .or_default()
                     .push(DataRange {
                         offset: loc.page_offset,
@@ -101,15 +101,15 @@ impl MatrixChunkService {
             stats.payload_bytes,
             now_millis(),
         )?;
-        let mut merged_grouped: BTreeMap<(SlabId, PageId), Vec<DataRange>> = BTreeMap::new();
+        let mut merged_grouped: BTreeMap<(ChunkId, PageId), Vec<DataRange>> = BTreeMap::new();
         let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
-        for ((slab_id, page_id), ranges) in grouped {
+        for ((chunk_id, page_id), ranges) in grouped {
             let merged = merge_ranges(ranges);
             if merged.is_empty() {
                 continue;
             }
             discard_ranges.insert(page_id.clone(), merged.clone());
-            merged_grouped.insert((slab_id, page_id), merged);
+            merged_grouped.insert((chunk_id, page_id), merged);
         }
         let accepted_replicas = self.admissible_discard_replicas(&discard_ranges)?;
         for ((_, page_id), merged) in merged_grouped {

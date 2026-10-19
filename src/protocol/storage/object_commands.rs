@@ -522,8 +522,8 @@ pub enum ObjectCommand {
     ApplyPreparedPageRouteQos {
         prepared: PreparedPageRouteQosConfig,
     },
-    SealPageSlab {
-        slab_id: SlabId,
+    SealPageChunk {
+        chunk_id: ChunkId,
         expected_route_control_checksum: String,
     },
     ApplyPreparedPageAllocationReservation {
@@ -545,7 +545,7 @@ pub enum ObjectCommand {
         prepared: PreparedPageAllocationRelease,
     },
     WritePageRangeIdempotent {
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         data: Vec<u8>,
         idempotency_key: String,
@@ -558,7 +558,7 @@ pub enum ObjectCommand {
         prepared: PreparedPageBatchWrite,
     },
     DiscardPageRangeIdempotent {
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         length: u64,
         idempotency_key: String,
@@ -586,7 +586,7 @@ pub enum ObjectCommand {
         repair: bool,
     },
     RepairPageRangeBounded {
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         length: u64,
         max_repair_chunks: usize,
@@ -1081,14 +1081,14 @@ pub enum ObjectCommand {
         enabled: bool,
     },
     ApplyDiscard {
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         ranges: Vec<DataRange>,
     },
-    ApplyPreparedSlabDiscard {
-        prepared: PreparedSlabDiscard,
+    ApplyPreparedChunkDiscard {
+        prepared: PreparedChunkDiscard,
     },
-    CompactSlab {
-        slab_id: SlabId,
+    CompactChunk {
+        chunk_id: ChunkId,
         update_time_ms: u64,
     },
     CompactAll {
@@ -1098,7 +1098,7 @@ pub enum ObjectCommand {
         expected_object_gc_report_proof_checksum: String,
         expected_full_compaction_plan_checksum: String,
     },
-    ApplyPreparedSlabCompaction {
-        prepared: PreparedSlabCompaction,
+    ApplyPreparedChunkCompaction {
+        prepared: PreparedChunkCompaction,
     },
 }

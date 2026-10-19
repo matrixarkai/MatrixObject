@@ -19,7 +19,7 @@ impl MatrixReplicaService {
         max_trim_bytes: u64,
     ) -> Result<ReplicaReclaimPlan, ObjectError> {
         if let Some(marker) = marker {
-            validate_slab_id(&marker.slab_id)?;
+            validate_chunk_id(&marker.chunk_id)?;
         }
         let limit = if max_chunks == 0 {
             usize::MAX

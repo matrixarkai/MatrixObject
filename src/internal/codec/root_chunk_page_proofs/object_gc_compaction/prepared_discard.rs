@@ -1,7 +1,7 @@
-pub(crate) fn prepared_slab_discard_checksum(prepared: &PreparedSlabDiscard) -> String {
+pub(crate) fn prepared_chunk_discard_checksum(prepared: &PreparedChunkDiscard) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-PREPARED-SEGMENT-DISCARD1");
-    append_slab_id(&mut material, &prepared.slab_id);
+    append_slab_id(&mut material, &prepared.chunk_id);
     append_u64(&mut material, prepared.discard_bytes);
     append_u64(&mut material, prepared.expected_previous_commit_index);
     append_u64(&mut material, prepared.prepared_commit_index);
@@ -25,12 +25,12 @@ pub(crate) fn prepared_slab_discard_checksum(prepared: &PreparedSlabDiscard) -> 
     etag(&material)
 }
 
-pub(crate) fn append_prepared_slab_discard_envelope(
+pub(crate) fn append_prepared_chunk_discard_envelope(
     out: &mut Vec<u8>,
-    envelope: &PreparedSlabDiscardEnvelope,
+    envelope: &PreparedChunkDiscardEnvelope,
 ) {
     append_string(out, &envelope.envelope_format);
-    append_slab_id(out, &envelope.slab_id);
+    append_slab_id(out, &envelope.chunk_id);
     append_u64(out, envelope.range_count);
     append_u64(out, envelope.discard_bytes);
     append_u64(out, envelope.source_stale_range_count);
@@ -51,22 +51,22 @@ pub(crate) fn append_prepared_slab_discard_envelope(
     append_string(out, &envelope.raft_entry_checksum);
 }
 
-pub(crate) fn prepared_slab_discard_envelope_checksum(
-    envelope: &PreparedSlabDiscardEnvelope,
+pub(crate) fn prepared_chunk_discard_envelope_checksum(
+    envelope: &PreparedChunkDiscardEnvelope,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-SEGMENT-DISCARD-ENVELOPE1");
-    append_prepared_slab_discard_envelope(&mut material, envelope);
+    append_prepared_chunk_discard_envelope(&mut material, envelope);
     etag(&material)
 }
 
-pub(crate) fn make_prepared_slab_discard_envelope(
-    prepared: &PreparedSlabDiscard,
-) -> PreparedSlabDiscardEnvelope {
+pub(crate) fn make_prepared_chunk_discard_envelope(
+    prepared: &PreparedChunkDiscard,
+) -> PreparedChunkDiscardEnvelope {
     let first_range = prepared.ranges.first();
-    let mut envelope = PreparedSlabDiscardEnvelope {
+    let mut envelope = PreparedChunkDiscardEnvelope {
         envelope_format: "MXOSSEGMENT-DISCARD-ENVELOPE1".to_string(),
-        slab_id: prepared.slab_id.clone(),
+        chunk_id: prepared.chunk_id.clone(),
         range_count: prepared.ranges.len() as u64,
         discard_bytes: prepared.discard_bytes,
         source_stale_range_count: prepared.source_stale_ranges.len() as u64,
@@ -91,6 +91,6 @@ pub(crate) fn make_prepared_slab_discard_envelope(
         raft_entry_checksum: prepared.raft_entry_checksum.clone(),
         envelope_checksum: String::new(),
     };
-    envelope.envelope_checksum = prepared_slab_discard_envelope_checksum(&envelope);
+    envelope.envelope_checksum = prepared_chunk_discard_envelope_checksum(&envelope);
     envelope
 }

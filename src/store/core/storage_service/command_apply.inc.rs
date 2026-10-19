@@ -10,7 +10,7 @@ enum CommandApplyFamily {
     MetadataCoordinator,
     BucketPolicy,
     ObjectMutation,
-    SlabLifecycle,
+    ChunkLifecycle,
 }
 
 impl ObjectCommand {
@@ -116,7 +116,7 @@ impl ObjectCommand {
             | ObjectCommand::ApplyPreparedPageReceiptRetention { .. }
             | ObjectCommand::ConfigurePageRouteQos { .. }
             | ObjectCommand::ApplyPreparedPageRouteQos { .. }
-            | ObjectCommand::SealPageSlab { .. }
+            | ObjectCommand::SealPageChunk { .. }
             | ObjectCommand::ApplyPreparedPageAllocationReservation { .. }
             | ObjectCommand::ApplyPreparedPageBatchAllocationReservation { .. }
             | ObjectCommand::ReleasePageAllocationIdempotent { .. }
@@ -236,11 +236,11 @@ impl ObjectCommand {
             | ObjectCommand::CommitRootPlacementMigration { .. }
             | ObjectCommand::SetBucketVersioning { .. }
             | ObjectCommand::ApplyDiscard { .. }
-            | ObjectCommand::ApplyPreparedSlabDiscard { .. }
-            | ObjectCommand::CompactSlab { .. }
+            | ObjectCommand::ApplyPreparedChunkDiscard { .. }
+            | ObjectCommand::CompactChunk { .. }
             | ObjectCommand::CompactAll { .. }
-            | ObjectCommand::ApplyPreparedSlabCompaction { .. } => {
-                CommandApplyFamily::SlabLifecycle
+            | ObjectCommand::ApplyPreparedChunkCompaction { .. } => {
+                CommandApplyFamily::ChunkLifecycle
             }
         }
     }
@@ -287,8 +287,8 @@ impl MatrixObjectStore {
             CommandApplyFamily::ObjectMutation => {
                 self.apply_object_mutation_command(command, raft_entry_index)
             }
-            CommandApplyFamily::SlabLifecycle => {
-                self.apply_slab_lifecycle_command(command, raft_entry_index)
+            CommandApplyFamily::ChunkLifecycle => {
+                self.apply_chunk_lifecycle_command(command, raft_entry_index)
             }
         }
     }

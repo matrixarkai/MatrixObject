@@ -15,7 +15,7 @@ impl StoreSnapshot {
         self.validate_bucket_policies()?;
         self.validate_raft_state()?;
         self.validate_snapshot_checksum()?;
-        self.validate_slabs()?;
+        self.validate_chunks()?;
         self.validate_objects()?;
         self.validate_multipart_uploads()?;
         self.validate_changefeed_state()

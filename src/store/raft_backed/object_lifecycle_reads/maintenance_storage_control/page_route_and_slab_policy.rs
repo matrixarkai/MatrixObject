@@ -147,32 +147,32 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_seal_page_slab(
+    pub fn propose_seal_page_chunk(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.propose_seal_page_slab_fenced(slab_id, None)
+        self.propose_seal_page_chunk_fenced(chunk_id, None)
     }
 
-    pub fn propose_seal_page_slab_fenced(
+    pub fn propose_seal_page_chunk_fenced(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.store
             .chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
-        self.propose(ObjectCommand::SealPageSlab {
-            slab_id,
+        self.propose(ObjectCommand::SealPageChunk {
+            chunk_id,
             expected_route_control_checksum: expected_route_control_checksum
                 .unwrap_or_default()
                 .to_string(),
         })
     }
 
-    pub fn propose_seal_page_slab_linearizable_fenced(
+    pub fn propose_seal_page_chunk_linearizable_fenced(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         expected_route_control_checksum: Option<&str>,
         min_read_index: u64,
         min_commit_index: u64,
@@ -183,22 +183,22 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        self.propose_seal_page_slab_fenced(slab_id, expected_route_control_checksum)
+        self.propose_seal_page_chunk_fenced(chunk_id, expected_route_control_checksum)
     }
 
-    pub fn list_page_sealed_slabs_linearizable(
+    pub fn list_page_sealed_chunks_linearizable(
         &self,
-        marker: Option<&SlabId>,
+        marker: Option<&ChunkId>,
         limit: usize,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<SealedSlabPage, ObjectError> {
+    ) -> Result<SealedChunkPage, ObjectError> {
         self.ensure_storage_control_read_index_committed_at(
             "list block sealed segments",
             None,
             min_read_index,
             min_commit_index,
         )?;
-        self.store.list_page_sealed_slabs(marker, limit)
+        self.store.list_page_sealed_chunks(marker, limit)
     }
 }

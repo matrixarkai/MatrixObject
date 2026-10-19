@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoreOptions {
-    pub slab_size: u64,
+    pub chunk_size: u64,
     pub max_extent_bytes: u64,
     pub page_size: u64,
     pub volume_count: u64,
@@ -14,7 +14,7 @@ pub struct StoreOptions {
     /// Off by default: reclaiming immediately means an overwrite stops
     /// accumulating stale bytes for the collector, which changes what
     /// `gc_report` reports.
-    pub reuse_stale_slab_space: bool,
+    pub reuse_stale_chunk_space: bool,
     pub compaction_fragment_threshold: usize,
     pub object_manifest_checkpoint_interval: u64,
     pub object_metadata_checkpoint_interval: u64,

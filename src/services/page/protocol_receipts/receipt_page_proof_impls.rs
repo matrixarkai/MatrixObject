@@ -130,8 +130,8 @@ macro_rules! impl_filtered_page_storage_receipt_page_source {
                 self.next_marker.as_deref()
             }
 
-            fn storage_receipt_page_slab_filter(&self) -> Option<&SlabId> {
-                self.slab_id.as_ref()
+            fn storage_receipt_page_slab_filter(&self) -> Option<&ChunkId> {
+                self.chunk_id.as_ref()
             }
 
             fn storage_receipt_page_chunk_filter(&self) -> Option<u64> {

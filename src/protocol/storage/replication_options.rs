@@ -147,7 +147,7 @@ impl MetadataReplicationProofReport {
 impl Default for StoreOptions {
     fn default() -> Self {
         Self {
-            slab_size: 64 * 1024 * 1024,
+            chunk_size: 64 * 1024 * 1024,
             max_extent_bytes: 4 * 1024 * 1024,
             page_size: 1024 * 1024,
             volume_count: 1,
@@ -156,7 +156,7 @@ impl Default for StoreOptions {
             persistent_journal_path: String::new(),
             replica_count: 3,
             write_quorum: 2,
-            reuse_stale_slab_space: false,
+            reuse_stale_chunk_space: false,
             compaction_fragment_threshold: 128,
             object_manifest_checkpoint_interval: 1,
             object_metadata_checkpoint_interval: 1,

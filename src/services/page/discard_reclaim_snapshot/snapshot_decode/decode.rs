@@ -34,12 +34,12 @@ impl ChunkServiceSnapshot {
         let has_repair_receipts = version >= 20;
         let has_range_repair_receipts = version >= 21;
         let has_audit_repair_receipts = version >= 22;
-        let has_sealed_slabs = version >= 23;
+        let has_sealed_chunks = version >= 23;
         let page_size = cursor.read_u64()?;
         let write_quorum = cursor.read_count("block service snapshot write quorum")?;
         let read_quorum = cursor.read_count("block service snapshot read quorum")?;
-        let allocator_slab_size = cursor.read_u64()?;
-        let allocator_next_slab_id = cursor.read_u64()?;
+        let allocator_chunk_size = cursor.read_u64()?;
+        let allocator_next_chunk_id = cursor.read_u64()?;
         let allocator_next_offset = cursor.read_u64()?;
         let receipt_retention = if version >= 10 {
             cursor.read_count("block service snapshot receipt retention")?
@@ -51,13 +51,13 @@ impl ChunkServiceSnapshot {
         for _ in 0..cursor.read_count("block service snapshot pending allocation count")? {
             let map_allocation_id = cursor.read_string()?;
             let allocation_id = cursor.read_string()?;
-            let slab_id = SlabId {
+            let chunk_id = ChunkId {
                 volume_id: cursor.read_u64()?,
                 id: cursor.read_u64()?,
             };
             let allocation = ChunkAllocation {
                 allocation_id,
-                slab_id,
+                chunk_id,
                 offset: cursor.read_u64()?,
                 length: cursor.read_u64()?,
                 create_time_ms: cursor.read_u64()?,
@@ -69,13 +69,13 @@ impl ChunkServiceSnapshot {
             for _ in 0..cursor.read_count("block service snapshot allocation receipt count")? {
                 let idempotency_key = cursor.read_string()?;
                 let allocation_id = cursor.read_string()?;
-                let slab_id = SlabId {
+                let chunk_id = ChunkId {
                     volume_id: cursor.read_u64()?,
                     id: cursor.read_u64()?,
                 };
                 let allocation = ChunkAllocation {
                     allocation_id,
-                    slab_id,
+                    chunk_id,
                     offset: cursor.read_u64()?,
                     length: cursor.read_u64()?,
                     create_time_ms: cursor.read_u64()?,
@@ -94,13 +94,13 @@ impl ChunkServiceSnapshot {
                 let mut allocations = Vec::with_capacity(allocation_count);
                 for _ in 0..allocation_count {
                     let allocation_id = cursor.read_string()?;
-                    let slab_id = SlabId {
+                    let chunk_id = ChunkId {
                         volume_id: cursor.read_u64()?,
                         id: cursor.read_u64()?,
                     };
                     allocations.push(ChunkAllocation {
                         allocation_id,
-                        slab_id,
+                        chunk_id,
                         offset: cursor.read_u64()?,
                         length: cursor.read_u64()?,
                         create_time_ms: cursor.read_u64()?,
@@ -116,13 +116,13 @@ impl ChunkServiceSnapshot {
             {
                 let idempotency_key = cursor.read_string()?;
                 let allocation_id = cursor.read_string()?;
-                let slab_id = SlabId {
+                let chunk_id = ChunkId {
                     volume_id: cursor.read_u64()?,
                     id: cursor.read_u64()?,
                 };
                 let allocation = ChunkAllocation {
                     allocation_id,
-                    slab_id,
+                    chunk_id,
                     offset: cursor.read_u64()?,
                     length: cursor.read_u64()?,
                     create_time_ms: cursor.read_u64()?,
@@ -206,10 +206,10 @@ impl ChunkServiceSnapshot {
                 ChunkRouteQosState::default(),
             )
         };
-        let mut sealed_slabs = BTreeSet::new();
-        if has_sealed_slabs {
+        let mut sealed_chunks = BTreeSet::new();
+        if has_sealed_chunks {
             for _ in 0..cursor.read_count("block service snapshot sealed segment count")? {
-                sealed_slabs.insert(SlabId {
+                sealed_chunks.insert(ChunkId {
                     volume_id: cursor.read_u64()?,
                     id: cursor.read_u64()?,
                 });
@@ -310,8 +310,8 @@ impl ChunkServiceSnapshot {
             page_size,
             write_quorum,
             read_quorum,
-            allocator_slab_size,
-            allocator_next_slab_id,
+            allocator_chunk_size,
+            allocator_next_chunk_id,
             allocator_next_offset,
             receipt_retention,
             pending_allocations,
@@ -333,7 +333,7 @@ impl ChunkServiceSnapshot {
             chunk_route_control_next_log_index,
             route_qos_config,
             route_qos_state,
-            sealed_slabs,
+            sealed_chunks,
             cumulative_quorum_write_degraded_chunks,
             cumulative_quorum_read_degraded_chunks,
             cumulative_quorum_discard_degraded_chunks,

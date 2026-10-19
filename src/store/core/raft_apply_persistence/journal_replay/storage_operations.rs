@@ -20,23 +20,23 @@ impl MatrixObjectStore {
                 self.release_page_allocation_idempotent(&allocation_id, &idempotency_key)?;
             }
             55 => {
-                let slab_id = read_slab_id(&mut cursor)?;
+                let chunk_id = read_slab_id(&mut cursor)?;
                 let offset = cursor.read_u64()?;
                 let data_len = cursor.read_u64()? as usize;
                 let data = cursor.read_bytes(data_len)?.to_vec();
                 let idempotency_key = cursor.read_string()?;
-                self.write_page_range_idempotent(&slab_id, offset, &data, &idempotency_key)?;
+                self.write_page_range_idempotent(&chunk_id, offset, &data, &idempotency_key)?;
             }
             56 => {
                 let count = cursor.read_count("persistent journal block write count")?;
                 let mut writes = Vec::with_capacity(count);
                 for _ in 0..count {
-                    let slab_id = read_slab_id(&mut cursor)?;
+                    let chunk_id = read_slab_id(&mut cursor)?;
                     let offset = cursor.read_u64()?;
                     let data_len = cursor.read_u64()? as usize;
                     let data = cursor.read_bytes(data_len)?.to_vec();
                     writes.push(ChunkRangeWrite {
-                        slab_id,
+                        chunk_id,
                         offset,
                         data,
                     });
@@ -45,18 +45,18 @@ impl MatrixObjectStore {
                 self.write_page_ranges_idempotent(writes, &idempotency_key)?;
             }
             57 => {
-                let slab_id = read_slab_id(&mut cursor)?;
+                let chunk_id = read_slab_id(&mut cursor)?;
                 let offset = cursor.read_u64()?;
                 let length = cursor.read_u64()?;
                 let idempotency_key = cursor.read_string()?;
-                self.discard_page_range_idempotent(&slab_id, offset, length, &idempotency_key)?;
+                self.discard_page_range_idempotent(&chunk_id, offset, length, &idempotency_key)?;
             }
             58 => {
                 let count = cursor.read_count("persistent journal block discard count")?;
                 let mut requests = Vec::with_capacity(count);
                 for _ in 0..count {
                     requests.push(ChunkRangeRequest {
-                        slab_id: read_slab_id(&mut cursor)?,
+                        chunk_id: read_slab_id(&mut cursor)?,
                         offset: cursor.read_u64()?,
                         length: cursor.read_u64()?,
                     });

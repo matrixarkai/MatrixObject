@@ -1,14 +1,14 @@
 impl StoreSnapshot {
-    fn validate_slabs(&self) -> Result<(), ObjectError> {
-        let mut max_slab_id = 0u64;
-        for (slab_id, slab) in &self.slabs {
-            if slab_id != &slab.slab_id {
+    fn validate_chunks(&self) -> Result<(), ObjectError> {
+        let mut max_chunk_id = 0u64;
+        for (chunk_id, slab) in &self.slabs {
+            if chunk_id != &slab.chunk_id {
                 return Err(ObjectError::Corruption(
                     "snapshot segment key does not match segment info".to_string(),
                 ));
             }
-            max_slab_id = max_slab_id.max(slab_id.id);
-            if slab.next_offset > self.options.slab_size
+            max_chunk_id = max_chunk_id.max(chunk_id.id);
+            if slab.next_offset > self.options.chunk_size
                 || slab.live_bytes.saturating_add(slab.stale_bytes) < slab.live_bytes
                 || slab.discarded_bytes > slab.stale_bytes
             {
@@ -28,7 +28,7 @@ impl StoreSnapshot {
                 }
             }
         }
-        if max_slab_id >= self.next_slab_id {
+        if max_chunk_id >= self.next_chunk_id {
             return Err(ObjectError::Corruption(
                 "snapshot next segment id is behind retained segments".to_string(),
             ));

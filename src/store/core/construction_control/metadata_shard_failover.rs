@@ -123,25 +123,25 @@ impl MatrixObjectStore {
             "",
             expected_route_control_checksum,
         )?;
-        let selected_slab_discards = plan
+        let selected_chunk_discards = plan
             .actions
             .iter()
             .filter(|action| action.action == "discard_object_segment")
             .count();
-        let slab_discard = self.apply_planned_slab_discards(
+        let chunk_discard = self.apply_planned_chunk_discards(
             &plan,
-            selected_slab_discards,
+            selected_chunk_discards,
             expected_route_control_checksum,
         );
-        report.slab_discard = slab_discard;
+        report.chunk_discard = chunk_discard;
         report.executed_actions = report
             .executed_actions
-            .saturating_add(report.slab_discard.discarded_slabs);
+            .saturating_add(report.chunk_discard.discarded_chunks);
         report.skipped_actions =
             plan.actions
                 .len()
                 .saturating_sub(report.executed_actions as usize) as u64;
-        report.reclaimed = report.reclaimed || report.slab_discard.discarded_slabs > 0;
+        report.reclaimed = report.reclaimed || report.chunk_discard.discarded_chunks > 0;
         report.plan = plan;
         report.post_readiness = self.chunk_service.storage_readiness(
             min_capacity_free_bytes,
@@ -151,48 +151,48 @@ impl MatrixObjectStore {
         Ok(report)
     }
 
-    fn apply_planned_slab_discards(
+    fn apply_planned_chunk_discards(
         &mut self,
         plan: &StorageMaintenancePlan,
         max_slabs: usize,
         expected_route_control_checksum: &str,
-    ) -> SlabDiscardRunReport {
-        let mut report = SlabDiscardRunReport {
-            planned_slabs: plan.slab_discards.len() as u64,
+    ) -> ChunkDiscardRunReport {
+        let mut report = ChunkDiscardRunReport {
+            planned_chunks: plan.chunk_discards.len() as u64,
             planned_discard_bytes: plan
-                .slab_discards
+                .chunk_discards
                 .iter()
                 .map(|discard| discard.discard_bytes)
                 .fold(0u64, saturating_add),
             route_control_proof: plan.readiness.route_control_proof.clone(),
             expected_route_control_checksum: expected_route_control_checksum.to_string(),
-            ..SlabDiscardRunReport::default()
+            ..ChunkDiscardRunReport::default()
         };
-        for discard in &plan.slab_discards {
+        for discard in &plan.chunk_discards {
             if discard.compact_instead {
-                report.skipped_compaction_slabs =
-                    report.skipped_compaction_slabs.saturating_add(1);
+                report.skipped_compaction_chunks =
+                    report.skipped_compaction_chunks.saturating_add(1);
                 report
-                    .compaction_slab_ids
-                    .push(discard.slab_id.clone());
+                    .compaction_chunk_ids
+                    .push(discard.chunk_id.clone());
                 continue;
             }
-            if max_slabs == 0 || report.attempted_slabs >= max_slabs as u64 {
-                report.skipped_limit_slabs = report.skipped_limit_slabs.saturating_add(1);
+            if max_slabs == 0 || report.attempted_chunks >= max_slabs as u64 {
+                report.skipped_limit_chunks = report.skipped_limit_chunks.saturating_add(1);
                 continue;
             }
-            report.attempted_slabs = report.attempted_slabs.saturating_add(1);
-            match self.apply_discard_borrowed(&discard.slab_id, &discard.ranges) {
+            report.attempted_chunks = report.attempted_chunks.saturating_add(1);
+            match self.apply_discard_borrowed(&discard.chunk_id, &discard.ranges) {
                 Ok(()) => {
-                    report.discarded_slabs = report.discarded_slabs.saturating_add(1);
+                    report.discarded_chunks = report.discarded_chunks.saturating_add(1);
                     report.discard_bytes =
                         report.discard_bytes.saturating_add(discard.discard_bytes);
                     report
-                        .discarded_slab_ids
-                        .push(discard.slab_id.clone());
+                        .discarded_chunk_ids
+                        .push(discard.chunk_id.clone());
                 }
                 Err(err) => {
-                    report.failed_slabs = report.failed_slabs.saturating_add(1);
+                    report.failed_chunks = report.failed_chunks.saturating_add(1);
                     if report.first_error.is_empty() {
                         report.first_error = err.to_string();
                     }

@@ -1,13 +1,13 @@
 impl MatrixChunkService {
     pub fn can_accept_slab_discard(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_discard_bytes: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         validate_pipeline_range("block discard", offset, length)?;
-        let locations = self.map_range(slab_id, offset, length)?;
+        let locations = self.map_range(chunk_id, offset, length)?;
         let discard_budget_limited = max_discard_bytes > 0 && length > max_discard_bytes;
         let mut discard_ranges: BTreeMap<PageId, Vec<DataRange>> = BTreeMap::new();
         for loc in &locations {
@@ -77,7 +77,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_slab_discard_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_discard_bytes: u64,
@@ -85,7 +85,7 @@ impl MatrixChunkService {
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission =
-            self.can_accept_slab_discard(slab_id, offset, length, max_discard_bytes)?;
+            self.can_accept_slab_discard(chunk_id, offset, length, max_discard_bytes)?;
         self.stamp_route_control_admission(&mut admission, expected_route_control_checksum);
         stamp_page_range_admission_proof("CanDiscardBlock", &mut admission);
         Ok(admission)
@@ -169,7 +169,7 @@ impl MatrixChunkService {
             }
             selected_discard_bytes = selected_discard_bytes.saturating_add(request.length);
             admission.next_discard_range_index = (request_index as u64).saturating_add(1);
-            for loc in self.map_range(&request.slab_id, request.offset, request.length)? {
+            for loc in self.map_range(&request.chunk_id, request.offset, request.length)? {
                 admission.mapped_chunk_ranges = admission.mapped_chunk_ranges.saturating_add(1);
                 discard_ranges
                     .entry(loc.page_id)
@@ -245,7 +245,7 @@ impl MatrixChunkService {
         Ok(admission)
     }
 
-    pub fn can_accept_slab_discards_fenced(
+    pub fn can_accept_chunk_discards_fenced(
         &self,
         requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
@@ -258,14 +258,14 @@ impl MatrixChunkService {
         Ok(admission)
     }
 
-    pub fn can_accept_slab_discards_from_fenced(
+    pub fn can_accept_chunk_discards_from_fenced(
         &self,
         requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.can_accept_slab_discards_from_fenced_borrowed(
+        self.can_accept_chunk_discards_from_fenced_borrowed(
             &requests,
             max_discard_bytes,
             discard_start_range_index,
@@ -273,7 +273,7 @@ impl MatrixChunkService {
         )
     }
 
-    pub fn can_accept_slab_discards_from_fenced_borrowed(
+    pub fn can_accept_chunk_discards_from_fenced_borrowed(
         &self,
         requests: &[ChunkRangeRequest],
         max_discard_bytes: u64,

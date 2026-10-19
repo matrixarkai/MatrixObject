@@ -3,7 +3,7 @@ fn append_storage_readiness(mut material: &mut Vec<u8>, report: &ObjectStoreDist
     append_u64(&mut material, report.object_count);
     append_u64(&mut material, report.live_object_count);
     append_u64(&mut material, report.deleted_object_count);
-    append_u64(&mut material, report.slab_count);
+    append_u64(&mut material, report.chunk_count);
     append_u64(&mut material, report.page_count);
     append_u64(&mut material, report.live_bytes);
     append_u64(&mut material, report.stale_bytes);
@@ -19,11 +19,11 @@ fn append_storage_readiness(mut material: &mut Vec<u8>, report: &ObjectStoreDist
     append_u64(&mut material, report.space_amplification_ppm);
     append_u64(&mut material, report.discard_backlog_ppm);
     append_u64(&mut material, report.discard_candidate_bytes);
-    append_u64(&mut material, report.discard_candidate_slabs);
+    append_u64(&mut material, report.discard_candidate_chunks);
     append_u64(&mut material, report.pending_discard_range_count);
     append_u64(&mut material, report.merged_discard_range_count);
     append_u64(&mut material, report.fragmented_range_count);
-    append_u64(&mut material, report.compaction_candidate_slabs);
+    append_u64(&mut material, report.compaction_candidate_chunks);
     append_u64(&mut material, report.compaction_candidate_bytes);
     append_u64(&mut material, report.compaction_candidate_range_count);
     append_u64(&mut material, report.compaction_recommended as u64);

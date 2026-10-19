@@ -93,7 +93,7 @@ pub(crate) fn append_page_range_repair_receipt(
     out: &mut Vec<u8>,
     receipt: &ChunkRangeRepairReceipt,
 ) {
-    append_slab_id(out, &receipt.slab_id);
+    append_slab_id(out, &receipt.chunk_id);
     append_u64(out, receipt.offset);
     append_u64(out, receipt.length);
     append_u64(out, receipt.max_repair_chunks);

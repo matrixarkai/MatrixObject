@@ -45,7 +45,7 @@ impl MatrixChunkService {
         &self,
         marker: Option<&str>,
         limit: usize,
-        slab_id: Option<&SlabId>,
+        chunk_id: Option<&ChunkId>,
     ) -> Result<PageRangeRepairReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
@@ -54,7 +54,7 @@ impl MatrixChunkService {
         let mut page = PageRangeRepairReceiptPage {
             total_receipt_count: self.range_repair_request_receipts.len() as u64,
             limit: limit as u64,
-            slab_id: slab_id.cloned(),
+            chunk_id: chunk_id.cloned(),
             ..PageRangeRepairReceiptPage::default()
         };
         let iter: Box<dyn Iterator<Item = (&String, &ChunkRangeRepairReceipt)> + '_> =
@@ -68,7 +68,7 @@ impl MatrixChunkService {
             };
         for (idempotency_key, receipt) in iter {
             page.scanned_count = page.scanned_count.saturating_add(1);
-            if slab_id.is_some_and(|slab_id| &receipt.slab_id != slab_id) {
+            if chunk_id.is_some_and(|chunk_id| &receipt.chunk_id != chunk_id) {
                 page.skipped_slab_count = page.skipped_slab_count.saturating_add(1);
                 continue;
             }

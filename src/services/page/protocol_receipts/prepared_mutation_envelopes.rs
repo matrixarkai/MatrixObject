@@ -51,7 +51,7 @@ impl PreparedPageAllocationReservationEnvelope {
                 .to_control_fields(&format!("{field_prefix}route_control_proof.")),
         );
         fields.extend(
-            self.allocation_slab_id
+            self.allocation_chunk_id
                 .to_control_fields(&format!("{field_prefix}allocation_segment.")),
         );
         fields
@@ -101,9 +101,9 @@ impl PreparedPageBatchAllocationReservationEnvelope {
                 allocation_id.clone(),
             );
         }
-        for (index, slab_id) in self.allocation_slabs.iter().enumerate() {
+        for (index, chunk_id) in self.allocation_chunks.iter().enumerate() {
             fields.extend(
-                slab_id.to_control_fields(&format!("{field_prefix}allocation.{index}.segment.")),
+                chunk_id.to_control_fields(&format!("{field_prefix}allocation.{index}.segment.")),
             );
         }
         for (index, offset) in self.allocation_offsets.iter().enumerate() {
@@ -216,7 +216,7 @@ impl PreparedPageAllocationReleaseEnvelope {
                 .to_control_fields(&format!("{field_prefix}route_control_proof.")),
         );
         fields.extend(
-            self.allocation_slab_id
+            self.allocation_chunk_id
                 .to_control_fields(&format!("{field_prefix}allocation_segment.")),
         );
         fields

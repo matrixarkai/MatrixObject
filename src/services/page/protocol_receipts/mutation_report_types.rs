@@ -49,7 +49,7 @@ pub struct ChunkIdempotentBatchDiscardReport {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkRangeRepairReceipt {
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub offset: u64,
     pub length: u64,
     pub max_repair_chunks: u64,
@@ -90,11 +90,11 @@ impl ChunkRangeRepairReceipt {
 
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .slab_id
+            .chunk_id
             .to_control_fields(&format!("{field_prefix}segment."));
         for (name, value) in [
-            ("volume_id", self.slab_id.volume_id),
-            ("segment_id", self.slab_id.id),
+            ("volume_id", self.chunk_id.volume_id),
+            ("segment_id", self.chunk_id.id),
             ("offset", self.offset),
             ("length", self.length),
             ("max_repair_chunks", self.max_repair_chunks),

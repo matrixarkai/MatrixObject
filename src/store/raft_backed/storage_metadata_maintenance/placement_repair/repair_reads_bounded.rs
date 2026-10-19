@@ -55,7 +55,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             let selected_chunks = self
                 .store
                 .chunk_service
-                .map_range(&extent.slab_id, extent.offset + local_offset, local_len)?
+                .map_range(&extent.chunk_id, extent.offset + local_offset, local_len)?
                 .into_iter()
                 .filter(|loc| loc.page_id.page_index >= next_chunk_index)
                 .map(|loc| loc.page_id)
@@ -73,7 +73,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 .unwrap_or(next_chunk_index)
                 .saturating_add(1);
             self.propose_repair_page_range_bounded_linearizable_fenced(
-                extent.slab_id.clone(),
+                extent.chunk_id.clone(),
                 extent.offset + local_offset,
                 local_len,
                 chunk_limit,

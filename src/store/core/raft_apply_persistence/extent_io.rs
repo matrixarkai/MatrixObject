@@ -5,11 +5,11 @@ impl MatrixObjectStore {
             return self.allocate_extents(&data);
         }
         let page_len = data.len();
-        if let Some((slab_id, offset)) = self.take_reusable_stale_range(page_len as u64) {
+        if let Some((chunk_id, offset)) = self.take_reusable_stale_range(page_len as u64) {
             self.chunk_service
-                .write_slab_range(&slab_id, offset, &data)?;
+                .write_chunk_range(&chunk_id, offset, &data)?;
             self.payloads.insert(
-                (slab_id.clone(), offset),
+                (chunk_id.clone(), offset),
                 StoredPayload {
                     len: page_len as u64,
                     etag_fnv1a64: fnv1a64(&data),
@@ -18,15 +18,15 @@ impl MatrixObjectStore {
             self.physical_written_bytes =
                 saturating_add(self.physical_written_bytes, page_len as u64);
             return Ok(vec![ObjectExtent {
-                slab_id,
+                chunk_id,
                 offset,
                 length: page_len as u64,
             }]);
         }
-        let slab_id = self.ensure_writable_slab(page_len as u64)?;
+        let chunk_id = self.ensure_writable_chunk(page_len as u64)?;
         let slab = self
             .slabs
-            .get_mut(&slab_id)
+            .get_mut(&chunk_id)
             .ok_or_else(|| ObjectError::NotFound("allocated segment missing".to_string()))?;
         let offset = slab.next_offset;
         slab.next_offset = slab
@@ -36,9 +36,9 @@ impl MatrixObjectStore {
         slab.logical_bytes = slab.next_offset;
         slab.live_bytes = saturating_add(slab.live_bytes, page_len as u64);
         self.chunk_service
-            .write_slab_range(&slab_id, offset, &data)?;
+            .write_chunk_range(&chunk_id, offset, &data)?;
         self.payloads.insert(
-            (slab_id.clone(), offset),
+            (chunk_id.clone(), offset),
             StoredPayload {
                 len: page_len as u64,
                 etag_fnv1a64: fnv1a64(&data),
@@ -47,7 +47,7 @@ impl MatrixObjectStore {
         self.physical_written_bytes =
             saturating_add(self.physical_written_bytes, page_len as u64);
         Ok(vec![ObjectExtent {
-            slab_id,
+            chunk_id,
             offset,
             length: page_len as u64,
         }])
@@ -64,10 +64,10 @@ impl MatrixObjectStore {
         while cursor < data.len() {
             let remaining = data.len() - cursor;
             let page_len = remaining.min(max_extent);
-            let slab_id = self.ensure_writable_slab(page_len as u64)?;
+            let chunk_id = self.ensure_writable_chunk(page_len as u64)?;
             let slab = self
                 .slabs
-                .get_mut(&slab_id)
+                .get_mut(&chunk_id)
                 .ok_or_else(|| ObjectError::NotFound("allocated segment missing".to_string()))?;
             let offset = slab.next_offset;
             slab.next_offset = slab
@@ -78,13 +78,13 @@ impl MatrixObjectStore {
                 })?;
             slab.logical_bytes = slab.next_offset;
             slab.live_bytes = saturating_add(slab.live_bytes, page_len as u64);
-            self.chunk_service.write_slab_range(
-                &slab_id,
+            self.chunk_service.write_chunk_range(
+                &chunk_id,
                 offset,
                 &data[cursor..cursor + page_len],
             )?;
             self.payloads.insert(
-                (slab_id.clone(), offset),
+                (chunk_id.clone(), offset),
                 StoredPayload {
                     len: page_len as u64,
                     etag_fnv1a64: fnv1a64(&data[cursor..cursor + page_len]),
@@ -93,7 +93,7 @@ impl MatrixObjectStore {
             self.physical_written_bytes =
                 saturating_add(self.physical_written_bytes, page_len as u64);
             extents.push(ObjectExtent {
-                slab_id,
+                chunk_id,
                 offset,
                 length: page_len as u64,
             });
@@ -105,17 +105,17 @@ impl MatrixObjectStore {
     /// Takes the first freed range that fits, so an overwrite reuses the space
     /// its previous version left instead of growing the slab. Returns `None`
     /// unless the store was asked for this.
-    fn take_reusable_stale_range(&mut self, length: u64) -> Option<(SlabId, u64)> {
-        if !self.options.reuse_stale_slab_space || length == 0 {
+    fn take_reusable_stale_range(&mut self, length: u64) -> Option<(ChunkId, u64)> {
+        if !self.options.reuse_stale_chunk_space || length == 0 {
             return None;
         }
-        let (slab_id, index) = self.slabs.iter().find_map(|(slab_id, info)| {
+        let (chunk_id, index) = self.slabs.iter().find_map(|(chunk_id, info)| {
             info.stale_ranges
                 .iter()
                 .position(|range| range.length >= length)
-                .map(|index| (slab_id.clone(), index))
+                .map(|index| (chunk_id.clone(), index))
         })?;
-        let info = self.slabs.get_mut(&slab_id)?;
+        let info = self.slabs.get_mut(&chunk_id)?;
         let range = *info.stale_ranges.get(index)?;
         if range.length == length {
             info.stale_ranges.remove(index);
@@ -127,11 +127,11 @@ impl MatrixObjectStore {
         }
         info.stale_bytes = info.stale_bytes.saturating_sub(length);
         info.live_bytes = saturating_add(info.live_bytes, length);
-        Some((slab_id, range.offset))
+        Some((chunk_id, range.offset))
     }
 
-    fn ensure_writable_slab(&mut self, length: u64) -> Result<SlabId, ObjectError> {
-        if length > self.options.slab_size {
+    fn ensure_writable_chunk(&mut self, length: u64) -> Result<ChunkId, ObjectError> {
+        if length > self.options.chunk_size {
             return Err(ObjectError::InvalidArgument(
                 "extent length exceeds segment_size".to_string(),
             ));
@@ -139,23 +139,23 @@ impl MatrixObjectStore {
         if let Some((id, _)) = self
             .slabs
             .iter()
-            .find(|(_, info)| info.next_offset + length <= self.options.slab_size)
+            .find(|(_, info)| info.next_offset + length <= self.options.chunk_size)
         {
             return Ok(id.clone());
         }
-        let id = self.next_slab_id;
-        self.next_slab_id = self
-            .next_slab_id
+        let id = self.next_chunk_id;
+        self.next_chunk_id = self
+            .next_chunk_id
             .checked_add(1)
             .ok_or_else(|| ObjectError::InvalidArgument("segment id overflow".to_string()))?;
-        let slab_id = SlabId {
+        let chunk_id = ChunkId {
             volume_id: (id - 1) % self.options.volume_count,
             id,
         };
         self.slabs.insert(
-            slab_id.clone(),
-            SlabInfo {
-                slab_id: slab_id.clone(),
+            chunk_id.clone(),
+            ChunkInfo {
+                chunk_id: chunk_id.clone(),
                 logical_bytes: 0,
                 live_bytes: 0,
                 stale_bytes: 0,
@@ -165,17 +165,17 @@ impl MatrixObjectStore {
                 discarded_ranges: Vec::new(),
             },
         );
-        Ok(slab_id)
+        Ok(chunk_id)
     }
 
     fn mark_extents_stale(&mut self, extents: &[ObjectExtent]) -> Result<(), ObjectError> {
-        let mut grouped_ranges: BTreeMap<SlabId, Vec<DataRange>> = BTreeMap::new();
+        let mut grouped_ranges: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
         for extent in extents {
             extent
                 .offset
                 .checked_add(extent.length)
                 .ok_or_else(|| ObjectError::InvalidArgument("extent overflows".to_string()))?;
-            if !self.slabs.contains_key(&extent.slab_id) {
+            if !self.slabs.contains_key(&extent.chunk_id) {
                 return Err(ObjectError::NotFound("extent segment missing".to_string()));
             }
             // The range is about to be discarded, so its payload entry goes too:
@@ -184,9 +184,9 @@ impl MatrixObjectStore {
             // and leaving the entry behind would both retain garbage and name a
             // range the page service can no longer return.
             self.payloads
-                .remove(&(extent.slab_id.clone(), extent.offset));
+                .remove(&(extent.chunk_id.clone(), extent.offset));
             grouped_ranges
-                .entry(extent.slab_id.clone())
+                .entry(extent.chunk_id.clone())
                 .or_default()
                 .push(DataRange {
                     offset: extent.offset,
@@ -195,14 +195,14 @@ impl MatrixObjectStore {
         }
 
         let mut discard_requests = Vec::new();
-        for (slab_id, ranges) in grouped_ranges {
+        for (chunk_id, ranges) in grouped_ranges {
             let merged_ranges = merge_ranges(ranges);
             if merged_ranges.is_empty() {
                 continue;
             }
             let slab = self
                 .slabs
-                .get_mut(&slab_id)
+                .get_mut(&chunk_id)
                 .ok_or_else(|| ObjectError::NotFound("extent segment missing".to_string()))?;
             let stale_bytes = merged_ranges
                 .iter()
@@ -210,7 +210,7 @@ impl MatrixObjectStore {
             slab.live_bytes = slab.live_bytes.saturating_sub(stale_bytes);
             slab.stale_bytes = saturating_add(slab.stale_bytes, stale_bytes);
             discard_requests.extend(merged_ranges.iter().map(|range| ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: range.offset,
                 length: range.length,
             }));
@@ -319,8 +319,8 @@ impl MatrixObjectStore {
                 ObjectError::InvalidArgument("object extent overflows".to_string())
             })?;
             if range_offset >= extent_start && range_end <= extent_end {
-                return self.chunk_service.read_slab_range_bounded_by_chunks(
-                    &extent.slab_id,
+                return self.chunk_service.read_chunk_range_bounded_by_chunks(
+                    &extent.chunk_id,
                     extent.offset + (range_offset - extent_start),
                     range_length,
                     max_payload_bytes,
@@ -361,8 +361,8 @@ impl MatrixObjectStore {
             } else {
                 max_chunk_read_count.saturating_sub(chunk_reads)
             };
-            let (payload, read_stats) = self.chunk_service.read_slab_range_bounded_by_chunks(
-                &extent.slab_id,
+            let (payload, read_stats) = self.chunk_service.read_chunk_range_bounded_by_chunks(
+                &extent.chunk_id,
                 extent.offset + local_offset,
                 local_len,
                 remaining_budget,

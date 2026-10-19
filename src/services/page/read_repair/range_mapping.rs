@@ -14,14 +14,14 @@ impl MatrixChunkService {
                 "block allocation write length mismatch".to_string(),
             ));
         }
-        self.write_slab_range(&allocation.slab_id, allocation.offset, data)?;
+        self.write_chunk_range(&allocation.chunk_id, allocation.offset, data)?;
         self.pending_allocations.remove(allocation_id);
         Ok(allocation)
     }
 
     pub fn map_range(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
     ) -> Result<Vec<ChunkLocation>, ObjectError> {
@@ -39,7 +39,7 @@ impl MatrixChunkService {
             let n = available.min(length - cursor);
             out.push(ChunkLocation {
                 page_id: PageId {
-                    slab_id: slab_id.clone(),
+                    chunk_id: chunk_id.clone(),
                     page_index,
                 },
                 page_offset,

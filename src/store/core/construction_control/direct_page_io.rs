@@ -1,34 +1,34 @@
 impl MatrixObjectStore {
     pub fn read_direct_page_range(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
     ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
-        self.read_direct_page_range_bounded(slab_id, offset, length, 0)
+        self.read_direct_page_range_bounded(chunk_id, offset, length, 0)
     }
 
     pub fn read_direct_page_range_bounded(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
     ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
         self.chunk_service
-            .read_slab_range_bounded(slab_id, offset, length, max_payload_bytes)
+            .read_chunk_range_bounded(chunk_id, offset, length, max_payload_bytes)
     }
 
     pub fn read_direct_page_range_bounded_by_chunks(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_payload_bytes: u64,
         max_chunk_read_count: u64,
     ) -> Result<(Vec<u8>, ChunkReadStats), ObjectError> {
-        self.chunk_service.read_slab_range_bounded_by_chunks(
-            slab_id,
+        self.chunk_service.read_chunk_range_bounded_by_chunks(
+            chunk_id,
             offset,
             length,
             max_payload_bytes,
@@ -42,12 +42,12 @@ impl MatrixObjectStore {
         max_payload_bytes: u64,
     ) -> Result<(Vec<ChunkRangeReadResult>, ChunkBatchStats), ObjectError> {
         self.chunk_service
-            .read_slab_ranges_bounded(requests, max_payload_bytes)
+            .read_chunk_ranges_bounded(requests, max_payload_bytes)
     }
 
     pub fn write_page_range_idempotent(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         data: &[u8],
         idempotency_key: &str,
@@ -57,8 +57,8 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let receipt = self.chunk_service.write_slab_range_idempotent(
-            slab_id,
+        let receipt = self.chunk_service.write_chunk_range_idempotent(
+            chunk_id,
             offset,
             data,
             idempotency_key,
@@ -72,7 +72,7 @@ impl MatrixObjectStore {
             }
         }
         if let Err(err) =
-            self.append_page_write_journal_record(slab_id, offset, data, idempotency_key)
+            self.append_page_write_journal_record(chunk_id, offset, data, idempotency_key)
         {
             if let Some(rollback) = rollback {
                 self.restore_object_mutation_rollback(rollback);
@@ -114,7 +114,7 @@ impl MatrixObjectStore {
 
     pub fn discard_page_range_idempotent(
         &mut self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
@@ -124,8 +124,8 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let receipt = self.chunk_service.discard_slab_range_idempotent(
-            slab_id,
+        let receipt = self.chunk_service.discard_chunk_range_idempotent(
+            chunk_id,
             offset,
             length,
             idempotency_key,
@@ -139,7 +139,7 @@ impl MatrixObjectStore {
             }
         }
         if let Err(err) =
-            self.append_page_discard_journal_record(slab_id, offset, length, idempotency_key)
+            self.append_page_discard_journal_record(chunk_id, offset, length, idempotency_key)
         {
             if let Some(rollback) = rollback {
                 self.restore_object_mutation_rollback(rollback);

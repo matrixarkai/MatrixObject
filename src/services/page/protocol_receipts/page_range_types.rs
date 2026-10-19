@@ -8,14 +8,14 @@ pub struct ChunkLocation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkRangeWrite {
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub offset: u64,
     pub data: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkRangeRequest {
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub offset: u64,
     pub length: u64,
 }
@@ -42,7 +42,7 @@ pub struct ChunkRangeReadReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkAllocation {
     pub allocation_id: String,
-    pub slab_id: SlabId,
+    pub chunk_id: ChunkId,
     pub offset: u64,
     pub length: u64,
     pub create_time_ms: u64,
@@ -51,7 +51,7 @@ pub struct ChunkAllocation {
 impl ChunkAllocation {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
-            .slab_id
+            .chunk_id
             .to_control_fields(&format!("{field_prefix}segment."));
         fields.insert(
             format!("{field_prefix}allocation_id"),
@@ -59,11 +59,11 @@ impl ChunkAllocation {
         );
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.slab_id.volume_id.to_string(),
+            self.chunk_id.volume_id.to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.slab_id.id.to_string(),
+            self.chunk_id.id.to_string(),
         );
         fields.insert(format!("{field_prefix}offset"), self.offset.to_string());
         fields.insert(format!("{field_prefix}length"), self.length.to_string());

@@ -21,20 +21,20 @@ impl MatrixObjectStore {
                 ))
             }
             ObjectCommand::WritePageRangeIdempotent {
-                slab_id,
+                chunk_id,
                 offset,
                 data,
                 idempotency_key,
             } => {
                 let receipt = self.write_page_range_idempotent(
-                    &slab_id,
+                    &chunk_id,
                     offset,
                     &data,
                     &idempotency_key,
                 )?;
                 Ok(metadata_control_metadata(
                     "_blockwrite",
-                    &format!("{}:{}:{}", slab_id.volume_id, slab_id.id, offset),
+                    &format!("{}:{}:{}", chunk_id.volume_id, chunk_id.id, offset),
                     receipt.deduped as u64,
                     receipt.length,
                     "blockserver/idempotent-write",
@@ -72,20 +72,20 @@ impl MatrixObjectStore {
                 ))
             }
             ObjectCommand::DiscardPageRangeIdempotent {
-                slab_id,
+                chunk_id,
                 offset,
                 length,
                 idempotency_key,
             } => {
                 let receipt = self.discard_page_range_idempotent(
-                    &slab_id,
+                    &chunk_id,
                     offset,
                     length,
                     &idempotency_key,
                 )?;
                 Ok(metadata_control_metadata(
                     "_blockdiscard",
-                    &format!("{}:{}:{}", slab_id.volume_id, slab_id.id, offset),
+                    &format!("{}:{}:{}", chunk_id.volume_id, chunk_id.id, offset),
                     receipt.deduped as u64,
                     receipt.length,
                     "blockserver/idempotent-discard",

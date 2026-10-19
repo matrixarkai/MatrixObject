@@ -24,8 +24,8 @@ impl MatrixObjectStore {
             max_trim_bytes,
             now_ms,
         )?;
-        let slab_discards = self.plan_discard(min_discarded_bytes, max_discard_ranges);
-        for discard in &slab_discards {
+        let chunk_discards = self.plan_discard(min_discarded_bytes, max_discard_ranges);
+        for discard in &chunk_discards {
             plan.actions.push(StorageMaintenanceAction {
                 action: if discard.compact_instead {
                     "compact_object_segment".to_string()
@@ -57,8 +57,8 @@ impl MatrixObjectStore {
         if truncated {
             plan.actions.truncate(max_actions);
         }
-        plan.slab_discards = slab_discards;
-        plan.reclaim_pressure = plan.reclaim_pressure || !plan.slab_discards.is_empty();
+        plan.chunk_discards = chunk_discards;
+        plan.reclaim_pressure = plan.reclaim_pressure || !plan.chunk_discards.is_empty();
         plan.truncated = plan.truncated || truncated;
         plan.plan_checksum = storage_maintenance_plan_checksum(&plan);
         Ok(plan)

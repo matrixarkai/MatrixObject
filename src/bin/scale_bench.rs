@@ -80,7 +80,7 @@ struct Config {
     range_size: u64,
     overwrite_ratio_percent: u64,
     delete_ratio_percent: u64,
-    slab_size: u64,
+    chunk_size: u64,
     max_extent_bytes: u64,
     page_size: u64,
     chunk_read_cache_max_bytes_per_replica: u64,
@@ -1430,7 +1430,7 @@ fn run_replica_repair_fault_probe(
         })?;
         for extent in metadata.extents {
             let page_id = PageId {
-                slab_id: extent.slab_id,
+                chunk_id: extent.chunk_id,
                 page_index: extent.offset / cfg.page_size,
             };
             if !target_chunks.contains(&page_id) {
@@ -1468,7 +1468,7 @@ fn run_replica_repair_fault_probe(
                 receipt.offset / cfg.page_size
             };
             let page_id = PageId {
-                slab_id: receipt.slab_id,
+                chunk_id: receipt.chunk_id,
                 page_index,
             };
             if !target_chunks.contains(&page_id) {
@@ -1488,7 +1488,7 @@ fn run_replica_repair_fault_probe(
                 continue;
             }
             let page_id = PageId {
-                slab_id: receipt.allocation.slab_id,
+                chunk_id: receipt.allocation.chunk_id,
                 page_index: receipt.allocation.offset / cfg.page_size,
             };
             if !target_chunks.contains(&page_id) {
@@ -1506,7 +1506,7 @@ fn run_replica_repair_fault_probe(
         for receipt in batch_allocation_receipts.receipts {
             for allocation in receipt.allocations {
                 let page_id = PageId {
-                    slab_id: allocation.slab_id,
+                    chunk_id: allocation.chunk_id,
                     page_index: allocation.offset / cfg.page_size,
                 };
                 if !target_chunks.contains(&page_id) {
@@ -2114,7 +2114,7 @@ fn render_scale_event_log(
             cfg.object_count,
             cfg.concurrency,
             cfg.range_size,
-            cfg.slab_size,
+            cfg.chunk_size,
             cfg.max_extent_bytes,
             cfg.page_size,
             cfg.chunk_read_cache_max_bytes_per_replica,
@@ -3034,7 +3034,7 @@ fn render_scale_json_report(
         cfg.range_size,
         cfg.overwrite_ratio_percent.min(100),
         cfg.delete_ratio_percent.min(100),
-        cfg.slab_size,
+        cfg.chunk_size,
         cfg.max_extent_bytes,
         cfg.page_size,
         cfg.chunk_read_cache_max_bytes_per_replica,
@@ -3071,7 +3071,7 @@ fn render_scale_json_report(
         cfg.replica_count,
         cfg.write_quorum,
         cfg.mixed_duration_ms,
-        cfg.slab_size,
+        cfg.chunk_size,
         cfg.max_extent_bytes,
         cfg.page_size,
         cfg.chunk_read_cache_max_bytes_per_replica,
@@ -3119,7 +3119,7 @@ fn render_scale_json_report(
         readiness.storage_read_cache_uncacheable_read_bytes,
         readiness.ready,
         json_escape(&readiness.reason),
-        readiness.slab_count,
+        readiness.chunk_count,
         readiness.page_count,
         readiness.metadata_commit_index,
         json_escape(&readiness.metadata_state_fingerprint),
@@ -3226,7 +3226,7 @@ fn render_scale_json_report(
         readiness.metaserver_route_cache_miss_ratio_ppm,
         readiness.metaserver_route_cache_remaining_capacity,
         replicaserver_readiness_json(readiness),
-        readiness.slab_count,
+        readiness.chunk_count,
         readiness.page_count,
         chunk_metadata_journal.fsync_every_records,
         chunk_metadata_journal.fsync_every_bytes,
@@ -3490,7 +3490,7 @@ fn run() -> Result<(), ObjectError> {
             5,
         )
         .map_err(ObjectError::InvalidArgument)?,
-        slab_size: env_u64_any(
+        chunk_size: env_u64_any(
             &[
                 "MATRIX_OBJECTSTORE_RUST_SEGMENT_SIZE",
                 "MATRIX_OBJECTSTORE_SEGMENT_SIZE",
@@ -3896,7 +3896,7 @@ fn run() -> Result<(), ObjectError> {
     let benchmark_start = Instant::now();
     let recovery_snapshot_path = recovery_snapshot_path();
     let options = StoreOptions {
-        slab_size: cfg.slab_size,
+        chunk_size: cfg.chunk_size,
         max_extent_bytes: cfg.max_extent_bytes,
         page_size: cfg.page_size,
         volume_count: cfg.volume_count,
@@ -4495,7 +4495,7 @@ fn run() -> Result<(), ObjectError> {
         cfg.overwrite_ratio_percent.min(100)
     );
     println!("delete_ratio_percent={}", cfg.delete_ratio_percent.min(100));
-    println!("segment_size={}", cfg.slab_size);
+    println!("segment_size={}", cfg.chunk_size);
     println!("max_extent_bytes={}", cfg.max_extent_bytes);
     println!("chunk_size={}", cfg.page_size);
     println!(
@@ -4912,7 +4912,7 @@ fn run() -> Result<(), ObjectError> {
         "compaction_candidate_segments={}",
         gc.compaction_candidate_count
     );
-    println!("segment_count={}", readiness.slab_count);
+    println!("segment_count={}", readiness.chunk_count);
     println!("chunk_count={}", readiness.page_count);
     println!(
         "chunk_metadata_journal_fsync_every_records={}",

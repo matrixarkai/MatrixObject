@@ -1,13 +1,13 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_discard_page_range_idempotent(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose(ObjectCommand::DiscardPageRangeIdempotent {
-            slab_id,
+            chunk_id,
             offset,
             length,
             idempotency_key: idempotency_key.to_string(),
@@ -16,7 +16,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_discard_page_range_idempotent_fenced(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
@@ -29,7 +29,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .contains_key(idempotency_key)
         {
             return self.propose_discard_page_range_idempotent(
-                slab_id,
+                chunk_id,
                 offset,
                 length,
                 idempotency_key,
@@ -38,19 +38,19 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store
             .chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
-        self.propose_discard_page_range_idempotent(slab_id, offset, length, idempotency_key)
+        self.propose_discard_page_range_idempotent(chunk_id, offset, length, idempotency_key)
     }
 
     pub fn propose_discard_page_range_idempotent_fenced_report(
         &mut self,
-        slab_id: SlabId,
+        chunk_id: ChunkId,
         offset: u64,
         length: u64,
         idempotency_key: &str,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<(ObjectMetadata, ChunkIdempotentDiscardReport), ObjectError> {
         let metadata = self.propose_discard_page_range_idempotent_fenced(
-            slab_id,
+            chunk_id,
             offset,
             length,
             idempotency_key,

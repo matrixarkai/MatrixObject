@@ -1,7 +1,7 @@
 impl MatrixChunkService {
     pub fn can_accept_slab_write(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_write_bytes: u64,
@@ -15,7 +15,7 @@ impl MatrixChunkService {
         let mut writable_replica_count = 0u64;
         let mut first_error: Option<ObjectError> = None;
         if !byte_budget_limited && !chunk_budget_limited {
-            let locations = self.map_range(slab_id, offset, length)?;
+            let locations = self.map_range(chunk_id, offset, length)?;
             let projected_lengths = Self::projected_chunk_lengths_for_locations(&locations)?;
             for (index, replica) in self.replicas.iter().enumerate() {
                 if !self.replica_writable(index) {
@@ -71,7 +71,7 @@ impl MatrixChunkService {
 
     pub fn can_accept_slab_write_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         max_write_bytes: u64,
@@ -80,7 +80,7 @@ impl MatrixChunkService {
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission = self.can_accept_slab_write(
-            slab_id,
+            chunk_id,
             offset,
             length,
             max_write_bytes,
@@ -151,7 +151,7 @@ impl MatrixChunkService {
                 write_start_range_index, admission.input_ranges
             )));
         }
-        let mut grouped: BTreeMap<(SlabId, PageId), Vec<(u64, &[u8])>> = BTreeMap::new();
+        let mut grouped: BTreeMap<(ChunkId, PageId), Vec<(u64, &[u8])>> = BTreeMap::new();
         let mut selected_writes = Vec::with_capacity(admission.input_ranges as usize);
         let mut selected_mapped_chunk_ranges = 0u64;
         let mut non_empty_index = 0u64;
@@ -227,12 +227,12 @@ impl MatrixChunkService {
                     )
                 })?;
             let locations =
-                self.map_range(&write.slab_id, write.offset, write.data.len() as u64)?;
+                self.map_range(&write.chunk_id, write.offset, write.data.len() as u64)?;
             let mut cursor = 0usize;
             for loc in locations {
                 let next = cursor + loc.length as usize;
                 grouped
-                    .entry((write.slab_id.clone(), loc.page_id))
+                    .entry((write.chunk_id.clone(), loc.page_id))
                     .or_default()
                     .push((loc.page_offset, &write.data[cursor..next]));
                 cursor = next;
@@ -305,14 +305,14 @@ impl MatrixChunkService {
         Ok(admission)
     }
 
-    pub fn can_accept_slab_writes_fenced(
+    pub fn can_accept_chunk_writes_fenced(
         &self,
         writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.can_accept_slab_writes_fenced_from(
+        self.can_accept_chunk_writes_fenced_from(
             writes,
             max_write_bytes,
             max_chunk_write_count,
@@ -321,7 +321,7 @@ impl MatrixChunkService {
         )
     }
 
-    pub fn can_accept_slab_writes_fenced_from(
+    pub fn can_accept_chunk_writes_fenced_from(
         &self,
         writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
@@ -329,7 +329,7 @@ impl MatrixChunkService {
         write_start_range_index: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.can_accept_slab_writes_fenced_from_borrowed(
+        self.can_accept_chunk_writes_fenced_from_borrowed(
             &writes,
             max_write_bytes,
             max_chunk_write_count,
@@ -338,7 +338,7 @@ impl MatrixChunkService {
         )
     }
 
-    pub fn can_accept_slab_writes_fenced_from_borrowed(
+    pub fn can_accept_chunk_writes_fenced_from_borrowed(
         &self,
         writes: &[ChunkRangeWrite],
         max_write_bytes: u64,

@@ -23,12 +23,12 @@ impl ObjectId {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct SlabId {
+pub struct ChunkId {
     pub volume_id: u64,
     pub id: u64,
 }
 
-impl SlabId {
+impl ChunkId {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(

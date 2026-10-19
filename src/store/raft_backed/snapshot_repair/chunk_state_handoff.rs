@@ -1,7 +1,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_chunk_state_handoffs_linearizable_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         source_replica_index: usize,
@@ -13,7 +13,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_page_route_control_checksum.as_ref(),
         )?;
         self.store.prepare_chunk_state_handoffs(
-            slab_id,
+            chunk_id,
             offset,
             length,
             source_replica_index,
@@ -23,7 +23,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_chunk_state_handoffs_with_read_proof_linearizable_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         source_replica_index: usize,
@@ -32,7 +32,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenStorageRead<Vec<ReplicaStateHandoff>>, ObjectError> {
         let requested_read_index = self.raft.commit_index();
         let handoffs = self.prepare_chunk_state_handoffs_linearizable_fenced(
-            slab_id,
+            chunk_id,
             offset,
             length,
             source_replica_index,
@@ -48,7 +48,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_chunk_state_handoff_envelope_linearizable_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         source_replica_index: usize,
@@ -58,7 +58,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let expected_page_route_control_checksum =
             expected_page_route_control_checksum.as_ref().to_string();
         let handoffs = self.prepare_chunk_state_handoffs_linearizable_fenced(
-            slab_id,
+            chunk_id,
             offset,
             length,
             source_replica_index,
@@ -75,7 +75,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             )));
         }
         Ok(make_prepared_chunk_state_handoff_envelope(
-            slab_id,
+            chunk_id,
             offset,
             length,
             source_replica_index,
@@ -87,7 +87,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn prepare_chunk_state_handoff_envelope_with_read_proof_linearizable_fenced(
         &self,
-        slab_id: &SlabId,
+        chunk_id: &ChunkId,
         offset: u64,
         length: u64,
         source_replica_index: usize,
@@ -96,7 +96,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenPreparedChunkStateHandoffEnvelope, ObjectError> {
         let requested_read_index = self.raft.commit_index();
         let envelope = self.prepare_chunk_state_handoff_envelope_linearizable_fenced(
-            slab_id,
+            chunk_id,
             offset,
             length,
             source_replica_index,
@@ -273,7 +273,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             ));
         }
         let actual_envelope = make_prepared_chunk_state_handoff_envelope(
-            &proven_envelope.envelope.slab_id,
+            &proven_envelope.envelope.chunk_id,
             proven_envelope.envelope.offset,
             proven_envelope.envelope.length,
             proven_envelope.envelope.source_replica_index,

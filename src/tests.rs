@@ -2,7 +2,7 @@ use super::*;
 
 fn test_options() -> StoreOptions {
     StoreOptions {
-        slab_size: 16,
+        chunk_size: 16,
         max_extent_bytes: 4,
         page_size: 4,
         volume_count: 2,
@@ -11,7 +11,7 @@ fn test_options() -> StoreOptions {
         persistent_journal_path: String::new(),
         replica_count: 3,
         write_quorum: 2,
-        reuse_stale_slab_space: false,
+        reuse_stale_chunk_space: false,
         compaction_fragment_threshold: 2,
         object_manifest_checkpoint_interval: 1,
         object_metadata_checkpoint_interval: 1,
@@ -232,7 +232,7 @@ fn append_object_extends_existing_blob_without_staling_old_extents() {
     );
     let first_slab = store
         .slabs
-        .get(&first.extents[0].slab_id)
+        .get(&first.extents[0].chunk_id)
         .expect("first append segment remains present");
     assert_eq!(first_slab.stale_bytes, 0);
 }
@@ -1061,26 +1061,26 @@ fn persistent_journal_replays_page_mutations() {
     let journal_path_string = journal_path.to_string_lossy().to_string();
     let mut options = test_options();
     options.persistent_journal_path = journal_path_string;
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7,
     };
     {
         let mut store = MatrixObjectStore::new(options.clone()).unwrap();
         let write = store
-            .write_page_range_idempotent(&slab_id, 0, b"abcdefghijklmnop", "block-write-a")
+            .write_page_range_idempotent(&chunk_id, 0, b"abcdefghijklmnop", "block-write-a")
             .unwrap();
         assert!(!write.deduped);
         let (stats, batch_write) = store
             .write_page_ranges_idempotent(
                 vec![
                     ChunkRangeWrite {
-                        slab_id: slab_id.clone(),
+                        chunk_id: chunk_id.clone(),
                         offset: 16,
                         data: b"qrst".to_vec(),
                     },
                     ChunkRangeWrite {
-                        slab_id: slab_id.clone(),
+                        chunk_id: chunk_id.clone(),
                         offset: 20,
                         data: b"uvwx".to_vec(),
                     },
@@ -1091,13 +1091,13 @@ fn persistent_journal_replays_page_mutations() {
         assert_eq!(stats.payload_bytes, 8);
         assert!(!batch_write.deduped);
         let discard = store
-            .discard_page_range_idempotent(&slab_id, 2, 4, "block-discard-a")
+            .discard_page_range_idempotent(&chunk_id, 2, 4, "block-discard-a")
             .unwrap();
         assert!(!discard.deduped);
         let (_stats, batch_discard) = store
             .discard_page_ranges_idempotent(
                 vec![ChunkRangeRequest {
-                    slab_id: slab_id.clone(),
+                    chunk_id: chunk_id.clone(),
                     offset: 18,
                     length: 2,
                 }],
@@ -1110,35 +1110,35 @@ fn persistent_journal_replays_page_mutations() {
 
     let mut reopened = MatrixObjectStore::new(options).unwrap();
     let write_admission = reopened
-        .can_accept_page_write(&slab_id, 24, 4, 4, 1)
+        .can_accept_page_write(&chunk_id, 24, 4, 4, 1)
         .unwrap();
     assert!(write_admission.can_accept);
     assert_eq!(write_admission.admission_reason, "write_ready");
     let write_budget_admission = reopened
-        .can_accept_page_write(&slab_id, 24, 4, 3, 1)
+        .can_accept_page_write(&chunk_id, 24, 4, 3, 1)
         .unwrap();
     assert!(!write_budget_admission.can_accept);
     assert!(write_budget_admission.budget_limited);
-    let (prefix, _) = reopened.read_direct_page_range(&slab_id, 0, 2).unwrap();
+    let (prefix, _) = reopened.read_direct_page_range(&chunk_id, 0, 2).unwrap();
     assert_eq!(prefix, b"ab".to_vec());
     assert!(matches!(
-        reopened.read_direct_page_range(&slab_id, 2, 4),
+        reopened.read_direct_page_range(&chunk_id, 2, 4),
         Err(ObjectError::Corruption(_))
     ));
     let read_admission = reopened
-        .can_accept_page_read_bounded(&slab_id, 6, 12, 12, 4)
+        .can_accept_page_read_bounded(&chunk_id, 6, 12, 12, 4)
         .unwrap();
     assert!(read_admission.can_accept);
     assert_eq!(read_admission.admission_reason, "read_ready");
     let read_budget_admission = reopened
-        .can_accept_page_read_bounded(&slab_id, 6, 12, 12, 3)
+        .can_accept_page_read_bounded(&chunk_id, 6, 12, 12, 3)
         .unwrap();
     assert!(!read_budget_admission.can_accept);
     assert!(read_budget_admission.budget_limited);
     let (batch_reads, batch_stats) = reopened
         .read_direct_page_ranges(
             vec![ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 6,
                 length: 12,
             }],
@@ -1149,41 +1149,41 @@ fn persistent_journal_replays_page_mutations() {
     assert_eq!(batch_reads[0].data, b"ghijklmnopqr".to_vec());
     assert_eq!(batch_stats.payload_bytes, 12);
     let (middle, _) = reopened
-        .read_direct_page_range_bounded_by_chunks(&slab_id, 6, 12, 12, 4)
+        .read_direct_page_range_bounded_by_chunks(&chunk_id, 6, 12, 12, 4)
         .unwrap();
     assert_eq!(middle, b"ghijklmnopqr".to_vec());
     assert!(matches!(
-        reopened.read_direct_page_range(&slab_id, 18, 2),
+        reopened.read_direct_page_range(&chunk_id, 18, 2),
         Err(ObjectError::Corruption(_))
     ));
     let (suffix, _) = reopened
-        .read_direct_page_range_bounded(&slab_id, 20, 4, 4)
+        .read_direct_page_range_bounded(&chunk_id, 20, 4, 4)
         .unwrap();
     assert_eq!(suffix, b"uvwx".to_vec());
     let discard_admission = reopened
-        .can_accept_page_discard(&slab_id, 20, 2, 2)
+        .can_accept_page_discard(&chunk_id, 20, 2, 2)
         .unwrap();
     assert!(discard_admission.can_accept);
     assert_eq!(discard_admission.admission_reason, "discard_ready");
     let discard_budget_admission = reopened
-        .can_accept_page_discard(&slab_id, 20, 2, 1)
+        .can_accept_page_discard(&chunk_id, 20, 2, 1)
         .unwrap();
     assert!(!discard_budget_admission.can_accept);
     assert!(discard_budget_admission.budget_limited);
     let retry_write = reopened
-        .write_page_range_idempotent(&slab_id, 0, b"abcdefghijklmnop", "block-write-a")
+        .write_page_range_idempotent(&chunk_id, 0, b"abcdefghijklmnop", "block-write-a")
         .unwrap();
     assert!(retry_write.deduped);
     let (_retry_stats, retry_batch_write) = reopened
         .write_page_ranges_idempotent(
             vec![
                 ChunkRangeWrite {
-                    slab_id: slab_id.clone(),
+                    chunk_id: chunk_id.clone(),
                     offset: 16,
                     data: b"qrst".to_vec(),
                 },
                 ChunkRangeWrite {
-                    slab_id: slab_id.clone(),
+                    chunk_id: chunk_id.clone(),
                     offset: 20,
                     data: b"uvwx".to_vec(),
                 },
@@ -1193,13 +1193,13 @@ fn persistent_journal_replays_page_mutations() {
         .unwrap();
     assert!(retry_batch_write.deduped);
     let retry_discard = reopened
-        .discard_page_range_idempotent(&slab_id, 2, 4, "block-discard-a")
+        .discard_page_range_idempotent(&chunk_id, 2, 4, "block-discard-a")
         .unwrap();
     assert!(retry_discard.deduped);
     let (_retry_stats, retry_batch_discard) = reopened
         .discard_page_ranges_idempotent(
             vec![ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 18,
                 length: 2,
             }],
@@ -1209,7 +1209,7 @@ fn persistent_journal_replays_page_mutations() {
     assert!(retry_batch_discard.deduped);
     assert_eq!(
         reopened
-            .list_page_write_receipts(None, 10, Some(&slab_id))
+            .list_page_write_receipts(None, 10, Some(&chunk_id))
             .unwrap()
             .receipt_count,
         1
@@ -1223,7 +1223,7 @@ fn persistent_journal_replays_page_mutations() {
     );
     assert_eq!(
         reopened
-            .list_page_discard_receipts(None, 10, Some(&slab_id))
+            .list_page_discard_receipts(None, 10, Some(&chunk_id))
             .unwrap()
             .receipt_count,
         1
@@ -1250,7 +1250,7 @@ fn persistent_journal_replays_direct_chunk_mutations() {
     let mut options = test_options();
     options.persistent_journal_path = journal_path_string;
     let page_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 11,
         },
@@ -1734,13 +1734,13 @@ fn batch_object_reads_can_heal_degraded_replicas() {
         .unwrap();
     let large_chunk = store
         .chunk_service
-        .map_range(&large.extents[0].slab_id, large.extents[0].offset, 4)
+        .map_range(&large.extents[0].chunk_id, large.extents[0].offset, 4)
         .unwrap()[0]
         .page_id
         .clone();
     let small_chunk = store
         .chunk_service
-        .map_range(&small.extents[0].slab_id, small.extents[0].offset, 3)
+        .map_range(&small.extents[0].chunk_id, small.extents[0].offset, 3)
         .unwrap()[0]
         .page_id
         .clone();
@@ -2369,7 +2369,7 @@ fn object_inventory_pages_metadata_and_placement() {
 fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 710,
         },
@@ -2436,7 +2436,7 @@ fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
 fn replicaserver_batch_admission_reports_continuation_cursors() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 711,
         },
@@ -2641,49 +2641,49 @@ fn replicaserver_batch_admission_reports_continuation_cursors() {
 
 #[test]
 fn chunk_service_maps_writes_to_replicated_chunks() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 2, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 2, b"abcdefgh")
         .unwrap();
-    let locations = page.map_range(&slab_id, 2, 8).unwrap();
+    let locations = page.map_range(&chunk_id, 2, 8).unwrap();
     assert_eq!(locations.len(), 3);
-    let (data, stats) = page.read_slab_range(&slab_id, 2, 8).unwrap();
+    let (data, stats) = page.read_chunk_range(&chunk_id, 2, 8).unwrap();
     assert_eq!(data, b"abcdefgh".to_vec());
     assert_eq!(stats.chunk_reads, 3);
     assert_eq!(stats.quorum_verified_chunks, 3);
     assert_eq!(stats.physical_chunk_read_count, 6);
     assert!(matches!(
-        page.read_slab_range_bounded(&slab_id, 2, 8, 7),
+        page.read_chunk_range_bounded(&chunk_id, 2, 8, 7),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert_eq!(
         page
-            .read_slab_range_bounded(&slab_id, 2, 8, 8)
+            .read_chunk_range_bounded(&chunk_id, 2, 8, 8)
             .unwrap()
             .0,
         b"abcdefgh".to_vec()
     );
-    page.discard_slab_range(&slab_id, 2, 4).unwrap();
+    page.discard_chunk_range(&chunk_id, 2, 4).unwrap();
     assert!(matches!(
-        page.read_slab_range(&slab_id, 2, 4),
+        page.read_chunk_range(&chunk_id, 2, 4),
         Err(ObjectError::Corruption(_))
     ));
-    let (tail, _) = page.read_slab_range(&slab_id, 6, 4).unwrap();
+    let (tail, _) = page.read_chunk_range(&chunk_id, 6, 4).unwrap();
     assert_eq!(tail, b"efgh".to_vec());
 }
 
 #[test]
 fn chunk_service_preflights_chunk_write_admission_before_mutation() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 707,
     };
     let page_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
@@ -2699,12 +2699,12 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
 
     let writes = vec![
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 0,
             data: b"abcd".to_vec(),
         },
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 4,
             data: b"efgh".to_vec(),
         },
@@ -2721,7 +2721,7 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
     page.replicas[0].set_capacity_bytes(8).unwrap();
     page.replicas[1].set_capacity_bytes(8).unwrap();
     page.write_slab_ranges(writes).unwrap();
-    let (payload, stats) = page.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (payload, stats) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(payload, b"abcdefgh".to_vec());
     assert_eq!(stats.quorum_verified_chunks, 2);
 
@@ -2730,7 +2730,7 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
     blocked.replicas[1].set_capacity_bytes(4).unwrap();
     blocked.replicas[2].set_capacity_bytes(8).unwrap();
     assert!(matches!(
-        blocked.write_slab_range(&slab_id, 0, b"abcdefgh"),
+        blocked.write_chunk_range(&chunk_id, 0, b"abcdefgh"),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(blocked
@@ -2741,15 +2741,15 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
 
 #[test]
 fn chunk_service_preflights_chunk_discard_admission_before_mutation() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 708,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
-    let page_id = page.map_range(&slab_id, 0, 4).unwrap()[0]
+    let page_id = page.map_range(&chunk_id, 0, 4).unwrap()[0]
         .page_id
         .clone();
     let admission = page.replicas[0]
@@ -2768,7 +2768,7 @@ fn chunk_service_preflights_chunk_discard_admission_before_mutation() {
     page.replicas[0].configure_service_mode(Some(false), None, None);
     page.remove_replica_chunk_for_repair(1, &page_id).unwrap();
     assert!(matches!(
-        page.discard_slab_range(&slab_id, 1, 2),
+        page.discard_chunk_range(&chunk_id, 1, 2),
         Err(ObjectError::PreconditionFailed(_))
     ));
     for replica in &page.replicas {
@@ -2779,8 +2779,8 @@ fn chunk_service_preflights_chunk_discard_admission_before_mutation() {
     assert!(page.replicas[0].service_mode_rejected_mutations() > 0);
 
     page.replicas[0].configure_service_mode(Some(true), None, None);
-    page.repair_slab_range(&slab_id, 0, 4).unwrap();
-    page.discard_slab_range(&slab_id, 1, 2).unwrap();
+    page.repair_chunk_range(&chunk_id, 0, 4).unwrap();
+    page.discard_chunk_range(&chunk_id, 1, 2).unwrap();
     let discarded_replicas = page
         .replicas
         .iter()
@@ -2796,13 +2796,13 @@ fn chunk_service_preflights_chunk_discard_admission_before_mutation() {
 
 #[test]
 fn chunk_service_quarantines_replicas_and_restores_with_repair() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 77,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
     assert_eq!(page.write_quorum(), 2);
     assert_eq!(page.read_quorum(), 2);
@@ -2827,9 +2827,9 @@ fn chunk_service_quarantines_replicas_and_restores_with_repair() {
     ));
 
     page
-        .write_slab_range(&slab_id, 0, b"ABCDEFGH")
+        .write_chunk_range(&chunk_id, 0, b"ABCDEFGH")
         .unwrap();
-    let (payload, degraded) = page.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (payload, degraded) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(payload, b"ABCDEFGH".to_vec());
     assert_eq!(degraded.quorum_read_degraded_chunks, 2);
 
@@ -2844,29 +2844,29 @@ fn chunk_service_quarantines_replicas_and_restores_with_repair() {
     assert_eq!(restored.quarantined_replica_indices(), vec![0]);
     assert_eq!(restored.write_quorum(), 2);
     assert_eq!(restored.read_quorum(), 2);
-    let (restored_payload, _) = restored.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (restored_payload, _) = restored.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(restored_payload, b"ABCDEFGH".to_vec());
 
     restored.set_replica_quarantine(0, false).unwrap();
-    let (degraded_payload, degraded) = restored.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (degraded_payload, degraded) = restored.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(degraded_payload, b"ABCDEFGH".to_vec());
     assert_eq!(degraded.quorum_read_degraded_chunks, 2);
-    let repaired = restored.repair_slab_range(&slab_id, 0, 8).unwrap();
+    let repaired = restored.repair_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(repaired.repaired_replicas, 2);
-    let (healthy_payload, healthy) = restored.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (healthy_payload, healthy) = restored.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(healthy_payload, b"ABCDEFGH".to_vec());
     assert_eq!(healthy.quorum_read_degraded_chunks, 0);
 }
 
 #[test]
 fn chunk_service_freezes_chunk_replicas_for_maintenance() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 79,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
     page.set_replica_frozen(0, true).unwrap();
     assert_eq!(page.frozen_replica_indices(), vec![0]);
@@ -2881,9 +2881,9 @@ fn chunk_service_freezes_chunk_replicas_for_maintenance() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     page
-        .write_slab_range(&slab_id, 0, b"ABCDEFGH")
+        .write_chunk_range(&chunk_id, 0, b"ABCDEFGH")
         .unwrap();
-    let (payload, degraded) = page.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (payload, degraded) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(payload, b"ABCDEFGH".to_vec());
     assert_eq!(degraded.quorum_read_degraded_chunks, 2);
 
@@ -2894,11 +2894,11 @@ fn chunk_service_freezes_chunk_replicas_for_maintenance() {
     let mut restored = MatrixChunkService::new(4, 3, 2).unwrap();
     restored.install_snapshot_bytes(&bytes).unwrap();
     assert_eq!(restored.frozen_replica_indices(), vec![0]);
-    let (restored_payload, _) = restored.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (restored_payload, _) = restored.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(restored_payload, b"ABCDEFGH".to_vec());
 
     restored.set_replica_frozen(0, false).unwrap();
-    let repaired = restored.repair_slab_range(&slab_id, 0, 8).unwrap();
+    let repaired = restored.repair_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(repaired.repaired_replicas, 2);
     let healthy = restored.scrub_chunk_replicas(false).unwrap();
     assert_eq!(healthy.degraded_chunks, 0);
@@ -2906,14 +2906,14 @@ fn chunk_service_freezes_chunk_replicas_for_maintenance() {
 
 #[test]
 fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 81,
     };
     let mut chunk = MatrixReplicaService::new();
     chunk.set_capacity_bytes(8).unwrap();
     let page_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     chunk.write_chunk(page_id.clone(), 0, b"abcdefgh").unwrap();
@@ -2940,7 +2940,7 @@ fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
     assert!(matches!(
         restored_chunk.install_chunk_state(
             PageId {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 page_index: 1,
             },
             PageState {
@@ -2959,14 +2959,14 @@ fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
     page.set_chunk_replica_capacities(8).unwrap();
     assert_eq!(page.chunk_replica_capacity_bytes(), vec![8, 8, 8]);
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
     assert!(page
         .chunk_replica_capacity_free_bytes()
         .iter()
         .all(|free| *free == 0));
     assert!(matches!(
-        page.write_slab_range(&slab_id, 8, b"ijkl"),
+        page.write_chunk_range(&chunk_id, 8, b"ijkl"),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(page
@@ -2981,19 +2981,19 @@ fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
         .unwrap();
     assert_eq!(restored_page.chunk_replica_capacity_bytes(), vec![8, 8, 8]);
     assert!(matches!(
-        restored_page.write_slab_range(&slab_id, 8, b"ijkl"),
+        restored_page.write_chunk_range(&chunk_id, 8, b"ijkl"),
         Err(ObjectError::PreconditionFailed(_))
     ));
 }
 
 #[test]
 fn chunk_replica_service_mode_gates_writes_and_survives_snapshot() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 82,
     };
     let page_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let mut chunk = MatrixReplicaService::new();
@@ -3078,7 +3078,7 @@ fn chunk_replica_service_mode_gates_writes_and_survives_snapshot() {
         vec![false, true, true]
     );
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
     assert_eq!(page.chunk_replica_service_mode_rejected_mutations()[0], 2);
     page
@@ -3086,7 +3086,7 @@ fn chunk_replica_service_mode_gates_writes_and_survives_snapshot() {
         .unwrap();
     assert_eq!(page.draining_chunk_replicas(), vec![1]);
     assert!(matches!(
-        page.write_slab_range(&slab_id, 8, b"ijkl"),
+        page.write_chunk_range(&chunk_id, 8, b"ijkl"),
         Err(ObjectError::PreconditionFailed(_))
     ));
     let chunk_snapshot = page.export_snapshot();
@@ -3104,12 +3104,12 @@ fn chunk_replica_service_mode_gates_writes_and_survives_snapshot() {
 
 #[test]
 fn chunk_state_handoff_proofs_gate_replica_repair_installs() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 83,
     };
     let page_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let mut source = MatrixReplicaService::new();
@@ -3213,16 +3213,16 @@ fn chunk_state_handoff_proofs_gate_replica_repair_installs() {
 
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefghijkl")
+        .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
-    let first_chunk = page.map_range(&slab_id, 0, 4).unwrap()[0]
+    let first_chunk = page.map_range(&chunk_id, 0, 4).unwrap()[0]
         .page_id
         .clone();
     page
         .remove_replica_chunk_for_repair(0, &first_chunk)
         .unwrap();
     let handoffs = page
-        .prepare_chunk_state_handoffs(&slab_id, 0, 4, 1, 0)
+        .prepare_chunk_state_handoffs(&chunk_id, 0, 4, 1, 0)
         .unwrap();
     let stale_replica_control = page.replicas[0].control_proof().state_checksum;
     page.replicas[0].set_read_cache_max_bytes(16);
@@ -3257,18 +3257,18 @@ fn chunk_state_handoff_proofs_gate_replica_repair_installs() {
 
 #[test]
 fn chunk_service_prepares_and_applies_chunk_state_handoff_batches() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 84,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefghijkl")
+        .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
-    let first_chunk = page.map_range(&slab_id, 0, 4).unwrap()[0]
+    let first_chunk = page.map_range(&chunk_id, 0, 4).unwrap()[0]
         .page_id
         .clone();
-    let second_chunk = page.map_range(&slab_id, 4, 4).unwrap()[0]
+    let second_chunk = page.map_range(&chunk_id, 4, 4).unwrap()[0]
         .page_id
         .clone();
     page
@@ -3279,12 +3279,12 @@ fn chunk_service_prepares_and_applies_chunk_state_handoff_batches() {
         .unwrap();
 
     let budgeted = page
-        .prepare_chunk_state_handoffs(&slab_id, 0, 12, 0, 4)
+        .prepare_chunk_state_handoffs(&chunk_id, 0, 12, 0, 4)
         .unwrap();
     assert_eq!(budgeted.len(), 1);
     assert_eq!(budgeted[0].page_id, first_chunk);
     let handoffs = page
-        .prepare_chunk_state_handoffs(&slab_id, 0, 12, 0, 0)
+        .prepare_chunk_state_handoffs(&chunk_id, 0, 12, 0, 0)
         .unwrap();
     assert_eq!(handoffs.len(), 3);
     assert!(handoffs.iter().all(|handoff| handoff.proof_version == 2));
@@ -3292,7 +3292,7 @@ fn chunk_service_prepares_and_applies_chunk_state_handoff_batches() {
         .iter()
         .all(|handoff| !handoff.handoff_token.is_empty()));
     assert!(matches!(
-        page.prepare_chunk_state_handoffs(&slab_id, 0, 12, 0, 1),
+        page.prepare_chunk_state_handoffs(&chunk_id, 0, 12, 0, 1),
         Err(ObjectError::InvalidArgument(_))
     ));
     let repaired = page
@@ -3328,18 +3328,18 @@ fn chunk_service_prepares_and_applies_chunk_state_handoff_batches() {
 
 #[test]
 fn chunk_service_scrubs_missing_and_corrupt_replicas() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 78,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
-    let first_chunk = page.map_range(&slab_id, 0, 4).unwrap()[0]
+    let first_chunk = page.map_range(&chunk_id, 0, 4).unwrap()[0]
         .page_id
         .clone();
-    let second_chunk = page.map_range(&slab_id, 4, 4).unwrap()[0]
+    let second_chunk = page.map_range(&chunk_id, 4, 4).unwrap()[0]
         .page_id
         .clone();
     page
@@ -3364,7 +3364,7 @@ fn chunk_service_scrubs_missing_and_corrupt_replicas() {
     assert_eq!(repaired.repaired_replicas, 2);
     assert_eq!(repaired.failed_repairs, 0);
     assert_eq!(repaired.unrepaired_chunks, 0);
-    let (payload, stats) = page.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (payload, stats) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(payload, b"abcdefgh".to_vec());
     assert_eq!(stats.quorum_read_degraded_chunks, 0);
     let healthy = page.scrub_chunk_replicas(false).unwrap();
@@ -3374,15 +3374,15 @@ fn chunk_service_scrubs_missing_and_corrupt_replicas() {
 
 #[test]
 fn chunk_service_repairs_exact_chunk_without_broad_scan() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7801,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
-    let page_id = page.map_range(&slab_id, 0, 4).unwrap()[0]
+    let page_id = page.map_range(&chunk_id, 0, 4).unwrap()[0]
         .page_id
         .clone();
     page.remove_replica_chunk_for_repair(1, &page_id).unwrap();
@@ -3412,7 +3412,7 @@ fn chunk_service_repairs_exact_chunk_without_broad_scan() {
     assert_eq!(healthy.healthy_chunks, 1);
     assert_eq!(healthy.degraded_chunks, 0);
     assert_eq!(healthy.repaired_replicas, 0);
-    let (payload, stats) = page.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (payload, stats) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(payload, b"abcdefgh".to_vec());
     assert_eq!(stats.quorum_read_degraded_chunks, 0);
 }
@@ -3437,7 +3437,7 @@ fn object_store_exposes_exact_page_chunk_repair() {
     let page_id = store
         .chunk_service
         .map_range(
-            &first_extent.slab_id,
+            &first_extent.chunk_id,
             first_extent.offset,
             first_extent.length,
         )
@@ -3462,15 +3462,15 @@ fn object_store_exposes_exact_page_chunk_repair() {
 
 #[test]
 fn chunk_service_prefers_local_ec_repair_for_corrupt_payloads() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 79,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
-    let page_id = page.map_range(&slab_id, 0, 4).unwrap()[0]
+    let page_id = page.map_range(&chunk_id, 0, 4).unwrap()[0]
         .page_id
         .clone();
     let expected = page.replicas[0]
@@ -3508,18 +3508,18 @@ fn chunk_service_prefers_local_ec_repair_for_corrupt_payloads() {
 
 #[test]
 fn chunk_service_pages_replica_audit_for_repair_controllers() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 80,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefghijkl")
+        .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
-    let first_chunk = page.map_range(&slab_id, 0, 4).unwrap()[0]
+    let first_chunk = page.map_range(&chunk_id, 0, 4).unwrap()[0]
         .page_id
         .clone();
-    let second_chunk = page.map_range(&slab_id, 4, 4).unwrap()[0]
+    let second_chunk = page.map_range(&chunk_id, 4, 4).unwrap()[0]
         .page_id
         .clone();
     page
@@ -3569,18 +3569,18 @@ fn chunk_service_pages_replica_audit_for_repair_controllers() {
 
 #[test]
 fn chunk_service_repairs_from_replica_audit_page() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 81,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefghijkl")
+        .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
-    let first_chunk = page.map_range(&slab_id, 0, 4).unwrap()[0]
+    let first_chunk = page.map_range(&chunk_id, 0, 4).unwrap()[0]
         .page_id
         .clone();
-    let second_chunk = page.map_range(&slab_id, 4, 4).unwrap()[0]
+    let second_chunk = page.map_range(&chunk_id, 4, 4).unwrap()[0]
         .page_id
         .clone();
     page
@@ -3620,7 +3620,7 @@ fn chunk_service_repairs_from_replica_audit_page() {
 #[test]
 fn chunk_service_batches_coalesce_reads_and_discards() {
     let page_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 700,
         },
@@ -3661,7 +3661,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
         .chunk_service
-        .write_slab_range(&page_id.slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&page_id.chunk_id, 0, b"abcdefgh")
         .unwrap();
     let expected_replica_head = store.chunk_service.replicas[0]
         .head_chunk(&page_id)
@@ -3887,7 +3887,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
         }]
     );
 
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 70,
     };
@@ -3895,12 +3895,12 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     let write_stats = page
         .write_slab_ranges(vec![
             ChunkRangeWrite {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 data: b"abcdefgh".to_vec(),
             },
             ChunkRangeWrite {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 8,
                 data: b"ijklmnop".to_vec(),
             },
@@ -3951,12 +3951,12 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
 
     let bounded_write_requests = vec![
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 16,
             data: b"qrst".to_vec(),
         },
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 20,
             data: b"uvwx".to_vec(),
         },
@@ -4029,17 +4029,17 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     let (reads, batch_stats) = page
         .read_slab_ranges(vec![
             ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 length: 2,
             },
             ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 2,
                 length: 4,
             },
             ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 8,
                 length: 4,
             },
@@ -4062,15 +4062,15 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     assert_eq!(batch_stats.read_stats.metadata_cache_misses, 4);
     assert_eq!(batch_stats.read_stats.quorum_verified_chunks, 2);
     assert!(matches!(
-        page.read_slab_ranges_bounded(
+        page.read_chunk_ranges_bounded(
             vec![
                 ChunkRangeRequest {
-                    slab_id: slab_id.clone(),
+                    chunk_id: chunk_id.clone(),
                     offset: 0,
                     length: 8,
                 },
                 ChunkRangeRequest {
-                    slab_id: slab_id.clone(),
+                    chunk_id: chunk_id.clone(),
                     offset: 8,
                     length: 4,
                 },
@@ -4083,17 +4083,17 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
 
     let discard_admission_requests = vec![
         ChunkRangeRequest {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 0,
             length: 2,
         },
         ChunkRangeRequest {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 4,
             length: 2,
         },
         ChunkRangeRequest {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 8,
             length: 2,
         },
@@ -4144,10 +4144,10 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
 
     let mut bounded_apply_page = MatrixChunkService::new(4, 3, 2).unwrap();
     bounded_apply_page
-        .write_slab_range(&slab_id, 0, b"abcdefghijkl")
+        .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
     let (bounded_apply_stats, bounded_apply_receipt, bounded_apply_admission) = bounded_apply_page
-        .discard_slab_ranges_idempotent_bounded_from(
+        .discard_chunk_ranges_idempotent_bounded_from(
             discard_admission_requests.clone(),
             2,
             0,
@@ -4160,15 +4160,15 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     assert_eq!(bounded_apply_admission.next_discard_range_index, 1);
     assert!(bounded_apply_admission.discard_has_more);
     assert!(matches!(
-        bounded_apply_page.read_slab_range(&slab_id, 0, 2),
+        bounded_apply_page.read_chunk_range(&chunk_id, 0, 2),
         Err(ObjectError::Corruption(_))
     ));
     let (still_live, _) = bounded_apply_page
-        .read_slab_range(&slab_id, 4, 2)
+        .read_chunk_range(&chunk_id, 4, 2)
         .unwrap();
     assert_eq!(still_live, b"ef".to_vec());
     let (resumed_apply_stats, resumed_apply_receipt, resumed_apply_admission) = bounded_apply_page
-        .discard_slab_ranges_idempotent_bounded_from(
+        .discard_chunk_ranges_idempotent_bounded_from(
             discard_admission_requests.clone(),
             2,
             bounded_apply_admission.next_discard_range_index,
@@ -4181,23 +4181,23 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     assert_eq!(resumed_apply_admission.discard_start_range_index, 1);
     assert_eq!(resumed_apply_admission.next_discard_range_index, 2);
     assert!(matches!(
-        bounded_apply_page.read_slab_range(&slab_id, 4, 2),
+        bounded_apply_page.read_chunk_range(&chunk_id, 4, 2),
         Err(ObjectError::Corruption(_))
     ));
     let (still_live, _) = bounded_apply_page
-        .read_slab_range(&slab_id, 8, 2)
+        .read_chunk_range(&chunk_id, 8, 2)
         .unwrap();
     assert_eq!(still_live, b"ij".to_vec());
 
     let discard_stats = page
         .discard_slab_ranges(vec![
             ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 length: 2,
             },
             ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 2,
                 length: 4,
             },
@@ -4255,10 +4255,10 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     assert_eq!(capacity_actions[1].replica_index, Some(1));
     assert_eq!(capacity_actions[2].replica_index, Some(2));
     assert!(matches!(
-        page.read_slab_range(&slab_id, 0, 6),
+        page.read_chunk_range(&chunk_id, 0, 6),
         Err(ObjectError::Corruption(_))
     ));
-    let (tail, _) = page.read_slab_range(&slab_id, 8, 4).unwrap();
+    let (tail, _) = page.read_chunk_range(&chunk_id, 8, 4).unwrap();
     assert_eq!(tail, b"ijkl".to_vec());
     let run_plan = page
         .plan_storage_maintenance(8, 8, 1, 10, 32, 1, 1, 4, 16, 100)
@@ -4297,7 +4297,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
 #[test]
 fn replica_service_dedupes_idempotent_batch_mutations_across_snapshots() {
     let page_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 701,
         },
@@ -4439,7 +4439,7 @@ fn replica_service_dedupes_idempotent_batch_mutations_across_snapshots() {
 fn replica_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 707,
         },
@@ -4486,7 +4486,7 @@ fn replica_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
     assert_eq!(discard_page.total_receipt_count, 1);
     assert_eq!(discard_page.receipts[0].idempotency_key, "chunk-discard-a");
     let missing_chunk_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 708,
         },
@@ -4540,7 +4540,7 @@ fn replica_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
 fn replica_service_dedupes_state_install_and_reclaim_receipts_across_snapshots() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 709,
         },
@@ -4631,14 +4631,14 @@ fn replica_service_dedupes_state_install_and_reclaim_receipts_across_snapshots()
 #[test]
 fn chunk_service_partially_reclaims_chunk_discard_ranges() {
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 71,
     };
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
-    page.discard_slab_range(&slab_id, 2, 4).unwrap();
+    page.discard_chunk_range(&chunk_id, 2, 4).unwrap();
 
     let report = page.partial_reclaim_chunk_replicas(1, 4, 1);
     assert_eq!(report.scanned_chunks, 6);
@@ -4651,11 +4651,11 @@ fn chunk_service_partially_reclaims_chunk_discard_ranges() {
     assert!(report.budget_limited);
 
     let chunk0 = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let chunk1 = PageId {
-        slab_id,
+        chunk_id,
         page_index: 1,
     };
     let reclaimed = page.replicas[0].read_chunk_state(&chunk0).unwrap();
@@ -4678,20 +4678,20 @@ fn chunk_service_partially_reclaims_chunk_discard_ranges() {
 #[test]
 fn replicaserver_plans_reclaim_with_fragmentation_and_trim_budgets() {
     let mut chunk = MatrixReplicaService::new();
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 72,
     };
     let tail_chunk = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let fragmented_chunk = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 1,
     };
     let budget_chunk = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 2,
     };
     chunk
@@ -4782,12 +4782,12 @@ fn replicaserver_plans_reclaim_with_fragmentation_and_trim_budgets() {
 #[test]
 fn replicaserver_persists_trim_flow_and_throttles_reclaim() {
     let mut chunk = MatrixReplicaService::new();
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 721,
     };
     let page_id = PageId {
-        slab_id,
+        chunk_id,
         page_index: 0,
     };
     chunk.write_chunk(page_id.clone(), 0, b"abcdefgh").unwrap();
@@ -4825,18 +4825,18 @@ fn replicaserver_persists_trim_flow_and_throttles_reclaim() {
 #[test]
 fn pageserver_plans_reclaim_across_active_replicas() {
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 73,
     };
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
     page
-        .write_slab_range(&slab_id, 8, b"ijklmnop")
+        .write_chunk_range(&chunk_id, 8, b"ijklmnop")
         .unwrap();
-    page.discard_slab_range(&slab_id, 6, 2).unwrap();
-    page.discard_slab_range(&slab_id, 14, 2).unwrap();
+    page.discard_chunk_range(&chunk_id, 6, 2).unwrap();
+    page.discard_chunk_range(&chunk_id, 14, 2).unwrap();
     page.configure_quorums(1, 1).unwrap();
     page.set_replica_quarantine(0, true).unwrap();
     page.set_replica_frozen(2, true).unwrap();
@@ -4879,7 +4879,7 @@ fn pageserver_plans_reclaim_across_active_replicas() {
     assert_eq!(report.reclaimed_chunks, 1);
     assert_eq!(report.rewritten_bytes, 2);
     let page_id = PageId {
-        slab_id,
+        chunk_id,
         page_index: 1,
     };
     assert_eq!(
@@ -4924,12 +4924,12 @@ fn pageserver_plans_reclaim_across_active_replicas() {
 #[test]
 fn pageserver_enforces_global_reclaim_rewrite_budget() {
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 730,
     };
-    page.write_slab_range(&slab_id, 0, b"abcd").unwrap();
-    page.discard_slab_range(&slab_id, 2, 2).unwrap();
+    page.write_chunk_range(&chunk_id, 0, b"abcd").unwrap();
+    page.discard_chunk_range(&chunk_id, 2, 2).unwrap();
 
     let plan = page
         .plan_chunk_replica_reclaim(None, 10, 2, 1, 200_000, 2, 2)
@@ -4996,13 +4996,13 @@ fn chunk_service_allocator_tracks_pending_commit_and_release() {
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page.configure_allocator(16).unwrap();
     let first = page.allocate_page_range(8, 10).unwrap();
-    assert_eq!(first.slab_id.id, 1);
+    assert_eq!(first.chunk_id.id, 1);
     assert_eq!(first.offset, 0);
     let second = page.allocate_page_range(8, 11).unwrap();
-    assert_eq!(second.slab_id.id, 1);
+    assert_eq!(second.chunk_id.id, 1);
     assert_eq!(second.offset, 8);
     let third = page.allocate_page_range(4, 12).unwrap();
-    assert_eq!(third.slab_id.id, 2);
+    assert_eq!(third.chunk_id.id, 2);
     assert_eq!(third.offset, 0);
     assert_eq!(page.pending_page_allocations().len(), 3);
 
@@ -5015,7 +5015,7 @@ fn chunk_service_allocator_tracks_pending_commit_and_release() {
         Err(ObjectError::InvalidArgument(_))
     ));
     let (payload, _) = page
-        .read_slab_range(&committed.slab_id, committed.offset, committed.length)
+        .read_chunk_range(&committed.chunk_id, committed.offset, committed.length)
         .unwrap();
     assert_eq!(payload, b"abcdefgh".to_vec());
     page
@@ -5060,7 +5060,7 @@ fn chunk_service_dedupes_idempotent_allocations_across_snapshots() {
     let third = page
         .allocate_page_range_idempotent(4, 14, "alloc-request-c")
         .unwrap();
-    assert_eq!(third.allocation.slab_id.id, 2);
+    assert_eq!(third.allocation.chunk_id.id, 2);
     assert_eq!(third.allocation.offset, 0);
     assert_eq!(page.pending_page_allocations().len(), 3);
 
@@ -5117,12 +5117,12 @@ fn chunk_service_dedupes_idempotent_allocations_across_snapshots() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     let release_page = restored
-        .list_release_allocation_receipts(None, 10, Some(&second.allocation.slab_id))
+        .list_release_allocation_receipts(None, 10, Some(&second.allocation.chunk_id))
         .unwrap();
     assert_eq!(release_page.receipt_count, 1);
     assert_eq!(
-        release_page.slab_id,
-        Some(second.allocation.slab_id.clone())
+        release_page.chunk_id,
+        Some(second.allocation.chunk_id.clone())
     );
     assert_eq!(
         release_page.receipts[0].idempotency_key,
@@ -5181,13 +5181,13 @@ fn chunk_service_dedupes_idempotent_batch_allocations_across_snapshots() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     let page = service
-        .list_batch_allocation_receipts(None, 1, Some(&first.allocations[0].slab_id))
+        .list_batch_allocation_receipts(None, 1, Some(&first.allocations[0].chunk_id))
         .unwrap();
     assert_eq!(page.receipt_count, 1);
     assert_eq!(page.total_receipt_count, 1);
     assert_eq!(
-        page.slab_id,
-        Some(first.allocations[0].slab_id.clone())
+        page.chunk_id,
+        Some(first.allocations[0].chunk_id.clone())
     );
     assert_eq!(page.receipts[0].idempotency_key, "batch-alloc-request-a");
     assert_eq!(page.receipts[0].allocations, first.allocations);
@@ -5212,43 +5212,43 @@ fn chunk_service_dedupes_idempotent_batch_allocations_across_snapshots() {
 
 #[test]
 fn chunk_service_dedupes_idempotent_writes_across_snapshots() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 42,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     let first = page
-        .write_slab_range_idempotent(&slab_id, 0, b"abcdefgh", "block-write-a")
+        .write_chunk_range_idempotent(&chunk_id, 0, b"abcdefgh", "block-write-a")
         .unwrap();
     assert!(!first.deduped);
     assert_eq!(first.length, 8);
     assert!(!first.request_checksum.is_empty());
     let retry = page
-        .write_slab_range_idempotent(&slab_id, 0, b"abcdefgh", "block-write-a")
+        .write_chunk_range_idempotent(&chunk_id, 0, b"abcdefgh", "block-write-a")
         .unwrap();
     assert!(retry.deduped);
     assert_eq!(retry.request_checksum, first.request_checksum);
     assert!(matches!(
-        page.write_slab_range_idempotent(&slab_id, 0, b"ABCDefgh", "block-write-a"),
+        page.write_chunk_range_idempotent(&chunk_id, 0, b"ABCDefgh", "block-write-a"),
         Err(ObjectError::PreconditionFailed(_))
     ));
-    let (payload, _) = page.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (payload, _) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(payload, b"abcdefgh".to_vec());
 
     let snapshot = page.export_snapshot();
     assert_eq!(snapshot.write_request_receipts.len(), 1);
     let page_write_page = page
-        .list_write_receipts(None, 1, Some(&slab_id))
+        .list_write_receipts(None, 1, Some(&chunk_id))
         .unwrap();
     assert_eq!(page_write_page.receipt_count, 1);
     assert_eq!(page_write_page.total_receipt_count, 1);
-    assert_eq!(page_write_page.slab_id, Some(slab_id.clone()));
+    assert_eq!(page_write_page.chunk_id, Some(chunk_id.clone()));
     assert_eq!(
         page_write_page.receipts[0].idempotency_key,
         "block-write-a"
     );
     let expected_chunk_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let chunk_write_page = page
@@ -5306,35 +5306,35 @@ fn chunk_service_dedupes_idempotent_writes_across_snapshots() {
         6
     );
     let restored_retry = restored
-        .write_slab_range_idempotent(&slab_id, 0, b"abcdefgh", "block-write-a")
+        .write_chunk_range_idempotent(&chunk_id, 0, b"abcdefgh", "block-write-a")
         .unwrap();
     assert!(restored_retry.deduped);
     let second = restored
-        .write_slab_range_idempotent(&slab_id, 8, b"ijkl", "block-write-b")
+        .write_chunk_range_idempotent(&chunk_id, 8, b"ijkl", "block-write-b")
         .unwrap();
     assert!(!second.deduped);
-    let (restored_payload, _) = restored.read_slab_range(&slab_id, 0, 12).unwrap();
+    let (restored_payload, _) = restored.read_chunk_range(&chunk_id, 0, 12).unwrap();
     assert_eq!(restored_payload, b"abcdefghijkl".to_vec());
     assert!(matches!(
-        restored.write_slab_range_idempotent(&slab_id, 12, b"", "block-write-empty"),
+        restored.write_chunk_range_idempotent(&chunk_id, 12, b"", "block-write-empty"),
         Err(ObjectError::InvalidArgument(_))
     ));
 }
 
 #[test]
 fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 43,
     };
     let batch = vec![
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 0,
             data: b"abcd".to_vec(),
         },
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 4,
             data: b"efgh".to_vec(),
         },
@@ -5367,7 +5367,7 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
     assert!(matches!(
         page.write_slab_ranges_idempotent(
             vec![ChunkRangeWrite {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 data: b"ABCDefgh".to_vec(),
             }],
@@ -5376,7 +5376,7 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
         Err(ObjectError::PreconditionFailed(_))
     ));
 
-    let (payload, _) = page.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (payload, _) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(payload, b"abcdefgh".to_vec());
     let snapshot = page.export_snapshot();
     assert_eq!(snapshot.batch_write_request_receipts.len(), 1);
@@ -5388,7 +5388,7 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
         "block-batch-write-a"
     );
     let expected_chunk_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let chunk_write_page = page
@@ -5445,7 +5445,7 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
     assert!(matches!(
         restored.write_slab_ranges_idempotent(
             vec![ChunkRangeWrite {
-                slab_id,
+                chunk_id,
                 offset: 8,
                 data: Vec::new(),
             }],
@@ -5457,49 +5457,49 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
 
 #[test]
 fn chunk_service_dedupes_idempotent_discards_across_snapshots() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 43,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefghijkl")
+        .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
     let first = page
-        .discard_slab_range_idempotent(&slab_id, 2, 4, "block-discard-a")
+        .discard_chunk_range_idempotent(&chunk_id, 2, 4, "block-discard-a")
         .unwrap();
     assert!(!first.deduped);
     assert_eq!(first.length, 4);
     let retry = page
-        .discard_slab_range_idempotent(&slab_id, 2, 4, "block-discard-a")
+        .discard_chunk_range_idempotent(&chunk_id, 2, 4, "block-discard-a")
         .unwrap();
     assert!(retry.deduped);
     assert_eq!(retry.request_checksum, first.request_checksum);
     assert!(matches!(
-        page.discard_slab_range_idempotent(&slab_id, 2, 2, "block-discard-a"),
+        page.discard_chunk_range_idempotent(&chunk_id, 2, 2, "block-discard-a"),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        page.read_slab_range(&slab_id, 2, 4),
+        page.read_chunk_range(&chunk_id, 2, 4),
         Err(ObjectError::Corruption(_))
     ));
-    let (tail, _) = page.read_slab_range(&slab_id, 8, 4).unwrap();
+    let (tail, _) = page.read_chunk_range(&chunk_id, 8, 4).unwrap();
     assert_eq!(tail, b"ijkl".to_vec());
 
     let snapshot = page.export_snapshot();
     assert_eq!(snapshot.discard_request_receipts.len(), 1);
     let page_discard_page = page
-        .list_discard_receipts(None, 1, Some(&slab_id))
+        .list_discard_receipts(None, 1, Some(&chunk_id))
         .unwrap();
     assert_eq!(page_discard_page.receipt_count, 1);
     assert_eq!(page_discard_page.total_receipt_count, 1);
-    assert_eq!(page_discard_page.slab_id, Some(slab_id.clone()));
+    assert_eq!(page_discard_page.chunk_id, Some(chunk_id.clone()));
     assert_eq!(
         page_discard_page.receipts[0].idempotency_key,
         "block-discard-a"
     );
     let expected_chunk_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let chunk_discard_page = page
@@ -5553,36 +5553,36 @@ fn chunk_service_dedupes_idempotent_discards_across_snapshots() {
         6
     );
     let restored_retry = restored
-        .discard_slab_range_idempotent(&slab_id, 2, 4, "block-discard-a")
+        .discard_chunk_range_idempotent(&chunk_id, 2, 4, "block-discard-a")
         .unwrap();
     assert!(restored_retry.deduped);
     assert!(matches!(
-        restored.discard_slab_range_idempotent(&slab_id, 8, 0, "block-discard-empty"),
+        restored.discard_chunk_range_idempotent(&chunk_id, 8, 0, "block-discard-empty"),
         Err(ObjectError::InvalidArgument(_))
     ));
 }
 
 #[test]
 fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 44,
     };
     let requests = vec![
         ChunkRangeRequest {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 0,
             length: 2,
         },
         ChunkRangeRequest {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 2,
             length: 4,
         },
     ];
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefghijkl")
+        .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
     let (stats, first) = page
         .discard_slab_ranges_idempotent(requests.clone(), "block-batch-discard-a")
@@ -5606,7 +5606,7 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
     assert!(matches!(
         page.discard_slab_ranges_idempotent(
             vec![ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 length: 2,
             }],
@@ -5615,7 +5615,7 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        page.read_slab_range(&slab_id, 0, 6),
+        page.read_chunk_range(&chunk_id, 0, 6),
         Err(ObjectError::Corruption(_))
     ));
 
@@ -5629,7 +5629,7 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
         "block-batch-discard-a"
     );
     let expected_chunk_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let chunk_discard_page = page
@@ -5686,16 +5686,16 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
 
 #[test]
 fn replica_service_snapshot_chunks_restore_replacement_nodes() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 1,
         id: 99,
     };
     let chunk_a = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let chunk_b = PageId {
-        slab_id,
+        chunk_id,
         page_index: 1,
     };
     let mut source = MatrixReplicaService::new();
@@ -5894,7 +5894,7 @@ fn replica_service_snapshot_chunks_restore_replacement_nodes() {
 
 #[test]
 fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 11,
     };
@@ -5910,11 +5910,11 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
         .release_page_allocation(&released.allocation_id)
         .unwrap();
     source
-        .write_slab_range(&slab_id, 0, b"abcdefghijklmnop")
+        .write_chunk_range(&chunk_id, 0, b"abcdefghijklmnop")
         .unwrap();
-    source.discard_slab_range(&slab_id, 4, 4).unwrap();
+    source.discard_chunk_range(&chunk_id, 4, 4).unwrap();
     source
-        .prewarm_slab_range_cache(&slab_id, 8, 4, 0)
+        .prewarm_chunk_range_cache(&chunk_id, 8, 4, 0)
         .unwrap();
 
     let mut chunks = Vec::new();
@@ -6069,7 +6069,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
             .stream_active
     );
     let (partial_tail, _) = partial_replacement
-        .read_slab_range(&slab_id, 8, 8)
+        .read_chunk_range(&chunk_id, 8, 8)
         .unwrap();
     assert_eq!(partial_tail, b"ijklmnop".to_vec());
     let mut streamed_replacement = MatrixChunkService::new(8, 1, 1).unwrap();
@@ -6084,7 +6084,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
         &etag(&snapshot_bytes),
     );
     let (streamed_tail, _) = streamed_replacement
-        .read_slab_range(&slab_id, 8, 8)
+        .read_chunk_range(&chunk_id, 8, 8)
         .unwrap();
     assert_eq!(streamed_tail, b"ijklmnop".to_vec());
     let facade_progress = MatrixObjectStore::new(test_options())
@@ -6097,17 +6097,17 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
         vec![pending.clone()]
     );
     assert_eq!(replacement.released_page_allocation_count(), 1);
-    let (head, _) = replacement.read_slab_range(&slab_id, 0, 4).unwrap();
+    let (head, _) = replacement.read_chunk_range(&chunk_id, 0, 4).unwrap();
     assert_eq!(head, b"abcd".to_vec());
     let (allocated, _) = replacement
-        .read_slab_range(&committed.slab_id, committed.offset, committed.length)
+        .read_chunk_range(&committed.chunk_id, committed.offset, committed.length)
         .unwrap();
     assert_eq!(allocated, b"wxyz".to_vec());
     assert!(matches!(
-        replacement.read_slab_range(&slab_id, 4, 4),
+        replacement.read_chunk_range(&chunk_id, 4, 4),
         Err(ObjectError::Corruption(_))
     ));
-    let (tail, stats) = replacement.read_slab_range(&slab_id, 8, 8).unwrap();
+    let (tail, stats) = replacement.read_chunk_range(&chunk_id, 8, 8).unwrap();
     assert_eq!(tail, b"ijklmnop".to_vec());
     assert_eq!(stats.quorum_verified_chunks, 2);
 
@@ -6117,12 +6117,12 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
 
 #[test]
 fn page_and_object_cache_control_coalesce_ranges() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 8,
     };
     let page_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 99,
     };
     let mut chunk = MatrixReplicaService::new();
@@ -6175,7 +6175,7 @@ fn page_and_object_cache_control_coalesce_ranges() {
     assert!(chunk.control_proof().read_cache_invalidations >= 2);
 
     let lru_chunk_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 100,
     };
     let mut lru_chunk = MatrixReplicaService::new();
@@ -6263,15 +6263,15 @@ fn page_and_object_cache_control_coalesce_ranges() {
 
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefghijkl")
+        .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
     assert_eq!(page.read_cache_stats().entries, 0);
-    let (_, cold_read) = page.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (_, cold_read) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(cold_read.cache_hits, 0);
     let cache_after_cold = page.read_cache_stats();
     assert!(cache_after_cold.entries >= 4);
     assert!(cache_after_cold.bytes >= 8);
-    let (_, hot_read) = page.read_slab_range(&slab_id, 0, 8).unwrap();
+    let (_, hot_read) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert!(hot_read.cache_hits >= hot_read.quorum_verified_chunks);
     assert_eq!(hot_read.physical_chunk_read_count, 0);
     page.set_read_cache_max_bytes_per_replica(4);
@@ -6284,17 +6284,17 @@ fn page_and_object_cache_control_coalesce_ranges() {
     assert!(cache_after_clear.direct_fill_pages > 0);
     page.set_read_cache_max_bytes_per_replica(DEFAULT_CHUNK_READ_CACHE_MAX_BYTES);
     let first = page
-        .prewarm_slab_range_cache(&slab_id, 1, 9, 0)
+        .prewarm_chunk_range_cache(&chunk_id, 1, 9, 0)
         .unwrap();
     assert_eq!(first.physical_reads, 9);
     assert_eq!(first.selected_ranges, 9);
     let second = page
-        .prewarm_slab_range_cache(&slab_id, 1, 9, 0)
+        .prewarm_chunk_range_cache(&chunk_id, 1, 9, 0)
         .unwrap();
     assert_eq!(second.cache_hits, 9);
     assert_eq!(second.physical_reads, 0);
     let invalidated = page
-        .invalidate_slab_range_cache(&slab_id, 3, 5)
+        .invalidate_chunk_range_cache(&chunk_id, 3, 5)
         .unwrap();
     assert!(invalidated.invalidated_entries >= 6);
     let page_ready = page.storage_readiness(0, 0, 0);
@@ -6335,7 +6335,7 @@ fn page_and_object_cache_control_coalesce_ranges() {
     let object_chunk = store
         .chunk_service
         .map_range(
-            &object_metadata.extents[0].slab_id,
+            &object_metadata.extents[0].chunk_id,
             object_metadata.extents[0].offset,
             4,
         )
@@ -6549,34 +6549,34 @@ fn page_and_object_cache_control_coalesce_ranges() {
 
 #[test]
 fn page_and_object_reads_repair_missing_replicas() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 9,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefgh")
+        .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
-    let first_chunk = page.map_range(&slab_id, 0, 4).unwrap()[0]
+    let first_chunk = page.map_range(&chunk_id, 0, 4).unwrap()[0]
         .page_id
         .clone();
     page
         .remove_replica_chunk_for_repair(0, &first_chunk)
         .unwrap();
-    let (data, degraded) = page.read_slab_range(&slab_id, 0, 4).unwrap();
+    let (data, degraded) = page.read_chunk_range(&chunk_id, 0, 4).unwrap();
     assert_eq!(data, b"abcd".to_vec());
     assert_eq!(degraded.quorum_read_degraded_chunks, 1);
-    let repaired = page.repair_slab_range(&slab_id, 0, 4).unwrap();
+    let repaired = page.repair_chunk_range(&chunk_id, 0, 4).unwrap();
     assert_eq!(repaired.checked_chunks, 1);
     assert_eq!(repaired.repaired_replicas, 1);
-    let (_, healthy) = page.read_slab_range(&slab_id, 0, 4).unwrap();
+    let (_, healthy) = page.read_chunk_range(&chunk_id, 0, 4).unwrap();
     assert_eq!(healthy.quorum_read_degraded_chunks, 0);
 
     page
         .remove_replica_chunk_for_repair(1, &first_chunk)
         .unwrap();
     let (repairing_data, repair_stats) = page
-        .read_slab_range_repairing(&slab_id, 0, 4)
+        .read_chunk_range_repairing(&chunk_id, 0, 4)
         .unwrap();
     assert_eq!(repairing_data, b"abcd".to_vec());
     assert_eq!(repair_stats.replica_read_repairs, 1);
@@ -6585,9 +6585,9 @@ fn page_and_object_reads_repair_missing_replicas() {
         .remove_replica_chunk_for_repair(1, &first_chunk)
         .unwrap();
     let page_report = page
-        .read_slab_range_repair_report(&slab_id, 0, 4)
+        .read_chunk_range_repair_report(&chunk_id, 0, 4)
         .unwrap();
-    assert_eq!(page_report.slab_id, slab_id);
+    assert_eq!(page_report.chunk_id, chunk_id);
     assert_eq!(page_report.offset, 0);
     assert_eq!(page_report.length, 4);
     assert_eq!(page_report.data, b"abcd".to_vec());
@@ -6606,7 +6606,7 @@ fn page_and_object_reads_repair_missing_replicas() {
     let repair_chunk = store
         .chunk_service
         .map_range(
-            &metadata.extents[0].slab_id,
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -6664,15 +6664,15 @@ fn page_and_object_reads_repair_missing_replicas() {
 
 #[test]
 fn page_and_object_repair_large_ranges_with_cursors() {
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 91,
     };
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
-        .write_slab_range(&slab_id, 0, b"abcdefghijkl")
+        .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
-    let chunks = page.map_range(&slab_id, 0, 12).unwrap();
+    let chunks = page.map_range(&chunk_id, 0, 12).unwrap();
     for loc in &chunks {
         page
             .remove_replica_chunk_for_repair(0, &loc.page_id)
@@ -6680,7 +6680,7 @@ fn page_and_object_repair_large_ranges_with_cursors() {
     }
 
     let first = page
-        .repair_slab_range_bounded(&slab_id, 0, 12, 1, 0)
+        .repair_chunk_range_bounded(&chunk_id, 0, 12, 1, 0)
         .unwrap();
     assert_eq!(first.total_chunk_count, 3);
     assert_eq!(first.selected_chunk_count, 1);
@@ -6693,13 +6693,13 @@ fn page_and_object_repair_large_ranges_with_cursors() {
     assert_eq!(first.stats.repaired_replicas, 1);
 
     let second = page
-        .repair_slab_range_bounded(&slab_id, 0, 12, 1, first.next_chunk_index)
+        .repair_chunk_range_bounded(&chunk_id, 0, 12, 1, first.next_chunk_index)
         .unwrap();
     assert_eq!(second.selected_chunk_count, 1);
     assert_eq!(second.next_chunk_index, 2);
     assert!(second.has_more);
     let final_pass = page
-        .repair_slab_range_bounded(&slab_id, 0, 12, 0, second.next_chunk_index)
+        .repair_chunk_range_bounded(&chunk_id, 0, 12, 0, second.next_chunk_index)
         .unwrap();
     assert_eq!(final_pass.selected_chunk_count, 1);
     assert!(!final_pass.has_more);
@@ -6719,7 +6719,7 @@ fn page_and_object_repair_large_ranges_with_cursors() {
     let object_chunks = store
         .chunk_service
         .map_range(
-            &metadata.extents[0].slab_id,
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             metadata.length,
         )
@@ -6768,7 +6768,7 @@ fn page_and_object_repair_large_ranges_with_cursors() {
     for extent in &multi_extent_metadata.extents {
         for loc in multi_extent_store
             .chunk_service
-            .map_range(&extent.slab_id, extent.offset, extent.length)
+            .map_range(&extent.chunk_id, extent.offset, extent.length)
             .unwrap()
         {
             multi_extent_chunk_ids.insert(loc.page_id);
@@ -6836,7 +6836,7 @@ fn object_store_plans_and_runs_bounded_replica_repairs() {
         .unwrap();
     let first_chunk = store
         .chunk_service
-        .map_range(&first.extents[0].slab_id, first.extents[0].offset, 4)
+        .map_range(&first.extents[0].chunk_id, first.extents[0].offset, 4)
         .unwrap()[0]
         .page_id
         .clone();
@@ -6846,7 +6846,7 @@ fn object_store_plans_and_runs_bounded_replica_repairs() {
         .unwrap();
     let second_chunk = store
         .chunk_service
-        .map_range(&second.extents[0].slab_id, second.extents[0].offset, 4)
+        .map_range(&second.extents[0].chunk_id, second.extents[0].offset, 4)
         .unwrap()[0]
         .page_id
         .clone();
@@ -6892,7 +6892,7 @@ fn object_store_plans_and_runs_bounded_replica_repairs() {
 
     let post = store
         .chunk_service
-        .read_slab_range(&first.extents[0].slab_id, first.extents[0].offset, 4)
+        .read_chunk_range(&first.extents[0].chunk_id, first.extents[0].offset, 4)
         .unwrap();
     assert_eq!(post.1.quorum_read_degraded_chunks, 0);
 }
@@ -6927,7 +6927,7 @@ fn object_store_decommissions_draining_replicas_after_repair() {
     let degraded_chunk = store
         .chunk_service
         .map_range(
-            &metadata.extents[0].slab_id,
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -6958,8 +6958,8 @@ fn object_store_decommissions_draining_replicas_after_repair() {
     assert_eq!(migrated.node_ids.len(), 2);
     let post = store
         .chunk_service
-        .read_slab_range(
-            &metadata.extents[0].slab_id,
+        .read_chunk_range(
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -9511,7 +9511,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     assert_eq!(ready.object_count, 2);
     assert_eq!(ready.live_object_count, 2);
     assert_eq!(ready.deleted_object_count, 0);
-    assert!(ready.slab_count > 0);
+    assert!(ready.chunk_count > 0);
     assert!(ready.page_count > 0);
     assert_eq!(ready.live_bytes, 24);
     assert!(ready.stale_bytes >= 32);
@@ -9551,7 +9551,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         ratio_ppm(ready.pending_discard_bytes, ready.stale_bytes)
     );
     assert_eq!(ready.discard_candidate_bytes, gc.discard_candidate_bytes);
-    assert_eq!(ready.discard_candidate_slabs, gc.candidate_count);
+    assert_eq!(ready.discard_candidate_chunks, gc.candidate_count);
     assert_eq!(
         ready.pending_discard_range_count,
         gc.pending_discard_range_count
@@ -9563,7 +9563,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     assert!(ready.pending_discard_range_count >= ready.merged_discard_range_count);
     assert_eq!(ready.fragmented_range_count, gc.fragmented_range_count);
     assert_eq!(
-        ready.compaction_candidate_slabs,
+        ready.compaction_candidate_chunks,
         gc.compaction_candidate_count
     );
     assert_eq!(
@@ -9576,7 +9576,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     );
     assert_eq!(
         ready.compaction_recommended,
-        ready.compaction_candidate_slabs > 0
+        ready.compaction_candidate_chunks > 0
     );
     assert_eq!(ready.physical_bytes, ready.page.total_physical_bytes);
     assert_eq!(ready.read_cache_bytes, ready.storage_read_cache_bytes);
@@ -10019,7 +10019,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         module_status.deleted_object_count,
         ready.deleted_object_count
     );
-    assert_eq!(module_status.slab_count, ready.slab_count);
+    assert_eq!(module_status.chunk_count, ready.chunk_count);
     assert_eq!(module_status.page_count, ready.page_count);
     assert_eq!(
         module_status.logical_written_bytes,
@@ -10054,8 +10054,8 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         ready.discard_candidate_bytes
     );
     assert_eq!(
-        module_status.discard_candidate_slabs,
-        ready.discard_candidate_slabs
+        module_status.discard_candidate_chunks,
+        ready.discard_candidate_chunks
     );
     assert_eq!(
         module_status.pending_discard_range_count,
@@ -10070,8 +10070,8 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         ready.fragmented_range_count
     );
     assert_eq!(
-        module_status.compaction_candidate_slabs,
-        ready.compaction_candidate_slabs
+        module_status.compaction_candidate_chunks,
+        ready.compaction_candidate_chunks
     );
     assert_eq!(
         module_status.compaction_candidate_bytes,
@@ -11878,7 +11878,7 @@ fn overwrite_delete_and_discard_accounting() {
     assert!(!plans.is_empty());
     let first = plans[0].clone();
     store
-        .apply_discard(&first.slab_id, first.ranges.clone())
+        .apply_discard(&first.chunk_id, first.ranges.clone())
         .unwrap();
     assert!(store.gc_report().discarded_bytes >= first.discard_bytes);
     store.delete_object("bucket", "object").unwrap();
@@ -16021,7 +16021,7 @@ fn raft_backed_store_applies_prepared_chunk_batches() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     let page_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 991,
         },
@@ -18015,18 +18015,18 @@ fn raft_backed_store_applies_prepared_page_batches() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 1,
         id: 773,
     };
     let writes = vec![
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 0,
             data: b"left".to_vec(),
         },
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 4,
             data: b"-right".to_vec(),
         },
@@ -18072,7 +18072,7 @@ fn raft_backed_store_applies_prepared_page_batches() {
         bounded_replicated
             .store()
             .chunk_service
-            .read_slab_range(&slab_id, 0, 4)
+            .read_chunk_range(&chunk_id, 0, 4)
             .unwrap()
             .0,
         b"left".to_vec()
@@ -18101,7 +18101,7 @@ fn raft_backed_store_applies_prepared_page_batches() {
         bounded_replicated
             .store()
             .chunk_service
-            .read_slab_range(&slab_id, 0, 10)
+            .read_chunk_range(&chunk_id, 0, 10)
             .unwrap()
             .0,
         b"left-right".to_vec()
@@ -18118,7 +18118,7 @@ fn raft_backed_store_applies_prepared_page_batches() {
     assert!(replicated
         .store()
         .chunk_service
-        .read_slab_range(&slab_id, 0, 10)
+        .read_chunk_range(&chunk_id, 0, 10)
         .is_err());
 
     let mut tampered = prepared_write.clone();
@@ -18152,14 +18152,14 @@ fn raft_backed_store_applies_prepared_page_batches() {
         replicated
             .store()
             .chunk_service
-            .read_slab_range(&slab_id, 0, 10)
+            .read_chunk_range(&chunk_id, 0, 10)
             .unwrap()
             .0,
         b"left-right".to_vec()
     );
 
     let discards = vec![ChunkRangeRequest {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         offset: 4,
         length: 1,
     }];
@@ -18212,13 +18212,13 @@ fn raft_backed_store_applies_prepared_page_batches() {
     assert!(matches!(
         follower
             .chunk_service
-            .read_slab_range(&slab_id, 0, 10),
+            .read_chunk_range(&chunk_id, 0, 10),
         Err(ObjectError::Corruption(_))
     ));
     assert_eq!(
         follower
             .chunk_service
-            .read_slab_range(&slab_id, 0, 4)
+            .read_chunk_range(&chunk_id, 0, 4)
             .unwrap()
             .0,
         b"left".to_vec()
@@ -18226,7 +18226,7 @@ fn raft_backed_store_applies_prepared_page_batches() {
     assert_eq!(
         follower
             .chunk_service
-            .read_slab_range(&slab_id, 5, 5)
+            .read_chunk_range(&chunk_id, 5, 5)
             .unwrap()
             .0,
         b"right".to_vec()
@@ -19708,7 +19708,7 @@ fn raft_backed_store_replays_storage_receipt_retention_configuration() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     let page_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 9901,
         },
@@ -20144,13 +20144,13 @@ fn raft_backed_store_replays_page_route_qos() {
     assert_eq!(proof.qos_max_read_ops_per_window, 1);
     assert_eq!(proof.qos_max_write_ops_per_window, 1);
 
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7017,
     };
     let first = replicated
         .propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"abcdefgh".to_vec(),
             "raft-block-qos-write-a",
@@ -20172,7 +20172,7 @@ fn raft_backed_store_replays_page_route_qos() {
     );
     assert!(matches!(
         replicated.propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             8,
             b"ijkl".to_vec(),
             "raft-block-qos-write-b",
@@ -20191,7 +20191,7 @@ fn raft_backed_store_replays_page_route_qos() {
     );
     let (payload, _) = follower
         .chunk_service
-        .read_slab_range(&slab_id, 0, 8)
+        .read_chunk_range(&chunk_id, 0, 8)
         .unwrap();
     assert_eq!(payload, b"abcdefgh".to_vec());
     assert_eq!(
@@ -20201,7 +20201,7 @@ fn raft_backed_store_replays_page_route_qos() {
         1
     );
     assert!(matches!(
-        follower.chunk_service.read_slab_range(&slab_id, 0, 4),
+        follower.chunk_service.read_chunk_range(&chunk_id, 0, 4),
         Err(ObjectError::PreconditionFailed(_))
     ));
     let snapshot = follower.chunk_service.export_snapshot();
@@ -20224,13 +20224,13 @@ fn raft_backed_store_applies_prepared_page_route_qos() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7018,
     };
     replicated
         .propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"seed".to_vec(),
             "prepared-block-qos-seed",
@@ -20389,7 +20389,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7019,
     };
@@ -20418,7 +20418,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
 
     assert!(matches!(
         replicated.propose_write_page_range_idempotent_fenced(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"abcdefgh".to_vec(),
             "stale-route-scalar-write",
@@ -20430,7 +20430,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     assert!(matches!(
         replicated.propose_write_page_ranges_idempotent_fenced(
             vec![ChunkRangeWrite {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 data: b"abcdefgh".to_vec(),
             }],
@@ -20442,7 +20442,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     assert!(matches!(
         replicated.propose_page_batch_write_prepared_bounded_fenced(
             vec![ChunkRangeWrite {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 data: b"abcdefgh".to_vec(),
             }],
@@ -20456,7 +20456,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
 
     let write = replicated
         .propose_write_page_range_idempotent_fenced(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"abcdefgh".to_vec(),
             "fresh-route-scalar-write",
@@ -20467,7 +20467,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     assert_eq!(replicated.raft_commit_index(), 2);
     let deduped = replicated
         .propose_write_page_range_idempotent_fenced(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"abcdefgh".to_vec(),
             "fresh-route-scalar-write",
@@ -20485,7 +20485,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     let proven_prepared_write = replicated
         .prepare_page_batch_write_raft_entry_bounded_with_read_proof_linearizable_fenced(
             vec![ChunkRangeWrite {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 8,
                 data: b"ijkl".to_vec(),
             }],
@@ -20617,7 +20617,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
         .state_checksum;
     assert!(matches!(
         replicated.propose_discard_page_range_idempotent_fenced(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             4,
             "stale-route-scalar-discard",
@@ -20628,7 +20628,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     assert!(matches!(
         replicated.propose_discard_page_ranges_idempotent_fenced(
             vec![ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 length: 4,
             }],
@@ -20640,7 +20640,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     assert!(matches!(
         replicated.propose_page_batch_discard_prepared_bounded_fenced(
             vec![ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 length: 4,
             }],
@@ -20652,7 +20652,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     ));
     let discard = replicated
         .propose_discard_page_range_idempotent_fenced(
-            slab_id,
+            chunk_id,
             0,
             4,
             "fresh-route-scalar-discard",
@@ -20668,7 +20668,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     let proven_prepared_discard = replicated
         .prepare_page_batch_discard_raft_entry_bounded_with_read_proof_linearizable_fenced(
             vec![ChunkRangeRequest {
-                slab_id: SlabId {
+                chunk_id: ChunkId {
                     volume_id: 0,
                     id: 7019,
                 },
@@ -20798,7 +20798,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
 }
 
 #[test]
-fn raft_backed_store_fences_prepared_slab_compaction() {
+fn raft_backed_store_fences_prepared_chunk_compaction() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
@@ -20812,7 +20812,7 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
             options: PutOptions::default(),
         })
         .unwrap();
-    let source_slab = first.extents[0].slab_id.clone();
+    let source_chunk = first.extents[0].chunk_id.clone();
     replicated
         .propose(ObjectCommand::PutObject {
             bucket: "bucket".to_string(),
@@ -20823,7 +20823,7 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
             options: PutOptions::default(),
         })
         .unwrap();
-    let source_before = replicated.store().slabs.get(&source_slab).unwrap();
+    let source_before = replicated.store().slabs.get(&source_chunk).unwrap();
     assert_eq!(source_before.stale_bytes, 8);
     assert_eq!(source_before.live_bytes, 8);
 
@@ -20855,8 +20855,8 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
         .unwrap();
     let gc_report_proof_checksum = gc_report.proof_checksum();
     assert!(matches!(
-        replicated.prepare_compact_slab_raft_entry_linearizable_fenced(
-            &source_slab,
+        replicated.prepare_compact_chunk_raft_entry_linearizable_fenced(
+            &source_chunk,
             8,
             3,
             &stale_route_checksum,
@@ -20864,8 +20864,8 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        replicated.prepare_compact_slab_raft_entry_linearizable_gc_proof_fenced(
-            &source_slab,
+        replicated.prepare_compact_chunk_raft_entry_linearizable_gc_proof_fenced(
+            &source_chunk,
             8,
             3,
             &current_route_checksum,
@@ -20875,8 +20875,8 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
     ));
 
     let proven_prepared = replicated
-        .prepare_compact_slab_raft_entry_with_read_proof_linearizable_gc_proof_fenced(
-            &source_slab,
+        .prepare_compact_chunk_raft_entry_with_read_proof_linearizable_gc_proof_fenced(
+            &source_chunk,
             8,
             3,
             &current_route_checksum,
@@ -20911,8 +20911,8 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
         gc_report_proof_checksum
     );
     let fenced_envelope = replicated
-        .prepare_compact_slab_envelope_linearizable_gc_proof_fenced(
-            &source_slab,
+        .prepare_compact_chunk_envelope_linearizable_gc_proof_fenced(
+            &source_chunk,
             8,
             3,
             &current_route_checksum,
@@ -20928,7 +20928,7 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
         "MXOSSEGMENT-COMPACTION-ENVELOPE2"
     );
     let default_prepared = replicated
-        .prepare_compact_slab_raft_entry(&source_slab, 8, 3)
+        .prepare_compact_chunk_raft_entry(&source_chunk, 8, 3)
         .unwrap();
     assert_eq!(
         default_prepared.expected_route_control_checksum,
@@ -20941,22 +20941,22 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
     );
     assert_eq!(prepared.source_stale_ranges.len(), 1);
     assert!(matches!(
-        replicated.propose_prepared_slab_compaction_linearizable_fenced(prepared.clone(), ""),
+        replicated.propose_prepared_chunk_compaction_linearizable_fenced(prepared.clone(), ""),
         Err(ObjectError::PreconditionFailed(_))
     ));
     let mut unfenced_prepared = prepared.clone();
     unfenced_prepared.expected_route_control_checksum.clear();
     unfenced_prepared.raft_entry_checksum =
-        prepared_slab_compaction_checksum(&unfenced_prepared);
+        prepared_chunk_compaction_checksum(&unfenced_prepared);
     assert!(matches!(
         replicated
             .store()
             .clone()
-            .apply_prepared_slab_compaction(unfenced_prepared.clone()),
+            .apply_prepared_chunk_compaction(unfenced_prepared.clone()),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        replicated.propose_prepared_slab_compaction_linearizable_fenced(
+        replicated.propose_prepared_chunk_compaction_linearizable_fenced(
             unfenced_prepared,
             &current_route_checksum,
         ),
@@ -20967,23 +20967,23 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
         .route_control_proof
         .chunk_route_control_commit_index = u64::MAX;
     stale_cursor_prepared.raft_entry_checksum =
-        prepared_slab_compaction_checksum(&stale_cursor_prepared);
+        prepared_chunk_compaction_checksum(&stale_cursor_prepared);
     assert!(matches!(
         replicated
             .store()
             .clone()
-            .apply_prepared_slab_compaction(stale_cursor_prepared.clone()),
+            .apply_prepared_chunk_compaction(stale_cursor_prepared.clone()),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        replicated.propose_prepared_slab_compaction_linearizable_fenced(
+        replicated.propose_prepared_chunk_compaction_linearizable_fenced(
             stale_cursor_prepared,
             &current_route_checksum,
         ),
         Err(ObjectError::PreconditionFailed(_))
     ));
     let apply_report = replicated
-        .propose_prepared_slab_compaction_linearizable_gc_proof_fenced_with_status(
+        .propose_prepared_chunk_compaction_linearizable_gc_proof_fenced_with_status(
             prepared.clone(),
             &current_route_checksum,
             &gc_report_proof_checksum,
@@ -21010,7 +21010,7 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
     assert!(!apply_report.prepared);
     assert!(!apply_report.external_raft_required);
     assert!(!apply_report.deduped);
-    assert_eq!(apply_report.slab_id, source_slab);
+    assert_eq!(apply_report.chunk_id, source_chunk);
     assert_eq!(apply_report.min_stale_bytes, 8);
     assert_eq!(apply_report.live_object_count, 1);
     assert_eq!(apply_report.source_stale_range_count, 1);
@@ -21037,7 +21037,7 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
         fields.get("segment_compact.metadata.content_type"),
         Some(&"segment/prepared-compaction".to_string())
     );
-    let source_after = replicated.store().slabs.get(&source_slab).unwrap();
+    let source_after = replicated.store().slabs.get(&source_chunk).unwrap();
     assert_eq!(source_after.live_bytes, 0);
     assert_eq!(source_after.stale_bytes, source_after.next_offset);
     assert_eq!(
@@ -21059,7 +21059,7 @@ fn raft_backed_store_fences_prepared_slab_compaction() {
         follower.get_object("bucket", "compact-me").unwrap().data,
         b"new-data".to_vec()
     );
-    let follower_source = follower.slabs.get(&source_slab).unwrap();
+    let follower_source = follower.slabs.get(&source_chunk).unwrap();
     assert_eq!(follower_source.live_bytes, 0);
     assert_eq!(follower_source.stale_bytes, follower_source.next_offset);
 }
@@ -21220,7 +21220,7 @@ fn raft_backed_store_fences_full_compaction_with_gc_proof() {
 }
 
 #[test]
-fn raft_backed_slab_discard_run_reports_route_evidence() {
+fn raft_backed_chunk_discard_run_reports_route_evidence() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
@@ -21251,14 +21251,14 @@ fn raft_backed_slab_discard_run_reports_route_evidence() {
         .state_checksum;
 
     let report = replicated
-        .propose_slab_discards_prepared_linearizable_fenced(1, 8, 1, &route_checksum)
+        .propose_chunk_discards_prepared_linearizable_fenced(1, 8, 1, &route_checksum)
         .unwrap();
-    assert!(report.planned_slabs > 0);
+    assert!(report.planned_chunks > 0);
     assert!(report.planned_discard_bytes >= report.discard_bytes);
-    assert_eq!(report.attempted_slabs, 1);
-    assert_eq!(report.discarded_slabs, 1);
-    assert_eq!(report.failed_slabs, 0);
-    assert_eq!(report.skipped_limit_slabs, 0);
+    assert_eq!(report.attempted_chunks, 1);
+    assert_eq!(report.discarded_chunks, 1);
+    assert_eq!(report.failed_chunks, 0);
+    assert_eq!(report.skipped_limit_chunks, 0);
     assert!(report.discard_bytes > 0);
     assert_eq!(report.route_control_proof.state_checksum, route_checksum);
     assert_eq!(report.expected_route_control_checksum, route_checksum);
@@ -21334,7 +21334,7 @@ fn raft_backed_slab_discard_run_reports_route_evidence() {
         .unwrap();
     let planned_gc_checksum = planned_gc_report.proof_checksum();
     assert!(matches!(
-        replicated.propose_slab_discards_prepared_linearizable_gc_proof_fenced(
+        replicated.propose_chunk_discards_prepared_linearizable_gc_proof_fenced(
             1,
             8,
             1,
@@ -21344,7 +21344,7 @@ fn raft_backed_slab_discard_run_reports_route_evidence() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     let fenced_report = replicated
-        .propose_slab_discards_prepared_linearizable_gc_proof_fenced(
+        .propose_chunk_discards_prepared_linearizable_gc_proof_fenced(
             1,
             8,
             1,
@@ -21352,7 +21352,7 @@ fn raft_backed_slab_discard_run_reports_route_evidence() {
             &planned_gc_checksum,
         )
         .unwrap();
-    assert!(fenced_report.discarded_slabs > 0);
+    assert!(fenced_report.discarded_chunks > 0);
     assert_eq!(
         fenced_report.route_control_proof.state_checksum,
         refreshed_route_checksum
@@ -21384,13 +21384,13 @@ fn raft_backed_store_replays_chunk_mutation_qos() {
         .iter()
         .all(|replica_config| replica_config == &config));
 
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7018,
     };
     let first = replicated
         .propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"abcdefgh".to_vec(),
             "raft-chunk-qos-write-a",
@@ -21408,7 +21408,7 @@ fn raft_backed_store_replays_chunk_mutation_qos() {
         .all(|replica| replica.mutation_qos_pressure));
     assert!(matches!(
         replicated.propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             8,
             b"ijkl".to_vec(),
             "raft-chunk-qos-write-b",
@@ -21418,7 +21418,7 @@ fn raft_backed_store_replays_chunk_mutation_qos() {
 
     let discard = replicated
         .propose_discard_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             4,
             "raft-chunk-qos-discard-a",
@@ -21427,7 +21427,7 @@ fn raft_backed_store_replays_chunk_mutation_qos() {
     assert_eq!(discard.content_type, "blockserver/idempotent-discard");
     assert!(matches!(
         replicated.propose_discard_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             4,
             4,
             "raft-chunk-qos-discard-b",
@@ -21552,13 +21552,13 @@ fn raft_backed_store_applies_prepared_chunk_mutation_qos() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7020,
     };
     replicated
         .propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"seed".to_vec(),
             "prepared-chunk-qos-seed",
@@ -21692,13 +21692,13 @@ fn raft_backed_store_replays_idempotent_page_writes() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7000,
     };
     let first = replicated
         .propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"abcdefgh".to_vec(),
             "raft-block-write-a",
@@ -21710,7 +21710,7 @@ fn raft_backed_store_replays_idempotent_page_writes() {
     assert_eq!(first.length, 8);
     let retry = replicated
         .propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"abcdefgh".to_vec(),
             "raft-block-write-a",
@@ -21720,7 +21720,7 @@ fn raft_backed_store_replays_idempotent_page_writes() {
     assert_eq!(retry.length, 8);
     assert!(matches!(
         replicated.propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"ABCDefgh".to_vec(),
             "raft-block-write-a",
@@ -21729,7 +21729,7 @@ fn raft_backed_store_replays_idempotent_page_writes() {
     ));
     let second = replicated
         .propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             8,
             b"ijkl".to_vec(),
             "raft-block-write-b",
@@ -21740,7 +21740,7 @@ fn raft_backed_store_replays_idempotent_page_writes() {
     let (payload, _) = replicated
         .store()
         .chunk_service
-        .read_slab_range(&slab_id, 0, 12)
+        .read_chunk_range(&chunk_id, 0, 12)
         .unwrap();
     assert_eq!(payload, b"abcdefghijkl".to_vec());
 
@@ -21748,7 +21748,7 @@ fn raft_backed_store_replays_idempotent_page_writes() {
     replicated.replay_into(&mut follower).unwrap();
     let (follower_payload, _) = follower
         .chunk_service
-        .read_slab_range(&slab_id, 0, 12)
+        .read_chunk_range(&chunk_id, 0, 12)
         .unwrap();
     assert_eq!(follower_payload, b"abcdefghijkl".to_vec());
     assert_eq!(follower.last_applied_index(), 3);
@@ -21761,7 +21761,7 @@ fn raft_backed_store_replays_idempotent_page_writes() {
         .unwrap();
     let restored_retry = restored
         .chunk_service
-        .write_slab_range_idempotent(&slab_id, 0, b"abcdefgh", "raft-block-write-a")
+        .write_chunk_range_idempotent(&chunk_id, 0, b"abcdefgh", "raft-block-write-a")
         .unwrap();
     assert!(restored_retry.deduped);
 }
@@ -21771,23 +21771,23 @@ fn raft_backed_store_replays_idempotent_batch_page_writes() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7006,
     };
     let batch = vec![
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 0,
             data: b"abcd".to_vec(),
         },
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 4,
             data: b"efgh".to_vec(),
         },
         ChunkRangeWrite {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 8,
             data: b"ijkl".to_vec(),
         },
@@ -21807,7 +21807,7 @@ fn raft_backed_store_replays_idempotent_batch_page_writes() {
     assert!(matches!(
         replicated.propose_write_page_ranges_idempotent(
             vec![ChunkRangeWrite {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 data: b"ABCDefghijkl".to_vec(),
             }],
@@ -21819,7 +21819,7 @@ fn raft_backed_store_replays_idempotent_batch_page_writes() {
     let (payload, _) = replicated
         .store()
         .chunk_service
-        .read_slab_range(&slab_id, 0, 12)
+        .read_chunk_range(&chunk_id, 0, 12)
         .unwrap();
     assert_eq!(payload, b"abcdefghijkl".to_vec());
 
@@ -21827,7 +21827,7 @@ fn raft_backed_store_replays_idempotent_batch_page_writes() {
     replicated.replay_into(&mut follower).unwrap();
     let (follower_payload, _) = follower
         .chunk_service
-        .read_slab_range(&slab_id, 0, 12)
+        .read_chunk_range(&chunk_id, 0, 12)
         .unwrap();
     assert_eq!(follower_payload, b"abcdefghijkl".to_vec());
     assert_eq!(follower.last_applied_index(), 2);
@@ -21850,33 +21850,33 @@ fn raft_backed_store_replays_idempotent_page_discards() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7001,
     };
     replicated
         .propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"abcdefghijkl".to_vec(),
             "raft-discard-seed",
         )
         .unwrap();
     let first = replicated
-        .propose_discard_page_range_idempotent(slab_id.clone(), 2, 4, "raft-block-discard-a")
+        .propose_discard_page_range_idempotent(chunk_id.clone(), 2, 4, "raft-block-discard-a")
         .unwrap();
     assert_eq!(first.object_id.bucket, "_blockdiscard");
     assert_eq!(first.content_type, "blockserver/idempotent-discard");
     assert_eq!(first.version, 0);
     assert_eq!(first.length, 4);
     let retry = replicated
-        .propose_discard_page_range_idempotent(slab_id.clone(), 2, 4, "raft-block-discard-a")
+        .propose_discard_page_range_idempotent(chunk_id.clone(), 2, 4, "raft-block-discard-a")
         .unwrap();
     assert_eq!(retry.version, 1);
     assert_eq!(retry.length, 4);
     assert!(matches!(
         replicated.propose_discard_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             2,
             2,
             "raft-block-discard-a",
@@ -21888,14 +21888,14 @@ fn raft_backed_store_replays_idempotent_page_discards() {
         replicated
             .store()
             .chunk_service
-            .read_slab_range(&slab_id, 2, 4),
+            .read_chunk_range(&chunk_id, 2, 4),
         Err(ObjectError::Corruption(_))
     ));
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     assert!(matches!(
-        follower.chunk_service.read_slab_range(&slab_id, 2, 4),
+        follower.chunk_service.read_chunk_range(&chunk_id, 2, 4),
         Err(ObjectError::Corruption(_))
     ));
     assert_eq!(follower.last_applied_index(), 3);
@@ -21908,7 +21908,7 @@ fn raft_backed_store_replays_idempotent_page_discards() {
         .unwrap();
     let restored_retry = restored
         .chunk_service
-        .discard_slab_range_idempotent(&slab_id, 2, 4, "raft-block-discard-a")
+        .discard_chunk_range_idempotent(&chunk_id, 2, 4, "raft-block-discard-a")
         .unwrap();
     assert!(restored_retry.deduped);
 }
@@ -21918,27 +21918,27 @@ fn raft_backed_store_gates_page_and_chunk_receipt_reads() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7003,
     };
     replicated
         .propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"receipt-audit".to_vec(),
             "raft-receipt-write-a",
         )
         .unwrap();
     replicated
-        .propose_discard_page_range_idempotent(slab_id.clone(), 2, 4, "raft-receipt-discard-a")
+        .propose_discard_page_range_idempotent(chunk_id.clone(), 2, 4, "raft-receipt-discard-a")
         .unwrap();
 
     let (page_write_page, write_readiness) = replicated
-        .list_page_write_receipts_linearizable(None, 10, Some(&slab_id), 30)
+        .list_page_write_receipts_linearizable(None, 10, Some(&chunk_id), 30)
         .unwrap();
     assert_eq!(page_write_page.receipt_count, 1);
-    assert_eq!(page_write_page.slab_id, Some(slab_id.clone()));
+    assert_eq!(page_write_page.chunk_id, Some(chunk_id.clone()));
     assert_eq!(
         page_write_page.receipts[0].idempotency_key,
         "raft-receipt-write-a"
@@ -21949,7 +21949,7 @@ fn raft_backed_store_gates_page_and_chunk_receipt_reads() {
     );
 
     let (page_discard_page, _) = replicated
-        .list_page_discard_receipts_linearizable(None, 10, Some(&slab_id), 31)
+        .list_page_discard_receipts_linearizable(None, 10, Some(&chunk_id), 31)
         .unwrap();
     assert_eq!(page_discard_page.receipt_count, 1);
     assert_eq!(
@@ -21958,7 +21958,7 @@ fn raft_backed_store_gates_page_and_chunk_receipt_reads() {
     );
 
     let page_id = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let (chunk_write_page, _) = replicated
@@ -21984,7 +21984,7 @@ fn raft_backed_store_gates_page_and_chunk_receipt_reads() {
         MatrixObjectStore::new(test_options()).unwrap(),
     );
     let err = stale
-        .list_page_write_receipts_linearizable(None, 10, Some(&slab_id), 34)
+        .list_page_write_receipts_linearizable(None, 10, Some(&chunk_id), 34)
         .unwrap_err();
     assert!(matches!(err, ObjectError::PreconditionFailed(_)));
     assert!(err
@@ -21997,13 +21997,13 @@ fn raft_backed_store_replays_idempotent_batch_page_discards() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7002,
     };
     replicated
         .propose_write_page_range_idempotent(
-            slab_id.clone(),
+            chunk_id.clone(),
             0,
             b"abcdefghijkl".to_vec(),
             "raft-batch-discard-seed",
@@ -22011,12 +22011,12 @@ fn raft_backed_store_replays_idempotent_batch_page_discards() {
         .unwrap();
     let requests = vec![
         ChunkRangeRequest {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 0,
             length: 2,
         },
         ChunkRangeRequest {
-            slab_id: slab_id.clone(),
+            chunk_id: chunk_id.clone(),
             offset: 2,
             length: 4,
         },
@@ -22036,7 +22036,7 @@ fn raft_backed_store_replays_idempotent_batch_page_discards() {
     assert!(matches!(
         replicated.propose_discard_page_ranges_idempotent(
             vec![ChunkRangeRequest {
-                slab_id: slab_id.clone(),
+                chunk_id: chunk_id.clone(),
                 offset: 0,
                 length: 2,
             }],
@@ -22049,7 +22049,7 @@ fn raft_backed_store_replays_idempotent_batch_page_discards() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     assert!(matches!(
-        follower.chunk_service.read_slab_range(&slab_id, 0, 6),
+        follower.chunk_service.read_chunk_range(&chunk_id, 0, 6),
         Err(ObjectError::Corruption(_))
     ));
     let chunk_snapshot = follower.chunk_service.export_snapshot();
@@ -22101,11 +22101,11 @@ fn raft_backed_store_replays_bounded_page_repair() {
             options: PutOptions::default(),
         })
         .unwrap();
-    let slab_id = written.extents[0].slab_id.clone();
+    let chunk_id = written.extents[0].chunk_id.clone();
     let chunks = replicated
         .store()
         .chunk_service
-        .map_range(&slab_id, written.extents[0].offset, written.length)
+        .map_range(&chunk_id, written.extents[0].offset, written.length)
         .unwrap();
     for loc in &chunks {
         replicated
@@ -22117,7 +22117,7 @@ fn raft_backed_store_replays_bounded_page_repair() {
     let route_proof = replicated.store().chunk_service.route_control_proof();
     assert!(matches!(
         replicated.propose_repair_page_range_bounded_linearizable_fenced(
-            slab_id.clone(),
+            chunk_id.clone(),
             written.extents[0].offset,
             written.length,
             1,
@@ -22128,7 +22128,7 @@ fn raft_backed_store_replays_bounded_page_repair() {
     ));
     let first = replicated
         .propose_repair_page_range_bounded_linearizable_fenced(
-            slab_id.clone(),
+            chunk_id.clone(),
             written.extents[0].offset,
             written.length,
             1,
@@ -22141,7 +22141,7 @@ fn raft_backed_store_replays_bounded_page_repair() {
     assert_eq!(first.length, 1);
     let second = replicated
         .propose_repair_page_range_bounded(
-            slab_id.clone(),
+            chunk_id.clone(),
             written.extents[0].offset,
             written.length,
             0,
@@ -22185,12 +22185,12 @@ fn raft_backed_store_replays_exact_page_chunk_repair() {
             options: PutOptions::default(),
         })
         .unwrap();
-    let slab_id = written.extents[0].slab_id.clone();
+    let chunk_id = written.extents[0].chunk_id.clone();
     let page_id = replicated
         .store()
         .chunk_service
         .map_range(
-            &slab_id,
+            &chunk_id,
             written.extents[0].offset,
             written.extents[0].length,
         )
@@ -22286,11 +22286,11 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
             options: PutOptions::default(),
         })
         .unwrap();
-    let slab_id = written.extents[0].slab_id.clone();
+    let chunk_id = written.extents[0].chunk_id.clone();
     let chunks = replicated
         .store()
         .chunk_service
-        .map_range(&slab_id, written.extents[0].offset, written.length)
+        .map_range(&chunk_id, written.extents[0].offset, written.length)
         .unwrap();
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
@@ -22309,7 +22309,7 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
     let route_proof = replicated.store().chunk_service.route_control_proof();
     let prepared = replicated
         .prepare_repair_page_range_raft_entry_with_read_proof_linearizable_fenced(
-            slab_id.clone(),
+            chunk_id.clone(),
             written.extents[0].offset,
             written.length,
             1,
@@ -22327,7 +22327,7 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
     assert!(!prepared.value.chunk_control_proof.proof_checksum.is_empty());
     let envelope = replicated
         .prepare_repair_page_range_envelope_with_read_proof_linearizable_fenced(
-            slab_id.clone(),
+            chunk_id.clone(),
             written.extents[0].offset,
             written.length,
             1,
@@ -22336,7 +22336,7 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
         )
         .unwrap();
     assert_eq!(envelope.envelope.operation, "range");
-    assert_eq!(envelope.envelope.slab_id, Some(slab_id.clone()));
+    assert_eq!(envelope.envelope.chunk_id, Some(chunk_id.clone()));
     assert_eq!(envelope.envelope.selected_chunk_count, 1);
     assert_eq!(
         envelope.envelope.raft_entry_checksum,
@@ -22353,7 +22353,7 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
     );
     assert!(matches!(
         replicated.propose_repair_page_range_prepared_linearizable_fenced(
-            slab_id.clone(),
+            chunk_id.clone(),
             written.extents[0].offset,
             written.length,
             1,
@@ -22458,12 +22458,12 @@ fn raft_backed_store_replays_prepared_exact_page_chunk_repair() {
             options: PutOptions::default(),
         })
         .unwrap();
-    let slab_id = written.extents[0].slab_id.clone();
+    let chunk_id = written.extents[0].chunk_id.clone();
     let page_id = replicated
         .store()
         .chunk_service
         .map_range(
-            &slab_id,
+            &chunk_id,
             written.extents[0].offset,
             written.extents[0].length,
         )
@@ -22626,7 +22626,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     let stale = RaftBackedObjectStore::new(stale_raft, stale_store);
     let stale_err = stale
         .prepare_chunk_state_handoffs_with_read_proof_linearizable_fenced(
-            &SlabId {
+            &ChunkId {
                 volume_id: 0,
                 id: 0,
             },
@@ -22654,11 +22654,11 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
             options: PutOptions::default(),
         })
         .unwrap();
-    let slab_id = written.extents[0].slab_id.clone();
+    let chunk_id = written.extents[0].chunk_id.clone();
     let chunks = replicated
         .store()
         .chunk_service
-        .map_range(&slab_id, written.extents[0].offset, written.length)
+        .map_range(&chunk_id, written.extents[0].offset, written.length)
         .unwrap();
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
@@ -22684,7 +22684,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     );
     assert!(matches!(
         replicated.prepare_chunk_state_handoffs_linearizable_fenced(
-            &slab_id,
+            &chunk_id,
             written.extents[0].offset,
             written.length,
             0,
@@ -22696,7 +22696,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     let route_proof = replicated.store().chunk_service.route_control_proof();
     let proven_handoffs = replicated
         .prepare_chunk_state_handoffs_with_read_proof_linearizable_fenced(
-            &slab_id,
+            &chunk_id,
             written.extents[0].offset,
             written.length,
             0,
@@ -22720,7 +22720,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     );
     let handoff_envelope = replicated
         .prepare_chunk_state_handoff_envelope_with_read_proof_linearizable_fenced(
-            &slab_id,
+            &chunk_id,
             written.extents[0].offset,
             written.length,
             0,
@@ -22753,7 +22753,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     );
     let tighter_handoff_envelope = replicated
         .prepare_chunk_state_handoff_envelope_with_read_proof_linearizable_fenced(
-            &slab_id,
+            &chunk_id,
             written.extents[0].offset,
             written.length,
             0,
@@ -22863,11 +22863,11 @@ fn raft_backed_store_replays_audit_driven_page_repair() {
             options: PutOptions::default(),
         })
         .unwrap();
-    let slab_id = written.extents[0].slab_id.clone();
+    let chunk_id = written.extents[0].chunk_id.clone();
     let chunks = replicated
         .store()
         .chunk_service
-        .map_range(&slab_id, written.extents[0].offset, written.length)
+        .map_range(&chunk_id, written.extents[0].offset, written.length)
         .unwrap();
     for loc in chunks.iter().take(2) {
         replicated
@@ -22925,7 +22925,7 @@ fn raft_backed_store_replays_prepared_page_audit_repair_with_compact_fences() {
         .store()
         .chunk_service
         .map_range(
-            &written.extents[0].slab_id,
+            &written.extents[0].chunk_id,
             written.extents[0].offset,
             written.length,
         )
@@ -23223,16 +23223,16 @@ fn raft_backed_store_replays_chunk_partial_reclaim() {
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 1,
     };
     let chunk0 = PageId {
-        slab_id: slab_id.clone(),
+        chunk_id: chunk_id.clone(),
         page_index: 0,
     };
     let chunk1 = PageId {
-        slab_id,
+        chunk_id,
         page_index: 1,
     };
     assert!(follower.chunk_service.replicas[0]
@@ -23498,7 +23498,7 @@ fn raft_backed_store_replays_targeted_chunk_reclaim() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     let chunk1 = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 1,
         },
@@ -23738,7 +23738,7 @@ fn raft_backed_store_replays_prepared_chunk_reclaim_with_compact_fences() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     let chunk1 = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 1,
         },
@@ -23908,7 +23908,7 @@ fn raft_backed_storage_maintenance_repairs_degraded_chunks() {
         .store()
         .chunk_service
         .map_range(
-            &written.extents[0].slab_id,
+            &written.extents[0].chunk_id,
             written.extents[0].offset,
             written.length,
         )
@@ -24004,7 +24004,7 @@ fn raft_backed_store_replays_chunk_trim_flow_throttling() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     let page_id = PageId {
-        slab_id: SlabId {
+        chunk_id: ChunkId {
             volume_id: 0,
             id: 1,
         },
@@ -24065,13 +24065,13 @@ fn raft_backed_store_applies_prepared_chunk_trim_flow_control() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7021,
     };
     replicated
         .propose_write_page_range_idempotent(
-            slab_id,
+            chunk_id,
             0,
             b"seed".to_vec(),
             "prepared-trim-flow-seed",
@@ -24249,7 +24249,7 @@ fn raft_backed_object_chunk_cache_control_is_linearizable() {
         .store()
         .chunk_service
         .map_range(
-            &metadata.extents[0].slab_id,
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -24402,13 +24402,13 @@ fn raft_backed_store_applies_prepared_chunk_read_cache_configuration() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let slab_id = SlabId {
+    let chunk_id = ChunkId {
         volume_id: 0,
         id: 7022,
     };
     replicated
         .propose_write_page_range_idempotent(
-            slab_id,
+            chunk_id,
             0,
             b"abcdefgh".to_vec(),
             "prepared-read-cache-seed",
@@ -24592,7 +24592,7 @@ fn raft_backed_store_replays_page_chunk_endpoint_topology() {
     );
     assert!(matches!(
         replicated.store().chunk_service.replicas[2].read_chunk_state(&PageId {
-            slab_id: SlabId {
+            chunk_id: ChunkId {
                 volume_id: 0,
                 id: 1
             },
@@ -28326,7 +28326,7 @@ fn raft_backed_store_decommissions_draining_objects_after_page_repair() {
         .store
         .chunk_service
         .map_range(
-            &metadata.extents[0].slab_id,
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -28372,8 +28372,8 @@ fn raft_backed_store_decommissions_draining_objects_after_page_repair() {
     let post = replicated
         .store()
         .chunk_service
-        .read_slab_range(
-            &metadata.extents[0].slab_id,
+        .read_chunk_range(
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -28389,8 +28389,8 @@ fn raft_backed_store_decommissions_draining_objects_after_page_repair() {
     replicated.replay_into(&mut follower).unwrap();
     let follower_post = follower
         .chunk_service
-        .read_slab_range(
-            &metadata.extents[0].slab_id,
+        .read_chunk_range(
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -28438,7 +28438,7 @@ fn raft_backed_store_repairs_planned_object_replicas() {
         .store
         .chunk_service
         .map_range(
-            &metadata.extents[0].slab_id,
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -28497,8 +28497,8 @@ fn raft_backed_store_repairs_planned_object_replicas() {
     let post = replicated
         .store()
         .chunk_service
-        .read_slab_range(
-            &metadata.extents[0].slab_id,
+        .read_chunk_range(
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -28509,8 +28509,8 @@ fn raft_backed_store_repairs_planned_object_replicas() {
     replicated.replay_into(&mut follower).unwrap();
     let follower_post = follower
         .chunk_service
-        .read_slab_range(
-            &metadata.extents[0].slab_id,
+        .read_chunk_range(
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -28791,7 +28791,7 @@ fn raft_backed_store_replays_object_range_read_repair() {
         .store
         .chunk_service
         .map_range(
-            &metadata.extents[0].slab_id,
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -28820,8 +28820,8 @@ fn raft_backed_store_replays_object_range_read_repair() {
     let post = replicated
         .store()
         .chunk_service
-        .read_slab_range(
-            &metadata.extents[0].slab_id,
+        .read_chunk_range(
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -28839,8 +28839,8 @@ fn raft_backed_store_replays_object_range_read_repair() {
     );
     let follower_post = follower
         .chunk_service
-        .read_slab_range(
-            &metadata.extents[0].slab_id,
+        .read_chunk_range(
+            &metadata.extents[0].chunk_id,
             metadata.extents[0].offset,
             4,
         )
@@ -28891,7 +28891,7 @@ fn raft_backed_store_replays_batch_object_read_repair() {
     let degraded_chunk = replicated
         .store
         .chunk_service
-        .map_range(&first.extents[0].slab_id, first.extents[0].offset, 4)
+        .map_range(&first.extents[0].chunk_id, first.extents[0].offset, 4)
         .unwrap()[0]
         .page_id
         .clone();
@@ -28945,7 +28945,7 @@ fn raft_backed_store_replays_batch_object_read_repair() {
     let post = replicated
         .store()
         .chunk_service
-        .read_slab_range(&first.extents[0].slab_id, first.extents[0].offset, 4)
+        .read_chunk_range(&first.extents[0].chunk_id, first.extents[0].offset, 4)
         .unwrap();
     assert_eq!(post.1.quorum_read_degraded_chunks, 0);
 
@@ -28967,7 +28967,7 @@ fn raft_backed_store_replays_batch_object_read_repair() {
     );
     let follower_post = follower
         .chunk_service
-        .read_slab_range(&first.extents[0].slab_id, first.extents[0].offset, 4)
+        .read_chunk_range(&first.extents[0].chunk_id, first.extents[0].offset, 4)
         .unwrap();
     assert_eq!(follower_post.1.quorum_read_degraded_chunks, 0);
     assert_eq!(
@@ -29584,15 +29584,15 @@ fn snapshot_round_trips_validated_versioned_state() {
             if message.contains("object version key")
     ));
     let mut corrupt_payload_range = chunk_restored.export_snapshot().unwrap();
-    let (slab_id, slab) = corrupt_payload_range
+    let (chunk_id, slab) = corrupt_payload_range
         .slabs
         .iter()
         .next()
-        .map(|(slab_id, slab)| (slab_id.clone(), slab.clone()))
+        .map(|(chunk_id, slab)| (chunk_id.clone(), slab.clone()))
         .unwrap();
     corrupt_payload_range
         .payloads
-        .insert((slab_id, slab.next_offset), std::sync::Arc::new(b"x".to_vec()));
+        .insert((chunk_id, slab.next_offset), std::sync::Arc::new(b"x".to_vec()));
     corrupt_payload_range.snapshot_checksum = corrupt_payload_range.checksum_material_hash();
     assert!(matches!(
         corrupt_payload_range.validate(),
@@ -35235,17 +35235,17 @@ fn a_stale_range_holds_no_payload_entry() {
     }
     store.delete_object("bucket", "k1").unwrap();
     let mut stale_ranges_seen = 0usize;
-    for (slab_id, slab) in store.slabs.iter() {
+    for (chunk_id, slab) in store.slabs.iter() {
         for range in slab.stale_ranges.iter() {
             stale_ranges_seen += 1;
             for (key, _) in store.payloads.iter() {
-                if key.0 != *slab_id {
+                if key.0 != *chunk_id {
                     continue;
                 }
                 assert!(
                     key.1 < range.offset || key.1 >= range.offset + range.length,
                     "a payload entry at offset {} falls inside the stale range \
-                     {}..{} of {slab_id:?}, so a reclaimed range could overwrite \
+                     {}..{} of {chunk_id:?}, so a reclaimed range could overwrite \
                      an entry a refused put would have to restore",
                     key.1,
                     range.offset,
@@ -35386,7 +35386,7 @@ fn an_append_that_fails_after_mutating_leaves_the_store_unchanged() {
     }
     // The raw snapshot bytes are deliberately NOT compared, and the reason is
     // worth stating because it looks like an omission. A refused append that
-    // allocated a slab leaves `next_slab_id` advanced: no undo restores it,
+    // allocated a slab leaves `next_chunk_id` advanced: no undo restores it,
     // because it is not a field of `ObjectMutationRollback` at all, and that
     // predates the narrowed undo -- the whole-store capture leaves it advanced
     // in exactly the same way, which is what this test showed when it was
