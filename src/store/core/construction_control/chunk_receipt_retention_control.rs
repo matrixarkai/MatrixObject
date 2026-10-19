@@ -1,4 +1,18 @@
 impl MatrixObjectStore {
+    /// How many receipts the PAGE SERVICE keeps for its own requests.
+    ///
+    /// This is **not** what `configure_chunk_receipt_retention` changes. That
+    /// call loops over the replicas and sets each replica's bound, leaving this
+    /// one alone -- so reading this back after making that call shows 100,000
+    /// unchanged while the replicas' behaviour has moved, which reads exactly
+    /// like a knob that did not apply.
+    ///
+    /// The evidence that the replica call took effect is its own return value,
+    /// `(receipts_trimmed, replicas_configured)`.
+    pub fn page_service_receipt_retention(&self) -> usize {
+        self.chunk_service.receipt_retention()
+    }
+
     pub fn configure_chunk_replica_receipt_retention(
         &mut self,
         replica_index: usize,

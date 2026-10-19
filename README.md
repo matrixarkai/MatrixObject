@@ -557,9 +557,13 @@ It is not a `StoreOptions` field — it is configured on a live store, because
 changing it is a control-plane change that each replica has to accept:
 
 ```rust
-let (chunk_commit_index, page_commit_index) =
+let (receipts_trimmed, replicas_configured) =
     store.configure_chunk_receipt_retention(8)?;
 ```
+
+It returns how many receipts it trimmed and how many replicas it configured,
+which is the only read-back: the page service's own `receipt_retention` is a
+different number and that call does not move it.
 
 `configure_chunk_replica_receipt_retention(replica_index, retention)` sets one
 replica instead of all of them.

@@ -124,6 +124,19 @@ const CHUNK_SIZE_ENV: [&str; 6] = [
     "MATRIX_OBJECTSTORE_SEGMENT_SIZE",
 ];
 
+/// The environment names that set how many idempotency receipts a replica keeps.
+///
+/// The README publishes an A/B over this bound -- total allocations and
+/// allocations per delete at 100,000 against 8 -- and the benchmark could not
+/// reproduce it, because `receipt_retention` is not a `StoreOptions` field and
+/// nothing here configured it. Zero means leave it at the shipped default.
+const RECEIPT_RETENTION_ENV: [&str; 4] = [
+    "MATRIX_OBJECTSTORE_RUST_RECEIPT_RETENTION",
+    "MATRIX_OBJECTSTORE_RECEIPT_RETENTION",
+    "MATRIXOBJECTSTORE_RUST_RECEIPT_RETENTION",
+    "MATRIXOBJECTSTORE_RECEIPT_RETENTION",
+];
+
 const PAGE_SIZE_ENV: [&str; 4] = [
     "MATRIX_OBJECTSTORE_RUST_PAGE_SIZE",
     "MATRIX_OBJECTSTORE_PAGE_SIZE",
@@ -3527,6 +3540,7 @@ fn run() -> Result<(), ObjectError> {
         eprintln!("storage tiers: a {} MiB chunk holding {} MiB pages", 64, 1);
         eprintln!("  chunk size: {}", CHUNK_SIZE_ENV.join(", "));
         eprintln!("  page size:  {}", PAGE_SIZE_ENV.join(", "));
+        eprintln!("  receipt retention (0 = leave default): {}", RECEIPT_RETENTION_ENV.join(", "));
         return Ok(());
     }
 
@@ -3967,6 +3981,16 @@ fn run() -> Result<(), ObjectError> {
         cfg.chunk_read_cache_max_bytes_per_replica,
         cfg.chunk_read_cache_max_cacheable_read_bytes_per_replica,
     )?;
+    let requested_receipt_retention =
+        env_u64_any(&RECEIPT_RETENTION_ENV, 0).map_err(ObjectError::InvalidArgument)?;
+    // The call's own return is the read-back: it says how many receipts it
+    // trimmed and how many replicas it configured. The page service's own bound
+    // is a different number and does not move, so it is not evidence here.
+    let (receipts_trimmed, replicas_configured) = if requested_receipt_retention > 0 {
+        store.configure_chunk_receipt_retention(requested_receipt_retention as usize)?
+    } else {
+        (0, 0)
+    };
     store.create_bucket("bench")?;
     let store = Arc::new(Mutex::new(store));
     let lock_stats = Arc::new(StoreLockStats::default());
@@ -4565,6 +4589,13 @@ fn run() -> Result<(), ObjectError> {
     );
     println!("volumes={}", cfg.volume_count);
     println!("replicas={}", cfg.replica_count);
+    println!("receipt_retention_requested={requested_receipt_retention}");
+    println!("receipt_retention_trimmed={receipts_trimmed}");
+    println!("receipt_retention_replicas_configured={replicas_configured}");
+    println!(
+        "page_service_receipt_retention={}",
+        store.lock().map(|store| store.page_service_receipt_retention()).unwrap_or(0)
+    );
     println!("write_quorum={}", cfg.write_quorum);
     println!("object_batch_size={}", cfg.object_batch_size);
     println!("batch_mode={}", cfg.object_batch_size > 1);
