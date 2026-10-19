@@ -37181,9 +37181,14 @@ fn everything_the_readme_tells_you_to_set_exists() {
     const PUBLISHED: &str = include_str!("../README.md");
     const OPTIONS: &str = include_str!("protocol/storage/store_options.rs");
     const RETENTION: &str = include_str!("store/core/construction_control/chunk_receipt_retention_control.rs");
-    const EXEMPT: [(&str, &str); 2] = [
+    const EXEMPT: [(&str, &str); 3] = [
         // set on a live store rather than in the options
         ("receipt_retention", "configure_chunk_receipt_retention"),
+        // and the method that sets it, which the README names
+        (
+            "configure_chunk_receipt_retention",
+            "configure_chunk_receipt_retention",
+        ),
         // a binary a reader runs, not a knob
         ("scale_bench", "MATRIX_OBJECTSTORE_BENCH_MODE"),
     ];
