@@ -86,19 +86,9 @@ in both directions: a renamed constant fails it, and so does a new one.
   retention, lifecycle policies, tagging, CORS and bucket policies, quotas, and
   a change feed.
 
-## What the footprint audit reports, and which total to divide by
+## Footprint
 
-`footprint_audit()` returns two totals, and the difference between them is the
-whole point:
-
-- **`byte_buffers`** is payload buffers, replica data, redundancy fragments and
-  checksums. An amplification derived from it alone is **data-only**, because
-  everything else the store holds used to be reported as an entry count and
-  never converted to bytes.
-- **`total_bytes`** adds the metadata the store keeps to describe that data, and
-  is the one to divide by `logical.written`.
-
-Measured at three replicas, 26-character keys, with the metadata counted:
+At three replicas with the metadata counted, measured at 26-character keys:
 
 | object size | objects | amplification | data-only figure |
 |---:|---:|---:|---:|
@@ -106,176 +96,19 @@ Measured at three replicas, 26-character keys, with the metadata counted:
 | 4 KiB | 4,000 | **3.18x** | 3.00x |
 | 1 KiB | 8,000 | **3.69x** | 3.02x |
 
-Reproduce any row with the measurement harness:
+The data term is exactly **3.00x** -- the replication floor -- so everything
+above it is metadata, which is **661 bytes an object plus 172,456 fixed**
+whatever the object size. `footprint_audit()` names every resident byte and its
+breakdown sums to its own total with no remainder.
 
 ```
-MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib \
-  measure_the_metadata_footprint -- --ignored --nocapture
+MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib   measure_the_metadata_footprint -- --ignored --nocapture
 ```
 
-**Lowering `replica_count` does not reach 1.0x.** A page with no peers keeps a
-redundancy fragment so that a partial corruption is still recoverable from the
-single copy it has, and a page with peers does not — which is why the data term
-above is exactly 3.00 rather than something above it. Measured at one replica:
+[docs/footprint.md](docs/footprint.md) has the per-leg working: which total to
+divide by, why lowering `replica_count` does not reach 1.0x, what is bounded by
+a setting rather than by your data, and what the change feeds cost.
 
-| bytes in the page | fragment | split | overhead |
-|---:|---:|---:|---:|
-| 20,480 | 10,240 | 2 | 50% |
-| 204,800 | 12,800 | 16 | **6.25%** |
-
-The split is `clamp(bytes / 8192, 2, 16)` and the fragment is one more piece, so
-the overhead is 1/N and falls as a page fills: **a single replica costs 1.5x for
-a nearly empty page and 1.0625x past 128 KiB.**
-`a_page_with_no_peers_carries_a_redundancy_fragment` asserts both rows, and
-`no_page_carries_a_redundancy_fragment_while_it_has_peers` asserts the
-suppression that makes the 3.00 exact.
-
-### Metadata is per object, and the per-object figure depends on how many there are
-
-At a fixed object count the metadata total barely moves with what the objects
-contain: 2,851,246 bytes for 4,000 objects at both 1 KiB and 4 KiB. So it
-disappears into a large object and dominates a small one, which is the whole
-reason the two totals are reported separately.
-
-It is not quite constant, and the reason is worth knowing: an object's length is
-stored as **decimal text**, so the per-object cost rises by one byte for every
-decimal digit in the size. At 4,000 objects the metadata total is 2,847,246 at
-256 B, 2,851,246 at both 1 KiB and 4 KiB, and 2,855,606 at 64 KiB — a byte an
-object per digit, which is why the 1 KiB and 4 KiB figures agree exactly and the
-others do not.
-
-The per-object figure falls as the store grows, because two of the structures
-are bounded rather than per object:
-
-| objects | 100 | 1,000 | 4,000 | 8,000 |
-|---:|---:|---:|---:|---:|
-| metadata per object | 914 B | 867 B | 712 B | **686 B** |
-
-Both change feeds cap at 1,024 records, so together they are 27.2% of metadata
-at a hundred objects and 3.8% at eight thousand. Everything else is exactly
-linear, which makes the total a line once the feeds are full:
-
-```
-metadata = 661 bytes an object + 207,246 bytes fixed      (remainder: zero)
-```
-
-measured at 4,000 and 8,000 objects of 1 KiB, and reproducing both totals
-exactly. The fixed term is measured rather than derived, which matters because
-deriving it from the feeds' own per-record costs gives 206,848 and loses 398
-bytes that are not in the feeds at all:
-
-| | bytes | |
-|---|---:|---|
-| object change feed | 149,504 | 1,024 records at its bound |
-| metadata change log | 57,344 | 1,024 records at its bound |
-| inside `objects` | 86 | the content-type and storage-class text, shared by every object |
-| inside `meta.records` | 108 | one record more than there are objects — the bucket's |
-| `meta.entities` | 84 | |
-| `segments` | 120 | |
-| **fixed total** | **207,246** | |
-
-`every_metadata_leg_is_a_line_and_the_intercepts_are_named` fits each leg over
-three store sizes and fails unless every one is a line and the fixed terms sum
-to the total's — so a leg that starts depending on the object count, or a fixed
-byte that stops being named, is caught rather than absorbed.
-
-That 661 is now more than half one item:
-
-| | per object | share |
-|---|---:|---:|
-| `meta.records` — the metadata projection record | 355 B | 53.7% |
-| `objects` — the structured metadata | 282 B | 42.7% |
-| payload index keys | 24 B | 3.6% |
-
-Those two halves hold the **same facts twice**. `objects` is a binary struct —
-152 bytes inline, with the object id, length, etag, content type, storage class
-and extent list in fixed-width fields. `meta.records` is a text projection of
-the same object, and it is the largest single item in the store per object: 227
-bytes of value, **34% of everything the store holds per object**.
-
-Measured against what that text actually distinguishes:
-
-| | per record | share | |
-|---|---:|---:|---|
-| field names and separators | 151 B | 70% | `retention_until_ms`, `metadata_count`, … spelled out for every object |
-| values that never differ | 24 B | 11% | 9 of the 12 fields have **one** distinct value across every object |
-| values that differ | 42 B | 19% | etag, length, content type |
-
-So **175 of 217 bytes carry no information that varies between objects** — 81%,
-and 26% of all per-object metadata. Issue #40 has the measurement and what
-closing it would require; it is a durable format, so the cost is a migration
-rather than an edit. The item is unchanged in absolute terms while everything
-around it has shrunk, which is why its share keeps rising.
-
-So if you store small objects, three replicas do not cost 3x. Any amplification
-figure published for this store before the metadata was counted was the
-data-only column, including in this file; and any per-object figure quoted
-without its object count was measured at a hundred objects, where the bounded
-feeds have not yet amortised.
-
-`byte_buffers` also counts what the caches hold: each replica's read cache and
-the per-page hashes beside it, and the cached encoded snapshots the store, the
-page service and every replica keep. A read cache is bounded by a configured
-size per replica rather than by anything the data implies, so a deployment
-serving reads can hold as much there as it holds data. All of those read zero in
-the rows above, which write and never read.
-
-Neither total includes B-tree node slack or allocator overhead, which is what
-the remainder against process RSS is. Capacity is counted rather than length,
-because the slack is resident and showing slack is what the audit is for. Text
-shared between holders is charged once per allocation — the characters and the
-two counts in front of them — so `mapkey_capacity` against `mapkey_len` is that
-header rather than slack.
-
-### What is bounded by a setting rather than by your data
-
-Every figure above scales with what you store. Several structures do not: they
-are bounded by a configured limit, so they are the same size whether the store
-holds a thousand objects or a million, and a deployment has to provision for
-them separately.
-
-Each per-unit cost below is measured rather than estimated. The figures come
-from the ignored `measure_*` tests in the suite, which print them on demand:
-
-```
-cargo test --lib measure_ -- --ignored --nocapture
-```
-
-| structure | setting | default | per unit | at that default |
-|---|---|---:|---:|---:|
-| idempotency receipts | `receipt_retention` | 100,000 | 274 B | **82.2 MB** across three replicas |
-| metadata route cache | `metadata_route_cache_entries` | 100,000 | 144 B | **14.4 MB** |
-| raft apply receipts | `k_max_raft_apply_receipts()` | 4,096 | 280 B | 1.15 MB |
-| object change feed | `UNCONSUMED_OBJECT_CHANGE_RETENTION` | 1,024 | 146 B | 146 KB |
-| metadata change log | `UNCHECKPOINTED_METADATA_CHANGE_RETENTION` | 1,024 | 56 B | 56 KB |
-| read cache | `chunk_read_cache_max_bytes_per_replica` | — | — | the bound **plus 5.6%** |
-
-A change feed's per-record figure is the one **at its cap**. A smaller store
-reports more per record, because a vector that has grown by doubling carries
-spare slots and the audit charges capacity rather than length: at 200 records
-the feed measures 177 bytes a record, and at its cap of 1,024 it measures 146.
-
-The read cache is the odd one: its setting bounds the cached payload, and the
-entries, keys, checksums, by-chunk index and eviction queue beside it are
-outside that bound. A replica configured to cache 1 GiB holds about 1.056 GiB,
-and the overhead's share depends on how large the cached ranges are.
-
-For scale, the metadata for 2,000 objects of 1 KiB is about 1.8 MB. A full
-route cache is eight times that, and the receipt maps at their default are
-considerably more.
-
-The route cache is the one most likely to surprise, because it is keyed by
-**metadata key** — one entry per object key resolved, not one per shard — so it
-fills with the number of distinct objects a deployment serves rather than with
-its topology. It was 598 bytes an entry until the entries for one shard were
-made to share a single route; it is 168 now, which is the key text and the
-entry's own fields. Its TTL (`metadata_route_cache_ttl_ms`, default 1000) makes
-an entry stale after a second but does not free it: a burst of distinct keys
-leaves the cache resident behind it.
-
-```
-cargo test --release --lib measure_what_a_filled_metadata_route_cache_costs -- --ignored --nocapture
-```
 
 ### What a mutation holds while it runs
 
@@ -356,21 +189,7 @@ So a deployment sizing from the figures above should add the undo and the batch
 copy to the resting total, and a workload that deletes should expect the receipt
 retention to dominate both.
 
-### The change feeds used to grow without bound
 
-`Vec::drain` moves the tail down and keeps the allocation, so a change feed that
-once reached a peak held those slots for the life of the process — the audit
-caught 4,600 records sitting in a capacity of 8,192, and compacting the front
-away returned none of it. Compaction now shrinks, which costs one copy per
-compaction rather than one per append.
-
-Compaction only helps a feed somebody reads, though: it drops the prefix every
-registered consumer has passed, so with no consumer at all it declined to drop
-anything and the feed grew for the life of the process. Both feeds now bound
-that case at 1,024 records — the object change feed when no cursor is
-registered, the metadata change log when no checkpoint is. A consumer that
-registers later and asks for a trimmed prefix is told to resync, which is the
-read path's existing contract after any compaction.
 ## Reaching the store over a network
 
 Every way into the store used to be an in-process call, so a store was only ever as shared as the
@@ -494,105 +313,21 @@ does not have. Four of the six rows this replaces were wrong: `slab_size` and
 when it is 64, and `page_size` — the option the next section calls the one worth
 setting deliberately — was missing.
 
-### Sizing `page_size` for your object size
+### Picking the two that matter
 
-`page_size` is the one option worth setting deliberately before you store small
-objects, because a write's undo is currently the **page** it lands in rather than
-the range it wrote. Measured per put, with a deterministic allocation counter:
+**`page_size` is the one worth setting deliberately.** It is the replicated
+unit, so an object smaller than a page still occupies a page's worth of
+replication, and an object much larger than a page is split across more pages
+than a ranged read needs. Sizing `page_size` near your median object size is
+what keeps both from happening.
 
-```
-undo bytes per put  ~=  replica_count  x  0.572  x  page_size
-```
+**`receipt_retention` is not in the options table** -- it is configured on a
+live store with `configure_chunk_receipt_retention`, and it bounds what a
+mutation's idempotency receipts cost. Set `receipt_retention` rather than
+leaving it at its 100,000 default if your workload deletes heavily.
 
-The 0.572 is a page's average occupancy as it fills, and the per-replica factor
-came out identical at three and five replicas. At the defaults that is about
-1.7 MiB copied to store a 1 KiB object. The effect on time, 4,000 puts of 1 KiB
-at three replicas:
-
-| `page_size` | put seconds |
-|---:|---:|
-| 1 MiB (default) | 8.84 |
-| 256 KiB | 2.12 |
-| 64 KiB | 0.70 |
-
-So pick a `page_size` near the size of the objects you actually store. The
-trade is that smaller pages mean more of them to track: allocation *count* rose
-from 23,091,061 to 23,764,493 across that range, while bytes and time both fell
-much further.
-
-The largest single allocation a put makes says the same thing exactly, measured
-with `scale_bench`'s per-phase allocation watermark:
-
-```
-put_largest_alloc_bytes  =  min(bytes already in the page, page_size)   per replica
-```
-
-| `page_size` | 400 objects | 800 | 1,600 |
-|---:|---:|---:|---:|
-| 256 KiB | 261,120 **at the bound** | 261,120 | 261,120 |
-| 1 MiB | 408,576 | 818,176 | 1,047,552 **at the bound** |
-| 4 MiB | 408,576 | 818,176 | 1,637,376 |
-
-The copy grows with what the page already holds and stops at `page_size`, which
-makes `page_size x replica_count` the ceiling on what one write copies — about
-**3 MiB at the defaults**, to store a single 1 KiB object. Reproduce with
-`cargo build --release --bin scale_bench` and
-`./target/release/scale_bench 1024 400 1 65536`, reading
-`put_largest_alloc_bytes` — not `alloc.largest_bytes`, which is process-wide and
-reports the recovery snapshot.
-
-Note which setting this is. `chunk_size` is the 64 MiB container **above** the
-page and is not the one to reduce here: lowering it below `max_extent_bytes`
-(4 MiB by default) is refused outright with
-`max_extent_bytes must be 1..chunk_size`. The environment names the benchmark
-reads are `MATRIX_OBJECTSTORE_PAGE_SIZE` and `MATRIX_OBJECTSTORE_CHUNK_SIZE`.
-
-This is a property of the write undo, not of the storage layout, and it is
-tracked as an issue rather than accepted as the design.
-
-### Receipt retention costs something per mutation
-
-Allocation, write, discard and repair carry receipts so a retried request is not
-applied twice. Those receipts are held per replica, bounded by
-`receipt_retention` (default 100,000), and a mutation's rollback snapshot copies
-them, so **the cost of a mutation grows with the number of receipts being held**.
-
-Measured over the same workload, changing only the bound:
-
-| | retention 100,000 | retention 8 |
-|---|---:|---:|
-| total allocations | 4,351,882 | 2,703,037 |
-| allocations per overwrite | 2,732 | 932 |
-| allocations per delete | 5,527 | 911 |
-| delete seconds | 0.096 | 0.016 |
-
-A put is unaffected, because a put writes no discard receipt.
-
-Set `receipt_retention` to cover the retry window you actually need rather than
-leaving it at the default. The trade is that an evicted receipt no longer
-deduplicates its retry.
-
-It is not a `StoreOptions` field — it is configured on a live store, because
-changing it is a control-plane change that each replica has to accept:
-
-```rust
-let (receipts_trimmed, replicas_configured) =
-    store.configure_chunk_receipt_retention(8)?;
-```
-
-It returns how many receipts it trimmed and how many replicas it configured,
-which is the only read-back: the page service's own `receipt_retention` is a
-different number and that call does not move it.
-
-`configure_chunk_replica_receipt_retention(replica_index, retention)` sets one
-replica instead of all of them.
-`the_documented_way_to_set_receipt_retention_works` exercises the call above and
-checks the retained receipts actually fall, so the advice cannot drift from the
-API that carries it out.
-
-This is a property of what the rollback snapshot carries rather than of
-receipts themselves, and it is tracked as an issue rather than accepted as the
-design.
+[docs/configuring.md](docs/configuring.md) has the sizing table for both, and
+the measurements behind them.
 
 ## Contributing
 
@@ -611,33 +346,11 @@ Two invariants worth knowing before you start:
 
 ## Continuous integration
 
-Every push and pull request runs two jobs: a build of all targets and the
-documentation with warnings denied, and the two guards that protect properties
-nothing else protects -- that the durable format constants have not changed, and
-that a mutation which fails after it has already mutated leaves the store
-byte-identical.
+`cargo build`, the library suite, and the measurement suite, on every push.
+`tools/known_failures.txt` lists the tests known to fail, and a change is
+gated by the failures matching that list name for name rather than by a count.
 
-Two things CI deliberately does **not** run, because a check that is red on
-arrival teaches people to ignore the ones that matter:
-
-- **The full test suite.** 21 tests fail on `main`, and have done since the
-  first commit. `tools/suite_gate.sh` runs it and compares the failures by name
-  against `tools/known_failures.txt`, so you can tell a pre-existing failure
-  from one you just caused. It fails if a failure is new **and** if a recorded
-  one has started passing, so the list cannot quietly rot, and it refuses
-  outright if the suite did not run rather than reporting everything fixed.
-  Run `cargo test` and expect `250 passed; 21 failed`.
-- **`cargo fmt --check`.** The tree has never been rustfmt-clean; there were 93
-  diff hunks at the first commit. Reformatting 33,000 lines of tests to turn one
-  check green is a change nobody asked for, and it would bury real history.
-
-`Cargo.lock` is committed, because this crate ships a binary and CI builds with
-`--locked` so that a dependency release cannot change what is being tested. The
-toolchain is **pinned** for the same reason: "it builds" should mean the same
-thing in CI and on your machine. Bumping either is a deliberate change.
-
-If you fix one of the 21, or format the tree, add the corresponding check here
-in the same change.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run the same gates locally.
 
 ## Licence
 
