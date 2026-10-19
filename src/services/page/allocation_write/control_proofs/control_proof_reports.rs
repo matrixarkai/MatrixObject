@@ -37,8 +37,8 @@ impl MatrixChunkService {
         append_page_route_qos_config(&mut material, &self.route_qos_config);
         append_u64(&mut material, self.receipt_retention as u64);
         append_u64(&mut material, self.sealed_chunks.len() as u64);
-        for slab in &self.sealed_chunks {
-            append_slab_id(&mut material, slab);
+        for chunk in &self.sealed_chunks {
+            append_slab_id(&mut material, chunk);
         }
         append_u64(
             &mut material,

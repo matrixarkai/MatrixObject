@@ -145,12 +145,12 @@ impl MatrixObjectStore {
     /// The index was copied in full by every mutation -- 40 bytes per stored
     /// object, to protect one object's worth of change -- and it was the last
     /// container on the put path still doing that. What makes it unnecessary is
-    /// that an entry this mutation inserted is identifiable from the slab
+    /// that an entry this mutation inserted is identifiable from the chunk
     /// records, which the undo already carries and which cost 120 bytes:
     ///
-    /// * an entry in a slab the undo has never heard of is new, because the
-    ///   mutation created the slab;
-    /// * an entry at or past the slab's write cursor as it was is new, because
+    /// * an entry in a chunk the undo has never heard of is new, because the
+    ///   mutation created the chunk;
+    /// * an entry at or past the chunk's write cursor as it was is new, because
     ///   that is where a fresh allocation goes;
     /// * an entry inside a range that was stale is new, because
     ///   `mark_extents_stale` removes the payload entry when a range goes

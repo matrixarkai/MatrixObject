@@ -105,17 +105,17 @@ impl MatrixObjectStore {
         max_ranges_per_chunk: usize,
     ) -> Vec<DiscardPlan> {
         let mut plans = Vec::new();
-        for slab in self.chunks.values() {
-            if slab.stale_bytes < min_stale_bytes {
+        for chunk in self.chunks.values() {
+            if chunk.stale_bytes < min_stale_bytes {
                 continue;
             }
-            let ranges = merge_range_slice(&slab.stale_ranges);
+            let ranges = merge_range_slice(&chunk.stale_ranges);
             let discard_bytes = ranges.iter().map(|range| range.length).sum();
             let fragmented = ranges.len() > self.options.compaction_fragment_threshold;
             let compact_instead =
                 fragmented || (max_ranges_per_chunk > 0 && ranges.len() > max_ranges_per_chunk);
             plans.push(DiscardPlan {
-                chunk_id: slab.chunk_id.clone(),
+                chunk_id: chunk.chunk_id.clone(),
                 ranges,
                 discard_bytes,
                 fragmented,
@@ -140,16 +140,16 @@ impl MatrixObjectStore {
         ranges: &[DataRange],
     ) -> Result<(), ObjectError> {
         let merged = merge_range_slice(ranges);
-        let slab = self
+        let chunk = self
             .chunks
             .get_mut(chunk_id)
             .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
         for range in merged {
             range.end()?;
-            slab.discarded_bytes = saturating_add(slab.discarded_bytes, range.length);
-            slab.discarded_ranges.push(range);
+            chunk.discarded_bytes = saturating_add(chunk.discarded_bytes, range.length);
+            chunk.discarded_ranges.push(range);
         }
-        slab.discarded_ranges = merge_ranges(std::mem::take(&mut slab.discarded_ranges));
+        chunk.discarded_ranges = merge_ranges(std::mem::take(&mut chunk.discarded_ranges));
         Ok(())
     }
 
@@ -207,17 +207,17 @@ impl MatrixObjectStore {
         for range in &ranges {
             range.end()?;
         }
-        let slab = self
+        let chunk = self
             .chunks
             .get(chunk_id)
             .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
-        let source_stale_ranges = merge_range_slice(&slab.stale_ranges);
+        let source_stale_ranges = merge_range_slice(&chunk.stale_ranges);
         if !ranges_covered_by(&ranges, &source_stale_ranges) {
             return Err(ObjectError::PreconditionFailed(
                 "segment discard ranges must be covered by stale ranges".to_string(),
             ));
         }
-        let source_discarded_ranges = merge_range_slice(&slab.discarded_ranges);
+        let source_discarded_ranges = merge_range_slice(&chunk.discarded_ranges);
         let before_state_fingerprint = self.state_fingerprint_without_payload_clones();
         let mut projected = self.clone();
         projected.apply_discard_borrowed(chunk_id, &ranges)?;

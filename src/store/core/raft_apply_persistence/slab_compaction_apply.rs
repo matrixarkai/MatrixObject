@@ -40,14 +40,14 @@ impl MatrixObjectStore {
                 "compact_segment_put",
             )?;
         }
-        if let Some(slab) = self.chunks.get_mut(chunk_id) {
-            slab.stale_ranges.push(DataRange {
+        if let Some(chunk) = self.chunks.get_mut(chunk_id) {
+            chunk.stale_ranges.push(DataRange {
                 offset: 0,
-                length: slab.next_offset,
+                length: chunk.next_offset,
             });
-            slab.stale_ranges = merge_ranges(std::mem::take(&mut slab.stale_ranges));
-            slab.stale_bytes = slab.next_offset;
-            slab.live_bytes = 0;
+            chunk.stale_ranges = merge_ranges(std::mem::take(&mut chunk.stale_ranges));
+            chunk.stale_bytes = chunk.next_offset;
+            chunk.live_bytes = 0;
         }
         Ok(())
     }
@@ -64,8 +64,8 @@ impl MatrixObjectStore {
         let mut candidates = self
             .chunks
             .iter()
-            .filter_map(|(chunk_id, slab)| {
-                if slab.stale_bytes >= min_stale_bytes && slab.next_offset > 0 {
+            .filter_map(|(chunk_id, chunk)| {
+                if chunk.stale_bytes >= min_stale_bytes && chunk.next_offset > 0 {
                     Some(chunk_id.clone())
                 } else {
                     None
@@ -108,13 +108,13 @@ impl MatrixObjectStore {
         let mut candidate_stale_bytes = 0u64;
         let mut candidate_live_bytes = 0u64;
         let mut candidate_logical_bytes = 0u64;
-        for (chunk_id, slab) in &self.chunks {
-            if slab.stale_bytes >= min_stale_bytes && slab.next_offset > 0 {
+        for (chunk_id, chunk) in &self.chunks {
+            if chunk.stale_bytes >= min_stale_bytes && chunk.next_offset > 0 {
                 candidate_chunk_ids.push(chunk_id.clone());
-                candidate_stale_bytes = saturating_add(candidate_stale_bytes, slab.stale_bytes);
-                candidate_live_bytes = saturating_add(candidate_live_bytes, slab.live_bytes);
+                candidate_stale_bytes = saturating_add(candidate_stale_bytes, chunk.stale_bytes);
+                candidate_live_bytes = saturating_add(candidate_live_bytes, chunk.live_bytes);
                 candidate_logical_bytes =
-                    saturating_add(candidate_logical_bytes, slab.logical_bytes);
+                    saturating_add(candidate_logical_bytes, chunk.logical_bytes);
             }
         }
         candidate_chunk_ids.sort_by_key(|chunk_id| (chunk_id.volume_id, chunk_id.id));
@@ -178,14 +178,14 @@ impl MatrixObjectStore {
                 expected_previous_commit_index, self.last_applied_index
             )));
         }
-        let slab = self
+        let chunk = self
             .chunks
             .get(chunk_id)
             .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
-        if slab.stale_bytes < min_stale_bytes {
+        if chunk.stale_bytes < min_stale_bytes {
             return Err(ObjectError::PreconditionFailed(format!(
                 "segment stale bytes {} below compaction threshold {}",
-                slab.stale_bytes, min_stale_bytes
+                chunk.stale_bytes, min_stale_bytes
             )));
         }
         let live_objects = self.collect_chunk_compaction_live_objects(chunk_id)?;
@@ -203,8 +203,8 @@ impl MatrixObjectStore {
             min_stale_bytes,
             update_time_ms,
             live_objects,
-            source_stale_ranges: merge_range_slice(&slab.stale_ranges),
-            source_discarded_ranges: merge_range_slice(&slab.discarded_ranges),
+            source_stale_ranges: merge_range_slice(&chunk.stale_ranges),
+            source_discarded_ranges: merge_range_slice(&chunk.discarded_ranges),
             before_state_fingerprint,
             after_state_fingerprint,
             request_checksum,

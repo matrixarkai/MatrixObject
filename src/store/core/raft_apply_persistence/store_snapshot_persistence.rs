@@ -378,9 +378,9 @@ impl MatrixObjectStore {
                 append_metadata(&mut material, metadata);
             }
         }
-        for (chunk_id, slab) in &self.chunks {
+        for (chunk_id, chunk) in &self.chunks {
             append_slab_id(&mut material, chunk_id);
-            append_chunk_info(&mut material, slab);
+            append_chunk_info(&mut material, chunk);
         }
         append_u64(&mut material, 0);
         for (upload_id, upload) in &self.multipart_uploads {
