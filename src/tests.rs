@@ -38874,6 +38874,529 @@ fn a_refused_mutation_leaves_exactly_the_receipts_it_found() {
 }
 
 #[cfg(feature = "matrix-raft")]
+fn chunk_raft_page() -> PageId {
+    PageId {
+        chunk_id: ChunkId {
+            volume_id: 7,
+            id: 11,
+        },
+        page_index: 3,
+    }
+}
+
+#[cfg(feature = "matrix-raft")]
+fn chunk_raft_entry(group_id: u64, index: u64, payload: Vec<u8>) -> matrixraft::ApplyRequest {
+    matrixraft::ApplyRequest {
+        group_id,
+        log_id: matrixraft::LogId { term: 1, index },
+        payload,
+    }
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn the_chunk_write_command_spells_exactly_these_bytes() {
+    // THE RAFT LOG IS A DURABLE FORMAT. Whatever this encoding is, every replica in the group has
+    // to read it the same way, and an entry written by one build has to be readable by the next.
+    // So the spelling is pinned here byte for byte rather than only round-tripped: a round trip
+    // passes just as happily after the format silently changes, and the thing that must not change
+    // silently is the format.
+    let command = ChunkWriteCommand {
+        page_id: chunk_raft_page(),
+        ranges: vec![(1, vec![0xaa, 0xbb]), (64, vec![0xcc])],
+    };
+    let payload = command.to_payload();
+    let expected: Vec<u8> = vec![
+        // magic
+        b'M', b'X', b'C', b'W',
+        // version, kind
+        1, 1,
+        // volume_id = 7
+        0, 0, 0, 0, 0, 0, 0, 7,
+        // chunk id = 11
+        0, 0, 0, 0, 0, 0, 0, 11,
+        // page_index = 3
+        0, 0, 0, 0, 0, 0, 0, 3,
+        // range count = 2
+        0, 0, 0, 2,
+        // range 0: offset 1, two bytes
+        0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0xaa, 0xbb,
+        // range 1: offset 64, one byte
+        0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 1, 0xcc,
+    ];
+    assert_eq!(
+        payload, expected,
+        "the chunk write command encoding changed; every replica in a group reads this, and an \
+         entry written before the change has to still decode"
+    );
+    assert_eq!(
+        payload.len(),
+        command.payload_size_hint(),
+        "the size hint must be exact, or every proposal reallocates"
+    );
+    assert_eq!(
+        ChunkWriteCommand::from_payload(&payload).unwrap(),
+        command,
+        "the command did not survive its own encoding"
+    );
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_chunk_write_command_refuses_everything_it_does_not_recognise() {
+    let good = ChunkWriteCommand {
+        page_id: chunk_raft_page(),
+        ranges: vec![(0, vec![1, 2, 3, 4])],
+    }
+    .to_payload();
+    assert!(ChunkWriteCommand::from_payload(&good).is_ok());
+
+    // A REFUSAL, NOT A GUESS, FOR EACH OF THESE. A raft entry that one replica accepts and another
+    // rejects is the single failure a replicated log exists to rule out, so a decoder that is
+    // lenient anywhere is worse than one that stops.
+    let mut wrong_magic = good.clone();
+    wrong_magic[0] = b'X';
+    let mut wrong_version = good.clone();
+    wrong_version[4] = 99;
+    let mut wrong_kind = good.clone();
+    wrong_kind[5] = 99;
+    let mut trailing = good.clone();
+    trailing.push(0);
+    let mut truncated = good.clone();
+    truncated.pop();
+    let mut overlong_range = good.clone();
+    // Claim one more byte in the range than the payload carries.
+    let at = 4 + 1 + 1 + 8 + 8 + 8 + 4 + 8;
+    overlong_range[at..at + 4].copy_from_slice(&999u32.to_be_bytes());
+    let mut overlong_count = good.clone();
+    overlong_count[30..34].copy_from_slice(&9u32.to_be_bytes());
+
+    for (name, payload) in [
+        ("a marker from another state machine", wrong_magic),
+        ("an encoding version this node does not know", wrong_version),
+        ("a command kind this node does not apply", wrong_kind),
+        ("bytes after the last range", trailing),
+        ("a header that is one byte short of a range", truncated),
+        ("a range longer than the payload", overlong_range),
+        ("more ranges than the payload holds", overlong_count),
+        ("an empty payload", Vec::new()),
+        ("a payload shorter than the header", vec![b'M', b'X']),
+    ] {
+        let refused = ChunkWriteCommand::from_payload(&payload);
+        assert!(
+            refused.is_err(),
+            "{name} was accepted, so two replicas can disagree about what this entry said"
+        );
+    }
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn three_replicas_driven_only_by_the_log_reach_the_same_bytes() {
+    // THE WRITE TOPOLOGY THIS EXISTS TO OFFER. A star write has the coordinator apply the write to
+    // each replica itself, which is what
+    // `a_write_reaches_every_replica_from_the_coordinator_in_one_hop` asserts of the shipped path.
+    // Here the write is proposed ONCE and each replica applies it from its own copy of the log --
+    // nothing in this test touches a replica except its own state machine.
+    let page_id = chunk_raft_page();
+    let log: Vec<Vec<u8>> = vec![
+        ChunkStateMachine::encode_write(page_id.clone(), vec![(0, vec![b'a'; 16])]),
+        ChunkStateMachine::encode_write(page_id.clone(), vec![(16, vec![b'b'; 16])]),
+        // Overlapping, and ordered: the second write of a range is the one that must survive on
+        // every replica, which is the property an ordered log buys over a quorum of one write.
+        ChunkStateMachine::encode_write(page_id.clone(), vec![(8, vec![b'c'; 4])]),
+    ];
+
+    let mut machines: Vec<ChunkStateMachine> = (0..3)
+        .map(|_| ChunkStateMachine::new(42, MatrixReplicaService::new()))
+        .collect();
+    for machine in machines.iter_mut() {
+        for (position, payload) in log.iter().enumerate() {
+            let index = position as u64 + 1;
+            let response = matrixraft::StateMachine::apply(
+                machine,
+                chunk_raft_entry(42, index, payload.clone()),
+            )
+            .expect("a committed entry applies");
+            assert_eq!(
+                response.applied_index, index,
+                "the state machine must report the index it reached, which is what lets a \
+                 restarting node know where to replay from"
+            );
+        }
+    }
+
+    let states: Vec<(u64, u64, Vec<u8>)> = machines
+        .iter()
+        .map(|machine| {
+            let page = machine
+                .replica()
+                .pages.get(&page_id)
+                .expect("the page the log wrote");
+            (page.logical_length, page.checksum_fnv1a64, page.data.to_vec())
+        })
+        .collect();
+    assert_eq!(states[0].2.len(), 32, "the log wrote 32 bytes: {:?}", states[0].0);
+    assert_eq!(
+        &states[0].2[8..12],
+        b"cccc",
+        "the last write of an overlapping range must be the one that survives"
+    );
+    for (index, state) in states.iter().enumerate().skip(1) {
+        assert_eq!(
+            state.2, states[0].2,
+            "replica {index} holds different bytes from replica 0, so the log did not replicate"
+        );
+        assert_eq!(
+            state.1, states[0].1,
+            "replica {index} computed a different checksum from replica 0"
+        );
+        assert_eq!(state.0, states[0].0, "replica {index} has a different length");
+    }
+    for machine in &machines {
+        assert_eq!(
+            machine.last_applied_index(),
+            log.len() as u64,
+            "every replica applied every entry"
+        );
+    }
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn the_range_order_inside_one_entry_cannot_make_two_replicas_diverge() {
+    // THE OTHER DIRECTION, and a correction to what this file's own comment used to claim. The
+    // order of ranges WITHIN one entry is carried on the wire, and it does not decide the bytes:
+    // the replica's write path sorts by offset whenever the ranges are not already ascending and
+    // then coalesces. So two replicas handed the same ranges in different order inside one entry
+    // reach the same page -- which is the direction worth having, because it means a proposer
+    // cannot cause divergence by assembling its ranges differently.
+    //
+    // It is the order ACROSS entries that the log has to fix, and that is what it fixes.
+    let page_id = chunk_raft_page();
+    let ascending = ChunkStateMachine::encode_write(
+        page_id.clone(),
+        vec![(0, vec![b'a'; 4]), (2, vec![b'b'; 2])],
+    );
+    let descending = ChunkStateMachine::encode_write(
+        page_id.clone(),
+        vec![(2, vec![b'b'; 2]), (0, vec![b'a'; 4])],
+    );
+    assert_ne!(
+        ascending, descending,
+        "the two entries must differ ON THE WIRE, or this test is comparing one entry with itself"
+    );
+
+    let mut one = ChunkStateMachine::new(4, MatrixReplicaService::new());
+    let mut other = ChunkStateMachine::new(4, MatrixReplicaService::new());
+    matrixraft::StateMachine::apply(&mut one, chunk_raft_entry(4, 1, ascending)).unwrap();
+    matrixraft::StateMachine::apply(&mut other, chunk_raft_entry(4, 1, descending)).unwrap();
+
+    let one_bytes = one.replica().pages.get(&page_id).unwrap().data.to_vec();
+    let other_bytes = other.replica().pages.get(&page_id).unwrap().data.to_vec();
+    assert_eq!(one_bytes, b"aabb", "{one_bytes:?}");
+    assert_eq!(
+        one_bytes, other_bytes,
+        "the range order inside one entry changed the page, so a proposer could make two \
+         replicas diverge by assembling the same write differently"
+    );
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn the_order_the_log_fixes_is_what_makes_the_replicas_agree() {
+    // WHY THE PREVIOUS TEST IS NOT ENOUGH ON ITS OWN. Three identical state machines fed
+    // identical entries reaching identical bytes is true of anything deterministic; it does not
+    // show that the log is doing any work. What shows it is the other direction: the same two
+    // writes, applied in the other order, must reach DIFFERENT bytes. If they did not, the order
+    // would be incidental and a star write would be just as safe.
+    //
+    // This is also the precise respect in which the raft path is stronger than a quorum star
+    // write. A star write establishes that a quorum accepted THIS write. It does not establish
+    // that two concurrent writers' writes landed in the same order on every replica, and with
+    // overlapping ranges that is the difference between the replicas holding the same bytes and
+    // holding different ones.
+    let page_id = chunk_raft_page();
+    let first = ChunkStateMachine::encode_write(page_id.clone(), vec![(0, vec![b'a'; 8])]);
+    let second = ChunkStateMachine::encode_write(page_id.clone(), vec![(4, vec![b'b'; 8])]);
+
+    let mut forwards = ChunkStateMachine::new(3, MatrixReplicaService::new());
+    matrixraft::StateMachine::apply(&mut forwards, chunk_raft_entry(3, 1, first.clone())).unwrap();
+    matrixraft::StateMachine::apply(&mut forwards, chunk_raft_entry(3, 2, second.clone())).unwrap();
+
+    let mut backwards = ChunkStateMachine::new(3, MatrixReplicaService::new());
+    matrixraft::StateMachine::apply(&mut backwards, chunk_raft_entry(3, 1, second)).unwrap();
+    matrixraft::StateMachine::apply(&mut backwards, chunk_raft_entry(3, 2, first)).unwrap();
+
+    let forwards_bytes = forwards.replica().pages.get(&page_id).unwrap().data.to_vec();
+    let backwards_bytes = backwards.replica().pages.get(&page_id).unwrap().data.to_vec();
+    assert_eq!(forwards_bytes, b"aaaabbbbbbbb", "{forwards_bytes:?}");
+    assert_eq!(backwards_bytes, b"aaaaaaaabbbb", "{backwards_bytes:?}");
+    assert_ne!(
+        forwards_bytes, backwards_bytes,
+        "the two orders reached the same bytes, which would mean the order the log fixes is \
+         incidental and this whole path buys nothing over a star write"
+    );
+    assert_ne!(
+        forwards.replica().pages.get(&page_id).unwrap().checksum_fnv1a64,
+        backwards.replica().pages.get(&page_id).unwrap().checksum_fnv1a64,
+        "two different page contents must not share a checksum"
+    );
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_redelivered_entry_is_acknowledged_and_not_applied_twice() {
+    // WHY THIS MATTERS HERE AND NOT ON THE STAR PATH. A coordinator issues each write exactly
+    // once. Raft does not promise that: a state machine's applied index is not committed with the
+    // log, so a node that restarts replays from the index its last SNAPSHOT reached and can be
+    // handed an entry it already applied.
+    //
+    // The bytes of a page write are idempotent -- writing the same range twice leaves the same
+    // data. Its EFFECTS are not: `write_sequence` advances and the replica's physical-write
+    // counters advance, and those counters are what the page service reads to decide a write was
+    // degraded. So this asserts on the counters, which is where a double-apply is visible, rather
+    // than on the data, where it is not.
+    let page_id = chunk_raft_page();
+    let payload = ChunkStateMachine::encode_write(page_id.clone(), vec![(0, vec![b'z'; 8])]);
+    let mut machine = ChunkStateMachine::new(1, MatrixReplicaService::new());
+
+    matrixraft::StateMachine::apply(&mut machine, chunk_raft_entry(1, 1, payload.clone())).unwrap();
+    let after_first = machine.replica().pages.get(&page_id).unwrap().clone();
+    let writes_after_first = machine.replica().physical_write_count;
+
+    let response =
+        matrixraft::StateMachine::apply(&mut machine, chunk_raft_entry(1, 1, payload.clone()))
+            .expect(
+                "a redelivery must be acknowledged, not refused: refusing it stalls the apply \
+                 loop on an entry raft has every right to send again",
+            );
+    assert_eq!(response.applied_index, 1);
+    assert_eq!(
+        machine.replica().physical_write_count,
+        writes_after_first,
+        "the redelivered entry was applied a second time, so the replica counted a physical \
+         write that happened once -- and the page service reads those counters"
+    );
+    let after_second = machine.replica().pages.get(&page_id).unwrap();
+    assert_eq!(
+        after_second.write_sequence, after_first.write_sequence,
+        "the write sequence advanced for an entry that was already applied"
+    );
+    assert_eq!(after_second.data, after_first.data);
+
+    // An index BELOW the last applied one is the same situation, and a later entry still applies.
+    matrixraft::StateMachine::apply(&mut machine, chunk_raft_entry(1, 1, payload.clone())).unwrap();
+    assert_eq!(machine.replica().physical_write_count, writes_after_first);
+    matrixraft::StateMachine::apply(
+        &mut machine,
+        chunk_raft_entry(1, 2, ChunkStateMachine::encode_write(page_id.clone(), vec![(8, vec![b'y'; 8])])),
+    )
+    .unwrap();
+    assert_eq!(
+        machine.replica().pages.get(&page_id).unwrap().data.len(),
+        16,
+        "a genuinely new entry after a redelivery must still apply"
+    );
+    assert_eq!(machine.last_applied_index(), 2);
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn an_entry_for_another_group_is_refused_rather_than_written_into_this_one() {
+    // A misrouted entry is the one error that applies CLEANLY and wrongly: the payload decodes,
+    // the page identity is valid, and the write lands in a page this group owns. Nothing
+    // downstream would report it.
+    let payload =
+        ChunkStateMachine::encode_write(chunk_raft_page(), vec![(0, vec![b'q'; 4])]);
+    let mut machine = ChunkStateMachine::new(5, MatrixReplicaService::new());
+    let refused = matrixraft::StateMachine::apply(&mut machine, chunk_raft_entry(6, 1, payload));
+    match refused {
+        Err(matrixraft::RaftError::InvalidRequest(message)) => {
+            assert!(
+                message.contains("group 6") && message.contains("group 5"),
+                "the refusal must name both groups, because a routing bug is diagnosed from \
+                 which group sent what: {message}"
+            );
+        }
+        other => panic!("an entry for another group was not refused: {other:?}"),
+    }
+    assert_eq!(machine.last_applied_index(), 0, "nothing should have applied");
+    assert!(
+        machine.replica().pages.get(&chunk_raft_page()).is_none(),
+        "a misrouted entry wrote a page into this group"
+    );
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_malformed_entry_is_refused_without_moving_the_applied_index() {
+    // An undecodable entry stalls every replica in the group at the same index, which is the
+    // correct outcome -- all of them stop at the same place rather than diverging. What must not
+    // happen is the index moving past it: that would mark an entry applied that was not.
+    let page_id = chunk_raft_page();
+    let mut machine = ChunkStateMachine::new(1, MatrixReplicaService::new());
+    matrixraft::StateMachine::apply(
+        &mut machine,
+        chunk_raft_entry(1, 1, ChunkStateMachine::encode_write(page_id.clone(), vec![(0, vec![1, 2])])),
+    )
+    .unwrap();
+
+    let refused = matrixraft::StateMachine::apply(
+        &mut machine,
+        chunk_raft_entry(1, 2, b"not a chunk write command".to_vec()),
+    );
+    assert!(matches!(
+        refused,
+        Err(matrixraft::RaftError::InvalidRequest(_))
+    ));
+    assert_eq!(
+        machine.last_applied_index(),
+        1,
+        "the applied index moved past an entry that did not apply, so a snapshot taken now would \
+         claim to contain a write that never happened"
+    );
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn an_entry_whose_write_is_refused_does_not_move_the_applied_index_either() {
+    // THE OTHER HALF OF THE PREVIOUS TEST, AND IT WAS MISSING. That one feeds an entry that fails
+    // to DECODE, so it never reaches the write at all -- and a version of `apply` that marked the
+    // index applied before calling the write still passed it. An entry can decode perfectly and
+    // still be refused by the replica, and then the index must not move either: a snapshot taken
+    // afterwards would claim to contain a write that was rejected, and every node installing it
+    // would skip the entry forever.
+    let page_id = chunk_raft_page();
+    let mut machine = ChunkStateMachine::new(1, MatrixReplicaService::new());
+    matrixraft::StateMachine::apply(
+        &mut machine,
+        chunk_raft_entry(1, 1, ChunkStateMachine::encode_write(page_id.clone(), vec![(0, vec![1, 2])])),
+    )
+    .unwrap();
+
+    // Decodes cleanly: the marker, the version, the kind and the page identity are all valid.
+    // The replica refuses it because the range ends past the pipeline offset limit.
+    let beyond = ChunkStateMachine::encode_write(
+        page_id.clone(),
+        vec![(PIPELINE_OFFSET_MAX, vec![0xff; 8])],
+    );
+    assert!(
+        ChunkWriteCommand::from_payload(&beyond).is_ok(),
+        "this entry has to DECODE for the test to be about the write rather than the codec"
+    );
+    let refused = matrixraft::StateMachine::apply(&mut machine, chunk_raft_entry(1, 2, beyond));
+    match refused {
+        Err(matrixraft::RaftError::Storage(message)) => assert!(
+            message.contains("pipeline offset limit"),
+            "the refusal must carry what the replica said, since that is all an operator has \
+             when every node in the group stalls at the same index: {message}"
+        ),
+        other => panic!("a write the replica refuses was reported as something else: {other:?}"),
+    }
+    assert_eq!(
+        machine.last_applied_index(),
+        1,
+        "the applied index moved past an entry whose write was refused"
+    );
+    assert_eq!(
+        machine.replica().pages.get(&page_id).unwrap().data.len(),
+        2,
+        "the refused write left bytes behind"
+    );
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_chunk_snapshot_carries_the_applied_index_as_well_as_the_pages() {
+    // The snapshot half, and the reason the index travels with it: a receiver that installed the
+    // pages and left its applied index at zero would replay every entry the snapshot already
+    // contains, and the redelivery guard would then be the only thing between it and
+    // double-applying all of them.
+    let page_id = chunk_raft_page();
+    let mut source = ChunkStateMachine::new(9, MatrixReplicaService::new());
+    for index in 1..=4u64 {
+        matrixraft::StateMachine::apply(
+            &mut source,
+            chunk_raft_entry(
+                9,
+                index,
+                ChunkStateMachine::encode_write(
+                    page_id.clone(),
+                    vec![((index - 1) * 8, vec![b'0' + index as u8; 8])],
+                ),
+            ),
+        )
+        .unwrap();
+    }
+    assert_eq!(source.last_applied_index(), 4);
+
+    let chunk = matrixraft::StateMachine::snapshot(&source).expect("the source exports a snapshot");
+    assert_eq!(
+        chunk.meta.last_log_id.index, 4,
+        "a snapshot that does not say which index it is complete to tells a restarting node \
+         nothing about what it still has to replay"
+    );
+    assert!(chunk.done && chunk.offset == 0);
+
+    let mut target = ChunkStateMachine::new(9, MatrixReplicaService::new());
+    matrixraft::StateMachine::install_snapshot(&mut target, chunk).expect("the target installs it");
+    assert_eq!(
+        target.last_applied_index(),
+        4,
+        "the applied index must move with the data"
+    );
+    let installed = target.replica().pages.get(&page_id).expect("the pages");
+    let original = source.replica().pages.get(&page_id).unwrap();
+    assert_eq!(installed.data, original.data, "the pages did not cross intact");
+    assert_eq!(installed.checksum_fnv1a64, original.checksum_fnv1a64);
+
+    // And a replay of an entry the snapshot already contains changes nothing.
+    let writes_before = target.replica().physical_write_count;
+    matrixraft::StateMachine::apply(
+        &mut target,
+        chunk_raft_entry(
+            9,
+            3,
+            ChunkStateMachine::encode_write(page_id.clone(), vec![(16, vec![b'3'; 8])]),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        target.replica().physical_write_count,
+        writes_before,
+        "an entry the installed snapshot already contained was applied again"
+    );
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_snapshot_chunk_out_of_order_is_refused_rather_than_assembled_wrongly() {
+    let mut target = ChunkStateMachine::new(2, MatrixReplicaService::new());
+    let refused = matrixraft::StateMachine::install_snapshot(
+        &mut target,
+        matrixraft::SnapshotChunk {
+            meta: matrixraft::SnapshotMetadata {
+                snapshot_id: "chunk-2-1".to_string(),
+                last_log_id: matrixraft::LogId { term: 0, index: 1 },
+                membership: Vec::new(),
+                members: Vec::new(),
+            },
+            // Nothing has arrived, so a chunk claiming to start at 64 is missing the first 64
+            // bytes. Appended anyway, the snapshot would decode as something else or not at all.
+            offset: 64,
+            data: vec![0; 8],
+            done: true,
+        },
+    );
+    assert!(matches!(
+        refused,
+        Err(matrixraft::RaftError::InvalidRequest(_))
+    ));
+    assert_eq!(target.last_applied_index(), 0);
+}
+
+#[cfg(feature = "matrix-raft")]
 #[test]
 fn a_metadata_snapshot_crosses_a_raft_state_machine_intact() {
     // What the snapshot half of `matrixraft::StateMachine` is for: a node that
