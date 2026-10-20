@@ -10,7 +10,8 @@ impl MatrixObjectStore {
             self.chunk_service
                 .write_chunk_range(&chunk_id, offset, &data)?;
             self.payloads.insert(
-                (chunk_id.clone(), offset),
+                chunk_id.clone(),
+                offset,
                 StoredPayload {
                     len: page_len as u64,
                     etag_fnv1a64: fnv1a64(&data),
@@ -39,7 +40,8 @@ impl MatrixObjectStore {
         self.chunk_service
             .write_chunk_range(&chunk_id, offset, &data)?;
         self.payloads.insert(
-            (chunk_id.clone(), offset),
+            chunk_id.clone(),
+            offset,
             StoredPayload {
                 len: page_len as u64,
                 etag_fnv1a64: fnv1a64(&data),
@@ -85,7 +87,8 @@ impl MatrixObjectStore {
                 &data[cursor..cursor + page_len],
             )?;
             self.payloads.insert(
-                (chunk_id.clone(), offset),
+                chunk_id.clone(),
+                offset,
                 StoredPayload {
                     len: page_len as u64,
                     etag_fnv1a64: fnv1a64(&data[cursor..cursor + page_len]),
@@ -184,8 +187,7 @@ impl MatrixObjectStore {
             // old metadata is kept in `versions` and this function is not called),
             // and leaving the entry behind would both retain garbage and name a
             // range the page service can no longer return.
-            self.payloads
-                .remove(&(extent.chunk_id.clone(), extent.offset));
+            self.payloads.remove(&extent.chunk_id, extent.offset);
             grouped_ranges
                 .entry(extent.chunk_id.clone())
                 .or_default()

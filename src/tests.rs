@@ -36765,16 +36765,16 @@ fn a_stale_range_holds_no_payload_entry() {
     for (chunk_id, chunk) in store.chunks.iter() {
         for range in chunk.stale_ranges.iter() {
             stale_ranges_seen += 1;
-            for (key, _) in store.payloads.iter() {
-                if key.0 != *chunk_id {
+            for (payload_chunk, offset, _) in store.payloads.iter() {
+                if payload_chunk != chunk_id {
                     continue;
                 }
                 assert!(
-                    key.1 < range.offset || key.1 >= range.offset + range.length,
+                    offset < range.offset || offset >= range.offset + range.length,
                     "a payload entry at offset {} falls inside the stale range \
                      {}..{} of {chunk_id:?}, so a reclaimed range could overwrite \
                      an entry a refused put would have to restore",
-                    key.1,
+                    offset,
                     range.offset,
                     range.offset + range.length
                 );
@@ -38620,6 +38620,352 @@ fn a_stripe_layout_is_refused_where_it_could_not_be_honoured() {
         service.configure_stripe_layout(Some(other)).is_err(),
         "a different unit size must not change under pages that were addressed by the old one"
     );
+}
+
+#[test]
+fn the_published_metadata_footprint_line_is_the_one_this_tree_produces() {
+    // The README publishes the metadata footprint as a LINE: so many bytes an object plus
+    // a fixed part, "whatever the object size". Nothing checked it and it went stale twice
+    // -- the projection conversion moved the slope by 155 bytes an object and the sentence
+    // kept the old number through two changes.
+    //
+    // This fits the line from measurements and compares both of its numbers.
+    const PUBLISHED: &str = include_str!("../README.md");
+
+    // The sentence, parsed rather than searched for verbatim, so rewording it does not
+    // silently disable the check -- the two NUMBERS are what this is about.
+    let marker = " bytes an object plus ";
+    let at = PUBLISHED
+        .find(marker)
+        .expect("the README should state the metadata footprint as a line");
+    let before: String = PUBLISHED[..at]
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    let published_slope: u64 = before
+        .chars()
+        .rev()
+        .collect::<String>()
+        .parse()
+        .expect("the slope should be a number");
+    let after = &PUBLISHED[at + marker.len()..];
+    let published_fixed: u64 = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == ',')
+        .filter(|c| *c != ',')
+        .collect::<String>()
+        .parse()
+        .expect("the fixed part should be a number");
+
+    // SIXTY-FOUR BYTE OBJECTS, because the claim is that the line does not depend on the
+    // object size and the small payload is what makes three stores affordable here. The
+    // claim itself is not assumed: 1,000 objects of 1 KiB and 1,000 of 64 KiB both measure
+    // 662,496 bytes of metadata, which is what lets this test use the cheap size.
+    //
+    // AND ABOVE 512 OBJECTS, which is not arbitrary. The change feed's vector grows by
+    // doubling and is charged at its CAPACITY, so the "fixed" part steps at each doubling
+    // until the feed reaches its record cap. At 500 objects the capacity is 512 and the
+    // point is off the line; from 513 it is 1,024 and every point is on it.
+    fn metadata_bytes(objects: u64) -> u64 {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 1,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("prefix/{index:08}/kkkkkkkkkk"),
+                    vec![b'x'; 64],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(key, _)| key == "ACCOUNTED.metadata_bytes")
+            .map(|(_, value)| value)
+            .expect("the audit should report ACCOUNTED.metadata_bytes")
+    }
+
+    let (low, high, check) = (520u64, 1_040u64, 1_560u64);
+    let at_low = metadata_bytes(low);
+    let at_high = metadata_bytes(high);
+    let at_check = metadata_bytes(check);
+
+    let slope = (at_high - at_low) / (high - low);
+    let fixed = at_low - slope * low;
+    println!(
+        "METALINE at_{low}={at_low} at_{high}={at_high} at_{check}={at_check} \
+         slope={slope} fixed={fixed}"
+    );
+
+    // THE LINE IS A LINE, checked at a third point before either number is compared to the
+    // document. Two points fit a line through anything; the third is what makes "so many
+    // bytes an object plus a fixed part" a true description rather than an interpolation.
+    assert_eq!(
+        slope * check + fixed,
+        at_check,
+        "the metadata footprint should be exactly linear in the object count, and the fit \
+         from {low}/{high} predicts {} at {check} where it measures {at_check}",
+        slope * check + fixed
+    );
+    // Not vacuous: a slope of zero would satisfy a line through three equal points.
+    assert!(slope > 0 && fixed > 0);
+
+    assert_eq!(
+        slope, published_slope,
+        "the README publishes {published_slope} bytes an object and this tree produces \
+         {slope} -- correct the README in the change that moved it"
+    );
+    assert_eq!(
+        fixed, published_fixed,
+        "the README publishes {published_fixed} fixed bytes and this tree produces \
+         {fixed} -- correct the README in the change that moved it"
+    );
+}
+
+#[test]
+fn a_refused_put_restores_the_payload_entry_it_replaced() {
+    // `restore_targeted_payloads` drops the entries the mutation added and puts back the
+    // ones it replaced. The digest in a dropped entry is not derivable from anything the
+    // store still holds, so putting it back at the wrong offset loses it silently -- and
+    // `validate_objects` would then refuse to load a snapshot of a store nothing was wrong
+    // with.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 1,
+        reuse_stale_chunk_space: false,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "k", vec![b'a'; 1024], "text/plain")
+        .unwrap();
+
+    // What the first put left, by chunk and offset.
+    let before: Vec<(ChunkId, u64, StoredPayload)> = store
+        .payloads
+        .iter()
+        .map(|(chunk_id, offset, stored)| (chunk_id.clone(), offset, stored.clone()))
+        .collect();
+    assert_eq!(before.len(), 1, "one payload entry for one 1 KiB object");
+
+    // The undo, captured before the replacing put and applied after it -- which is the
+    // order a refused put uses.
+    let rollback = store.capture_targeted_mutation_rollback("bucket", "k");
+    store
+        .put_object("bucket", "k", vec![b'b'; 1024], "text/plain")
+        .unwrap();
+    let replaced: Vec<(ChunkId, u64, StoredPayload)> = store
+        .payloads
+        .iter()
+        .map(|(chunk_id, offset, stored)| (chunk_id.clone(), offset, stored.clone()))
+        .collect();
+    assert_ne!(
+        replaced, before,
+        "the replacing put must actually have changed the index, or the restore below \
+         proves nothing"
+    );
+
+    store.restore_object_mutation_rollback(rollback);
+    let after: Vec<(ChunkId, u64, StoredPayload)> = store
+        .payloads
+        .iter()
+        .map(|(chunk_id, offset, stored)| (chunk_id.clone(), offset, stored.clone()))
+        .collect();
+    assert_eq!(
+        after, before,
+        "the undo should leave the index holding exactly the entries the refused put \
+         replaced, at their own offsets"
+    );
+    // AND WHAT THIS DOES NOT PROVE, asserted rather than left for the next reader to
+    // assume. `restore_object_mutation_rollback` restores the store's maps and NOT the page
+    // service: a targeted undo deliberately does not copy it, which is the optimisation
+    // that stopped a put costing O(stored objects). The refusal path calls
+    // `abort_mutation_batch` alongside this, and the two are only correct together -- so a
+    // read after the undo alone still refuses, because the store's index is restored and
+    // the page service's view of the range is not.
+    let read = store.get_object("bucket", "k");
+    assert!(
+        read.is_err(),
+        "the undo alone does not undo the page service, so this read should refuse rather \
+         than answer: {read:?}"
+    );
+    let message = read.unwrap_err().to_string();
+    assert!(
+        message.contains("discarded"),
+        "and it should refuse for the discarded range the replacing put recorded, which is \
+         what `abort_mutation_batch` undoes: {message:?}"
+    );
+}
+
+#[test]
+fn the_payload_index_behaves_like_the_map_it_replaced() {
+    // THE BEHAVIOUR FIRST, because the saving below is worthless if the index has stopped
+    // answering correctly -- and a key-shape change is exactly the kind that can lose an
+    // entry while every byte figure still looks right.
+    let mut index = PayloadIndex::default();
+    assert!(index.is_empty());
+    assert_eq!(index.len(), 0);
+    assert_eq!(index.chunk_count(), 0);
+
+    let one = ChunkId { volume_id: 1, id: 1 };
+    let two = ChunkId { volume_id: 1, id: 2 };
+    let other_volume = ChunkId { volume_id: 2, id: 1 };
+    let payload = |len: u64| StoredPayload { len, etag_fnv1a64: len * 7 };
+
+    // Inserted out of order, and in two chunks, so the ordering assertion below is not
+    // satisfied by the insertion order.
+    assert!(index.insert(two.clone(), 128, payload(10)).is_none());
+    assert!(index.insert(one.clone(), 64, payload(20)).is_none());
+    assert!(index.insert(other_volume.clone(), 0, payload(30)).is_none());
+    assert!(index.insert(one.clone(), 0, payload(40)).is_none());
+    assert_eq!(index.len(), 4);
+    assert_eq!(index.chunk_count(), 3);
+    assert!(!index.is_empty());
+
+    // Replacing returns the old value and does NOT change the count, which is the one way
+    // a counted length can drift from the entries it counts.
+    assert_eq!(
+        index.insert(one.clone(), 0, payload(41)),
+        Some(payload(40))
+    );
+    assert_eq!(index.len(), 4, "a replacement is not a new entry");
+
+    assert_eq!(index.get(&one, 0), Some(&payload(41)));
+    assert_eq!(index.get(&one, 64), Some(&payload(20)));
+    assert_eq!(index.get(&one, 1), None, "a wrong offset is not a hit");
+    assert_eq!(
+        index.get(&ChunkId { volume_id: 9, id: 9 }, 0),
+        None,
+        "a wrong chunk is not a hit"
+    );
+
+    // THE ORDER THE FLAT MAP HAD: by chunk, then by offset. The snapshot material is
+    // written in this order and hashed, so a change here is a durable-format change.
+    assert_eq!(
+        index
+            .iter()
+            .map(|(chunk_id, offset, stored)| (chunk_id.clone(), offset, stored.len))
+            .collect::<Vec<_>>(),
+        vec![
+            (one.clone(), 0, 41),
+            (one.clone(), 64, 20),
+            (two.clone(), 128, 10),
+            (other_volume.clone(), 0, 30),
+        ],
+        "a pair key sorts by chunk and then by offset, and the nested index must walk the \
+         same sequence"
+    );
+    assert_eq!(
+        index.values().map(|stored| stored.len).collect::<Vec<_>>(),
+        vec![41, 20, 10, 30]
+    );
+
+    // Removing the last entry of a chunk drops the chunk, which is what stops the shape
+    // paying for identities it no longer indexes.
+    assert_eq!(index.remove(&two, 128), Some(payload(10)));
+    assert_eq!(index.len(), 3);
+    assert_eq!(index.chunk_count(), 2, "an emptied chunk should not be kept");
+    assert_eq!(index.remove(&two, 128), None, "removing twice is not a removal");
+    assert_eq!(index.len(), 3);
+    assert_eq!(index.remove(&one, 0), Some(payload(41)));
+    assert_eq!(index.chunk_count(), 2, "chunk one still holds its other entry");
+
+    // And `retain` keeps the count and the chunk set honest.
+    index.insert(two.clone(), 0, payload(50));
+    index.insert(two.clone(), 64, payload(60));
+    assert_eq!((index.len(), index.chunk_count()), (4, 3));
+    index.retain(|chunk_id, offset, _| *chunk_id == two && offset == 64);
+    assert_eq!(
+        (index.len(), index.chunk_count()),
+        (1, 1),
+        "retain should drop the emptied chunks with their entries"
+    );
+    assert_eq!(index.get(&two, 64), Some(&payload(60)));
+}
+
+#[test]
+fn the_payload_index_pays_the_chunk_identity_once_per_chunk() {
+    // THE SAVING THIS SHAPE EXISTS FOR, read out of the audit rather than argued from the
+    // type: the key term is an offset per entry plus an identity per CHUNK, where a pair
+    // key was an identity per ENTRY.
+    const OBJECTS: u64 = 400;
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 1,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..OBJECTS {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}"),
+                vec![b'x'; 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let get = |key: &str| -> u64 {
+        *audit
+            .get(key)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    };
+    let entries = get("payloads.entries");
+    let chunks = get("payloads.chunks");
+    let key_bytes = get("payloads.key_bytes");
+    assert_eq!(entries, OBJECTS, "one payload an object at this size");
+    assert!(
+        chunks < entries,
+        "the whole point is that there are fewer chunks than entries, and this store has \
+         {chunks} chunks for {entries} entries"
+    );
+
+    // STRUCTURAL, not a byte count copied out of a run: a hardcoded figure here would be
+    // a property of this probe's object count and of this platform's pointer width.
+    let offset_term = entries * std::mem::size_of::<u64>() as u64;
+    let chunk_term = chunks
+        * (std::mem::size_of::<ChunkId>()
+            + std::mem::size_of::<std::collections::BTreeMap<u64, StoredPayload>>())
+            as u64;
+    assert_eq!(
+        key_bytes,
+        offset_term + chunk_term,
+        "the key term is an offset an entry plus an identity a chunk: {offset_term} + \
+         {chunk_term} against {key_bytes}"
+    );
+
+    // Against the shape it replaced. This is ARITHMETIC, not a second measurement -- the
+    // flat map is gone -- and it is written as such so nobody reads it as an A/B.
+    let flat = entries * std::mem::size_of::<(ChunkId, u64)>() as u64;
+    println!(
+        "PAYLOADKEYS entries={entries} chunks={chunks} nested={key_bytes} \
+         flat_would_have_been={flat} saved_per_object={}",
+        (flat - key_bytes) / entries
+    );
+    assert!(
+        key_bytes < flat,
+        "the nested index must cost less than the pair keys it replaced: {key_bytes} \
+         against {flat}"
+    );
+    // And by the whole identity, less the per-chunk cost. Asserted as a relation rather
+    // than as a figure, so it holds at any object count.
+    assert_eq!(
+        flat - key_bytes,
+        entries * std::mem::size_of::<ChunkId>() as u64 - chunk_term,
+        "the saving is the identity at every entry, less what it still costs per chunk"
+    );
+
+    // NOT VACUOUS: a store that wrote nothing would satisfy every relation above.
+    assert!(key_bytes > 0 && flat > key_bytes * 2);
 }
 
 #[cfg(test)]

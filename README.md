@@ -108,14 +108,20 @@ At three replicas with the metadata counted, measured at 26-character keys:
 | object size | objects | amplification | data-only figure |
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
-| 4 KiB | 4,000 | **3.18x** | 3.00x |
-| 1 KiB | 8,000 | **3.69x** | 3.02x |
+| 4 KiB | 4,000 | **3.13x** | 3.00x |
+| 1 KiB | 8,000 | **3.52x** | 3.02x |
 
 The data term is exactly **3.00x** -- the replication floor for a store that
 copies every page to every replica -- so everything above it is metadata, which
-is **661 bytes an object plus 172,456 fixed** whatever the object size.
+is **490 bytes an object plus 172,496 fixed** whatever the object size.
 `footprint_audit()` names every resident byte and its breakdown sums to its own
 total with no remainder.
+
+Those two numbers are a line, and
+`the_published_metadata_footprint_line_is_the_one_this_tree_produces` fits it from
+measurements and fails if this file disagrees. It exists because the figure went
+stale twice without anything noticing: a document nothing derives from the tree
+is a document that will be wrong.
 
 A store that stripes instead moves the data term itself: the same figure for the
 same objects is **1.5x** at three replicas and one unit of redundancy.
@@ -188,11 +194,11 @@ cargo test --release --lib measure_what_a_mutation_batch_snapshot_costs -- --ign
 #### A delete does not reclaim, it trades
 
 Writing 500 objects of 1 KiB and then deleting every one leaves the store
-**24.4% larger** than when it held them:
+**25.0% larger** than when it held them:
 
 | | bytes |
 |---|---:|
-| holding 500 objects | 1,883,753 |
+| holding 500 objects | 1,875,793 |
 | after deleting all 500 | 2,344,894 |
 
 The payload index is given back in full. What replaces it is **822 bytes of

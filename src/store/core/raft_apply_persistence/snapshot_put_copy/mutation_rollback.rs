@@ -121,9 +121,11 @@ impl MatrixObjectStore {
             .map(|previous| {
                 let mut captured = Vec::with_capacity(previous.extents.len());
                 for extent in previous.extents.iter() {
-                    let key = (extent.chunk_id.clone(), extent.offset);
-                    if let Some(payload) = self.payloads.get(&key) {
-                        captured.push((key, payload.clone()));
+                    if let Some(payload) = self.payloads.get(&extent.chunk_id, extent.offset) {
+                        captured.push((
+                            (extent.chunk_id.clone(), extent.offset),
+                            payload.clone(),
+                        ));
                     }
                 }
                 captured
@@ -166,23 +168,22 @@ impl MatrixObjectStore {
         chunks_before: &BTreeMap<ChunkId, ChunkInfo>,
         previous_payloads: Vec<((ChunkId, u64), StoredPayload)>,
     ) {
-        self.payloads.retain(|(chunk_id, offset), _| {
+        self.payloads.retain(|chunk_id, offset, _| {
             let Some(before) = chunks_before.get(chunk_id) else {
                 return false;
             };
-            if *offset >= before.next_offset {
+            if offset >= before.next_offset {
                 return false;
             }
             !before.stale_ranges.iter().any(|range| {
-                *offset >= range.offset
-                    && *offset < range.offset.saturating_add(range.length)
+                offset >= range.offset && offset < range.offset.saturating_add(range.length)
             })
         });
         // What the mutation removed. A put that replaces an object stales the
         // old extents, and the digest in the entry it dropped is not derivable
         // from anything the store still holds.
-        for (key, payload) in previous_payloads {
-            self.payloads.insert(key, payload);
+        for ((chunk_id, offset), payload) in previous_payloads {
+            self.payloads.insert(chunk_id, offset, payload);
         }
     }
 

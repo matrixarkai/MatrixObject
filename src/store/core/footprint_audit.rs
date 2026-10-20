@@ -327,10 +327,24 @@ impl MatrixObjectStore {
         // and until this was asked for, only the record map was in any total.
         let meta = self.meta_service.footprint_bytes(&mut ledger);
         let meta_record_bytes = meta.records;
-        // The payload headline counts only the value struct; the key is a
-        // `(ChunkId, u64)` and was never in the figure.
+        // The payload headline counts only the value struct; the keys were never in
+        // the figure, and they are what the index's shape decides.
+        //
+        // THE INDEX IS NESTED, so an entry's key is the 8-byte offset and the 16-byte chunk
+        // identity is paid once per chunk rather than once per entry. Charging it the old
+        // way -- `len * size_of::<(ChunkId, u64)>()` -- would report the saving as zero and
+        // the change as pointless, which is the mistake a representation change keeps making
+        // at the leg that weighs it.
+        //
+        // The outer map's own per-chunk cost is charged too, inner map struct included, so
+        // the figure cannot flatter a store holding one payload in each of many chunks.
         let payload_key_bytes = (self.payloads.len() as u64)
-            .saturating_mul(std::mem::size_of::<(ChunkId, u64)>() as u64);
+            .saturating_mul(std::mem::size_of::<u64>() as u64)
+            .saturating_add((self.payloads.chunk_count() as u64).saturating_mul(
+                (std::mem::size_of::<ChunkId>()
+                    + std::mem::size_of::<BTreeMap<u64, StoredPayload>>())
+                    as u64,
+            ));
         push("objects.bytes", objects_bytes);
         // The two largest metadata line items, broken into their parts. Both
         // sums are asserted against the totals above by
@@ -513,6 +527,9 @@ impl MatrixObjectStore {
         push("meta.entities.bytes", meta.entities);
         push("meta.export_caches.bytes", meta.export_caches);
         push("payloads.key_bytes", payload_key_bytes);
+        // The shape itself, so a reader of the breakdown can see which term is which
+        // without re-deriving it: entries pay an offset each, chunks pay an identity each.
+        push("payloads.chunks", self.payloads.chunk_count() as u64);
         let (multipart_metadata_bytes, multipart_payload_bytes) = self
             .multipart_uploads
             .iter()
@@ -1011,9 +1028,16 @@ impl ObjectMutationRollback {
         // stored objects. The key is a chunk and an offset and the value is a
         // length and a digest; neither owns anything below itself, which is why
         // the whole leg is arithmetic rather than a walk.
-        let payloads_bytes = (self.payloads.len() as u64).saturating_mul(
-            (std::mem::size_of::<(ChunkId, u64)>() + std::mem::size_of::<StoredPayload>()) as u64,
-        );
+        // Nested as the live index is, so the undo's copy is weighed by the same rule.
+        let payloads_bytes = (self.payloads.len() as u64)
+            .saturating_mul(
+                (std::mem::size_of::<u64>() + std::mem::size_of::<StoredPayload>()) as u64,
+            )
+            .saturating_add((self.payloads.chunk_count() as u64).saturating_mul(
+                (std::mem::size_of::<ChunkId>()
+                    + std::mem::size_of::<BTreeMap<u64, StoredPayload>>())
+                    as u64,
+            ));
 
         let legs: [(&str, u64); 11] = [
             ("undo.put_targeted.bytes", targeted_bytes),
