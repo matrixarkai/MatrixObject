@@ -25,13 +25,13 @@ pub(crate) fn chunk_local_state_checksum(state: &PageState) -> String {
     let data_checksum = etag(&state.data);
     let mut material = Vec::with_capacity(
         std::mem::size_of::<u64>() * 4
-            + encoded_string_len(&state.checksum)
+            + encoded_string_len(&state.checksum())
             + encoded_string_len(&data_checksum)
             + state.discarded_ranges.len() * std::mem::size_of::<u64>() * 2,
     );
     append_u64(&mut material, state.logical_length);
     append_u64(&mut material, state.write_sequence);
-    append_string(&mut material, &state.checksum);
+    append_string(&mut material, &state.checksum());
     append_string(&mut material, &data_checksum);
     append_u64(&mut material, state.discarded_ranges.len() as u64);
     for range in &state.discarded_ranges {

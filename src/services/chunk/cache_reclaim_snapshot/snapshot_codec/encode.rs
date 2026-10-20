@@ -10,7 +10,7 @@ impl ReplicaServiceSnapshot {
         for state in self.pages.values() {
             bytes = bytes
                 .saturating_add(U64 * 7)
-                .saturating_add(encoded_string_len(&state.checksum))
+                .saturating_add(encoded_string_len(&state.checksum()))
                 .saturating_add(state.data.len())
                 .saturating_add(U64)
                 .saturating_add(state.ec_parity_fragment.len())
@@ -122,7 +122,7 @@ impl ReplicaServiceSnapshot {
             append_u64(&mut out, page_id.page_index);
             append_u64(&mut out, state.logical_length);
             append_u64(&mut out, state.write_sequence);
-            append_string(&mut out, &state.checksum);
+            append_string(&mut out, &state.checksum());
             append_u64(&mut out, state.data.len() as u64);
             out.extend_from_slice(&state.data);
             append_u64(&mut out, state.ec_parity_fragment.len() as u64);

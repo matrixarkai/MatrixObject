@@ -151,7 +151,7 @@ impl MatrixReplicaService {
         {
             let memo = self.page_validation.borrow();
             if let Some((sequence, checksum, hashes)) = memo.get(page_id) {
-                if *sequence == chunk.write_sequence && checksum == &chunk.checksum {
+                if *sequence == chunk.write_sequence && checksum == &chunk.checksum() {
                     let first = start / page;
                     let last = end.saturating_sub(1) / page;
                     for index in first..=last {
@@ -170,7 +170,7 @@ impl MatrixReplicaService {
             }
         }
         // cold: validate the whole payload once, then memoise the pages
-        if !etag_matches(&chunk.data, &chunk.checksum) {
+        if !etag_matches(&chunk.data, &chunk.checksum()) {
             self.page_validation.borrow_mut().remove(page_id);
             return false;
         }
@@ -183,7 +183,7 @@ impl MatrixReplicaService {
         }
         self.page_validation.borrow_mut().insert(
             page_id.clone(),
-            (chunk.write_sequence, chunk.checksum.clone(), hashes),
+            (chunk.write_sequence, chunk.checksum().clone(), hashes),
         );
         true
     }

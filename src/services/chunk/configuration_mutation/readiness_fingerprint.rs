@@ -28,7 +28,7 @@ impl MatrixReplicaService {
 
     pub fn chunk_state_fingerprint(&self) -> String {
         let chunk_bytes = self.pages.values().fold(0usize, |sum, state| {
-            sum.saturating_add(encoded_string_len(&state.checksum))
+            sum.saturating_add(encoded_string_len(&state.checksum()))
                 .saturating_add(
                     state
                         .discarded_ranges
@@ -107,7 +107,7 @@ impl MatrixReplicaService {
             append_page_id(&mut material, page_id);
             append_u64(&mut material, state.logical_length);
             append_u64(&mut material, state.write_sequence);
-            append_string(&mut material, &state.checksum);
+            append_string(&mut material, &state.checksum());
             append_u64(&mut material, state.discarded_ranges.len() as u64);
             for range in &state.discarded_ranges {
                 append_range(&mut material, range);

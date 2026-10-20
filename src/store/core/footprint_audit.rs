@@ -211,7 +211,11 @@ impl MatrixObjectStore {
             for state in replica.pages.values() {
                 data_len = data_len.saturating_add(state.data.len() as u64);
                 data_cap = data_cap.saturating_add(state.data.capacity() as u64);
-                checksum_bytes = checksum_bytes.saturating_add(state.checksum.capacity() as u64);
+                // The digest is inline in the page state, so it owns no heap.
+                // Charging checksum().capacity() would report the 24 bytes a
+                // freshly formatted String happens to hold -- a cost that is
+                // no longer resident. The leg stays and reports zero.
+                checksum_bytes = checksum_bytes.saturating_add(0);
                 discard_rows = discard_rows.saturating_add(state.discarded_ranges.len() as u64);
                 // Count the pages that actually CARRY a redundancy fragment. This
                 // incremented once per page regardless, which made it a second copy

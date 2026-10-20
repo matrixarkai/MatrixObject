@@ -192,7 +192,7 @@ impl MatrixReplicaService {
                 }
             }
             state.write_sequence = state.write_sequence.saturating_add(1);
-            state.checksum = etag(&state.data);
+            state.checksum_fnv1a64 = fnv1a64(&state.data);
             if self.keep_ec_sidecar {
                 refresh_chunk_ec_sidecars(state);
             } else {

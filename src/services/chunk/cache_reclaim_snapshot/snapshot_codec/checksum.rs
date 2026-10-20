@@ -52,7 +52,7 @@ impl ReplicaServiceSnapshot {
             append_u64(&mut material, page_id.page_index);
             append_u64(&mut material, state.logical_length);
             append_u64(&mut material, state.write_sequence);
-            append_string(&mut material, &state.checksum);
+            append_string(&mut material, &state.checksum());
             append_u64(&mut material, state.data.len() as u64);
             material.extend_from_slice(&state.data);
             append_u64(&mut material, state.ec_parity_fragment.len() as u64);

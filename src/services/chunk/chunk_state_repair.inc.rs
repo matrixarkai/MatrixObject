@@ -87,14 +87,14 @@ impl MatrixReplicaService {
             .get_mut(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
         let chunk = std::sync::Arc::make_mut(chunk);
-        if etag_matches(&chunk.data, &chunk.checksum) {
+        if etag_matches(&chunk.data, &chunk.checksum()) {
             return Ok(false);
         }
         let reconstructed = match chunk_ec_recover_data(
             &chunk.data,
             &chunk.ec_parity_fragment,
             chunk.logical_length as usize,
-            &chunk.checksum,
+            &chunk.checksum(),
         ) {
             Ok(reconstructed) => reconstructed,
             Err(err) => {
@@ -103,7 +103,7 @@ impl MatrixReplicaService {
                 return Err(err);
             }
         };
-        if !etag_matches(&reconstructed, &chunk.checksum) {
+        if !etag_matches(&reconstructed, &chunk.checksum()) {
             self.ec_reconstruction_failures
                 .set(self.ec_reconstruction_failures.get().saturating_add(1));
             return Err(ObjectError::Corruption(

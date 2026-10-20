@@ -42,13 +42,30 @@ impl PageId {
 pub struct PageState {
     pub logical_length: u64,
     pub write_sequence: u64,
-    pub checksum: String,
+    /// The DIGEST of this page's bytes, not its spelling. `checksum()` formats
+    /// this same number as "fnv1a64:" followed by 16 hex digits, which is the
+    /// only form it has ever had -- `etag(&chunk.data)` produces it and
+    /// `etag(&[])` produces the empty page's.
+    ///
+    /// A `String` cost 24 bytes inline and a 24-byte buffer behind it, per page
+    /// PER REPLICA, which is the first footprint term here that scales with
+    /// data rather than object count: 1 TiB at a 1 MiB page and three replicas
+    /// is a million pages, so 40 bytes each is about 125 MB.
+    pub checksum_fnv1a64: u64,
     pub data: std::sync::Arc<Vec<u8>>,
     pub ec_parity_fragment: std::sync::Arc<Vec<u8>>,
     pub discarded_ranges: Vec<DataRange>,
 }
 
 impl PageState {
+    /// The checksum as it has always been spelled, and as it still goes into
+    /// proof material and onto the wire.
+    pub fn checksum(&self) -> String {
+        let mut text = String::with_capacity(24);
+        append_etag_of_digest(&mut text, self.checksum_fnv1a64);
+        text
+    }
+
     /// A chunk that exists and holds nothing.
     ///
     /// Both write paths built this same literal inline. Moving the state behind
@@ -58,7 +75,7 @@ impl PageState {
         Self {
             logical_length: 0,
             write_sequence: 0,
-            checksum: etag(&[]),
+            checksum_fnv1a64: fnv1a64(&[]),
             data: std::sync::Arc::new(Vec::new()),
             ec_parity_fragment: std::sync::Arc::new(Vec::new()),
             discarded_ranges: Vec::new(),
@@ -79,7 +96,7 @@ impl PageState {
         ] {
             fields.insert(format!("{field_prefix}{name}"), value.to_string());
         }
-        fields.insert(format!("{field_prefix}checksum"), self.checksum.clone());
+        fields.insert(format!("{field_prefix}checksum"), self.checksum().clone());
         fields.insert(format!("{field_prefix}payload_checksum"), etag(&self.data));
         for (index, shard) in ec_data_fragments.iter().enumerate() {
             fields.insert(
@@ -103,4 +120,15 @@ impl PageState {
         }
         fields
     }
+}
+
+/// The digest behind a page checksum's spelling.
+///
+/// Unlike an object's etag there is no empty case: every page has a checksum,
+/// and an empty page's is `etag(&[])`. So an empty one came from a snapshot
+/// that does not hold what this format says it holds.
+pub(crate) fn page_checksum_digest(text: &str) -> Result<u64, ObjectError> {
+    change_etag_digest(text)?.ok_or_else(|| {
+        ObjectError::Corruption("a page checksum is a digest and cannot be empty".to_string())
+    })
 }

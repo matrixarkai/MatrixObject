@@ -375,7 +375,8 @@ impl SharedPayloadLedger {
             .insert(std::sync::Arc::as_ptr(state) as *const u8 as usize)
         {
             ((std::mem::size_of::<PageState>() + 2 * std::mem::size_of::<usize>()) as u64)
-                .saturating_add(state.checksum.capacity() as u64)
+                // Inline digest: no heap. See footprint_audit.rs.
+                .saturating_add(0)
                 .saturating_add(
                     (state.discarded_ranges.capacity() as u64)
                         .saturating_mul(std::mem::size_of::<DataRange>() as u64),
