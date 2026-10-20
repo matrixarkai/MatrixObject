@@ -20,7 +20,8 @@
 //! `/{bucket}/{key}` with ranged reads, and the whole multipart family --
 //! CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, ListParts
 //! and ListMultipartUploads, selected by the `uploads`, `uploadId` and `partNumber` query
-//! parameters as S3 selects them.
+//! parameters as S3 selects them. Also DeleteObjects, CopyObject, GetBucketLocation and
+//! Get/PutBucketVersioning.
 //!
 //! # WHAT IS DELIBERATELY NOT IMPLEMENTED
 //!
@@ -47,6 +48,7 @@ use std::sync::{Arc, Mutex};
 
 use super::http::{self, Request, Response, ResolvedRange};
 use super::s3;
+use super::s3_batch as batch;
 use super::s3_multipart as mp;
 use crate::{MatrixObjectStore, ObjectError, ObjectMetadata, PutOptions};
 
@@ -173,18 +175,42 @@ impl ObjectService {
     }
 
     fn bucket_request(&self, request: &Request, bucket: &str) -> Response {
+        // EVERY SUB-RESOURCE ARM COMES FIRST, AND THE ORDER IS LOAD-BEARING. S3 selects a bucket's
+        // sub-resources with valueless query parameters on the SAME method as the plain verb, so
+        // an unguarded `"PUT"` placed above `"PUT" if ...?versioning` swallows it. The compiler
+        // said so for PUT; GET escaped only because its unguarded arm already happened to sit
+        // below. Grouped here so adding the next sub-resource cannot repeat it.
         match request.method.as_str() {
-            "PUT" => self.create_bucket(bucket),
-            // `?uploads` ON A BUCKET IS A DIFFERENT VERB, not a filtered listing. S3
-            // selects its sub-resources with valueless query parameters, so the flag has to be
-            // read before the listing rather than passed to it.
             "GET" if request.query_param("uploads").is_some() => {
                 self.list_multipart_uploads(request, bucket)
             }
+            // SDKs CALL THIS BEFORE THEIR FIRST REQUEST and treat a failure as the bucket being
+            // unreachable, so it is answered rather than left to fall through to a listing.
+            "GET" if request.query_param("location").is_some() => {
+                self.bucket_location(bucket)
+            }
+            "GET" if request.query_param("versioning").is_some() => {
+                self.bucket_versioning(bucket)
+            }
+            "PUT" if request.query_param("versioning").is_some() => {
+                self.set_bucket_versioning(request, bucket)
+            }
+            "POST" if request.query_param("delete").is_some() => {
+                self.delete_objects(request, bucket)
+            }
+
+            "PUT" => self.create_bucket(bucket),
             "GET" => self.list_bucket(request, bucket),
             "HEAD" => self.head_bucket(bucket),
             "DELETE" => self.delete_bucket(bucket),
-            _ => method_not_allowed("PUT, GET, HEAD, DELETE", &format!("/{bucket}")),
+            // POST is allowed on a bucket for `?delete` and nothing else, so a bare one is a
+            // missing sub-resource rather than a disallowed method.
+            "POST" => s3::error_response(
+                s3::S3ErrorCode::InvalidArgument,
+                "a POST to a bucket is ?delete, and this names no sub-resource",
+                &format!("/{bucket}"),
+            ),
+            _ => method_not_allowed("PUT, POST, GET, HEAD, DELETE", &format!("/{bucket}")),
         }
     }
 
@@ -398,7 +424,17 @@ impl ObjectService {
         match request.method.as_str() {
             "PUT" => match request.query_param("partNumber") {
                 Some(part_number) => self.upload_part(request, bucket, key, &part_number, upload_id),
-                None => self.put_object(request, bucket, key),
+                // A PUT CARRYING `x-amz-copy-source` IS A COPY, NOT A WRITE OF ITS BODY. S3
+                // overloads the same verb on the same path, and a surface that ignored the header
+                // would store an empty object over the destination -- a copy request answered
+                // with a successful deletion of the thing being copied to.
+                None => match request.header("x-amz-copy-source") {
+                    Some(source) => {
+                        let source = source.to_string();
+                        self.copy_object(request, &source, bucket, key)
+                    }
+                    None => self.put_object(request, bucket, key),
+                },
             },
             "POST" if request.query_param("uploads").is_some() => {
                 self.create_multipart_upload(request, bucket, key)
@@ -416,6 +452,212 @@ impl ObjectService {
                 "PUT, POST, GET, HEAD, DELETE",
                 &format!("/{bucket}/{key}"),
             ),
+        }
+    }
+
+    /// `GetBucketLocation`.
+    fn bucket_location(&self, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.bucket_exists(bucket) {
+            Ok(true) => s3::xml_response(200, batch::location_constraint_xml()),
+            Ok(false) => s3::error_response(
+                s3::S3ErrorCode::NoSuchBucket,
+                "bucket not found",
+                &resource,
+            ),
+            Err(err) => s3_error(err, &resource, true),
+        }
+    }
+
+    /// `GetBucketVersioning`.
+    fn bucket_versioning(&self, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.bucket_exists(bucket) {
+            Ok(true) => {}
+            Ok(false) => {
+                return s3::error_response(
+                    s3::S3ErrorCode::NoSuchBucket,
+                    "bucket not found",
+                    &resource,
+                )
+            }
+            Err(err) => return s3_error(err, &resource, true),
+        }
+        match guard.bucket_versioning_enabled(bucket) {
+            Ok(enabled) => {
+                s3::xml_response(200, batch::versioning_configuration_xml(enabled))
+            }
+            Err(err) => s3_error(err, &resource, true),
+        }
+    }
+
+    /// `PutBucketVersioning`.
+    fn set_bucket_versioning(&self, request: &Request, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let enabled = match batch::parse_versioning_configuration(&request.body) {
+            Ok(enabled) => enabled,
+            Err(reason) => {
+                return s3::error_response(s3::S3ErrorCode::MalformedXml, &reason, &resource)
+            }
+        };
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.set_bucket_versioning(bucket, enabled) {
+            // NO BODY, which is what S3 answers for a configuration write.
+            Ok(()) => Response::status(200),
+            Err(err) => s3_error(err, &resource, true),
+        }
+    }
+
+    /// `DeleteObjects` -- the batch delete.
+    ///
+    /// The one answer on this surface where failure is not a status: 200 with a per-key report,
+    /// because a tool deleting a prefix reads which keys remain and retries those. A single 4xx
+    /// for a batch where one key failed would make it retry the whole batch forever, and a flat
+    /// 200 would make it believe keys are gone that are not.
+    fn delete_objects(&self, request: &Request, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let asked = match batch::parse_delete_objects(&request.body) {
+            Ok(asked) => asked,
+            Err(reason) => {
+                return s3::error_response(s3::S3ErrorCode::MalformedXml, &reason, &resource)
+            }
+        };
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        let mut outcomes = Vec::with_capacity(asked.keys.len());
+        let mut deleted_any = false;
+        for key in &asked.keys {
+            match guard.delete_object(bucket, key) {
+                Ok(_) => {
+                    deleted_any = true;
+                    outcomes.push(batch::DeleteOutcome::Deleted(key.clone()));
+                }
+                // A KEY THAT WAS NOT THERE IS A SUCCESS, the same answer the single-object delete
+                // gives and for the same reason: a client retrying a batch it already completed
+                // must see its keys as gone rather than as failures.
+                Err(ObjectError::NotFound(_)) => {
+                    outcomes.push(batch::DeleteOutcome::Deleted(key.clone()))
+                }
+                Err(err) => outcomes.push(batch::DeleteOutcome::Failed {
+                    key: key.clone(),
+                    code: s3::code_for(&err, false),
+                    message: err.to_string(),
+                }),
+            }
+        }
+        // FLUSHED ONCE FOR THE WHOLE BATCH, not once per key: the snapshot is rewritten whole, so
+        // a flush per key would make a thousand-key batch a thousand rewrites of the same file.
+        // Skipped when nothing was removed, because there is nothing to make durable.
+        if deleted_any {
+            if let Err(err) = guard.flush_persistent_snapshot() {
+                return flush_failed(
+                    &resource,
+                    format!(
+                        "the objects were removed from memory but the durable snapshot could not \
+                         be rewritten, so they may come back on restart: {err}"
+                    ),
+                );
+            }
+        }
+        s3::xml_response(200, batch::delete_result_xml(&outcomes, asked.quiet))
+    }
+
+    /// `CopyObject`, which S3 selects with an `x-amz-copy-source` header on a PUT.
+    fn copy_object(
+        &self,
+        request: &Request,
+        source: &str,
+        bucket: &str,
+        key: &str,
+    ) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let (source_bucket, source_key) = match batch::parse_copy_source(source) {
+            Ok(parsed) => parsed,
+            Err(reason) => {
+                return s3::error_response(s3::S3ErrorCode::InvalidArgument, &reason, &resource)
+            }
+        };
+        // `REPLACE` takes the metadata from this request; `COPY`, the default, keeps the source's.
+        let replace = request
+            .header("x-amz-metadata-directive")
+            .map(|value| value.trim().eq_ignore_ascii_case("REPLACE"))
+            .unwrap_or(false);
+        // A COPY ONTO ITSELF THAT CHANGES NOTHING IS REFUSED, which is S3's behaviour and is the
+        // useful one: it is almost always a client that meant to change the metadata and forgot
+        // the directive, and silently succeeding would leave it believing the change landed.
+        if source_bucket == bucket && source_key == key && !replace {
+            return s3::error_response(
+                s3::S3ErrorCode::InvalidRequest,
+                "the copy source and destination are the same object and no metadata directive \
+                 was given, so this request would change nothing",
+                &resource,
+            );
+        }
+        let content_type = if replace {
+            request
+                .header("content-type")
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+        } else {
+            None
+        };
+        let options = if replace {
+            let mut user_metadata: BTreeMap<String, String> = BTreeMap::new();
+            for (suffix, value) in request.headers_with_prefix(USER_METADATA_PREFIX) {
+                user_metadata.insert(suffix.to_string(), value.to_string());
+            }
+            PutOptions {
+                user_metadata,
+                ..PutOptions::default()
+            }
+        } else {
+            PutOptions::default()
+        };
+
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.copy_object_with_options(
+            &source_bucket,
+            &source_key,
+            bucket,
+            key,
+            content_type,
+            options,
+        ) {
+            Ok(metadata) => {
+                if let Err(err) = guard.flush_persistent_snapshot() {
+                    return flush_failed(
+                        &resource,
+                        format!(
+                            "the copy reached memory but its durable snapshot could not be \
+                             rewritten, so it is not durable: {err}"
+                        ),
+                    );
+                }
+                s3::xml_response(
+                    200,
+                    batch::copy_object_result_xml(metadata.update_time_ms, &metadata.etag()),
+                )
+            }
+            // THE SOURCE IS THE MISSING THING HERE, not the destination, and the resource reported
+            // says so -- a client told `NoSuchKey` against the destination path would go looking
+            // at the wrong end of its own request.
+            Err(err) => s3_error(err, &format!("/{source_bucket}/{source_key}"), false),
         }
     }
 

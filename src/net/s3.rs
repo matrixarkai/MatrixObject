@@ -45,6 +45,7 @@ pub enum S3ErrorCode {
     PreconditionFailed,
     BucketNotEmpty,
     NoSuchUpload,
+    InvalidRequest,
     InvalidPart,
     InvalidPartOrder,
     MalformedXml,
@@ -65,6 +66,7 @@ impl S3ErrorCode {
             S3ErrorCode::PreconditionFailed => "PreconditionFailed",
             S3ErrorCode::BucketNotEmpty => "BucketNotEmpty",
             S3ErrorCode::NoSuchUpload => "NoSuchUpload",
+            S3ErrorCode::InvalidRequest => "InvalidRequest",
             S3ErrorCode::InvalidPart => "InvalidPart",
             S3ErrorCode::InvalidPartOrder => "InvalidPartOrder",
             // S3 spells it MalformedXML, with the acronym in capitals. The variant is Rust
@@ -90,6 +92,7 @@ impl S3ErrorCode {
             S3ErrorCode::PreconditionFailed => 412,
             S3ErrorCode::BucketNotEmpty => 409,
             S3ErrorCode::NoSuchUpload => 404,
+            S3ErrorCode::InvalidRequest => 400,
             S3ErrorCode::InvalidPart
             | S3ErrorCode::InvalidPartOrder
             | S3ErrorCode::MalformedXml => 400,
