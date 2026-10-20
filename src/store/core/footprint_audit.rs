@@ -200,6 +200,11 @@ impl MatrixObjectStore {
         let mut pages = 0u64;
         let mut data_len = 0u64;
         let mut data_cap = 0u64;
+        // What one `Arc<Vec<u8>>` costs beyond the bytes it points at: two
+        // counts and the Vec's own pointer, length and capacity.
+        const ARC_VEC_ALLOCATION: u64 =
+            (2 * std::mem::size_of::<usize>() + std::mem::size_of::<Vec<u8>>()) as u64;
+        let mut page_handle_bytes = 0u64;
         let mut fragment_len = 0u64;
         let mut fragment_cap = 0u64;
         let mut fragment_count = 0u64;
@@ -228,6 +233,16 @@ impl MatrixObjectStore {
                 fragment_len = fragment_len.saturating_add(state.ec_parity_fragment.len() as u64);
                 fragment_cap =
                     fragment_cap.saturating_add(state.ec_parity_fragment.capacity() as u64);
+                // An `Arc<Vec<u8>>` allocates whether or not the Vec holds
+                // anything: the two counts in front of it, and the Vec's own
+                // three words, live in that allocation. Charging only
+                // `capacity()` reported ZERO for a fragment that is empty
+                // whenever its page has peers -- which is every page in a
+                // three-replica store -- and zero for the handle on a page that
+                // does hold data. Both are real and both are per page PER
+                // REPLICA, so they scale with the data.
+                page_handle_bytes = page_handle_bytes.saturating_add(ARC_VEC_ALLOCATION);
+                page_handle_bytes = page_handle_bytes.saturating_add(ARC_VEC_ALLOCATION);
             }
             replica_receipts = replica_receipts
                 .saturating_add(replica.write_request_receipts.len() as u64)
@@ -239,6 +254,7 @@ impl MatrixObjectStore {
         push("replica.data.len", data_len);
         push("replica.data.capacity", data_cap);
         push("replica.ec_fragments.count", fragment_count);
+        push("replica.page_payload_handles.bytes", page_handle_bytes);
         push("replica.ec_fragments.len", fragment_len);
         push("replica.ec_fragments.capacity", fragment_cap);
         push("replica.checksum.capacity", checksum_bytes);
@@ -806,6 +822,7 @@ impl MatrixObjectStore {
         let accounted = payload_cap
             .saturating_add(data_cap)
             .saturating_add(fragment_cap)
+            .saturating_add(page_handle_bytes)
             .saturating_add(checksum_bytes)
             .saturating_add(page.total())
             .saturating_add(store_export_caches);
