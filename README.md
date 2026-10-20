@@ -169,8 +169,8 @@ Writing 500 objects of 1 KiB and then deleting every one leaves the store
 
 | | bytes |
 |---|---:|
-| holding 500 objects | 1,949,133 |
-| after deleting all 500 | 2,384,274 |
+| holding 500 objects | 1,949,373 |
+| after deleting all 500 | 2,384,514 |
 
 The payload index is given back in full. What replaces it is **822 bytes of
 idempotency receipt per delete** across three replicas, bounded only by
