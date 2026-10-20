@@ -162,7 +162,7 @@ pub(crate) fn read_metadata_transaction(
     for _ in 0..mutation_count {
         mutations.push(MetadataMutation {
             key: cursor.read_string()?.into(),
-            value: cursor.read_string()?,
+            record_value: cursor.read_string()?.into(),
             expected_version: cursor.read_u64()?,
             delete: cursor.read_bool()?,
         });

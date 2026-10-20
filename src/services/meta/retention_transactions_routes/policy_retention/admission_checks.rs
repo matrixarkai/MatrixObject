@@ -10,7 +10,7 @@ impl MatrixMetaService {
         }
         let value_bytes = mutations.iter().try_fold(0_u64, |total, mutation| {
             total
-                .checked_add(mutation.value.len() as u64)
+                .checked_add(mutation.record_value.len() as u64)
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument("metadata batch value bytes overflow".to_string())
                 })

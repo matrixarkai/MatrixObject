@@ -4,7 +4,9 @@ use super::*;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataRecord {
     pub key: SharedText,
-    pub value: Box<str>,
+    /// A projection of the object at this key, or the text any other record
+    /// carries. Sixteen bytes inline either way -- see `RecordValue`.
+    pub value: RecordValue,
     pub version: u64,
     pub update_time_ms: u64,
     pub deleted: bool,
@@ -14,7 +16,7 @@ impl MetadataRecord {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(format!("{field_prefix}key"), self.key.to_string());
-        fields.insert(format!("{field_prefix}value"), self.value.clone().into());
+        fields.insert(format!("{field_prefix}value"), self.value.as_text().into_owned());
         fields.insert(format!("{field_prefix}version"), self.version.to_string().into());
         fields.insert(
             format!("{field_prefix}update_time_ms"),

@@ -92,7 +92,7 @@ impl MatrixMetaService {
                 || image.deleted != mutation.delete
                 || image.version != current_version.saturating_add(1)
                 || (mutation.delete && !image.value.is_empty())
-                || (!mutation.delete && image.value != mutation.value.clone().into())
+                || (!mutation.delete && image.value != mutation.record_value)
                 || image.update_time_ms != prepared.now_ms
             {
                 return Err(ObjectError::Corruption(

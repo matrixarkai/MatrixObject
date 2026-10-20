@@ -81,7 +81,7 @@ impl MatrixMetaService {
         append_u64(&mut material, self.records.len() as u64);
         for (key, record) in &self.records {
             append_string(&mut material, key);
-            append_string(&mut material, &etag(record.value.as_bytes()));
+            append_string(&mut material, &etag(record.value.as_text().as_bytes()));
             append_u64(&mut material, record.version);
             append_u64(&mut material, record.update_time_ms);
             append_u64(&mut material, record.deleted as u64);
@@ -153,7 +153,10 @@ impl MatrixMetaService {
             append_u64(&mut material, transaction.mutations.len() as u64);
             for mutation in &transaction.mutations {
                 append_string(&mut material, &mutation.key);
-                append_string(&mut material, &etag(mutation.value.as_bytes()));
+                append_string(
+                    &mut material,
+                    &etag(mutation.record_value.as_text().as_bytes()),
+                );
                 append_u64(&mut material, mutation.expected_version);
                 append_u64(&mut material, mutation.delete as u64);
             }

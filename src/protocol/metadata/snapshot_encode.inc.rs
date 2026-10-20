@@ -31,7 +31,7 @@ impl MetaSnapshot {
         append_u64(&mut out, self.records.len() as u64);
         for (key, record) in &self.records {
             append_string(&mut out, key);
-            append_string(&mut out, &record.value);
+            append_string(&mut out, &record.value.as_text());
             append_u64(&mut out, record.version);
             append_u64(&mut out, record.update_time_ms);
             append_u64(&mut out, record.deleted as u64);
@@ -95,7 +95,9 @@ impl MetaSnapshot {
             append_u64(&mut out, transaction.mutations.len() as u64);
             for mutation in &transaction.mutations {
                 append_string(&mut out, &mutation.key);
-                append_string(&mut out, &mutation.value);
+                // THE DURABLE ENCODING. A snapshot written with different bytes here is a
+                // format change, so the text is what it always was.
+                append_string(&mut out, &mutation.record_value.as_text());
                 append_u64(&mut out, mutation.expected_version);
                 append_u64(&mut out, mutation.delete as u64);
             }
@@ -281,7 +283,7 @@ fn metadata_record_encoded_size(record: &MetadataRecord) -> usize {
 }
 
 fn metadata_record_value_encoded_size(record: &MetadataRecord) -> usize {
-    encoded_string_len(&record.value)
+    encoded_string_len(&record.value.as_text())
         .saturating_add(3 * std::mem::size_of::<u64>())
 }
 
@@ -319,7 +321,7 @@ fn metadata_shard_value_encoded_size(shard: &MetadataShard) -> usize {
 
 fn metadata_mutation_encoded_size(mutation: &MetadataMutation) -> usize {
     encoded_string_len(&mutation.key)
-        .saturating_add(encoded_string_len(&mutation.value))
+        .saturating_add(encoded_string_len(&mutation.record_value.as_text()))
         .saturating_add(2 * std::mem::size_of::<u64>())
 }
 

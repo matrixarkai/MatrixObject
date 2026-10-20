@@ -20,7 +20,13 @@ pub struct MetadataReadSetReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataMutation {
     pub key: SharedText,
-    pub value: String,
+    /// What the record will hold, which is no longer necessarily its characters.
+    ///
+    /// RENAMED from `value` rather than retyped in place. A retype would have left every
+    /// construction compiling through `From<String>` and every read compiling through `Deref`,
+    /// and the readers that matter are the ones that put this into proof material -- where a
+    /// value rendered differently is a different checksum. The rename made all of them errors.
+    pub record_value: RecordValue,
     pub expected_version: u64,
     pub delete: bool,
 }
@@ -29,7 +35,14 @@ impl MetadataMutation {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(format!("{field_prefix}key"), self.key.to_string());
-        fields.insert(format!("{field_prefix}value"), self.value.clone().into());
+        // THE SAME CHARACTERS AS BEFORE, which is the whole requirement here. This goes into
+        // proof material, so a value that rendered differently would change a checksum that
+        // existing receipts carry -- a migration rather than a representation change. `as_text`
+        // borrows a stored text and builds a derived one, so the bytes are what they always were.
+        fields.insert(
+            format!("{field_prefix}value"),
+            self.record_value.as_text().into_owned(),
+        );
         fields.insert(
             format!("{field_prefix}expected_version"),
             self.expected_version.to_string().into(),

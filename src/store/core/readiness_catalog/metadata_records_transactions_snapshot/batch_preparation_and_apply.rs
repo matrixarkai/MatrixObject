@@ -122,13 +122,13 @@ impl MatrixObjectStore {
         let mutations = vec![
             MetadataMutation {
                 key: current_key.to_string().into(),
-                value: current_value.to_string(),
+                record_value: current_value.into(),
                 expected_version: expected_current_version,
                 delete: false,
             },
             MetadataMutation {
                 key: object_record_key.clone().into(),
-                value: object_mutation_value.clone(),
+                record_value: object_mutation_value.clone().into(),
                 expected_version: expected_object_version,
                 delete: delete_object,
             },
@@ -146,7 +146,7 @@ impl MatrixObjectStore {
             || batch.images[0].value != current_value.into()
             || batch.images[0].deleted
             || batch.images[1].key != object_record_key
-            || &*batch.images[1].value != object_mutation_value.as_str()
+            || batch.images[1].value.as_text() != object_mutation_value.as_str()
             || batch.images[1].deleted != delete_object
         {
             return Err(ObjectError::Corruption(
@@ -194,11 +194,11 @@ impl MatrixObjectStore {
         if prepared.batch.mutations.len() != 2
             || prepared.batch.images.len() != 2
             || prepared.batch.mutations[0].key != prepared.current_key
-            || prepared.batch.mutations[0].value != prepared.current_value
+            || prepared.batch.mutations[0].record_value.as_text() != prepared.current_value
             || prepared.batch.mutations[0].delete
             || prepared.batch.mutations[0].expected_version != prepared.expected_current_version
             || prepared.batch.mutations[1].key != object_record_key
-            || prepared.batch.mutations[1].value != prepared.object_value
+            || prepared.batch.mutations[1].record_value.as_text() != prepared.object_value
             || prepared.batch.mutations[1].delete != prepared.delete_object
             || prepared.batch.mutations[1].expected_version != prepared.expected_object_version
         {

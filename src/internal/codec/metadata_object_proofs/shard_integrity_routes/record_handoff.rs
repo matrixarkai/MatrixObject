@@ -35,7 +35,7 @@ pub(crate) fn metadata_shard_record_handoff_batch_checksum(
     append_u64(&mut material, records.len() as u64);
     for record in records {
         append_metadata_record(&mut material, record);
-        append_string(&mut material, &etag(record.value.as_bytes()));
+        append_string(&mut material, &etag(record.value.as_text().as_bytes()));
     }
     etag(&material)
 }

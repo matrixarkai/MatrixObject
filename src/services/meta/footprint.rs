@@ -102,7 +102,7 @@ fn meta_optional_string_heap(value: Option<&String>) -> u64 {
 fn meta_record_heap(ledger: &mut SharedTextLedger, record: &MetadataRecord) -> u64 {
     ledger
         .charge(&record.key)
-        .saturating_add(audit_boxed_str_heap(&record.value))
+        .saturating_add(record.value.heap_bytes())
 }
 
 fn meta_records_vec_bytes(ledger: &mut SharedTextLedger, records: &[MetadataRecord]) -> u64 {
@@ -125,7 +125,10 @@ fn meta_transaction_heap(ledger: &mut SharedTextLedger, transaction: &MetadataTr
     for mutation in &transaction.mutations {
         total = total
             .saturating_add(ledger.charge(&mutation.key))
-            .saturating_add(audit_string_heap(&mutation.value));
+            // WEIGHED, NOT RENDERED. `audit_string_heap(&as_text())` would charge the
+            // characters a projection no longer stores -- a phantom cost, which is the
+            // exact mistake three representation changes in one session already made.
+            .saturating_add(mutation.record_value.heap_bytes());
     }
     total = total.saturating_add(
         (transaction.read_versions.len() as u64)

@@ -178,7 +178,7 @@ impl MatrixObjectStore {
         self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
             &metadata.object_id,
-            &metadata_projection_value(&metadata),
+            RecordValue::of_object(&metadata),
             options.lease_owner.as_deref(),
             options.lease_epoch,
             update_time_ms,

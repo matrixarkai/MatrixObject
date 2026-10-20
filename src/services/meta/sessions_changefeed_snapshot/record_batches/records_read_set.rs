@@ -3,7 +3,7 @@ impl MatrixMetaService {
     pub fn commit_record(
         &mut self,
         key: &str,
-        value: String,
+        value: impl Into<RecordValue>,
         expected_version: u64,
         lease_owner: Option<&str>,
         lease_epoch: Option<u64>,
@@ -15,7 +15,7 @@ impl MatrixMetaService {
         self.apply_mutation(
             MetadataMutation {
                 key: key.to_string().into(),
-                value,
+                record_value: value.into(),
                 expected_version,
                 delete: false,
             },
@@ -37,7 +37,7 @@ impl MatrixMetaService {
         self.apply_mutation(
             MetadataMutation {
                 key: key.to_string().into(),
-                value: String::new(),
+                record_value: RecordValue::empty(),
                 expected_version,
                 delete: true,
             },

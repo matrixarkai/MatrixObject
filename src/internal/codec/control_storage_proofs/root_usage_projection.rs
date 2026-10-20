@@ -181,29 +181,24 @@ pub(crate) fn retention_active(
 /// It owns NO heap: the etag is its digest, and the content type and storage
 /// class are `SharedText` handles on allocations the object already holds and
 /// shares across every object carrying the same one.
-// Only the round-trip test reaches this yet, and `-D warnings` makes dead
-// code an error, so it is gated until the storage is converted to use it.
-// `allow(dead_code)` would hide the same thing less honestly.
-#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ObjectProjection {
-    pub(crate) version: u64,
-    pub(crate) length: u64,
-    pub(crate) etag_fnv1a64: Option<u64>,
-    pub(crate) content_type: SharedText,
-    pub(crate) metadata_count: u32,
-    pub(crate) storage_class: SharedText,
-    pub(crate) restore_until_ms: u64,
-    pub(crate) deleted: bool,
-    pub(crate) extent_count: u32,
-    pub(crate) tag_count: u32,
-    pub(crate) legal_hold: bool,
-    pub(crate) retention_until_ms: u64,
+pub struct ObjectProjection {
+    pub version: u64,
+    pub length: u64,
+    pub etag_fnv1a64: Option<u64>,
+    pub content_type: SharedText,
+    pub metadata_count: u32,
+    pub storage_class: SharedText,
+    pub restore_until_ms: u64,
+    pub deleted: bool,
+    pub extent_count: u32,
+    pub tag_count: u32,
+    pub legal_hold: bool,
+    pub retention_until_ms: u64,
 }
 
-#[cfg(test)]
 impl ObjectProjection {
-    pub(crate) fn from_metadata(metadata: &ObjectMetadata) -> Self {
+    pub fn from_metadata(metadata: &ObjectMetadata) -> Self {
         Self {
             version: metadata.version,
             length: metadata.length,
@@ -223,7 +218,7 @@ impl ObjectProjection {
     /// The same bytes `metadata_projection_value` produces, which is the whole
     /// requirement: `the_packed_projection_spells_the_same_text` asserts it
     /// against a seeded store rather than against a reading of the format.
-    pub(crate) fn to_text(&self) -> String {
+    pub fn to_text(&self) -> String {
         let mut etag = String::new();
         if let Some(digest) = self.etag_fnv1a64 {
             append_etag_of_digest(&mut etag, digest);
@@ -243,5 +238,124 @@ impl ObjectProjection {
             self.legal_hold,
             self.retention_until_ms
         )
+    }
+}
+
+/// What a metadata record holds as its value.
+///
+/// A record at an object key holds a projection of that object; a record at a
+/// bucket, lifecycle or multipart key holds arbitrary text, and so does any
+/// record a metadata transaction wrote directly. Both shapes are BOXED, which
+/// is what keeps this sixteen bytes inline -- the same as the `Box<str>` it
+/// replaces, because a `Box` is non-null and the niche absorbs the
+/// discriminant. So a record that still holds text costs exactly what it cost
+/// before, and one holding a projection costs 112 bytes instead of 243.
+///
+/// An inline projection would be 96 bytes inline and look better: 96 against
+/// 243 for a packed record. It would also be 323 for a text one, so a store
+/// that had just loaded a snapshot would be worse off until every record was
+/// rewritten. `measure_what_each_record_value_representation_would_cost`
+/// prints all three.
+#[derive(Clone, Debug)]
+pub enum RecordValue {
+    Text(Box<str>),
+    Projection(Box<ObjectProjection>),
+}
+
+/// Equality is on the CHARACTERS, not on the variant.
+///
+/// # WHY THIS IS NOT DERIVED
+///
+/// A derived `PartialEq` makes `Projection(p)` and `Text(p.to_text())` different values. They
+/// are not: the characters are the whole of what a record means -- they are what goes into
+/// every proof, every snapshot and every comparison a caller makes -- so two values that spell
+/// the same thing are the same value.
+///
+/// It was derived at first, and the listing audit immediately flagged a correctly written
+/// object as drifted: it compares a record against a freshly rendered projection, which is a
+/// `Text`, against a stored `Projection`. That is the representation becoming observable, which
+/// is the one thing a representation change must not do. Fixing it at the call site would have
+/// left the next comparison to find the same trap.
+///
+/// The same-variant cases are compared without rendering anything, so the only comparison that
+/// builds a string is the mixed one -- which is the one that was silently wrong before.
+impl PartialEq for RecordValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (RecordValue::Text(left), RecordValue::Text(right)) => left == right,
+            (RecordValue::Projection(left), RecordValue::Projection(right)) => left == right,
+            _ => self.as_text() == other.as_text(),
+        }
+    }
+}
+
+impl Eq for RecordValue {}
+
+impl RecordValue {
+    /// The value a delete or a tombstone carries, which is no value.
+    ///
+    /// Named rather than written as `String::new().into()` at each site: a boxed empty string
+    /// allocates nothing, and spelling it out at eight call sites invited one of them to use
+    /// `String::with_capacity` or a `format!` instead and quietly allocate.
+    pub fn empty() -> Self {
+        RecordValue::Text(Box::from(""))
+    }
+
+    pub(crate) fn of_object(metadata: &ObjectMetadata) -> Self {
+        RecordValue::Projection(Box::new(ObjectProjection::from_metadata(metadata)))
+    }
+
+    /// The text the record has always carried. Borrowed when it is stored and
+    /// built when it is derived, so a reader that only needs to look pays
+    /// nothing for the ones that are stored.
+    pub fn as_text(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            RecordValue::Text(text) => std::borrow::Cow::Borrowed(text),
+            RecordValue::Projection(projection) => {
+                std::borrow::Cow::Owned(projection.to_text())
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            RecordValue::Text(text) => text.len(),
+            RecordValue::Projection(projection) => projection.to_text().len(),
+        }
+    }
+
+    /// What the value owns on the heap. A projection's box is its own size; a
+    /// text's is its characters. Neither has spare capacity.
+    pub fn heap_bytes(&self) -> u64 {
+        match self {
+            RecordValue::Text(text) => text.len() as u64,
+            RecordValue::Projection(_) => std::mem::size_of::<ObjectProjection>() as u64,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            RecordValue::Text(text) => text.is_empty(),
+            // A projection always formats twelve fields, so it is never empty.
+            RecordValue::Projection(_) => false,
+        }
+    }
+}
+
+impl From<String> for RecordValue {
+    fn from(text: String) -> Self {
+        RecordValue::Text(text.into())
+    }
+}
+
+impl From<&String> for RecordValue {
+    fn from(text: &String) -> Self {
+        RecordValue::Text(text.as_str().into())
+    }
+}
+
+impl From<&str> for RecordValue {
+    fn from(text: &str) -> Self {
+        RecordValue::Text(text.into())
     }
 }

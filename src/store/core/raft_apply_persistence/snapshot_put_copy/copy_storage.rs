@@ -56,7 +56,7 @@ impl MatrixObjectStore {
             .insert(metadata.object_id.clone(), metadata.clone());
         self.commit_meta_projection(
             &metadata.object_id,
-            &metadata_projection_value(&metadata),
+            RecordValue::of_object(&metadata),
             None,
             None,
             update_time_ms,

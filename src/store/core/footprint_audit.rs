@@ -6,13 +6,6 @@
 pub(crate) fn audit_string_heap(value: &String) -> u64 {
     value.capacity() as u64
 }
-
-/// Heap bytes a `Box<str>` owns. It has no spare capacity by construction --
-/// which is why these fields are boxed -- so the length is the whole of it.
-pub(crate) fn audit_boxed_str_heap(value: &str) -> u64 {
-    value.len() as u64
-}
-
 /// Charges the characters behind a `SharedText` once per allocation, however
 /// many holders name it.
 ///
@@ -443,14 +436,22 @@ impl MatrixObjectStore {
         // `meta.records.record_key_capacity` reads zero: the record's own naming
         // is the map key's allocation and costs nothing again.
         //
-        // **The two `_len` counters are not comparable with each other.**
-        // `value_capacity` against `value_len` is slack, because the value is a
-        // `String` and its spare capacity is resident. `mapkey_capacity` against
-        // `mapkey_len` is *not* slack: shared text has no spare capacity, and the
-        // difference is the strong and weak counts the ledger charges in front of
-        // the characters -- sixteen bytes once per allocation. Reading it as
-        // slack would send someone looking for tens of kilobytes that are not
-        // recoverable without unsharing the key.
+        // **The two `_len` counters are not comparable with each other, and neither
+        // difference is slack.**
+        //
+        // `value_len` is what the value SPELLS and `value_capacity` is what it
+        // OCCUPIES, and since the value became a `RecordValue` those are different
+        // numbers for a projection: 227 characters against a 96-byte box. The
+        // difference is the saving, not waste -- a projection renders its text on
+        // demand and stores none of it. (This comment said the difference was a
+        // `String`'s spare capacity. It was, until the conversion, and the stale
+        // reading survived one change because nothing compared the two.)
+        //
+        // `mapkey_capacity` against `mapkey_len` is not slack either: shared text has
+        // no spare capacity, and the difference is the strong and weak counts the
+        // ledger charges in front of the characters -- sixteen bytes once per
+        // allocation. Reading it as slack would send someone looking for tens of
+        // kilobytes that are not recoverable without unsharing the key.
         //
         // `the_metadata_breakdown_accounts_for_every_byte_of_its_total` pins both
         // readings, so neither can drift back into the other.
@@ -483,8 +484,12 @@ impl MatrixObjectStore {
                     mapkey_capacity.saturating_add(detail_record_ledger.charge(key));
                 record_key_capacity = record_key_capacity
                     .saturating_add(detail_record_ledger.charge(&record.key));
+                // SPELLS, against OCCUPIES. `len()` renders a projection to count its
+                // characters; `heap_bytes()` reports the box it actually holds. Charging
+                // the first as capacity is what made the parts out-sum the total.
                 value_len = value_len.saturating_add(record.value.len() as u64);
-                value_capacity = value_capacity.saturating_add(record.value.len() as u64);
+                value_capacity =
+                    value_capacity.saturating_add(record.value.heap_bytes());
                 if key.as_str() == record.key.as_str() {
                     key_text_duplicated = key_text_duplicated.saturating_add(1);
                 }

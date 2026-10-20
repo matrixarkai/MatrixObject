@@ -88,7 +88,7 @@ impl MatrixObjectStore {
         self.file_object(object_id, &mut delete_marker);
         self.commit_meta_projection(
             &delete_marker.object_id,
-            &metadata_projection_value(&delete_marker),
+            RecordValue::of_object(&delete_marker),
             None,
             None,
             update_time_ms,
