@@ -16,15 +16,18 @@
 //! read, and a test can say which happened.
 //!
 //! Implemented: `GET /` (ListBuckets), `PUT` / `HEAD` / `GET` / `DELETE` on `/{bucket}`
-//! (CreateBucket, HeadBucket, ListObjectsV2, DeleteBucket), and `PUT` / `GET` / `HEAD` / `DELETE`
-//! on `/{bucket}/{key}`, with ranged reads.
+//! (CreateBucket, HeadBucket, ListObjectsV2, DeleteBucket), `PUT` / `GET` / `HEAD` / `DELETE` on
+//! `/{bucket}/{key}` with ranged reads, and the whole multipart family --
+//! CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, ListParts
+//! and ListMultipartUploads, selected by the `uploads`, `uploadId` and `partNumber` query
+//! parameters as S3 selects them.
 //!
 //! # WHAT IS DELIBERATELY NOT IMPLEMENTED
 //!
-//! Request signing, multipart upload, versioning verbs, tagging verbs, object ACLs, bucket
-//! policies, lifecycle verbs. Anything a caller might reasonably expect and not get is answered
-//! with an S3 error code rather than a plausible-looking wrong answer -- a client that reads
-//! `NotImplemented` can fall back, and a client handed an empty success cannot.
+//! Request signing, versioning verbs, tagging verbs, object ACLs, bucket policies, lifecycle
+//! verbs. Anything a caller might reasonably expect and not get is answered with an S3 error code
+//! rather than a plausible-looking wrong answer -- a client that reads `NotImplemented` can fall
+//! back, and a client handed an empty success cannot.
 //!
 //! `/healthz` and `/health` are the exceptions and answer plain text. They are not S3 routes, they
 //! are for an operator and for a container probe, and dressing a readiness answer in XML would
@@ -44,6 +47,7 @@ use std::sync::{Arc, Mutex};
 
 use super::http::{self, Request, Response, ResolvedRange};
 use super::s3;
+use super::s3_multipart as mp;
 use crate::{MatrixObjectStore, ObjectError, ObjectMetadata, PutOptions};
 
 /// Default `Content-Type` recorded for a body that arrives without one.
@@ -60,6 +64,14 @@ pub const MAX_LIST_LIMIT: usize = 10_000;
 
 /// Most buckets `GET /` will answer with.
 pub const MAX_BUCKET_PAGE: usize = 10_000;
+
+/// Most parts one `ListParts` will answer with, by default and at most.
+pub const DEFAULT_PARTS_PAGE: usize = 1_000;
+pub const MAX_PARTS_PAGE: usize = 10_000;
+
+/// Most uploads one `ListMultipartUploads` will answer with, by default and at most.
+pub const DEFAULT_UPLOADS_PAGE: usize = 1_000;
+pub const MAX_UPLOADS_PAGE: usize = 10_000;
 
 /// Serves object requests against one store behind one lock.
 ///
@@ -163,6 +175,12 @@ impl ObjectService {
     fn bucket_request(&self, request: &Request, bucket: &str) -> Response {
         match request.method.as_str() {
             "PUT" => self.create_bucket(bucket),
+            // `?uploads` ON A BUCKET IS A DIFFERENT VERB, not a filtered listing. S3
+            // selects its sub-resources with valueless query parameters, so the flag has to be
+            // read before the listing rather than passed to it.
+            "GET" if request.query_param("uploads").is_some() => {
+                self.list_multipart_uploads(request, bucket)
+            }
             "GET" => self.list_bucket(request, bucket),
             "HEAD" => self.head_bucket(bucket),
             "DELETE" => self.delete_bucket(bucket),
@@ -371,15 +389,385 @@ impl ObjectService {
     }
 
     fn object_request(&self, request: &Request, bucket: &str, key: &str) -> Response {
+        // THE MULTIPART VERBS ARE SELECTED BY QUERY PARAMETER, WHICH IS S3'S OWN DESIGN AND NOT
+        // THIS SURFACE'S. `PUT /{bucket}/{key}` is a whole-object write or a part write depending
+        // on `partNumber`, and `POST` is a create or a complete depending on `uploads` against
+        // `uploadId`. Read here, at the one point the method is dispatched, so no handler further
+        // down has to wonder which request it is serving.
+        let upload_id = request.query_param("uploadId").filter(|id| !id.is_empty());
         match request.method.as_str() {
-            "PUT" => self.put_object(request, bucket, key),
+            "PUT" => match request.query_param("partNumber") {
+                Some(part_number) => self.upload_part(request, bucket, key, &part_number, upload_id),
+                None => self.put_object(request, bucket, key),
+            },
+            "POST" if request.query_param("uploads").is_some() => {
+                self.create_multipart_upload(request, bucket, key)
+            }
+            "POST" => self.complete_multipart_upload(request, bucket, key, upload_id),
+            "GET" | "HEAD" if upload_id.is_some() => {
+                self.list_parts(request, bucket, key, upload_id)
+            }
             "GET" | "HEAD" => self.get_object(request, bucket, key),
+            "DELETE" if upload_id.is_some() => {
+                self.abort_multipart_upload(bucket, key, upload_id)
+            }
             "DELETE" => self.delete_object(bucket, key),
             _ => method_not_allowed(
-                "PUT, GET, HEAD, DELETE",
+                "PUT, POST, GET, HEAD, DELETE",
                 &format!("/{bucket}/{key}"),
             ),
         }
+    }
+
+    /// `CreateMultipartUpload`, which S3 selects with `POST /{bucket}/{key}?uploads`.
+    fn create_multipart_upload(&self, request: &Request, bucket: &str, key: &str) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let content_type = request
+            .header("content-type")
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_CONTENT_TYPE)
+            .to_string();
+        let mut user_metadata: BTreeMap<String, String> = BTreeMap::new();
+        for (suffix, value) in request.headers_with_prefix(USER_METADATA_PREFIX) {
+            user_metadata.insert(suffix.to_string(), value.to_string());
+        }
+        // THE METADATA IS TAKEN AT CREATE, WHICH IS WHERE S3 TAKES IT. A client sends
+        // `x-amz-meta-*` with the create and not with the parts, so reading it anywhere else
+        // would silently drop it.
+        let options = PutOptions {
+            user_metadata,
+            ..PutOptions::default()
+        };
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.create_multipart_upload(bucket, key, content_type, options) {
+            Ok(upload) => s3::xml_response(
+                200,
+                mp::initiate_multipart_upload_xml(bucket, key, &upload.upload_id),
+            ),
+            Err(err) => s3_error(err, &resource, true),
+        }
+    }
+
+    /// `UploadPart`.
+    fn upload_part(
+        &self,
+        request: &Request,
+        bucket: &str,
+        key: &str,
+        part_number: &str,
+        upload_id: Option<String>,
+    ) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let Some(upload_id) = upload_id else {
+            return s3::error_response(
+                s3::S3ErrorCode::InvalidArgument,
+                "partNumber was given without an uploadId, and a part belongs to one upload",
+                &resource,
+            );
+        };
+        let part_number: u32 = match part_number.parse() {
+            Ok(parsed) if parsed >= 1 => parsed,
+            // REFUSED, NOT COERCED. A part stored under a number the client did not ask for is a
+            // part the client will not name when it completes, and the upload fails later with a
+            // message about the wrong thing.
+            //
+            // The `>= 1` half is DEFENCE IN DEPTH and is recorded as such: the store refuses a
+            // part number outside 1..10000 itself, so removing it here changes the message and
+            // not the outcome. What this arm uniquely catches is a `partNumber` that is not a
+            // number at all, which never reaches the store to be refused.
+            _ => {
+                return s3::error_response(
+                    s3::S3ErrorCode::InvalidArgument,
+                    "partNumber must be a positive whole number",
+                    &resource,
+                )
+            }
+        };
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.upload_part(&upload_id, part_number, request.body.clone()) {
+            // NO BODY, AND AN ETAG HEADER. That is what S3 answers, and the etag is the value the
+            // client must send back in its CompleteMultipartUpload -- a client that cannot read it
+            // here cannot complete the upload at all.
+            Ok(part) => Response::status(200)
+                .with_header("etag", format!("\"{}\"", part.etag))
+                .with_header("x-matrixobject-part-length", part.length.to_string()),
+            Err(err) => s3_upload_error(err, &resource),
+        }
+    }
+
+    /// `CompleteMultipartUpload`.
+    ///
+    /// The one request on this surface whose BODY is parsed. The client sends the parts it
+    /// believes it uploaded, and S3 validates that list -- which is how a client learns a part is
+    /// missing or was overwritten, instead of receiving an object assembled from something else.
+    fn complete_multipart_upload(
+        &self,
+        request: &Request,
+        bucket: &str,
+        key: &str,
+        upload_id: Option<String>,
+    ) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let Some(upload_id) = upload_id else {
+            return s3::error_response(
+                s3::S3ErrorCode::InvalidArgument,
+                "a POST to an object is either ?uploads to create an upload or ?uploadId=... to \
+                 complete one, and this names neither",
+                &resource,
+            );
+        };
+        let claimed = match mp::parse_complete_multipart_upload(&request.body) {
+            Ok(claimed) => claimed,
+            Err(reason) => {
+                return s3::error_response(s3::S3ErrorCode::MalformedXml, &reason, &resource)
+            }
+        };
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        let upload = match guard.multipart_upload(&upload_id) {
+            Ok(upload) => upload,
+            Err(err) => return s3_upload_error(err, &resource),
+        };
+        let stored: Vec<mp::StoredPart> = upload
+            .parts
+            .values()
+            .map(|part| mp::StoredPart {
+                part_number: part.part_number,
+                etag: part.etag.clone(),
+            })
+            .collect();
+        // VALIDATED BEFORE THE STORE IS ASKED. `complete_multipart_upload` completes whatever
+        // parts it holds and takes no list, so a mismatch that is not caught here is not caught
+        // at all -- the object would be assembled and answered as a success.
+        if let Some((code, message)) = mp::validate_claimed_parts(&claimed, &stored) {
+            return s3::error_response(code, &message, &resource);
+        }
+        match guard.complete_multipart_upload(&upload_id, None, None) {
+            Ok(metadata) => {
+                if let Err(err) = guard.flush_persistent_snapshot() {
+                    return flush_failed(
+                        &resource,
+                        format!(
+                            "the object was assembled in memory but its durable snapshot could \
+                             not be rewritten, so this upload is not durable: {err}"
+                        ),
+                    );
+                }
+                s3::xml_response(
+                    200,
+                    mp::complete_multipart_upload_xml(bucket, key, &metadata.etag()),
+                )
+            }
+            Err(err) => s3_upload_error(err, &resource),
+        }
+    }
+
+    /// `AbortMultipartUpload`.
+    fn abort_multipart_upload(
+        &self,
+        bucket: &str,
+        key: &str,
+        upload_id: Option<String>,
+    ) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let Some(upload_id) = upload_id else {
+            return s3::error_response(
+                s3::S3ErrorCode::InvalidArgument,
+                "an upload cannot be aborted without an uploadId",
+                &resource,
+            );
+        };
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.abort_multipart_upload(&upload_id) {
+            Ok(_) => Response::status(204),
+            // NOT IDEMPOTENT, UNLIKE A DELETE. S3 answers `NoSuchUpload` for an upload that is
+            // already gone, and that is the useful answer: an abort that reports success for an
+            // upload id the server never had would hide a client sending the wrong id.
+            Err(err) => s3_upload_error(err, &resource),
+        }
+    }
+
+    /// `ListParts`.
+    fn list_parts(
+        &self,
+        request: &Request,
+        bucket: &str,
+        key: &str,
+        upload_id: Option<String>,
+    ) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let Some(upload_id) = upload_id else {
+            return s3::error_response(
+                s3::S3ErrorCode::InvalidArgument,
+                "listing parts needs an uploadId",
+                &resource,
+            );
+        };
+        let marker: u32 = match request.query_param("part-number-marker") {
+            Some(raw) if !raw.is_empty() => match raw.parse() {
+                Ok(parsed) => parsed,
+                Err(_) => {
+                    return s3::error_response(
+                        s3::S3ErrorCode::InvalidArgument,
+                        "part-number-marker is not a number",
+                        &resource,
+                    )
+                }
+            },
+            _ => 0,
+        };
+        let max_parts = match request.query_param("max-parts") {
+            Some(raw) if !raw.is_empty() => match raw.parse::<usize>() {
+                Ok(parsed) => parsed.clamp(1, MAX_PARTS_PAGE),
+                Err(_) => {
+                    return s3::error_response(
+                        s3::S3ErrorCode::InvalidArgument,
+                        "max-parts is not a number",
+                        &resource,
+                    )
+                }
+            },
+            _ => DEFAULT_PARTS_PAGE,
+        };
+        let guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        let parts = match guard.list_multipart_parts(&upload_id, marker, max_parts) {
+            Ok(parts) => parts,
+            Err(err) => return s3_upload_error(err, &resource),
+        };
+        let truncated = parts.len() >= max_parts;
+        let next = if truncated {
+            parts.last().map(|part| part.part_number)
+        } else {
+            None
+        };
+        let result = mp::ListPartsResult {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            upload_id,
+            part_number_marker: marker,
+            next_part_number_marker: next,
+            max_parts,
+            is_truncated: truncated,
+            storage_class: s3::DEFAULT_STORAGE_CLASS.to_string(),
+            parts: parts
+                .into_iter()
+                .map(|part| mp::PartEntry {
+                    part_number: part.part_number,
+                    last_modified_ms: part.update_time_ms,
+                    etag: part.etag,
+                    size: part.length,
+                })
+                .collect(),
+        };
+        s3::xml_response(200, mp::list_parts_xml(&result))
+    }
+
+    /// `ListMultipartUploads`.
+    fn list_multipart_uploads(&self, request: &Request, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let prefix = request.query_param("prefix").unwrap_or_default();
+        let delimiter = request.query_param("delimiter").filter(|d| !d.is_empty());
+        let key_marker = request.query_param("key-marker").unwrap_or_default();
+        let upload_id_marker = request.query_param("upload-id-marker").unwrap_or_default();
+        let max_uploads = match request.query_param("max-uploads") {
+            Some(raw) if !raw.is_empty() => match raw.parse::<usize>() {
+                Ok(parsed) => parsed.clamp(1, MAX_UPLOADS_PAGE),
+                Err(_) => {
+                    return s3::error_response(
+                        s3::S3ErrorCode::InvalidArgument,
+                        "max-uploads is not a number",
+                        &resource,
+                    )
+                }
+            },
+            _ => DEFAULT_UPLOADS_PAGE,
+        };
+        let guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.bucket_exists(bucket) {
+            Ok(true) => {}
+            Ok(false) => {
+                return s3::error_response(
+                    s3::S3ErrorCode::NoSuchBucket,
+                    "bucket not found",
+                    &resource,
+                )
+            }
+            Err(err) => return s3_error(err, &resource, true),
+        }
+        let uploads = match guard.list_multipart_uploads_by_key(
+            Some(bucket),
+            Some(prefix.as_str()).filter(|prefix| !prefix.is_empty()),
+            Some(key_marker.as_str()).filter(|marker| !marker.is_empty()),
+            Some(upload_id_marker.as_str()).filter(|marker| !marker.is_empty()),
+            max_uploads,
+        ) {
+            Ok(uploads) => uploads,
+            Err(err) => return s3_error(err, &resource, true),
+        };
+        let truncated = uploads.len() >= max_uploads;
+        let mut entries: Vec<mp::UploadEntry> = Vec::new();
+        let mut common_prefixes: Vec<String> = Vec::new();
+        let mut last: Option<(String, String)> = None;
+        for upload in uploads {
+            last = Some((upload.key.clone(), upload.upload_id.clone()));
+            // THE SAME ROLLUP AS THE OBJECT LISTING, and deliberately the same shape: a client
+            // walking a prefix tree uses one idiom for both, and two rollups that differed in
+            // their edge cases would be two bugs.
+            if let Some(delimiter) = &delimiter {
+                let remainder = upload
+                    .key
+                    .strip_prefix(prefix.as_str())
+                    .unwrap_or(upload.key.as_str());
+                if let Some(at) = remainder.find(delimiter.as_str()) {
+                    let rolled = format!("{prefix}{}", &remainder[..at + delimiter.len()]);
+                    if !common_prefixes.contains(&rolled) {
+                        common_prefixes.push(rolled);
+                    }
+                    continue;
+                }
+            }
+            entries.push(mp::UploadEntry {
+                key: upload.key,
+                upload_id: upload.upload_id,
+                initiated_ms: upload.create_time_ms,
+                storage_class: s3::DEFAULT_STORAGE_CLASS.to_string(),
+            });
+        }
+        let (next_key_marker, next_upload_id_marker) = match (truncated, last) {
+            (true, Some((key, upload_id))) => (Some(key), Some(upload_id)),
+            _ => (None, None),
+        };
+        let result = mp::ListUploadsResult {
+            bucket: bucket.to_string(),
+            prefix,
+            delimiter,
+            key_marker,
+            upload_id_marker,
+            next_key_marker,
+            next_upload_id_marker,
+            max_uploads,
+            is_truncated: truncated,
+            uploads: entries,
+            common_prefixes,
+        };
+        s3::xml_response(200, mp::list_multipart_uploads_xml(&result))
     }
 
     fn put_object(&self, request: &Request, bucket: &str, key: &str) -> Response {
@@ -611,6 +999,21 @@ const POISONED_TEXT: &str =
 fn s3_error(err: ObjectError, resource: &str, missing_is_bucket: bool) -> Response {
     let code = s3::code_for(&err, missing_is_bucket);
     s3::error_response(code, &err.to_string(), resource)
+}
+
+/// An error from a multipart call, where a `NotFound` means the UPLOAD is not there.
+///
+/// Separate from [`s3_error`] rather than another flag on it. The store reports a missing upload
+/// the same way it reports a missing object, and S3 has a third code for it: a client that reads
+/// `NoSuchUpload` knows its upload id is wrong or the upload has been aborted, where `NoSuchKey`
+/// would send it looking for an object that was never supposed to exist yet.
+fn s3_upload_error(err: ObjectError, resource: &str) -> Response {
+    match &err {
+        ObjectError::NotFound(_) => {
+            s3::error_response(s3::S3ErrorCode::NoSuchUpload, &err.to_string(), resource)
+        }
+        _ => s3_error(err, resource, false),
+    }
 }
 
 fn method_not_allowed(allowed: &str, resource: &str) -> Response {

@@ -44,6 +44,10 @@ pub enum S3ErrorCode {
     InvalidRange,
     PreconditionFailed,
     BucketNotEmpty,
+    NoSuchUpload,
+    InvalidPart,
+    InvalidPartOrder,
+    MalformedXml,
     MethodNotAllowed,
     NotImplemented,
     InternalError,
@@ -60,6 +64,13 @@ impl S3ErrorCode {
             S3ErrorCode::InvalidRange => "InvalidRange",
             S3ErrorCode::PreconditionFailed => "PreconditionFailed",
             S3ErrorCode::BucketNotEmpty => "BucketNotEmpty",
+            S3ErrorCode::NoSuchUpload => "NoSuchUpload",
+            S3ErrorCode::InvalidPart => "InvalidPart",
+            S3ErrorCode::InvalidPartOrder => "InvalidPartOrder",
+            // S3 spells it MalformedXML, with the acronym in capitals. The variant is Rust
+            // cased and the WIRE spelling is what a client matches, so the two differ here
+            // on purpose.
+            S3ErrorCode::MalformedXml => "MalformedXML",
             S3ErrorCode::MethodNotAllowed => "MethodNotAllowed",
             S3ErrorCode::NotImplemented => "NotImplemented",
             S3ErrorCode::InternalError => "InternalError",
@@ -78,6 +89,10 @@ impl S3ErrorCode {
             S3ErrorCode::InvalidRange => 416,
             S3ErrorCode::PreconditionFailed => 412,
             S3ErrorCode::BucketNotEmpty => 409,
+            S3ErrorCode::NoSuchUpload => 404,
+            S3ErrorCode::InvalidPart
+            | S3ErrorCode::InvalidPartOrder
+            | S3ErrorCode::MalformedXml => 400,
             S3ErrorCode::MethodNotAllowed => 405,
             S3ErrorCode::NotImplemented => 501,
             S3ErrorCode::InternalError => 500,
