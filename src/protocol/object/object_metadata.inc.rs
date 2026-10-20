@@ -17,10 +17,22 @@ pub struct ObjectMetadata {
     /// `Box<str>` cost and drops the 24-byte buffer behind it -- 24 bytes an
     /// object, 8.5% of what `objects` costs and 3.6% of the metadata slope.
     ///
-    /// `None` is the EMPTY etag, a real state rather than a missing one: a
-    /// delete marker and a bucket membership record both carry it, and a digest
-    /// of 0 spells "fnv1a64:0000000000000000", which is not "".
-    pub etag_fnv1a64: Option<u64>,
+    /// # WHY THIS IS NOT AN `Option<u64>`
+    ///
+    /// It was, and that cost eight bytes an object for one bit. A `u64` uses every
+    /// one of its bit patterns, so `Option<u64>` has no niche to put the tag in and
+    /// pays a whole extra word. Split, the flag lands in padding this struct already
+    /// had beside `deleted` and costs nothing: 152 bytes an object became 144.
+    ///
+    /// Read it through `etag_digest()`, which gives back the `Option`.
+    pub etag_digest_bits: u64,
+    /// Whether there is an etag at all.
+    ///
+    /// ABSENT IS THE EMPTY ETAG, a real state rather than a missing one: a delete
+    /// marker and a bucket membership record both carry it, and a digest of 0 spells
+    /// "fnv1a64:0000000000000000", which is not "". So this cannot be inferred from
+    /// the bits being zero, which is exactly why a sentinel was not used.
+    pub has_etag: bool,
     pub content_type: SharedText,
     pub user_metadata: ObjectAttributes,
     pub storage_class: SharedText,
@@ -34,8 +46,19 @@ pub struct ObjectMetadata {
 impl ObjectMetadata {
     /// The etag as it has always been spelled, and as it still goes on the
     /// wire, into proof material and out of the HTTP front door.
+    /// The digest if there is one, as the `Option` this used to store.
+    ///
+    /// See `etag_digest_fields` for the other direction.
+    pub fn etag_digest(&self) -> Option<u64> {
+        if self.has_etag {
+            Some(self.etag_digest_bits)
+        } else {
+            None
+        }
+    }
+
     pub fn etag(&self) -> String {
-        match self.etag_fnv1a64 {
+        match self.etag_digest() {
             None => String::new(),
             Some(digest) => {
                 let mut text = String::with_capacity(24);
@@ -130,3 +153,15 @@ impl ObjectMetadata {
     }
 }
 
+/// The two fields an optional digest becomes.
+///
+/// The inverse of `etag_digest()`, for the construction sites that have an `Option<u64>` in
+/// hand -- a decoded etag, a parsed one, a computed one. Absent is `(0, false)`: the bits
+/// are not consulted when the flag is clear, and ZERO IS A LEGITIMATE DIGEST, which is why
+/// the flag exists rather than a sentinel.
+pub(crate) fn etag_digest_fields(digest: Option<u64>) -> (u64, bool) {
+    match digest {
+        None => (0, false),
+        Some(bits) => (bits, true),
+    }
+}

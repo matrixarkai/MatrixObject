@@ -160,11 +160,14 @@ impl MatrixObjectStore {
         let object_etag = etag(&data);
         let extents = self.allocate_extents_owned(data)?;
         let version = self.next_object_version(&object_id);
+        let (etag_digest_bits, has_etag) =
+            etag_digest_fields(change_etag_digest(&object_etag).unwrap_or(None));
         let mut metadata = ObjectMetadata {
             object_id: object_id.clone(),
             version,
             length,
-            etag_fnv1a64: change_etag_digest(&object_etag).unwrap_or(None),
+            etag_digest_bits,
+            has_etag,
             content_type: content_type.into(),
             user_metadata: options.user_metadata.clone().into(),
             storage_class: storage_class.into(),

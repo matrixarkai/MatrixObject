@@ -39,15 +39,12 @@ impl MatrixObjectStore {
             object_id: metadata.object_id.clone(),
             version: metadata.version,
             length: metadata.length,
-            etag_fnv1a64: {
-                let parsed = change_etag_digest(&metadata.etag());
-                debug_assert!(
-                    parsed.is_ok(),
-                    "an object's etag is empty or an fnv1a64 digest, not {:?}",
-                    metadata.etag()
-                );
-                parsed.unwrap_or(None)
-            },
+            // STRAIGHT ACROSS, where this used to render the metadata's digest to text and
+            // parse it back. Both structs hold the same two fields now, so the round trip
+            // through "fnv1a64:...." is gone -- and with it the `debug_assert` that existed
+            // to catch the parse failing.
+            etag_digest_bits: metadata.etag_digest_bits,
+            has_etag: metadata.has_etag,
             deleted: metadata.deleted,
             event_time_ms: metadata.update_time_ms,
         });
@@ -96,7 +93,7 @@ impl MatrixObjectStore {
             "an object's etag is empty or an fnv1a64 digest, not {:?}",
             metadata.etag()
         );
-        change.etag_fnv1a64 = parsed.unwrap_or(None);
+        change.set_etag_digest(parsed.unwrap_or(None));
         change.deleted = metadata.deleted;
         change.event_time_ms = metadata.update_time_ms;
     }

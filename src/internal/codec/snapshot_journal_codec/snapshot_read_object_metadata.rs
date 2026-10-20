@@ -37,11 +37,13 @@ pub(crate) fn read_metadata(
             length: cursor.read_u64()?,
         });
     }
+    let (etag_digest_bits, has_etag) = etag_digest_fields(change_etag_digest(&etag)?);
     Ok(ObjectMetadata {
         object_id,
         version,
         length,
-        etag_fnv1a64: change_etag_digest(&etag)?,
+        etag_digest_bits,
+        has_etag,
         content_type: content_type.into(),
         user_metadata: user_metadata.into(),
         storage_class: interned_storage_class(&storage_class),

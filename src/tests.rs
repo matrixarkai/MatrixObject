@@ -35995,13 +35995,15 @@ fn a_change_feed_etag_round_trips_through_its_digest() {
         object_id: ObjectId::new("bucket", "key"),
         version: 1,
         length: 3,
-        etag_fnv1a64: digest,
+        etag_digest_bits: etag_digest_fields(digest).0,
+        has_etag: etag_digest_fields(digest).1,
         deleted: false,
         event_time_ms: 0,
     };
     assert_eq!(record.etag(), text, "the digest must spell the etag it came from");
     let empty = ObjectChangeRecord {
-        etag_fnv1a64: None,
+        etag_digest_bits: 0,
+        has_etag: false,
         ..record.clone()
     };
     assert_eq!(empty.etag(), "", "and None must spell the empty etag");
@@ -38812,6 +38814,89 @@ fn one_replica_chunk_service() -> MatrixChunkService {
     // `keep_ec_sidecar = replica_count <= 1`. A page with peers is repaired from a peer and
     // stores neither sidecar nor digests.
     MatrixChunkService::new(1024 * 1024, 1, 1).unwrap()
+}
+
+#[test]
+fn an_optional_digest_costs_eight_bytes_and_not_sixteen() {
+    // `u64` uses every one of its bit patterns, so `Option<u64>` has no niche to put its
+    // tag in and pays a whole extra word for one bit. Split into a `u64` and a `bool`, the
+    // flag lands in padding these three structs already had.
+    //
+    // ASSERTED AS A RELATION to what the Option costs, not against a copied figure: the
+    // sizes are a property of this platform's alignment, and a test that hardcoded 144
+    // would be pinning the padding rather than the saving.
+    assert_eq!(
+        std::mem::size_of::<Option<u64>>(),
+        2 * std::mem::size_of::<u64>(),
+        "this is the whole premise: an optional u64 costs two words"
+    );
+
+    // The three structs that carried one. Each is now a whole number of words with the
+    // flag in padding, so each is exactly one word smaller than it was.
+    let word = std::mem::size_of::<u64>();
+    assert_eq!(std::mem::size_of::<ObjectMetadata>(), 144, "was 152, one word more");
+    assert_eq!(std::mem::size_of::<ObjectProjection>(), 88, "was 96");
+    assert_eq!(
+        std::mem::size_of::<ObjectChangeRecord>(),
+        104,
+        "was 112"
+    );
+    // NOT VACUOUS: the flag has to be free. If it ever stops landing in padding these
+    // would grow by a word and the saving would be nothing.
+    for (name, size) in [
+        ("ObjectMetadata", std::mem::size_of::<ObjectMetadata>()),
+        ("ObjectProjection", std::mem::size_of::<ObjectProjection>()),
+        ("ObjectChangeRecord", std::mem::size_of::<ObjectChangeRecord>()),
+    ] {
+        assert_eq!(size % word, 0, "{name} should be a whole number of words, and is {size}");
+    }
+}
+
+#[test]
+fn a_digest_and_its_flag_spell_what_the_option_spelled() {
+    // THE RENDERED TEXT IS WHAT MAKES THIS A REPRESENTATION CHANGE AND NOT A MIGRATION.
+    // Three proofs hash an etag, so the characters cannot move whatever the storage is.
+    //
+    // ABSENT IS NOT ZERO, which is the whole reason there is a flag rather than a sentinel:
+    // a digest of 0 spells sixteen zeroes, and absent spells nothing.
+    let mut metadata = ObjectMetadata {
+        object_id: ObjectId::new("bucket", "key"),
+        version: 1,
+        length: 3,
+        etag_digest_bits: 0,
+        has_etag: false,
+        content_type: "text/plain".to_string().into(),
+        user_metadata: BTreeMap::new().into(),
+        storage_class: "STANDARD".to_string().into(),
+        tags: BTreeMap::new().into(),
+        lock: ObjectLock::default(),
+        update_time_ms: 0,
+        extents: Vec::new().into(),
+        deleted: false,
+    };
+    assert_eq!(metadata.etag(), "", "absent spells the empty etag");
+    assert_eq!(metadata.etag_digest(), None);
+
+    metadata.has_etag = true;
+    assert_eq!(
+        metadata.etag(),
+        "fnv1a64:0000000000000000",
+        "a digest of zero is a real digest and spells sixteen zeroes"
+    );
+    assert_eq!(metadata.etag_digest(), Some(0));
+    assert_ne!(
+        metadata.etag(),
+        "",
+        "which is the distinction a sentinel of zero would have lost"
+    );
+
+    metadata.etag_digest_bits = 0x0123_4567_89ab_cdef;
+    assert_eq!(metadata.etag(), "fnv1a64:0123456789abcdef");
+
+    // And the conversion goes both ways.
+    assert_eq!(etag_digest_fields(None), (0, false));
+    assert_eq!(etag_digest_fields(Some(0)), (0, true));
+    assert_eq!(etag_digest_fields(Some(7)), (7, true));
 }
 
 #[test]

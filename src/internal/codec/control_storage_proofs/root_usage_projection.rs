@@ -185,7 +185,11 @@ pub(crate) fn retention_active(
 pub struct ObjectProjection {
     pub version: u64,
     pub length: u64,
-    pub etag_fnv1a64: Option<u64>,
+    /// The digest and whether there is one, for the reason `ObjectMetadata` gives:
+    /// `Option<u64>` has no niche and costs a whole word for one bit, while this flag
+    /// sits in padding beside `deleted` and `legal_hold`. 96 bytes became 88.
+    pub etag_digest_bits: u64,
+    pub has_etag: bool,
     pub content_type: SharedText,
     pub metadata_count: u32,
     pub storage_class: SharedText,
@@ -202,7 +206,8 @@ impl ObjectProjection {
         Self {
             version: metadata.version,
             length: metadata.length,
-            etag_fnv1a64: metadata.etag_fnv1a64,
+            etag_digest_bits: metadata.etag_digest_bits,
+            has_etag: metadata.has_etag,
             content_type: metadata.content_type.clone(),
             metadata_count: metadata.user_metadata.len() as u32,
             storage_class: metadata.storage_class.clone(),
@@ -220,7 +225,8 @@ impl ObjectProjection {
     /// against a seeded store rather than against a reading of the format.
     pub fn to_text(&self) -> String {
         let mut etag = String::new();
-        if let Some(digest) = self.etag_fnv1a64 {
+        if self.has_etag {
+            let digest = self.etag_digest_bits;
             append_etag_of_digest(&mut etag, digest);
         }
         format!(
