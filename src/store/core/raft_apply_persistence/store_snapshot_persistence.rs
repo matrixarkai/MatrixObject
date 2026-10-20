@@ -18,11 +18,11 @@ impl MatrixObjectStore {
     ) -> Result<std::collections::BTreeMap<(ChunkId, u64), std::sync::Arc<Vec<u8>>>, ObjectError>
     {
         let mut out = std::collections::BTreeMap::new();
-        for ((chunk_id, offset), stored) in &self.payloads {
-            let (bytes, _) =
-                self.chunk_service
-                    .read_chunk_range(chunk_id, *offset, stored.len)?;
-            out.insert((chunk_id.clone(), *offset), std::sync::Arc::new(bytes));
+        for (chunk_id, offset, stored) in self.payloads.iter() {
+            let (bytes, _) = self
+                .chunk_service
+                .read_chunk_range(chunk_id, offset, stored.len)?;
+            out.insert((chunk_id.clone(), offset), std::sync::Arc::new(bytes));
         }
         Ok(out)
     }
@@ -194,7 +194,10 @@ impl MatrixObjectStore {
             self.payloads.len(),
             snapshot_payload_bytes
         );
-        for ((chunk_id, offset), payload) in &self.payloads {
+        // IN THE SAME ORDER AS BEFORE, which is what keeps this material -- and the
+        // fingerprint hashed from it -- unchanged by the index's shape. A pair key sorts by
+        // chunk and then by offset, and that is the order the nested index walks.
+        for (chunk_id, offset, payload) in self.payloads.iter() {
             let _ = write!(
                 material,
                 "|p:{}/{}@{}:{}:",
@@ -609,11 +612,12 @@ impl MatrixObjectStore {
             }
             .stripe_layout()?,
         )?;
-        let mut payload_index = std::collections::BTreeMap::new();
+        let mut payload_index = PayloadIndex::default();
         for ((chunk_id, offset), payload) in &snapshot.payloads {
             chunk_service.write_chunk_range(chunk_id, *offset, payload)?;
             payload_index.insert(
-                (chunk_id.clone(), *offset),
+                chunk_id.clone(),
+                *offset,
                 StoredPayload {
                     len: payload.len() as u64,
                     etag_fnv1a64: fnv1a64(payload),

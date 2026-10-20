@@ -178,7 +178,7 @@ impl MatrixObjectStore {
             metadata_route_cache_capacity_evictions: 0,
             metadata_route_cache_sequence: 0,
             chunks: BTreeMap::new(),
-            payloads: BTreeMap::new(),
+            payloads: PayloadIndex::default(),
             chunk_service,
             next_chunk_id: 1,
             next_upload_sequence: 1,

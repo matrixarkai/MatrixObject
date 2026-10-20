@@ -54,6 +54,118 @@ pub(crate) struct StoredPayload {
     pub(crate) etag_fnv1a64: u64,
 }
 
+/// Every written range the store knows about, keyed by chunk and then by offset.
+///
+/// # WHY IT IS NESTED RATHER THAN KEYED BY A PAIR
+///
+/// A flat `BTreeMap<(ChunkId, u64), StoredPayload>` spends 24 bytes on every key, and 16
+/// of them are the `ChunkId` -- repeated in every entry of a chunk, and a 64 MiB chunk
+/// holds tens of thousands of 1 KiB payloads. Keyed by chunk and then by offset, the
+/// identity is paid once per chunk and a key is the 8-byte offset.
+///
+/// **The iteration order is unchanged, and that is what makes this a shape change rather
+/// than a format one.** `(ChunkId, u64)` sorts by chunk and then by offset, which is
+/// exactly the order a nested map walks, so the snapshot encoder, its checksum and its
+/// validator all see the same sequence they saw before. If that were not true this would
+/// be a durable-format change: the encoder's output is hashed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PayloadIndex {
+    by_chunk: BTreeMap<ChunkId, BTreeMap<u64, StoredPayload>>,
+    /// Counted, not summed on demand. `len()` is read by the audit, by the snapshot
+    /// encoder and by the export sizer, and summing the inner maps would make each of
+    /// those walk every chunk to answer a question it asks once.
+    entries: usize,
+}
+
+impl PayloadIndex {
+    pub(crate) fn len(&self) -> usize {
+        self.entries
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries == 0
+    }
+
+    /// Chunks holding at least one entry, which is how many times the identity is paid.
+    pub(crate) fn chunk_count(&self) -> usize {
+        self.by_chunk.len()
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        chunk_id: ChunkId,
+        offset: u64,
+        payload: StoredPayload,
+    ) -> Option<StoredPayload> {
+        let replaced = self
+            .by_chunk
+            .entry(chunk_id)
+            .or_default()
+            .insert(offset, payload);
+        if replaced.is_none() {
+            self.entries = self.entries.saturating_add(1);
+        }
+        replaced
+    }
+
+    pub(crate) fn get(&self, chunk_id: &ChunkId, offset: u64) -> Option<&StoredPayload> {
+        self.by_chunk.get(chunk_id)?.get(&offset)
+    }
+
+    /// Removes the entry, and the chunk's map with it when that was its last.
+    ///
+    /// An emptied inner map left behind would keep the 16 bytes this shape exists to stop
+    /// paying, and would make `chunk_count` report chunks the index no longer indexes.
+    pub(crate) fn remove(&mut self, chunk_id: &ChunkId, offset: u64) -> Option<StoredPayload> {
+        let chunk = self.by_chunk.get_mut(chunk_id)?;
+        let removed = chunk.remove(&offset);
+        if removed.is_some() {
+            self.entries = self.entries.saturating_sub(1);
+            if chunk.is_empty() {
+                self.by_chunk.remove(chunk_id);
+            }
+        }
+        removed
+    }
+
+    /// Every entry, in `(chunk, offset)` order -- the order the flat map had.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&ChunkId, u64, &StoredPayload)> {
+        self.by_chunk.iter().flat_map(|(chunk_id, offsets)| {
+            offsets
+                .iter()
+                .map(move |(offset, payload)| (chunk_id, *offset, payload))
+        })
+    }
+
+    pub(crate) fn values(&self) -> impl Iterator<Item = &StoredPayload> {
+        self.by_chunk.values().flat_map(|offsets| offsets.values())
+    }
+
+    pub(crate) fn retain<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&ChunkId, u64, &StoredPayload) -> bool,
+    {
+        let mut kept = 0usize;
+        self.by_chunk.retain(|chunk_id, offsets| {
+            offsets.retain(|offset, payload| keep(chunk_id, *offset, payload));
+            kept = kept.saturating_add(offsets.len());
+            // The emptied map goes, for the reason `remove` gives.
+            !offsets.is_empty()
+        });
+        self.entries = kept;
+    }
+}
+
+impl FromIterator<((ChunkId, u64), StoredPayload)> for PayloadIndex {
+    fn from_iter<I: IntoIterator<Item = ((ChunkId, u64), StoredPayload)>>(entries: I) -> Self {
+        let mut index = Self::default();
+        for ((chunk_id, offset), payload) in entries {
+            index.insert(chunk_id, offset, payload);
+        }
+        index
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MatrixObjectStore {
     pub(crate) options: StoreOptions,
@@ -103,7 +215,7 @@ pub struct MatrixObjectStore {
     // Visible to the crate as `chunks` is, so that the invariant the targeted
     // undo derives from -- a stale range holds no payload entry -- can be
     // asserted from a test rather than argued for in a comment.
-    pub(crate) payloads: BTreeMap<(ChunkId, u64), StoredPayload>,
+    pub(crate) payloads: PayloadIndex,
     pub(crate) chunk_service: MatrixChunkService,
     next_chunk_id: u64,
     next_upload_sequence: u64,
@@ -175,7 +287,7 @@ pub(crate) struct ObjectMutationRollback {
     next_upload_sequence: u64,
     meta_service: Option<MatrixMetaService>,
     chunks: BTreeMap<ChunkId, ChunkInfo>,
-    payloads: BTreeMap<(ChunkId, u64), StoredPayload>,
+    payloads: PayloadIndex,
     /// Absent on the put path, where the page service's own mutation batch
     /// holds the undo and the put drives its abort.
     chunk_service: Option<MatrixChunkService>,

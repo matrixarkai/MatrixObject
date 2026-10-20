@@ -21,8 +21,8 @@ Measured at three replicas, 26-character keys, with the metadata counted:
 | object size | objects | amplification | data-only figure |
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
-| 4 KiB | 4,000 | **3.18x** | 3.00x |
-| 1 KiB | 8,000 | **3.69x** | 3.02x |
+| 4 KiB | 4,000 | **3.13x** | 3.00x |
+| 1 KiB | 8,000 | **3.52x** | 3.02x |
 
 Reproduce any row with the measurement harness:
 
@@ -67,51 +67,59 @@ are bounded rather than per object:
 
 | objects | 100 | 1,000 | 4,000 | 8,000 |
 |---:|---:|---:|---:|---:|
-| metadata per object | 914 B | 867 B | 712 B | **686 B** |
+| metadata per object | 710 B | 662 B | 533 B | **512 B** |
 
-Both change feeds cap at 1,024 records, so together they are 27.2% of metadata
-at a hundred objects and 3.8% at eight thousand. Everything else is exactly
+Both change feeds cap at 1,024 records, so together they are 30.3% of metadata
+at a hundred objects and 4.2% at eight thousand. Everything else is exactly
 linear, which makes the total a line once the feeds are full:
 
 ```
-metadata = 661 bytes an object + 207,246 bytes fixed      (remainder: zero)
+metadata = 490 bytes an object + 172,496 bytes fixed      (remainder: zero)
 ```
 
-measured at 4,000 and 8,000 objects of 1 KiB, and reproducing both totals
-exactly. The fixed term is measured rather than derived, which matters because
-deriving it from the feeds' own per-record costs gives 206,848 and loses 398
-bytes that are not in the feeds at all:
+reproducing every total above exactly, at every count where the feeds have
+reached their bound. **Below 513 objects they have not**: the feed's vector grows
+by doubling and is charged at its capacity, so a store of 100 objects sits above
+the line rather than on it, and so does the 710 in that table.
+
+The fixed term is measured rather than derived, which matters because deriving it
+from the two feeds alone gives 172,058 and loses 438 bytes that are not in the
+feeds at all:
 
 | | bytes | |
 |---|---:|---|
-| object change feed | 149,504 | 1,024 records at its bound |
+| object change feed | 114,714 | 1,024 records at its bound |
 | metadata change log | 57,344 | 1,024 records at its bound |
 | inside `objects` | 86 | the content-type and storage-class text, shared by every object |
 | inside `meta.records` | 108 | one record more than there are objects — the bucket's |
 | `meta.entities` | 84 | |
-| `segments` | 120 | |
-| **fixed total** | **207,246** | |
+| `chunks` | 120 | |
+| payload index | 40 | the chunk identity, paid once per chunk rather than once per entry |
+| **fixed total** | **172,496** | |
 
 `every_metadata_leg_is_a_line_and_the_intercepts_are_named` fits each leg over
 three store sizes and fails unless every one is a line and the fixed terms sum
 to the total's — so a leg that starts depending on the object count, or a fixed
 byte that stops being named, is caught rather than absorbed.
 
-That 661 is now more than half one item:
+That 490 is two items and a rounding error:
 
 | | per object | share |
 |---|---:|---:|
-| `meta.records` — the metadata projection record | 355 B | 53.7% |
-| `objects` — the structured metadata | 282 B | 42.7% |
-| payload index keys | 24 B | 3.6% |
+| `objects` — the structured metadata | 258 B | 52.7% |
+| `meta.records` — the metadata projection record | 224 B | 45.7% |
+| payload index keys | 8 B | 1.6% |
 
 Those two halves hold the **same facts twice**. `objects` is a binary struct —
 152 bytes inline, with the object id, length, etag, content type, storage class
-and extent list in fixed-width fields. `meta.records` is a text projection of
-the same object, and it is the largest single item in the store per object: 227
-bytes of value, **34% of everything the store holds per object**.
+and extent list in fixed-width fields. `meta.records` is a projection of the same
+object: it **spells** 227 characters and **holds** a 96-byte struct of twelve
+values, rendering the text on demand.
 
-Measured against what that text actually distinguishes:
+That distinction is the whole of the saving the record has already taken, and it
+is also why the format question below is still open. The text is durable — three
+proofs hash it — so what the record spells cannot change without a migration,
+whatever it stores. Measured against what those characters actually distinguish:
 
 | | per record | share | |
 |---|---:|---:|---|
@@ -119,11 +127,15 @@ Measured against what that text actually distinguishes:
 | values that never differ | 24 B | 11% | 9 of the 12 fields have **one** distinct value across every object |
 | values that differ | 42 B | 19% | etag, length, content type |
 
-So **175 of 217 bytes carry no information that varies between objects** — 81%,
-and 26% of all per-object metadata. Issue #40 has the measurement and what
-closing it would require; it is a durable format, so the cost is a migration
-rather than an edit. The item is unchanged in absolute terms while everything
-around it has shrunk, which is why its share keeps rising.
+So **175 of 217 characters carry no information that varies between objects** —
+81% of the text the record spells. Issue #40 has the measurement and what closing
+it would require; it is a durable format, so the cost is a migration rather than
+an edit.
+
+What the record *stores* no longer pays for those characters: 96 bytes of struct
+against 227 of text is the conversion already made, and it is free in the worst
+case — a record decoded from a snapshot carries characters, so it holds exactly
+what it spells and never more.
 
 So if you store small objects, three replicas do not cost 3x. Any amplification
 figure published for this store before the metadata was counted was the
