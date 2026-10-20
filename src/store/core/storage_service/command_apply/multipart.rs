@@ -45,7 +45,8 @@ impl MatrixObjectStore {
                     object_id: ObjectId::new("_multipart", upload.upload_id),
                     version: 0,
                     length: upload.total_bytes,
-                    etag_fnv1a64: None,
+                    etag_digest_bits: 0,
+                    has_etag: false,
                     content_type: "multipart/create".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
                     storage_class: k_standard_storage_class().to_string().into(),
@@ -78,7 +79,8 @@ impl MatrixObjectStore {
                     object_id: ObjectId::new("_multipart", upload.upload_id),
                     version: 0,
                     length: upload.total_bytes,
-                    etag_fnv1a64: None,
+                    etag_digest_bits: 0,
+                    has_etag: false,
                     content_type: "multipart/create-idempotent".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
                     storage_class: k_standard_storage_class().to_string().into(),
@@ -97,11 +99,14 @@ impl MatrixObjectStore {
             } => {
                 let part =
                     self.apply_upload_part(upload_id.clone(), part_number, data, update_time_ms)?;
+                let (etag_digest_bits, has_etag) =
+                    etag_digest_fields(change_etag_digest(&part.etag).unwrap_or(None));
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new("_multipart", upload_id),
                     version: part.part_number as u64,
                     length: part.length,
-                    etag_fnv1a64: change_etag_digest(&part.etag).unwrap_or(None),
+                    etag_digest_bits,
+                    has_etag,
                     content_type: "multipart/part".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
                     storage_class: k_standard_storage_class().to_string().into(),
@@ -126,11 +131,14 @@ impl MatrixObjectStore {
                     update_time_ms,
                     idempotency_key,
                 )?;
+                let (etag_digest_bits, has_etag) =
+                    etag_digest_fields(change_etag_digest(&part.etag).unwrap_or(None));
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new("_multipart", upload_id),
                     version: part.part_number as u64,
                     length: part.length,
-                    etag_fnv1a64: change_etag_digest(&part.etag).unwrap_or(None),
+                    etag_digest_bits,
+                    has_etag,
                     content_type: "multipart/part-idempotent".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
                     storage_class: k_standard_storage_class().to_string().into(),
@@ -194,7 +202,8 @@ impl MatrixObjectStore {
                     object_id: ObjectId::new("_multipart", upload.upload_id),
                     version: 0,
                     length: upload.total_bytes,
-                    etag_fnv1a64: None,
+                    etag_digest_bits: 0,
+                    has_etag: false,
                     content_type: "multipart/abort".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
                     storage_class: k_standard_storage_class().to_string().into(),

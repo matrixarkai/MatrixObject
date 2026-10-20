@@ -37,7 +37,13 @@ pub struct ObjectChangeRecord {
     /// a delete marker is exactly what a change record records on a delete.
     /// A digest of 0 formats as "fnv1a64:0000000000000000", which is not "",
     /// so the two cannot share a representation.
-    pub etag_fnv1a64: Option<u64>,
+    /// The digest and whether there is one, for the reason `ObjectMetadata` gives.
+    ///
+    /// This one is charged at the feed's CAPACITY rather than its length -- the feed is
+    /// bounded at 1,024 records and the audit counts the slots -- so the eight bytes come
+    /// off the store's FIXED term, 1,024 times, rather than off its per-object slope.
+    pub etag_digest_bits: u64,
+    pub has_etag: bool,
     pub deleted: bool,
     pub event_time_ms: u64,
 }
@@ -220,9 +226,25 @@ pub(crate) fn interned_change_operation(operation: &str) -> SharedText {
 }
 
 impl ObjectChangeRecord {
+    /// The digest if there is one, as the `Option` this used to store.
+    pub fn etag_digest(&self) -> Option<u64> {
+        if self.has_etag {
+            Some(self.etag_digest_bits)
+        } else {
+            None
+        }
+    }
+
+    /// Replace the digest, from a site that has an `Option<u64>`.
+    pub fn set_etag_digest(&mut self, digest: Option<u64>) {
+        let (bits, present) = etag_digest_fields(digest);
+        self.etag_digest_bits = bits;
+        self.has_etag = present;
+    }
+
     /// The etag as it was stored and as it still goes on the wire.
     pub fn etag(&self) -> String {
-        match self.etag_fnv1a64 {
+        match self.etag_digest() {
             None => String::new(),
             Some(digest) => {
                 let mut text = String::with_capacity(24);

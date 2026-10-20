@@ -7,7 +7,7 @@ pub(crate) fn coordinator_session_metadata(
         object_id: ObjectId::new("_metacoord", session.session_id.clone()),
         version: session.epoch,
         length: 0,
-        etag_fnv1a64: Some(fnv1a64(
+        etag_digest_bits: fnv1a64(
             format!(
                 "{}\n{}\n{}\n{}\n{}",
                 session.session_id,
@@ -17,7 +17,8 @@ pub(crate) fn coordinator_session_metadata(
                 session.expire_time_ms
             )
             .as_bytes(),
-        )),
+        ),
+        has_etag: true,
         content_type: content_type.to_string().into(),
         user_metadata: BTreeMap::new().into(),
         storage_class: k_standard_storage_class().to_string().into(),
@@ -40,7 +41,8 @@ pub(crate) fn metadata_coordinator_config_metadata(
         object_id: ObjectId::new("_metacoord", "config"),
         version: config.revision,
         length: config.endpoints.len() as u64,
-        etag_fnv1a64: Some(fnv1a64(&material)),
+        etag_digest_bits: fnv1a64(&material),
+        has_etag: true,
         content_type: content_type.to_string().into(),
         user_metadata: BTreeMap::new().into(),
         storage_class: k_standard_storage_class().to_string().into(),
@@ -61,7 +63,8 @@ pub(crate) fn root_coordinator_config_metadata(
         object_id: ObjectId::new("_rootcoord", "config"),
         version: config.revision,
         length: config.endpoints.len() as u64,
-        etag_fnv1a64: Some(fnv1a64(&material)),
+        etag_digest_bits: fnv1a64(&material),
+        has_etag: true,
         content_type: "rootserver/coordinator-config".to_string().into(),
         user_metadata: BTreeMap::new().into(),
         storage_class: k_standard_storage_class().to_string().into(),
@@ -78,13 +81,14 @@ pub(crate) fn metadata_lease_metadata(lease: &MetadataLease, content_type: &str)
         object_id: ObjectId::new("_metalease", lease.namespace.clone()),
         version: lease.epoch,
         length: lease.ttl_ms,
-        etag_fnv1a64: Some(fnv1a64(
+        etag_digest_bits: fnv1a64(
             format!(
                 "{}\n{}\n{}\n{}\n{}",
                 lease.namespace, lease.owner, lease.epoch, lease.expire_time_ms, lease.ttl_ms
             )
             .as_bytes(),
-        )),
+        ),
+        has_etag: true,
         content_type: content_type.to_string().into(),
         user_metadata: BTreeMap::new().into(),
         storage_class: k_standard_storage_class().to_string().into(),
@@ -104,7 +108,7 @@ pub(crate) fn root_leader_lease_metadata(
         object_id: ObjectId::new("_rootlease", lease.leader_node_id.clone()),
         version: lease.epoch,
         length: lease.ttl_ms,
-        etag_fnv1a64: Some(fnv1a64(
+        etag_digest_bits: fnv1a64(
             format!(
                 "{}\n{}\n{}\n{}\n{}",
                 lease.leader_node_id,
@@ -114,7 +118,8 @@ pub(crate) fn root_leader_lease_metadata(
                 lease.ttl_ms
             )
             .as_bytes(),
-        )),
+        ),
+        has_etag: true,
         content_type: content_type.to_string().into(),
         user_metadata: BTreeMap::new().into(),
         storage_class: k_standard_storage_class().to_string().into(),
@@ -138,9 +143,10 @@ pub(crate) fn metadata_control_metadata(
         object_id: ObjectId::new(bucket, key),
         version,
         length,
-        etag_fnv1a64: Some(fnv1a64(
+        etag_digest_bits: fnv1a64(
             format!("{bucket}\n{key}\n{version}\n{length}\n{content_type}").as_bytes(),
-        )),
+        ),
+        has_etag: true,
         content_type: content_type.to_string().into(),
         user_metadata: BTreeMap::new().into(),
         storage_class: k_standard_storage_class().to_string().into(),

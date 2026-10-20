@@ -2,16 +2,32 @@
 pub(crate) fn read_object_change_record(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ObjectChangeRecord, ObjectError> {
+    // HOISTED, because the cursor is POSITIONAL. These were struct-literal fields, which
+    // Rust evaluates in written order -- so the wire order was the field order, and
+    // reordering the fields would have silently reordered the reads. The digest is two
+    // fields now and only one of them can read the cursor, so the order is written out
+    // here instead of inferred.
+    let sequence = cursor.read_u64()?;
+    let previous_sequence = cursor.read_u64()?;
+    let operation = interned_change_operation(&cursor.read_string()?);
+    let object_id = read_object_id(cursor)?;
+    let version = cursor.read_u64()?;
+    let length = cursor.read_u64()?;
+    let (etag_digest_bits, has_etag) =
+        etag_digest_fields(change_etag_digest(&cursor.read_string()?)?);
+    let deleted = cursor.read_bool()?;
+    let event_time_ms = cursor.read_u64()?;
     Ok(ObjectChangeRecord {
-        sequence: cursor.read_u64()?,
-        previous_sequence: cursor.read_u64()?,
-        operation: interned_change_operation(&cursor.read_string()?),
-        object_id: read_object_id(cursor)?,
-        version: cursor.read_u64()?,
-        length: cursor.read_u64()?,
-        etag_fnv1a64: change_etag_digest(&cursor.read_string()?)?,
-        deleted: cursor.read_bool()?,
-        event_time_ms: cursor.read_u64()?,
+        sequence,
+        previous_sequence,
+        operation,
+        object_id,
+        version,
+        length,
+        etag_digest_bits,
+        has_etag,
+        deleted,
+        event_time_ms,
     })
 }
 

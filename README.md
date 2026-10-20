@@ -109,11 +109,11 @@ At three replicas with the metadata counted, measured at 26-character keys:
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
 | 4 KiB | 4,000 | **3.13x** | 3.00x |
-| 1 KiB | 8,000 | **3.52x** | 3.02x |
+| 1 KiB | 8,000 | **3.50x** | 3.02x |
 
 The data term is exactly **3.00x** -- the replication floor for a store that
 copies every page to every replica -- so everything above it is metadata, which
-is **490 bytes an object plus 172,496 fixed** whatever the object size.
+is **474 bytes an object plus 164,304 fixed** whatever the object size.
 `footprint_audit()` names every resident byte and its breakdown sums to its own
 total with no remainder.
 
@@ -194,16 +194,16 @@ cargo test --release --lib measure_what_a_mutation_batch_snapshot_costs -- --ign
 #### A delete does not reclaim, it trades
 
 Writing 500 objects of 1 KiB and then deleting every one leaves the store
-**25.0% larger** than when it held them:
+**24.9% larger** than when it held them:
 
 | | bytes |
 |---|---:|
-| holding 500 objects | 1,875,793 |
-| after deleting all 500 | 2,344,894 |
+| holding 500 objects | 1,863,697 |
+| after deleting all 500 | 2,328,702 |
 
 The payload index is given back in full. What replaces it is **822 bytes of
 idempotency receipt per delete** across three replicas, bounded only by
-`receipt_retention`, which defaults to 100,000; plus 114 bytes of change feed and
+`receipt_retention`, which defaults to 100,000; plus 106 bytes of change feed and
 57 of metadata change log per delete, both bounded by their retention constants.
 The object's own entry does not go away either — a delete files a delete marker,
 so 226 of the 282 bytes an object cost stay, which is what the change feed and

@@ -22,7 +22,7 @@ Measured at three replicas, 26-character keys, with the metadata counted:
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
 | 4 KiB | 4,000 | **3.13x** | 3.00x |
-| 1 KiB | 8,000 | **3.52x** | 3.02x |
+| 1 KiB | 8,000 | **3.50x** | 3.02x |
 
 Reproduce any row with the measurement harness:
 
@@ -67,14 +67,14 @@ are bounded rather than per object:
 
 | objects | 100 | 1,000 | 4,000 | 8,000 |
 |---:|---:|---:|---:|---:|
-| metadata per object | 710 B | 662 B | 533 B | **512 B** |
+| metadata per object | 683 B | 638 B | 515 B | **494 B** |
 
-Both change feeds cap at 1,024 records, so together they are 30.3% of metadata
-at a hundred objects and 4.2% at eight thousand. Everything else is exactly
+Both change feeds cap at 1,024 records, so together they are 30.0% of metadata
+at a hundred objects and 4.1% at eight thousand. Everything else is exactly
 linear, which makes the total a line once the feeds are full:
 
 ```
-metadata = 490 bytes an object + 172,496 bytes fixed      (remainder: zero)
+metadata = 474 bytes an object + 164,304 bytes fixed      (remainder: zero)
 ```
 
 reproducing every total above exactly, at every count where the feeds have
@@ -83,37 +83,37 @@ by doubling and is charged at its capacity, so a store of 100 objects sits above
 the line rather than on it, and so does the 710 in that table.
 
 The fixed term is measured rather than derived, which matters because deriving it
-from the two feeds alone gives 172,058 and loses 438 bytes that are not in the
+from the two feeds alone gives 163,866 and loses 438 bytes that are not in the
 feeds at all:
 
 | | bytes | |
 |---|---:|---|
-| object change feed | 114,714 | 1,024 records at its bound |
+| object change feed | 106,522 | 1,024 records at its bound |
 | metadata change log | 57,344 | 1,024 records at its bound |
 | inside `objects` | 86 | the content-type and storage-class text, shared by every object |
 | inside `meta.records` | 108 | one record more than there are objects — the bucket's |
 | `meta.entities` | 84 | |
 | `chunks` | 120 | |
 | payload index | 40 | the chunk identity, paid once per chunk rather than once per entry |
-| **fixed total** | **172,496** | |
+| **fixed total** | **164,304** | |
 
 `every_metadata_leg_is_a_line_and_the_intercepts_are_named` fits each leg over
 three store sizes and fails unless every one is a line and the fixed terms sum
 to the total's — so a leg that starts depending on the object count, or a fixed
 byte that stops being named, is caught rather than absorbed.
 
-That 490 is two items and a rounding error:
+That 474 is two items and a rounding error:
 
 | | per object | share |
 |---|---:|---:|
-| `objects` — the structured metadata | 258 B | 52.7% |
-| `meta.records` — the metadata projection record | 224 B | 45.7% |
-| payload index keys | 8 B | 1.6% |
+| `objects` — the structured metadata | 250 B | 52.7% |
+| `meta.records` — the metadata projection record | 216 B | 45.6% |
+| payload index keys | 8 B | 1.7% |
 
 Those two halves hold the **same facts twice**. `objects` is a binary struct —
-152 bytes inline, with the object id, length, etag, content type, storage class
+144 bytes inline, with the object id, length, etag, content type, storage class
 and extent list in fixed-width fields. `meta.records` is a projection of the same
-object: it **spells** 227 characters and **holds** a 96-byte struct of twelve
+object: it **spells** 227 characters and **holds** an 88-byte struct of twelve
 values, rendering the text on demand.
 
 That distinction is the whole of the saving the record has already taken, and it
@@ -132,7 +132,7 @@ So **175 of 217 characters carry no information that varies between objects** �
 it would require; it is a durable format, so the cost is a migration rather than
 an edit.
 
-What the record *stores* no longer pays for those characters: 96 bytes of struct
+What the record *stores* no longer pays for those characters: 88 bytes of struct
 against 227 of text is the conversion already made, and it is free in the worst
 case — a record decoded from a snapshot carries characters, so it holds exactly
 what it spells and never more.

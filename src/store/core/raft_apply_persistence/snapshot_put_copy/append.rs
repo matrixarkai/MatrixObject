@@ -128,7 +128,8 @@ impl MatrixObjectStore {
             object_id: object_id.clone(),
             version,
             length,
-            etag_fnv1a64: Some(fnv1a64(&etag_data)),
+            etag_digest_bits: fnv1a64(&etag_data),
+            has_etag: true,
             content_type: previous
                 .as_ref()
                 .map_or(content_type.into(), |metadata| metadata.content_type.clone()),
