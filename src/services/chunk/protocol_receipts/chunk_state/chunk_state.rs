@@ -62,6 +62,34 @@ pub struct PageState {
     /// Vec's own three words, 40 bytes, per page per replica. `Arc` is non-null
     /// so the `Option` costs nothing inline.
     pub ec_parity_fragment: Option<std::sync::Arc<Vec<u8>>>,
+    /// One digest per data fragment, kept beside the sidecar and under the same policy.
+    ///
+    /// # WHY THIS IS STORED AND NOT DERIVED
+    ///
+    /// Everything else about the fragments is derived from the payload wherever it is
+    /// needed, because keeping it cost a second copy of every byte. A digest cannot be:
+    /// the whole point of it is to be read when the payload is damaged, and a digest
+    /// recomputed from damaged bytes agrees with them.
+    ///
+    /// # WHAT IT BUYS
+    ///
+    /// Without it the recovery does not know WHICH fragment is damaged, so it assumes each
+    /// in turn, rebuilds the whole page on that assumption and tests the page checksum --
+    /// `k` rebuilds and `k` page checksums at worst, and no way to tell a damaged payload
+    /// from a damaged sidecar. With it the damaged fragment is a lookup, and a page whose
+    /// fragments all verify says the sidecar is the damaged part.
+    ///
+    /// `k` is 2..16, so this is 16 to 128 bytes against a sidecar of `len / k` -- 128 bytes
+    /// beside 16 KiB on a 256 KiB page.
+    ///
+    /// It is NOT in any proof material and NOT on the wire, and both are deliberate.
+    /// Neither `chunk_state_handoff_checksum` nor `chunk_local_state_checksum` has ever
+    /// hashed the sidecar, so neither hashes this. And a snapshot does not carry it
+    /// because a snapshot cannot carry a damaged page -- `to_bytes` validates every one
+    /// and refuses a checksum mismatch -- so a table derived at decode is byte for byte
+    /// the table that was stored. `a_snapshot_cannot_carry_a_damaged_page` pins that; if
+    /// it stops holding, the derivation becomes wrong and this has to start travelling.
+    pub ec_fragment_digests: Option<std::sync::Arc<Vec<u64>>>,
     pub discarded_ranges: Vec<DataRange>,
 }
 
@@ -72,6 +100,14 @@ impl PageState {
         match &self.ec_parity_fragment {
             None => &[],
             Some(fragment) => fragment.as_slice(),
+        }
+    }
+
+    /// The per-fragment digests, or nothing when this page keeps no sidecar.
+    pub fn fragment_digests(&self) -> &[u64] {
+        match &self.ec_fragment_digests {
+            None => &[],
+            Some(digests) => digests.as_slice(),
         }
     }
 
@@ -95,6 +131,7 @@ impl PageState {
             checksum_fnv1a64: fnv1a64(&[]),
             data: std::sync::Arc::new(Vec::new()),
             ec_parity_fragment: None,
+            ec_fragment_digests: None,
             discarded_ranges: Vec::new(),
         }
     }

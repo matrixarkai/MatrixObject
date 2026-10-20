@@ -561,7 +561,17 @@ impl ChunkServiceSnapshot {
                             .ec_parity_fragment
                             .as_ref()
                             .map_or(0, |fragment| ledger.charge(fragment)),
-                    );
+                    )
+                    // Charged through the same ledger as the sidecar, so a snapshot naming
+                    // a page the live replica still holds pays for the table once --
+                    // `charge_allocation` takes the pointer the `Arc` names and the bytes
+                    // behind it, which is exactly the shape this needs.
+                    .saturating_add(state.ec_fragment_digests.as_ref().map_or(0, |digests| {
+                        ledger.charge_allocation(
+                            std::sync::Arc::as_ptr(digests) as *const u8,
+                            (digests.capacity() * std::mem::size_of::<u64>()) as u64,
+                        )
+                    }));
             }
         }
 

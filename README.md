@@ -171,8 +171,8 @@ only names:
 
 | stored objects | copied | named |
 |---:|---:|---:|
-| 250 | 2,485 B | 768,288 B |
-| 1,000 | **2,485 B** | 3,072,288 B |
+| 250 | 2,485 B | 768,312 B |
+| 1,000 | **2,485 B** | 3,072,312 B |
 
 Also flat in the object count, because a chunk's payload is shared rather than
 copied and so are the receipt maps. The copy is 823 bytes of page service state,
