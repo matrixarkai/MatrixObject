@@ -10,3 +10,6 @@ include!("matrixraft_state_machine.rs");
 
 #[cfg(feature = "matrix-raft")]
 include!("matrixraft_chunk_state_machine.rs");
+
+#[cfg(feature = "matrix-raft")]
+include!("matrixraft_chunk_write_group.rs");

@@ -241,6 +241,47 @@ impl ChunkStateMachine {
         self.replica
     }
 
+    /// The snapshot bytes a peer would send, without the raft envelope.
+    ///
+    /// Goes through [`StateMachine::snapshot`] rather than calling the replica directly, so the
+    /// bytes a catching-up node installs locally are the same bytes it would receive over a
+    /// group -- there is one export path, not two that could drift.
+    pub fn snapshot_payload(&self) -> Result<Vec<u8>, ObjectError> {
+        StateMachine::snapshot(self)
+            .map(|chunk| chunk.data)
+            .map_err(|err| ObjectError::Corruption(format!("chunk snapshot export failed: {err}")))
+    }
+
+    /// Install snapshot bytes as a catching-up node would, through the same path.
+    ///
+    /// `through_index` is the index the snapshot is complete to, and it is carried rather than
+    /// derived: the bytes themselves record the replica's pages and no raft index, so a caller
+    /// that does not pass it would leave this node replaying entries the snapshot contains.
+    pub fn install_snapshot_payload(
+        &mut self,
+        bytes: &[u8],
+        through_index: u64,
+    ) -> Result<(), ObjectError> {
+        StateMachine::install_snapshot(
+            self,
+            SnapshotChunk {
+                meta: SnapshotMetadata {
+                    snapshot_id: format!("chunk-{}-{through_index}", self.group_id),
+                    last_log_id: LogId {
+                        term: 0,
+                        index: through_index,
+                    },
+                    membership: Vec::new(),
+                    members: Vec::new(),
+                },
+                offset: 0,
+                data: bytes.to_vec(),
+                done: true,
+            },
+        )
+        .map_err(|err| ObjectError::Corruption(format!("chunk snapshot install failed: {err}")))
+    }
+
     /// Propose one write as the payload of a raft entry.
     ///
     /// Here rather than at the call site so a proposer and an applier cannot disagree about the
@@ -268,6 +309,28 @@ impl StateMachine for ChunkStateMachine {
                 applied_index: self.last_applied_index,
                 response: Vec::new(),
             });
+        }
+        // A GAP IS REFUSED, NOT APPLIED. Raft delivers a group's entries contiguously, so this
+        // should never fire against a correct sender -- which is exactly why it is checked rather
+        // than assumed. Applying index n+2 onto a replica that has applied n leaves a page that
+        // NO sequence of writes produces: it holds the later write and not the earlier one, it
+        // will never be told about the earlier one again, and nothing downstream can see the
+        // difference between that and a page that was written correctly.
+        //
+        // Found by writing the group route rather than by reading this function: a proposal that
+        // leaves a replica out -- a partition, expressed -- means the next entry that replica
+        // does receive arrives with a hole behind it. The replica has to be caught up from a
+        // snapshot instead, and refusing the gap is what makes that mandatory rather than
+        // optional.
+        if request.log_id.index > self.last_applied_index.saturating_add(1) {
+            return Err(RaftError::InvalidRequest(format!(
+                "entry at index {} would skip indexes {}..{}: this replica has applied through \
+                 {} and must be caught up from a snapshot rather than applying over the gap",
+                request.log_id.index,
+                self.last_applied_index.saturating_add(1),
+                request.log_id.index.saturating_sub(1),
+                self.last_applied_index
+            )));
         }
         let command = ChunkWriteCommand::from_payload(&request.payload)
             .map_err(|err| RaftError::InvalidRequest(err.to_string()))?;
