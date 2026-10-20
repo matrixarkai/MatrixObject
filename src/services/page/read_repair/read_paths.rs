@@ -164,7 +164,12 @@ impl MatrixChunkService {
                 continue;
             }
             attempted += 1;
-            match replica.read_chunk_with_cache_status(page_id, offset, length) {
+            match replica.read_chunk_with_cache_status(
+                page_id,
+                offset,
+                length,
+                ReadCacheIntent::Fill,
+            ) {
                 Ok((read, cache_hit)) => {
                     if cache_hit {
                         stats.cache_hits = stats.cache_hits.saturating_add(1);

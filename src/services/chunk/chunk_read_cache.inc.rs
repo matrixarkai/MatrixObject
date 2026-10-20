@@ -5,6 +5,7 @@ impl MatrixReplicaService {
         page_id: &PageId,
         offset: u64,
         length: u64,
+        intent: ReadCacheIntent,
     ) -> Result<(ReplicaReadResult, bool), ObjectError> {
         let end = validate_pipeline_range("chunk read", offset, length)?;
         let chunk = self
@@ -32,8 +33,13 @@ impl MatrixReplicaService {
                 ));
             }
         }
-        let use_read_cache = self.max_cacheable_read_bytes.get() == 0
-            || length <= self.max_cacheable_read_bytes.get();
+        // A BYPASSING READ IS NOT A CACHE MISS, which falls out of this rather than
+        // being special-cased below: the miss counter, the fill counters and the eviction
+        // of a stale entry are all inside `use_read_cache`. Counting a read the store did
+        // for itself as a miss would make the hit ratio a statement about the write path.
+        let use_read_cache = matches!(intent, ReadCacheIntent::Fill)
+            && (self.max_cacheable_read_bytes.get() == 0
+                || length <= self.max_cacheable_read_bytes.get());
         let cache_key = use_read_cache.then(|| (page_id.clone(), offset, length));
         let mut remove_cached_entry = false;
         let mut corrupt_cached_entry = false;

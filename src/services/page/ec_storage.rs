@@ -196,8 +196,18 @@ impl MatrixChunkService {
             // Nothing there is padding HERE, which is the one place it legitimately is: a
             // group being filled has units that do not exist yet.
             units.push(
-                self.read_striped_unit_bytes(page_id, layout, replica, base)?
-                    .unwrap_or_default(),
+                // BYPASSING, and this is the whole of the saving: these bytes go into an
+                // XOR on the next line and are never asked for again. Caching them filled
+                // a bounded cache out of the write path, which the footprint audit counts
+                // as resident -- 212 MB of it against 8 MB of logical data.
+                self.read_striped_unit_bytes(
+                    page_id,
+                    layout,
+                    replica,
+                    base,
+                    ReadCacheIntent::Bypass,
+                )?
+                .unwrap_or_default(),
             );
         }
         let borrowed: Vec<&[u8]> = units.iter().map(|unit| unit.as_slice()).collect();
@@ -234,12 +244,16 @@ impl MatrixChunkService {
     ///
     /// A replica that HAS the page and holds bytes at the group's base has that unit,
     /// however short. One with no page, or whose page stops before the group, does not.
+    ///
+    /// `intent` is the caller's, because this one function serves both kinds of read: the
+    /// unit a client asked for, and the sibling units the store reads to XOR.
     fn read_striped_unit_bytes(
         &self,
         page_id: &PageId,
         layout: &EcStripeLayout,
         replica: usize,
         base: u64,
+        intent: ReadCacheIntent,
     ) -> Result<Option<Vec<u8>>, ObjectError> {
         let Some(state) = self.replicas[replica].pages.get(page_id) else {
             return Ok(None);
@@ -248,8 +262,12 @@ impl MatrixChunkService {
             return Ok(None);
         }
         let available = (state.logical_length - base).min(layout.unit_bytes as u64) as usize;
-        let (read, _) =
-            self.replicas[replica].read_chunk_with_cache_status(page_id, base, available as u64)?;
+        let (read, _) = self.replicas[replica].read_chunk_with_cache_status(
+            page_id,
+            base,
+            available as u64,
+            intent,
+        )?;
         Ok(Some(read.data))
     }
 
@@ -276,7 +294,14 @@ impl MatrixChunkService {
             let base = group * layout.unit_bytes as u64;
 
             let unit = if self.replica_active(replica) {
-                match self.read_striped_unit_bytes(page_id, &layout, replica, base) {
+                match self.read_striped_unit_bytes(
+                    page_id,
+                    &layout,
+                    replica,
+                    base,
+                    // THE BYTES THE CLIENT ASKED FOR, so this read fills as it always did.
+                    ReadCacheIntent::Fill,
+                ) {
                     Ok(Some(unit)) if unit.len() >= within + take => {
                         stats.physical_chunk_read_count =
                             stats.physical_chunk_read_count.saturating_add(1);
@@ -323,7 +348,17 @@ impl MatrixChunkService {
                 offered.push(None);
                 continue;
             }
-            match self.read_striped_unit_bytes(page_id, layout, replica, base)? {
+            // A SIBLING IS NOT WHAT THE CLIENT ASKED FOR. The client asked for one unit;
+            // these are read to XOR it back, exactly as on the write path, so they are the
+            // same kind of read. Only the write path's effect is measured -- this is the
+            // same reasoning applied to the same shape of read, not a second measurement.
+            match self.read_striped_unit_bytes(
+                page_id,
+                layout,
+                replica,
+                base,
+                ReadCacheIntent::Bypass,
+            )? {
                 // Zero-EXTENDED, not zero-invented: a short unit is a unit whose tail
                 // nobody wrote, and the redundancy was computed over exactly that.
                 Some(mut unit) => {
@@ -343,8 +378,14 @@ impl MatrixChunkService {
                  redundancy recovers one"
             )));
         }
-        let Some(mut redundancy) =
-            self.read_striped_unit_bytes(page_id, layout, redundancy_replica, base)?
+        // The redundancy unit goes into the same XOR as the siblings above.
+        let Some(mut redundancy) = self.read_striped_unit_bytes(
+            page_id,
+            layout,
+            redundancy_replica,
+            base,
+            ReadCacheIntent::Bypass,
+        )?
         else {
             return Err(ObjectError::Corruption(format!(
                 "group {group} has lost a data unit and its redundancy unit is not there"

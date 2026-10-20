@@ -81,9 +81,12 @@ in both directions: a renamed constant fails it, and so does a new one.
   each, so the store holds `replica_count / (replica_count - stripe_redundancy_units)`
   of the payload. At three replicas and one unit of redundancy that measures
   **1.5x against replication's 3.0x**, read out of `footprint_audit()` for the
-  same objects put through two stores. It is a durability trade -- one loss
-  survived where three-way replication survives two -- and a striped write needs
-  every replica to accept it, so `write_quorum` must equal `replica_count`.
+  same objects put through two stores, and counting the metadata too the whole
+  store measures 2.77x against 3.64x at a thousand objects of 1 KiB. It is a
+  durability trade
+  -- one loss survived where three-way replication survives two -- and a striped
+  write needs every replica to accept it, so `write_quorum` must equal
+  `replica_count`.
   Replication is the default and is unchanged. Two things it cannot do yet, named
   rather than implied: an operator cannot quarantine a replica of a striped
   service (the guard refuses dropping below the write quorum), and
@@ -123,11 +126,29 @@ measurements and fails if this file disagrees. It exists because the figure went
 stale twice without anything noticing: a document nothing derives from the tree
 is a document that will be wrong.
 
-A store that stripes instead moves the data term itself: the same figure for the
-same objects is **1.5x** at three replicas and one unit of redundancy.
+A store that stripes moves the data term itself, to **1.5x** at three replicas and
+one unit of redundancy -- which is the least any layout can hold and still survive a
+loss. Every replica holds one unit of each stripe group, so keeping `p` units of
+redundancy over `R` replicas costs `R / (R - p)`, which is smallest at one unit; with
+no redundancy nothing is recoverable, and the only way further down is more replicas,
+which is more hardware rather than less space.
+`one_unit_of_redundancy_is_the_least_a_layout_can_hold` sweeps every layout from three
+replicas to eight and fails if any of them undercuts that.
+
+Counted with the metadata, a thousand objects of 1 KiB measure
+**2.77x striped against 3.64x replicated**, both read out of `footprint_audit()` on a
+store nothing has read back yet. The two are closer together than their data terms are
+because a striped page pays a receipt for every unit it writes -- 636 bytes an object at
+this size, which is now the largest thing sitting above the floor.
+
+A smaller point than the table's rows above, and deliberately: measuring both shapes at
+8,000 objects takes longer than the whole test suite, and a figure checked only by a test
+nobody runs is how the metadata line went stale twice. Both numbers here are for the same
+size, so the comparison is between two stores rather than across two measurements.
 
 ```
 cargo test --lib a_store_holds_one_and_a_half_copies_of_its_payload_when_it_stripes -- --nocapture
+cargo test --lib the_published_striped_amplification_is_the_one_this_tree_produces -- --nocapture
 ```
 
 ```

@@ -6189,19 +6189,19 @@ fn page_and_object_cache_control_coalesce_ranges() {
         .unwrap();
     assert!(
         !lru_chunk
-            .read_chunk_with_cache_status(&lru_chunk_id, 0, 4)
+            .read_chunk_with_cache_status(&lru_chunk_id, 0, 4, ReadCacheIntent::Fill)
             .unwrap()
             .1
     );
     assert!(
         !lru_chunk
-            .read_chunk_with_cache_status(&lru_chunk_id, 4, 4)
+            .read_chunk_with_cache_status(&lru_chunk_id, 4, 4, ReadCacheIntent::Fill)
             .unwrap()
             .1
     );
     assert!(
         lru_chunk
-            .read_chunk_with_cache_status(&lru_chunk_id, 0, 4)
+            .read_chunk_with_cache_status(&lru_chunk_id, 0, 4, ReadCacheIntent::Fill)
             .unwrap()
             .1
     );
@@ -6211,7 +6211,7 @@ fn page_and_object_cache_control_coalesce_ranges() {
         entry.result.data[0] = b'Z';
     }
     let (self_healed, corrupt_cache_hit) = lru_chunk
-        .read_chunk_with_cache_status(&lru_chunk_id, 0, 4)
+        .read_chunk_with_cache_status(&lru_chunk_id, 0, 4, ReadCacheIntent::Fill)
         .unwrap();
     assert!(!corrupt_cache_hit);
     assert_eq!(self_healed.data, b"abcd".to_vec());
@@ -6219,7 +6219,7 @@ fn page_and_object_cache_control_coalesce_ranges() {
     assert_eq!(lru_chunk.read_cache_stats().corrupt_bytes, 4);
     assert!(
         lru_chunk
-            .read_chunk_with_cache_status(&lru_chunk_id, 0, 4)
+            .read_chunk_with_cache_status(&lru_chunk_id, 0, 4, ReadCacheIntent::Fill)
             .unwrap()
             .1
     );
@@ -6227,13 +6227,13 @@ fn page_and_object_cache_control_coalesce_ranges() {
     assert_eq!(lru_chunk.read_cache_stats().entries, 1);
     assert!(
         lru_chunk
-            .read_chunk_with_cache_status(&lru_chunk_id, 0, 4)
+            .read_chunk_with_cache_status(&lru_chunk_id, 0, 4, ReadCacheIntent::Fill)
             .unwrap()
             .1
     );
     assert!(
         !lru_chunk
-            .read_chunk_with_cache_status(&lru_chunk_id, 4, 4)
+            .read_chunk_with_cache_status(&lru_chunk_id, 4, 4, ReadCacheIntent::Fill)
             .unwrap()
             .1
     );
@@ -6241,7 +6241,7 @@ fn page_and_object_cache_control_coalesce_ranges() {
     let before_oversized = lru_chunk.read_cache_stats();
     assert!(
         !lru_chunk
-            .read_chunk_with_cache_status(&lru_chunk_id, 8, 4)
+            .read_chunk_with_cache_status(&lru_chunk_id, 8, 4, ReadCacheIntent::Fill)
             .unwrap()
             .1
     );
@@ -43045,5 +43045,265 @@ fn keys_on_one_shard_share_one_cached_route() {
     assert!(
         bytes < (keys as u64) * 300,
         "a shared route should keep this well under one copy per key: {bytes}"
+    );
+}
+
+/// A striped store on the shipped geometry, which is what the published figures measure.
+fn striped_default_geometry_options(striped: bool) -> StoreOptions {
+    StoreOptions {
+        volume_count: 2,
+        // EVERY REPLICA, because a striped unit has no peer to vote with. Set on both
+        // shapes so the two figures differ by the layout and by nothing else -- measured,
+        // not assumed: a replicated store with this quorum reports the same total to within
+        // 2 KB of one with the default.
+        write_quorum: 3,
+        stripe_redundancy_units: if striped { 1 } else { 0 },
+        ..StoreOptions::default()
+    }
+}
+
+#[test]
+fn a_striped_write_leaves_the_read_cache_alone() {
+    // Recomputing a stripe group's redundancy means reading the group's other data units
+    // and XORing them. Those reads went through the CACHING read, so one put an object
+    // left a 64 KiB unit in a bounded cache that no client had asked to fill -- and the
+    // footprint audit counts a cached byte as resident, because it is.
+    //
+    // At 1 KiB objects that measured 212 MB of cached payload against 8 MB of logical
+    // data: a store holding one and a half copies of its payload held 27.4x in total.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    fn cached_after_writes(objects: u64) -> (u64, u64) {
+        let mut store = MatrixObjectStore::new(striped_default_geometry_options(true)).unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("k/{index:08}"),
+                    vec![b'x'; 1024],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        let after_writes = audit_value(&store, "replica.read_cache.payload_bytes");
+        // THE POSITIVE CONTROL, and this test is worth nothing without it. Zero after the
+        // writes has two readings: the write path stopped filling the cache, or this store
+        // has no cache to fill and the assertion above is vacuous. Reading the objects back
+        // tells those apart -- and it must be a read of the SAME bytes the writes handled,
+        // so a cache that only works for something else cannot satisfy it.
+        for index in 0..objects.min(64) {
+            let read = store
+                .get_object("bucket", &format!("k/{index:08}"))
+                .unwrap();
+            assert_eq!(
+                read.data,
+                vec![b'x'; 1024],
+                "a striped read came back wrong"
+            );
+        }
+        let after_reads = audit_value(&store, "replica.read_cache.payload_bytes");
+        (after_writes, after_reads)
+    }
+
+    // TWO OBJECT COUNTS, because the defect grew per write. A leg that is merely small
+    // would read the same in both; one that grows would double.
+    let (low_writes, low_reads) = cached_after_writes(500);
+    let (high_writes, high_reads) = cached_after_writes(1_000);
+    println!(
+        "WRITEPATHCACHE at_500={low_writes} at_1000={high_writes} \
+         after_reads_500={low_reads} after_reads_1000={high_reads}"
+    );
+    assert_eq!(
+        low_writes, 0,
+        "writing 500 objects into a striped store should leave nothing in the read cache"
+    );
+    assert_eq!(
+        high_writes, 0,
+        "and twice the writes should still leave nothing: {high_writes}"
+    );
+    assert!(
+        low_reads > 0 && high_reads > 0,
+        "the control failed: reading the objects back left nothing in the cache either, so \
+         the zero above says nothing about the write path ({low_reads}, {high_reads})"
+    );
+}
+
+#[test]
+fn one_unit_of_redundancy_is_the_least_a_layout_can_hold() {
+    // THE PAYLOAD TARGET, stated as a bound rather than as a figure to beat. Every replica
+    // holds one unit of each stripe group, so a layout keeping `p` units of redundancy over
+    // `R` replicas holds `R / (R - p)` of its logical bytes. That is smallest at p = 1, and
+    // one unit of redundancy is also the least that survives any loss at all.
+    //
+    // So at three replicas 1.5x is a FLOOR and not a way-point: nothing below it tolerates a
+    // loss, and the only way further down is more replicas, which is more hardware rather
+    // than less space.
+    const UNIT: usize = 64 * 1024;
+    for replicas in 3..=8usize {
+        let mut best: Option<(usize, u64)> = None;
+        for redundancy in 1..replicas {
+            let layout = EcStripeLayout::for_replicas(replicas, redundancy, UNIT)
+                .expect("a layout keeping fewer units of redundancy than it has replicas");
+            let held = layout.amplification_permille();
+            // The arithmetic the layout reports is the arithmetic claimed here.
+            assert_eq!(
+                held,
+                (replicas as u64 * 1000) / (replicas - redundancy) as u64,
+                "{replicas} replicas keeping {redundancy} of redundancy"
+            );
+            if best.is_none() || best.map(|(_, previous)| held < previous).unwrap_or(false) {
+                best = Some((redundancy, held));
+            }
+        }
+        let (cheapest, held) = best.expect("a replica set of three or more admits a layout");
+        println!("FLOOR replicas={replicas} cheapest_redundancy={cheapest} permille={held}");
+        assert_eq!(
+            cheapest, 1,
+            "{replicas} replicas should hold least with one unit of redundancy"
+        );
+        assert_eq!(
+            held,
+            (replicas as u64 * 1000) / (replicas as u64 - 1),
+            "the floor at {replicas} replicas"
+        );
+        // And no layout with no redundancy exists to undercut it: that is replication's
+        // job, and the constructor refuses rather than returning a cheaper non-layout.
+        assert!(
+            EcStripeLayout::for_replicas(replicas, 0, UNIT).is_err(),
+            "a layout with no redundancy is not a layout"
+        );
+    }
+    // The published floor, named: three replicas, one unit, one and a half copies.
+    assert_eq!(
+        EcStripeLayout::for_replicas(3, 1, UNIT)
+            .unwrap()
+            .amplification_permille(),
+        1500
+    );
+}
+
+#[test]
+fn the_published_striped_amplification_is_the_one_this_tree_produces() {
+    // The README publishes what a striped store holds AGAINST what a replicated one holds,
+    // counted with the metadata. Both numbers are measured here, because the striped one
+    // was wrong by an order of magnitude for as long as it was only the data term: the
+    // sentence said 1.5x while the store held 27.4x.
+    const PUBLISHED: &str = include_str!("../README.md");
+    let marker = "x striped against ";
+    let at = PUBLISHED
+        .find(marker)
+        .expect("the README should compare a striped store against a replicated one");
+    // Hundredths, parsed either side of the marker, so rewording the sentence around the
+    // two numbers does not disable the check.
+    fn hundredths(text: &str) -> u64 {
+        let (whole, rest) = text.split_once('.').expect("a figure like 2.63");
+        let fraction: String = rest.chars().take(2).collect();
+        whole.trim().parse::<u64>().expect("whole part") * 100
+            + fraction.parse::<u64>().expect("fraction")
+    }
+    let before: String = PUBLISHED[..at]
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let published_striped = hundredths(&before.chars().rev().collect::<String>());
+    let after: String = PUBLISHED[at + marker.len()..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let published_replicated = hundredths(&after);
+
+    // THE POINT THE SENTENCE NAMES: 1,000 objects of 1 KiB, 26-character keys.
+    //
+    // NOT the table's 8,000, and the reason is this test's own cost. Measuring both shapes
+    // at 8,000 means 16,000 puts, which is 238 seconds in a debug build against a suite
+    // that takes 187 -- and marking it `#[ignore]` would leave the figure checked by
+    // nothing, since the workflow compiles rather than tests. So the document publishes
+    // BOTH numbers for this point, and a reader comparing them is comparing one store
+    // against another at the same size rather than across two.
+    fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
+        store
+            .footprint_audit()
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    }
+
+    fn total_permille(striped: bool) -> (u64, u64) {
+        let mut store = MatrixObjectStore::new(striped_default_geometry_options(striped)).unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..1_000u64 {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("prefix/{index:08}/kkkkkkkkkk"),
+                    vec![b'x'; 1024],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        // MEASURED BEFORE ANYTHING READS THE STORE. A read fills the read cache and the
+        // audit counts a cached byte as resident, so the verification read below put a
+        // 64 KiB stripe unit into the figure -- 2.3% of it -- while it came first.
+        let logical = audit_value(&store, "logical.written");
+        let total = audit_value(&store, "ACCOUNTED.total_bytes");
+        let data = audit_value(&store, "replica.data.capacity");
+        // AND THE BYTES STILL HAVE TO COME BACK: a store that held less of the wrong thing
+        // would satisfy every figure above. This is the condition for believing the
+        // measurement, not a part of it, which is the whole reason it reads second.
+        let read = store
+            .get_object("bucket", "prefix/00000500/kkkkkkkkkk")
+            .unwrap();
+        assert_eq!(
+            read.data,
+            vec![b'x'; 1024],
+            "striped={striped} read back wrong"
+        );
+        (total * 1000 / logical, data * 1000 / logical)
+    }
+    let (striped, striped_data) = total_permille(true);
+    let (replicated, replicated_data) = total_permille(false);
+    println!(
+        "STRIPEDTABLE striped={striped} replicated={replicated} \
+         striped_data={striped_data} replicated_data={replicated_data} \
+         published_striped={published_striped} published_replicated={published_replicated}"
+    );
+    // The data terms, so a total that happened to match cannot hide a layout that did not
+    // take: 1.5x against 3.0x is the layout doing its job, and 1,504 rather than 1,500 is
+    // the last page of 8,000 objects not filling a whole stripe group.
+    assert_eq!(
+        replicated_data, 3000,
+        "three-way replication holds three copies"
+    );
+    assert!(
+        (1500..=1560).contains(&striped_data),
+        "a striped store should hold one and a half copies of its payload, give or take a          tail page that does not fill its last stripe group: {striped_data}"
+    );
+    // Rounded to hundredths the way the document writes them.
+    assert_eq!(
+        (striped + 5) / 10,
+        published_striped,
+        "the README publishes {published_striped} hundredths striped and this tree produces \
+         {striped} permille -- correct the README in the change that moved it"
+    );
+    assert_eq!(
+        (replicated + 5) / 10,
+        published_replicated,
+        "the README publishes {published_replicated} hundredths replicated and this tree \
+         produces {replicated} permille"
+    );
+    // Not vacuous, and the direction is the claim: striping holds LESS.
+    assert!(
+        striped < replicated,
+        "striping should hold less than replication at this size: {striped} against {replicated}"
     );
 }

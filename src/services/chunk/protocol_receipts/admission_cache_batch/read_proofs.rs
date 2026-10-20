@@ -1,4 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
+/// Whether a read's bytes are worth keeping in the read cache.
+///
+/// # WHY A READ HAS TO SAY WHICH IT IS
+///
+/// The cache exists to make a client's next read cheap, and it is bounded, so every byte
+/// in it displaces another. A read the store performs for its OWN bookkeeping consumes its
+/// bytes immediately and never asks for them again -- and filling the cache with those is
+/// not a warm cache, it is a cache with a client's bytes evicted out of it.
+///
+/// The striped write path is the case that forced the distinction. Recomputing a stripe
+/// group's redundancy unit means reading the group's other data units and XORing them, and
+/// at 64 KiB units that read a cacheable 64 KiB per write. One put an object therefore
+/// filled the cache to its bound out of the WRITE path, with nothing having been read: the
+/// footprint audit counted 212 MB of cached payload against 8 MB of logical data, so a
+/// store that held one and a half copies of its payload held twenty-seven times its data
+/// in total.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadCacheIntent {
+    /// A read on a client's behalf: look in the cache, and leave the bytes there.
+    Fill,
+    /// A read the store does for itself: do not look, and do not leave anything behind.
+    ///
+    /// The lookup is skipped as well as the fill, deliberately. An entry one of these reads
+    /// could hit is an entry one of them put there, so looking costs a probe and a lock to
+    /// find what bypassing never stored.
+    Bypass,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaReadResult {
     pub data: Vec<u8>,
