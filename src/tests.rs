@@ -38388,6 +38388,284 @@ fn a_rejection_names_the_setting_it_rejected() {
 }
 
 #[test]
+fn a_stripe_layout_holds_one_and_a_half_copies_where_replication_holds_three() {
+    // THE FIGURE THE PAYLOAD SIDE IS STUCK AT. `replica.data.capacity` is exactly 3.0000x of
+    // logical bytes and there is no slack above it to recover, so the only thing that moves the
+    // floor is holding different bytes on different replicas.
+    const REPLICATION_PERMILLE: u64 = 3000;
+
+    let three = EcStripeLayout::for_replicas(3, 1, 64 * 1024).unwrap();
+    assert_eq!(three.data_units, 2);
+    assert_eq!(three.amplification_permille(), 1500, "three replicas, one of redundancy");
+    println!(
+        "STRIPEFLOOR replicas=3 parity=1 permille={} against replication {}",
+        three.amplification_permille(),
+        REPLICATION_PERMILLE
+    );
+    assert!(
+        three.amplification_permille() < REPLICATION_PERMILLE,
+        "the whole point is to hold less than three-way replication does"
+    );
+
+    // Wider sets are cheaper for the same redundancy, which is the trade the unit count buys.
+    for (replicas, parity, permille) in [
+        (3usize, 1usize, 1500u64),
+        (4, 1, 1333),
+        (6, 1, 1200),
+        (6, 2, 1500),
+        (9, 2, 1285),
+    ] {
+        let layout = EcStripeLayout::for_replicas(replicas, parity, 64 * 1024).unwrap();
+        assert_eq!(
+            layout.amplification_permille(),
+            permille,
+            "{replicas} replicas with {parity} of redundancy"
+        );
+    }
+
+    // A LAYOUT THAT CANNOT DESCRIBE ITSELF IS REFUSED, not clamped: a store that asked for more
+    // redundancy than it has replicas would otherwise get less than it asked for, silently, which
+    // is the one mistake a durability setting must not make.
+    for (replicas, parity, unit) in [(1usize, 1usize, 4096usize), (3, 3, 4096), (3, 4, 4096), (3, 1, 0), (3, 0, 4096)] {
+        assert!(
+            EcStripeLayout::for_replicas(replicas, parity, unit).is_err(),
+            "{replicas} replicas / {parity} redundancy / {unit}-byte unit should be refused"
+        );
+    }
+}
+
+#[test]
+fn a_bytes_place_in_the_stripe_does_not_move_as_the_page_grows() {
+    // THIS IS WHY THE UNITS ARE A FIXED SIZE, and it is the property the whole layout rests on.
+    //
+    // Splitting a page into `k` equal pieces makes the piece size a function of the page's current
+    // length, so appending to a page moves every boundary and every replica has to be rewritten --
+    // a one-byte write re-stripes the whole page. With fixed units, byte `p` lives in the same unit
+    // on the same replica for the life of the page, so a write touches one data unit and one
+    // redundancy unit and reads nothing else.
+    //
+    // Asserted by locating the same offsets against a layout and checking the answer does not
+    // depend on anything about the page -- there is no page length in `locate`, which is the point,
+    // so this pins that the signature cannot quietly grow one.
+    let layout = EcStripeLayout::for_replicas(3, 1, 1024).unwrap();
+    let probes = [0u64, 1, 1023, 1024, 2047, 2048, 4096, 1_048_575, 1_048_576];
+    let placed: Vec<(u64, usize, usize)> = probes
+        .iter()
+        .map(|offset| {
+            let (group, unit) = layout.locate(*offset);
+            (group, unit, layout.replica_for(group, unit))
+        })
+        .collect();
+    println!("STRIPEPLACE {placed:?}");
+
+    // Byte 0 and byte 1023 share a unit; byte 1024 starts the next.
+    assert_eq!(layout.locate(0), (0, 0));
+    assert_eq!(layout.locate(1023), (0, 0));
+    assert_eq!(layout.locate(1024), (0, 1));
+    // Two data units a group, so the third unit opens group 1.
+    assert_eq!(layout.locate(2048), (1, 0));
+    assert_eq!(layout.locate(3071), (1, 0));
+
+    // And the placement is a pure function of the offset: locating the same offsets again gives
+    // the same answers, with nothing about a page's size in the call.
+    let again: Vec<(u64, usize, usize)> = probes
+        .iter()
+        .map(|offset| {
+            let (group, unit) = layout.locate(*offset);
+            (group, unit, layout.replica_for(group, unit))
+        })
+        .collect();
+    assert_eq!(placed, again);
+}
+
+#[test]
+fn a_stripe_group_survives_losing_any_one_replica_and_refuses_two() {
+    let layout = EcStripeLayout::for_replicas(3, 1, 8).unwrap();
+    // Two data units of 8 bytes, so one group holds 16 bytes.
+    let page: Vec<u8> = (0..16u8).collect();
+    let groups = stripe_data_units(&layout, &page);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].len(), 2);
+    let parity = stripe_parity(&layout, &groups[0]);
+    assert_eq!(parity.len(), 8);
+
+    // LOSE EACH DATA UNIT IN TURN and rebuild it, then check the page comes back whole.
+    for missing in 0..layout.data_units {
+        let offered: Vec<Option<&[u8]>> = (0..layout.data_units)
+            .map(|index| if index == missing { None } else { Some(groups[0][index]) })
+            .collect();
+        let rebuilt = reconstruct_stripe_unit(&layout, &offered, &parity).unwrap();
+        assert_eq!(
+            &rebuilt[..groups[0][missing].len()],
+            groups[0][missing],
+            "unit {missing} did not come back"
+        );
+    }
+
+    // LOSING THE REDUNDANCY UNIT costs nothing: the data units are the data.
+    let whole: Vec<u8> = groups[0].concat();
+    assert_eq!(whole, page, "the data units are the page");
+
+    // TWO LOSSES ARE REFUSED, not answered. One unit of redundancy recovers one unit, and a
+    // function that returned something anyway would be inventing bytes.
+    let two_gone: Vec<Option<&[u8]>> = (0..layout.data_units).map(|_| None).collect();
+    let refused = reconstruct_stripe_unit(&layout, &two_gone, &parity);
+    assert!(refused.is_err(), "two losses must be refused");
+
+    // Nothing missing is also refused: a caller asking to rebuild a complete group has a bug, and
+    // answering would hand it the group it already had.
+    let nothing_gone: Vec<Option<&[u8]>> =
+        (0..layout.data_units).map(|index| Some(groups[0][index])).collect();
+    assert!(reconstruct_stripe_unit(&layout, &nothing_gone, &parity).is_err());
+
+    // The wrong number of units is refused.
+    assert!(reconstruct_stripe_unit(&layout, &two_gone[..1], &parity).is_err());
+
+    // A REDUNDANCY UNIT OF THE WRONG SIZE is corruption, not something to pad -- and reaching that
+    // check needs a group with exactly ONE unit missing. Offering a complete group hits the
+    // nothing-is-missing refusal first, so the assertion would pass without the size check
+    // existing at all.
+    let one_gone: Vec<Option<&[u8]>> = (0..layout.data_units)
+        .map(|index| if index == 0 { None } else { Some(groups[0][index]) })
+        .collect();
+    assert!(
+        reconstruct_stripe_unit(&layout, &one_gone, &parity).is_ok(),
+        "one missing unit and a correct redundancy unit must rebuild, or the next assertion is \
+         passing for the wrong reason"
+    );
+    assert!(
+        reconstruct_stripe_unit(&layout, &one_gone, &parity[..4]).is_err(),
+        "a short redundancy unit must be refused rather than zero-extended"
+    );
+    let mut too_long = parity.clone();
+    too_long.push(0);
+    assert!(
+        reconstruct_stripe_unit(&layout, &one_gone, &too_long).is_err(),
+        "a long redundancy unit must be refused too"
+    );
+}
+
+#[test]
+fn a_page_round_trips_through_the_stripe_layout_with_one_replica_gone() {
+    // End to end over something that is not a whole number of groups, because the last unit being
+    // SHORT is where an off-by-one lives.
+    let layout = EcStripeLayout::for_replicas(3, 1, 100).unwrap();
+    let page: Vec<u8> = (0..250u32).map(|index| (index % 251) as u8).collect();
+    let groups = stripe_data_units(&layout, &page);
+    // 200 bytes a group, so two groups: [100,100] and [50].
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].iter().map(|u| u.len()).collect::<Vec<_>>(), vec![100, 100]);
+    assert_eq!(groups[1].iter().map(|u| u.len()).collect::<Vec<_>>(), vec![50]);
+
+    let parities: Vec<Vec<u8>> = groups
+        .iter()
+        .map(|group| stripe_parity(&layout, group))
+        .collect();
+
+    // Rebuild the whole page with replica 0 gone, which costs a different unit in each group
+    // because the placement rotates.
+    let gone = 0usize;
+    let mut rebuilt_page: Vec<u8> = Vec::with_capacity(page.len());
+    for (group_index, group) in groups.iter().enumerate() {
+        let group_number = group_index as u64;
+        let mut units: Vec<Option<&[u8]>> = Vec::with_capacity(layout.data_units);
+        let mut lost_unit = None;
+        for unit_index in 0..layout.data_units {
+            if layout.replica_for(group_number, unit_index) == gone {
+                units.push(None);
+                lost_unit = Some(unit_index);
+            } else {
+                units.push(group.get(unit_index).copied());
+            }
+        }
+        // A group whose lost unit does not exist at all (the short last group) has nothing to
+        // rebuild for it.
+        let rebuilt = match lost_unit {
+            Some(unit_index) if unit_index < group.len() => {
+                Some(reconstruct_stripe_unit(&layout, &units, &parities[group_index]).unwrap())
+            }
+            _ => None,
+        };
+        for unit_index in 0..group.len() {
+            if Some(unit_index) == lost_unit {
+                let bytes = rebuilt.as_ref().expect("the lost unit was rebuilt");
+                rebuilt_page.extend_from_slice(&bytes[..group[unit_index].len()]);
+            } else {
+                rebuilt_page.extend_from_slice(group[unit_index]);
+            }
+        }
+    }
+    assert_eq!(rebuilt_page, page, "the page did not come back with one replica gone");
+}
+
+#[test]
+fn the_redundancy_unit_does_not_sit_on_one_replica_for_every_group() {
+    // PINNING PARITY TO ONE REPLICA makes that replica carry every write in the store -- a write
+    // to any unit updates its group's redundancy -- so one node becomes the write bottleneck for
+    // the whole layout. The rotation is what prevents it, and a rotation that did not actually
+    // rotate would look identical from the outside.
+    let layout = EcStripeLayout::for_replicas(3, 1, 4096).unwrap();
+    let mut parity_holder_counts = [0usize; 3];
+    const GROUPS: u64 = 300;
+    for group in 0..GROUPS {
+        let replica = layout.replica_for(group, layout.parity_unit_index());
+        parity_holder_counts[replica] += 1;
+    }
+    println!("STRIPEROTATE parity_per_replica={parity_holder_counts:?}");
+    for (replica, count) in parity_holder_counts.iter().enumerate() {
+        assert_eq!(
+            *count,
+            (GROUPS / 3) as usize,
+            "replica {replica} holds the redundancy for {count} of {GROUPS} groups, which is not \
+             an even share"
+        );
+    }
+    // And no two units of one group land on the same replica, or the layout would lose two units
+    // to one failure.
+    for group in 0..GROUPS {
+        let mut seen = std::collections::BTreeSet::new();
+        for unit in 0..layout.group_units() {
+            assert!(
+                seen.insert(layout.replica_for(group, unit)),
+                "group {group} puts two units on one replica"
+            );
+        }
+    }
+}
+
+#[test]
+fn what_a_stripe_layout_would_hold_counts_the_partial_group() {
+    let layout = EcStripeLayout::for_replicas(3, 1, 1024).unwrap();
+    // A whole group: 2 KiB of data costs 3 KiB.
+    assert_eq!(stored_bytes(&layout, 2048), 3072);
+    // Two whole groups.
+    assert_eq!(stored_bytes(&layout, 4096), 6144);
+    // A PARTIAL GROUP STILL PAYS A WHOLE REDUNDANCY UNIT, because the redundancy covers the group
+    // and not the bytes in it. A layout costed without this understates what a store full of
+    // small pages pays, which is the case most likely to be quoted.
+    assert_eq!(stored_bytes(&layout, 1), 1 + 1024);
+    assert_eq!(stored_bytes(&layout, 2049), 3072 + 1 + 1024);
+
+    // THE HEADLINE, against the figure the payload side reports today. One megabyte of logical
+    // data: three-way replication holds 3 MiB, this layout holds 1.5 MiB.
+    let logical = 1024 * 1024u64;
+    let striped = stored_bytes(&layout, logical);
+    let replicated = logical * 3;
+    println!(
+        "STRIPEHOLD logical={logical} striped={striped} replicated={replicated} \
+         ratio_permille={}",
+        striped * 1000 / logical
+    );
+    assert_eq!(striped * 1000 / logical, 1500);
+    assert_eq!(replicated * 1000 / logical, 3000);
+    assert!(
+        striped * 2 == replicated,
+        "at two data units the layout should hold exactly half of what three replicas do: \
+         {striped} against {replicated}"
+    );
+}
+
+#[test]
 fn measure_what_the_redundancy_fragment_buys_at_each_replica_count() {
     // WHY THE FRAGMENT EXISTS, measured rather than argued. It is single-shard recovery INSIDE one
     // page: `chunk_ec_recover_data` rebuilds a page whose checksum fails from `len / k` bytes of
