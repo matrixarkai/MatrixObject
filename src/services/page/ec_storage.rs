@@ -85,10 +85,17 @@ impl MatrixChunkService {
     }
 
     /// Write ranges into one page, striped.
+    ///
+    /// `receipts` carries the replica-receipt prefix and the caller's idempotency key when
+    /// the write is an idempotent one, so a retried striped write is deduplicated at each
+    /// replica exactly as a retried replicated write is. Without it a striped service would
+    /// quietly have no idempotent write while a replicated one did, which is the kind of
+    /// asymmetry that is only ever found by the retry that needed it.
     pub(crate) fn write_striped_page_ranges(
         &mut self,
         page_id: &PageId,
         writes: &[(u64, &[u8])],
+        receipts: Option<(&str, &str)>,
     ) -> Result<ReplicaWriteBatchStats, ObjectError> {
         let layout = self
             .ec_layout
@@ -120,10 +127,38 @@ impl MatrixChunkService {
                             "striped write offset overflows the replica's page".to_string(),
                         )
                     })?;
-                let chunk_stats = self.replicas[replica].write_chunk_ranges_borrowed(
-                    page_id.clone(),
-                    &[(replica_offset, &data[consumed..consumed + take])],
-                )?;
+                let unit_write = (replica_offset, &data[consumed..consumed + take]);
+                let chunk_stats = match receipts {
+                    Some((prefix, base_key)) => {
+                        // KEYED BY THE BYTES GOING TO THE REPLICA, because each replica
+                        // receives a different range of a striped write and one replica can
+                        // receive several. A key naming only the page and the replica would
+                        // make the second of those look like the first retried, and that
+                        // replica would silently never receive its second unit.
+                        //
+                        // The replica index is in the key because this helper is shared with
+                        // the replicated path, where every replica receives the SAME bytes
+                        // and the index is the only thing telling their receipts apart. Here
+                        // it is redundant -- the receipt map is per replica -- and no input
+                        // can make it matter, so no test covers it.
+                        let page_key = replica_receipt_key(
+                            prefix,
+                            base_key,
+                            page_id,
+                            replica,
+                            &unit_write,
+                        );
+                        self.replicas[replica]
+                            .write_chunk_ranges_idempotent_borrowed(
+                                page_id.clone(),
+                                &[unit_write],
+                                &page_key,
+                            )
+                            .map(|(stats, _)| stats)?
+                    }
+                    None => self.replicas[replica]
+                        .write_chunk_ranges_borrowed(page_id.clone(), &[unit_write])?,
+                };
                 stats.physical_write_count = stats
                     .physical_write_count
                     .saturating_add(chunk_stats.physical_write_count);
@@ -168,6 +203,17 @@ impl MatrixChunkService {
         let borrowed: Vec<&[u8]> = units.iter().map(|unit| unit.as_slice()).collect();
         let redundancy = stripe_parity(layout, &borrowed);
         let replica = layout.replica_for(group, layout.parity_unit_index());
+        // NOT GIVEN THE CALLER'S KEY, deliberately. This is a recompute, not a write being
+        // applied: it reads whatever the group's data units now hold and writes the result,
+        // so running it twice writes the same bytes. Keying it on the caller's request would
+        // let a retry SKIP it, which is the one thing a redundancy rewrite must never do
+        // after the data has moved.
+        //
+        // It is not receipt-free, though: `write_chunk_ranges_borrowed` records one of its
+        // own, keyed `direct-batch-write-<request checksum>`, which is why one striped write
+        // leaves one receipt per touched group on top of its unit receipts. That receipt is
+        // written and never consulted -- the function does not check it before writing -- so
+        // it costs a replica's receipt map and buys nothing here.
         self.replicas[replica]
             .write_chunk_ranges_borrowed(page_id.clone(), &[(base, &redundancy)])?;
         Ok(())

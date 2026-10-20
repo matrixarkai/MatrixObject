@@ -80,6 +80,23 @@ impl MatrixChunkService {
                 ));
             }
             let slice = &data[cursor..next];
+            // A STRIPED WRITE SENDS DIFFERENT BYTES TO EACH REPLICA, so the loop below --
+            // which sends the same slice to every admitted replica and counts successes
+            // against the write quorum -- is not the right shape for one.
+            //
+            // THIS ENTRY WAS MISSED WHEN THE BATCH ENTRY WAS WIRED, and the cost was not a
+            // lost saving: a striped service wrote whole copies at page offsets here, and
+            // then the striped read interpreted them as units and rebuilt a page that was
+            // not what had been written. It returned those bytes rather than refusing them.
+            if self.ec_layout.is_some() {
+                self.write_striped_page_ranges(
+                    &loc.page_id,
+                    &[(loc.page_offset, slice)],
+                    idempotency_key.map(|key| ("sw", key)),
+                )?;
+                cursor = next;
+                continue;
+            }
             let mut ok = 0usize;
             let mut first_error: Option<ObjectError> = None;
             for (index, replica) in self.replicas.iter_mut().enumerate() {

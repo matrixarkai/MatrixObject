@@ -37,11 +37,18 @@
 // Here: the layout arithmetic, the placement, the parity, and reconstruction of one lost unit --
 // with the amplification it produces measured against the replicated figure.
 //
-// NOT here: the storage path. Wiring this in replaces what a replica's page HOLDS, and the read
-// path currently votes on identical copies from each replica (`read_chunk_quorum`), which is
-// meaningless when each one holds a different unit. That is a change to a durable layout and to
-// the recovery story, so it is a decision to take deliberately rather than a consequence of
-// landing a codec. The arithmetic is here so the decision has numbers.
+// The storage path is in `ec_storage.rs`, and the read path dispatches to it at the top of
+// `read_chunk_quorum` rather than inside that function's loop -- the loop votes a majority over
+// `(write_sequence, checksum, etag)` across replicas holding identical copies, and there is
+// nothing to agree about when each one holds a different unit. A store asks for a layout through
+// `StoreOptions::stripe_redundancy_units`; replication is unchanged and is still the default.
+//
+// NOT here, and named rather than implied: a striped page that has lost a replica cannot have its
+// units rebuilt by `repair_chunk_replicas`. That repair picks the state a majority of replicas
+// agree on and copies it over the rest, and on a striped page every replica legitimately
+// disagrees, so it reports the page unrepaired instead. Reads still serve it -- the striped read
+// reconstructs a missing unit on demand -- but the redundancy does not come back, so the page
+// stays one loss from unreadable.
 
 /// How a page's bytes are spread over a replica set.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

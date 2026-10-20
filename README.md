@@ -76,6 +76,21 @@ in both directions: a renamed constant fails it, and so does a new one.
   partial corruption is still recoverable from the single copy it has. The
   fragment is local to its page and is empty whenever the page has peers, which
   is why the data term measures exactly 3.00x at three replicas.
+- **Striped payload, if you ask for it.** `stripe_redundancy_units` places a page's
+  bytes across the replicas as fixed-size units instead of copying the page to
+  each, so the store holds `replica_count / (replica_count - stripe_redundancy_units)`
+  of the payload. At three replicas and one unit of redundancy that measures
+  **1.5x against replication's 3.0x**, read out of `footprint_audit()` for the
+  same objects put through two stores. It is a durability trade -- one loss
+  survived where three-way replication survives two -- and a striped write needs
+  every replica to accept it, so `write_quorum` must equal `replica_count`.
+  Replication is the default and is unchanged. Two things it cannot do yet, named
+  rather than implied: an operator cannot quarantine a replica of a striped
+  service (the guard refuses dropping below the write quorum), and
+  `repair_chunk_replicas` reports a striped page with a lost replica as
+  unrepaired rather than rebuilding its units -- reads still serve it by
+  reconstructing on demand, so the page is readable and one loss from unreadable
+  at the same time.
 - **Space reuse.** Overwriting an object normally leaves its previous version
   resident until collection. With `reuse_stale_chunk_space` the next write takes
   that space directly, which measures about 9% off resident footprint on an
@@ -96,10 +111,18 @@ At three replicas with the metadata counted, measured at 26-character keys:
 | 4 KiB | 4,000 | **3.18x** | 3.00x |
 | 1 KiB | 8,000 | **3.69x** | 3.02x |
 
-The data term is exactly **3.00x** -- the replication floor -- so everything
-above it is metadata, which is **661 bytes an object plus 172,456 fixed**
-whatever the object size. `footprint_audit()` names every resident byte and its
-breakdown sums to its own total with no remainder.
+The data term is exactly **3.00x** -- the replication floor for a store that
+copies every page to every replica -- so everything above it is metadata, which
+is **661 bytes an object plus 172,456 fixed** whatever the object size.
+`footprint_audit()` names every resident byte and its breakdown sums to its own
+total with no remainder.
+
+A store that stripes instead moves the data term itself: the same figure for the
+same objects is **1.5x** at three replicas and one unit of redundancy.
+
+```
+cargo test --lib a_store_holds_one_and_a_half_copies_of_its_payload_when_it_stripes -- --nocapture
+```
 
 ```
 MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib   measure_the_metadata_footprint -- --ignored --nocapture
@@ -373,6 +396,8 @@ Nothing external is required to build or run the tests.
 | `volume_count` | 1 | volumes to spread chunks across |
 | `replica_count` | 3 | copies kept of each chunk |
 | `write_quorum` | 2 | replicas that must accept a write |
+| `stripe_redundancy_units` | 0 | units of redundancy in a stripe group; 0 copies every page to every replica |
+| `stripe_unit_bytes` | 64 KiB | bytes in one stripe unit, when striping |
 | `reuse_stale_chunk_space` | false | take the space a superseded object left instead of growing the chunk |
 
 Every default above is `StoreOptions::default()`, and

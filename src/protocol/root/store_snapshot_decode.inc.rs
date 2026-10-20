@@ -58,6 +58,14 @@ impl StoreSnapshot {
             replica_count: cursor.read_count("store snapshot replica count")?,
             write_quorum: cursor.read_count("store snapshot write quorum")?,
             reuse_stale_chunk_space: StoreOptions::default().reuse_stale_chunk_space,
+            // NOT SNAPSHOT STATE. The layout decides where a byte lives on a replica, and a
+            // snapshot carries the payload logically -- `install_snapshot` replays it through
+            // the write path, which stripes it again if the live store is striping. So the
+            // layout belongs to the store that is restoring, not to the image it restores
+            // from, and `install_snapshot` carries the live setting across the replacement of
+            // `self.options`.
+            stripe_redundancy_units: StoreOptions::default().stripe_redundancy_units,
+            stripe_unit_bytes: StoreOptions::default().stripe_unit_bytes,
         compaction_fragment_threshold: cursor
                 .read_count("store snapshot compaction fragment threshold")?,
             object_manifest_checkpoint_interval: 1,
