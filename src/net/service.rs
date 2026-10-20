@@ -20,8 +20,8 @@
 //! `/{bucket}/{key}` with ranged reads, and the whole multipart family --
 //! CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, ListParts
 //! and ListMultipartUploads, selected by the `uploads`, `uploadId` and `partNumber` query
-//! parameters as S3 selects them. Also DeleteObjects, CopyObject, GetBucketLocation and
-//! Get/PutBucketVersioning.
+//! parameters as S3 selects them. Also DeleteObjects, CopyObject, GetBucketLocation,
+//! Get/PutBucketVersioning, ListObjectVersions, and `versionId` on a read or a delete.
 //!
 //! # WHAT IS DELIBERATELY NOT IMPLEMENTED
 //!
@@ -50,6 +50,7 @@ use super::http::{self, Request, Response, ResolvedRange};
 use super::s3;
 use super::s3_batch as batch;
 use super::s3_multipart as mp;
+use super::s3_versions as versions;
 use crate::{MatrixObjectStore, ObjectError, ObjectMetadata, PutOptions};
 
 /// Default `Content-Type` recorded for a body that arrives without one.
@@ -191,6 +192,9 @@ impl ObjectService {
             }
             "GET" if request.query_param("versioning").is_some() => {
                 self.bucket_versioning(bucket)
+            }
+            "GET" if request.query_param("versions").is_some() => {
+                self.list_object_versions(request, bucket)
             }
             "PUT" if request.query_param("versioning").is_some() => {
                 self.set_bucket_versioning(request, bucket)
@@ -443,15 +447,240 @@ impl ObjectService {
             "GET" | "HEAD" if upload_id.is_some() => {
                 self.list_parts(request, bucket, key, upload_id)
             }
+            "GET" | "HEAD" if request.query_param("versionId").is_some() => {
+                self.get_object_version(request, bucket, key)
+            }
             "GET" | "HEAD" => self.get_object(request, bucket, key),
             "DELETE" if upload_id.is_some() => {
                 self.abort_multipart_upload(bucket, key, upload_id)
+            }
+            "DELETE" if request.query_param("versionId").is_some() => {
+                self.delete_object_version(request, bucket, key)
             }
             "DELETE" => self.delete_object(bucket, key),
             _ => method_not_allowed(
                 "PUT, POST, GET, HEAD, DELETE",
                 &format!("/{bucket}/{key}"),
             ),
+        }
+    }
+
+    /// `ListObjectVersions`.
+    fn list_object_versions(&self, request: &Request, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let prefix = request.query_param("prefix").unwrap_or_default();
+        let delimiter = request.query_param("delimiter").filter(|d| !d.is_empty());
+        let key_marker = request.query_param("key-marker").unwrap_or_default();
+        let version_id_marker_raw = request
+            .query_param("version-id-marker")
+            .unwrap_or_default();
+        let version_id_marker = if version_id_marker_raw.is_empty() {
+            None
+        } else {
+            match versions::parse_version_id(&version_id_marker_raw) {
+                Ok(version) => Some(version),
+                Err(reason) => {
+                    return s3::error_response(
+                        s3::S3ErrorCode::InvalidArgument,
+                        &reason,
+                        &resource,
+                    )
+                }
+            }
+        };
+        // A version-id-marker WITHOUT a key-marker names a position in no key. Refused rather than
+        // ignored: ignoring it restarts the listing from the top, and a client paging through
+        // versions would loop over the same first page forever.
+        if version_id_marker.is_some() && key_marker.is_empty() {
+            return s3::error_response(
+                s3::S3ErrorCode::InvalidArgument,
+                "version-id-marker names a position within a key and no key-marker was given",
+                &resource,
+            );
+        }
+        let max_keys = match request.query_param("max-keys") {
+            Some(raw) if !raw.is_empty() => match raw.parse::<usize>() {
+                Ok(parsed) => parsed.clamp(1, MAX_LIST_LIMIT),
+                Err(_) => {
+                    return s3::error_response(
+                        s3::S3ErrorCode::InvalidArgument,
+                        "max-keys is not a number",
+                        &resource,
+                    )
+                }
+            },
+            _ => DEFAULT_LIST_LIMIT,
+        };
+
+        let guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.bucket_exists(bucket) {
+            Ok(true) => {}
+            Ok(false) => {
+                return s3::error_response(
+                    s3::S3ErrorCode::NoSuchBucket,
+                    "bucket not found",
+                    &resource,
+                )
+            }
+            Err(err) => return s3_error(err, &resource, true),
+        }
+        let listed = match guard.list_bucket_object_versions(
+            bucket,
+            &prefix,
+            Some(key_marker.as_str()).filter(|marker| !marker.is_empty()),
+            version_id_marker,
+            max_keys,
+        ) {
+            Ok(listed) => listed,
+            Err(err) => return s3_error(err, &resource, true),
+        };
+        let truncated = listed.len() >= max_keys;
+        let mut entries: Vec<versions::VersionEntry> = Vec::new();
+        let mut common_prefixes: Vec<String> = Vec::new();
+        let mut last: Option<(String, u64)> = None;
+        // THE LATEST VERSION OF A KEY IS THE FIRST ONE SEEN, because the store returns each key's
+        // versions newest first. Tracked rather than recomputed: asking the store again per key
+        // would be a second read of the same data that could disagree with the first.
+        let mut latest_seen: Option<String> = None;
+        for metadata in listed {
+            let key = metadata.object_id.key.to_string();
+            last = Some((key.clone(), metadata.version));
+            if let Some(delimiter) = &delimiter {
+                let remainder = key.strip_prefix(prefix.as_str()).unwrap_or(key.as_str());
+                if let Some(at) = remainder.find(delimiter.as_str()) {
+                    let rolled = format!("{prefix}{}", &remainder[..at + delimiter.len()]);
+                    if !common_prefixes.contains(&rolled) {
+                        common_prefixes.push(rolled);
+                    }
+                    continue;
+                }
+            }
+            let is_latest = latest_seen.as_deref() != Some(key.as_str());
+            if is_latest {
+                latest_seen = Some(key.clone());
+            }
+            let storage_class = metadata.storage_class.to_string();
+            entries.push(versions::VersionEntry {
+                key,
+                version_id: metadata.version,
+                is_latest,
+                delete_marker: metadata.deleted,
+                last_modified_ms: metadata.update_time_ms,
+                etag: metadata.etag(),
+                size: metadata.length,
+                storage_class: if storage_class.is_empty() {
+                    s3::DEFAULT_STORAGE_CLASS.to_string()
+                } else {
+                    storage_class
+                },
+            });
+        }
+        let (next_key_marker, next_version_id_marker) = match (truncated, last) {
+            (true, Some((key, version))) => (Some(key), Some(version)),
+            _ => (None, None),
+        };
+        let result = versions::ListVersionsResult {
+            bucket: bucket.to_string(),
+            prefix,
+            delimiter,
+            key_marker,
+            version_id_marker: version_id_marker_raw,
+            next_key_marker,
+            next_version_id_marker,
+            max_keys,
+            is_truncated: truncated,
+            entries,
+            common_prefixes,
+        };
+        s3::xml_response(200, versions::list_object_versions_xml(&result))
+    }
+
+    /// A read of one named version.
+    fn get_object_version(&self, request: &Request, bucket: &str, key: &str) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let raw = request.query_param("versionId").unwrap_or_default();
+        let version = match versions::parse_version_id(&raw) {
+            Ok(version) => version,
+            Err(reason) => {
+                return s3::error_response(s3::S3ErrorCode::InvalidArgument, &reason, &resource)
+            }
+        };
+        let guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        let metadata = match guard.head_object_version(bucket, key, version) {
+            Ok(metadata) => metadata,
+            Err(err) => return s3_error(err, &resource, false),
+        };
+        // A RANGE IS NOT HONOURED ON A VERSIONED READ, and it is refused rather than ignored: a
+        // client that asked for bytes 0-99 and received the whole object under a 200 would write
+        // the wrong length wherever it put them. The store has a versioned range read; wiring it
+        // is a separate change, and until then this says so.
+        if request.header("range").is_some() {
+            return s3::error_response(
+                s3::S3ErrorCode::NotImplemented,
+                "a ranged read of a named version is not implemented here, and a range is \
+                 refused rather than silently answered with the whole object",
+                &resource,
+            );
+        }
+        if request.method == "HEAD" {
+            let mut response = Response::status(200);
+            apply_metadata_headers(&mut response, &metadata);
+            return response;
+        }
+        match guard.get_object_version(bucket, key, version) {
+            Ok(object) => {
+                let mut response = Response {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: object.data,
+                };
+                apply_metadata_headers(&mut response, &object.metadata);
+                response
+            }
+            Err(err) => s3_error(err, &resource, false),
+        }
+    }
+
+    /// A delete of one named version.
+    ///
+    /// NOT IDEMPOTENT, unlike a delete of a key. Deleting a key is a request to make it absent,
+    /// and a retry that finds it already absent got what it asked for. Deleting a NAMED version is
+    /// a request about one particular stored thing, and reporting success for a version this store
+    /// never had would hide a client sending the wrong id -- the same reason an abort is not
+    /// idempotent.
+    fn delete_object_version(&self, request: &Request, bucket: &str, key: &str) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let raw = request.query_param("versionId").unwrap_or_default();
+        let version = match versions::parse_version_id(&raw) {
+            Ok(version) => version,
+            Err(reason) => {
+                return s3::error_response(s3::S3ErrorCode::InvalidArgument, &reason, &resource)
+            }
+        };
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.delete_object_version(bucket, key, version) {
+            Ok(_) => {
+                if let Err(err) = guard.flush_persistent_snapshot() {
+                    return flush_failed(
+                        &resource,
+                        format!(
+                            "the version was removed from memory but its durable snapshot could \
+                             not be rewritten, so it may come back on restart: {err}"
+                        ),
+                    );
+                }
+                Response::status(204).with_header("x-amz-version-id", version.to_string())
+            }
+            Err(err) => s3_error(err, &resource, false),
         }
     }
 
@@ -1195,6 +1424,14 @@ fn apply_metadata_headers(response: &mut Response, metadata: &ObjectMetadata) {
     response
         .headers
         .push(("accept-ranges".to_string(), "bytes".to_string()));
+    // BOTH SPELLINGS, and the S3 one is not a rename of the other. `x-amz-version-id` is what a
+    // client reads to learn the id it can come back to with `?versionId=`; without it, versioning
+    // is a switch with no way to discover what it produced. The crate's own header predates it and
+    // stays, because something may already be reading it.
+    response.headers.push((
+        "x-amz-version-id".to_string(),
+        metadata.version.to_string(),
+    ));
     response.headers.push((
         "x-matrixobject-version".to_string(),
         metadata.version.to_string(),

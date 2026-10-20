@@ -233,6 +233,9 @@ The verbs, where `{bucket}` is the first path segment and `{key}` is everything 
 | `GET /{bucket}?location` | `GetBucketLocation` |
 | `GET /{bucket}?versioning` | `GetBucketVersioning` |
 | `PUT /{bucket}?versioning` | `PutBucketVersioning` |
+| `GET /{bucket}?versions` | `ListObjectVersions`, with delete markers reported as such |
+| `GET` / `HEAD /{bucket}/{key}?versionId=` | read one named version |
+| `DELETE /{bucket}/{key}?versionId=` | remove one named version |
 | `GET /healthz` | readiness, which takes the store lock rather than only reporting the listener |
 
 A write answers the object's `ETag`, `Content-Type`, `Last-Modified`, its version and length, and
@@ -279,7 +282,10 @@ verified, which is the same statement as the unauthenticated note above and the 
 bind is loopback.
 
 Not implemented, and answered with `NotImplemented` or `MethodNotAllowed` rather than with an empty
-success: versioning verbs, tagging verbs, object ACLs, bucket policies, lifecycle verbs.
+success: tagging verbs, object ACLs, bucket policies, lifecycle verbs, and a ranged read of a named
+version -- a range on a `?versionId=` read is refused rather than answered with the whole object,
+because a client that asked for bytes 0-99 and got all of them would write the wrong length wherever
+it put them.
 
 **One thing S3 checks that this does not:** the 5 MiB minimum for a non-final part. This store
 accepts any part size, and enforcing a minimum it does not have would refuse uploads it can serve
@@ -291,6 +297,14 @@ the other two it is. `GetBucketVersioning` therefore omits `<Status>` for `false
 sends for a bucket that was never configured and is the answer a client acts on identically either
 way. A client that specifically wants to know whether versioning was once on and then suspended
 cannot learn it here, and closing that needs the store to carry the third state.
+
+**The version id is a number here and an opaque string in S3.** A client is required to treat it as
+opaque -- it reads the id out of a response and sends it back untouched -- and one that does cannot
+tell the difference. A write reports it as `x-amz-version-id`, which is how a client learns the id
+it can come back to. `versionId=null`, S3's id for an object written before versioning was turned
+on, is **refused**: every object here carries a version from the start, so there is no such version,
+and serving the current object instead would hand a client a different version from the one it
+named.
 
 **`GetBucketLocation` answers an empty `<LocationConstraint/>`**, which is S3's own value for its
 default region and is the only answer that is true of a store with no notion of a region. Naming one
