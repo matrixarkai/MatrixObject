@@ -2952,6 +2952,7 @@ fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
                 checksum_fnv1a64: fnv1a64(b"x"),
                 data: std::sync::Arc::new(b"x".to_vec()),
                 ec_parity_fragment: None,
+                ec_fragment_digests: None,
                 discarded_ranges: Vec::new(),
             },
         ),
@@ -4555,6 +4556,7 @@ fn replica_service_dedupes_state_install_and_reclaim_receipts_across_snapshots()
         checksum_fnv1a64: fnv1a64(b"abcdefgh"),
         data: std::sync::Arc::new(b"abcdefgh".to_vec()),
         ec_parity_fragment: None,
+        ec_fragment_digests: None,
         discarded_ranges: vec![DataRange {
             offset: 2,
             length: 3,
@@ -38801,6 +38803,549 @@ fn a_refused_put_restores_the_payload_entry_it_replaced() {
         message.contains("discarded"),
         "and it should refuse for the discarded range the replacing put recorded, which is \
          what `abort_mutation_batch` undoes: {message:?}"
+    );
+}
+
+#[cfg(test)]
+fn one_replica_chunk_service() -> MatrixChunkService {
+    // ONE replica, because that is the only configuration that keeps a sidecar:
+    // `keep_ec_sidecar = replica_count <= 1`. A page with peers is repaired from a peer and
+    // stores neither sidecar nor digests.
+    MatrixChunkService::new(1024 * 1024, 1, 1).unwrap()
+}
+
+#[test]
+fn a_damaged_fragment_is_located_by_its_digest_rather_than_searched_for() {
+    // THE POSITIVE CASE FIRST, and for this change that is not a formality: the old
+    // recovery searched and would still have found the answer, so a test that only checked
+    // the bytes came back would pass with the digests deleted. What the digests change is
+    // WHICH fragment is rebuilt and WHAT is said when one cannot be, and both are asserted
+    // below.
+    let mut service = one_replica_chunk_service();
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    // Large enough for several fragments: the floor is 8 KiB a fragment, so 64 KiB is 8.
+    let payload: Vec<u8> = (0..65_536u32).map(|index| (index % 251) as u8).collect();
+    service
+        .write_slab_ranges(vec![ChunkRangeWrite {
+            chunk_id: chunk_id.clone(),
+            offset: 0,
+            data: payload.clone(),
+        }])
+        .unwrap();
+    let page_id = PageId {
+        chunk_id: chunk_id.clone(),
+        page_index: 0,
+    };
+
+    let digests = service.replicas[0]
+        .pages
+        .get(&page_id)
+        .expect("the page should exist")
+        .fragment_digests()
+        .to_vec();
+    assert_eq!(
+        digests.len(),
+        chunk_ec_fragment_count(payload.len()),
+        "one digest per fragment, and the payload should be several fragments"
+    );
+    assert!(digests.len() > 2, "a one-fragment payload proves nothing here");
+    assert_eq!(
+        digests,
+        chunk_ec_fragment_digests_from_data(&payload),
+        "the stored digests should be the ones the payload produces"
+    );
+
+    // Damage a fragment in the middle, so a search would have to walk past some good ones.
+    let shard_len = chunk_ec_fragment_len(payload.len());
+    let damaged_fragment = 3usize;
+    let damaged_at = damaged_fragment * shard_len + 7;
+    {
+        let state = std::sync::Arc::make_mut(
+            service.replicas[0].pages.get_mut(&page_id).expect("the page"),
+        );
+        let data = std::sync::Arc::make_mut(&mut state.data);
+        data[damaged_at] ^= 0xFF;
+    }
+
+    // The digests name exactly the fragment that was damaged, which is the whole point.
+    let state = service.replicas[0].pages.get(&page_id).expect("the page");
+    assert_eq!(
+        chunk_ec_damaged_fragments(&state.data, state.fragment_digests()),
+        vec![damaged_fragment],
+        "the digest table should name the one damaged fragment and no other"
+    );
+
+    // And the page reads back as what was written.
+    let (read, _) = service
+        .read_chunk_range(&chunk_id, 0, payload.len() as u64)
+        .unwrap();
+    assert_eq!(read, payload, "a page with one damaged fragment should recover");
+
+    // A PAYLOAD THAT DOES NOT DIVIDE EVENLY, because the one above does: 65,536 bytes is
+    // exactly eight fragments of 8,192, so no fragment there has a short tail at all.
+    //
+    // WHAT THIS DOES NOT PROVE, said so it is not read as proving it: the padding the
+    // digest takes over that tail is NOT observable from here. The only reader of the
+    // digests compares a stored table against one computed by the same function, so
+    // padding or not padding changes both sides together -- a mutation that removed it
+    // went uncaught even against this payload. What this does cover is that a short tail
+    // is handled at all, through the whole path from writing to locating to rebuilding.
+    let ragged: Vec<u8> = (0..65_636u32).map(|index| (index % 241) as u8).collect();
+    let shard_len = chunk_ec_fragment_len(ragged.len());
+    let shards = chunk_ec_fragment_count(ragged.len());
+    assert!(
+        shards * shard_len > ragged.len(),
+        "this payload must NOT divide evenly, or it tests the same thing as the one above"
+    );
+    let last = shards - 1;
+    assert!(
+        ragged.len() > last * shard_len,
+        "the last fragment must hold some real bytes as well as padding"
+    );
+    assert_eq!(
+        chunk_ec_damaged_fragments(&ragged, &chunk_ec_fragment_digests_from_data(&ragged)),
+        Vec::<usize>::new(),
+        "an undamaged ragged payload must have NO damaged fragments -- a digest over the \
+         unpadded tail would make its last fragment read as damaged forever"
+    );
+
+    // And the ragged page recovers from damage in that last, short fragment.
+    let mut damaged_ragged = ragged.clone();
+    damaged_ragged[last * shard_len + 3] ^= 0xFF;
+    assert_eq!(
+        chunk_ec_damaged_fragments(
+            &damaged_ragged,
+            &chunk_ec_fragment_digests_from_data(&ragged)
+        ),
+        vec![last],
+        "damage in the short tail fragment should name that fragment"
+    );
+    let recovered = chunk_ec_recover_data(
+        &damaged_ragged,
+        &chunk_ec_parity_from_data(&ragged),
+        &chunk_ec_fragment_digests_from_data(&ragged),
+        ragged.len(),
+        &etag(&ragged),
+    )
+    .expect("a ragged page with one damaged fragment should recover");
+    assert_eq!(recovered, ragged, "and recover as the bytes that were written");
+}
+
+#[test]
+fn the_digests_tell_a_damaged_payload_from_a_damaged_sidecar() {
+    // WHAT THE SEARCH COULD NOT SAY. With every fragment matching its digest the payload is
+    // whole, so the damage is in the sidecar or in the recorded checksum -- and rebuilding
+    // a fragment would replace good bytes with bytes derived from a bad sidecar. The old
+    // recovery tried every fragment, failed, and reported that something unspecified did
+    // not reproduce the checksum.
+    let payload: Vec<u8> = (0..65_536u32).map(|index| (index % 251) as u8).collect();
+    let digests = chunk_ec_fragment_digests_from_data(&payload);
+    let sidecar = chunk_ec_parity_from_data(&payload);
+
+    // A sidecar that is wrong, beside a payload that is not.
+    let mut damaged_sidecar = sidecar.clone();
+    damaged_sidecar[11] ^= 0xFF;
+    let refused = chunk_ec_recover_data(
+        &payload,
+        &damaged_sidecar,
+        &digests,
+        payload.len(),
+        // A checksum that the payload does NOT match, so recovery is actually attempted.
+        &etag(b"not this payload"),
+    );
+    let message = match refused {
+        Err(err) => err.to_string(),
+        Ok(_) => panic!("a whole payload must not be rebuilt from a damaged sidecar"),
+    };
+    assert!(
+        message.contains("payload is whole"),
+        "the refusal should say the payload is whole and the damage is elsewhere, and it \
+         says {message:?}"
+    );
+
+    // TWO damaged fragments: one unit of redundancy recovers one, and the refusal counts
+    // them rather than reporting a generic failure.
+    let shard_len = chunk_ec_fragment_len(payload.len());
+    let mut twice_damaged = payload.clone();
+    twice_damaged[shard_len + 1] ^= 0xFF;
+    twice_damaged[3 * shard_len + 1] ^= 0xFF;
+    let refused = chunk_ec_recover_data(
+        &twice_damaged,
+        &sidecar,
+        &digests,
+        payload.len(),
+        &etag(&payload),
+    );
+    let message = match refused {
+        Err(err) => err.to_string(),
+        Ok(_) => panic!("two damaged fragments cannot be rebuilt from one unit"),
+    };
+    assert!(
+        message.contains("2 chunk fragments are damaged"),
+        "the refusal should count the damaged fragments, and it says {message:?}"
+    );
+
+    // AND THE SEARCH STILL WORKS without digests, which is what keeps an older snapshot
+    // recoverable. Same damage, no digest table, same bytes back.
+    let mut once_damaged = payload.clone();
+    once_damaged[3 * shard_len + 1] ^= 0xFF;
+    let recovered =
+        chunk_ec_recover_data(&once_damaged, &sidecar, &[], payload.len(), &etag(&payload))
+            .expect("the fallback search should still recover one damaged fragment");
+    assert_eq!(recovered, payload, "the fallback should produce the same bytes");
+}
+
+#[test]
+fn a_replica_with_peers_stores_neither_sidecar_nor_digests() {
+    // The digests go with the sidecar. On their own they can say a fragment is damaged and
+    // do nothing about it, so a replica that keeps no sidecar should pay for neither.
+    let mut service = MatrixChunkService::new(1024 * 1024, 3, 2).unwrap();
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    service
+        .write_slab_ranges(vec![ChunkRangeWrite {
+            chunk_id: chunk_id.clone(),
+            offset: 0,
+            data: vec![b'x'; 65_536],
+        }])
+        .unwrap();
+    let page_id = PageId {
+        chunk_id,
+        page_index: 0,
+    };
+    for (index, replica) in service.replicas.iter().enumerate() {
+        let state = replica.pages.get(&page_id).expect("every replica holds it");
+        assert!(
+            state.fragment_bytes().is_empty(),
+            "replica {index} has peers and should keep no sidecar"
+        );
+        assert!(
+            state.fragment_digests().is_empty(),
+            "replica {index} keeps no sidecar, so it should keep no digests either"
+        );
+    }
+
+    // And the one-replica case does keep both, so the assertion above is about the policy
+    // rather than about the digests never being stored at all.
+    let mut alone = one_replica_chunk_service();
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    alone
+        .write_slab_ranges(vec![ChunkRangeWrite {
+            chunk_id: chunk_id.clone(),
+            offset: 0,
+            data: vec![b'x'; 65_536],
+        }])
+        .unwrap();
+    let state = alone.replicas[0]
+        .pages
+        .get(&PageId { chunk_id, page_index: 0 })
+        .expect("the page");
+    assert!(!state.fragment_bytes().is_empty());
+    assert!(!state.fragment_digests().is_empty());
+}
+
+#[test]
+fn a_snapshot_cannot_carry_a_damaged_page() {
+    // THE PREMISE THE DIGEST TABLE'S ABSENCE FROM THE WIRE RESTS ON. `to_bytes` validates
+    // every page and refuses one whose checksum does not match its payload, so a snapshot
+    // never carries damaged bytes -- which is what makes a table derived at decode byte for
+    // byte the table that was stored.
+    //
+    // Two mutations found this rather than a test: deleting the wire format entirely
+    // changed nothing observable, because nothing the format carried could ever differ
+    // from what the decoder recomputes. The format went; this pins why.
+    let mut service = one_replica_chunk_service();
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let payload: Vec<u8> = (0..65_536u32).map(|index| (index % 251) as u8).collect();
+    service
+        .write_slab_ranges(vec![ChunkRangeWrite {
+            chunk_id: chunk_id.clone(),
+            offset: 0,
+            data: payload.clone(),
+        }])
+        .unwrap();
+    let page_id = PageId {
+        chunk_id: chunk_id.clone(),
+        page_index: 0,
+    };
+    // THE HEALTHY CASE FIRST, or the refusal below could be any refusal at all.
+    let bytes = service
+        .export_snapshot()
+        .to_bytes()
+        .expect("a healthy page should export");
+    let mut restored = one_replica_chunk_service();
+    restored.install_snapshot_bytes(&bytes).unwrap();
+    let after = restored.replicas[0]
+        .pages
+        .get(&page_id)
+        .expect("the restored page")
+        .fragment_digests()
+        .to_vec();
+    assert_eq!(
+        after,
+        chunk_ec_fragment_digests_from_data(&payload),
+        "a restored page should hold the table its payload produces"
+    );
+    assert!(!after.is_empty(), "a one-replica page keeps a table");
+
+    // And it still locates damage after the round trip, which is what the table is for.
+    let shard_len = chunk_ec_fragment_len(payload.len());
+    {
+        let state = std::sync::Arc::make_mut(
+            restored.replicas[0].pages.get_mut(&page_id).expect("the page"),
+        );
+        let data = std::sync::Arc::make_mut(&mut state.data);
+        data[2 * shard_len + 5] ^= 0xFF;
+    }
+    let state = restored.replicas[0].pages.get(&page_id).expect("the page");
+    assert_eq!(
+        chunk_ec_damaged_fragments(&state.data, state.fragment_digests()),
+        vec![2],
+        "the restored table should name the damaged fragment"
+    );
+    let (read, _) = restored
+        .read_chunk_range(&chunk_id, 0, payload.len() as u64)
+        .unwrap();
+    assert_eq!(read, payload, "and the page should still recover");
+
+    // NOW THE REFUSAL: that same damaged page cannot be exported at all.
+    let refused = restored.export_snapshot().to_bytes();
+    let message = match refused {
+        Err(err) => err.to_string(),
+        Ok(_) => panic!(
+            "a snapshot carrying a damaged page would make the decoder's derivation wrong, \
+             and the export is what stops it"
+        ),
+    };
+    assert!(
+        message.contains("checksum mismatch"),
+        "the export should refuse for the checksum, and it says {message:?}"
+    );
+}
+
+#[test]
+fn a_digest_table_of_the_wrong_width_is_refused_on_install() {
+    // A table that does not have one entry per fragment cannot locate anything, and a
+    // reader that trusted it would mis-name the damage -- `chunk_ec_damaged_fragments`
+    // would see the widths disagree and report NO damaged fragments, which reads as "the
+    // payload is whole" and sends the recovery down the branch that refuses to rebuild.
+    //
+    // The decoder can no longer produce one, so this is reachable the way any other
+    // malformed state is: handed to `install_chunk_state`, which validates first.
+    let mut service = one_replica_chunk_service();
+    let payload: Vec<u8> = (0..65_536u32).map(|index| (index % 251) as u8).collect();
+    let page_id = PageId {
+        chunk_id: ChunkId { volume_id: 1, id: 1 },
+        page_index: 0,
+    };
+    let sound = PageState {
+        logical_length: payload.len() as u64,
+        write_sequence: 1,
+        checksum_fnv1a64: fnv1a64(&payload),
+        data: std::sync::Arc::new(payload.clone()),
+        ec_parity_fragment: Some(std::sync::Arc::new(chunk_ec_parity_from_data(&payload))),
+        ec_fragment_digests: Some(std::sync::Arc::new(
+            chunk_ec_fragment_digests_from_data(&payload),
+        )),
+        discarded_ranges: Vec::new(),
+    };
+    // THE SOUND ONE FIRST, so the refusal below is about the width and not about anything
+    // else being wrong with a hand-built state.
+    service.replicas[0]
+        .install_chunk_state(page_id.clone(), sound.clone())
+        .expect("a state whose table has one entry per fragment should install");
+
+    let mut too_narrow = sound.clone();
+    let mut short = chunk_ec_fragment_digests_from_data(&payload);
+    short.pop();
+    assert!(!short.is_empty(), "the short table must still have entries");
+    too_narrow.ec_fragment_digests = Some(std::sync::Arc::new(short));
+    let refused = service.replicas[0].install_chunk_state(page_id.clone(), too_narrow);
+    let message = match refused {
+        Err(err) => err.to_string(),
+        Ok(()) => panic!("a table with one entry too few should be refused"),
+    };
+    assert!(
+        message.contains("digest table"),
+        "the refusal should name the digest table, and it says {message:?}"
+    );
+
+    let mut too_wide = sound;
+    let mut long = chunk_ec_fragment_digests_from_data(&payload);
+    long.push(0);
+    too_wide.ec_fragment_digests = Some(std::sync::Arc::new(long));
+    assert!(
+        service.replicas[0]
+            .install_chunk_state(page_id, too_wide)
+            .is_err(),
+        "a table with one entry too many should be refused as well"
+    );
+}
+
+#[test]
+fn a_page_that_moves_to_a_replica_with_peers_gives_up_its_digests() {
+    // The only path where `clear_chunk_ec_sidecars` has anything to clear. A service with
+    // peers never COMPUTES the digests, so clearing them there is a no-op and a test that
+    // only looked at such a service would pass with the clearing deleted -- which is
+    // exactly what a mutation showed.
+    //
+    // A page carrying both arrives from a service that kept them, and is then written.
+    let mut alone = one_replica_chunk_service();
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    alone
+        .write_slab_ranges(vec![ChunkRangeWrite {
+            chunk_id: chunk_id.clone(),
+            offset: 0,
+            data: vec![b'x'; 65_536],
+        }])
+        .unwrap();
+    let page_id = PageId {
+        chunk_id: chunk_id.clone(),
+        page_index: 0,
+    };
+    let carried = alone.replicas[0]
+        .pages
+        .get(&page_id)
+        .expect("the page")
+        .as_ref()
+        .clone();
+    assert!(
+        !carried.fragment_digests().is_empty(),
+        "the page must arrive WITH digests, or this proves nothing"
+    );
+
+    let mut with_peers = MatrixChunkService::new(1024 * 1024, 3, 2).unwrap();
+    with_peers
+        .replicas
+        .get_mut(0)
+        .expect("a replica")
+        .install_chunk_state(page_id.clone(), carried)
+        .unwrap();
+
+    // The write is what runs the policy.
+    with_peers
+        .write_slab_ranges(vec![ChunkRangeWrite {
+            chunk_id: chunk_id.clone(),
+            offset: 0,
+            data: vec![b'y'; 1024],
+        }])
+        .unwrap();
+    let state = with_peers.replicas[0]
+        .pages
+        .get(&page_id)
+        .expect("the page");
+    assert!(
+        state.fragment_bytes().is_empty(),
+        "a replica with peers keeps no sidecar"
+    );
+    assert!(
+        state.fragment_digests().is_empty(),
+        "and must give up the digests with it -- on their own they can say a fragment is \
+         damaged and do nothing about it"
+    );
+}
+
+#[test]
+fn the_audit_weighs_the_fragment_digest_table() {
+    // A representation change is not done until the leg that weighs it moves, and nothing
+    // named this one until a mutation charged it at zero and no test noticed.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 1,
+        replica_count: 1,
+        write_quorum: 1,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..8u64 {
+        store
+            .put_object(
+                "bucket",
+                &format!("k/{index:08}"),
+                vec![b'x'; 65_536],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let get = |key: &str| -> u64 {
+        *audit
+            .get(key)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    };
+    let count = get("replica.ec_digests.count");
+    let bytes = get("replica.ec_digests.capacity");
+    println!(
+        "ECDIGESTS count={count} bytes={bytes} sidecar_bytes={}",
+        get("replica.ec_fragments.capacity")
+    );
+    assert!(
+        count > 0,
+        "a single-replica store keeps a digest per fragment, and this one reports none"
+    );
+    // STRUCTURAL: eight bytes a digest, whatever the fragment count works out to here.
+    assert_eq!(
+        bytes,
+        count * std::mem::size_of::<u64>() as u64,
+        "the table is weighed at eight bytes a digest"
+    );
+    // And it is small beside what it indexes, which is the trade this change makes.
+    assert!(
+        bytes * 50 < get("replica.ec_fragments.capacity"),
+        "the table should be a small fraction of the sidecar it locates damage in: \
+         {bytes} against {}",
+        get("replica.ec_fragments.capacity")
+    );
+
+    // THE HANDLE AS WELL AS THE CONTENTS. An `Arc<Vec<u64>>` allocation is the two counts
+    // plus the Vec's three words, which for a 128-byte table is the larger of the two --
+    // so an audit that counted the digests and not their allocation would understate the
+    // table by more than the table.
+    //
+    // As a RELATION between two stores, not against a constant: the allocation's size is a
+    // property of this platform's pointer width, and a figure copied out of a run would be
+    // a second thing to keep in step.
+    let pages = get("replica.chunks");
+    let handles = get("replica.page_payload_handles.bytes");
+
+    let mut with_peers = MatrixObjectStore::new(StoreOptions {
+        volume_count: 1,
+        replica_count: 3,
+        write_quorum: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    with_peers.create_bucket("bucket").unwrap();
+    for index in 0..8u64 {
+        with_peers
+            .put_object(
+                "bucket",
+                &format!("k/{index:08}"),
+                vec![b'x'; 65_536],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let peer_audit: std::collections::BTreeMap<String, u64> =
+        with_peers.footprint_audit().into_iter().collect();
+    let peer_pages = peer_audit["replica.chunks"];
+    let peer_handles = peer_audit["replica.page_payload_handles.bytes"];
+    // A replica with peers keeps neither sidecar nor digests, so each of its pages holds
+    // exactly one of these allocations: the payload's.
+    assert_eq!(
+        peer_audit["replica.ec_digests.count"], 0,
+        "a store with peers should keep no digests, or the unit below is not one allocation"
+    );
+    let one_allocation = peer_handles / peer_pages;
+    assert!(one_allocation > 0);
+
+    // A single-replica page holds three: the payload, the sidecar and the digest table.
+    assert_eq!(
+        handles,
+        pages * 3 * one_allocation,
+        "a page that keeps a sidecar and a digest table holds three of these allocations, \
+         and the audit should charge all three: {handles} against {}",
+        pages * 3 * one_allocation
     );
 }
 

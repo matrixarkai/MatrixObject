@@ -93,6 +93,7 @@ impl MatrixReplicaService {
         let reconstructed = match chunk_ec_recover_data(
             &chunk.data,
             chunk.fragment_bytes(),
+            chunk.fragment_digests(),
             chunk.logical_length as usize,
             &chunk.checksum(),
         ) {

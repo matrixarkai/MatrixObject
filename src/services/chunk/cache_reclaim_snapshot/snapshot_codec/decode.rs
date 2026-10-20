@@ -202,6 +202,23 @@ impl ReplicaServiceSnapshot {
             } else {
                 std::sync::Arc::new(chunk_ec_parity_from_data(&data))
             };
+            // DERIVED, NOT CARRIED, and the reason is a property of the snapshot rather
+            // than a saving: `to_bytes` validates every page and refuses one whose
+            // checksum does not match its payload, so a snapshot NEVER carries damaged
+            // bytes. A table taken from the payload here is therefore byte for byte the
+            // table that was taken when the page was written, and encoding it would add a
+            // format version to carry bytes this line can always recompute.
+            //
+            // `a_snapshot_cannot_carry_a_damaged_page` pins that premise. If it ever stops
+            // holding, this derivation becomes wrong -- it would agree with the damage --
+            // and the table has to start travelling.
+            let ec_fragment_digests = if ec_parity_fragment.is_empty() {
+                // No sidecar kept, so no digests: on their own they can say a fragment is
+                // damaged and do nothing about it.
+                Vec::new()
+            } else {
+                chunk_ec_fragment_digests_from_data(&data)
+            };
             let discard_range_count =
                 cursor.read_count("chunk service snapshot discard range count")?;
             let mut discarded_ranges = Vec::with_capacity(discard_range_count);
@@ -225,6 +242,11 @@ impl ReplicaServiceSnapshot {
                         None
                     } else {
                         Some(ec_parity_fragment)
+                    },
+                    ec_fragment_digests: if ec_fragment_digests.is_empty() {
+                        None
+                    } else {
+                        Some(std::sync::Arc::new(ec_fragment_digests))
                     },
                     discarded_ranges,
                 }),

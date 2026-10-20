@@ -198,6 +198,8 @@ impl MatrixObjectStore {
         const ARC_VEC_ALLOCATION: u64 =
             (2 * std::mem::size_of::<usize>() + std::mem::size_of::<Vec<u8>>()) as u64;
         let mut page_handle_bytes = 0u64;
+        let mut digest_bytes = 0u64;
+        let mut digest_count = 0u64;
         let mut fragment_len = 0u64;
         let mut fragment_cap = 0u64;
         let mut fragment_count = 0u64;
@@ -242,6 +244,18 @@ impl MatrixObjectStore {
                 if state.ec_parity_fragment.is_some() {
                     page_handle_bytes = page_handle_bytes.saturating_add(ARC_VEC_ALLOCATION);
                 }
+                // The digest table is a third allocation on the pages that keep one, and
+                // it is charged by the same rule as the sidecar: the handle whenever it
+                // exists, the contents at capacity. `k` is 2..16, so the contents are 16
+                // to 128 bytes -- small beside a sidecar of `len / k`, and NOT nothing,
+                // which is what an audit that skipped it would report.
+                if let Some(digests) = state.ec_fragment_digests.as_ref() {
+                    page_handle_bytes = page_handle_bytes.saturating_add(ARC_VEC_ALLOCATION);
+                    digest_bytes = digest_bytes.saturating_add(
+                        (digests.capacity() * std::mem::size_of::<u64>()) as u64,
+                    );
+                    digest_count = digest_count.saturating_add(digests.len() as u64);
+                }
             }
             replica_receipts = replica_receipts
                 .saturating_add(replica.write_request_receipts.len() as u64)
@@ -256,6 +270,9 @@ impl MatrixObjectStore {
         push("replica.page_payload_handles.bytes", page_handle_bytes);
         push("replica.ec_fragments.len", fragment_len);
         push("replica.ec_fragments.capacity", fragment_cap);
+        // What it costs to know WHICH fragment is damaged rather than to search for it.
+        push("replica.ec_digests.count", digest_count);
+        push("replica.ec_digests.capacity", digest_bytes);
         push("replica.checksum.capacity", checksum_bytes);
         push("replica.discard_rows", discard_rows);
         push("replica.receipts", replica_receipts);
