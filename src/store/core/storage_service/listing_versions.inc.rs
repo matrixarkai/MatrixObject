@@ -1,5 +1,115 @@
 // SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
+    /// Every version of every object under `prefix` in one bucket, newest first within each key.
+    ///
+    /// # WHY THIS IS NOT [`Self::list_object_versions`] CALLED IN A LOOP
+    ///
+    /// That one takes a key, so a caller wanting a bucket would have to enumerate the keys first
+    /// -- and the only enumeration available is [`Self::list_objects`], which **skips a deleted
+    /// object**. A key whose current version is a delete marker would then be invisible, and every
+    /// older version of it unreachable, which is exactly the object a caller asks for versions in
+    /// order to recover.
+    ///
+    /// Walking `versions` and `objects` together has no such hole: a deleted current version is
+    /// REPORTED, with `deleted` set, which is what lets a caller tell "this key is gone" from
+    /// "this key never existed" and is how S3 reports a delete marker.
+    ///
+    /// The `versions` half of the walk also covers a key that is in `versions` and NOT in
+    /// `objects`, which is a state the store really reaches: lifecycle expiry removes a current
+    /// delete marker when no live version is left behind it
+    /// (`lifecycle/bucket_policies.rs`, `expire_delete_markers`), and the older
+    /// delete-marker versions stay. Such a key has no current version at all and would be invisible
+    /// to a walk of `objects` alone. No test here reaches it, because producing it needs a
+    /// lifecycle policy applied and the HTTP surface has no verb for that -- recorded rather than
+    /// left looking untested by oversight.
+    ///
+    /// # ORDER
+    ///
+    /// Key ascending, and within a key version DESCENDING, because the newest version is the one
+    /// a caller is most often after and a page boundary should not land between a key's newest
+    /// version and the key itself.
+    ///
+    /// `key_marker` and `version_marker` resume after that exact position. A `key_marker` with no
+    /// `version_marker` resumes after the whole of that key, which is what a caller paging on keys
+    /// alone means by it.
+    pub fn list_bucket_object_versions(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        key_marker: Option<&str>,
+        version_marker: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<ObjectMetadata>, ObjectError> {
+        validate_bucket(bucket)?;
+        if limit == 0 {
+            return Err(ObjectError::InvalidArgument(
+                "bucket version listing limit must be positive".to_string(),
+            ));
+        }
+        // Collect the keys that have anything at all -- a current version, older versions, or
+        // both -- in one ascending pass over each map.
+        let start = key_marker.filter(|marker| prefix.is_empty() || *marker >= prefix);
+        let start_key = start.unwrap_or(prefix);
+        let mut keys: Vec<SharedText> = Vec::new();
+        for map_keys in [
+            self.objects
+                .range(ObjectId::new(bucket, start_key)..)
+                .map(|(object_id, _)| object_id)
+                .collect::<Vec<_>>(),
+            self.versions
+                .range(ObjectId::new(bucket, start_key)..)
+                .map(|(object_id, _)| object_id)
+                .collect::<Vec<_>>(),
+        ] {
+            for object_id in map_keys {
+                if object_id.bucket != bucket {
+                    break;
+                }
+                if !object_id.key.starts_with(prefix) {
+                    break;
+                }
+                keys.push(object_id.key.clone());
+            }
+        }
+        keys.sort();
+        keys.dedup();
+
+        let mut out = Vec::with_capacity(limit.min(keys.len().saturating_add(1)));
+        for key in keys {
+            // A `key_marker` with no `version_marker` means "past this whole key".
+            if let Some(marker) = key_marker {
+                if key.as_str() < marker {
+                    continue;
+                }
+                if key.as_str() == marker && version_marker.is_none() {
+                    continue;
+                }
+            }
+            let object_id = ObjectId::new(bucket, key.as_str());
+            let mut versions: Vec<ObjectMetadata> = Vec::new();
+            if let Some(current) = self.objects.get(&object_id) {
+                versions.push(current.clone());
+            }
+            if let Some(older) = self.versions.get(&object_id) {
+                versions.extend(older.iter().cloned());
+            }
+            versions.sort_by(|left, right| right.version.cmp(&left.version));
+            for metadata in versions {
+                if let (Some(marker_key), Some(marker_version)) = (key_marker, version_marker) {
+                    // Descending within a key, so "after" the marker version means BELOW it.
+                    if key.as_str() == marker_key && metadata.version >= marker_version {
+                        continue;
+                    }
+                }
+                out.push(metadata);
+                if out.len() >= limit {
+                    return Ok(out);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub fn list_object_versions(
         &self,
         bucket: &str,

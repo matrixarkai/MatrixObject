@@ -28,6 +28,7 @@ pub mod http;
 pub mod s3;
 pub mod s3_batch;
 pub mod s3_multipart;
+pub mod s3_versions;
 pub mod service;
 
 pub use http::{Request, Response};
@@ -1568,6 +1569,329 @@ mod tests {
             assert_eq!(status_of(&answered), 400, "{answered}");
             assert!(body_of(&answered).contains("<Code>MalformedXML</Code>"), "{answered}");
         }
+        handle.shutdown();
+    }
+
+    /// Turn versioning on for the test bucket, the way a client would.
+    fn enable_versioning(addr: &str) {
+        let answered = roundtrip(
+            addr,
+            &request(
+                "PUT",
+                "/b?versioning",
+                "",
+                b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+            ),
+        );
+        assert_eq!(status_of(&answered), 200, "{answered}");
+    }
+
+    /// The `x-amz-version-id` a write answered.
+    fn version_id_of(response: &str) -> String {
+        response
+            .split("x-amz-version-id: ")
+            .nth(1)
+            .and_then(|rest| rest.split("\r\n").next())
+            .expect("a write must report the version id, or there is no way to come back to it")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn a_write_reports_the_version_id_a_client_can_come_back_to() {
+        let (handle, addr) = serve();
+        enable_versioning(&addr);
+        let first = roundtrip(&addr, &request("PUT", "/b/v", "", b"one"));
+        let second = roundtrip(&addr, &request("PUT", "/b/v", "", b"two"));
+        let first_id = version_id_of(&first);
+        let second_id = version_id_of(&second);
+        assert_ne!(
+            first_id, second_id,
+            "two writes of a key must report different version ids, or there is nothing to come \
+             back to"
+        );
+
+        // THE OLDER VERSION IS STILL READABLE, which is the whole point of the switch.
+        let read = roundtrip(
+            &addr,
+            &request("GET", &format!("/b/v?versionId={first_id}"), "", b""),
+        );
+        assert_eq!(status_of(&read), 200, "{read}");
+        assert_eq!(body_of(&read), "one", "the named version did not come back: {read}");
+        // THE HEADERS HAVE TO DESCRIBE THE VERSION READ, not the current one. Asserting only the
+        // body let a mutation past: the bytes came from the named version while the metadata --
+        // the etag, the length, the version id -- came from the current object, so a client
+        // comparing the etag it was given against the one it stored would see a mismatch on
+        // bytes that were in fact correct.
+        assert!(
+            read.to_ascii_lowercase().contains(&format!("x-amz-version-id: {first_id}")),
+            "a versioned read must report the version it served: {read}"
+        );
+        assert!(
+            read.to_ascii_lowercase().contains("x-matrixobject-length: 3"),
+            "the length must be the named version's: {read}"
+        );
+        // And the unqualified read is still the current one.
+        assert_eq!(body_of(&roundtrip(&addr, &request("GET", "/b/v", "", b""))), "two");
+
+        let head = roundtrip(
+            &addr,
+            &request("HEAD", &format!("/b/v?versionId={first_id}"), "", b""),
+        );
+        assert_eq!(status_of(&head), 200, "{head}");
+        assert!(body_of(&head).is_empty(), "a HEAD must send no body: {head}");
+        // THE HEAD PATH IS THE ONLY ONE THAT USES THE VERSIONED HEAD'S METADATA -- a GET takes its
+        // headers from the payload read's own metadata -- so without these assertions a HEAD could
+        // describe the CURRENT object while reporting success for a named version, and nothing
+        // would notice. A mutation found exactly that.
+        assert!(
+            head.to_ascii_lowercase().contains(&format!("x-amz-version-id: {first_id}")),
+            "a versioned HEAD must describe the version it was asked about: {head}"
+        );
+        assert!(
+            head.to_ascii_lowercase().contains("x-matrixobject-length: 3"),
+            "the length must be the named version's, not the current one's: {head}"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_version_listing_marks_the_latest_and_reports_a_delete_marker() {
+        let (handle, addr) = serve();
+        enable_versioning(&addr);
+        let first = version_id_of(&roundtrip(&addr, &request("PUT", "/b/k", "", b"one")));
+        let second = version_id_of(&roundtrip(&addr, &request("PUT", "/b/k", "", b"two")));
+        let _ = roundtrip(&addr, &request("PUT", "/b/other", "", b"x"));
+
+        let listed = roundtrip(&addr, &request("GET", "/b?versions", "", b""));
+        assert_eq!(status_of(&listed), 200, "{listed}");
+        let body = body_of(&listed).to_string();
+        assert!(
+            body.contains("<ListVersionsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"),
+            "{body}"
+        );
+        assert!(body.contains(&format!("<VersionId>{first}</VersionId>")), "{body}");
+        assert!(body.contains(&format!("<VersionId>{second}</VersionId>")), "{body}");
+        // EXACTLY ONE LATEST PER KEY. Two keys here, so two.
+        assert_eq!(
+            body.matches("<IsLatest>true</IsLatest>").count(),
+            2,
+            "one version of each key is the latest, and no more: {body}"
+        );
+        assert_eq!(
+            body.matches("<IsLatest>false</IsLatest>").count(),
+            1,
+            "{body}"
+        );
+        // Newest first within a key, which is what makes <IsLatest> and the order agree.
+        let at_second = body.find(&format!("<VersionId>{second}</VersionId>")).unwrap();
+        let at_first = body.find(&format!("<VersionId>{first}</VersionId>")).unwrap();
+        assert!(
+            at_second < at_first,
+            "a key's versions must be newest first: {body}"
+        );
+
+        // A DELETE MARKER IS REPORTED AS ONE, which is the case the store-side walk exists for:
+        // `list_objects` skips a deleted object, so a listing assembled from it would make this
+        // key invisible and every older version unreachable -- precisely the object someone lists
+        // versions in order to recover.
+        assert_eq!(status_of(&roundtrip(&addr, &request("DELETE", "/b/k", "", b""))), 204);
+        let after = roundtrip(&addr, &request("GET", "/b?versions", "", b""));
+        let body = body_of(&after).to_string();
+        assert!(
+            body.contains("<DeleteMarker>"),
+            "a deleted key must be reported as a delete marker, not omitted: {body}"
+        );
+        assert!(
+            body.contains(&format!("<VersionId>{first}</VersionId>")),
+            "the older versions of a deleted key must still be listed: {body}"
+        );
+        // A delete marker carries neither an etag nor a size: both would be invented, and a client
+        // comparing etags would match a delete marker against a real object.
+        let marker = body
+            .split("<DeleteMarker>")
+            .nth(1)
+            .and_then(|rest| rest.split("</DeleteMarker>").next())
+            .expect("the marker");
+        assert!(
+            !marker.contains("<ETag>") && !marker.contains("<Size>"),
+            "a delete marker must carry no etag or size: {marker}"
+        );
+
+        // And the older version is still readable by id, which is the recovery this enables.
+        let recovered = roundtrip(
+            &addr,
+            &request("GET", &format!("/b/k?versionId={first}"), "", b""),
+        );
+        assert_eq!(status_of(&recovered), 200, "{recovered}");
+        assert_eq!(body_of(&recovered), "one", "{recovered}");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_version_listing_pages_and_rolls_up_a_delimiter() {
+        let (handle, addr) = serve();
+        enable_versioning(&addr);
+        for key in ["d/1", "d/2", "top"] {
+            let _ = roundtrip(&addr, &request("PUT", &format!("/b/{key}"), "", b"v"));
+            let _ = roundtrip(&addr, &request("PUT", &format!("/b/{key}"), "", b"vv"));
+        }
+
+        let rolled = roundtrip(&addr, &request("GET", "/b?versions&delimiter=/", "", b""));
+        let body = body_of(&rolled);
+        assert!(
+            body.contains("<CommonPrefixes><Prefix>d/</Prefix></CommonPrefixes>"),
+            "{body}"
+        );
+        assert_eq!(body.matches("<CommonPrefixes>").count(), 1, "{body}");
+        assert!(body.contains("<Key>top</Key>"), "{body}");
+        assert!(!body.contains("<Key>d/1</Key>"), "{body}");
+
+        // Paging: one entry at a time, resumed by the pair of markers.
+        let first = roundtrip(&addr, &request("GET", "/b?versions&max-keys=1", "", b""));
+        let body = body_of(&first).to_string();
+        assert!(body.contains("<IsTruncated>true</IsTruncated>"), "{body}");
+        let key_marker = body
+            .split("<NextKeyMarker>")
+            .nth(1)
+            .and_then(|rest| rest.split("</NextKeyMarker>").next())
+            .expect("a key marker")
+            .to_string();
+        let version_marker = body
+            .split("<NextVersionIdMarker>")
+            .nth(1)
+            .and_then(|rest| rest.split("</NextVersionIdMarker>").next())
+            .expect("a version marker")
+            .to_string();
+        let second = roundtrip(
+            &addr,
+            &request(
+                "GET",
+                &format!(
+                    "/b?versions&max-keys=1&key-marker={key_marker}&version-id-marker={version_marker}"
+                ),
+                "",
+                b"",
+            ),
+        );
+        let next = body_of(&second);
+        assert!(
+            !next.contains(&format!("<VersionId>{version_marker}</VersionId>")),
+            "the resumed page re-answered the version the markers named: {next}"
+        );
+        assert!(next.contains("<VersionId>"), "the resumed page answered nothing: {next}");
+
+        // A KEY MARKER ALONE means "past this whole key", which is what a client paging on keys
+        // rather than on versions sends. Tested separately because the pair above exercises a
+        // different branch: with both markers the resume lands inside a key, with one it skips the
+        // key entirely, and a listing that treated them the same would re-answer that key's
+        // versions forever.
+        let by_key = roundtrip(
+            &addr,
+            &request("GET", "/b?versions&key-marker=d/1", "", b""),
+        );
+        let body = body_of(&by_key);
+        assert!(
+            !body.contains("<Key>d/1</Key>"),
+            "a key marker alone must skip that whole key, not just part of it: {body}"
+        );
+        assert!(
+            body.contains("<Key>d/2</Key>") && body.contains("<Key>top</Key>"),
+            "the keys after the marker must still be answered: {body}"
+        );
+
+        // A VERSION MARKER WITH NO KEY MARKER names a position in no key, and ignoring it would
+        // restart the listing -- a client paging through versions would loop over the first page.
+        let orphan = roundtrip(
+            &addr,
+            &request("GET", "/b?versions&version-id-marker=2", "", b""),
+        );
+        assert_eq!(status_of(&orphan), 400, "{orphan}");
+        assert!(body_of(&orphan).contains("<Code>InvalidArgument</Code>"), "{orphan}");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_version_id_this_store_does_not_issue_is_refused() {
+        let (handle, addr) = serve();
+        enable_versioning(&addr);
+        let _ = roundtrip(&addr, &request("PUT", "/b/one", "", b"v"));
+
+        for raw in ["null", "0", "abc", ""] {
+            let answered = roundtrip(
+                &addr,
+                &request("GET", &format!("/b/one?versionId={raw}"), "", b""),
+            );
+            assert_eq!(status_of(&answered), 400, "versionId={raw:?}: {answered}");
+            assert!(
+                body_of(&answered).contains("<Code>InvalidArgument</Code>"),
+                "versionId={raw:?}: {answered}"
+            );
+        }
+        // `null` is S3's id for an object written before versioning was on. Every object here
+        // carries a version from the start, so there is no such version -- and serving the
+        // CURRENT object instead would hand a client a different version from the one it named,
+        // silently.
+        let null = roundtrip(&addr, &request("GET", "/b/one?versionId=null", "", b""));
+        assert!(
+            body_of(&null).contains("versioning was turned on"),
+            "the refusal should say why there is no null version: {null}"
+        );
+
+        // A version that could exist but does not.
+        let absent = roundtrip(&addr, &request("GET", "/b/one?versionId=99999", "", b""));
+        assert_eq!(status_of(&absent), 404, "{absent}");
+        assert!(body_of(&absent).contains("<Code>NoSuchKey</Code>"), "{absent}");
+
+        // A ranged read of a named version is refused rather than answered with the whole object,
+        // which would make a client write the wrong length wherever it put the bytes.
+        let ranged = roundtrip(
+            &addr,
+            &request("GET", "/b/one?versionId=1", "range: bytes=0-0\r\n", b""),
+        );
+        assert_eq!(status_of(&ranged), 501, "{ranged}");
+        assert!(body_of(&ranged).contains("<Code>NotImplemented</Code>"), "{ranged}");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn deleting_a_named_version_is_not_idempotent() {
+        let (handle, addr) = serve();
+        enable_versioning(&addr);
+        let first = version_id_of(&roundtrip(&addr, &request("PUT", "/b/d", "", b"one")));
+        let _ = roundtrip(&addr, &request("PUT", "/b/d", "", b"two"));
+
+        let deleted = roundtrip(
+            &addr,
+            &request("DELETE", &format!("/b/d?versionId={first}"), "", b""),
+        );
+        assert_eq!(status_of(&deleted), 204, "{deleted}");
+        assert!(
+            deleted.to_ascii_lowercase().contains(&format!("x-amz-version-id: {first}")),
+            "the delete must name the version it removed: {deleted}"
+        );
+        assert_eq!(
+            status_of(&roundtrip(
+                &addr,
+                &request("GET", &format!("/b/d?versionId={first}"), "", b"")
+            )),
+            404,
+            "the version is still readable after being deleted"
+        );
+
+        // NOT IDEMPOTENT, unlike deleting a key. Deleting a key is a request to make it absent, and
+        // a retry that finds it absent got what it asked for. Deleting a NAMED version is a
+        // request about one stored thing, and success for a version this store never had would
+        // hide a client sending the wrong id.
+        let again = roundtrip(
+            &addr,
+            &request("DELETE", &format!("/b/d?versionId={first}"), "", b""),
+        );
+        assert_eq!(status_of(&again), 404, "{again}");
+        assert!(body_of(&again).contains("<Code>NoSuchKey</Code>"), "{again}");
+
+        // The current version is untouched.
+        assert_eq!(body_of(&roundtrip(&addr, &request("GET", "/b/d", "", b""))), "two");
         handle.shutdown();
     }
 
