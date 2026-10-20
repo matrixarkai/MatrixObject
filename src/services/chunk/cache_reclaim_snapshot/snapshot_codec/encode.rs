@@ -13,7 +13,7 @@ impl ReplicaServiceSnapshot {
                 .saturating_add(encoded_string_len(&state.checksum()))
                 .saturating_add(state.data.len())
                 .saturating_add(U64)
-                .saturating_add(state.ec_parity_fragment.len())
+                .saturating_add(state.fragment_bytes().len())
                 .saturating_add(U64 * 2 * state.discarded_ranges.len());
         }
         for (key, receipt) in self.write_request_receipts.iter() {
@@ -125,8 +125,8 @@ impl ReplicaServiceSnapshot {
             append_string(&mut out, &state.checksum());
             append_u64(&mut out, state.data.len() as u64);
             out.extend_from_slice(&state.data);
-            append_u64(&mut out, state.ec_parity_fragment.len() as u64);
-            out.extend_from_slice(&state.ec_parity_fragment);
+            append_u64(&mut out, state.fragment_bytes().len() as u64);
+            out.extend_from_slice(state.fragment_bytes());
             append_u64(&mut out, state.discarded_ranges.len() as u64);
             for range in &state.discarded_ranges {
                 append_range(&mut out, range);

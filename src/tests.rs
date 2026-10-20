@@ -2382,7 +2382,7 @@ fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
     let healthy = chunk.read_chunk_state_validated(&page_id).unwrap();
     assert_eq!(chunk_ec_data_fragments(&healthy.data).len(), 2);
     assert_eq!(
-        healthy.ec_parity_fragment.len(),
+        healthy.fragment_bytes().len(),
         chunk_ec_data_fragments(&healthy.data)[0].len()
     );
 
@@ -2412,7 +2412,7 @@ fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
 
     let snapshot = chunk.export_snapshot();
     assert_eq!(
-        snapshot.pages.get(&page_id).unwrap().ec_parity_fragment.len(),
+        snapshot.pages.get(&page_id).unwrap().fragment_bytes().len(),
         6
     );
     let restored_snapshot = ReplicaServiceSnapshot::from_bytes(&snapshot.to_bytes().unwrap())
@@ -2427,7 +2427,7 @@ fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
         restored
             .read_chunk_state_validated(&page_id)
             .unwrap()
-            .ec_parity_fragment
+            .fragment_bytes()
             .len(),
         6
     );
@@ -2949,7 +2949,7 @@ fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
                 write_sequence: 1,
                 checksum_fnv1a64: fnv1a64(b"x"),
                 data: std::sync::Arc::new(b"x".to_vec()),
-                ec_parity_fragment: std::sync::Arc::new(Vec::new()),
+                ec_parity_fragment: None,
                 discarded_ranges: Vec::new(),
             },
         ),
@@ -4552,7 +4552,7 @@ fn replica_service_dedupes_state_install_and_reclaim_receipts_across_snapshots()
         write_sequence: 7,
         checksum_fnv1a64: fnv1a64(b"abcdefgh"),
         data: std::sync::Arc::new(b"abcdefgh".to_vec()),
-        ec_parity_fragment: std::sync::Arc::new(Vec::new()),
+        ec_parity_fragment: None,
         discarded_ranges: vec![DataRange {
             offset: 2,
             length: 3,

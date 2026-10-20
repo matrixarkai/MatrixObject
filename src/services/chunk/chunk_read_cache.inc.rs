@@ -105,7 +105,7 @@ impl MatrixReplicaService {
         } else {
             let reconstructed = match chunk_ec_recover_data(
                 &chunk.data,
-                &chunk.ec_parity_fragment,
+                chunk.fragment_bytes(),
                 logical_length_index,
                 &chunk.checksum(),
             ) {

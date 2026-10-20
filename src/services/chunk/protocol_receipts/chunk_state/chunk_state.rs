@@ -53,11 +53,28 @@ pub struct PageState {
     /// is a million pages, so 40 bytes each is about 125 MB.
     pub checksum_fnv1a64: u64,
     pub data: std::sync::Arc<Vec<u8>>,
-    pub ec_parity_fragment: std::sync::Arc<Vec<u8>>,
+    /// The redundancy computed from this page's own bytes, kept on the same
+    /// replica, and EMPTY whenever the page has peers -- which is every page in
+    /// a three-replica store.
+    ///
+    /// `None` rather than an empty `Arc<Vec<u8>>`, because that handle
+    /// allocates whether or not the Vec holds anything: two counts and the
+    /// Vec's own three words, 40 bytes, per page per replica. `Arc` is non-null
+    /// so the `Option` costs nothing inline.
+    pub ec_parity_fragment: Option<std::sync::Arc<Vec<u8>>>,
     pub discarded_ranges: Vec<DataRange>,
 }
 
 impl PageState {
+    /// This page's redundancy fragment, or nothing when it has peers and needs
+    /// none. Borrowed, so a reader that only looks allocates nothing.
+    pub fn fragment_bytes(&self) -> &[u8] {
+        match &self.ec_parity_fragment {
+            None => &[],
+            Some(fragment) => fragment.as_slice(),
+        }
+    }
+
     /// The checksum as it has always been spelled, and as it still goes into
     /// proof material and onto the wire.
     pub fn checksum(&self) -> String {
@@ -77,7 +94,7 @@ impl PageState {
             write_sequence: 0,
             checksum_fnv1a64: fnv1a64(&[]),
             data: std::sync::Arc::new(Vec::new()),
-            ec_parity_fragment: std::sync::Arc::new(Vec::new()),
+            ec_parity_fragment: None,
             discarded_ranges: Vec::new(),
         }
     }
@@ -85,7 +102,7 @@ impl PageState {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         let ec_data_fragments = chunk_ec_data_fragments(&self.data);
-        let ec_parity_fragment = &self.ec_parity_fragment;
+        let ec_parity_fragment = self.fragment_bytes();
         for (name, value) in [
             ("logical_length", self.logical_length),
             ("write_sequence", self.write_sequence),
@@ -96,7 +113,7 @@ impl PageState {
         ] {
             fields.insert(format!("{field_prefix}{name}"), value.to_string());
         }
-        fields.insert(format!("{field_prefix}checksum"), self.checksum().clone());
+        fields.insert(format!("{field_prefix}checksum"), self.checksum());
         fields.insert(format!("{field_prefix}payload_checksum"), etag(&self.data));
         for (index, shard) in ec_data_fragments.iter().enumerate() {
             fields.insert(
@@ -111,7 +128,7 @@ impl PageState {
         if !ec_parity_fragment.is_empty() {
             fields.insert(
                 format!("{field_prefix}ec_parity_checksum"),
-                etag(&ec_parity_fragment),
+                etag(ec_parity_fragment),
             );
         }
         for (index, range) in self.discarded_ranges.iter().enumerate() {

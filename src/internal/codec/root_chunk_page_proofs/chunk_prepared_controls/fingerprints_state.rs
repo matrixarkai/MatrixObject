@@ -51,8 +51,8 @@ pub(crate) fn append_chunk_state(out: &mut Vec<u8>, state: &PageState) {
     append_string(out, &state.checksum());
     append_string(out, &etag(&state.data));
     append_u64(out, state.data.len() as u64);
-    append_u64(out, state.ec_parity_fragment.len() as u64);
-    append_string(out, &etag(&state.ec_parity_fragment));
+    append_u64(out, state.fragment_bytes().len() as u64);
+    append_string(out, &etag(state.fragment_bytes()));
     append_u64(out, state.discarded_ranges.len() as u64);
     for range in &state.discarded_ranges {
         append_range(out, range);

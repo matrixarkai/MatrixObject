@@ -218,7 +218,14 @@ impl ReplicaServiceSnapshot {
                     write_sequence,
                     checksum_fnv1a64: page_checksum_digest(&checksum)?,
                     data,
-                    ec_parity_fragment,
+                    // An empty fragment on the wire means the page had
+                    // peers and needed none, which is None rather than an
+                    // allocation holding nothing.
+                    ec_parity_fragment: if ec_parity_fragment.is_empty() {
+                        None
+                    } else {
+                        Some(ec_parity_fragment)
+                    },
                     discarded_ranges,
                 }),
             );

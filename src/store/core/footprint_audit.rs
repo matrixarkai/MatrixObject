@@ -227,12 +227,12 @@ impl MatrixObjectStore {
                 // of `replica.pages` and left no way to tell "no fragments stored"
                 // from "one empty slot per page" -- the distinction that explains
                 // why the data term measures exactly 3.0000 at three replicas.
-                if !state.ec_parity_fragment.is_empty() {
+                if !state.fragment_bytes().is_empty() {
                     fragment_count = fragment_count.saturating_add(1);
                 }
-                fragment_len = fragment_len.saturating_add(state.ec_parity_fragment.len() as u64);
+                fragment_len = fragment_len.saturating_add(state.fragment_bytes().len() as u64);
                 fragment_cap =
-                    fragment_cap.saturating_add(state.ec_parity_fragment.capacity() as u64);
+                    fragment_cap.saturating_add(state.ec_parity_fragment.as_ref().map_or(0, |f| f.capacity()) as u64);
                 // An `Arc<Vec<u8>>` allocates whether or not the Vec holds
                 // anything: the two counts in front of it, and the Vec's own
                 // three words, live in that allocation. Charging only
@@ -241,8 +241,14 @@ impl MatrixObjectStore {
                 // three-replica store -- and zero for the handle on a page that
                 // does hold data. Both are real and both are per page PER
                 // REPLICA, so they scale with the data.
+                // The data handle always exists; the fragment's does not. It
+                // is None whenever the page has peers, which is every page in a
+                // three-replica store, and charging it unconditionally would
+                // report an allocation that is no longer made.
                 page_handle_bytes = page_handle_bytes.saturating_add(ARC_VEC_ALLOCATION);
-                page_handle_bytes = page_handle_bytes.saturating_add(ARC_VEC_ALLOCATION);
+                if state.ec_parity_fragment.is_some() {
+                    page_handle_bytes = page_handle_bytes.saturating_add(ARC_VEC_ALLOCATION);
+                }
             }
             replica_receipts = replica_receipts
                 .saturating_add(replica.write_request_receipts.len() as u64)
