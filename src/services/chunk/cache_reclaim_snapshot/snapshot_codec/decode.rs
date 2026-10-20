@@ -216,7 +216,7 @@ impl ReplicaServiceSnapshot {
                 std::sync::Arc::new(PageState {
                     logical_length,
                     write_sequence,
-                    checksum,
+                    checksum_fnv1a64: page_checksum_digest(&checksum)?,
                     data,
                     ec_parity_fragment,
                     discarded_ranges,

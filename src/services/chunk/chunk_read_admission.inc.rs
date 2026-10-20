@@ -84,7 +84,7 @@ impl MatrixReplicaService {
                     .get(&(page_id.clone(), range.offset, range.length))
                     .is_some_and(|entry| {
                         entry.result.write_sequence == chunk.write_sequence
-                            && entry.result.checksum == chunk.checksum
+                            && entry.result.checksum == chunk.checksum()
                             && etag_matches(&entry.result.data, &entry.range_checksum)
                     });
                 if cache_hit {
@@ -126,7 +126,7 @@ impl MatrixReplicaService {
                 .get(&(page_id.clone(), range.offset, range.length))
                 .is_some_and(|entry| {
                     entry.result.write_sequence == chunk.write_sequence
-                        && entry.result.checksum == chunk.checksum
+                        && entry.result.checksum == chunk.checksum()
                         && etag_matches(&entry.result.data, &entry.range_checksum)
                 });
             if cache_hit {

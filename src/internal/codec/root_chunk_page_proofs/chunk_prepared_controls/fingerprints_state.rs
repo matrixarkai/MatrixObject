@@ -48,7 +48,7 @@ pub(crate) fn replica_service_fingerprint(service: &MatrixReplicaService) -> Str
 pub(crate) fn append_chunk_state(out: &mut Vec<u8>, state: &PageState) {
     append_u64(out, state.logical_length);
     append_u64(out, state.write_sequence);
-    append_string(out, &state.checksum);
+    append_string(out, &state.checksum());
     append_string(out, &etag(&state.data));
     append_u64(out, state.data.len() as u64);
     append_u64(out, state.ec_parity_fragment.len() as u64);

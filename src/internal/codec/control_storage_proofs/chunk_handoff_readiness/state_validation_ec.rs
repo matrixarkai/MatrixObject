@@ -5,7 +5,7 @@ pub(crate) fn validate_chunk_state(state: &PageState) -> Result<(), ObjectError>
             "chunk state logical length exceeds payload".to_string(),
         ));
     }
-    if state.checksum != etag(&state.data) {
+    if state.checksum() != etag(&state.data) {
         return Err(ObjectError::Corruption(
             "chunk state checksum mismatch".to_string(),
         ));

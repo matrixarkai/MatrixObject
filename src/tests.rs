@@ -2947,7 +2947,7 @@ fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
             PageState {
                 logical_length: 1,
                 write_sequence: 1,
-                checksum: etag(b"x"),
+                checksum_fnv1a64: fnv1a64(b"x"),
                 data: std::sync::Arc::new(b"x".to_vec()),
                 ec_parity_fragment: std::sync::Arc::new(Vec::new()),
                 discarded_ranges: Vec::new(),
@@ -3347,7 +3347,7 @@ fn chunk_service_scrubs_missing_and_corrupt_replicas() {
         .remove_replica_chunk_for_repair(0, &first_chunk)
         .unwrap();
     std::sync::Arc::make_mut(page.replicas[1].pages.get_mut(&second_chunk).unwrap())
-        .checksum = "fnv1a64:0000000000000000".to_string();
+        .checksum_fnv1a64 = 0;
 
     let plan = page.scrub_chunk_replicas(false).unwrap();
     assert_eq!(plan.checked_chunks, 2);
@@ -3527,7 +3527,7 @@ fn chunk_service_pages_replica_audit_for_repair_controllers() {
         .remove_replica_chunk_for_repair(0, &first_chunk)
         .unwrap();
     std::sync::Arc::make_mut(page.replicas[1].pages.get_mut(&second_chunk).unwrap())
-        .checksum = "fnv1a64:0000000000000000".to_string();
+        .checksum_fnv1a64 = 0;
     page.configure_quorums(1, 1).unwrap();
     page.set_replica_frozen(2, true).unwrap();
     page.set_replica_quarantine(0, true).unwrap();
@@ -4550,7 +4550,7 @@ fn replica_service_dedupes_state_install_and_reclaim_receipts_across_snapshots()
     let mut install_state = PageState {
         logical_length: 8,
         write_sequence: 7,
-        checksum: etag(b"abcdefgh"),
+        checksum_fnv1a64: fnv1a64(b"abcdefgh"),
         data: std::sync::Arc::new(b"abcdefgh".to_vec()),
         ec_parity_fragment: std::sync::Arc::new(Vec::new()),
         discarded_ranges: vec![DataRange {
@@ -37200,8 +37200,22 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
     let thousand = published_row("1,000", 4);
     assert_eq!(
         thousand[0], copied,
-        "the two published rows should agree that the copy is flat in the object          count: {} against {copied}",
+        "the two published rows should agree that the copy is flat in the object count: {} against {copied}",
         thousand[0]
+    );
+    // The NAMED cell is not flat -- it grows with the data the batch names --
+    // so it is a measurement and it goes stale on its own. It was left
+    // unguarded on the reasoning that flatness is held elsewhere, which is true
+    // of the COPIED column and not of this one.
+    let thousand_measured = batch_audit(1000);
+    let thousand_named = *thousand_measured
+        .get("batch.replica_chunks.shared_state_and_payload_bytes")
+        .expect("the batch audit should report what it names");
+    println!("PUBLISHED thousand_named measured={thousand_named} published={}", thousand[1]);
+    assert_eq!(
+        thousand[1], thousand_named,
+        "the README's 1,000-object row should name {thousand_named} bytes and it names {}",
+        thousand[1]
     );
 
     // The delete trade, from the same document. Its two rows were stale as

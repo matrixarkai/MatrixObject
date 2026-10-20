@@ -53,7 +53,7 @@ impl MatrixReplicaService {
                 subtract_range(&chunk.discarded_ranges, offset, data.len() as u64);
         }
         chunk.write_sequence = chunk.write_sequence.saturating_add(1);
-        chunk.checksum = etag(&chunk.data);
+        chunk.checksum_fnv1a64 = fnv1a64(&chunk.data);
         if self.keep_ec_sidecar {
             refresh_chunk_ec_sidecars(chunk);
         } else {
@@ -292,7 +292,7 @@ impl MatrixReplicaService {
             chunk.write_sequence = chunk
                 .write_sequence
                 .saturating_add(coalesced_write_sequence_delta);
-            chunk.checksum = etag(&chunk.data);
+            chunk.checksum_fnv1a64 = fnv1a64(&chunk.data);
             if self.keep_ec_sidecar {
             refresh_chunk_ec_sidecars(chunk);
         } else {

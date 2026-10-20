@@ -142,8 +142,8 @@ only names:
 
 | stored objects | copied | named |
 |---:|---:|---:|
-| 250 | 2,485 B | 768,456 B |
-| 1,000 | **2,485 B** | 3,072,456 B |
+| 250 | 2,485 B | 768,336 B |
+| 1,000 | **2,485 B** | 3,072,336 B |
 
 Also flat in the object count, because a chunk's payload is shared rather than
 copied and so are the receipt maps. The copy is 823 bytes of page service state,
@@ -169,8 +169,8 @@ Writing 500 objects of 1 KiB and then deleting every one leaves the store
 
 | | bytes |
 |---|---:|
-| holding 500 objects | 1,949,205 |
-| after deleting all 500 | 2,384,346 |
+| holding 500 objects | 1,949,133 |
+| after deleting all 500 | 2,384,274 |
 
 The payload index is given back in full. What replaces it is **822 bytes of
 idempotency receipt per delete** across three replicas, bounded only by

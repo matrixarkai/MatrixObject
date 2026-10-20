@@ -206,7 +206,7 @@ impl MatrixChunkService {
                             status: "present".to_string(),
                             logical_length: state.logical_length,
                             write_sequence: state.write_sequence,
-                            checksum: state.checksum,
+                            checksum: state.checksum(),
                             discarded_range_count: state.discarded_ranges.len() as u64,
                             frozen,
                             quarantined,

@@ -45,7 +45,7 @@ impl MatrixReplicaService {
                 let cache_payload_valid =
                     etag_matches(&entry.result.data, &entry.range_checksum);
                 if entry.result.write_sequence == chunk.write_sequence
-                    && entry.result.checksum == chunk.checksum
+                    && entry.result.checksum == chunk.checksum()
                     && cache_payload_valid
                 {
                     entry.last_access_sequence = last_access_sequence;
@@ -107,7 +107,7 @@ impl MatrixReplicaService {
                 &chunk.data,
                 &chunk.ec_parity_fragment,
                 logical_length_index,
-                &chunk.checksum,
+                &chunk.checksum(),
             ) {
                 Ok(reconstructed) => reconstructed,
                 Err(err) => {
@@ -116,7 +116,7 @@ impl MatrixReplicaService {
                     return Err(err);
                 }
             };
-            if !etag_matches(&reconstructed, &chunk.checksum) || end_index > reconstructed.len() {
+            if !etag_matches(&reconstructed, &chunk.checksum()) || end_index > reconstructed.len() {
                 self.ec_reconstruction_failures
                     .set(self.ec_reconstruction_failures.get().saturating_add(1));
                 return Err(ObjectError::Corruption(
@@ -135,7 +135,7 @@ impl MatrixReplicaService {
         let result = ReplicaReadResult {
             data,
             write_sequence: chunk.write_sequence,
-            checksum: chunk.checksum.clone(),
+            checksum: chunk.checksum().clone(),
         };
         let result_bytes = result.data.len() as u64;
         if use_read_cache {

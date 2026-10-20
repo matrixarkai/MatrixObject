@@ -97,7 +97,7 @@ impl MatrixReplicaService {
                 page_id.page_index,
                 state.logical_length,
                 state.write_sequence,
-                state.checksum,
+                state.checksum(),
                 state.data.len(),
                 state.discarded_ranges.len()
             );
@@ -130,7 +130,7 @@ impl MatrixReplicaService {
         let chunk_bytes = self.pages.values().fold(0usize, |total, state| {
             total
                 .saturating_add(96)
-                .saturating_add(state.checksum.len())
+                .saturating_add(state.checksum().len())
                 .saturating_add(state.discarded_ranges.len().saturating_mul(32))
                 .saturating_add(if state.ec_parity_fragment.is_empty() { 0 } else { 48 })
         });

@@ -15,8 +15,8 @@ impl MatrixReplicaService {
         Ok(ReplicaHead {
             logical_length: state.logical_length,
             write_sequence: state.write_sequence,
-            checksum: state.checksum.clone(),
-            state_checksum: chunk_state_handoff_checksum(page_id, state, &state.checksum),
+            checksum: state.checksum().clone(),
+            state_checksum: chunk_state_handoff_checksum(page_id, state, &state.checksum()),
             discarded_ranges: state.discarded_ranges.clone(),
         })
     }
