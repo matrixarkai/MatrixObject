@@ -39397,6 +39397,357 @@ fn a_snapshot_chunk_out_of_order_is_refused_rather_than_assembled_wrongly() {
 }
 
 #[cfg(feature = "matrix-raft")]
+fn chunk_raft_group(replica_count: usize, write_quorum: usize) -> ChunkRaftWriteGroup {
+    ChunkRaftWriteGroup::new(
+        77,
+        (0..replica_count)
+            .map(|_| MatrixReplicaService::new())
+            .collect(),
+        write_quorum,
+        matrixraft::ApplierOptions::default(),
+    )
+    .expect("the group is well formed")
+}
+
+/// Long enough that a loaded machine does not report a false timeout, short enough that a test
+/// which SHOULD time out does not stall the suite. Used only where the wait is expected to
+/// succeed; the negative cases pass their own short timeout.
+#[cfg(feature = "matrix-raft")]
+const CHUNK_RAFT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn one_proposal_through_the_applier_reaches_every_replica() {
+    // The coordinator-side contrast with the star write. There the coordinator calls each replica
+    // itself; here it appends ONE entry and MatrixRaft's own applier threads carry it to every
+    // replica's state machine.
+    let page_id = chunk_raft_page();
+    let mut group = chunk_raft_group(3, 2);
+    let outcome = group
+        .propose(page_id.clone(), vec![(0, vec![b'r'; 32])], CHUNK_RAFT_WAIT)
+        .expect("the proposal is accepted");
+    assert!(outcome.committed, "{outcome:?}");
+    assert_eq!(outcome.index, 1);
+    assert_eq!(outcome.acknowledged, vec![1, 2, 3], "{outcome:?}");
+    assert!(outcome.behind.is_empty(), "{outcome:?}");
+
+    for node_id in group.node_ids() {
+        let handler = group.handler(node_id).unwrap();
+        assert_eq!(handler.applied_index(), 1, "node {node_id}");
+        let (length, checksum) = handler.with_replica(|replica| {
+            let page = replica.pages.get(&page_id).expect("the page");
+            (page.data.len(), page.checksum_fnv1a64)
+        });
+        assert_eq!(length, 32, "node {node_id} holds the wrong length");
+        if node_id > 1 {
+            let first = group.handler(1).unwrap().with_replica(|replica| {
+                replica.pages.get(&page_id).unwrap().checksum_fnv1a64
+            });
+            assert_eq!(checksum, first, "node {node_id} disagrees with node 1");
+        }
+    }
+    group.stop();
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_proposal_a_quorum_did_not_reach_is_reported_as_not_committed() {
+    // A proposal delivered to one replica of three, with a quorum of two: that is not a write, and
+    // the caller has to be told so rather than inferring it from a success that happened to reach
+    // fewer nodes than it needed.
+    let page_id = chunk_raft_page();
+    let mut group = chunk_raft_group(3, 2);
+    let outcome = group
+        .propose_to(&[1], page_id.clone(), vec![(0, vec![b'q'; 8])], CHUNK_RAFT_WAIT)
+        .expect("the proposal is accepted for delivery");
+    assert!(
+        !outcome.committed,
+        "one acknowledgement out of a quorum of two was reported as committed: {outcome:?}"
+    );
+    assert_eq!(outcome.acknowledged, vec![1]);
+
+    // And the replicas it was not delivered to genuinely do not hold it -- the outcome is not
+    // merely a different report of the same state.
+    for node_id in [2, 3] {
+        let held = group
+            .handler(node_id)
+            .unwrap()
+            .with_replica(|replica| replica.pages.contains_key(&page_id));
+        assert!(!held, "node {node_id} holds a write it was never sent");
+        assert_eq!(group.handler(node_id).unwrap().applied_index(), 0);
+    }
+    group.stop();
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_replica_that_missed_an_entry_refuses_to_apply_over_the_hole() {
+    // THE DEFECT WRITING THIS ROUTE FOUND. Nothing stopped a replica applying index 2 having
+    // never applied index 1. The result is a page NO sequence of writes produces -- it holds the
+    // later write and not the earlier one, it will never be told about the earlier one again, and
+    // nothing downstream can tell it from a page written correctly.
+    //
+    // Raft delivers contiguously, so a correct sender never produces this, which is exactly why
+    // it is checked rather than assumed: a partition expressed as "this entry did not reach that
+    // replica" puts a hole behind the next entry that does.
+    let page_id = chunk_raft_page();
+    let mut group = chunk_raft_group(3, 2);
+    group
+        .propose_to(&[1, 2], page_id.clone(), vec![(0, vec![b'a'; 8])], CHUNK_RAFT_WAIT)
+        .expect("accepted");
+    assert_eq!(group.handler(3).unwrap().applied_index(), 0, "node 3 missed it");
+
+    // Now everyone, including the replica with the hole.
+    let outcome = group
+        .propose(page_id.clone(), vec![(8, vec![b'b'; 8])], std::time::Duration::from_millis(400))
+        .expect("accepted");
+    assert_eq!(outcome.acknowledged, vec![1, 2], "{outcome:?}");
+    assert_eq!(
+        outcome.behind,
+        vec![(3, 0)],
+        "node 3 must be reported as still at index 0: it refused the entry rather than \
+         applying it over the gap: {outcome:?}"
+    );
+    assert!(
+        outcome.committed,
+        "two of three is still a quorum, so the write DID commit -- the point is that the third \
+         replica is known to be behind rather than silently wrong: {outcome:?}"
+    );
+
+    let refusals = group.handler(3).unwrap().refusals();
+    assert_eq!(refusals.len(), 1, "{refusals:?}");
+    assert_eq!(refusals[0].index, 2);
+    assert!(
+        refusals[0].reason.contains("would skip") && refusals[0].reason.contains("snapshot"),
+        "the refusal has to say what is missing and what to do about it, because every waiter \
+         past this index now times out and that is all an operator has: {:?}",
+        refusals[0].reason
+    );
+    assert!(
+        !group
+            .handler(3)
+            .unwrap()
+            .with_replica(|replica| replica.pages.contains_key(&page_id)),
+        "the refused entry wrote a page anyway"
+    );
+    group.stop();
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_replica_that_fell_behind_is_caught_up_from_a_snapshot_and_converges() {
+    // THIS IS THE THING A STAR WRITE CANNOT DO AT ALL, and it is the strongest argument for the
+    // log. A replica that missed a coordinator-driven write has no record of what it missed: the
+    // coordinator's admitted-replica list was the only place that existed and it is gone, so the
+    // replica cannot say what it is missing and nobody can tell it. A replica behind a log knows
+    // its own applied index, and the index a snapshot is complete to says exactly which entries it
+    // no longer needs.
+    let page_id = chunk_raft_page();
+    let mut group = chunk_raft_group(3, 2);
+
+    // Three writes that node 3 never receives.
+    for (position, byte) in [b'a', b'b', b'c'].iter().enumerate() {
+        group
+            .propose_to(
+                &[1, 2],
+                page_id.clone(),
+                vec![(position as u64 * 8, vec![*byte; 8])],
+                CHUNK_RAFT_WAIT,
+            )
+            .expect("accepted");
+    }
+    assert_eq!(group.handler(1).unwrap().applied_index(), 3);
+    assert_eq!(group.handler(3).unwrap().applied_index(), 0);
+
+    let through = group.catch_up_from(3, 1).expect("the snapshot installs");
+    assert_eq!(
+        through, 3,
+        "the catch-up has to report the index it reached, or the replica does not know which \
+         entries it still needs"
+    );
+    assert_eq!(group.handler(3).unwrap().applied_index(), 3);
+
+    let (caught_up, leader) = (
+        group
+            .handler(3)
+            .unwrap()
+            .with_replica(|replica| replica.pages.get(&page_id).unwrap().data.to_vec()),
+        group
+            .handler(1)
+            .unwrap()
+            .with_replica(|replica| replica.pages.get(&page_id).unwrap().data.to_vec()),
+    );
+    assert_eq!(caught_up, b"aaaaaaaabbbbbbbbcccccccc", "{caught_up:?}");
+    assert_eq!(caught_up, leader, "the caught-up replica holds different bytes");
+
+    // AND IT IS BACK IN THE GROUP, which is the part that makes the catch-up worth anything: the
+    // next entry applies on all three, with no hole behind it.
+    let outcome = group
+        .propose(page_id.clone(), vec![(24, vec![b'd'; 8])], CHUNK_RAFT_WAIT)
+        .expect("accepted");
+    assert!(outcome.committed && outcome.behind.is_empty(), "{outcome:?}");
+    assert_eq!(outcome.acknowledged, vec![1, 2, 3]);
+    for node_id in group.node_ids() {
+        let bytes = group
+            .handler(node_id)
+            .unwrap()
+            .with_replica(|replica| replica.pages.get(&page_id).unwrap().data.to_vec());
+        assert_eq!(bytes, b"aaaaaaaabbbbbbbbccccccccdddddddd", "node {node_id}: {bytes:?}");
+    }
+    group.stop();
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn an_entry_the_replica_refuses_stops_the_group_reporting_progress_past_it() {
+    // What `ApplyHandler::apply` returns is the whole of what a waiter learns. A handler that
+    // returned the batch's last index regardless of outcome would tell a caller a refused write
+    // had landed -- so it returns the last index that APPLIED, and the waiter times out.
+    let page_id = chunk_raft_page();
+    let mut group = chunk_raft_group(3, 2);
+    group
+        .propose(page_id.clone(), vec![(0, vec![b'k'; 4])], CHUNK_RAFT_WAIT)
+        .expect("accepted");
+
+    // Encodes cleanly, and every replica's write path refuses it: the range ends past the
+    // pipeline offset limit.
+    let outcome = group
+        .propose(
+            page_id.clone(),
+            vec![(PIPELINE_OFFSET_MAX, vec![0xff; 8])],
+            std::time::Duration::from_millis(400),
+        )
+        .expect("accepted for delivery");
+    assert!(
+        !outcome.committed,
+        "a write every replica refused was reported as committed: {outcome:?}"
+    );
+    assert!(outcome.acknowledged.is_empty(), "{outcome:?}");
+    assert_eq!(
+        outcome.behind,
+        vec![(1, 1), (2, 1), (3, 1)],
+        "every replica must be reported as still at the last index that applied: {outcome:?}"
+    );
+    for node_id in group.node_ids() {
+        let handler = group.handler(node_id).unwrap();
+        assert_eq!(handler.applied_index(), 1, "node {node_id}");
+        assert_eq!(handler.refusals().len(), 1, "node {node_id}");
+        assert_eq!(
+            handler.with_replica(|replica| replica.pages.get(&page_id).unwrap().data.len()),
+            4,
+            "node {node_id} kept bytes from the refused write"
+        );
+    }
+    group.stop();
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_batch_stops_at_its_first_refusal_rather_than_cascading() {
+    // The applier hands a handler a BATCH, and a proposal carries one entry per task, so this
+    // contract is not reachable through `propose` -- it is asserted directly.
+    //
+    // What the early return is and is not for, which a mutation settled rather than an argument:
+    // removing it does NOT corrupt the reported index, because the gap guard refuses every entry
+    // after the hole anyway. What it protects is the DIAGNOSIS. Continuing records a refusal for
+    // every later entry in the batch, all of them saying "would skip", and the one refusal that
+    // names the real cause is buried under them.
+    let page_id = chunk_raft_page();
+    let handler = ChunkApplyHandler::new(ChunkStateMachine::new(
+        12,
+        MatrixReplicaService::new(),
+    ));
+
+    let entry = |index: u64, ranges: Vec<(u64, Vec<u8>)>| matrixraft::LogEntry {
+        log_id: matrixraft::LogId { term: 1, index },
+        payload: ChunkStateMachine::encode_write(page_id.clone(), ranges),
+        is_command: true,
+    };
+    let reached = matrixraft::ApplyHandler::apply(
+        &handler,
+        vec![matrixraft::ApplyTask {
+            entries: vec![
+                entry(1, vec![(0, vec![b'a'; 4])]),
+                // Decodes, and the replica refuses it: the range ends past the pipeline limit.
+                entry(2, vec![(PIPELINE_OFFSET_MAX, vec![0xff; 4])]),
+                entry(3, vec![(4, vec![b'c'; 4])]),
+            ],
+            snapshot: None,
+        }],
+    );
+
+    assert_eq!(
+        reached, 1,
+        "the handler must report the last index that APPLIED; anything else tells a waiter past \
+         it that its write landed"
+    );
+    let refusals = handler.refusals();
+    assert_eq!(
+        refusals.len(),
+        1,
+        "the batch must stop at its first refusal: continuing records a refusal for every later \
+         entry too, and the one that names the real cause is then buried: {refusals:?}"
+    );
+    assert_eq!(refusals[0].index, 2);
+    assert!(
+        refusals[0].reason.contains("pipeline offset limit"),
+        "the surviving refusal has to be the real one, not a knock-on: {:?}",
+        refusals[0].reason
+    );
+    assert_eq!(
+        handler.applied_index(),
+        1,
+        "the state machine applied past its own refusal"
+    );
+    assert_eq!(
+        handler.with_replica(|replica| replica.pages.get(&page_id).unwrap().data.len()),
+        4,
+        "entry 3 was applied over the hole left by entry 2"
+    );
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn a_group_refuses_a_quorum_it_cannot_honour() {
+    // A quorum larger than the group would make every write fail at the first wait, which reads
+    // as a replication fault rather than as a configuration mistake. Refused at construction,
+    // where the number is still in the caller's hand.
+    for (replicas, quorum) in [(3usize, 4usize), (3, 0), (1, 2)] {
+        let refused = ChunkRaftWriteWriteGroupProbe::build(replicas, quorum);
+        assert!(
+            refused.is_err(),
+            "a group of {replicas} accepted a quorum of {quorum}"
+        );
+    }
+    assert!(
+        ChunkRaftWriteWriteGroupProbe::build(0, 1).is_err(),
+        "a group with no replicas was accepted"
+    );
+    let ok = ChunkRaftWriteWriteGroupProbe::build(3, 3).expect("3 of 3 is a legal quorum");
+    assert_eq!(ok.write_quorum(), 3);
+    assert_eq!(ok.node_ids(), vec![1, 2, 3]);
+    ok.stop();
+}
+
+/// Builds a group without the test helper's `expect`, so a refusal can be asserted on.
+#[cfg(feature = "matrix-raft")]
+struct ChunkRaftWriteWriteGroupProbe;
+
+#[cfg(feature = "matrix-raft")]
+impl ChunkRaftWriteWriteGroupProbe {
+    fn build(replica_count: usize, write_quorum: usize) -> Result<ChunkRaftWriteGroup, ObjectError> {
+        ChunkRaftWriteGroup::new(
+            78,
+            (0..replica_count)
+                .map(|_| MatrixReplicaService::new())
+                .collect(),
+            write_quorum,
+            matrixraft::ApplierOptions::default(),
+        )
+    }
+}
+
+#[cfg(feature = "matrix-raft")]
 #[test]
 fn a_metadata_snapshot_crosses_a_raft_state_machine_intact() {
     // What the snapshot half of `matrixraft::StateMachine` is for: a node that
