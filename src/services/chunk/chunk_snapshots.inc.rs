@@ -101,9 +101,9 @@ impl MatrixReplicaService {
                 state.data.len(),
                 state.discarded_ranges.len()
             );
-            if !state.ec_parity_fragment.is_empty() {
-                let _ = write!(stamp, ":ps{}:", state.ec_parity_fragment.len());
-                append_etag(&mut stamp, &state.ec_parity_fragment);
+            if !state.fragment_bytes().is_empty() {
+                let _ = write!(stamp, ":ps{}:", state.fragment_bytes().len());
+                append_etag(&mut stamp, state.fragment_bytes());
             }
             for range in &state.discarded_ranges {
                 let _ = write!(stamp, ":r{}+{}", range.offset, range.length);
@@ -132,7 +132,7 @@ impl MatrixReplicaService {
                 .saturating_add(96)
                 .saturating_add(state.checksum().len())
                 .saturating_add(state.discarded_ranges.len().saturating_mul(32))
-                .saturating_add(if state.ec_parity_fragment.is_empty() { 0 } else { 48 })
+                .saturating_add(if state.fragment_bytes().is_empty() { 0 } else { 48 })
         });
         receipt_key_bytes.saturating_add(chunk_bytes)
     }

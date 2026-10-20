@@ -6,7 +6,7 @@ impl MatrixReplicaService {
         mut state: PageState,
     ) -> Result<(), ObjectError> {
         self.ensure_writable()?;
-        if state.ec_parity_fragment.is_empty() {
+        if state.fragment_bytes().is_empty() {
             if self.keep_ec_sidecar {
                 refresh_chunk_ec_sidecars(&mut state);
             } else {
@@ -92,7 +92,7 @@ impl MatrixReplicaService {
         }
         let reconstructed = match chunk_ec_recover_data(
             &chunk.data,
-            &chunk.ec_parity_fragment,
+            chunk.fragment_bytes(),
             chunk.logical_length as usize,
             &chunk.checksum(),
         ) {

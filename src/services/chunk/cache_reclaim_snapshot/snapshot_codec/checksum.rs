@@ -55,8 +55,8 @@ impl ReplicaServiceSnapshot {
             append_string(&mut material, &state.checksum());
             append_u64(&mut material, state.data.len() as u64);
             material.extend_from_slice(&state.data);
-            append_u64(&mut material, state.ec_parity_fragment.len() as u64);
-            material.extend_from_slice(&state.ec_parity_fragment);
+            append_u64(&mut material, state.fragment_bytes().len() as u64);
+            material.extend_from_slice(state.fragment_bytes());
             append_u64(&mut material, state.discarded_ranges.len() as u64);
             for range in &state.discarded_ranges {
                 append_range(&mut material, range);

@@ -94,8 +94,8 @@ pub(crate) fn chunk_ec_parity_from_data(data: &[u8]) -> Vec<u8> {
 
 /// Drop the sidecar, for a replica that keeps none.
 pub(crate) fn clear_chunk_ec_sidecars(state: &mut PageState) {
-    if !state.ec_parity_fragment.is_empty() {
-        state.ec_parity_fragment = std::sync::Arc::new(Vec::new());
+    if !state.fragment_bytes().is_empty() {
+        state.ec_parity_fragment = None;
     }
 }
 
@@ -106,14 +106,14 @@ pub(crate) fn clear_chunk_ec_sidecars(state: &mut PageState) {
 /// the service's policy. A payload that is itself empty legitimately has an empty
 /// sidecar, hence the second arm.
 pub(crate) fn chunk_keeps_ec_sidecar(state: &PageState) -> bool {
-    !state.ec_parity_fragment.is_empty() || state.data.is_empty()
+    !state.fragment_bytes().is_empty() || state.data.is_empty()
 }
 
 pub(crate) fn validate_chunk_ec_sidecars(state: &PageState) -> Result<(), ObjectError> {
     if !chunk_keeps_ec_sidecar(state) {
         return Ok(());
     }
-    if *state.ec_parity_fragment != chunk_ec_parity_from_data(&state.data) {
+    if state.fragment_bytes() != chunk_ec_parity_from_data(&state.data).as_slice() {
         return Err(ObjectError::Corruption(
             "chunk EC sidecar does not match payload".to_string(),
         ));
@@ -173,5 +173,6 @@ pub(crate) fn chunk_ec_recover_data(
 }
 
 pub(crate) fn refresh_chunk_ec_sidecars(state: &mut PageState) {
-    state.ec_parity_fragment = std::sync::Arc::new(chunk_ec_parity_from_data(&state.data));
+    state.ec_parity_fragment =
+        Some(std::sync::Arc::new(chunk_ec_parity_from_data(&state.data)));
 }

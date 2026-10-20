@@ -556,7 +556,12 @@ impl ChunkServiceSnapshot {
                 chunks_shared = chunks_shared
                     .saturating_add(state_ledger.charge_chunk_state(state))
                     .saturating_add(ledger.charge(&state.data))
-                    .saturating_add(ledger.charge(&state.ec_parity_fragment));
+                    .saturating_add(
+                        state
+                            .ec_parity_fragment
+                            .as_ref()
+                            .map_or(0, |fragment| ledger.charge(fragment)),
+                    );
             }
         }
 
