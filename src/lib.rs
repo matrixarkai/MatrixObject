@@ -293,8 +293,8 @@ pub use internal_codec::*;
 
 /// An HTTP front door, so this store can be reached from another process or another machine.
 ///
-/// Off by default: it is a listener and a thread pool, and a crate that is linked for its object
-/// semantics should not grow either without being asked. Build with `--features http-server`.
+/// On by default, and it adds no dependencies. Turn it off with `--no-default-features` in a
+/// crate that links this one for its object semantics and will never bind a port.
 #[cfg(feature = "http-server")]
 pub mod net;
 

@@ -35,8 +35,27 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings"
 
+      # EVERY FEATURE, AND THIS IS NOT BELT-AND-BRACES. `net` -- the entire HTTP
+      # surface, its wire format and its tests -- sits behind `http-server`, so
+      # the step above never compiles a line of it. Two changes reached main with
+      # the feature build broken before this step existed, each passing a green
+      # check: the default build cannot see a feature-gated module at all, and
+      # neither can `--all-targets`.
+      - name: Build everything with every feature, warnings denied
+        run: cargo build --all-targets --locked --all-features
+        env:
+          RUSTFLAGS: "-D warnings"
+
       - name: Docs
         run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+      # Same reason, and it found two unresolved intra-doc links that had been in
+      # `net` since it was written: a module nothing documents cannot have its
+      # links checked.
+      - name: Docs with every feature
+        run: cargo doc --no-deps --locked --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
 

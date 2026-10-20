@@ -12,8 +12,9 @@
 //!
 //! # WHAT IT IS BUILT ON
 //!
-//! The standard library alone. See [`http`] for why that is a deliberate constraint rather than
-//! an omission, and [`service`] for exactly which verbs and headers are implemented -- including
+//! The standard library alone. See [`crate::net::http`] for why that is a deliberate constraint
+//! rather than an omission, [`crate::net::s3`] for the wire format, and [`crate::net::service`] for
+//! exactly which verbs and headers are implemented -- including
 //! the ones that are not, each of which answers a status rather than a plausible wrong answer.
 //!
 //! # IT IS UNAUTHENTICATED, AND THE DEFAULT BIND REFLECTS THAT
@@ -24,6 +25,7 @@
 //! whole store behind whatever else protects that network.
 
 pub mod http;
+pub mod s3;
 pub mod service;
 
 pub use http::{Request, Response};
@@ -493,22 +495,57 @@ mod tests {
     }
 
     #[test]
-    fn a_bucket_listing_names_its_keys_and_says_when_there_are_more() {
+    fn a_bucket_listing_is_the_xml_an_s3_client_parses() {
         let (handle, addr) = serve();
         for key in ["a/1", "a/2", "b/1"] {
             let _ = roundtrip(&addr, &request("PUT", &format!("/b/{key}"), "", b"v"));
         }
         let listed = roundtrip(&addr, &request("GET", "/b?prefix=a/", "", b""));
         assert_eq!(status_of(&listed), 200, "listing answered: {listed}");
-        let keys: Vec<&str> = body_of(&listed).lines().collect();
-        assert_eq!(keys, vec!["a/1", "a/2"], "the prefix did not narrow the listing");
-
-        let page = roundtrip(&addr, &request("GET", "/b?prefix=a/&max-keys=1", "", b""));
-        assert_eq!(body_of(&page).lines().count(), 1, "max-keys was not applied");
         assert!(
-            page.to_ascii_lowercase().contains("x-matrixobject-truncated: true"),
-            "a full page must say whether there is more, because a client cannot tell a complete \
-             page from a truncated one by counting; got: {page}"
+            listed
+                .to_ascii_lowercase()
+                .contains("content-type: application/xml"),
+            "a listing must be announced as XML, or a client will not try to parse it: {listed}"
+        );
+        let body = body_of(&listed);
+        assert!(
+            body.contains("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"),
+            "the root element and its namespace are what a client matches on: {body}"
+        );
+        assert!(body.contains("<Name>b</Name>"), "{body}");
+        assert!(body.contains("<Prefix>a/</Prefix>"), "{body}");
+        assert!(body.contains("<Key>a/1</Key>"), "{body}");
+        assert!(body.contains("<Key>a/2</Key>"), "{body}");
+        assert!(
+            !body.contains("<Key>b/1</Key>"),
+            "the prefix did not narrow the listing: {body}"
+        );
+        assert!(
+            body.contains("<KeyCount>2</KeyCount>") && body.contains("<IsTruncated>false</IsTruncated>"),
+            "{body}"
+        );
+        assert!(
+            body.contains("<StorageClass>STANDARD</StorageClass>"),
+            "an empty storage class reads as neither of the answers a client knows: {body}"
+        );
+        // THE QUOTES ARE PART OF AN ETAG AND IN XML THEY ARE ESCAPED. A client strips `&quot;`
+        // and compares; a raw `"` here would end the attribute-free text early in a strict parser.
+        assert!(
+            body.contains("<ETag>&quot;fnv1a64:"),
+            "the etag must be quoted and the quotes escaped: {body}"
+        );
+        // ISO 8601 WITH MILLIS, NOT THE HTTP DATE. The two live in different places and a client
+        // parses each with its own format; swapping them is a listing a client cannot read.
+        let last_modified = body
+            .split("<LastModified>")
+            .nth(1)
+            .and_then(|rest| rest.split("</LastModified>").next())
+            .expect("a LastModified in the listing");
+        assert!(
+            Regex::matches_iso8601(last_modified),
+            "a listing dates an object in ISO 8601 with millis and a literal Z, not in the HTTP \
+             date format `Last-Modified` uses; got {last_modified}"
         );
 
         let bad = roundtrip(&addr, &request("GET", "/b?max-keys=lots", "", b""));
@@ -518,7 +555,278 @@ mod tests {
             "an unparseable max-keys must be refused, not silently defaulted -- a caller that \
              asked for a page size and got another would page wrongly and never know: {bad}"
         );
+        assert!(
+            body_of(&bad).contains("<Code>InvalidArgument</Code>"),
+            "the code is what a client branches on, not the status alone: {bad}"
+        );
         handle.shutdown();
+    }
+
+    #[test]
+    fn a_truncated_listing_hands_back_a_token_that_resumes_it() {
+        let (handle, addr) = serve();
+        for key in ["k1", "k2", "k3"] {
+            let _ = roundtrip(&addr, &request("PUT", &format!("/b/{key}"), "", b"v"));
+        }
+        let first = roundtrip(&addr, &request("GET", "/b?max-keys=2", "", b""));
+        let body = body_of(&first).to_string();
+        assert!(body.contains("<IsTruncated>true</IsTruncated>"), "{body}");
+        let token = body
+            .split("<NextContinuationToken>")
+            .nth(1)
+            .and_then(|rest| rest.split("</NextContinuationToken>").next())
+            .expect("a full page must hand back a token: a client cannot tell a complete page \
+                     from a truncated one by counting")
+            .to_string();
+        assert_eq!(token, "k2", "the token resumes AFTER the last key answered: {body}");
+
+        let second = roundtrip(
+            &addr,
+            &request("GET", &format!("/b?max-keys=2&continuation-token={token}"), "", b""),
+        );
+        let body = body_of(&second);
+        assert!(body.contains("<Key>k3</Key>"), "the token did not resume: {body}");
+        assert!(
+            !body.contains("<Key>k1</Key>") && !body.contains("<Key>k2</Key>"),
+            "a resumed page re-answered keys the first page already gave: {body}"
+        );
+        assert!(
+            body.contains("<IsTruncated>false</IsTruncated>")
+                && !body.contains("<NextContinuationToken>"),
+            "a final page must not carry a token: a client that trusts the token over \
+             IsTruncated would ask again for nothing, forever: {body}"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_delimiter_rolls_the_keys_under_it_into_one_prefix() {
+        let (handle, addr) = serve();
+        for key in ["d/1", "d/2", "d/3", "top"] {
+            let _ = roundtrip(&addr, &request("PUT", &format!("/b/{key}"), "", b"v"));
+        }
+        let listed = roundtrip(&addr, &request("GET", "/b?delimiter=/", "", b""));
+        let body = body_of(&listed);
+        assert!(
+            body.contains("<CommonPrefixes><Prefix>d/</Prefix></CommonPrefixes>"),
+            "three keys under one delimiter must roll up to one prefix, which is what lets a \
+             client walk a tree without listing every leaf: {body}"
+        );
+        assert_eq!(
+            body.matches("<CommonPrefixes>").count(),
+            1,
+            "a prefix is reported once however many keys sit under it: {body}"
+        );
+        assert!(body.contains("<Key>top</Key>"), "{body}");
+        assert!(
+            !body.contains("<Key>d/1</Key>"),
+            "a rolled-up key must not also be answered as a result: {body}"
+        );
+        // KeyCount COUNTS THE PREFIXES TOO. A listing fully rolled up answers prefixes and no
+        // keys at all, and a client paging on the entry count alone would stop early.
+        assert!(
+            body.contains("<KeyCount>2</KeyCount>"),
+            "KeyCount is the entries plus the common prefixes: {body}"
+        );
+        assert!(body.contains("<Delimiter>/</Delimiter>"), "{body}");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn every_failure_is_an_error_document_with_the_code_a_client_branches_on() {
+        let (handle, addr) = serve();
+        let _ = roundtrip(&addr, &request("PUT", "/b/present", "", b"v"));
+
+        // A MISSING KEY AND A MISSING BUCKET ARE DIFFERENT ANSWERS. Both are 404 and the store
+        // reports both as NotFound, but one tells a client to create the bucket and retry and the
+        // other tells it to stop. Reported the same way they would be indistinguishable.
+        let missing_key = roundtrip(&addr, &request("GET", "/b/absent", "", b""));
+        assert_eq!(status_of(&missing_key), 404);
+        assert!(
+            body_of(&missing_key).contains("<Code>NoSuchKey</Code>"),
+            "{missing_key}"
+        );
+        assert!(
+            body_of(&missing_key).contains("<Resource>/b/absent</Resource>"),
+            "the resource is what a client logs: {missing_key}"
+        );
+
+        let missing_bucket = roundtrip(&addr, &request("GET", "/nope", "", b""));
+        assert_eq!(status_of(&missing_bucket), 404, "{missing_bucket}");
+        assert!(
+            body_of(&missing_bucket).contains("<Code>NoSuchBucket</Code>"),
+            "a bucket that was never created must not answer an empty listing: a client told its \
+             bucket is empty keeps writing into a name that will never hold anything: \
+             {missing_bucket}"
+        );
+
+        let wrong_method = roundtrip(&addr, &request("POST", "/b/present", "", b""));
+        assert_eq!(status_of(&wrong_method), 405, "{wrong_method}");
+        assert!(
+            body_of(&wrong_method).contains("<Code>MethodNotAllowed</Code>"),
+            "{wrong_method}"
+        );
+        assert!(
+            wrong_method.to_ascii_lowercase().contains("allow: "),
+            "the Allow header is what an HTTP client reads and the body is what an S3 client \
+             reads; answering only one leaves the other guessing: {wrong_method}"
+        );
+
+        let bad_range = roundtrip(
+            &addr,
+            &request("GET", "/b/present", "range: bytes=99-200\r\n", b""),
+        );
+        assert_eq!(status_of(&bad_range), 416, "{bad_range}");
+        assert!(
+            body_of(&bad_range).contains("<Code>InvalidRange</Code>"),
+            "{bad_range}"
+        );
+        assert!(
+            bad_range.to_ascii_lowercase().contains("content-range: bytes */1"),
+            "the size a client should have asked within must still be reported: {bad_range}"
+        );
+
+        let refused = roundtrip(
+            &addr,
+            &request("PUT", "/b/present", "if-none-match: *\r\n", b"again"),
+        );
+        assert_eq!(status_of(&refused), 412, "{refused}");
+        assert!(
+            body_of(&refused).contains("<Code>PreconditionFailed</Code>"),
+            "{refused}"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_key_holding_xml_syntax_is_escaped_rather_than_breaking_the_document() {
+        let (handle, addr) = serve();
+        // An ampersand alone is enough to make a listing unparseable, and object keys are
+        // caller-supplied, so this is not a hypothetical input.
+        let key = "a&b<c>d";
+        let put = roundtrip(&addr, &request("PUT", &format!("/b/{key}"), "", b"v"));
+        assert_eq!(status_of(&put), 200, "the key was refused: {put}");
+        let listed = roundtrip(&addr, &request("GET", "/b", "", b""));
+        let body = body_of(&listed);
+        assert!(
+            body.contains("<Key>a&amp;b&lt;c&gt;d</Key>"),
+            "every one of the five XML metacharacters must be escaped in a key: {body}"
+        );
+        assert!(
+            !body.contains("<Key>a&b"),
+            "a raw ampersand in a key makes the whole listing unparseable: {body}"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn the_service_root_lists_the_buckets() {
+        let (handle, addr) = serve();
+        let listed = roundtrip(&addr, &request("GET", "/", "", b""));
+        assert_eq!(status_of(&listed), 200, "{listed}");
+        let body = body_of(&listed);
+        assert!(
+            body.contains("<ListAllMyBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"),
+            "{body}"
+        );
+        assert!(body.contains("<Bucket><Name>b</Name></Bucket>"), "{body}");
+        // NO CreationDate. This store records no creation time for a bucket, and a fabricated one
+        // would be an answer it never knew; the element is omitted instead.
+        assert!(!body.contains("<CreationDate>"), "{body}");
+
+        let wrong_method = roundtrip(&addr, &request("DELETE", "/", "", b""));
+        assert_eq!(status_of(&wrong_method), 405, "{wrong_method}");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_bucket_can_be_created_checked_and_deleted_over_http() {
+        let (handle, addr) = serve();
+
+        let absent = roundtrip(&addr, &request("HEAD", "/fresh", "", b""));
+        assert_eq!(
+            status_of(&absent),
+            404,
+            "an existence check on a bucket that is not there must not answer 200: {absent}"
+        );
+
+        let created = roundtrip(&addr, &request("PUT", "/fresh", "", b""));
+        assert_eq!(status_of(&created), 200, "{created}");
+        assert!(
+            created.to_ascii_lowercase().contains("location: /fresh"),
+            "CreateBucket answers a Location and no body: {created}"
+        );
+        assert_eq!(
+            status_of(&roundtrip(&addr, &request("PUT", "/fresh", "", b""))),
+            200,
+            "a repeated create must succeed: a client that cannot tell whether its first PUT \
+             landed will send it again, and a 409 would make the retry look like a failure"
+        );
+        assert_eq!(status_of(&roundtrip(&addr, &request("HEAD", "/fresh", "", b""))), 200);
+
+        let _ = roundtrip(&addr, &request("PUT", "/fresh/held", "", b"v"));
+        let not_empty = roundtrip(&addr, &request("DELETE", "/fresh", "", b""));
+        assert_eq!(status_of(&not_empty), 409, "{not_empty}");
+        assert!(
+            body_of(&not_empty).contains("<Code>BucketNotEmpty</Code>"),
+            "the store refuses a non-empty bucket in the same vocabulary it uses for a malformed \
+             name, so without asking first both would be reported as 400 and a client could not \
+             tell it needs to empty the bucket: {not_empty}"
+        );
+
+        assert_eq!(status_of(&roundtrip(&addr, &request("DELETE", "/fresh/held", "", b""))), 204);
+        let deleted = roundtrip(&addr, &request("DELETE", "/fresh", "", b""));
+        assert_eq!(status_of(&deleted), 204, "{deleted}");
+        assert_eq!(
+            status_of(&roundtrip(&addr, &request("HEAD", "/fresh", "", b""))),
+            404,
+            "the bucket is still there after being deleted"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn the_readiness_route_stays_plain_text_because_it_is_not_an_s3_route() {
+        let (handle, addr) = serve();
+        let health = roundtrip(&addr, &request("GET", "/healthz", "", b""));
+        assert_eq!(status_of(&health), 200, "{health}");
+        assert!(
+            !body_of(&health).contains("<?xml"),
+            "a container probe and an operator read this, not an S3 client; dressing a readiness \
+             answer in XML would help neither: {health}"
+        );
+        assert!(body_of(&health).starts_with("ok bucket="), "{health}");
+        handle.shutdown();
+    }
+
+    /// Whether a listing timestamp is ISO 8601 with milliseconds and a literal Z.
+    ///
+    /// Spelled out rather than pattern-matched with a dependency: the point is the SHAPE a client
+    /// parses, and a hand-written check names which character is wrong when it is.
+    struct Regex;
+
+    impl Regex {
+        fn matches_iso8601(text: &str) -> bool {
+            let bytes = text.as_bytes();
+            if bytes.len() != 24 {
+                return false;
+            }
+            let digit = |at: usize| bytes[at].is_ascii_digit();
+            (0..4).all(digit)
+                && bytes[4] == b'-'
+                && (5..7).all(digit)
+                && bytes[7] == b'-'
+                && (8..10).all(digit)
+                && bytes[10] == b'T'
+                && (11..13).all(digit)
+                && bytes[13] == b':'
+                && (14..16).all(digit)
+                && bytes[16] == b':'
+                && (17..19).all(digit)
+                && bytes[19] == b'.'
+                && (20..23).all(digit)
+                && bytes[23] == b'Z'
+        }
     }
 
     #[test]
