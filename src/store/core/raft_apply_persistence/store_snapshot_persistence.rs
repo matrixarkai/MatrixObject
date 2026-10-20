@@ -577,6 +577,13 @@ impl MatrixObjectStore {
         *self.snapshot_export_cache.borrow_mut() = None;
         *self.persistent_snapshot_durable_stamp.borrow_mut() = None;
         self.snapshot_assembler.reset();
+        // THE LAYOUT BELONGS TO THE STORE THAT IS RESTORING, not to the image. A snapshot
+        // carries the payload logically and the replay below writes it through the ordinary
+        // write path, so a striping store re-stripes it and a replicating one copies it.
+        // Taking the layout from `snapshot.options` would instead silently un-stripe a
+        // striped store, because the decoder fills an unencoded option from its default.
+        let stripe_redundancy_units = self.options.stripe_redundancy_units;
+        let stripe_unit_bytes = self.options.stripe_unit_bytes;
         let mut chunk_service = MatrixChunkService::new_with_parallelism(
             snapshot.options.page_size,
             snapshot.options.replica_count,
@@ -589,6 +596,18 @@ impl MatrixObjectStore {
             snapshot.options.page_repair_parallelism,
             snapshot.options.replica_fanout_parallelism,
             snapshot.options.local_replica_store_parallelism,
+        )?;
+        // BEFORE THE REPLAY BELOW, which writes pages: the layout cannot be set once a
+        // service holds any.
+        chunk_service.configure_stripe_layout(
+            StoreOptions {
+                stripe_redundancy_units,
+                stripe_unit_bytes,
+                replica_count: snapshot.options.replica_count,
+                write_quorum: snapshot.page_write_quorum,
+                ..snapshot.options.clone()
+            }
+            .stripe_layout()?,
         )?;
         let mut payload_index = std::collections::BTreeMap::new();
         for ((chunk_id, offset), payload) in &snapshot.payloads {
@@ -608,6 +627,10 @@ impl MatrixObjectStore {
             snapshot.page_read_quorum,
         )?;
         self.options = snapshot.options;
+        // Carried across the replacement, for the reason above: the layout is this store's
+        // storage configuration and the snapshot does not carry it.
+        self.options.stripe_redundancy_units = stripe_redundancy_units;
+        self.options.stripe_unit_bytes = stripe_unit_bytes;
         self.buckets = snapshot.buckets;
         self.bucket_versioning = snapshot.bucket_versioning;
         self.bucket_retention = snapshot.bucket_retention;

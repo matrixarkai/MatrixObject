@@ -128,7 +128,7 @@ impl MatrixObjectStore {
                 }
             }
         }
-        let chunk_service = MatrixChunkService::new_with_parallelism(
+        let mut chunk_service = MatrixChunkService::new_with_parallelism(
             options.page_size,
             options.replica_count,
             options.write_quorum,
@@ -141,6 +141,9 @@ impl MatrixObjectStore {
             options.replica_fanout_parallelism,
             options.local_replica_store_parallelism,
         )?;
+        // BEFORE ANYTHING IS WRITTEN, which is the only time the layout can be set: it
+        // decides where a byte lives, so a service that already holds pages refuses it.
+        chunk_service.configure_stripe_layout(options.stripe_layout()?)?;
         let mut store = Self {
             persistent_snapshot_path,
             persistent_journal_path: persistent_journal_path.clone(),

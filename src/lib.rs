@@ -46,6 +46,11 @@ const DEFAULT_PAGE_BATCH_WRITE_PARALLELISM: usize = 64;
 const DEFAULT_PAGE_BATCH_DISCARD_PARALLELISM: usize = 64;
 const DEFAULT_PAGE_REPAIR_PARALLELISM: usize = 64;
 const DEFAULT_PAGE_CHUNK_FANOUT_PARALLELISM: usize = 64;
+// A sixteenth of the default page, so a default page is eight stripe groups at two
+// data units and nothing is left over. A unit is the smallest thing a striped write
+// touches and a striped read rebuilds, so it trades write amplification against the
+// cost of rebuilding one.
+const DEFAULT_STRIPE_UNIT_BYTES: usize = 64 * 1024;
 const DEFAULT_PRIMARY_BATCH_READ_REPAIR_PROBE_LIMIT: usize = 8;
 const STORAGE_ADMISSION_PROOF_FORMAT: &str = "MXOS-STORAGE-ADMISSION-PROOF2";
 const CACHE_BATCH_PROOF_FORMAT: &str = "MXOS-CACHE-BATCH-PROOF1";

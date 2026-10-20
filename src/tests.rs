@@ -12,6 +12,8 @@ fn test_options() -> StoreOptions {
         persistent_journal_path: String::new(),
         replica_count: 3,
         write_quorum: 2,
+        stripe_redundancy_units: 0,
+        stripe_unit_bytes: DEFAULT_STRIPE_UNIT_BYTES,
         reuse_stale_chunk_space: false,
         compaction_fragment_threshold: 2,
         object_manifest_checkpoint_interval: 1,
@@ -37547,6 +37549,14 @@ fn every_option_in_the_table_is_a_field_with_that_default() {
         ("replica_count", defaults.replica_count.to_string()),
         ("write_quorum", defaults.write_quorum.to_string()),
         (
+            "stripe_redundancy_units",
+            defaults.stripe_redundancy_units.to_string(),
+        ),
+        (
+            "stripe_unit_bytes",
+            rendered(defaults.stripe_unit_bytes as u64),
+        ),
+        (
             "reuse_stale_chunk_space",
             defaults.reuse_stale_chunk_space.to_string(),
         ),
@@ -38609,6 +38619,494 @@ fn a_stripe_layout_is_refused_where_it_could_not_be_honoured() {
     assert!(
         service.configure_stripe_layout(Some(other)).is_err(),
         "a different unit size must not change under pages that were addressed by the old one"
+    );
+}
+
+#[cfg(test)]
+fn striped_store_options() -> StoreOptions {
+    // A page is exactly eight stripe groups: two data units of 64 KiB is 128 KiB a group,
+    // and a 1 MiB page is eight of them. Chosen so the measurement below is not blurred by
+    // a partial group paying a whole redundancy unit.
+    StoreOptions {
+        chunk_size: 64 * 1024 * 1024,
+        max_extent_bytes: 4 * 1024 * 1024,
+        page_size: 1024 * 1024,
+        volume_count: 1,
+        replica_count: 3,
+        // EVERY REPLICA, because a striped unit has no peer.
+        write_quorum: 3,
+        stripe_redundancy_units: 1,
+        stripe_unit_bytes: 64 * 1024,
+        ..StoreOptions::default()
+    }
+}
+
+#[test]
+fn a_striped_service_stripes_a_single_range_write_too() {
+    // THE ENTRY THE FIRST WIRING MISSED. `write_chunk_range` is a separate write path from
+    // the batch one, and it is the path a snapshot replay takes, so a striped service that
+    // only striped batch writes held full copies here -- and then the striped read
+    // interpreted those copies as units, rebuilt a page that was not what had been written,
+    // and RETURNED it.
+    let mut service = striped_chunk_service(64);
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    // Five units' worth, so the write spans three groups and the last unit is partial.
+    let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
+    service.write_chunk_range(&chunk_id, 0, &payload).unwrap();
+
+    // THE POSITIVE CASE FIRST: the bytes come back. The bug was answered reads, not refused
+    // ones, so a test that only asserted the saving would have been satisfied by a service
+    // that striped and then read back rubbish.
+    let (read, _) = service
+        .read_chunk_range(&chunk_id, 0, payload.len() as u64)
+        .unwrap();
+    assert_eq!(
+        read, payload,
+        "a single-range striped write did not read back as what was written"
+    );
+
+    // And the bytes on the replicas are units, not copies. 300 logical bytes is two full
+    // groups of 128 and a third holding 44, and a partial group still pays a whole
+    // redundancy unit: 128 + 64 twice, then 44 + 64.
+    let held: u64 = service
+        .replicas
+        .iter()
+        .flat_map(|replica| replica.pages.values())
+        .map(|state| state.data.len() as u64)
+        .sum();
+    assert_eq!(
+        held,
+        (128 + 64) * 2 + 44 + 64,
+        "a single-range striped write should hold units, and it holds {held} bytes"
+    );
+    assert!(
+        held < payload.len() as u64 * 3,
+        "whatever the partial-group arithmetic, striping must hold less than three copies: \
+         {held} against {}",
+        payload.len() * 3
+    );
+}
+
+#[test]
+fn a_retried_striped_write_is_deduplicated_at_each_replica() {
+    // A striped write sends DIFFERENT bytes to each replica, so its replica receipts have to
+    // be keyed by the replica and by the bytes going to it. Without that key a striped
+    // service would quietly have no replica-level idempotent write while a replicated one
+    // did.
+    //
+    // THIS CALLS THE STRIPED WRITE DIRECTLY, and the reason is worth stating: both public
+    // idempotent entries -- `write_chunk_range_idempotent` and `write_slab_ranges_idempotent`
+    // -- dedupe at the SERVICE, out of `write_request_receipts`, before a replica is touched
+    // at all. A retry through either of them is answered from that map, so it would pass with
+    // the replica keying deleted. The physical write count is what sees the layer below.
+    let mut service = striped_chunk_service(64);
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let page_id = PageId {
+        chunk_id: chunk_id.clone(),
+        page_index: 0,
+    };
+    let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
+
+    // NOT the physical write count: a deduplicated write answers from the STORED receipt,
+    // `receipt.stats.clone()`, so it reports the ORIGINAL write's physical count and a retry
+    // looks identical to a first write by that measure. The receipts themselves are the
+    // observable.
+    let receipts = |service: &MatrixChunkService| -> usize {
+        service
+            .replicas
+            .iter()
+            .map(|replica| replica.batch_write_request_receipts.len())
+            .sum()
+    };
+    assert_eq!(receipts(&service), 0, "nothing has been written yet");
+
+    service
+        .write_striped_page_ranges(&page_id, &[(0, &payload)], Some(("sw", "stripe-retry-1")))
+        .unwrap();
+    // ONE RECEIPT PER UNIT WRITE, which is the property a key missing the bytes would break.
+    // 300 bytes is five data units: replica 0 holds one of them, replicas 1 and 2 hold two
+    // each, and the two on one replica go to DIFFERENT offsets with different bytes. A key
+    // naming only the page and the replica would make the second look like the first
+    // retried, and that replica would silently never receive its second unit.
+    // ONE RECEIPT PER UNIT WRITE, which is the property a key missing the bytes would
+    // break: 300 bytes is five data units, replica 0 holds one of them and replicas 1 and 2
+    // hold two each, and the two on one replica go to different offsets with different
+    // bytes. A key naming only the page and the replica would make the second look like the
+    // first retried, and that replica would silently never receive its second unit.
+    //
+    // PLUS ONE PER TOUCHED GROUP for the redundancy rewrite, which goes through
+    // `write_chunk_ranges_borrowed` -- and that records a `direct-batch-write-` receipt of
+    // its own without ever checking one. Three groups, so eight. Counted separately rather
+    // than folded into a total, because the two kinds are there for different reasons and a
+    // single number would hide one of them appearing or disappearing.
+    let unit_receipts = |service: &MatrixChunkService| -> usize {
+        service
+            .replicas
+            .iter()
+            .flat_map(|replica| replica.batch_write_request_receipts.keys())
+            .filter(|key| key.starts_with("sw:"))
+            .count()
+    };
+    assert_eq!(
+        unit_receipts(&service),
+        5,
+        "each of the five data-unit writes should have left its own receipt"
+    );
+    assert_eq!(
+        receipts(&service),
+        8,
+        "five unit receipts and one per touched group for the redundancy rewrite"
+    );
+
+    let bytes_held = |service: &MatrixChunkService| -> Vec<(u64, u64, Vec<u8>)> {
+        service
+            .replicas
+            .iter()
+            .map(|replica| {
+                let state = replica.pages.get(&page_id).expect("every replica holds a unit");
+                (
+                    state.logical_length,
+                    state.checksum_fnv1a64,
+                    state.data.as_ref().clone(),
+                )
+            })
+            .collect()
+    };
+    let before = bytes_held(&service);
+    let sequences_before: Vec<u64> = service
+        .replicas
+        .iter()
+        .map(|replica| replica.pages.get(&page_id).unwrap().write_sequence)
+        .collect();
+    service
+        .write_striped_page_ranges(&page_id, &[(0, &payload)], Some(("sw", "stripe-retry-1")))
+        .unwrap();
+    assert_eq!(
+        unit_receipts(&service),
+        5,
+        "a retry under the same key should add no unit receipts"
+    );
+    // THE BYTES, not the whole state. The redundancy rewrite is not given the caller's key
+    // -- it is a recompute, not a write being applied -- so a retry runs it again and writes
+    // the same bytes to the same place.
+    assert_eq!(
+        before,
+        bytes_held(&service),
+        "a retried striped write should leave every replica holding the same bytes"
+    );
+    // And the way it is NOT identical, asserted rather than left to be discovered: the
+    // redundancy rewrite still counts as a write, so every replica carrying a redundancy
+    // unit of a touched group moves its `write_sequence`. That sequence is what the
+    // REPLICATED read votes on; a striped read reports none, because no single replica's
+    // sequence is the page's, so nothing reads it here.
+    let sequences_after: Vec<u64> = service
+        .replicas
+        .iter()
+        .map(|replica| replica.pages.get(&page_id).unwrap().write_sequence)
+        .collect();
+    assert!(
+        sequences_after
+            .iter()
+            .zip(sequences_before.iter())
+            .all(|(after, before)| after > before),
+        "every replica holds a redundancy unit of some touched group, so every sequence \
+         should have moved: {sequences_before:?} then {sequences_after:?}"
+    );
+
+    // And a DIFFERENT key writes its own receipts, so the count above is a measurement of
+    // the keying rather than of a cap.
+    service
+        .write_striped_page_ranges(&page_id, &[(0, &payload)], Some(("sw", "stripe-retry-2")))
+        .unwrap();
+    assert_eq!(
+        unit_receipts(&service),
+        10,
+        "a second key should leave its own five unit receipts"
+    );
+
+    let (read, _) = service
+        .read_chunk_range(&chunk_id, 0, payload.len() as u64)
+        .unwrap();
+    assert_eq!(read, payload, "a retried striped write changed the page");
+}
+
+#[test]
+fn a_striped_services_public_idempotent_write_is_answered_from_its_own_receipts() {
+    // The layer ABOVE the one the test before this measures, kept separate so neither is
+    // read as evidence for the other.
+    let mut service = striped_chunk_service(64);
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
+    let writes = vec![ChunkRangeWrite {
+        chunk_id: chunk_id.clone(),
+        offset: 0,
+        data: payload.clone(),
+    }];
+    let (_, first) = service
+        .write_slab_ranges_idempotent(writes.clone(), "stripe-public-1")
+        .unwrap();
+    assert!(!first.deduped, "the first write of a key is not a retry");
+    let (_, again) = service
+        .write_slab_ranges_idempotent(writes, "stripe-public-1")
+        .unwrap();
+    assert!(
+        again.deduped,
+        "the same key with the same request should be recognised as a retry"
+    );
+    let single = service
+        .write_chunk_range_idempotent(&chunk_id, 0, &payload, "stripe-public-2")
+        .unwrap();
+    assert!(!single.deduped);
+    let single_again = service
+        .write_chunk_range_idempotent(&chunk_id, 0, &payload, "stripe-public-2")
+        .unwrap();
+    assert!(
+        single_again.deduped,
+        "the single-range entry dedupes from the same map, and striping must not have \
+         changed that"
+    );
+    let (read, _) = service
+        .read_chunk_range(&chunk_id, 0, payload.len() as u64)
+        .unwrap();
+    assert_eq!(read, payload, "the retries changed the page");
+}
+
+#[test]
+fn a_store_holds_one_and_a_half_copies_of_its_payload_when_it_stripes() {
+    // THE MEASUREMENT THIS CHANGE EXISTS FOR, taken at the STORE rather than at the chunk
+    // service: the same objects put through two stores, one configured to stripe and one
+    // not, with the figure read out of the footprint audit both times.
+    fn held(striped: bool) -> (u64, u64) {
+        // The SAME options either way but for the one setting, so the figures differ by
+        // the layout and by nothing else. The write quorum stays at every replica for both,
+        // because a quorum difference would change what the replicated figure measures.
+        let mut options = striped_store_options();
+        if !striped {
+            options.stripe_redundancy_units = 0;
+        }
+        let mut store = MatrixObjectStore::new(options).unwrap();
+        store.create_bucket("bucket").unwrap();
+        // Exactly one page: 1,024 objects of 1 KiB is 1 MiB, which is eight whole stripe
+        // groups, so no partial group pays a whole redundancy unit in either figure.
+        for index in 0..1024u64 {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("k/{index:08}"),
+                    vec![b'x'; 1024],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        // THE BYTES COME BACK, asserted before the saving is read: a store that held 1.5
+        // copies of the wrong bytes would satisfy the figure and nothing else.
+        let read = store.get_object("bucket", "k/00000500").unwrap();
+        assert_eq!(
+            read.data,
+            vec![b'x'; 1024],
+            "a striped store did not read an object back"
+        );
+        // THE LAYOUT IN FORCE IS THE ONE THE OPTIONS ASKED FOR, which the figure below
+        // cannot tell: a unit size that divides the page evenly gives 1.5x whatever it is,
+        // so doubling it changes nothing measurable. Four groups of 256 KiB and eight of
+        // 128 KiB hold the same bytes, and only this says which was built.
+        let layout = store.chunk_service.stripe_layout();
+        if striped {
+            let layout = layout.expect("a striped store should have a layout in force");
+            assert_eq!(layout.unit_bytes, 64 * 1024, "the unit size the options named");
+            assert_eq!(layout.parity_units, 1, "one unit of redundancy");
+            assert_eq!(
+                layout.data_units, 2,
+                "two data units, because the replica count leaves two"
+            );
+        } else {
+            assert!(
+                layout.is_none(),
+                "a store that asked for no layout should have none"
+            );
+        }
+        let audit: std::collections::BTreeMap<String, u64> =
+            store.footprint_audit().into_iter().collect();
+        let get = |key: &str| -> u64 {
+            *audit
+                .get(key)
+                .unwrap_or_else(|| panic!("the audit should report {key}"))
+        };
+        (get("logical.written"), get("replica.data.capacity"))
+    }
+
+    let (striped_logical, striped_held) = held(true);
+    let (plain_logical, plain_held) = held(false);
+    println!(
+        "STOREWIRED logical={striped_logical} striped={striped_held} replicated={plain_held} \
+         striped_permille={} replicated_permille={}",
+        striped_held * 1000 / striped_logical,
+        plain_held * 1000 / plain_logical
+    );
+    assert_eq!(
+        striped_logical, plain_logical,
+        "both stores must have been given the same logical bytes for the figures to compare"
+    );
+    assert_eq!(
+        plain_held * 1000 / plain_logical,
+        3000,
+        "three-way replication holds three copies, and this is the figure the payload floor \
+         has always reported"
+    );
+    assert_eq!(
+        striped_held * 1000 / striped_logical,
+        1500,
+        "a striped store should hold one and a half"
+    );
+    assert_eq!(
+        striped_held * 2,
+        plain_held,
+        "exactly half, asserted as a relation so it cannot drift into a near miss: \
+         {striped_held} against {plain_held}"
+    );
+}
+
+#[test]
+fn a_striped_store_is_still_striping_after_a_snapshot_round_trip() {
+    // The layout decides where a byte lives, so a restore that silently dropped it would
+    // leave a store holding three copies again -- and a store that took the layout from the
+    // IMAGE would drop it, because the snapshot decoder fills an unencoded option from its
+    // default. The layout belongs to the store that is restoring.
+    let mut store = MatrixObjectStore::new(striped_store_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..1024u64 {
+        store
+            .put_object(
+                "bucket",
+                &format!("k/{index:08}"),
+                vec![b'x'; 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+
+    let mut restored = MatrixObjectStore::new(striped_store_options()).unwrap();
+    restored.install_snapshot_bytes(&bytes).unwrap();
+    assert_eq!(
+        restored.options.stripe_redundancy_units, 1,
+        "the restoring store's layout setting should survive the options being replaced"
+    );
+    // And the SETTING having survived is not the same as the layout having been rebuilt from
+    // it: the restore builds a fresh chunk service, and it has to be configured with the
+    // same unit size or every byte would be addressed differently from before.
+    assert_eq!(
+        restored.chunk_service.stripe_layout(),
+        Some(EcStripeLayout::for_replicas(3, 1, 64 * 1024).unwrap()),
+        "a restored striped store should hold exactly the layout it was configured with"
+    );
+    // THE BYTES FIRST. A restored store that is striping but addressed its pages the other
+    // way would read back rubbish, and the figure below would not notice.
+    let read = restored.get_object("bucket", "k/00000500").unwrap();
+    assert_eq!(
+        read.data,
+        vec![b'x'; 1024],
+        "a restored striped store did not read an object back"
+    );
+    let audit: std::collections::BTreeMap<String, u64> =
+        restored.footprint_audit().into_iter().collect();
+    let get = |key: &str| -> u64 {
+        *audit
+            .get(key)
+            .unwrap_or_else(|| panic!("the audit should report {key}"))
+    };
+    assert_eq!(
+        get("replica.data.capacity") * 1000 / get("logical.written"),
+        1500,
+        "a restored striped store should still hold one and a half copies"
+    );
+}
+
+#[test]
+fn a_store_that_asks_for_a_layout_it_cannot_have_is_refused() {
+    // Refused at construction rather than part-way through, and refused rather than
+    // clamped: a durability setting that silently gives less than it was asked for is the
+    // one mistake this must not make.
+    let short_quorum = MatrixObjectStore::new(StoreOptions {
+        write_quorum: 2,
+        ..striped_store_options()
+    });
+    let message = match short_quorum {
+        Err(err) => err.to_string(),
+        Ok(_) => panic!("a striped store with a quorum of two of three should be refused"),
+    };
+    assert!(
+        message.contains("write_quorum"),
+        "the refusal should name the setting that is wrong, and it says {message:?}"
+    );
+
+    assert!(
+        MatrixObjectStore::new(StoreOptions {
+            stripe_redundancy_units: 3,
+            ..striped_store_options()
+        })
+        .is_err(),
+        "three replicas cannot hold three units of redundancy and any data"
+    );
+    assert!(
+        MatrixObjectStore::new(StoreOptions {
+            stripe_unit_bytes: 0,
+            ..striped_store_options()
+        })
+        .is_err(),
+        "a stripe unit that holds no bytes is not a unit"
+    );
+    // And the default is still replication, so a store that asks for nothing gets exactly
+    // the path it had before.
+    let plain = MatrixObjectStore::new(StoreOptions::default()).unwrap();
+    assert_eq!(
+        plain.options.stripe_redundancy_units, 0,
+        "replication is the default and this change must not have moved it"
+    );
+}
+
+#[test]
+fn a_striped_page_that_has_lost_a_replica_is_reported_unrepaired() {
+    // WHAT THIS CANNOT DO, asserted so it is visible rather than discovered. Repair picks
+    // the state a majority of replicas agree on and copies it over the rest; on a striped
+    // page every replica legitimately holds different bytes, so there is no majority and
+    // the repair reports the page unrepaired.
+    //
+    // It does NOT destroy the page, which is the thing worth pinning: a repair that took one
+    // replica's units for the page and copied them everywhere would lose the data.
+    let mut service = striped_chunk_service(64);
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
+    service
+        .write_slab_ranges(vec![ChunkRangeWrite {
+            chunk_id: chunk_id.clone(),
+            offset: 0,
+            data: payload.clone(),
+        }])
+        .unwrap();
+    let page_id = PageId {
+        chunk_id: chunk_id.clone(),
+        page_index: 0,
+    };
+    service.replicas[1].pages.clear();
+
+    let report = service.repair_chunk_replicas(&page_id).unwrap();
+    assert_eq!(
+        report.repaired_replicas, 0,
+        "a striped page's units cannot be rebuilt by a majority-state repair"
+    );
+    assert_eq!(
+        report.unrepaired_chunks, 1,
+        "and the report must say so rather than reporting a healthy page"
+    );
+    // The read still serves it, by rebuilding the lost units on demand -- so the page is
+    // readable and one loss from unreadable at the same time.
+    let (read, _) = service
+        .read_chunk_range(&chunk_id, 0, payload.len() as u64)
+        .unwrap();
+    assert_eq!(
+        read, payload,
+        "the striped read should still serve a page whose repair was refused"
     );
 }
 

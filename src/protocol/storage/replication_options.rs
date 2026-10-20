@@ -157,6 +157,10 @@ impl Default for StoreOptions {
             persistent_journal_path: String::new(),
             replica_count: 3,
             write_quorum: 2,
+            // REPLICATION BY DEFAULT. Striping costs a loss of redundancy and requires
+            // every replica to accept a write, so it is asked for rather than inherited.
+            stripe_redundancy_units: 0,
+            stripe_unit_bytes: DEFAULT_STRIPE_UNIT_BYTES,
             reuse_stale_chunk_space: false,
             compaction_fragment_threshold: 128,
             object_manifest_checkpoint_interval: 1,

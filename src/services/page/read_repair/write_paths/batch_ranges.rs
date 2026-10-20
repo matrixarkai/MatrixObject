@@ -114,7 +114,11 @@ impl MatrixChunkService {
             // a write that left one unit of a group behind would have spent the one loss the
             // layout is allowed.
             if self.ec_layout.is_some() {
-                let striped = self.write_striped_page_ranges(&page_id, &chunk_writes)?;
+                let striped = self.write_striped_page_ranges(
+                    &page_id,
+                    &chunk_writes,
+                    idempotency_key.map(|key| ("bw", key)),
+                )?;
                 stats.coalesced_chunk_ranges = stats
                     .coalesced_chunk_ranges
                     .saturating_add(striped.coalesced_ranges);
