@@ -87,6 +87,9 @@ impl MatrixReplicaService {
                 page_id,
                 selected_range.offset,
                 selected_range.length,
+                // WARMING IS THE POINT OF THIS CALL, not a side effect of it: a prefetch
+                // that bypassed the cache would read bytes and throw them away.
+                ReadCacheIntent::Fill,
             )?;
             if cache_hit {
                 stats.cache_hits = stats.cache_hits.saturating_add(1);

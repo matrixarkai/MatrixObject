@@ -21,7 +21,7 @@ impl MatrixReplicaService {
                 "chunk read payload budget exceeded".to_string(),
             ));
         }
-        self.read_chunk_with_cache_status(page_id, offset, length)
+        self.read_chunk_with_cache_status(page_id, offset, length, ReadCacheIntent::Fill)
             .map(|(read, _)| read)
     }
 
@@ -76,7 +76,12 @@ impl MatrixReplicaService {
                 ObjectError::Corruption("chunk batch read missing selected range".to_string())
             })?;
             let (read, cache_hit) =
-                self.read_chunk_with_cache_status(page_id, range.offset, range.length)?;
+                self.read_chunk_with_cache_status(
+                    page_id,
+                    range.offset,
+                    range.length,
+                    ReadCacheIntent::Fill,
+                )?;
             stats.coalesced_ranges = 1;
             stats.coalesced_bytes = range.length;
             if cache_hit {
@@ -134,7 +139,12 @@ impl MatrixReplicaService {
         let mut merged_reads = Vec::with_capacity(merged_ranges.len());
         for merged in merged_ranges {
             let (read, cache_hit) =
-                self.read_chunk_with_cache_status(page_id, merged.offset, merged.length)?;
+                self.read_chunk_with_cache_status(
+                    page_id,
+                    merged.offset,
+                    merged.length,
+                    ReadCacheIntent::Fill,
+                )?;
             stats.coalesced_ranges = stats.coalesced_ranges.saturating_add(1);
             stats.coalesced_bytes = stats.coalesced_bytes.saturating_add(merged.length);
             if cache_hit {
