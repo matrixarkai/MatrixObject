@@ -63,5 +63,9 @@ pub struct MatrixChunkService {
     snapshot_export_cache: RefCell<Option<ChunkSnapshotExportCache>>,
     snapshot_assembler: ChunkServiceSnapshotAssembler,
     active_mutation_batch: Option<ChunkMutationBatch>,
+    /// Set when this service spreads a page's bytes over the replicas instead of copying
+    /// it to each. `None` is replication, which is the default and what every existing
+    /// store is.
+    pub(crate) ec_layout: Option<EcStripeLayout>,
     pub(crate) replicas: Vec<MatrixReplicaService>,
 }

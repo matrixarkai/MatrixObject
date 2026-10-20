@@ -88,6 +88,8 @@ impl MatrixChunkService {
             page_size,
             write_quorum,
             read_quorum: write_quorum,
+            // Replication, which is what every existing store is.
+            ec_layout: None,
             allocator_chunk_size: page_size.saturating_mul(1024).max(page_size),
             allocator_next_chunk_id: 1,
             allocator_next_offset: 0,
