@@ -26,6 +26,7 @@
 
 pub mod http;
 pub mod s3;
+pub mod s3_multipart;
 pub mod service;
 
 pub use http::{Request, Response};
@@ -660,7 +661,10 @@ mod tests {
              {missing_bucket}"
         );
 
-        let wrong_method = roundtrip(&addr, &request("POST", "/b/present", "", b""));
+        // PATCH, not POST: POST on an object is CreateMultipartUpload or
+        // CompleteMultipartUpload depending on its sub-resource, so it is a method this surface
+        // allows and a bare one is a different complaint -- asserted just below.
+        let wrong_method = roundtrip(&addr, &request("PATCH", "/b/present", "", b""));
         assert_eq!(status_of(&wrong_method), 405, "{wrong_method}");
         assert!(
             body_of(&wrong_method).contains("<Code>MethodNotAllowed</Code>"),
@@ -670,6 +674,20 @@ mod tests {
             wrong_method.to_ascii_lowercase().contains("allow: "),
             "the Allow header is what an HTTP client reads and the body is what an S3 client \
              reads; answering only one leaves the other guessing: {wrong_method}"
+        );
+        assert!(
+            wrong_method.to_ascii_lowercase().contains("post"),
+            "the Allow header must name POST now that the multipart verbs use it: {wrong_method}"
+        );
+
+        // A POST naming NEITHER sub-resource is a malformed request, not a disallowed method, and
+        // the two send a client to different places: one fixes its URL, the other stops using the
+        // verb.
+        let bare_post = roundtrip(&addr, &request("POST", "/b/present", "", b""));
+        assert_eq!(status_of(&bare_post), 400, "{bare_post}");
+        assert!(
+            body_of(&bare_post).contains("<Code>InvalidArgument</Code>"),
+            "{bare_post}"
         );
 
         let bad_range = roundtrip(
@@ -827,6 +845,389 @@ mod tests {
                 && (20..23).all(digit)
                 && bytes[23] == b'Z'
         }
+    }
+
+    #[test]
+    fn a_multipart_upload_runs_end_to_end_over_http() {
+        let (handle, addr) = serve();
+
+        // CreateMultipartUpload: POST ?uploads.
+        let created = roundtrip(
+            &addr,
+            &request(
+                "POST",
+                "/b/big?uploads",
+                "content-type: text/plain\r\nx-amz-meta-origin: the-create\r\n",
+                b"",
+            ),
+        );
+        assert_eq!(status_of(&created), 200, "{created}");
+        let body = body_of(&created).to_string();
+        assert!(
+            body.contains("<InitiateMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"),
+            "{body}"
+        );
+        assert!(body.contains("<Bucket>b</Bucket>") && body.contains("<Key>big</Key>"), "{body}");
+        let upload_id = body
+            .split("<UploadId>")
+            .nth(1)
+            .and_then(|rest| rest.split("</UploadId>").next())
+            .expect("an upload id")
+            .to_string();
+        assert!(!upload_id.is_empty(), "{body}");
+
+        // UploadPart: PUT ?partNumber=N&uploadId=X, answering an ETag and no body.
+        let mut etags: Vec<String> = Vec::new();
+        for (number, payload) in [(1u32, vec![b'a'; 64]), (2, vec![b'b'; 32])] {
+            let put = roundtrip(
+                &addr,
+                &request(
+                    "PUT",
+                    &format!("/b/big?partNumber={number}&uploadId={upload_id}"),
+                    "",
+                    &payload,
+                ),
+            );
+            assert_eq!(status_of(&put), 200, "part {number}: {put}");
+            assert!(
+                body_of(&put).is_empty(),
+                "UploadPart answers no body, and a client reads the header: {put}"
+            );
+            let etag = put
+                .split("etag: ")
+                .nth(1)
+                .and_then(|rest| rest.split("\r\n").next())
+                .expect("an etag header -- without it a client cannot complete the upload")
+                .trim()
+                .trim_matches('"')
+                .to_string();
+            assert!(!etag.is_empty(), "{put}");
+            etags.push(etag);
+        }
+
+        // ListParts: GET ?uploadId=X.
+        let listed = roundtrip(&addr, &request("GET", &format!("/b/big?uploadId={upload_id}"), "", b""));
+        assert_eq!(status_of(&listed), 200, "{listed}");
+        let body = body_of(&listed);
+        assert!(body.contains("<ListPartsResult"), "{body}");
+        assert!(body.contains("<PartNumber>1</PartNumber>"), "{body}");
+        assert!(body.contains("<PartNumber>2</PartNumber>"), "{body}");
+        assert!(body.contains("<Size>64</Size>") && body.contains("<Size>32</Size>"), "{body}");
+        assert!(body.contains("<IsTruncated>false</IsTruncated>"), "{body}");
+
+        // ListMultipartUploads: GET /{bucket}?uploads.
+        let uploads = roundtrip(&addr, &request("GET", "/b?uploads", "", b""));
+        assert_eq!(status_of(&uploads), 200, "{uploads}");
+        assert!(body_of(&uploads).contains("<ListMultipartUploadsResult"), "{uploads}");
+        assert!(
+            body_of(&uploads).contains(&format!("<UploadId>{upload_id}</UploadId>")),
+            "the upload in flight was not listed: {uploads}"
+        );
+
+        // CompleteMultipartUpload: POST ?uploadId=X with the part list.
+        let complete_body = format!(
+            "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>&quot;{}&quot;</ETag>\
+             </Part><Part><PartNumber>2</PartNumber><ETag>&quot;{}&quot;</ETag></Part>\
+             </CompleteMultipartUpload>",
+            etags[0], etags[1]
+        );
+        let completed = roundtrip(
+            &addr,
+            &request(
+                "POST",
+                &format!("/b/big?uploadId={upload_id}"),
+                "content-type: application/xml\r\n",
+                complete_body.as_bytes(),
+            ),
+        );
+        assert_eq!(status_of(&completed), 200, "{completed}");
+        let body = body_of(&completed);
+        assert!(body.contains("<CompleteMultipartUploadResult"), "{body}");
+        assert!(body.contains("<Location>/b/big</Location>"), "{body}");
+        assert!(body.contains("<ETag>&quot;fnv1a64:"), "{body}");
+
+        // AND THE OBJECT IS THERE, which is the only assertion that proves the upload did
+        // anything: every step above could pass against a surface that assembled nothing.
+        let read = roundtrip(&addr, &request("GET", "/b/big", "", b""));
+        assert_eq!(status_of(&read), 200, "{read}");
+        // THE METADATA WAS TAKEN AT THE CREATE, which is where S3 takes it -- a client sends
+        // `x-amz-meta-*` with the create and not with the parts, so a surface reading it anywhere
+        // else drops it silently and the object comes back without it.
+        assert!(
+            read.to_ascii_lowercase().contains("x-amz-meta-origin: the-create"),
+            "the metadata given at CreateMultipartUpload did not reach the assembled object: \
+             {read}"
+        );
+        assert!(
+            read.to_ascii_lowercase().contains("content-type: text/plain"),
+            "the content type given at the create did not reach the object: {read}"
+        );
+        assert_eq!(
+            body_of(&read).len(),
+            96,
+            "the assembled object is not the two parts: {}",
+            body_of(&read).len()
+        );
+        assert!(body_of(&read).starts_with(&"a".repeat(64)), "the parts are out of order");
+        assert!(body_of(&read).ends_with(&"b".repeat(32)), "the parts are out of order");
+
+        // The upload is gone from the listing now that it completed.
+        let after = roundtrip(&addr, &request("GET", "/b?uploads", "", b""));
+        assert!(
+            !body_of(&after).contains(&format!("<UploadId>{upload_id}</UploadId>")),
+            "a completed upload is still listed as in flight: {after}"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_part_list_that_does_not_match_what_was_uploaded_is_refused() {
+        let (handle, addr) = serve();
+        let created = roundtrip(&addr, &request("POST", "/b/mismatch?uploads", "", b""));
+        let upload_id = body_of(&created)
+            .split("<UploadId>")
+            .nth(1)
+            .and_then(|rest| rest.split("</UploadId>").next())
+            .expect("an upload id")
+            .to_string();
+        let put = roundtrip(
+            &addr,
+            &request("PUT", &format!("/b/mismatch?partNumber=1&uploadId={upload_id}"), "", b"xyz"),
+        );
+        let etag = put
+            .split("etag: ")
+            .nth(1)
+            .and_then(|rest| rest.split("\r\n").next())
+            .unwrap()
+            .trim()
+            .trim_matches('"')
+            .to_string();
+
+        // THE STORE WOULD HAVE COMPLETED EVERY ONE OF THESE. `complete_multipart_upload` takes no
+        // part list and completes whatever it holds, so a mismatch not caught at this surface is
+        // not caught at all -- the object is assembled and the client told it succeeded.
+        let cases: Vec<(&str, String, &str)> = vec![
+            (
+                "a part that was never uploaded",
+                format!(
+                    "<CompleteMultipartUpload><Part><PartNumber>7</PartNumber>\
+                     <ETag>&quot;{etag}&quot;</ETag></Part></CompleteMultipartUpload>"
+                ),
+                "InvalidPart",
+            ),
+            (
+                "a part with the wrong etag",
+                "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber>\
+                 <ETag>&quot;fnv1a64:0000000000000000&quot;</ETag></Part>\
+                 </CompleteMultipartUpload>"
+                    .to_string(),
+                "InvalidPart",
+            ),
+            (
+                "parts that do not ascend",
+                format!(
+                    "<CompleteMultipartUpload><Part><PartNumber>2</PartNumber>\
+                     <ETag>&quot;{etag}&quot;</ETag></Part><Part><PartNumber>1</PartNumber>\
+                     <ETag>&quot;{etag}&quot;</ETag></Part></CompleteMultipartUpload>"
+                ),
+                "InvalidPartOrder",
+            ),
+            (
+                "an empty part list",
+                "<CompleteMultipartUpload></CompleteMultipartUpload>".to_string(),
+                "MalformedXML",
+            ),
+            (
+                "a body that is not the document at all",
+                "nothing like xml".to_string(),
+                "MalformedXML",
+            ),
+            (
+                // THE ROOT ELEMENT IS CHECKED, and this is the case that shows why. The previous
+                // entry is refused for carrying no parts at all, so it passes whether or not the
+                // root is checked. This one carries a perfectly well formed part list under a
+                // root this endpoint never asked for -- without the check it would be accepted
+                // as a CompleteMultipartUpload the client did not send.
+                "a part list under the wrong root element",
+                format!(
+                    "<PutSomethingElse><Part><PartNumber>1</PartNumber>\
+                     <ETag>&quot;{etag}&quot;</ETag></Part></PutSomethingElse>"
+                ),
+                "MalformedXML",
+            ),
+            (
+                // Part numbers start at 1. Refused by the PARSER, which is what makes the answer
+                // MalformedXML: a zero is a malformed document, where an unknown part number is
+                // an InvalidPart, and a client reading the wrong one of those looks in the wrong
+                // place.
+                "part number zero",
+                format!(
+                    "<CompleteMultipartUpload><Part><PartNumber>0</PartNumber>\
+                     <ETag>&quot;{etag}&quot;</ETag></Part></CompleteMultipartUpload>"
+                ),
+                "MalformedXML",
+            ),
+            (
+                "a document type declaration",
+                "<!DOCTYPE x><CompleteMultipartUpload><Part><PartNumber>1</PartNumber>\
+                 <ETag>&quot;x&quot;</ETag></Part></CompleteMultipartUpload>"
+                    .to_string(),
+                "MalformedXML",
+            ),
+        ];
+        for (name, body, code) in cases {
+            let answered = roundtrip(
+                &addr,
+                &request(
+                    "POST",
+                    &format!("/b/mismatch?uploadId={upload_id}"),
+                    "",
+                    body.as_bytes(),
+                ),
+            );
+            assert_eq!(status_of(&answered), 400, "{name}: {answered}");
+            assert!(
+                body_of(&answered).contains(&format!("<Code>{code}</Code>")),
+                "{name} must answer {code}: {answered}"
+            );
+        }
+
+        // And the object was not created by any of them.
+        assert_eq!(
+            status_of(&roundtrip(&addr, &request("GET", "/b/mismatch", "", b""))),
+            404,
+            "a refused completion assembled the object anyway"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn an_unknown_upload_id_is_no_such_upload_and_not_no_such_key() {
+        let (handle, addr) = serve();
+        // A THIRD CODE, AND IT EARNS ITS KEEP. The store reports a missing upload the same way it
+        // reports a missing object. A client that reads NoSuchKey goes looking for an object that
+        // was never supposed to exist yet; one that reads NoSuchUpload knows its upload id is
+        // wrong or the upload was aborted.
+        for (method, target, body) in [
+            ("PUT", "/b/k?partNumber=1&uploadId=nope", &b"x"[..]),
+            ("GET", "/b/k?uploadId=nope", b""),
+            ("DELETE", "/b/k?uploadId=nope", b""),
+        ] {
+            let answered = roundtrip(&addr, &request(method, target, "", body));
+            assert_eq!(status_of(&answered), 404, "{method} {target}: {answered}");
+            assert!(
+                body_of(&answered).contains("<Code>NoSuchUpload</Code>"),
+                "{method} {target}: {answered}"
+            );
+        }
+
+        let completed = roundtrip(
+            &addr,
+            &request(
+                "POST",
+                "/b/k?uploadId=nope",
+                "",
+                b"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>&quot;x&quot;</ETag></Part></CompleteMultipartUpload>",
+            ),
+        );
+        assert_eq!(status_of(&completed), 404, "{completed}");
+        assert!(body_of(&completed).contains("<Code>NoSuchUpload</Code>"), "{completed}");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn an_upload_can_be_aborted_and_then_it_is_gone() {
+        let (handle, addr) = serve();
+        let created = roundtrip(&addr, &request("POST", "/b/dropped?uploads", "", b""));
+        let upload_id = body_of(&created)
+            .split("<UploadId>")
+            .nth(1)
+            .and_then(|rest| rest.split("</UploadId>").next())
+            .expect("an upload id")
+            .to_string();
+        let _ = roundtrip(
+            &addr,
+            &request("PUT", &format!("/b/dropped?partNumber=1&uploadId={upload_id}"), "", b"abc"),
+        );
+
+        let aborted = roundtrip(
+            &addr,
+            &request("DELETE", &format!("/b/dropped?uploadId={upload_id}"), "", b""),
+        );
+        assert_eq!(status_of(&aborted), 204, "{aborted}");
+
+        // NOT IDEMPOTENT, unlike a DELETE of an object, and that is S3's behaviour: an abort that
+        // reported success for an upload id the server never had would hide a client sending the
+        // wrong id.
+        let again = roundtrip(
+            &addr,
+            &request("DELETE", &format!("/b/dropped?uploadId={upload_id}"), "", b""),
+        );
+        assert_eq!(status_of(&again), 404, "{again}");
+        assert!(body_of(&again).contains("<Code>NoSuchUpload</Code>"), "{again}");
+        assert_eq!(
+            status_of(&roundtrip(&addr, &request("GET", "/b/dropped", "", b""))),
+            404,
+            "an aborted upload left an object behind"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_part_number_that_is_not_a_positive_number_is_refused() {
+        let (handle, addr) = serve();
+        let created = roundtrip(&addr, &request("POST", "/b/nums?uploads", "", b""));
+        let upload_id = body_of(&created)
+            .split("<UploadId>")
+            .nth(1)
+            .and_then(|rest| rest.split("</UploadId>").next())
+            .expect("an upload id")
+            .to_string();
+        // REFUSED, NOT COERCED. A part stored under a number the client did not ask for is a part
+        // the client will not name when it completes, and the upload then fails with a message
+        // about the wrong thing.
+        for raw in ["0", "-1", "lots", ""] {
+            let answered = roundtrip(
+                &addr,
+                &request(
+                    "PUT",
+                    &format!("/b/nums?partNumber={raw}&uploadId={upload_id}"),
+                    "",
+                    b"x",
+                ),
+            );
+            assert_eq!(status_of(&answered), 400, "partNumber={raw:?}: {answered}");
+            assert!(
+                body_of(&answered).contains("<Code>InvalidArgument</Code>"),
+                "partNumber={raw:?}: {answered}"
+            );
+        }
+        // A partNumber with no uploadId names a part of nothing.
+        let orphan = roundtrip(&addr, &request("PUT", "/b/nums?partNumber=1", "", b"x"));
+        assert_eq!(status_of(&orphan), 400, "{orphan}");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn an_escaped_ampersand_in_a_part_etag_survives_the_round_trip() {
+        // The unescape has to replace `&amp;` LAST. Replacing it first turns `&amp;quot;` -- an
+        // escaped literal `&quot;` -- into `&quot;` and then into a quote character, inventing a
+        // quote the client never sent. Checked directly, because no etag this store produces
+        // contains an ampersand and the path would otherwise never be exercised.
+        assert_eq!(
+            super::s3_multipart::xml_unescape("&amp;quot;x&amp;quot;"),
+            "&quot;x&quot;",
+            "an escaped literal entity was decoded twice"
+        );
+        assert_eq!(
+            super::s3_multipart::xml_unescape("&quot;a&amp;b&quot;"),
+            "\"a&b\"",
+            "the five escapes must round-trip"
+        );
+        assert_eq!(
+            super::s3_multipart::xml_unescape("&lt;&gt;&apos;"),
+            "<>'"
+        );
     }
 
     #[test]

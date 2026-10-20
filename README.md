@@ -222,6 +222,12 @@ The verbs, where `{bucket}` is the first path segment and `{key}` is everything 
 | `DELETE /{bucket}` | `DeleteBucket`; `BucketNotEmpty` with 409 while it still holds objects |
 | `GET /{bucket}?prefix=&delimiter=&continuation-token=&start-after=&max-keys=` | `ListObjectsV2`, with the delimiter rolled up into `CommonPrefixes` |
 | `GET /` | `ListBuckets` |
+| `POST /{bucket}/{key}?uploads` | `CreateMultipartUpload` |
+| `PUT /{bucket}/{key}?partNumber=&uploadId=` | `UploadPart`; answers the `ETag` the completion must name |
+| `POST /{bucket}/{key}?uploadId=` | `CompleteMultipartUpload`; the part list in the body is validated against what was uploaded |
+| `DELETE /{bucket}/{key}?uploadId=` | `AbortMultipartUpload` |
+| `GET /{bucket}/{key}?uploadId=` | `ListParts` |
+| `GET /{bucket}?uploads` | `ListMultipartUploads` |
 | `GET /healthz` | readiness, which takes the store lock rather than only reporting the listener |
 
 A write answers the object's `ETag`, `Content-Type`, `Last-Modified`, its version and length, and
@@ -232,7 +238,16 @@ a truncated one by counting, and a token on a final page would make it ask again
 Every failure is an `<Error>` document carrying the `<Code>` a client branches on, and the codes
 are S3's: `NoSuchBucket` and `NoSuchKey` are distinguished rather than both reported as a 404 with
 prose, because one tells a client to create the bucket and retry and the other tells it to stop.
-A V1 listing client that sends `marker` and no `list-type` is served the same body.
+`NoSuchUpload` is a third, for the same reason. A V1 listing client that sends `marker` and no
+`list-type` is served the same body.
+
+`CompleteMultipartUpload` is the one request whose body is read. The parser recognises exactly that
+document and refuses everything else -- including a document type declaration, a part list under
+another root element, and trailing or missing elements -- because accepting more of XML buys nothing
+a client needs. The part list is then checked against what was actually uploaded, and a mismatch
+answers `InvalidPart` or `InvalidPartOrder`: the store completes whatever parts it holds and takes
+no list, so a mismatch not caught here is not caught at all, and the client would be handed an
+object assembled from something other than what it sent.
 
 ### Three things to know before putting data in it
 
@@ -259,8 +274,11 @@ verified, which is the same statement as the unauthenticated note above and the 
 bind is loopback.
 
 Not implemented, and answered with `NotImplemented` or `MethodNotAllowed` rather than with an empty
-success: multipart upload, versioning verbs, tagging verbs, object ACLs, bucket policies, lifecycle
-verbs. `GET /healthz` is the one route that is deliberately not S3 -- it answers plain text, because
+success: versioning verbs, tagging verbs, object ACLs, bucket policies, lifecycle verbs.
+
+**One thing S3 checks that this does not:** the 5 MiB minimum for a non-final part. This store
+accepts any part size, and enforcing a minimum it does not have would refuse uploads it can serve
+perfectly well. The check would only ever fire on a client this store could have satisfied. `GET /healthz` is the one route that is deliberately not S3 -- it answers plain text, because
 a container probe and an operator read it and an `<Error>` document would help neither.
 
 Anything a caller might reasonably
