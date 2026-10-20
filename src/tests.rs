@@ -38244,6 +38244,190 @@ fn a_rejection_names_the_setting_it_rejected() {
 }
 
 #[test]
+fn measure_what_the_redundancy_fragment_buys_at_each_replica_count() {
+    // WHY THE FRAGMENT EXISTS, measured rather than argued. It is single-shard recovery INSIDE one
+    // page: `chunk_ec_recover_data` rebuilds a page whose checksum fails from `len / k` bytes of
+    // parity plus the shards that survived, so damage smaller than a shard costs a fraction of a
+    // page to repair instead of a whole mirror.
+    //
+    // Whether a page carries one is decided by `replica.keep_ec_sidecar = replica_count <= 1`.
+    // That inequality is the whole policy, and this measures what it means at each count --
+    // including the count nobody checked.
+    fn probe(replica_count: usize) -> (u64, u64, bool, bool) {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            replica_count,
+            write_quorum: 1,
+            volume_count: 1,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        // 256 KiB, which splits 16 ways at 8 KiB a shard, so the parity is 1/16 of the page.
+        let payload = (0..256 * 1024).map(|index| (index % 251) as u8).collect::<Vec<u8>>();
+        store
+            .put_object("bucket", "k", payload.clone(), "application/octet-stream")
+            .unwrap();
+
+        let audit: std::collections::BTreeMap<String, u64> =
+            store.footprint_audit().into_iter().collect();
+        let get = |key: &str| -> u64 {
+            *audit
+                .get(key)
+                .unwrap_or_else(|| panic!("the audit should report {key}"))
+        };
+        let data = get("replica.data.len");
+        let fragment = get("replica.ec_fragments.len");
+
+        // DAMAGE ONE SHARD ON EVERY REPLICA. That is the state a store is in when the last copy
+        // has bit rot -- after every peer has been lost, or when the same sector fails on each.
+        // Done to all of them because a surviving peer would make the repair trivially possible
+        // and the fragment irrelevant, which is the point of the policy.
+        for replica in store.chunk_service.replicas.iter_mut() {
+            let page_ids: Vec<PageId> = replica.pages.keys().cloned().collect();
+            for page_id in page_ids {
+                let state = std::sync::Arc::make_mut(replica.pages.get_mut(&page_id).unwrap());
+                let bytes = std::sync::Arc::make_mut(&mut state.data);
+                if bytes.is_empty() {
+                    continue;
+                }
+                // Inside the FIRST shard, so a single-shard recovery is the thing being asked for.
+                let at = (chunk_ec_fragment_len(bytes.len()) / 2).min(bytes.len() - 1);
+                bytes[at] ^= 0xff;
+            }
+        }
+
+        let recovered = match store.get_object("bucket", "k") {
+            Ok(object) => object.data == payload,
+            Err(_) => false,
+        };
+        (data, fragment, fragment > 0, recovered)
+    }
+
+    let (one_data, one_fragment, one_has, one_recovered) = probe(1);
+    let (two_data, two_fragment, two_has, two_recovered) = probe(2);
+    let (three_data, three_fragment, three_has, three_recovered) = probe(3);
+
+    // The quantities are PRINTED, so a reader of the output does not have to trust the assertions
+    // to see what the numbers were.
+    println!(
+        "FRAGMENTBUYS replicas=1 data={one_data} parity={one_fragment} has={one_has} \
+         recovered={one_recovered}"
+    );
+    println!(
+        "FRAGMENTBUYS replicas=2 data={two_data} parity={two_fragment} has={two_has} \
+         recovered={two_recovered}"
+    );
+    println!(
+        "FRAGMENTBUYS replicas=3 data={three_data} parity={three_fragment} has={three_has} \
+         recovered={three_recovered}"
+    );
+
+    // ONE REPLICA: the parity is there, costs a sixteenth, and repairs the damage.
+    assert!(one_has, "a page without peers must carry a parity fragment");
+    assert_eq!(
+        one_fragment * 16,
+        one_data,
+        "a 256 KiB page splits 16 ways, so the parity is a sixteenth of the data: \
+         {one_fragment} against {one_data}"
+    );
+    assert!(
+        one_recovered,
+        "single-shard damage on the only copy must be repaired from the parity -- that is the \
+         whole reason the fragment exists"
+    );
+
+    // TWO AND THREE REPLICAS: no parity at all, because a peer is a cheaper and stronger source
+    // for the same repair. A whole page from a peer beats one shard rebuilt from parity.
+    assert!(!two_has && !three_has, "a page with peers must carry no parity");
+    assert_eq!(two_fragment, 0);
+    assert_eq!(three_fragment, 0);
+
+    // AND HERE IS WHAT THE POLICY MEANS, which is the part worth measuring. The inequality is
+    // `replica_count <= 1`, evaluated when the service is built. A store at two replicas pays
+    // TWICE the data of a store at one, and when its last copy takes sub-shard damage it has
+    // nothing to repair from -- while the one-replica store, paying 1/16 instead of 1x extra,
+    // repairs it.
+    assert!(
+        !two_recovered && !three_recovered,
+        "a page with peers has no parity, so damage to every copy is unrecoverable: this is \
+         the cost of the policy and it is asserted so that changing the policy shows up here"
+    );
+    assert_eq!(two_data, one_data * 2, "two replicas hold twice the data");
+    assert_eq!(three_data, one_data * 3, "three hold three times");
+    let one_total = one_data + one_fragment;
+    println!(
+        "FRAGMENTTRADE one_replica_total={one_total} two_replica_total={two_data} \
+         ratio_one_to_two={:.4}",
+        two_data as f64 / one_total as f64
+    );
+    assert!(
+        one_total < two_data,
+        "one replica with parity must cost less than two without: {one_total} against {two_data}"
+    );
+
+    // AND THE OTHER LEG, because the comparison above is unfair without it. Damaging EVERY copy is
+    // the correlated case -- the same sector failing on each, a shared firmware bug, or the last
+    // survivor rotting after its peers are gone. The ordinary case is damage to ONE copy, and a
+    // peer repairs that perfectly well. Measured, so the trade is stated completely rather than
+    // leaving two replicas looking worse than they are.
+    fn probe_one_damaged(replica_count: usize) -> bool {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            replica_count,
+            write_quorum: 1,
+            volume_count: 1,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        let payload = (0..256 * 1024).map(|index| (index % 251) as u8).collect::<Vec<u8>>();
+        store
+            .put_object("bucket", "k", payload.clone(), "application/octet-stream")
+            .unwrap();
+        // The FIRST replica only.
+        let replica = store.chunk_service.replicas.get_mut(0).expect("a replica");
+        let page_ids: Vec<PageId> = replica.pages.keys().cloned().collect();
+        for page_id in page_ids {
+            let state = std::sync::Arc::make_mut(replica.pages.get_mut(&page_id).unwrap());
+            let bytes = std::sync::Arc::make_mut(&mut state.data);
+            if bytes.is_empty() {
+                continue;
+            }
+            let at = (chunk_ec_fragment_len(bytes.len()) / 2).min(bytes.len() - 1);
+            bytes[at] ^= 0xff;
+        }
+        matches!(store.get_object("bucket", "k"), Ok(object) if object.data == payload)
+    }
+
+    let one_of_one = probe_one_damaged(1);
+    let one_of_two = probe_one_damaged(2);
+    let one_of_three = probe_one_damaged(3);
+    println!(
+        "FRAGMENTBUYS one_copy_damaged: replicas=1 recovered={one_of_one} \
+         replicas=2 recovered={one_of_two} replicas=3 recovered={one_of_three}"
+    );
+    assert!(
+        one_of_one,
+        "one replica repairs its own single-shard damage from the parity"
+    );
+    assert!(
+        one_of_two && one_of_three,
+        "a peer repairs a damaged copy, which is what makes the parity redundant at two or more \
+         replicas and is the reason the policy turns it off"
+    );
+
+    // SO THE TRADE, IN ONE PLACE: the parity costs 1/k of a page and covers damage that reaches
+    // EVERY copy. Replication costs a whole copy each and covers damage that reaches some but not
+    // all of them. They are not substitutes, and the shipped policy buys only the second -- at
+    // two replicas a store pays 1.88x the bytes of one-plus-parity and still cannot repair
+    // correlated damage, which is the one thing one-plus-parity can.
+    //
+    // Whether that is the right default is a decision and not a defect: correlated sub-shard
+    // damage is rarer than losing a replica, and nothing here argues otherwise. What this test
+    // establishes is the SHAPE of the trade, so a change to `keep_ec_sidecar` has to come past a
+    // measurement rather than an intuition.
+}
+
+#[test]
 fn a_write_reaches_every_replica_from_the_coordinator_in_one_hop() {
     // Two write topologies are possible for a replicated chunk. In one the
     // coordinator hands the payload to every replica itself -- one hop each,
