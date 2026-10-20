@@ -78,7 +78,7 @@ impl MatrixMetaService {
                 value: if mutation.delete {
                     String::new().into()
                 } else {
-                    mutation.value.clone().into()
+                    mutation.record_value.clone()
                 },
                 version: current_version.saturating_add(1),
                 update_time_ms: now_ms,

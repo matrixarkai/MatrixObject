@@ -2,7 +2,7 @@
 impl MatrixObjectStore {
     fn encoded_metadata_mutation_len(mutation: &MetadataMutation) -> usize {
         encoded_string_len(&mutation.key)
-            + encoded_string_len(&mutation.value)
+            + encoded_string_len(&mutation.record_value.as_text())
             + std::mem::size_of::<u64>() * 2
     }
 

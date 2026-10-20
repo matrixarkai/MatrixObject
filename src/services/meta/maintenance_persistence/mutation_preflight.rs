@@ -106,7 +106,7 @@ impl MatrixMetaService {
         mutations.iter().try_fold(0_u64, |total, mutation| {
             total
                 .checked_add(mutation.key.len() as u64)
-                .and_then(|total| total.checked_add(mutation.value.len() as u64))
+                .and_then(|total| total.checked_add(mutation.record_value.len() as u64))
                 .ok_or_else(|| {
                     ObjectError::InvalidArgument("metadata qos payload bytes overflow".to_string())
                 })
@@ -315,7 +315,9 @@ impl MatrixMetaService {
         let key = self.filed_record_key(mutation.key);
         let record = MetadataRecord {
             key: key.clone(),
-            value: mutation.value.into(),
+            // THE CARRY, and the reason the whole conversion was blocked here: a projection
+            // reaches the record only if the mutation could hold one.
+            value: mutation.record_value,
             version: current_version.saturating_add(1),
             update_time_ms: now_ms,
             deleted: mutation.delete,

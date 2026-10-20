@@ -25,7 +25,7 @@ impl MetaSnapshot {
         }
         for (key, record) in &self.records {
             append_string(&mut material, key);
-            append_string(&mut material, &record.value);
+            append_string(&mut material, &record.value.as_text());
             append_u64(&mut material, record.version);
             append_u64(&mut material, record.update_time_ms);
             append_u64(&mut material, record.deleted as u64);
@@ -88,7 +88,8 @@ impl MetaSnapshot {
             append_u64(&mut material, transaction.mutations.len() as u64);
             for mutation in &transaction.mutations {
                 append_string(&mut material, &mutation.key);
-                append_string(&mut material, &mutation.value);
+                // CHECKSUM MATERIAL, same requirement as the encoding above.
+                append_string(&mut material, &mutation.record_value.as_text());
                 append_u64(&mut material, mutation.expected_version);
                 append_u64(&mut material, mutation.delete as u64);
             }

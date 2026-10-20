@@ -45,7 +45,7 @@ pub(crate) fn metadata_maintenance_transaction_payload_bytes(
             transaction
                 .mutations
                 .iter()
-                .map(|mutation| mutation.key.len().saturating_add(mutation.value.len()))
+                .map(|mutation| mutation.key.len().saturating_add(mutation.record_value.len()))
                 .sum::<usize>(),
         )
         .saturating_add(

@@ -28,7 +28,7 @@ impl MatrixObjectStore {
         self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
             &metadata.object_id,
-            &metadata_projection_value(&metadata),
+            RecordValue::of_object(&metadata),
             None,
             None,
             update_time_ms,
@@ -71,7 +71,7 @@ impl MatrixObjectStore {
         self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
             &metadata.object_id,
-            &metadata_projection_value(&metadata),
+            RecordValue::of_object(&metadata),
             None,
             None,
             update_time_ms,
@@ -120,7 +120,7 @@ impl MatrixObjectStore {
         self.file_object(object_id, &mut metadata);
         self.commit_meta_projection(
             &metadata.object_id,
-            &metadata_projection_value(&metadata),
+            RecordValue::of_object(&metadata),
             None,
             None,
             update_time_ms,
@@ -217,7 +217,7 @@ impl MatrixObjectStore {
         self.file_object(object_id, &mut metadata);
         if let Err(err) = self.commit_meta_projection(
             &metadata.object_id,
-            &metadata_projection_value(&metadata),
+            RecordValue::of_object(&metadata),
             None,
             None,
             update_time_ms,

@@ -30,7 +30,7 @@ impl MatrixMetaService {
             .iter()
             .map(|key| MetadataMutation {
                 key: key.clone().into(),
-                value: String::new(),
+                record_value: RecordValue::empty(),
                 expected_version: self
                         .records
                         .get(key.as_str())
@@ -76,7 +76,7 @@ impl MatrixMetaService {
             .iter()
             .map(|key| MetadataMutation {
                 key: key.clone().into(),
-                value: String::new(),
+                record_value: RecordValue::empty(),
                 expected_version: self
                         .records
                         .get(key.as_str())
@@ -194,7 +194,7 @@ impl MatrixMetaService {
             payload_bytes = next_payload;
             mutations.push(MetadataMutation {
                 key: key.clone(),
-                value: String::new(),
+                record_value: RecordValue::empty(),
                 expected_version: record.version,
                 delete: true,
             });

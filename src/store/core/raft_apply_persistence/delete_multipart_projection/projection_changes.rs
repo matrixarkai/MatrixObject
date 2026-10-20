@@ -3,7 +3,7 @@ impl MatrixObjectStore {
     fn commit_meta_projection(
         &mut self,
         object_id: &ObjectId,
-        value: &str,
+        value: impl Into<RecordValue>,
         lease_owner: Option<&str>,
         lease_epoch: Option<u64>,
         now_ms: u64,
@@ -16,7 +16,7 @@ impl MatrixObjectStore {
             .map_or(0, |record| record.version);
         self.meta_service.commit_record(
             &key,
-            value.to_string(),
+            value,
             expected_version,
             lease_owner,
             lease_epoch,

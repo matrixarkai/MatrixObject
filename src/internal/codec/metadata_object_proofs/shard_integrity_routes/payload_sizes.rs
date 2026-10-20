@@ -14,7 +14,7 @@ pub(crate) fn metadata_transaction_receipt_payload_bytes(
     for mutation in &receipt.transaction.mutations {
         bytes = bytes
             .saturating_add(mutation.key.len())
-            .saturating_add(mutation.value.len())
+            .saturating_add(mutation.record_value.len())
             .saturating_add(32);
     }
     for key in receipt.transaction.read_versions.keys() {

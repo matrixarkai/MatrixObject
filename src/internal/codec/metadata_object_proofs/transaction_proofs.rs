@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 pub(crate) fn append_metadata_mutation(out: &mut Vec<u8>, mutation: &MetadataMutation) {
     append_string(out, &mutation.key);
-    append_string(out, &mutation.value);
+    // PROOF MATERIAL: the same characters as before, or every receipt's checksum moves.
+    append_string(out, &mutation.record_value.as_text());
     append_u64(out, mutation.expected_version);
     append_u64(out, mutation.delete as u64);
 }
 
 pub(crate) fn append_metadata_record(out: &mut Vec<u8>, record: &MetadataRecord) {
     append_string(out, &record.key);
-    append_string(out, &record.value);
+    append_string(out, &record.value.as_text());
     append_u64(out, record.version);
     append_u64(out, record.update_time_ms);
     append_u64(out, record.deleted as u64);
@@ -47,7 +48,7 @@ pub(crate) fn metadata_transaction_summary(
         mutation_value_bytes: transaction
             .mutations
             .iter()
-            .map(|mutation| mutation.key.len().saturating_add(mutation.value.len()) as u64)
+            .map(|mutation| mutation.key.len().saturating_add(mutation.record_value.len()) as u64)
             .sum(),
         read_key_bytes: transaction
             .read_versions
