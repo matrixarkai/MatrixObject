@@ -133,6 +133,23 @@ impl MatrixChunkService {
         offset: u64,
         length: u64,
     ) -> Result<(ReplicaReadResult, ChunkReadStats), ObjectError> {
+        // STRIPED READS DO NOT VOTE. The loop below picks a majority over
+        // `(write_sequence, checksum, etag)` from replicas holding identical copies, which
+        // is meaningless when each replica holds a different unit -- there is nothing to
+        // agree about. So a striped service gathers and reconstructs instead, and the
+        // `write_sequence` and `checksum` a vote would have compared are not reported: no
+        // single replica's are the page's.
+        if self.ec_layout.is_some() {
+            let (data, stats) = self.read_striped_page_range(page_id, offset, length)?;
+            return Ok((
+                ReplicaReadResult {
+                    data,
+                    write_sequence: 0,
+                    checksum: String::new(),
+                },
+                stats,
+            ));
+        }
         let mut stats = ChunkReadStats::default();
         let mut successful =
             Vec::with_capacity(self.replicas.len().min(self.read_quorum.max(1)));

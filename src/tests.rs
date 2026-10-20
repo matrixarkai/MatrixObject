@@ -38387,6 +38387,231 @@ fn a_rejection_names_the_setting_it_rejected() {
     }
 }
 
+#[cfg(test)]
+fn striped_chunk_service(unit_bytes: usize) -> MatrixChunkService {
+    // Three replicas, one redundancy unit, so two data units: the layout should hold 1.5
+    // copies where replication holds 3.
+    let mut service = MatrixChunkService::new(64 * 1024, 3, 3).unwrap();
+    let layout = EcStripeLayout::for_replicas(3, 1, unit_bytes).unwrap();
+    service.configure_stripe_layout(Some(layout)).unwrap();
+    service
+}
+
+#[test]
+fn a_striped_page_reads_back_what_was_written_to_it() {
+    // THE QUESTION THAT DECIDES WHETHER ANY OF THIS IS WIRED. Everything else about the
+    // layout can be right while the storage path still copies pages to every replica.
+    let mut service = striped_chunk_service(64);
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    // Five units' worth, so the write spans three groups and the last unit is partial.
+    let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
+    service
+        .write_slab_ranges(vec![ChunkRangeWrite {
+            chunk_id: chunk_id.clone(),
+            offset: 0,
+            data: payload.clone(),
+        }])
+        .unwrap();
+
+    let (read, _) = service.read_chunk_range(&chunk_id, 0, payload.len() as u64).unwrap();
+    assert_eq!(read, payload, "a striped page did not read back");
+
+    // AND EVERY SUB-RANGE, because the unit boundaries are where an off-by-one lives: a
+    // range that starts mid-unit, one that ends mid-unit, and one that spans a group.
+    for (offset, length) in [(0u64, 1u64), (1, 63), (63, 2), (64, 64), (100, 120), (0, 300), (299, 1)] {
+        let (slice, _) = service.read_chunk_range(&chunk_id, offset, length).unwrap();
+        assert_eq!(
+            slice,
+            &payload[offset as usize..(offset + length) as usize],
+            "the striped read is wrong at offset {offset} for {length} bytes"
+        );
+    }
+}
+
+#[test]
+fn a_striped_page_holds_one_and_a_half_copies_and_replication_holds_three() {
+    // THE MEASUREMENT THE WHOLE LAYOUT EXISTS FOR, taken from what the replicas actually
+    // hold rather than from the layout's own arithmetic.
+    fn held_bytes(striped: bool, payload: &[u8]) -> u64 {
+        let mut service = if striped {
+            striped_chunk_service(64)
+        } else {
+            MatrixChunkService::new(64 * 1024, 3, 3).unwrap()
+        };
+        let chunk_id = ChunkId { volume_id: 1, id: 1 };
+        service
+            .write_slab_ranges(vec![ChunkRangeWrite {
+                chunk_id,
+                offset: 0,
+                data: payload.to_vec(),
+            }])
+            .unwrap();
+        service
+            .replicas
+            .iter()
+            .flat_map(|replica| replica.pages.values())
+            .map(|state| state.data.len() as u64)
+            .sum()
+    }
+
+    // A whole number of groups, so the partial-group redundancy unit does not blur the
+    // figure: two data units of 64 bytes is 128 a group, and 1,280 bytes is ten groups.
+    let payload: Vec<u8> = (0..1280u32).map(|index| (index % 251) as u8).collect();
+    let striped = held_bytes(true, &payload);
+    let replicated = held_bytes(false, &payload);
+    println!(
+        "STRIPEWIRED logical={} striped={striped} replicated={replicated} \
+         striped_permille={} replicated_permille={}",
+        payload.len(),
+        striped * 1000 / payload.len() as u64,
+        replicated * 1000 / payload.len() as u64
+    );
+    assert_eq!(
+        replicated * 1000 / payload.len() as u64,
+        3000,
+        "replication should hold three copies, and the floor measurement says it does"
+    );
+    assert_eq!(
+        striped * 1000 / payload.len() as u64,
+        1500,
+        "the striped layout should hold one and a half"
+    );
+    assert_eq!(
+        striped * 2,
+        replicated,
+        "exactly half, asserted as a relation so it cannot drift to a near miss: \
+         {striped} against {replicated}"
+    );
+}
+
+#[test]
+fn a_striped_page_still_reads_with_one_replica_gone() {
+    // The trade the layout makes: one loss survived, where three-way replication survives
+    // two. Each replica in turn, because the placement rotates and a different unit of
+    // each group is lost depending on which replica went.
+    let payload: Vec<u8> = (0..500u32).map(|index| (index % 251) as u8).collect();
+    for gone in 0..3usize {
+        let mut service = striped_chunk_service(64);
+        let chunk_id = ChunkId { volume_id: 1, id: 1 };
+        service
+            .write_slab_ranges(vec![ChunkRangeWrite {
+                chunk_id: chunk_id.clone(),
+                offset: 0,
+                data: payload.clone(),
+            }])
+            .unwrap();
+        // LOST THE WAY A REPLICA IS ACTUALLY LOST: its data is gone. Quarantine cannot
+        // express this -- see the assertion at the end of this test -- and clearing the
+        // pages is the state a failed node leaves behind anyway.
+        service.replicas[gone].pages.clear();
+        let (read, stats) = service
+            .read_chunk_range(&chunk_id, 0, payload.len() as u64)
+            .unwrap_or_else(|err| panic!("replica {gone} gone and the page did not read: {err}"));
+        assert_eq!(read, payload, "replica {gone} gone and the bytes are wrong");
+        assert!(
+            stats.replica_read_repairs > 0,
+            "replica {gone} gone, so some unit had to be rebuilt and the stats should say so"
+        );
+    }
+
+    // TWO GONE IS REFUSED, not answered with something. One unit of redundancy recovers
+    // one unit, and a read that returned anyway would be serving invented bytes.
+    let mut service = striped_chunk_service(64);
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    service
+        .write_slab_ranges(vec![ChunkRangeWrite {
+            chunk_id: chunk_id.clone(),
+            offset: 0,
+            data: payload.clone(),
+        }])
+        .unwrap();
+    service.replicas[0].pages.clear();
+    service.replicas[1].pages.clear();
+    assert!(
+        service.read_chunk_range(&chunk_id, 0, payload.len() as u64).is_err(),
+        "two replicas gone must be refused rather than answered"
+    );
+
+    // AND CONFINED TO ONE GROUP, because the assertion above is satisfied by the wrong
+    // mechanism. Reading the whole payload spans several groups, and group 1's REDUNDANCY
+    // unit is on replica 0 -- gone as well -- so that read is refused for a missing
+    // redundancy unit rather than for two missing data units.
+    //
+    // Group 0 isolates it: with two data units a group and 64-byte units it is offsets
+    // 0..128, its data units are on replicas 0 and 1 (both gone) and its redundancy unit is
+    // on replica 2 (present). The only thing that can refuse this read is the codec seeing
+    // two data units missing -- which is what a mutation offering an absent unit as zeros
+    // defeated, undetected, until this assertion existed.
+    let only_group_zero = service.read_chunk_range(&chunk_id, 0, 128);
+    assert!(
+        only_group_zero.is_err(),
+        "group 0 has lost both data units and kept its redundancy unit, so one unit of \
+         redundancy cannot rebuild it and the read must be refused rather than answered \
+         with zeros: {only_group_zero:?}"
+    );
+
+    // AND THE LIMITATION, ASSERTED SO IT IS VISIBLE. A striped write needs every replica
+    // to accept it, so the layout requires `write_quorum == replicas` -- and the
+    // quarantine guard refuses any change leaving fewer active replicas than the write
+    // quorum. So a striped service's reads survive a loss while its quarantine API will
+    // not let an operator record one. Reads degrade and the API cannot say so.
+    //
+    // Resolving it means separating "how many must accept a write" from "how many must be
+    // reachable to serve a read", which for a striped service are `replicas` and
+    // `data_units` and are not the same number. That is a change to a quorum invariant the
+    // replicated path shares, so it is named here rather than made in passing.
+    let mut fresh = striped_chunk_service(64);
+    let refused = fresh.set_replica_quarantine(0, true);
+    assert!(
+        refused.is_err(),
+        "a striped service cannot quarantine a replica today, and a test that did not say \
+         so would leave the next reader thinking it could"
+    );
+}
+
+#[test]
+fn a_stripe_layout_is_refused_where_it_could_not_be_honoured() {
+    // The layout decides where a byte lives, so it cannot change under existing pages, and
+    // a quorum short of every replica would let a write spend the one loss the layout is
+    // allowed before any failure happened.
+    let mut service = MatrixChunkService::new(64 * 1024, 3, 3).unwrap();
+    let layout = EcStripeLayout::for_replicas(3, 1, 64).unwrap();
+
+    // A layout whose group does not fit the replica set.
+    let wrong_width = EcStripeLayout::for_replicas(4, 1, 64).unwrap();
+    assert!(
+        service.configure_stripe_layout(Some(wrong_width)).is_err(),
+        "a four-unit layout on three replicas should be refused"
+    );
+
+    // A quorum short of every replica.
+    let mut short_quorum = MatrixChunkService::new(64 * 1024, 3, 2).unwrap();
+    assert!(
+        short_quorum.configure_stripe_layout(Some(layout)).is_err(),
+        "a striped write needs every replica, so a quorum of two of three is refused"
+    );
+
+    // And once pages exist, the layout is fixed.
+    service.configure_stripe_layout(Some(layout)).unwrap();
+    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    service
+        .write_slab_ranges(vec![ChunkRangeWrite {
+            chunk_id,
+            offset: 0,
+            data: vec![b'x'; 200],
+        }])
+        .unwrap();
+    assert!(
+        service.configure_stripe_layout(None).is_err(),
+        "the layout must not change under pages that were addressed by it"
+    );
+    let other = EcStripeLayout::for_replicas(3, 1, 128).unwrap();
+    assert!(
+        service.configure_stripe_layout(Some(other)).is_err(),
+        "a different unit size must not change under pages that were addressed by the old one"
+    );
+}
+
 #[test]
 fn a_stripe_layout_holds_one_and_a_half_copies_where_replication_holds_three() {
     // THE FIGURE THE PAYLOAD SIDE IS STUCK AT. `replica.data.capacity` is exactly 3.0000x of

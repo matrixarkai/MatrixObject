@@ -8,3 +8,4 @@ include!("page/discard_reclaim_snapshot.inc.rs");
 include!("page/snapshot_helpers.inc.rs");
 include!("page/footprint.rs");
 include!("page/ec_layout.rs");
+include!("page/ec_storage.rs");

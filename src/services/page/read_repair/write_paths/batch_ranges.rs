@@ -107,6 +107,25 @@ impl MatrixChunkService {
         let projected_lengths = Self::projected_chunk_lengths_for_grouped_write_views(&grouped)?;
         let accepted_replicas = self.admissible_write_replicas(&projected_lengths)?;
         for ((_, page_id), chunk_writes) in grouped {
+            // STRIPED WRITES GO TO EVERY REPLICA WITH DIFFERENT BYTES, so the loop below --
+            // which sends the same ranges to each admitted replica and counts successes
+            // against the write quorum -- is not the right shape. `configure_stripe_layout`
+            // already refuses a quorum short of every replica, because a unit has no peer:
+            // a write that left one unit of a group behind would have spent the one loss the
+            // layout is allowed.
+            if self.ec_layout.is_some() {
+                let striped = self.write_striped_page_ranges(&page_id, &chunk_writes)?;
+                stats.coalesced_chunk_ranges = stats
+                    .coalesced_chunk_ranges
+                    .saturating_add(striped.coalesced_ranges);
+                stats.physical_chunk_write_count = stats
+                    .physical_chunk_write_count
+                    .saturating_add(striped.physical_write_count);
+                stats.physical_chunk_write_bytes = stats
+                    .physical_chunk_write_bytes
+                    .saturating_add(striped.physical_write_bytes);
+                continue;
+            }
             let mut ok = 0usize;
             let mut first_error: Option<ObjectError> = None;
             let mut logical_coalesced_ranges = 0u64;
