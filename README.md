@@ -236,6 +236,8 @@ The verbs, where `{bucket}` is the first path segment and `{key}` is everything 
 | `GET /{bucket}?versions` | `ListObjectVersions`, with delete markers reported as such |
 | `GET` / `HEAD /{bucket}/{key}?versionId=` | read one named version |
 | `DELETE /{bucket}/{key}?versionId=` | remove one named version |
+| `GET` / `PUT` / `DELETE /{bucket}/{key}?tagging` | object tagging |
+| `GET` / `PUT` / `DELETE /{bucket}?cors` | bucket CORS |
 | `GET /healthz` | readiness, which takes the store lock rather than only reporting the listener |
 
 A write answers the object's `ETag`, `Content-Type`, `Last-Modified`, its version and length, and
@@ -282,10 +284,14 @@ verified, which is the same statement as the unauthenticated note above and the 
 bind is loopback.
 
 Not implemented, and answered with `NotImplemented` or `MethodNotAllowed` rather than with an empty
-success: tagging verbs, object ACLs, bucket policies, lifecycle verbs, and a ranged read of a named
-version -- a range on a `?versionId=` read is refused rather than answered with the whole object,
-because a client that asked for bytes 0-99 and got all of them would write the wrong length wherever
-it put them.
+success: object ACLs, bucket policies, lifecycle verbs, object lock.
+
+**One place the store's model is narrower than S3's, again:** CORS. S3's `CORSConfiguration` holds a
+list of rules, each pairing its own origins with its own methods and headers; this store keeps one
+flat policy per bucket. A configuration carrying a second rule is **refused**, not flattened --
+flattening would union the rules, so an origin that one rule allowed only `GET` would come back
+allowed whatever another rule permitted. That is granting access the request never asked for, so the
+refusal says exactly that. One rule round-trips exactly, and carrying a list needs a store change.
 
 **One thing S3 checks that this does not:** the 5 MiB minimum for a non-final part. This store
 accepts any part size, and enforcing a minimum it does not have would refuse uploads it can serve

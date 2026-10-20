@@ -27,6 +27,7 @@
 pub mod http;
 pub mod s3;
 pub mod s3_batch;
+pub mod s3_config;
 pub mod s3_multipart;
 pub mod s3_versions;
 pub mod service;
@@ -1843,14 +1844,68 @@ mod tests {
         assert_eq!(status_of(&absent), 404, "{absent}");
         assert!(body_of(&absent).contains("<Code>NoSuchKey</Code>"), "{absent}");
 
-        // A ranged read of a named version is refused rather than answered with the whole object,
-        // which would make a client write the wrong length wherever it put the bytes.
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_ranged_read_of_a_named_version_answers_that_versions_bytes() {
+        // THE PREVIOUS CHANGE REFUSED THIS WITH `NotImplemented` and said the store's versioned
+        // range read only needed wiring. It is wired, through the same `resolve_range` the
+        // unversioned read uses so the two cannot disagree about what a `Range` header means.
+        //
+        // What makes the test worth having rather than a formality: the range has to come from
+        // the NAMED version. Two versions of different lengths, and a range that is satisfiable
+        // against one and not the other, is the only shape that can tell them apart.
+        let (handle, addr) = serve();
+        enable_versioning(&addr);
+        let first = version_id_of(&roundtrip(&addr, &request("PUT", "/b/r", "", b"AAAABBBB")));
+        let second = version_id_of(&roundtrip(&addr, &request("PUT", "/b/r", "", b"zz")));
+
         let ranged = roundtrip(
             &addr,
-            &request("GET", "/b/one?versionId=1", "range: bytes=0-0\r\n", b""),
+            &request(
+                "GET",
+                &format!("/b/r?versionId={first}"),
+                "range: bytes=4-7\r\n",
+                b"",
+            ),
         );
-        assert_eq!(status_of(&ranged), 501, "{ranged}");
-        assert!(body_of(&ranged).contains("<Code>NotImplemented</Code>"), "{ranged}");
+        assert_eq!(status_of(&ranged), 206, "{ranged}");
+        assert_eq!(body_of(&ranged), "BBBB", "the range came from the wrong bytes: {ranged}");
+        assert!(
+            ranged.to_ascii_lowercase().contains("content-range: bytes 4-7/8"),
+            "the total must be the NAMED version's length, not the current one's: {ranged}"
+        );
+        assert!(
+            ranged.to_ascii_lowercase().contains(&format!("x-amz-version-id: {first}")),
+            "{ranged}"
+        );
+
+        // The same range against the CURRENT version is outside it, which is what proves the
+        // length above came from the version named and not from whatever is current.
+        let outside = roundtrip(
+            &addr,
+            &request(
+                "GET",
+                &format!("/b/r?versionId={second}"),
+                "range: bytes=4-7\r\n",
+                b"",
+            ),
+        );
+        assert_eq!(status_of(&outside), 416, "{outside}");
+        assert!(body_of(&outside).contains("<Code>InvalidRange</Code>"), "{outside}");
+        assert!(
+            outside.to_ascii_lowercase().contains("content-range: bytes */2"),
+            "the size a client should have asked within must be that version's: {outside}"
+        );
+
+        // And an unranged read of the same version is still whole.
+        let whole = roundtrip(
+            &addr,
+            &request("GET", &format!("/b/r?versionId={first}"), "", b""),
+        );
+        assert_eq!(status_of(&whole), 200, "{whole}");
+        assert_eq!(body_of(&whole), "AAAABBBB", "{whole}");
         handle.shutdown();
     }
 
@@ -1892,6 +1947,255 @@ mod tests {
 
         // The current version is untouched.
         assert_eq!(body_of(&roundtrip(&addr, &request("GET", "/b/d", "", b""))), "two");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn object_tags_round_trip_and_an_untagged_object_answers_an_empty_set() {
+        let (handle, addr) = serve();
+        let _ = roundtrip(&addr, &request("PUT", "/b/tagged", "", b"v"));
+
+        // AN OBJECT WITH NO TAGS ANSWERS AN EMPTY TagSet, not a 404: "this object has no tags"
+        // and "this object is not there" are different facts and the second has its own code.
+        let before = roundtrip(&addr, &request("GET", "/b/tagged?tagging", "", b""));
+        assert_eq!(status_of(&before), 200, "{before}");
+        assert!(body_of(&before).contains("<Tagging"), "{before}");
+        assert!(body_of(&before).contains("<TagSet></TagSet>"), "{before}");
+
+        let put = roundtrip(
+            &addr,
+            &request(
+                "PUT",
+                "/b/tagged?tagging",
+                "",
+                b"<Tagging><TagSet><Tag><Key>env</Key><Value>prod</Value></Tag>\
+                  <Tag><Key>owner</Key><Value>a&amp;b</Value></Tag></TagSet></Tagging>",
+            ),
+        );
+        assert_eq!(status_of(&put), 200, "{put}");
+
+        let after = roundtrip(&addr, &request("GET", "/b/tagged?tagging", "", b""));
+        let body = body_of(&after);
+        assert!(body.contains("<Key>env</Key><Value>prod</Value>"), "{body}");
+        // The ampersand has to survive BOTH directions: unescaped on the way in, escaped on the
+        // way out. A value that came back raw would make the listing unparseable.
+        assert!(
+            body.contains("<Key>owner</Key><Value>a&amp;b</Value>"),
+            "an escaped value must round-trip: {body}"
+        );
+
+        // DELETE clears them, and the read then reports the empty set rather than an error.
+        assert_eq!(
+            status_of(&roundtrip(&addr, &request("DELETE", "/b/tagged?tagging", "", b""))),
+            204
+        );
+        assert!(
+            body_of(&roundtrip(&addr, &request("GET", "/b/tagged?tagging", "", b"")))
+                .contains("<TagSet></TagSet>"),
+            "the tags were not cleared"
+        );
+
+        // A PUT of an empty set is also a clear, which is how a client that does not use DELETE
+        // does it. Different from the empty part list a completion refuses: there nothing was
+        // asked for, here clearing IS the ask.
+        let _ = roundtrip(
+            &addr,
+            &request(
+                "PUT",
+                "/b/tagged?tagging",
+                "",
+                b"<Tagging><TagSet><Tag><Key>k</Key><Value>v</Value></Tag></TagSet></Tagging>",
+            ),
+        );
+        let cleared = roundtrip(
+            &addr,
+            &request("PUT", "/b/tagged?tagging", "", b"<Tagging><TagSet></TagSet></Tagging>"),
+        );
+        assert_eq!(status_of(&cleared), 200, "{cleared}");
+        assert!(
+            body_of(&roundtrip(&addr, &request("GET", "/b/tagged?tagging", "", b"")))
+                .contains("<TagSet></TagSet>"),
+            "a PUT of an empty set must clear the tags"
+        );
+
+        // Tagging an object that is not there is NoSuchKey, not an empty set.
+        let absent = roundtrip(&addr, &request("GET", "/b/absent?tagging", "", b""));
+        assert_eq!(status_of(&absent), 404, "{absent}");
+        assert!(body_of(&absent).contains("<Code>NoSuchKey</Code>"), "{absent}");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_tagging_body_this_endpoint_cannot_read_is_refused() {
+        let (handle, addr) = serve();
+        let _ = roundtrip(&addr, &request("PUT", "/b/t2", "", b"v"));
+        for (name, body) in [
+            ("the wrong document", &b"<PutSomethingElse><TagSet></TagSet></PutSomethingElse>"[..]),
+            ("no TagSet", b"<Tagging></Tagging>"),
+            ("an unclosed Tag", b"<Tagging><TagSet><Tag><Key>k</Key><Value>v</Value></TagSet></Tagging>"),
+            ("a Tag with no Key", b"<Tagging><TagSet><Tag><Value>v</Value></Tag></TagSet></Tagging>"),
+            ("a Tag with no Value", b"<Tagging><TagSet><Tag><Key>k</Key></Tag></TagSet></Tagging>"),
+            ("an empty key", b"<Tagging><TagSet><Tag><Key></Key><Value>v</Value></Tag></TagSet></Tagging>"),
+            // A REPEATED KEY IS REFUSED, NOT OVERWRITTEN. A tag set is a map, so the last value
+            // would win silently and the client could not see it from a success.
+            ("a repeated key", b"<Tagging><TagSet><Tag><Key>k</Key><Value>1</Value></Tag>\
+                                 <Tag><Key>k</Key><Value>2</Value></Tag></TagSet></Tagging>"),
+            ("a document type declaration", b"<!DOCTYPE x><Tagging><TagSet></TagSet></Tagging>"),
+        ] {
+            let answered = roundtrip(&addr, &request("PUT", "/b/t2?tagging", "", body));
+            assert_eq!(status_of(&answered), 400, "{name}: {answered}");
+            assert!(
+                body_of(&answered).contains("<Code>MalformedXML</Code>"),
+                "{name}: {answered}"
+            );
+        }
+        // And the store's own limit still applies: more than ten tags is refused by the store,
+        // not by this surface, so the code is InvalidArgument rather than MalformedXML.
+        let eleven: String = (0..11)
+            .map(|index| format!("<Tag><Key>k{index}</Key><Value>v</Value></Tag>"))
+            .collect();
+        let too_many = roundtrip(
+            &addr,
+            &request(
+                "PUT",
+                "/b/t2?tagging",
+                "",
+                format!("<Tagging><TagSet>{eleven}</TagSet></Tagging>").as_bytes(),
+            ),
+        );
+        assert_eq!(status_of(&too_many), 400, "{too_many}");
+        assert!(
+            body_of(&too_many).contains("<Code>InvalidArgument</Code>"),
+            "the count limit is the store's, so the code is its vocabulary and not this \
+             surface's: {too_many}"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn bucket_cors_round_trips_and_a_bucket_without_one_says_so() {
+        let (handle, addr) = serve();
+
+        // A BUCKET WITH NO POLICY HAS ITS OWN CODE, unlike tags. A browser client reads the
+        // absence as "no cross-origin request will be allowed", where an empty rule set would
+        // read as a rule allowing nothing -- the same outcome by a different route, and only one
+        // of them is what the bucket actually says.
+        let before = roundtrip(&addr, &request("GET", "/b?cors", "", b""));
+        assert_eq!(status_of(&before), 404, "{before}");
+        assert!(
+            body_of(&before).contains("<Code>NoSuchCORSConfiguration</Code>"),
+            "{before}"
+        );
+
+        let put = roundtrip(
+            &addr,
+            &request(
+                "PUT",
+                "/b?cors",
+                "",
+                b"<CORSConfiguration><CORSRule><AllowedOrigin>https://example.test</AllowedOrigin>\
+                  <AllowedMethod>GET</AllowedMethod><AllowedMethod>HEAD</AllowedMethod>\
+                  <AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader>\
+                  <MaxAgeSeconds>3000</MaxAgeSeconds></CORSRule></CORSConfiguration>",
+            ),
+        );
+        assert_eq!(status_of(&put), 200, "{put}");
+
+        let after = roundtrip(&addr, &request("GET", "/b?cors", "", b""));
+        assert_eq!(status_of(&after), 200, "{after}");
+        let body = body_of(&after);
+        assert!(body.contains("<CORSConfiguration"), "{body}");
+        assert!(body.contains("<AllowedOrigin>https://example.test</AllowedOrigin>"), "{body}");
+        assert!(
+            body.contains("<AllowedMethod>GET</AllowedMethod>")
+                && body.contains("<AllowedMethod>HEAD</AllowedMethod>"),
+            "both methods must round-trip: {body}"
+        );
+        assert!(body.contains("<ExposeHeader>ETag</ExposeHeader>"), "{body}");
+        assert!(body.contains("<MaxAgeSeconds>3000</MaxAgeSeconds>"), "{body}");
+
+        assert_eq!(status_of(&roundtrip(&addr, &request("DELETE", "/b?cors", "", b""))), 204);
+        assert_eq!(
+            status_of(&roundtrip(&addr, &request("GET", "/b?cors", "", b""))),
+            404,
+            "the configuration was not removed"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_second_cors_rule_is_refused_rather_than_merged_into_the_first() {
+        let (handle, addr) = serve();
+        // THIS IS THE ONE THAT MATTERS. S3's configuration holds a LIST of rules, each pairing
+        // its own origins with its own methods. This store keeps one flat policy: a set of
+        // origins, a set of methods. Flattening two rules UNIONS them -- so an origin that rule A
+        // allowed only GET would come back allowed whatever rule B permitted, which is granting
+        // access the request never asked for.
+        //
+        // Refusing is the only answer that cannot be wrong, and the refusal has to say why or an
+        // operator will read it as a parser limitation and work around it.
+        let two_rules = roundtrip(
+            &addr,
+            &request(
+                "PUT",
+                "/b?cors",
+                "",
+                b"<CORSConfiguration>\
+                  <CORSRule><AllowedOrigin>https://a.test</AllowedOrigin>\
+                  <AllowedMethod>GET</AllowedMethod></CORSRule>\
+                  <CORSRule><AllowedOrigin>https://b.test</AllowedOrigin>\
+                  <AllowedMethod>DELETE</AllowedMethod></CORSRule>\
+                  </CORSConfiguration>",
+            ),
+        );
+        assert_eq!(status_of(&two_rules), 400, "{two_rules}");
+        assert!(
+            body_of(&two_rules).contains("<Code>MalformedXML</Code>"),
+            "{two_rules}"
+        );
+        assert!(
+            body_of(&two_rules).contains("refused rather than widened"),
+            "the refusal must say that merging would WIDEN access, or it reads as a parser \
+             limitation someone will work around: {two_rules}"
+        );
+        // And nothing was stored, so the refusal did not half-apply the first rule.
+        assert_eq!(
+            status_of(&roundtrip(&addr, &request("GET", "/b?cors", "", b""))),
+            404,
+            "a refused configuration was partly applied"
+        );
+
+        for (name, body) in [
+            ("no rule at all", &b"<CORSConfiguration></CORSConfiguration>"[..]),
+            ("the wrong document", b"<SomethingElse><CORSRule></CORSRule></SomethingElse>"),
+            ("an unclosed rule", b"<CORSConfiguration><CORSRule></CORSConfiguration>"),
+            (
+                "a rule with no origin",
+                b"<CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>",
+            ),
+            (
+                "a rule with no method",
+                b"<CORSConfiguration><CORSRule><AllowedOrigin>https://a.test</AllowedOrigin></CORSRule></CORSConfiguration>",
+            ),
+            (
+                "an unreadable max age",
+                b"<CORSConfiguration><CORSRule><AllowedOrigin>https://a.test</AllowedOrigin>\
+                  <AllowedMethod>GET</AllowedMethod><MaxAgeSeconds>soon</MaxAgeSeconds>\
+                  </CORSRule></CORSConfiguration>",
+            ),
+            (
+                "a document type declaration",
+                b"<!DOCTYPE x><CORSConfiguration><CORSRule><AllowedOrigin>https://a.test</AllowedOrigin>\
+                  <AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>",
+            ),
+        ] {
+            let answered = roundtrip(&addr, &request("PUT", "/b?cors", "", body));
+            assert_eq!(status_of(&answered), 400, "{name}: {answered}");
+            assert!(
+                body_of(&answered).contains("<Code>MalformedXML</Code>"),
+                "{name}: {answered}"
+            );
+        }
         handle.shutdown();
     }
 

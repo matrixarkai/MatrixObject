@@ -45,6 +45,7 @@ pub enum S3ErrorCode {
     PreconditionFailed,
     BucketNotEmpty,
     NoSuchUpload,
+    NoSuchCorsConfiguration,
     InvalidRequest,
     InvalidPart,
     InvalidPartOrder,
@@ -66,6 +67,10 @@ impl S3ErrorCode {
             S3ErrorCode::PreconditionFailed => "PreconditionFailed",
             S3ErrorCode::BucketNotEmpty => "BucketNotEmpty",
             S3ErrorCode::NoSuchUpload => "NoSuchUpload",
+            // S3 capitalises the acronym. The variant is Rust cased and the WIRE spelling
+            // is what a client matches, so the two differ here on purpose -- as for
+            // MalformedXML above.
+            S3ErrorCode::NoSuchCorsConfiguration => "NoSuchCORSConfiguration",
             S3ErrorCode::InvalidRequest => "InvalidRequest",
             S3ErrorCode::InvalidPart => "InvalidPart",
             S3ErrorCode::InvalidPartOrder => "InvalidPartOrder",
@@ -91,7 +96,7 @@ impl S3ErrorCode {
             S3ErrorCode::InvalidRange => 416,
             S3ErrorCode::PreconditionFailed => 412,
             S3ErrorCode::BucketNotEmpty => 409,
-            S3ErrorCode::NoSuchUpload => 404,
+            S3ErrorCode::NoSuchUpload | S3ErrorCode::NoSuchCorsConfiguration => 404,
             S3ErrorCode::InvalidRequest => 400,
             S3ErrorCode::InvalidPart
             | S3ErrorCode::InvalidPartOrder

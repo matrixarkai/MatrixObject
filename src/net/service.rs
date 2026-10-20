@@ -21,7 +21,8 @@
 //! CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, ListParts
 //! and ListMultipartUploads, selected by the `uploads`, `uploadId` and `partNumber` query
 //! parameters as S3 selects them. Also DeleteObjects, CopyObject, GetBucketLocation,
-//! Get/PutBucketVersioning, ListObjectVersions, and `versionId` on a read or a delete.
+//! Get/PutBucketVersioning, ListObjectVersions, `versionId` on a read or a delete, object
+//! tagging, and bucket CORS.
 //!
 //! # WHAT IS DELIBERATELY NOT IMPLEMENTED
 //!
@@ -49,9 +50,10 @@ use std::sync::{Arc, Mutex};
 use super::http::{self, Request, Response, ResolvedRange};
 use super::s3;
 use super::s3_batch as batch;
+use super::s3_config as config;
 use super::s3_multipart as mp;
 use super::s3_versions as versions;
-use crate::{MatrixObjectStore, ObjectError, ObjectMetadata, PutOptions};
+use crate::{BucketCorsPolicy, MatrixObjectStore, ObjectError, ObjectMetadata, PutOptions};
 
 /// Default `Content-Type` recorded for a body that arrives without one.
 pub const DEFAULT_CONTENT_TYPE: &str = "application/octet-stream";
@@ -196,6 +198,11 @@ impl ObjectService {
             "GET" if request.query_param("versions").is_some() => {
                 self.list_object_versions(request, bucket)
             }
+            "GET" if request.query_param("cors").is_some() => self.bucket_cors(bucket),
+            "PUT" if request.query_param("cors").is_some() => {
+                self.set_bucket_cors(request, bucket)
+            }
+            "DELETE" if request.query_param("cors").is_some() => self.delete_bucket_cors(bucket),
             "PUT" if request.query_param("versioning").is_some() => {
                 self.set_bucket_versioning(request, bucket)
             }
@@ -426,6 +433,14 @@ impl ObjectService {
         // down has to wonder which request it is serving.
         let upload_id = request.query_param("uploadId").filter(|id| !id.is_empty());
         match request.method.as_str() {
+            // ABOVE THE UNGUARDED `"PUT"`, for the reason the bucket routing already carries a
+            // comment about: an unguarded method arm swallows every guarded one below it. I wrote
+            // this one into the GET/HEAD group as well and the compiler called that copy
+            // unreachable -- the same mistake, one change after writing the comment warning about
+            // it.
+            "PUT" if request.query_param("tagging").is_some() => {
+                self.set_object_tagging(request, bucket, key)
+            }
             "PUT" => match request.query_param("partNumber") {
                 Some(part_number) => self.upload_part(request, bucket, key, &part_number, upload_id),
                 // A PUT CARRYING `x-amz-copy-source` IS A COPY, NOT A WRITE OF ITS BODY. S3
@@ -444,6 +459,12 @@ impl ObjectService {
                 self.create_multipart_upload(request, bucket, key)
             }
             "POST" => self.complete_multipart_upload(request, bucket, key, upload_id),
+            "GET" if request.query_param("tagging").is_some() => {
+                self.object_tagging(bucket, key)
+            }
+            "DELETE" if request.query_param("tagging").is_some() => {
+                self.delete_object_tagging(bucket, key)
+            }
             "GET" | "HEAD" if upload_id.is_some() => {
                 self.list_parts(request, bucket, key, upload_id)
             }
@@ -462,6 +483,160 @@ impl ObjectService {
                 "PUT, POST, GET, HEAD, DELETE",
                 &format!("/{bucket}/{key}"),
             ),
+        }
+    }
+
+    /// `GetObjectTagging`.
+    fn object_tagging(&self, bucket: &str, key: &str) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.get_object_tags(bucket, key) {
+            // AN OBJECT WITH NO TAGS ANSWERS AN EMPTY TagSet, not a 404. S3 does the same, and it
+            // is the useful answer: "this object has no tags" and "this object is not there" are
+            // different facts and the second already has its own code.
+            Ok(tags) => s3::xml_response(200, config::tagging_xml(&tags)),
+            Err(err) => s3_error(err, &resource, false),
+        }
+    }
+
+    /// `PutObjectTagging`.
+    fn set_object_tagging(&self, request: &Request, bucket: &str, key: &str) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let tags = match config::parse_tagging(&request.body) {
+            Ok(tags) => tags,
+            Err(reason) => {
+                return s3::error_response(s3::S3ErrorCode::MalformedXml, &reason, &resource)
+            }
+        };
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        // THE COUNT AND SIZE LIMITS ARE THE STORE'S. `validate_tags` refuses more than ten entries
+        // and a set over its size bound, so this does not check either: a second check here would
+        // be a message improvement at best and a place for the two to disagree at worst.
+        match guard.set_object_tags(bucket, key, tags) {
+            Ok(_) => {
+                if let Err(err) = guard.flush_persistent_snapshot() {
+                    return flush_failed(
+                        &resource,
+                        format!(
+                            "the tags reached memory but the durable snapshot could not be \
+                             rewritten, so they are not durable: {err}"
+                        ),
+                    );
+                }
+                Response::status(200)
+            }
+            Err(err) => s3_error(err, &resource, false),
+        }
+    }
+
+    /// `DeleteObjectTagging`.
+    fn delete_object_tagging(&self, bucket: &str, key: &str) -> Response {
+        let resource = format!("/{bucket}/{key}");
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        // An empty set IS the deletion: the store keeps tags on the object, so there is nothing
+        // separate to remove.
+        match guard.set_object_tags(bucket, key, BTreeMap::new()) {
+            Ok(_) => {
+                if let Err(err) = guard.flush_persistent_snapshot() {
+                    return flush_failed(
+                        &resource,
+                        format!(
+                            "the tags were cleared in memory but the durable snapshot could not \
+                             be rewritten, so they may come back on restart: {err}"
+                        ),
+                    );
+                }
+                Response::status(204)
+            }
+            Err(err) => s3_error(err, &resource, false),
+        }
+    }
+
+    /// `GetBucketCors`.
+    fn bucket_cors(&self, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.bucket_cors(bucket) {
+            Ok(policy) => {
+                // A BUCKET WITH NO POLICY HAS ITS OWN CODE, unlike tags. That is S3's design and
+                // it is right here: a browser client reads the absence to mean "no cross-origin
+                // request will be allowed", where an empty rule set would read as a rule that
+                // allows nothing -- the same outcome by a different route, and only one of them
+                // is what the bucket actually says.
+                if policy.disabled() {
+                    return s3::error_response(
+                        s3::S3ErrorCode::NoSuchCorsConfiguration,
+                        "the bucket has no CORS configuration",
+                        &resource,
+                    );
+                }
+                s3::xml_response(
+                    200,
+                    config::cors_configuration_xml(
+                        &policy.allowed_origins,
+                        &policy.allowed_methods,
+                        &policy.allowed_headers,
+                        &policy.expose_headers,
+                        policy.max_age_seconds,
+                    ),
+                )
+            }
+            Err(err) => s3_error(err, &resource, true),
+        }
+    }
+
+    /// `PutBucketCors`.
+    fn set_bucket_cors(&self, request: &Request, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let rule = match config::parse_cors_configuration(&request.body) {
+            Ok(rule) => rule,
+            Err(reason) => {
+                return s3::error_response(s3::S3ErrorCode::MalformedXml, &reason, &resource)
+            }
+        };
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        match guard.configure_bucket_cors(
+            bucket,
+            BucketCorsPolicy {
+                allowed_origins: rule.allowed_origins,
+                allowed_methods: rule.allowed_methods,
+                allowed_headers: rule.allowed_headers,
+                expose_headers: rule.expose_headers,
+                max_age_seconds: rule.max_age_seconds,
+            },
+        ) {
+            Ok(_) => Response::status(200),
+            Err(err) => s3_error(err, &resource, true),
+        }
+    }
+
+    /// `DeleteBucketCors`.
+    fn delete_bucket_cors(&self, bucket: &str) -> Response {
+        let resource = format!("/{bucket}");
+        let mut guard = match self.store.lock() {
+            Ok(guard) => guard,
+            Err(_) => return poisoned(&resource),
+        };
+        // The empty policy IS the absence: `disabled()` is exactly "every list empty and no
+        // max-age", which is what the read above reports as no configuration.
+        match guard.configure_bucket_cors(bucket, BucketCorsPolicy::default()) {
+            Ok(_) => Response::status(204),
+            Err(err) => s3_error(err, &resource, true),
         }
     }
 
@@ -616,34 +791,62 @@ impl ObjectService {
             Ok(metadata) => metadata,
             Err(err) => return s3_error(err, &resource, false),
         };
-        // A RANGE IS NOT HONOURED ON A VERSIONED READ, and it is refused rather than ignored: a
-        // client that asked for bytes 0-99 and received the whole object under a 200 would write
-        // the wrong length wherever it put them. The store has a versioned range read; wiring it
-        // is a separate change, and until then this says so.
-        if request.header("range").is_some() {
-            return s3::error_response(
-                s3::S3ErrorCode::NotImplemented,
-                "a ranged read of a named version is not implemented here, and a range is \
-                 refused rather than silently answered with the whole object",
-                &resource,
-            );
-        }
         if request.method == "HEAD" {
             let mut response = Response::status(200);
             apply_metadata_headers(&mut response, &metadata);
             return response;
         }
-        match guard.get_object_version(bucket, key, version) {
-            Ok(object) => {
-                let mut response = Response {
-                    status: 200,
-                    headers: Vec::new(),
-                    body: object.data,
-                };
-                apply_metadata_headers(&mut response, &object.metadata);
-                response
+
+        // A RANGE IS HONOURED NOW. The previous change refused one with `NotImplemented` rather
+        // than answering the whole object under a 200 -- which would make a client write the
+        // wrong length wherever it put the bytes -- and said the store's versioned range read
+        // only needed wiring. This is that wiring, through the same `resolve_range` the
+        // unversioned read uses, so the two cannot disagree about what a header means.
+        match http::resolve_range(request.header("range"), metadata.length) {
+            ResolvedRange::Whole => match guard.get_object_version(bucket, key, version) {
+                Ok(object) => {
+                    let mut response = Response {
+                        status: 200,
+                        headers: Vec::new(),
+                        body: object.data,
+                    };
+                    apply_metadata_headers(&mut response, &object.metadata);
+                    response
+                }
+                Err(err) => s3_error(err, &resource, false),
+            },
+            ResolvedRange::Partial { offset, length } => {
+                // `0` is the store's "no budget", which is what an unbounded read passes.
+                match guard
+                    .get_object_version_range_bounded(bucket, key, version, offset, length, 0)
+                {
+                    Ok(object) => {
+                        let last = offset + length - 1;
+                        let total = metadata.length;
+                        let mut response = Response {
+                            status: 206,
+                            headers: Vec::new(),
+                            body: object.data,
+                        };
+                        apply_metadata_headers(&mut response, &metadata);
+                        response.headers.push((
+                            "content-range".to_string(),
+                            format!("bytes {offset}-{last}/{total}"),
+                        ));
+                        response
+                    }
+                    Err(err) => s3_error(err, &resource, false),
+                }
             }
-            Err(err) => s3_error(err, &resource, false),
+            ResolvedRange::Unsatisfiable => s3::error_response(
+                s3::S3ErrorCode::InvalidRange,
+                &format!(
+                    "the requested range lies outside this version, which is {} bytes",
+                    metadata.length
+                ),
+                &resource,
+            )
+            .with_header("content-range", format!("bytes */{}", metadata.length)),
         }
     }
 
