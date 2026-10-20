@@ -228,6 +228,11 @@ The verbs, where `{bucket}` is the first path segment and `{key}` is everything 
 | `DELETE /{bucket}/{key}?uploadId=` | `AbortMultipartUpload` |
 | `GET /{bucket}/{key}?uploadId=` | `ListParts` |
 | `GET /{bucket}?uploads` | `ListMultipartUploads` |
+| `POST /{bucket}?delete` | `DeleteObjects`; 200 with a per-key report, because one key failing is not the batch failing |
+| `PUT /{bucket}/{key}` + `x-amz-copy-source` | `CopyObject`, honouring `x-amz-metadata-directive` |
+| `GET /{bucket}?location` | `GetBucketLocation` |
+| `GET /{bucket}?versioning` | `GetBucketVersioning` |
+| `PUT /{bucket}?versioning` | `PutBucketVersioning` |
 | `GET /healthz` | readiness, which takes the store lock rather than only reporting the listener |
 
 A write answers the object's `ETag`, `Content-Type`, `Last-Modified`, its version and length, and
@@ -278,7 +283,19 @@ success: versioning verbs, tagging verbs, object ACLs, bucket policies, lifecycl
 
 **One thing S3 checks that this does not:** the 5 MiB minimum for a non-final part. This store
 accepts any part size, and enforcing a minimum it does not have would refuse uploads it can serve
-perfectly well. The check would only ever fire on a client this store could have satisfied. `GET /healthz` is the one route that is deliberately not S3 -- it answers plain text, because
+perfectly well. The check would only ever fire on a client this store could have satisfied.
+
+**One place the store's model is narrower than S3's:** versioning. S3 has three states -- `Enabled`,
+`Suspended`, and never configured -- and this store keeps one flag, so `false` cannot say which of
+the other two it is. `GetBucketVersioning` therefore omits `<Status>` for `false`, which is what S3
+sends for a bucket that was never configured and is the answer a client acts on identically either
+way. A client that specifically wants to know whether versioning was once on and then suspended
+cannot learn it here, and closing that needs the store to carry the third state.
+
+**`GetBucketLocation` answers an empty `<LocationConstraint/>`**, which is S3's own value for its
+default region and is the only answer that is true of a store with no notion of a region. Naming one
+would send a client that honours it to an endpoint that does not exist. It is answered at all
+because SDKs call it before their first request and read a failure as the bucket being unreachable. `GET /healthz` is the one route that is deliberately not S3 -- it answers plain text, because
 a container probe and an operator read it and an `<Error>` document would help neither.
 
 Anything a caller might reasonably

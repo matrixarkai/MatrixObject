@@ -26,6 +26,7 @@
 
 pub mod http;
 pub mod s3;
+pub mod s3_batch;
 pub mod s3_multipart;
 pub mod service;
 
@@ -1228,6 +1229,346 @@ mod tests {
             super::s3_multipart::xml_unescape("&lt;&gt;&apos;"),
             "<>'"
         );
+    }
+
+    #[test]
+    fn a_batch_delete_reports_each_key_and_a_failure_does_not_fail_the_batch() {
+        let (handle, addr) = serve();
+        for key in ["one", "two", "three"] {
+            let _ = roundtrip(&addr, &request("PUT", &format!("/b/{key}"), "", b"v"));
+        }
+        // A key over 4096 bytes is refused by the store, which is what makes this a GENUINE
+        // per-key failure rather than one contrived at this surface.
+        let too_long = "x".repeat(5000);
+        let body = format!(
+            "<Delete><Object><Key>one</Key></Object><Object><Key>absent</Key></Object>\
+             <Object><Key>{too_long}</Key></Object><Object><Key>two</Key></Object></Delete>"
+        );
+        let answered = roundtrip(
+            &addr,
+            &request("POST", "/b?delete", "", body.as_bytes()),
+        );
+        // 200, NOT A 4XX. This is the whole contract: a tool deleting a prefix reads which keys
+        // remain and retries those. A single 4xx for a batch where one key failed would make it
+        // retry the whole batch forever.
+        assert_eq!(
+            status_of(&answered),
+            200,
+            "a batch with one bad key must still answer 200 and report per key: {answered}"
+        );
+        let body = body_of(&answered);
+        assert!(body.contains("<DeleteResult"), "{body}");
+        assert!(body.contains("<Deleted><Key>one</Key></Deleted>"), "{body}");
+        assert!(body.contains("<Deleted><Key>two</Key></Deleted>"), "{body}");
+        // A KEY THAT WAS NOT THERE IS A SUCCESS, the same answer the single delete gives: a
+        // client retrying a batch it already completed must see its keys as gone.
+        assert!(
+            body.contains("<Deleted><Key>absent</Key></Deleted>"),
+            "a key that was already gone must be reported as deleted: {body}"
+        );
+        assert!(
+            body.contains("<Error><Key>xxx"),
+            "the failing key must be reported with its own code: {body}"
+        );
+        assert!(body.contains("<Code>InvalidArgument</Code>"), "{body}");
+
+        // And the deletes really happened.
+        assert_eq!(status_of(&roundtrip(&addr, &request("GET", "/b/one", "", b""))), 404);
+        assert_eq!(status_of(&roundtrip(&addr, &request("GET", "/b/two", "", b""))), 404);
+        assert_eq!(
+            status_of(&roundtrip(&addr, &request("GET", "/b/three", "", b""))),
+            200,
+            "a key the batch did not name was deleted anyway"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_quiet_batch_drops_the_successes_and_never_the_failures() {
+        let (handle, addr) = serve();
+        let _ = roundtrip(&addr, &request("PUT", "/b/q1", "", b"v"));
+        let too_long = "y".repeat(5000);
+        let body = format!(
+            "<Delete><Quiet>true</Quiet><Object><Key>q1</Key></Object>\
+             <Object><Key>{too_long}</Key></Object></Delete>"
+        );
+        let answered = roundtrip(&addr, &request("POST", "/b?delete", "", body.as_bytes()));
+        assert_eq!(status_of(&answered), 200, "{answered}");
+        let body = body_of(&answered);
+        assert!(
+            !body.contains("<Deleted>"),
+            "a quiet batch must drop the successes: {body}"
+        );
+        assert!(
+            body.contains("<Error>") && body.contains("<Code>InvalidArgument</Code>"),
+            "a quiet batch that hid an error would leave a client believing a key is gone when \
+             it is not -- which is the one thing this answer exists to tell it: {body}"
+        );
+        assert_eq!(status_of(&roundtrip(&addr, &request("GET", "/b/q1", "", b""))), 404);
+
+        // A Quiet this endpoint cannot read is refused rather than defaulted to the loud form: a
+        // client that asked for quiet and got every success back is handed a body it is not
+        // prepared to read.
+        let bad = roundtrip(
+            &addr,
+            &request(
+                "POST",
+                "/b?delete",
+                "",
+                b"<Delete><Quiet>yes</Quiet><Object><Key>q1</Key></Object></Delete>",
+            ),
+        );
+        assert_eq!(status_of(&bad), 400, "{bad}");
+        assert!(body_of(&bad).contains("<Code>MalformedXML</Code>"), "{bad}");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_batch_delete_refuses_a_body_it_does_not_understand() {
+        let (handle, addr) = serve();
+        let over_limit: String = (0..1001)
+            .map(|index| format!("<Object><Key>k{index}</Key></Object>"))
+            .collect();
+        for (name, body) in [
+            ("an empty list", "<Delete></Delete>".to_string()),
+            ("the wrong document", "<PutSomethingElse><Object><Key>k</Key></Object></PutSomethingElse>".to_string()),
+            ("a document type declaration", "<!DOCTYPE x><Delete><Object><Key>k</Key></Object></Delete>".to_string()),
+            ("an unclosed element", "<Delete><Object><Key>k</Key></Delete>".to_string()),
+            ("an object with no key", "<Delete><Object></Object></Delete>".to_string()),
+            ("an empty key", "<Delete><Object><Key></Key></Object></Delete>".to_string()),
+            ("more keys than S3 allows", format!("<Delete>{over_limit}</Delete>")),
+        ] {
+            let answered = roundtrip(&addr, &request("POST", "/b?delete", "", body.as_bytes()));
+            assert_eq!(status_of(&answered), 400, "{name}: {answered}");
+            assert!(
+                body_of(&answered).contains("<Code>MalformedXML</Code>"),
+                "{name}: {answered}"
+            );
+        }
+        // A POST to a bucket naming no sub-resource is a missing sub-resource, not a disallowed
+        // method: the two send a client to different places.
+        let bare = roundtrip(&addr, &request("POST", "/b", "", b""));
+        assert_eq!(status_of(&bare), 400, "{bare}");
+        assert!(body_of(&bare).contains("<Code>InvalidArgument</Code>"), "{bare}");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_copy_puts_the_source_bytes_at_the_destination() {
+        let (handle, addr) = serve();
+        let _ = roundtrip(
+            &addr,
+            &request(
+                "PUT",
+                "/b/source",
+                "content-type: text/plain\r\nx-amz-meta-from: the-source\r\n",
+                b"copy me",
+            ),
+        );
+        let copied = roundtrip(
+            &addr,
+            &request("PUT", "/b/dest", "x-amz-copy-source: /b/source\r\n", b""),
+        );
+        assert_eq!(status_of(&copied), 200, "{copied}");
+        assert!(body_of(&copied).contains("<CopyObjectResult"), "{copied}");
+        assert!(body_of(&copied).contains("<ETag>&quot;fnv1a64:"), "{copied}");
+
+        // THE BODY OF A COPY IS NOT THE OBJECT. A surface that ignored the header would have
+        // written the empty request body over the destination -- a copy request answered with a
+        // successful deletion of what was being copied.
+        let read = roundtrip(&addr, &request("GET", "/b/dest", "", b""));
+        assert_eq!(status_of(&read), 200, "{read}");
+        assert_eq!(body_of(&read), "copy me", "{read}");
+        assert!(
+            read.to_ascii_lowercase().contains("x-amz-meta-from: the-source"),
+            "a COPY directive keeps the source's metadata: {read}"
+        );
+        assert!(read.to_ascii_lowercase().contains("content-type: text/plain"), "{read}");
+
+        // REPLACE takes the metadata from the request instead.
+        let replaced = roundtrip(
+            &addr,
+            &request(
+                "PUT",
+                "/b/replaced",
+                "x-amz-copy-source: /b/source\r\nx-amz-metadata-directive: REPLACE\r\n\
+                 content-type: application/json\r\nx-amz-meta-from: the-request\r\n",
+                b"",
+            ),
+        );
+        assert_eq!(status_of(&replaced), 200, "{replaced}");
+        let read = roundtrip(&addr, &request("GET", "/b/replaced", "", b""));
+        assert_eq!(body_of(&read), "copy me", "the bytes still come from the source: {read}");
+        assert!(
+            read.to_ascii_lowercase().contains("x-amz-meta-from: the-request"),
+            "REPLACE did not take the request's metadata: {read}"
+        );
+        assert!(
+            !read.to_ascii_lowercase().contains("the-source"),
+            "REPLACE kept the source's metadata as well: {read}"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_copy_that_would_change_nothing_or_names_nothing_is_refused() {
+        let (handle, addr) = serve();
+        let _ = roundtrip(&addr, &request("PUT", "/b/self", "", b"v"));
+
+        // A COPY ONTO ITSELF WITH NO DIRECTIVE is almost always a client that meant to change the
+        // metadata and forgot the directive. Succeeding silently leaves it believing the change
+        // landed.
+        let same = roundtrip(
+            &addr,
+            &request("PUT", "/b/self", "x-amz-copy-source: /b/self\r\n", b""),
+        );
+        assert_eq!(status_of(&same), 400, "{same}");
+        assert!(body_of(&same).contains("<Code>InvalidRequest</Code>"), "{same}");
+
+        // The same copy WITH a directive is a legitimate metadata rewrite and must work.
+        let rewritten = roundtrip(
+            &addr,
+            &request(
+                "PUT",
+                "/b/self",
+                "x-amz-copy-source: /b/self\r\nx-amz-metadata-directive: REPLACE\r\n\
+                 x-amz-meta-now: rewritten\r\n",
+                b"",
+            ),
+        );
+        assert_eq!(status_of(&rewritten), 200, "{rewritten}");
+        assert!(
+            roundtrip(&addr, &request("GET", "/b/self", "", b""))
+                .to_ascii_lowercase()
+                .contains("x-amz-meta-now: rewritten"),
+            "the metadata rewrite did not land"
+        );
+
+        // A missing source, reported against the SOURCE path: a client told NoSuchKey against the
+        // destination would look at the wrong end of its own request.
+        let missing = roundtrip(
+            &addr,
+            &request("PUT", "/b/dest", "x-amz-copy-source: /b/absent\r\n", b""),
+        );
+        assert_eq!(status_of(&missing), 404, "{missing}");
+        assert!(body_of(&missing).contains("<Code>NoSuchKey</Code>"), "{missing}");
+        assert!(
+            body_of(&missing).contains("<Resource>/b/absent</Resource>"),
+            "the resource must name the SOURCE, not the destination: {missing}"
+        );
+
+        for (name, header) in [
+            ("a source with no key", "x-amz-copy-source: /b\r\n"),
+            ("an empty source", "x-amz-copy-source: /\r\n"),
+            // THESE TWO GET PAST THE SPLIT, where the two above do not: `/b` and `/` have no
+            // separator to split on at all. What they establish is that the ANSWER is right for
+            // both shapes -- not that this surface is what produces it. A mutation run showed the
+            // emptiness check here is defence in depth, because the store's own validators refuse
+            // an empty bucket or key with the same status and code; the comment in
+            // `parse_copy_source` records that rather than this test pretending otherwise.
+            ("a source with a trailing slash", "x-amz-copy-source: /b/\r\n"),
+            ("a source with no bucket", "x-amz-copy-source: //k\r\n"),
+            // A versionId names a version this endpoint does not serve. Ignoring it would copy
+            // the CURRENT object while the client believes it asked for an older one.
+            ("a source naming a version", "x-amz-copy-source: /b/source?versionId=7\r\n"),
+        ] {
+            let answered = roundtrip(&addr, &request("PUT", "/b/d2", header, b""));
+            assert_eq!(status_of(&answered), 400, "{name}: {answered}");
+            assert!(
+                body_of(&answered).contains("<Code>InvalidArgument</Code>"),
+                "{name}: {answered}"
+            );
+        }
+        // A percent-encoded source key is decoded, since it travels in something shaped like a
+        // path -- and the key has to be WRITTEN encoded too, because a literal space in a request
+        // target is where the request line ends.
+        let _ = roundtrip(&addr, &request("PUT", "/b/a%20b", "", b"spaced"));
+        let encoded = roundtrip(
+            &addr,
+            &request("PUT", "/b/d3", "x-amz-copy-source: /b/a%20b\r\n", b""),
+        );
+        assert_eq!(status_of(&encoded), 200, "{encoded}");
+        assert_eq!(body_of(&roundtrip(&addr, &request("GET", "/b/d3", "", b""))), "spaced");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_bucket_answers_its_location_and_its_versioning() {
+        let (handle, addr) = serve();
+
+        // EMPTY, AND THAT IS THE ONLY TRUE ANSWER. This store has no notion of a region, and
+        // naming one would send a client that honours it to an endpoint that does not exist. It
+        // is answered at all because SDKs call it before their first request.
+        let location = roundtrip(&addr, &request("GET", "/b?location", "", b""));
+        assert_eq!(status_of(&location), 200, "{location}");
+        assert!(body_of(&location).contains("<LocationConstraint"), "{location}");
+        assert!(
+            !body_of(&location).contains("us-east-1"),
+            "a region was invented: {location}"
+        );
+        assert_eq!(
+            status_of(&roundtrip(&addr, &request("GET", "/absent?location", "", b""))),
+            404,
+            "a location for a bucket that is not there must not answer 200"
+        );
+
+        // Never configured: no <Status> at all, which is what S3 sends.
+        let before = roundtrip(&addr, &request("GET", "/b?versioning", "", b""));
+        assert_eq!(status_of(&before), 200, "{before}");
+        assert!(body_of(&before).contains("<VersioningConfiguration"), "{before}");
+        assert!(
+            !body_of(&before).contains("<Status>"),
+            "a bucket that was never configured must carry no Status: {before}"
+        );
+
+        let enabled = roundtrip(
+            &addr,
+            &request(
+                "PUT",
+                "/b?versioning",
+                "",
+                b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+            ),
+        );
+        assert_eq!(status_of(&enabled), 200, "{enabled}");
+        let after = roundtrip(&addr, &request("GET", "/b?versioning", "", b""));
+        assert!(
+            body_of(&after).contains("<Status>Enabled</Status>"),
+            "the versioning setting did not take: {after}"
+        );
+
+        // Suspended turns it off. THE STORE KEEPS A BOOLEAN AND S3 HAS THREE STATES, so this
+        // reads back as never-configured rather than as Suspended -- a client acts on both
+        // identically, and closing it needs the store to carry the third state.
+        let suspended = roundtrip(
+            &addr,
+            &request(
+                "PUT",
+                "/b?versioning",
+                "",
+                b"<VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>",
+            ),
+        );
+        assert_eq!(status_of(&suspended), 200, "{suspended}");
+        assert!(
+            !body_of(&roundtrip(&addr, &request("GET", "/b?versioning", "", b"")))
+                .contains("<Status>"),
+            "suspending left the status reading Enabled"
+        );
+
+        // A status this endpoint cannot read is refused rather than taken as off: silently
+        // disabling versioning is the worst available reading of an unknown request.
+        for body in [
+            &b"<VersioningConfiguration><Status>Paused</Status></VersioningConfiguration>"[..],
+            b"<VersioningConfiguration></VersioningConfiguration>",
+            b"<SomethingElse><Status>Enabled</Status></SomethingElse>",
+            b"<!DOCTYPE x><VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+        ] {
+            let answered = roundtrip(&addr, &request("PUT", "/b?versioning", "", body));
+            assert_eq!(status_of(&answered), 400, "{answered}");
+            assert!(body_of(&answered).contains("<Code>MalformedXML</Code>"), "{answered}");
+        }
+        handle.shutdown();
     }
 
     #[test]
