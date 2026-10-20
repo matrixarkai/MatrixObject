@@ -514,11 +514,24 @@ pub fn resolve_range(header: Option<&str>, total: u64) -> ResolvedRange {
 /// civil-date arithmetic over a fixed epoch, it has no configuration, and `Last-Modified` is in
 /// this store's own list of CORS-exposed headers, so omitting it would leave a header the policy
 /// already advertises unsent.
-pub fn http_date(epoch_ms: u64) -> String {
-    const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    const MONTH_NAMES: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
+/// The civil date and time one epoch-millisecond timestamp falls on.
+///
+/// Shared by the two formatters that need it -- the HTTP date on a GET and the ISO 8601 date in
+/// an S3 listing -- because the shift-to-March arithmetic below is the part that is easy to get
+/// subtly wrong, and two copies of it can disagree about a leap day.
+pub struct CivilParts {
+    pub year: i64,
+    pub month: i64,
+    pub day: i64,
+    pub hour: u64,
+    pub minute: u64,
+    pub second: u64,
+    /// 0 is Monday, matching the order of the day names an HTTP date uses.
+    pub weekday: usize,
+}
+
+/// Split epoch milliseconds into a civil date and time, in UTC.
+pub fn civil_parts(epoch_ms: u64) -> CivilParts {
     let seconds = epoch_ms / 1_000;
     let days = (seconds / 86_400) as i64;
     let second_of_day = seconds % 86_400;
@@ -527,8 +540,8 @@ pub fn http_date(epoch_ms: u64) -> String {
         (second_of_day % 3_600) / 60,
         second_of_day % 60,
     );
-    // 1970-01-01 was a Thursday, which is index 3 in `DAY_NAMES`.
-    let weekday = DAY_NAMES[(((days % 7) + 7 + 3) % 7) as usize];
+    // 1970-01-01 was a Thursday, which is index 3 when Monday is 0.
+    let weekday = (((days % 7) + 7 + 3) % 7) as usize;
 
     // Civil-from-days, the standard shift-to-March algorithm: March-based years have a
     // 146,097-day 400-year cycle with no leap-day special case inside it.
@@ -549,9 +562,37 @@ pub fn http_date(epoch_ms: u64) -> String {
     if month <= 2 {
         year += 1;
     }
+    CivilParts {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        weekday,
+    }
+}
 
+/// Format epoch milliseconds as an HTTP date (RFC 9110 IMF-fixdate).
+///
+/// Written out rather than taken from a dependency for the reason the rest of this file is: it is
+/// civil-date arithmetic over a fixed epoch, it has no configuration, and `Last-Modified` is in
+/// this store's own list of CORS-exposed headers, so omitting it would leave a header the policy
+/// already advertises unsent.
+pub fn http_date(epoch_ms: u64) -> String {
+    const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTH_NAMES: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let parts = civil_parts(epoch_ms);
     format!(
         "{weekday}, {day:02} {month_name} {year} {hour:02}:{minute:02}:{second:02} GMT",
-        month_name = MONTH_NAMES[(month - 1) as usize]
+        weekday = DAY_NAMES[parts.weekday],
+        day = parts.day,
+        month_name = MONTH_NAMES[(parts.month - 1) as usize],
+        year = parts.year,
+        hour = parts.hour,
+        minute = parts.minute,
+        second = parts.second,
     )
 }

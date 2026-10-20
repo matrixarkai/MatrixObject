@@ -6,7 +6,7 @@
 //! # RUNNING IT
 //!
 //! ```text
-//! cargo run --features http-server --bin object_server
+//! cargo run --bin object_server
 //! ```
 //!
 //! Configuration is environment variables, because this is a process an operator starts from a
@@ -35,8 +35,8 @@
 #[cfg(not(feature = "http-server"))]
 fn main() {
     eprintln!(
-        "this binary needs the `http-server` feature: \
-         cargo run --features http-server --bin object_server"
+        "this binary needs the `http-server` feature, which is on by default -- so this \
+         build turned it off: cargo run --features http-server --bin object_server"
     );
     std::process::exit(2);
 }

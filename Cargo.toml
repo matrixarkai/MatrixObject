@@ -17,14 +17,24 @@ categories = ["database-implementations", "filesystem"]
 exclude = ["pages/", "scratchpad/", "target/"]
 
 [features]
-default = ["raft-rs"]
+default = ["raft-rs", "http-server"]
 raft-rs = ["dep:raft"]
-# The HTTP front door (`src/net`, and the `object_server` binary).
+# The S3-compatible HTTP front door (`src/net`, and the `object_server` binary).
 #
-# Off by default, and it adds NO dependencies -- it is written on the standard library alone, for
+# ON by default, and it adds NO dependencies -- it is written on the standard library alone, for
 # the reason given at the top of `src/net/http.rs`. What the feature gates is the listener and its
-# thread pool: a crate linked for its object semantics should not grow either unasked.
+# thread pool, which cost nothing until something binds a port.
+#
+# It was off by default while it was an in-house HTTP shape nobody could point a client at. It
+# speaks S3 now, so the default is the other way round: a store that answers `ListObjectsV2` and
+# `<Error>` documents is reachable by every S3 client already installed, and a feature flag
+# standing between that and a new user is a barrier with nothing behind it.
 http-server = []
+# `s3` is the same surface under the name people look for. It gates nothing of its own: the wire
+# format is not separable from the routing -- there is no HTTP mode of this server that answers
+# anything other than S3 -- so this is an alias and is documented as one rather than implying a
+# choice that does not exist.
+s3 = ["http-server"]
 matrix-raft = ["dep:matrixraft"]
 
 [dependencies]

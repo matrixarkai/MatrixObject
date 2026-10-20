@@ -1,5 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 impl MatrixObjectStore {
+    /// Whether this bucket has been created.
+    ///
+    /// # WHY THIS IS NOT THE SAME QUESTION AS "DOES IT HOLD ANY OBJECTS"
+    ///
+    /// [`Self::list_objects`] validates the bucket NAME and then ranges over the object map, so a
+    /// bucket that was never created answers an empty listing rather than an error -- the two
+    /// states are indistinguishable from the listing alone. They are not the same thing to a
+    /// caller: one is a bucket with nothing in it, the other is a bucket that is not there, and a
+    /// caller told "empty" for the second will keep writing into a name that does not exist.
+    pub fn bucket_exists(&self, bucket: &str) -> Result<bool, ObjectError> {
+        validate_bucket(bucket)?;
+        Ok(self.buckets.contains(bucket))
+    }
+
     pub fn list_buckets(
         &self,
         marker: Option<&str>,

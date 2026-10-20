@@ -193,12 +193,12 @@ retention to dominate both.
 ## Reaching the store over a network
 
 Every way into the store used to be an in-process call, so a store was only ever as shared as the
-process holding it. `--features http-server` adds an HTTP front door and a binary that serves it.
+process holding it. An S3-compatible HTTP front door and a binary that serves it are built in by default.
 
 ```
 MATRIXOBJECT_SNAPSHOT_PATH=/var/lib/matrixobject/store.snapshot \
 MATRIXOBJECT_BUCKET=mybucket \
-cargo run --release --features http-server --bin object_server
+cargo run --release --bin object_server
 ```
 
 | variable | default | meaning |
@@ -217,14 +217,22 @@ The verbs, where `{bucket}` is the first path segment and `{key}` is everything 
 | `GET /{bucket}/{key}` | read it; honours `Range: bytes=` and `If-None-Match` |
 | `HEAD /{bucket}/{key}` | its headers, and the length the matching `GET` would send |
 | `DELETE /{bucket}/{key}` | remove it; idempotent, so a retried delete answers 204 |
-| `PUT /{bucket}` | create the bucket, idempotently |
-| `GET /{bucket}?prefix=&marker=&max-keys=` | newline-delimited keys |
+| `PUT /{bucket}` | `CreateBucket`, idempotently; answers a `Location` and no body |
+| `HEAD /{bucket}` | `HeadBucket`: 200 if it exists, `NoSuchBucket` if not |
+| `DELETE /{bucket}` | `DeleteBucket`; `BucketNotEmpty` with 409 while it still holds objects |
+| `GET /{bucket}?prefix=&delimiter=&continuation-token=&start-after=&max-keys=` | `ListObjectsV2`, with the delimiter rolled up into `CommonPrefixes` |
+| `GET /` | `ListBuckets` |
 | `GET /healthz` | readiness, which takes the store lock rather than only reporting the listener |
 
 A write answers the object's `ETag`, `Content-Type`, `Last-Modified`, its version and length, and
-any `x-amz-meta-*` headers it was given back again. A listing says whether it was truncated and,
-if it was, the marker to continue from -- a client cannot tell a full page from a truncated one by
-counting.
+any `x-amz-meta-*` headers it was given back again. A listing reports `<IsTruncated>` and, when it
+is truncated, the `<NextContinuationToken>` to resume from -- a client cannot tell a full page from
+a truncated one by counting, and a token on a final page would make it ask again for nothing.
+
+Every failure is an `<Error>` document carrying the `<Code>` a client branches on, and the codes
+are S3's: `NoSuchBucket` and `NoSuchKey` are distinguished rather than both reported as a 404 with
+prose, because one tells a client to create the bucket and retry and the other tells it to stop.
+A V1 listing client that sends `marker` and no `list-type` is served the same body.
 
 ### Three things to know before putting data in it
 
@@ -245,10 +253,17 @@ can reach it faster.
 
 ### What it is not
 
-Not an S3-compatible endpoint. The bucket and key come from the path, the conditional headers are
-the ones the store enforces internally, and user metadata travels as `x-amz-meta-*` -- but there is
-no request signing, no multipart upload, no versioning or tagging verb, and a listing answers
-`text/plain` keys rather than the XML body an S3 client parses. Anything a caller might reasonably
+**Unsigned.** There is no SigV4 and no credential check. An `Authorization` header is accepted and
+ignored rather than refused, so a signing client works against this surface -- it is simply not
+verified, which is the same statement as the unauthenticated note above and the reason the default
+bind is loopback.
+
+Not implemented, and answered with `NotImplemented` or `MethodNotAllowed` rather than with an empty
+success: multipart upload, versioning verbs, tagging verbs, object ACLs, bucket policies, lifecycle
+verbs. `GET /healthz` is the one route that is deliberately not S3 -- it answers plain text, because
+a container probe and an operator read it and an `<Error>` document would help neither.
+
+Anything a caller might reasonably
 expect and not get answers a status rather than a plausible-looking wrong answer: `chunked` framing
 is refused with 501 rather than read as a body of the wrong length, a `PUT` with no
 `Content-Length` is refused with 411 rather than stored as empty, and a multi-range request falls
