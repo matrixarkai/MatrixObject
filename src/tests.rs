@@ -43379,3 +43379,198 @@ fn a_striped_write_leaves_no_receipt_nothing_could_match() {
         "a retried striped write should be answered from the five receipts it already left"
     );
 }
+
+/// The store the metadata-line guards fit their legs from.
+///
+/// 64-byte payloads and 26-character keys, which is the fixture the published line is
+/// measured on, and the same two object counts: both above 512, so the change feed's
+/// doubling vector is at its cap and every leg is on its line rather than on a step.
+fn metadata_line_audit(objects: u64) -> std::collections::BTreeMap<String, u64> {
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 1,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..objects {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; 64],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    store.footprint_audit().into_iter().collect()
+}
+
+const METADATA_LINE_LOW: u64 = 520;
+const METADATA_LINE_HIGH: u64 = 1_040;
+
+#[test]
+fn the_published_metadata_decomposition_sums_to_the_line() {
+    // The published slope is one number for eight different things, and a reader deciding
+    // what to work on next cannot tell which of them is worth anything. The document names
+    // the parts; this measures each one and checks they still add up to the whole.
+    const PUBLISHED: &str = include_str!("../docs/footprint.md");
+    let block = PUBLISHED
+        .split("METADATA LINE PARTS")
+        .nth(1)
+        .expect("the footprint document should decompose the metadata line")
+        .split("METADATA LINE TOTAL")
+        .next()
+        .expect("the parts block should be closed by its total");
+    let published_total: u64 = PUBLISHED
+        .split("METADATA LINE TOTAL")
+        .nth(1)
+        .expect("the parts block should be closed by its total")
+        .split_whitespace()
+        .next()
+        .expect("a total follows the marker")
+        .parse()
+        .expect("the total should be a number");
+
+    let low = metadata_line_audit(METADATA_LINE_LOW);
+    let high = metadata_line_audit(METADATA_LINE_HIGH);
+    let slope = |leg: &str| -> i64 {
+        let at_low = low.get(leg).copied().unwrap_or_else(|| {
+            panic!("the audit should report {leg}, which the document names as a part")
+        });
+        let at_high = high.get(leg).copied().unwrap_or(0);
+        (at_high as i64 - at_low as i64) / (METADATA_LINE_HIGH - METADATA_LINE_LOW) as i64
+    };
+
+    let mut documented = 0i64;
+    let mut parts = 0usize;
+    for line in block.lines() {
+        let mut words = line.split_whitespace();
+        let (Some(leg), Some(figure)) = (words.next(), words.next()) else {
+            continue;
+        };
+        // Only the lines that are "<leg name> <number> <prose>", so the prose around the
+        // block cannot be read as a part.
+        if !leg.contains('.') {
+            continue;
+        }
+        let Ok(published) = figure.parse::<i64>() else {
+            continue;
+        };
+        let measured = slope(leg);
+        println!("DECOMP {leg} published={published} measured={measured}");
+        assert_eq!(
+            measured, published,
+            "the document publishes {published} bytes an object for {leg} and this tree \
+             produces {measured} -- correct the document in the change that moved it"
+        );
+        documented = documented.saturating_add(published);
+        parts += 1;
+    }
+    // A block that parsed as empty would satisfy every assertion above.
+    assert!(
+        parts >= 6,
+        "only {parts} parts were parsed out of the document, so this test checked almost \
+         nothing"
+    );
+    assert_eq!(
+        documented, published_total as i64,
+        "the parts should add up to the total the document states"
+    );
+    // AND THE TOTAL IS THE PUBLISHED LINE, not just an internally consistent table: this is
+    // what stops the decomposition drifting away from the figure the README publishes.
+    let line_at = |audit: &std::collections::BTreeMap<String, u64>| -> i64 {
+        audit
+            .get("ACCOUNTED.metadata_bytes")
+            .copied()
+            .expect("the audit should report ACCOUNTED.metadata_bytes") as i64
+    };
+    let measured_line =
+        (line_at(&high) - line_at(&low)) / (METADATA_LINE_HIGH - METADATA_LINE_LOW) as i64;
+    assert_eq!(
+        documented, measured_line,
+        "the parts sum to {documented} and the metadata line measures {measured_line}"
+    );
+}
+
+#[test]
+fn the_identity_each_map_names_twice_is_one_allocation() {
+    // Both maps name the object twice -- once as the map key, once inside the value -- and
+    // both times the two holders share one allocation. That is 42 bytes an object in
+    // `objects` and 56 in `meta.records` that are paid ONCE instead of twice.
+    //
+    // Nothing failed on behaviour when it was unshared, and nothing would now: a copy reads
+    // the same characters as a share. Only these counters tell them apart, so only a test
+    // on these counters can keep the saving.
+    let objects = METADATA_LINE_LOW;
+    let audit = metadata_line_audit(objects);
+    let get = |leg: &str| -> u64 {
+        audit
+            .get(leg)
+            .copied()
+            .unwrap_or_else(|| panic!("the audit should report {leg}"))
+    };
+
+    let entries = get("objects.entries");
+    assert_eq!(entries, objects, "one entry an object");
+    println!(
+        "SHARED objects entries={entries} shared={} duplicated={} inner_heap={} \
+         records={} record_shared={} record_key_capacity={}",
+        get("objects.id_text_shared"),
+        get("objects.id_text_duplicated"),
+        get("objects.inner_id_heap"),
+        get("meta.records"),
+        get("meta.records.key_text_shared"),
+        get("meta.records.record_key_capacity"),
+    );
+
+    // NOT VACUOUS, and this is the part that matters: `shares_with` is pointer equality, so
+    // two holders of DIFFERENT text would report "not shared" and a test asserting only the
+    // share count would pass a store that had quietly stopped naming the same object twice.
+    // The texts must be equal AND the allocation must be one.
+    assert_eq!(
+        get("objects.id_text_duplicated"),
+        entries,
+        "every object's map key and its value should name the SAME text"
+    );
+    assert_eq!(
+        get("objects.id_text_shared"),
+        entries,
+        "and every one of them should be one allocation, not two equal ones"
+    );
+    assert_eq!(
+        get("objects.inner_id_heap"),
+        0,
+        "so the identity inside the value owns no characters of its own"
+    );
+
+    let records = get("meta.records");
+    assert!(records >= entries, "a record an object, plus the bucket's");
+    assert_eq!(
+        get("meta.records.key_text_duplicated"),
+        records,
+        "every record's map key and its own naming should be the same text"
+    );
+    assert_eq!(
+        get("meta.records.key_text_shared"),
+        records,
+        "and one allocation for the two of them"
+    );
+    assert_eq!(
+        get("meta.records.record_key_capacity"),
+        0,
+        "so the record's own key owns no characters of its own"
+    );
+
+    // What the sharing is worth, stated as a figure rather than left to be inferred: a
+    // second copy would be the characters again plus a 16-byte header, for every object.
+    let objects_key_chars = get("objects.mapkey_heap");
+    let record_key_chars = get("meta.records.mapkey_capacity");
+    println!(
+        "SHARED worth_per_object={} ({objects_key_chars} + {record_key_chars} over {objects})",
+        (objects_key_chars + record_key_chars) / objects
+    );
+    assert!(
+        objects_key_chars > 0 && record_key_chars > 0,
+        "a zero here would make the saving above unmeasurable"
+    );
+}
