@@ -60,6 +60,109 @@ impl ObjectExtent {
     }
 }
 
+/// Which storage class an object carries.
+///
+/// # WHY THIS IS NOT TEXT
+///
+/// The set is CLOSED: `validate_storage_class` accepts exactly these four names and refuses
+/// everything else, so an object's class is always one of four things. Holding it as a
+/// `SharedText` spent sixteen bytes -- a fat pointer -- to say which. One byte says the same
+/// thing, and it lands in padding both structures already had:
+///
+/// | | was | now |
+/// |---|---:|---:|
+/// | `ObjectMetadata` | 144 | **128** |
+/// | `ObjectProjection` | 88 | **72** |
+///
+/// THE WIRE IS UNCHANGED. `as_str()` renders the same four names and the snapshot still
+/// writes a string, so this is a representation change and not a migration -- the same shape
+/// as the etag digest and the extent offset before it.
+///
+/// `the_storage_class_variants_are_the_valid_names` pins the variants to the validation, so
+/// one cannot gain a name the other does not.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum StorageClass {
+    #[default]
+    Standard,
+    Archive,
+    Glacier,
+    DeepArchive,
+}
+
+impl StorageClass {
+    /// Every class there is, in the order they are declared.
+    pub fn all() -> [Self; 4] {
+        [Self::Standard, Self::Archive, Self::Glacier, Self::DeepArchive]
+    }
+
+    /// The name this class has always had on the wire and in a response.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Standard => "STANDARD",
+            Self::Archive => "ARCHIVE",
+            Self::Glacier => "GLACIER",
+            Self::DeepArchive => "DEEP_ARCHIVE",
+        }
+    }
+
+    /// The class that name spells.
+    ///
+    /// Refused rather than defaulted: a name outside the set is one
+    /// `validate_storage_class` already rejects, so accepting it here by falling back to
+    /// `STANDARD` would silently change an object's class instead of reporting the problem.
+    pub fn parse(text: &str) -> Result<Self, ObjectError> {
+        Self::all()
+            .into_iter()
+            .find(|class| class.as_str() == text)
+            .ok_or_else(|| {
+                ObjectError::InvalidArgument(format!(
+                    "storage class must be STANDARD, ARCHIVE, GLACIER, or DEEP_ARCHIVE,                      and {text:?} is none of them"
+                ))
+            })
+    }
+
+    /// Whether reading an object of this class is a restore rather than a read.
+    pub fn is_cold(&self) -> bool {
+        matches!(self, Self::Archive | Self::Glacier | Self::DeepArchive)
+    }
+}
+
+impl std::fmt::Display for StorageClass {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<str> for StorageClass {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for StorageClass {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for StorageClass {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialEq<StorageClass> for str {
+    fn eq(&self, other: &StorageClass) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<StorageClass> for &str {
+    fn eq(&self, other: &StorageClass) -> bool {
+        *self == other.as_str()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectMetadata {
     pub object_id: ObjectId,
@@ -89,7 +192,7 @@ pub struct ObjectMetadata {
     pub has_etag: bool,
     pub content_type: SharedText,
     pub user_metadata: ObjectAttributes,
-    pub storage_class: SharedText,
+    pub storage_class: StorageClass,
     pub tags: ObjectAttributes,
     pub lock: ObjectLock,
     pub update_time_ms: u64,
@@ -174,11 +277,10 @@ impl ObjectMetadata {
         );
         fields.insert(
             format!("{field_prefix}storage_class"),
-            if self.storage_class.is_empty() {
-                "STANDARD".to_string().into()
-            } else {
-                self.storage_class.clone().into()
-            },
+            // NO EMPTY CASE ANY MORE: this branch spelled an empty text as "STANDARD",
+            // and an empty text is no longer a storage class. The default variant is
+            // Standard, so the value it produced is the value it still produces.
+            self.storage_class.as_str().to_string().into(),
         );
         fields.insert(
             format!("{field_prefix}restore_until_ms"),

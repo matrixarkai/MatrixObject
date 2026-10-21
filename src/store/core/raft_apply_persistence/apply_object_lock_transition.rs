@@ -112,8 +112,8 @@ impl MatrixObjectStore {
                 "transition if-match etag does not match current object".to_string(),
             ));
         }
-        metadata.storage_class = storage_class.into();
-        if !is_cold_storage_class(&metadata.storage_class) {
+        metadata.storage_class = StorageClass::parse(&storage_class)?;
+        if !metadata.storage_class.is_cold() {
             metadata.lock.restore_until_ms = 0;
         }
         metadata.update_time_ms = update_time_ms;
@@ -209,7 +209,7 @@ impl MatrixObjectStore {
         }
 
         let mut metadata = current.clone();
-        metadata.storage_class = storage_class.into();
+        metadata.storage_class = StorageClass::parse(&storage_class)?;
         metadata.lock.restore_until_ms = 0;
         metadata.update_time_ms = update_time_ms;
         metadata.extents = new_extents.into();

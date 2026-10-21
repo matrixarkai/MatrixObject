@@ -51,7 +51,10 @@ pub(crate) fn read_metadata(
         has_etag,
         content_type: content_type.into(),
         user_metadata: user_metadata.into(),
-        storage_class: interned_storage_class(&storage_class),
+        // PARSED, not interned: the set is closed, so a name outside it is one
+        // `validate_storage_class` already refuses -- and the snapshot validation refuses
+        // it too. Refusing here reports it instead of carrying a class the store rejects.
+        storage_class: StorageClass::parse(&storage_class)?,
         tags: tags.into(),
         lock: ObjectLock::new(
             restore_until_ms,

@@ -158,7 +158,7 @@ impl MatrixObjectStore {
                     has_etag: false,
                     content_type: "metaserver/session-expire".to_string().into(),
                     user_metadata: BTreeMap::new().into(),
-                    storage_class: k_standard_storage_class().to_string().into(),
+                    storage_class: StorageClass::Standard,
                     lock: ObjectLock::default(),
                     tags: BTreeMap::new().into(),
                     update_time_ms: now_ms,

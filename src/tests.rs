@@ -35712,7 +35712,7 @@ fn an_object_without_attributes_pays_one_pointer_for_them() {
 }
 
 #[test]
-fn four_storage_classes_cost_four_allocations() {
+fn a_storage_class_costs_no_heap_at_all() {
     // A storage class is one of four names, so a store holding a million
     // objects held a million copies of the word STANDARD.
     fn audit_value(store: &MatrixObjectStore, key: &str) -> u64 {
@@ -35733,66 +35733,88 @@ fn four_storage_classes_cost_four_allocations() {
             .unwrap();
     }
 
+    // This test used to assert that eight objects named one storage class through ONE
+    // allocation -- the characters plus a 16-byte header, charged once. A class is a
+    // one-byte enum now, so the answer is stronger and simpler: there is no allocation.
     let classes: Vec<_> = store
         .objects
         .values()
-        .map(|metadata| metadata.storage_class.clone())
+        .map(|metadata| metadata.storage_class)
         .collect();
     assert_eq!(classes.len(), OBJECTS);
-    assert_eq!(classes[0].as_str(), "STANDARD");
-    for other in &classes[1..] {
-        assert!(
-            classes[0].shares_with(other),
-            "two objects of the same storage class must name it through one              allocation"
-        );
-    }
-
-    // Charged once for the store, not once per object: the characters and the
-    // header, one time.
-    let header = 2 * std::mem::size_of::<usize>() as u64;
+    assert!(
+        classes.iter().all(|class| *class == StorageClass::Standard),
+        "a put with no class named should land on the default"
+    );
+    assert_eq!(
+        classes[0].as_str(),
+        "STANDARD",
+        "and it must still spell the name it always did"
+    );
     assert_eq!(
         audit_value(&store, "objects.storage_class_heap"),
-        "STANDARD".len() as u64 + header,
-        "eight objects, one storage class, one allocation"
+        0,
+        "a storage class owns no characters, so this leg is zero rather than one allocation"
     );
 
-    // And it survives a reload, which is the half a decode can quietly miss.
+    // And it survives a reload, which is the half a decode can quietly miss -- here it is
+    // also where a name off the wire is parsed back into a variant.
     let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
     let mut restored = MatrixObjectStore::new(test_options()).unwrap();
     restored.install_snapshot_bytes(&bytes).unwrap();
     assert_eq!(
         audit_value(&restored, "objects.storage_class_heap"),
-        "STANDARD".len() as u64 + header,
-        "a store loaded from a snapshot shares on the same terms"
+        0,
+        "a store loaded from a snapshot owes nothing for its classes either"
+    );
+    assert!(
+        restored
+            .objects
+            .values()
+            .all(|metadata| metadata.storage_class == StorageClass::Standard),
+        "and the class came back as the variant it went out as"
     );
 }
 
 #[test]
-fn the_interned_storage_classes_are_the_valid_ones() {
-    // The table and the validation are two lists of the same four names. If one
-    // gains a name the other does not, an object of that class quietly stops
-    // sharing -- or is refused while the table offers it.
-    for class in ["STANDARD", "ARCHIVE", "GLACIER", "DEEP_ARCHIVE"] {
-        validate_storage_class(class)
-            .unwrap_or_else(|error| panic!("{class} should be valid: {error:?}"));
+fn the_storage_class_variants_are_the_valid_names() {
+    // The variants and the validation are two lists of the same four names. If one gains a
+    // name the other does not, an object is either refused while the type can hold it, or
+    // holdable while the store refuses it.
+    //
+    // This replaced a test on an interning table. The table is the enum now, so there is no
+    // second list of allocations to keep in step -- only these two.
+    for class in StorageClass::all() {
+        validate_storage_class(class.as_str()).unwrap_or_else(|error| {
+            panic!("{} should be valid: {error:?}", class.as_str())
+        });
         assert_eq!(
-            interned_storage_class(class).as_str(),
+            StorageClass::parse(class.as_str()).unwrap(),
             class,
-            "a valid class must be in the table"
-        );
-        assert!(
-            interned_storage_class(class).shares_with(&interned_storage_class(class)),
-            "and must come back as the same allocation every time"
+            "every variant must parse back from its own name"
         );
     }
-    // A name outside the set is not refused here; it simply gets its own
-    // allocation, because refusing is the validation's job.
+    // Four, and not a fifth hiding behind a duplicate name.
+    let names: std::collections::BTreeSet<&str> =
+        StorageClass::all().iter().map(|class| class.as_str()).collect();
+    assert_eq!(names.len(), 4, "four distinct names: {names:?}");
+
+    // A name outside the set is REFUSED now, where the interner used to hand back its own
+    // allocation and leave the refusal to the validation. Both still refuse it.
     assert!(validate_storage_class("NEARLINE").is_err());
-    assert_eq!(interned_storage_class("NEARLINE").as_str(), "NEARLINE");
     assert!(
-        !interned_storage_class("NEARLINE").shares_with(&interned_storage_class("NEARLINE")),
-        "an unknown name is not in the table, so each call owns its own"
+        StorageClass::parse("NEARLINE").is_err(),
+        "a class the store would refuse must not be representable"
     );
+    // And which of the four are cold is the same question the removed free function asked.
+    assert!(!StorageClass::Standard.is_cold());
+    for cold in [
+        StorageClass::Archive,
+        StorageClass::Glacier,
+        StorageClass::DeepArchive,
+    ] {
+        assert!(cold.is_cold(), "{} should be cold", cold.as_str());
+    }
 }
 
 #[test]
@@ -38831,15 +38853,56 @@ fn an_optional_digest_costs_eight_bytes_and_not_sixteen() {
         "this is the whole premise: an optional u64 costs two words"
     );
 
-    // The three structs that carried one. Each is now a whole number of words with the
-    // flag in padding, so each is exactly one word smaller than it was.
+    // The three structs that carried one, asserted the way the paragraph above says: as a
+    // RELATION, against a mirror of each struct with the `Option` put back. The split must
+    // be exactly one word smaller.
+    //
+    // It used to assert 144, 88 and 104 -- the figures of the day -- directly underneath a
+    // comment explaining why that would be wrong. Two of the three went stale the next time
+    // a field changed representation, which is how the contradiction surfaced.
     let word = std::mem::size_of::<u64>();
-    assert_eq!(std::mem::size_of::<ObjectMetadata>(), 144, "was 152, one word more");
-    assert_eq!(std::mem::size_of::<ObjectProjection>(), 88, "was 96");
+    #[allow(dead_code)]
+    struct MetadataWithOption {
+        object_id: ObjectId,
+        version: u64,
+        length: u64,
+        etag: Option<u64>,
+        content_type: SharedText,
+        user_metadata: ObjectAttributes,
+        storage_class: StorageClass,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: Box<[ObjectExtent]>,
+        deleted: bool,
+    }
     assert_eq!(
-        std::mem::size_of::<ObjectChangeRecord>(),
-        104,
-        "was 112"
+        std::mem::size_of::<MetadataWithOption>() - std::mem::size_of::<ObjectMetadata>(),
+        word,
+        "ObjectMetadata should be one word smaller than it would be with the Option"
+    );
+    // The mirror has to be faithful, or it prices the wrong thing: the same fields with the
+    // split back in must come out at the real struct's size.
+    #[allow(dead_code)]
+    struct MetadataMirror {
+        object_id: ObjectId,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        user_metadata: ObjectAttributes,
+        storage_class: StorageClass,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: Box<[ObjectExtent]>,
+        deleted: bool,
+    }
+    assert_eq!(
+        std::mem::size_of::<MetadataMirror>(),
+        std::mem::size_of::<ObjectMetadata>(),
+        "the control: this mirror must match the real struct or it is pricing something else"
     );
     // NOT VACUOUS: the flag has to be free. If it ever stops landing in padding these
     // would grow by a word and the saving would be nothing.
@@ -38867,7 +38930,7 @@ fn a_digest_and_its_flag_spell_what_the_option_spelled() {
         has_etag: false,
         content_type: "text/plain".to_string().into(),
         user_metadata: BTreeMap::new().into(),
-        storage_class: "STANDARD".to_string().into(),
+        storage_class: StorageClass::Standard,
         tags: BTreeMap::new().into(),
         lock: ObjectLock::default(),
         update_time_ms: 0,
@@ -43688,4 +43751,147 @@ fn an_extent_past_four_gibibytes_is_refused_rather_than_truncated() {
         .is_ok(),
         "and a default store should still build"
     );
+}
+
+#[test]
+fn a_storage_class_is_one_byte_and_its_wire_is_still_a_name() {
+    // THE TWO HALVES OF THE CLAIM: one byte in memory, and the same four names on the wire.
+    // If the wire had narrowed too, every snapshot written before this would be unreadable
+    // and it would be a migration rather than a representation change.
+    assert_eq!(std::mem::size_of::<StorageClass>(), 1, "four names, one byte");
+    assert_eq!(
+        std::mem::size_of::<ObjectMetadata>(),
+        128,
+        "and the byte lands in padding the struct already had: 144 became 128"
+    );
+    assert_eq!(
+        std::mem::size_of::<ObjectProjection>(),
+        72,
+        "the same in the projection: 88 became 72"
+    );
+
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 1,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "k", vec![b'x'; 64], "application/octet-stream")
+        .unwrap();
+    let metadata = store.head_object("bucket", "k").unwrap();
+    assert_eq!(metadata.storage_class, StorageClass::Standard);
+
+    // THE NAME IS STILL ON THE WIRE AS TEXT, measured as the difference between encoding
+    // the shortest class and the longest: if the class were written as its discriminant the
+    // two would encode to the same length.
+    let encoded_len = |class: StorageClass| -> usize {
+        let mut with = metadata.clone();
+        with.storage_class = class;
+        let mut out = Vec::new();
+        append_object_metadata_identity(&mut out, &with);
+        out.len()
+    };
+    let standard = encoded_len(StorageClass::Standard);
+    let deep = encoded_len(StorageClass::DeepArchive);
+    assert_eq!(
+        deep - standard,
+        "DEEP_ARCHIVE".len() - "STANDARD".len(),
+        "the class goes out as its name, so a longer name is a longer record: {standard} \
+         against {deep}"
+    );
+
+    // AND IT COMES BACK, which is where a name off the wire is parsed into a variant. Every
+    // class, because only one of the four is exercised by an ordinary put.
+    for class in StorageClass::all() {
+        let mut store = MatrixObjectStore::new(test_options()).unwrap();
+        store.create_bucket("bucket").unwrap();
+        store
+            .put_object("bucket", "k", vec![b'v'; 4], "text/plain")
+            .unwrap();
+        store
+            .objects
+            .get_mut(&ObjectId::new("bucket", "k"))
+            .expect("the object just written")
+            .storage_class = class;
+        let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+        let mut restored = MatrixObjectStore::new(test_options()).unwrap();
+        restored.install_snapshot_bytes(&bytes).unwrap();
+        assert_eq!(
+            restored
+                .objects
+                .get(&ObjectId::new("bucket", "k"))
+                .expect("the object should survive the round trip")
+                .storage_class,
+            class,
+            "{} should come back as itself",
+            class.as_str()
+        );
+    }
+}
+
+#[test]
+fn every_guard_the_workflow_pins_by_name_exists() {
+    // CI runs thirty-odd guards as their own steps, each naming one test with `--exact`.
+    // `cargo test <filter>` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so every step greps its
+    // own output for `test result: ok. 1 passed` and fails with "the guard did not run"
+    // otherwise. That is what caught two renames in this change -- but it caught them in CI,
+    // after a push, because nothing in the tree knew the workflow had opinions about test
+    // names.
+    //
+    // This is that missing half: rename a pinned guard and the suite says so, here, before
+    // the push.
+    const WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
+    const SUITE: &str = include_str!("tests.rs");
+
+    // `tests::<name>` is how the workflow spells a filter. Taken from the workflow rather
+    // than from a list kept here, so a step ADDED later is covered without anyone
+    // remembering to add it twice.
+    let mut pinned: Vec<&str> = Vec::new();
+    for line in WORKFLOW.lines() {
+        let Some(at) = line.find("tests::") else {
+            continue;
+        };
+        let name: &str = line[at + "tests::".len()..]
+            .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+            .next()
+            .unwrap_or("");
+        if !name.is_empty() {
+            pinned.push(name);
+        }
+    }
+    pinned.sort_unstable();
+    pinned.dedup();
+    // Not vacuous: a parse that found nothing would pass every assertion below.
+    assert!(
+        pinned.len() >= 25,
+        "the workflow should pin a couple of dozen guards, and this found {}: {pinned:?}",
+        pinned.len()
+    );
+
+    let missing: Vec<&str> = pinned
+        .iter()
+        .copied()
+        .filter(|name| !SUITE.contains(&format!("fn {name}(")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the workflow runs these by name and this tree has no such test: {missing:?} -- \
+         rename them in the workflow too, or the step will pass nothing and report that it \
+         ran no guard"
+    );
+    println!("WORKFLOWPINS {} pinned guards, all present", pinned.len());
+
+    // AND THE SPELLING THE STEPS CHECK FOR IS THE ONE CARGO PRINTS. If that line ever
+    // changed, every step would fail open -- the grep would never match and the step would
+    // always error, which is noisy rather than dangerous, but the reverse is worth pinning:
+    // the steps rely on a single test passing, so none of them may name a filter that
+    // matches more than one test.
+    for name in &pinned {
+        let matches = SUITE.matches(&format!("fn {name}(")).count();
+        assert_eq!(
+            matches, 1,
+            "a pinned guard must name exactly one test, and {name} names {matches}"
+        );
+    }
 }

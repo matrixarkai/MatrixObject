@@ -25,7 +25,7 @@ fn listing_object_metadata_encoded_len(metadata: &ObjectMetadata) -> usize {
         + encoded_string_len(&metadata.etag())
         + encoded_string_len(&metadata.content_type)
         + listing_string_map_encoded_len(&metadata.user_metadata)
-        + encoded_string_len(&metadata.storage_class)
+        + encoded_string_len(metadata.storage_class.as_str())
         + listing_string_map_encoded_len(&metadata.tags)
         + std::mem::size_of::<u64>() * (12 + metadata.extents.len() * 4)
 }
