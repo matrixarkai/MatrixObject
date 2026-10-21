@@ -185,7 +185,7 @@ impl MatrixObjectStore {
         let mut object_cursor = 0u64;
         for extent in &metadata.extents {
             let extent_start = object_cursor;
-            let extent_end = object_cursor.checked_add(extent.length).ok_or_else(|| {
+            let extent_end = object_cursor.checked_add(extent.length()).ok_or_else(|| {
                 ObjectError::InvalidArgument("object extent overflows".to_string())
             })?;
             object_cursor = extent_end;
@@ -201,7 +201,7 @@ impl MatrixObjectStore {
             let local_len = read_end - read_start;
             let (payload, read_stats) = self.chunk_service.read_chunk_range_repairing(
                 &extent.chunk_id,
-                extent.offset + local_offset,
+                extent.offset() + local_offset,
                 local_len,
             )?;
             merge_page_read_stats(&mut stats, read_stats);

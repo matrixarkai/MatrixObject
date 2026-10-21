@@ -31,11 +31,16 @@ pub(crate) fn read_metadata(
     let extent_count = cursor.read_count("snapshot metadata extent count")?;
     let mut extents = Vec::with_capacity(extent_count);
     for _ in 0..extent_count {
-        extents.push(ObjectExtent {
-            chunk_id: read_chunk_id(cursor)?,
-            offset: cursor.read_u64()?,
-            length: cursor.read_u64()?,
-        });
+        // THE WIRE IS STILL TWO `u64`, which is what keeps this a representation change
+        // rather than a migration. It is also the only place a number too big for the
+        // in-memory form can arrive, so the constructor's refusal is reachable here and
+        // nowhere else: a snapshot written by a build whose chunks were larger than 4 GiB
+        // is refused on load instead of being truncated into an object that points at the
+        // wrong bytes.
+        let chunk_id = read_chunk_id(cursor)?;
+        let offset = cursor.read_u64()?;
+        let length = cursor.read_u64()?;
+        extents.push(ObjectExtent::new(chunk_id, offset, length)?);
     }
     let (etag_digest_bits, has_etag) = etag_digest_fields(change_etag_digest(&etag)?);
     Ok(ObjectMetadata {

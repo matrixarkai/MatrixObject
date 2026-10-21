@@ -110,8 +110,8 @@ pub(crate) fn append_object_metadata_identity(out: &mut Vec<u8>, metadata: &Obje
     append_u64(out, metadata.extents.len() as u64);
     for extent in &metadata.extents {
         append_chunk_id(out, &extent.chunk_id);
-        append_u64(out, extent.offset);
-        append_u64(out, extent.length);
+        append_u64(out, extent.offset());
+        append_u64(out, extent.length());
     }
 }
 
@@ -143,8 +143,8 @@ pub(crate) fn append_metadata(out: &mut Vec<u8>, metadata: &ObjectMetadata) {
     append_u64(out, metadata.extents.len() as u64);
     for extent in &metadata.extents {
         append_chunk_id(out, &extent.chunk_id);
-        append_u64(out, extent.offset);
-        append_u64(out, extent.length);
+        append_u64(out, extent.offset());
+        append_u64(out, extent.length());
     }
 }
 

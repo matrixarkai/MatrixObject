@@ -30,14 +30,14 @@ impl MatrixObjectStore {
         self.attach_storage_admission_context(&mut report, now_millis());
         let mut consumed_discard_budget = 0u64;
         for extent in &metadata.extents {
-            let mut admitted_extent_len = extent.length;
+            let mut admitted_extent_len = extent.length();
             if max_discard_bytes > 0 {
                 let remaining_budget = max_discard_bytes.saturating_sub(consumed_discard_budget);
                 if remaining_budget == 0 {
                     report.extent_count = report.extent_count.saturating_add(1);
                     report.budget_limited = true;
                     report.skipped_discard_bytes =
-                        report.skipped_discard_bytes.saturating_add(extent.length);
+                        report.skipped_discard_bytes.saturating_add(extent.length());
                     if report.can_accept {
                         report.can_accept = false;
                         report.partial_status = "object delete discard budget exceeded".to_string();
@@ -45,16 +45,16 @@ impl MatrixObjectStore {
                     continue;
                 }
                 admitted_extent_len = admitted_extent_len.min(remaining_budget);
-                if admitted_extent_len < extent.length {
+                if admitted_extent_len < extent.length() {
                     report.budget_limited = true;
                     report.skipped_discard_bytes = report
                         .skipped_discard_bytes
-                        .saturating_add(extent.length - admitted_extent_len);
+                        .saturating_add(extent.length() - admitted_extent_len);
                 }
             }
             let admission = self.chunk_service.can_accept_slab_discard(
                 &extent.chunk_id,
-                extent.offset,
+                extent.offset(),
                 admitted_extent_len,
                 0,
             )?;

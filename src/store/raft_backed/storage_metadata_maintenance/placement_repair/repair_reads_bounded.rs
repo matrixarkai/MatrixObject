@@ -39,7 +39,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 break;
             }
             let extent_start = object_cursor;
-            let extent_end = object_cursor.checked_add(extent.length).ok_or_else(|| {
+            let extent_end = object_cursor.checked_add(extent.length()).ok_or_else(|| {
                 ObjectError::InvalidArgument("object extent overflows".to_string())
             })?;
             object_cursor = extent_end;
@@ -56,7 +56,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             let selected_chunks = self
                 .store
                 .chunk_service
-                .map_range(&extent.chunk_id, extent.offset + local_offset, local_len)?
+                .map_range(&extent.chunk_id, extent.offset() + local_offset, local_len)?
                 .into_iter()
                 .filter(|loc| loc.page_id.page_index >= next_chunk_index)
                 .map(|loc| loc.page_id)
@@ -75,7 +75,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 .saturating_add(1);
             self.propose_repair_page_range_bounded_linearizable_fenced(
                 extent.chunk_id.clone(),
-                extent.offset + local_offset,
+                extent.offset() + local_offset,
                 local_len,
                 chunk_limit,
                 next_chunk_index,
