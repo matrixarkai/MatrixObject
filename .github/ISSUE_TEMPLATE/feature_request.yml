@@ -1,0 +1,30 @@
+name: Change proposal
+description: Something the store should do differently, or should do and does not.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What is costly, wrong or missing today. If you can put a number on it -- bytes per
+        object, a ratio, a count -- say how you measured it and on which commit.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: >-
+        The change itself. If it touches a format the store writes, say what would read the
+        old form: those constants are hashed into stored proofs, so changing the text is a
+        migration rather than a rename.
+    validations:
+      required: true
+  - type: textarea
+    id: measurement
+    attributes:
+      label: What would prove it
+      description: >-
+        The test that would fail today and pass afterwards. A proposal that cannot be
+        measured is hard to land here, because this is how every other change was.

@@ -43881,6 +43881,144 @@ fn every_guard_the_workflow_pins_by_name_exists() {
 }
 
 #[test]
+fn the_repository_carries_what_an_outside_contributor_needs() {
+    // The licence grants a stranger the right to change this store. It does not tell them
+    // how, who reviews, or what not to put in a public issue -- and a file that answers
+    // those questions ABOUT A DIFFERENT PROJECT answers none of them.
+    //
+    // That was the state: `CONTRIBUTING.md` opened "Contributing to MatrixRaft" and sent a
+    // reader to `scripts/verify_like_ci.sh`, `CHANGELOG.md` and a safety-review document,
+    // none of which are in this tree, while naming an MSRV and a `cargo-deny` gate this
+    // repository does not have. Every openness check passed it, because every one of them
+    // asks whether the file is PRESENT.
+    //
+    // So this guard asks two further things, and the second is the one that would have
+    // caught it: that the guide names this project, and that every repo-relative path it
+    // points at exists.
+    const CONTRIBUTING: &str = include_str!("../CONTRIBUTING.md");
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // What a stranger needs before they can land anything: what the thing is, how to build
+    // and test it, what they may do with it, who reviews, and how to report something that
+    // must not be public.
+    let required = [
+        "README.md",
+        "CONTRIBUTING.md",
+        "LICENSE",
+        "NOTICE",
+        "SECURITY.md",
+        "CODE_OF_CONDUCT.md",
+        ".github/CODEOWNERS",
+        ".github/pull_request_template.md",
+        ".github/ISSUE_TEMPLATE/config.yml",
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/feature_request.yml",
+    ];
+    let absent: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|name| !root.join(name).exists())
+        .collect();
+    assert!(
+        absent.is_empty(),
+        "an outside contributor needs these and they are not in the tree: {absent:?}"
+    );
+
+    let first_heading = CONTRIBUTING
+        .lines()
+        .find(|line| line.starts_with("# "))
+        .unwrap_or("");
+    assert_eq!(
+        first_heading, "# Contributing to MatrixObject",
+        "the contributing guide should be this project's, and it opens {first_heading:?}"
+    );
+
+    // Markdown link targets and backticked tokens, kept only when they look like a path in
+    // this repository: a slash, no space, no scheme. That leaves `tools/suite_gate.sh` and
+    // `.github/workflows/ci.yml` in, and keeps commands and option strings out.
+    let mut cited: Vec<&str> = Vec::new();
+    for (index, _) in CONTRIBUTING.match_indices("](") {
+        let rest = &CONTRIBUTING[index + 2..];
+        if let Some(end) = rest.find(')') {
+            cited.push(&rest[..end]);
+        }
+    }
+    for piece in CONTRIBUTING.split('`').skip(1).step_by(2) {
+        cited.push(piece);
+    }
+    let mut paths: Vec<&str> = cited
+        .into_iter()
+        .filter(|cite| {
+            cite.contains('/')
+                && !cite.contains(' ')
+                && !cite.contains('\n')
+                && !cite.contains("://")
+                && !cite.starts_with('#')
+        })
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
+    // Not vacuous: an extraction that found nothing would pass the check below, which is
+    // the shape every blind guard in this repository has had.
+    assert!(
+        paths.len() >= 5,
+        "the guide should point at several files in this tree, and this found {paths:?}"
+    );
+    println!("CONTRIBUTING cites {} in-tree paths: {paths:?}", paths.len());
+    let missing: Vec<&str> = paths
+        .iter()
+        .copied()
+        .filter(|path| !root.join(path).exists())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the contributing guide sends a reader to paths that are not here: {missing:?}"
+    );
+
+    // AND THE FIGURE THE GUIDE QUOTES IS THE WORKFLOW'S. "33 individual tests" is a
+    // literal in prose, which goes stale the moment a step is added -- so it is read back
+    // out of the workflow rather than trusted. `every_guard_the_workflow_pins_by_name_exists`
+    // does the same extraction for a different purpose; this one only needs the count.
+    const WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
+    let mut pinned: Vec<&str> = Vec::new();
+    for line in WORKFLOW.lines() {
+        let Some(at) = line.find("tests::") else {
+            continue;
+        };
+        let name = line[at + "tests::".len()..]
+            .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+            .next()
+            .unwrap_or("");
+        if !name.is_empty() {
+            pinned.push(name);
+        }
+    }
+    pinned.sort_unstable();
+    pinned.dedup();
+    assert!(
+        pinned.len() >= 25,
+        "the extraction should find a couple of dozen pinned guards, and it found {}",
+        pinned.len()
+    );
+    let quoted = format!("{} individual tests", pinned.len());
+    assert!(
+        CONTRIBUTING.contains(&quoted),
+        "the guide should say {quoted:?}, because that is how many guards the workflow pins"
+    );
+    let quoted = format!("those {} guards", pinned.len());
+    assert!(
+        CONTRIBUTING.contains(&quoted),
+        "the guide should say {quoted:?} as well, so the two figures cannot drift apart"
+    );
+
+    // NOT CHECKED HERE, deliberately: that `main` carries no branch protection, and that
+    // the repository is public, forkable and issues-open. Those are account state rather
+    // than tree state -- a test cannot see them, and one that pretended to would be the
+    // most reassuring kind of blind guard. They are audited against the GitHub API.
+}
+
+#[test]
 fn every_rust_source_carries_the_licence_header() {
     // Two lines, at the top of every Rust source, the way the sibling store carries them:
     //
