@@ -1,10 +1,10 @@
 # MatrixObject
 
-A distributed object store, in Rust. Apache-2.0.
+A distributed object store, in Rust. **Apache-2.0** open source: public, forkable,
+and open to issues and pull requests from anyone.
 
-MatrixObject stores objects across replicated storage nodes with quorum writes,
-quorum reads, per-unit checksums and background repair. It is open source and
-free for anyone in the world to use, fork, deploy and contribute to.
+Objects are stored across replicated nodes with quorum writes, quorum reads,
+per-page checksums and background repair.
 
 ```rust
 use matrixobjectstore_rs::{MatrixObjectStore, StoreOptions};
@@ -28,34 +28,28 @@ it by `page_index = absolute_offset / page_size`. So a ranged read fetches
 only the pages it needs instead of scanning a chunk, and a repair rebuilds one
 page rather than a whole container.
 
-Two words are used deliberately narrowly:
+**shard** is used in the distributed sense only -- metadata partitioned by key
+range across services. The pieces inside one page are **fragments**: they never
+leave the page they came from. The service coordinating a chunk's replicas is the
+**chunk service**; the one holding a single replica is the **replica service**.
 
-- **shard** means the distributed sense only: metadata partitioned by key range
-  across services. The pieces inside a single page are **fragments**, because
-  they never leave the page they came from.
-- **page** is the replicated unit of storage: `PageId`, `PageState`, `page_size`.
-  It is 1 MiB by default and it is what a quorum votes on and what repair
-  rebuilds. The service that coordinates one chunk's replicas is the **chunk
-  service**; the service that holds a single replica is the **replica
-  service**.
-
-The directory names still say `src/services/page` and `src/services/chunk` for
-the chunk service and the replica service; those move in a later change. The
-types and fields are renamed: `ChunkId`, `chunk_size`, `PageId`, `page_size`. What is still spelled the old way is spelled that way
-deliberately, and it is worth knowing which before you reach for a tidy-up:
+Two classes of name are still spelled the old way on purpose, because the text
+itself is load-bearing rather than cosmetic:
 
 | still named the old way | why it stays |
 |---|---|
 | **148 durable format constants** (36 contain `BLOCK`, 3 `SEGMENT`) | they are hashed into proofs, so changing the text changes every checksum computed from it |
 | **154 control-field and report keys** | they are observable output -- someone's dashboard reads them |
 
-The key count is distinct lower-case string literals containing `block` or
-`segment`; counted another way it comes out differently, which is why the
-definition is here and not just the figure.
+Both are a versioned migration rather than a rename, and
+`every_durable_format_constant_is_accounted_for` pins all 148 by name in both
+directions: a renamed constant fails it, and so does a new one. The second count
+is distinct lower-case literals containing `block` or `segment`; counted another
+way it differs, which is why the definition is here and not only the figure.
 
-Both classes are a versioned migration rather than a rename, and
-`every_durable_format_constant_is_accounted_for` pins all 148 constants by name
-in both directions: a renamed constant fails it, and so does a new one.
+The directories `src/services/page` and `src/services/chunk` hold the chunk
+service and the replica service respectively, and move in a later change; the
+types and fields are already `ChunkId`, `chunk_size`, `PageId`, `page_size`.
 
 ## Services
 
@@ -76,24 +70,19 @@ in both directions: a renamed constant fails it, and so does a new one.
   partial corruption is still recoverable from the single copy it has. The
   fragment is local to its page and is empty whenever the page has peers, which
   is why the data term measures exactly 3.00x at three replicas.
-- **Striped payload, if you ask for it.** `stripe_redundancy_units` places a page's
-  bytes across the replicas as fixed-size units instead of copying the page to
-  each, so the store holds `replica_count / (replica_count - stripe_redundancy_units)`
-  of the payload. At three replicas and one unit of redundancy that measures
-  **1.5x against replication's 3.0x**, read out of `footprint_audit()` for the
-  same objects put through two stores, and counting the metadata too the whole
-  store measures 2.11x against 3.60x at a thousand objects of 1 KiB. It is a
-  durability trade
-  -- one loss survived where three-way replication survives two -- and a striped
-  write needs every replica to accept it, so `write_quorum` must equal
-  `replica_count`.
-  Replication is the default and is unchanged. Two things it cannot do yet, named
-  rather than implied: an operator cannot quarantine a replica of a striped
-  service (the guard refuses dropping below the write quorum), and
+- **Striped payload, if you ask for it.** `stripe_redundancy_units` spreads a
+  page across its replicas as fixed-size units instead of copying it to each, so
+  the store holds `replica_count / (replica_count - stripe_redundancy_units)` of
+  the payload -- **1.5x against replication's 3.0x** at three replicas and one
+  unit of redundancy. Replication is the default. The trade is durability: one
+  loss survived where three-way replication survives two. A striped write needs
+  every replica to accept it, so `write_quorum` must equal `replica_count`.
+  Two limits, named rather than implied: a replica of a striped service cannot be
+  quarantined (the guard refuses dropping below the write quorum), and
   `repair_chunk_replicas` reports a striped page with a lost replica as
-  unrepaired rather than rebuilding its units -- reads still serve it by
-  reconstructing on demand, so the page is readable and one loss from unreadable
-  at the same time.
+  unrepaired instead of rebuilding its units -- reads still serve it by
+  reconstructing on demand, so it is readable and one loss from unreadable at the
+  same time. [Footprint](#footprint) has the whole-store figures.
 - **Space reuse.** Overwriting an object normally leaves its previous version
   resident until collection. With `reuse_stale_chunk_space` the next write takes
   that space directly, which measures about 9% off resident footprint on an
@@ -120,11 +109,9 @@ is **434 bytes an object plus 164,280 fixed** whatever the object size.
 `footprint_audit()` names every resident byte and its breakdown sums to its own
 total with no remainder.
 
-Those two numbers are a line, and
-`the_published_metadata_footprint_line_is_the_one_this_tree_produces` fits it from
-measurements and fails if this file disagrees. It exists because the figure went
-stale twice without anything noticing: a document nothing derives from the tree
-is a document that will be wrong.
+Those two numbers are a line, fitted from measurements at three object counts by
+`the_published_metadata_footprint_line_is_the_one_this_tree_produces`, which fails
+if this file disagrees with the tree.
 
 A store that stripes moves the data term itself, to **1.5x** at three replicas and
 one unit of redundancy -- which is the least any layout can hold and still survive a
@@ -141,10 +128,11 @@ store nothing has read back yet. What separates the total from the 1.5x data ter
 metadata line above, which striping does not change: the same 434 bytes an object either
 way. Striping moves the payload and nothing else.
 
-A smaller point than the table's rows above, and deliberately: measuring both shapes at
-8,000 objects takes longer than the whole test suite, and a figure checked only by a test
-nobody runs is how the metadata line went stale twice. Both numbers here are for the same
-size, so the comparison is between two stores rather than across two measurements.
+Both numbers are for the same object count, so the comparison is between two
+stores rather than across two measurements. It is a smaller point than the rows
+above because measuring both shapes at 8,000 objects takes longer than the whole
+suite, and a figure only a test nobody runs would check is a figure that goes
+stale.
 
 ```
 cargo test --lib a_store_holds_one_and_a_half_copies_of_its_payload_when_it_stripes -- --nocapture
@@ -152,13 +140,12 @@ cargo test --lib the_published_striped_amplification_is_the_one_this_tree_produc
 ```
 
 ```
-MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib   measure_the_metadata_footprint -- --ignored --nocapture
+MEASURE_OBJECTS=8000 MEASURE_SIZE=1024 cargo test --release --lib measure_the_metadata_footprint -- --ignored --nocapture
 ```
 
 [docs/footprint.md](docs/footprint.md) has the per-leg working: which total to
 divide by, why lowering `replica_count` does not reach 1.0x, what is bounded by
 a setting rather than by your data, and what the change feeds cost.
-
 
 ### What a mutation holds while it runs
 
@@ -180,11 +167,9 @@ at 1 KiB objects:
 | 2,000 | **1,225 B** |
 
 Flat, because a put, a delete, an append and a copy each write one object key,
-one metadata record and one change record, and the undo carries exactly that.
-Three terms used to make it grow instead: the payload index at 40 bytes per
-stored object, every container in the store for an append or a copy, and — the
-largest — every byte of every multipart upload in flight, which made an
-unrelated put's undo 8,391,068 bytes while an 8 MiB upload was open.
+one metadata record and one change record, and the undo carries exactly that --
+not the payload index, not the store's containers, and not the bytes of a
+multipart upload in flight.
 
 **The page service's mutation batch** holds a second copy, boxed, so the undo
 above can leave the page service alone. It separates what it copies from what it
@@ -201,9 +186,9 @@ copied and so are the receipt maps. The copy is 823 bytes of page service state,
 for each chunk — so what moves it is the chunk count, which the object SIZE
 drives rather than the object count.
 
-The receipt maps used to be the term that grew. They were copied outright, so an
-open batch held the whole of what the receipts table above reaches at its bound;
-sharing them until the batch writes one took that to the 168 bytes counted here.
+The receipt maps are shared until the batch writes one, which is what keeps them
+at the 168 bytes counted above rather than the whole of what the receipt table
+reaches at its bound.
 `the_published_mutation_copy_figures_are_the_ones_this_tree_produces` reads this
 table and fails if either figure stops being what the tree produces.
 
@@ -239,11 +224,10 @@ So a deployment sizing from the figures above should add the undo and the batch
 copy to the resting total, and a workload that deletes should expect the receipt
 retention to dominate both.
 
-
 ## Reaching the store over a network
 
-Every way into the store used to be an in-process call, so a store was only ever as shared as the
-process holding it. An S3-compatible HTTP front door and a binary that serves it are built in by default.
+An S3-compatible HTTP front door and a binary that serves it are built in, so a
+store can be reached from another machine rather than only in process.
 
 ```
 MATRIXOBJECT_SNAPSHOT_PATH=/var/lib/matrixobject/store.snapshot \
@@ -328,59 +312,36 @@ can reach it faster.
 
 ### What it is not
 
-**Unsigned.** There is no SigV4 and no credential check. An `Authorization` header is accepted and
-ignored rather than refused, so a signing client works against this surface -- it is simply not
-verified, which is the same statement as the unauthenticated note above and the reason the default
-bind is loopback.
+An `Authorization` header is accepted and ignored rather than refused, so a signing
+client works against this surface -- it is simply not verified. There is no SigV4.
 
 Not implemented, and answered with `NotImplemented` or `MethodNotAllowed` rather than with an empty
 success: object ACLs, bucket policies, lifecycle verbs, object lock.
 
-**One place the store's model is narrower than S3's, again:** CORS. S3's `CORSConfiguration` holds a
-list of rules, each pairing its own origins with its own methods and headers; this store keeps one
-flat policy per bucket. A configuration carrying a second rule is **refused**, not flattened --
-flattening would union the rules, so an origin that one rule allowed only `GET` would come back
-allowed whatever another rule permitted. That is granting access the request never asked for, so the
-refusal says exactly that. One rule round-trips exactly, and carrying a list needs a store change.
+Five places the model is narrower than S3's, each answered as itself rather than
+approximated:
 
-**One thing S3 checks that this does not:** the 5 MiB minimum for a non-final part. This store
-accepts any part size, and enforcing a minimum it does not have would refuse uploads it can serve
-perfectly well. The check would only ever fire on a client this store could have satisfied.
+| | this store | why |
+|---|---|---|
+| **CORS** | one flat policy per bucket; a second rule is **refused**, not flattened | flattening would union the rules, so an origin one rule allowed only `GET` would come back allowed whatever another permitted -- access the request never asked for. One rule round-trips exactly |
+| **The 5 MiB minimum** for a non-final part | any part size is accepted | the check would only ever refuse an upload this store can serve |
+| **Versioning** (`Enabled`, `Suspended`, never configured) | one flag, so `GetBucketVersioning` omits `<Status>` for `false` | that is what S3 sends for a never-configured bucket, and a client acts on it identically. Telling suspended from never-configured needs the third state |
+| **Version ids** (opaque strings in S3) | a number, reported as `x-amz-version-id`; `versionId=null` is **refused** | a client must treat an id as opaque, so it cannot tell. Every object here carries a version from the start, so S3's pre-versioning `null` names no version -- serving the current object would hand back a different one |
+| **`GetBucketLocation`** | an empty `<LocationConstraint/>` | S3's own value for its default region, and the only answer true of a store with no region. Answered at all because SDKs call it before their first request |
 
-**One place the store's model is narrower than S3's:** versioning. S3 has three states -- `Enabled`,
-`Suspended`, and never configured -- and this store keeps one flag, so `false` cannot say which of
-the other two it is. `GetBucketVersioning` therefore omits `<Status>` for `false`, which is what S3
-sends for a bucket that was never configured and is the answer a client acts on identically either
-way. A client that specifically wants to know whether versioning was once on and then suspended
-cannot learn it here, and closing that needs the store to carry the third state.
+`GET /healthz` is deliberately not S3: it answers plain text, because a container
+probe and an operator read it and an `<Error>` document would help neither.
 
-**The version id is a number here and an opaque string in S3.** A client is required to treat it as
-opaque -- it reads the id out of a response and sends it back untouched -- and one that does cannot
-tell the difference. A write reports it as `x-amz-version-id`, which is how a client learns the id
-it can come back to. `versionId=null`, S3's id for an object written before versioning was turned
-on, is **refused**: every object here carries a version from the start, so there is no such version,
-and serving the current object instead would hand a client a different version from the one it
-named.
+Anything a caller might reasonably expect and not get answers a status rather than
+a plausible-looking wrong answer: `chunked` framing is refused with 501 rather than
+read as a body of the wrong length, a `PUT` with no `Content-Length` is refused with
+411 rather than stored as empty, and a multi-range request falls back to the whole
+object rather than returning one range under a 206 claiming to be all of it.
 
-**`GetBucketLocation` answers an empty `<LocationConstraint/>`**, which is S3's own value for its
-default region and is the only answer that is true of a store with no notion of a region. Naming one
-would send a client that honours it to an endpoint that does not exist. It is answered at all
-because SDKs call it before their first request and read a failure as the bucket being unreachable. `GET /healthz` is the one route that is deliberately not S3 -- it answers plain text, because
-a container probe and an operator read it and an `<Error>` document would help neither.
-
-Anything a caller might reasonably
-expect and not get answers a status rather than a plausible-looking wrong answer: `chunked` framing
-is refused with 501 rather than read as a body of the wrong length, a `PUT` with no
-`Content-Length` is refused with 411 rather than stored as empty, and a multi-range request falls
-back to the whole object rather than returning one range under a 206 that claims to be all of it.
-
-There is also no deduplicating write. An earlier sketch of this surface answered a write whose
-bytes were already stored with `208 Already Reported`; that is not implementable here, because an
-object's `etag` is derived from its identity -- bucket, key, version, length, content type -- and
-not from a hash of its content. Comparing etags cannot tell the same bytes from the same shape, and
-the honest alternative would read the stored object back on every write. What the surface does
-support is the store's real conditional writes, applied inside the mutation the store guards rather
-than checked out here and then written.
+There is no deduplicating write: an object's `etag` is derived from its identity --
+bucket, key, version, length, content type -- not from a hash of its content, so
+comparing etags cannot tell the same bytes from the same shape. The store's real
+conditional writes are applied inside the mutation it guards.
 
 ### Embedding it
 
@@ -430,10 +391,7 @@ Nothing external is required to build or run the tests.
 Every default above is `StoreOptions::default()`, and
 `every_option_in_the_table_is_a_field_with_that_default` reads this table and
 fails if a row names a field that does not exist or states a default the tree
-does not have. Four of the six rows this replaces were wrong: `slab_size` and
-`reuse_stale_slab_space` were not fields at all, `chunk_size` was given as 1 MiB
-when it is 64, and `page_size` — the option the next section calls the one worth
-setting deliberately — was missing.
+does not have.
 
 ### Picking the two that matter
 
@@ -468,16 +426,22 @@ Two invariants worth knowing before you start:
 
 ## Continuous integration
 
-`cargo build`, the library suite, and the measurement suite, on every push.
-`tools/known_failures.txt` lists the tests known to fail, and a change is
-gated by the failures matching that list name for name rather than by a count.
+On pushes to `main` and on every pull request, two jobs:
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run the same gates locally.
+- **build & docs** -- `cargo build --all-targets` and `cargo doc`, each for the
+  default features and for `--all-features`, with warnings denied.
+- **format and rollback guards** -- each guard run on its own with `--exact`, and
+  its output checked for `test result: ok. 1 passed`, because `cargo test` exits 0
+  when a filter matches nothing.
+
+CI does not run the whole library suite. `tools/suite_gate.sh` does, locally: it
+compares the failures by name against the 21 recorded in
+`tools/known_failures.txt`, and fails in **both** directions -- a failure that is
+new, and a recorded one that has started passing and should come off the list.
 
 ## Licence
 
-Apache License 2.0 -- see [LICENSE](LICENSE) and [NOTICE](NOTICE). The repository is public,
-forkable, and open to issues and pull requests from anyone.
+Apache License 2.0 -- see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 Every Rust source opens with the two lines that say so:
 
@@ -486,8 +450,6 @@ Every Rust source opens with the two lines that say so:
 // Copyright 2026 MatrixArkAI
 ```
 
-`every_rust_source_carries_the_licence_header` checks that by walking the tree rather than
-sampling it, and refuses to pass if the walk finds fewer than a thousand sources -- a walk
-that reached nothing would otherwise report every header present. It also checks that the
-`LICENSE` is the Apache licence and that the `NOTICE` names MatrixArkAI, so the header
-cannot go on claiming a licence the repository has stopped shipping.
+`every_rust_source_carries_the_licence_header` walks the tree and fails if a source
+is missing either line, if the walk finds fewer than a thousand sources, or if the
+`LICENSE` and `NOTICE` stop saying what the header claims.
