@@ -424,8 +424,21 @@ the measurements behind them.
 
 ## Contributing
 
-Anyone can contribute: fork, commit, open a pull request. Issues are open.
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+Anyone can contribute: fork, commit, open a pull request. Issues are open, and
+`main` carries no branch protection, so an outside pull request can land without a
+review you cannot obtain. [CODEOWNERS](.github/CODEOWNERS) requests a reviewer; it
+gates nothing.
+
+[CONTRIBUTING.md](CONTRIBUTING.md) is the guide -- what CI runs and what it does not,
+the 21 recorded test failures and how to tell yours from them, and the shape a change
+is expected to take. [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) applies. There is a
+pull-request template and two issue templates; a security or durability report goes
+privately through [SECURITY.md](SECURITY.md) instead of an issue.
+
+`the_repository_carries_what_an_outside_contributor_needs` checks those files are
+here, that the contributing guide is this project's, and that every path it sends a
+reader to exists -- the guide was a sibling library's for a while, and a check on mere
+existence scored it present.
 
 Two invariants worth knowing before you start:
 

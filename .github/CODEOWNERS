@@ -1,0 +1,8 @@
+# Review ownership for MatrixObject.
+#
+# This file ADDS a review request; it does not gate anything. `main` carries no branch
+# protection, on purpose -- a required review an outside contributor cannot obtain would
+# make their pull request undeliverable, and this repository is Apache-2.0 for anyone in
+# the world to change. So a pull request here gets a reviewer automatically and can still
+# land without one.
+*       @superhaiou

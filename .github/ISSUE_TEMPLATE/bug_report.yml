@@ -1,0 +1,52 @@
+name: Bug report
+description: Something the store does that it should not, or does not do that it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        If this concerns durability, a read that does not reconstruct, or a receipt that
+        attests to a write that did not happen, please report it privately instead --
+        see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: >-
+        A command runnable from the repository root is worth more than a description. If
+        it is a failing test, give the exact filter and the output -- and note that
+        `cargo test <filter>` exits 0 when the filter matches nothing, so include the
+        `test result:` line.
+      placeholder: |
+        cargo test --lib tests::the_name -- --exact
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: The commit you are on (`git rev-parse --short HEAD`).
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Toolchain and platform
+      description: Output of `cargo --version --verbose`, and the operating system.
+  - type: checkboxes
+    id: baseline
+    attributes:
+      label: Known failures
+      description: >-
+        21 tests have failed since this repository's first commit and are listed in
+        `tools/known_failures.txt`. `tools/suite_gate.sh` tells a pre-existing failure
+        from a new one.
+      options:
+        - label: I checked this is not one of the recorded failures
