@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 // Replicating a chunk write through a MatrixRaft log, instead of from the coordinator.
 //
 // # THE WRITE TOPOLOGY THIS IS AN ALTERNATIVE TO

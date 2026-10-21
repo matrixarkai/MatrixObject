@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("page_controls/quorum_config.rs");
 include!("page_controls/write_admission.rs");
 include!("page_controls/read_admission.rs");

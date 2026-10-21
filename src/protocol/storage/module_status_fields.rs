@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl ObjectStoreModuleStatus {
     pub fn to_catalog_control_fields(&self) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();

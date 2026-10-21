@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     fn apply_object_lifecycle_command(&mut self, command: ObjectCommand) -> Result<ObjectMetadata, ObjectError> {
         match command {

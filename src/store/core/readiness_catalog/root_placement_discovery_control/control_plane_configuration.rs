@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn configured_control_plane_mode(&self) -> ControlPlaneMode {
         self.options.control_plane_mode.clone()

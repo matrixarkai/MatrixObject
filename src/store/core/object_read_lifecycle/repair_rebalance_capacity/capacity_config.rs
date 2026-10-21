@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     fn plan_object_repair_work(
         &self,

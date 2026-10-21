@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl ChunkServiceSnapshot {
     pub fn from_bytes(data: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = SnapshotByteCursor::new(data);

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixReplicaService {
     pub fn install_chunk_state(
         &mut self,

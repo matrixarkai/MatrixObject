@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl ReplicaServiceSnapshot {
     fn legacy_checksum_material_hash(&self) -> String {
         let mut material = Vec::with_capacity(self.legacy_checksum_material_size_hint());

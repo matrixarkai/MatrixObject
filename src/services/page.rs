@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 use super::*;
 include!("page/protocol_receipts.inc.rs");
 include!("page/service_state.inc.rs");

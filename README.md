@@ -476,4 +476,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run the same gates locally.
 
 ## Licence
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Apache License 2.0 -- see [LICENSE](LICENSE) and [NOTICE](NOTICE). The repository is public,
+forkable, and open to issues and pull requests from anyone.
+
+Every Rust source opens with the two lines that say so:
+
+```text
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+```
+
+`every_rust_source_carries_the_licence_header` checks that by walking the tree rather than
+sampling it, and refuses to pass if the walk finds fewer than a thousand sources -- a walk
+that reached nothing would otherwise report every header present. It also checks that the
+`LICENSE` is the Apache licence and that the `NOTICE` names MatrixArkAI, so the header
+cannot go on claiming a licence the repository has stopped shipping.

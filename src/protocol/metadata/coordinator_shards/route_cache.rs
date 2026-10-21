@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataRouteCacheEntry {
     /// Shared, because every key resolving to one shard resolves to the same

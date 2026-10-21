@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn metadata_lease_request_checksum(
     operation: &str,
     namespace: &str,

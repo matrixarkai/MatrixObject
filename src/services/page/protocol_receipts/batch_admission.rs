@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ChunkBatchStats {
     pub input_ranges: u64,

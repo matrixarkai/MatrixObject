@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     /// Fallible because the payload bytes are no longer held here: they are read
     /// back from the page service, which can fail on a damaged chunk. The

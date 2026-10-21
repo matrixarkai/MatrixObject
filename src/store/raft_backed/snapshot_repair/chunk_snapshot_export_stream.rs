@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn export_chunk_replica_snapshot_chunk_stream_with_read_proof_linearizable_fenced<F>(
         &self,

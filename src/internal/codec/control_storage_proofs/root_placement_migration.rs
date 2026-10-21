@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 fn encoded_object_id_len(object_id: &ObjectId) -> usize {
     encoded_string_len(&object_id.bucket).saturating_add(encoded_string_len(&object_id.key))
 }

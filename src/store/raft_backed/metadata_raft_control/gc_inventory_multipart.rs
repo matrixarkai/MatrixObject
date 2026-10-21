@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("gc_inventory_multipart/gc_reports.rs");
 include!("gc_inventory_multipart/object_governance_reads.rs");
 include!("gc_inventory_multipart/tag_listing_reads.rs");

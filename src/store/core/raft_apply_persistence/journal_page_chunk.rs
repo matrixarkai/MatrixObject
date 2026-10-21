@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     fn encoded_chunk_id_len() -> usize {
         std::mem::size_of::<u64>() * 2

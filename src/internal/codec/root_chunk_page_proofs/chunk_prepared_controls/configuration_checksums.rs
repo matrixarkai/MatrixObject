@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn prepared_chunk_mutation_qos_config_checksum(
     prepared: &PreparedChunkMutationQosConfig,
 ) -> String {

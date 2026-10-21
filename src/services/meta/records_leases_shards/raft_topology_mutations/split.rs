@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
     pub fn prepare_shard_split_raft_entry(
         &self,

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 // What a page service holds besides its replicas' pages: its own cached
 // snapshot and one being received, and the sum of what its replicas hold.
 //

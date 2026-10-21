@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_batch_copy_objects_with_root_placement(
         &mut self,

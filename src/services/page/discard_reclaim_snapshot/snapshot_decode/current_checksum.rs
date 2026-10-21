@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl ChunkServiceSnapshot {
     /// Computes the checksum an unsealed snapshot is missing, so `validate`
     /// accepts it. Paired with the `export_snapshot_unsealed` constructors,

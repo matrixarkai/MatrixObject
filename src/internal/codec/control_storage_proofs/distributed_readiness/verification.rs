@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub fn verify_objectstore_distributed_readiness_checksum(
     readiness: &ObjectStoreDistributedReadiness,
     expected_control_checksum: Option<&str>,

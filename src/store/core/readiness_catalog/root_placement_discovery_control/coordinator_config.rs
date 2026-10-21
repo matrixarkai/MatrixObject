@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn root_coordinator_config(&self) -> MetadataCoordinatorConfig {
         self.meta_service.placement_coordinator_config()

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     fn proven_cache_control_stats(
         &self,

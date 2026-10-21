@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 /// Whether a read's bytes are worth keeping in the read cache.
 ///
 /// # WHY A READ HAS TO SAY WHICH IT IS

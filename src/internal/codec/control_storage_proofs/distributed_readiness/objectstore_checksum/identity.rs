@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 fn append_readiness_identity(mut material: &mut Vec<u8>, report: &ObjectStoreDistributedReadiness) {
     append_string(&mut material, "MOSRSOBJECTREADY77");
     append_u64(&mut material, report.ready as u64);

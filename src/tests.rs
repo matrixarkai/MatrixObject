@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 use super::*;
 
 fn test_options() -> StoreOptions {
@@ -43894,4 +43895,109 @@ fn every_guard_the_workflow_pins_by_name_exists() {
             "a pinned guard must name exactly one test, and {name} names {matches}"
         );
     }
+}
+
+#[test]
+fn every_rust_source_carries_the_licence_header() {
+    // Two lines, at the top of every Rust source, the way the sibling store carries them:
+    //
+    //     // SPDX-License-Identifier: Apache-2.0
+    //     // Copyright 2026 MatrixArkAI
+    //
+    // The SPDX line was already on all 1,303 sources. The copyright line was on 11 of them,
+    // which is the state this guard exists to stop coming back: a licence header that is
+    // true of most of a repository is not a licence header, and nothing fails when a new
+    // file arrives without one.
+    //
+    // READ OFF DISK rather than through `include_str!`, because the claim is about EVERY
+    // source and a macro cannot glob. The walk starts at `CARGO_MANIFEST_DIR`, which is
+    // absolute and fixed at compile time, so the test does not depend on a working
+    // directory.
+    const SPDX: &str = "// SPDX-License-Identifier: Apache-2.0";
+    const COPYRIGHT: &str = "// Copyright 2026 MatrixArkAI";
+
+    fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let entries = std::fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("the source tree should be readable: {error}"));
+        for entry in entries {
+            let path = entry.expect("a directory entry should be readable").path();
+            if path.is_dir() {
+                collect(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sources = Vec::new();
+    collect(&root, &mut sources);
+    sources.sort();
+
+    // A WALK THAT FINDS NOTHING PASSES EVERYTHING BELOW IT, which is how a licence gate goes
+    // quietly blind: the headers do not have to disappear, the walk only has to stop reaching
+    // them -- a directory moved, a path that no longer resolves. 1,303 sources were here when
+    // this floor was written, so it has room for ordinary churn and only fires when the walk
+    // itself has stopped working.
+    assert!(
+        sources.len() >= 1_000,
+        "only {} Rust sources were found under {}, so a clean result below would mean \
+         nothing",
+        sources.len(),
+        root.display()
+    );
+
+    let mut missing_spdx: Vec<String> = Vec::new();
+    let mut missing_copyright: Vec<String> = Vec::new();
+    for path in &sources {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("{} should be readable: {error}", path.display()));
+        // Trimmed of a carriage return, because the repository has CRLF files -- its own
+        // LICENSE is one -- and a header is no less present for the ending it uses.
+        let mut lines = text.lines().map(|line| line.trim_end_matches('\r'));
+        let shown = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        if lines.next() != Some(SPDX) {
+            missing_spdx.push(shown.clone());
+        }
+        if lines.next() != Some(COPYRIGHT) {
+            missing_copyright.push(shown);
+        }
+    }
+
+    println!(
+        "LICENCEHEADER sources={} missing_spdx={} missing_copyright={}",
+        sources.len(),
+        missing_spdx.len(),
+        missing_copyright.len()
+    );
+    assert!(
+        missing_spdx.is_empty(),
+        "these sources do not open with {SPDX:?}: {missing_spdx:?}"
+    );
+    assert!(
+        missing_copyright.is_empty(),
+        "these sources do not carry {COPYRIGHT:?} on their second line: {missing_copyright:?}"
+    );
+
+    // NOT VACUOUS, and this is the part that keeps the two assertions above honest: the
+    // strings being searched for have to be the ones the repository's own licensing says.
+    // A guard asserting a header nobody declares would pass a tree that had quietly switched
+    // licence.
+    let at_root = |name: &str| -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("the repository should ship a {name}: {error}"))
+    };
+    assert!(
+        at_root("LICENSE").contains("Apache License"),
+        "the SPDX line says Apache-2.0, so the LICENSE must be the Apache licence"
+    );
+    assert!(
+        at_root("NOTICE").contains("MatrixArkAI"),
+        "the copyright line names MatrixArkAI, so the NOTICE must too"
+    );
 }

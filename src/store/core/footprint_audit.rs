@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 /// Heap bytes a `String` owns -- its capacity, not its length, because the
 /// slack is resident too and making slack visible is what this audit is for.
 /// The 24 bytes of pointer, length and capacity live inside whatever holds the

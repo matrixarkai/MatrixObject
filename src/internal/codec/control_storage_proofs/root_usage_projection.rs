@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn root_node_usage(
     node: &RootNode,
     min_free_bytes: u64,

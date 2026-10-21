@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl ReplicaServiceSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
         validate_storage_receipt_retention(self.receipt_retention)?;

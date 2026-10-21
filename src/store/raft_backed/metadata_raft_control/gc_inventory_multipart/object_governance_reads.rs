@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn get_object_tags_from_meta_shard(
         &self,

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("mutations_inventory/delete.rs");
 include!("mutations_inventory/inventory.rs");
 include!("mutations_inventory/put.rs");

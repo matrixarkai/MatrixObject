@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl ObjectStoreDistributedReadiness {
     pub fn storage_fault_count(&self) -> u64 {
         self.batch_write_failures

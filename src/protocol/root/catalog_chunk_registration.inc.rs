@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn validate_root_catalog_route(
     service_kind: &str,
     catalog_source: &str,

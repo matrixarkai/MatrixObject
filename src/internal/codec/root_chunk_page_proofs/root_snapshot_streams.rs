@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_root_snapshot_proof_material(
     material: &mut Vec<u8>,
     offset: u64,

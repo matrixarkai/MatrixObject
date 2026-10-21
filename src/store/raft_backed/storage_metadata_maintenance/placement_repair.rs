@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("placement_repair/root_decommission.rs");
 include!("placement_repair/root_read_fences.rs");
 include!("placement_repair/root_inventory_queries.rs");

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn metadata_shard_contains_key(shard: &MetadataShard, key: &str) -> bool {
     shard.start_key.as_str() <= key && (shard.end_key.is_empty() || key < shard.end_key.as_str())
 }

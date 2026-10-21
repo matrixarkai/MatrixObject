@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 // Driving the chunk replicas from MatrixRaft's own applier.
 //
 // # WHAT THIS ADDS OVER THE STATE MACHINE ALONE

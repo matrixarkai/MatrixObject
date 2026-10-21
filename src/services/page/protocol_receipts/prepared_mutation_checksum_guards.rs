@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 macro_rules! impl_prepared_page_raft_entry_checksum_guard {
     ($ty:ty, $label:literal, $require_method:ident) => {
         impl $ty {

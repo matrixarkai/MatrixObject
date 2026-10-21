@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 fn append_health_fingerprints(mut material: &mut Vec<u8>, status: &ObjectStoreModuleStatus) {
     append_u64(&mut material, status.repair_degraded_objects);
     append_u64(&mut material, status.repair_bytes_to_repair);

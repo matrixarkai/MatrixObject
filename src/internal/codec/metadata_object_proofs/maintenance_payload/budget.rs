@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn apply_metadata_maintenance_payload_budget(
     prepared: &mut PreparedMetadataMaintenance,
 ) -> Result<(), ObjectError> {

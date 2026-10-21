@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     fn apply_transaction_metadata_command(&mut self, command: ObjectCommand) -> Result<ObjectMetadata, ObjectError> {
         match command {

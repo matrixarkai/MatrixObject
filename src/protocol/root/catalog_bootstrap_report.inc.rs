@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl RootCatalogBootstrapReport {
     pub fn report_checksum_format(&self) -> &'static str {
         ROOT_CATALOG_BOOTSTRAP_REPORT_FORMAT

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
     pub fn scrub_chunk_replicas(&mut self, repair: bool) -> Result<ReplicaScrubReport, ObjectError> {
         let mut page_ids = BTreeSet::new();

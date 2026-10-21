@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn scrub_page_replicas(&mut self, repair: bool) -> Result<ReplicaScrubReport, ObjectError> {
         self.chunk_service.scrub_chunk_replicas(repair)

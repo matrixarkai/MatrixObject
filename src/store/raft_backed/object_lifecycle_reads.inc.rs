@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("object_lifecycle_reads/retention_transition_restore.rs");
 include!("object_lifecycle_reads/multipart_mutations.rs");
 include!("object_lifecycle_reads/metadata_shard_topology.rs");

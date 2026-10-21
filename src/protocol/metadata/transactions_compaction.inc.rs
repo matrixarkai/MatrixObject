@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("transactions_compaction/transaction_state.rs");
 include!("transactions_compaction/transaction_receipts.rs");
 include!("transactions_compaction/transaction_summary_pages.rs");

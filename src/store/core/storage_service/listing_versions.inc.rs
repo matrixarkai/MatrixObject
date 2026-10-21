@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     /// Every version of every object under `prefix` in one bucket, newest first within each key.
     ///

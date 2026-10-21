@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
     pub fn route_control_proof(&self) -> ChunkRouteControlProof {
         let route_qos_state = self.route_qos_state();

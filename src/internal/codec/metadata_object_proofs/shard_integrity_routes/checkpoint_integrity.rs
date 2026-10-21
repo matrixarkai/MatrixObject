@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn metadata_change_payload_bytes(change: &MetadataChange) -> u64 {
     change.key.len().saturating_add(40) as u64
 }

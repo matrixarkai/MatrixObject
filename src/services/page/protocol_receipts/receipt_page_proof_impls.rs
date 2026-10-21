@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 macro_rules! impl_page_receipt_page_proof_guard {
     ($ty:ty, $verify_method:ident, $require_method:ident) => {
         impl ProvenReceiptRead<$ty> {

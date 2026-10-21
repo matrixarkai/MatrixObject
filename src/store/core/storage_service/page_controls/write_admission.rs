@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn page_write_quorum(&self) -> usize {
         self.chunk_service.write_quorum()

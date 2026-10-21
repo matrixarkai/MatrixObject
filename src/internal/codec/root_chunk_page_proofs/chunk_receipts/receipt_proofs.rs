@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn chunk_id_encoded_len() -> usize {
     std::mem::size_of::<u64>() * 3
 }

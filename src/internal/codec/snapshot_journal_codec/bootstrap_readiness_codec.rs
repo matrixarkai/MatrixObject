@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_metadata_bootstrap_readiness(
     out: &mut Vec<u8>,
     readiness: &MetadataRaftReadiness,

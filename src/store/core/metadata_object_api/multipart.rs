@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 // Multipart APIs are grouped by lifecycle operation and listing contract.
 include!("multipart_create.rs");
 include!("multipart_upload_part.rs");

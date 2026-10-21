@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub fn verify_objectstore_module_status_checksum(
     status: &ObjectStoreModuleStatus,
     expected_control_checksum: Option<&str>,

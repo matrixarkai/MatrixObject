@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_page_receipt_page_common(
     material: &mut Vec<u8>,
     receipt_count: u64,

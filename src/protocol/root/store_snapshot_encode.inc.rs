@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl StoreSnapshot {
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         self.validate()?;

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_page_service_fingerprint(
     out: &mut Vec<u8>,
     chunk_service: &MatrixChunkService,

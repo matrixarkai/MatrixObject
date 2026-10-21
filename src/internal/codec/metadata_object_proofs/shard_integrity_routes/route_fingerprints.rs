@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn metadata_route_cache_expire_time_ms(
     route: &MetadataShardRoute,
     now_ms: u64,

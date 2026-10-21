@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
     pub fn configure_shard(&mut self, shard: MetadataShard) -> Result<(), ObjectError> {
         validate_meta_key(&shard.shard_id)?;

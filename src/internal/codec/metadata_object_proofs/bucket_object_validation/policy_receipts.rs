@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn bucket_membership_metadata(
     bucket: &str,
     content_type: &str,

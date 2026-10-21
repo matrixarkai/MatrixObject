@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 /// Reed-Solomon coding over GF(2^8), for `k` data fragments and `m` redundancy
 /// fragments of which any `k` of the `k + m` reconstruct the payload.
 ///

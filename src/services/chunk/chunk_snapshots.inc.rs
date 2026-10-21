@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixReplicaService {
     pub(crate) fn snapshot_cache_stamp_material(&self) -> String {
         use std::fmt::Write as _;

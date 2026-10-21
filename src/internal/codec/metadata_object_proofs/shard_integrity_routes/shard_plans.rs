@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_metadata_shard_image(out: &mut Vec<u8>, shard: &MetadataShard) {
     append_string(out, &shard.shard_id);
     append_string(out, &shard.start_key);

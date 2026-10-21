@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 /// The user metadata or tags an object carries, held behind a pointer so an
 /// object that carries none pays eight bytes rather than twenty-four.
 ///

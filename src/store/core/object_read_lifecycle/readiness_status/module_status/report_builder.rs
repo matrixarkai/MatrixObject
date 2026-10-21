@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 fn build_objectstore_module_status(
     readiness: ObjectStoreDistributedReadiness,
     health: ModuleHealthLabels,

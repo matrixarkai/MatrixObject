@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 fn append_root_metadata_topology(mut material: &mut Vec<u8>, report: &ObjectStoreDistributedReadiness) {
     append_u64(&mut material, report.root_active_metaserver_count);
     append_u64(&mut material, report.root_metadata_value_bytes);

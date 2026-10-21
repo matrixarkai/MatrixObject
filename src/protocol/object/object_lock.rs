@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 /// What an object under restore, legal hold or retention carries.
 ///
 /// Three timestamps and a flag, which are zero and false for every object that

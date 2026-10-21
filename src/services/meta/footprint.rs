@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 // What the metadata service holds, in bytes.
 //
 // The footprint audit read one of this service's twenty-odd maps and reported

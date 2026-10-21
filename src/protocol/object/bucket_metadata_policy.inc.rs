@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BucketQuota {
     pub max_live_bytes: u64,

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("chunk_handoff_readiness/state_validation_ec.rs");
 // The fragment arithmetic for a cross-node scheme, not yet placed on replicas.
 //

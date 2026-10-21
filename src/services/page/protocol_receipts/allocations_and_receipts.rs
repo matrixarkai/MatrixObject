@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 // Page protocol types are grouped by mutation and receipt ownership.
 include!("page_range_types.rs");
 include!("allocation_receipt_types.rs");

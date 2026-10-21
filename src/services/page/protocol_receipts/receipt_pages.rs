@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("allocation_receipt_pages.rs");
 include!("write_receipt_pages.rs");
 include!("discard_receipt_pages.rs");

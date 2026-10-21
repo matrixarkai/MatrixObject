@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 struct DistributedRootReadinessSnapshot {
     root_node_count: u64,
     rootserver_required: bool,

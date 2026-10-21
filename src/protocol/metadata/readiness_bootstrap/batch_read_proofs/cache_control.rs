@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_cache_control_stats(material: &mut Vec<u8>, stats: &CacheControlStats) {
     append_u64(material, stats.requested_ranges);
     append_u64(material, stats.requested_bytes);

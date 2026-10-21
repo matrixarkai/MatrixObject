@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn non_empty_endpoint(endpoint: Option<&str>) -> Option<&str> {
     endpoint.and_then(|value| {
         let trimmed = value.trim();

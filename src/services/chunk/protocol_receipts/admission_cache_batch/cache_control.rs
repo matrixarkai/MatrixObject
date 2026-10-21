@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) type ReplicaReadCacheKey = (PageId, u64, u64);
 pub(crate) type ReplicaReadCacheRangeKey = (u64, u64);
 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
     pub fn list_chunk_write_receipts(
         &self,

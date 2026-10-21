@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 fn merge_discard_ranges_in_place(existing: &mut Vec<DataRange>, additions: &[DataRange]) {
     let mut needs_full_merge = false;
     for range in additions.iter().filter(|range| range.length > 0) {

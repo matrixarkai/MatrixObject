@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl RootCatalogObjectStoreRegistration {
     pub fn catalog_route_checksum(&self) -> String {
         root_catalog_route_checksum(
