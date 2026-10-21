@@ -276,10 +276,10 @@ fn persistent_snapshot_reopens_append_blob_offsets() {
     assert_eq!(object.data, b"abcdefg");
     assert_eq!(object.metadata.length, 7);
     assert_eq!(object.metadata.extents.len(), 2);
-    assert_eq!(object.metadata.extents[0].offset, 0);
-    assert_eq!(object.metadata.extents[0].length, 3);
-    assert_eq!(object.metadata.extents[1].offset, 3);
-    assert_eq!(object.metadata.extents[1].length, 4);
+    assert_eq!(object.metadata.extents[0].offset(), 0);
+    assert_eq!(object.metadata.extents[0].length(), 3);
+    assert_eq!(object.metadata.extents[1].offset(), 3);
+    assert_eq!(object.metadata.extents[1].length(), 4);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -317,10 +317,10 @@ fn persistent_journal_replays_append_blob_offsets() {
     assert_eq!(object.data, b"abcdefg");
     assert_eq!(object.metadata.length, 7);
     assert_eq!(object.metadata.extents.len(), 2);
-    assert_eq!(object.metadata.extents[0].offset, 0);
-    assert_eq!(object.metadata.extents[0].length, 3);
-    assert_eq!(object.metadata.extents[1].offset, 3);
-    assert_eq!(object.metadata.extents[1].length, 4);
+    assert_eq!(object.metadata.extents[0].offset(), 0);
+    assert_eq!(object.metadata.extents[0].length(), 3);
+    assert_eq!(object.metadata.extents[1].offset(), 3);
+    assert_eq!(object.metadata.extents[1].length(), 4);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1737,13 +1737,13 @@ fn batch_object_reads_can_heal_degraded_replicas() {
         .unwrap();
     let large_chunk = store
         .chunk_service
-        .map_range(&large.extents[0].chunk_id, large.extents[0].offset, 4)
+        .map_range(&large.extents[0].chunk_id, large.extents[0].offset(), 4)
         .unwrap()[0]
         .page_id
         .clone();
     let small_chunk = store
         .chunk_service
-        .map_range(&small.extents[0].chunk_id, small.extents[0].offset, 3)
+        .map_range(&small.extents[0].chunk_id, small.extents[0].offset(), 3)
         .unwrap()[0]
         .page_id
         .clone();
@@ -3442,8 +3442,8 @@ fn object_store_exposes_exact_page_chunk_repair() {
         .chunk_service
         .map_range(
             &first_extent.chunk_id,
-            first_extent.offset,
-            first_extent.length,
+            first_extent.offset(),
+            first_extent.length(),
         )
         .unwrap()[0]
         .page_id
@@ -6341,7 +6341,7 @@ fn page_and_object_cache_control_coalesce_ranges() {
         .chunk_service
         .map_range(
             &object_metadata.extents[0].chunk_id,
-            object_metadata.extents[0].offset,
+            object_metadata.extents[0].offset(),
             4,
         )
         .unwrap()[0]
@@ -6612,7 +6612,7 @@ fn page_and_object_reads_repair_missing_replicas() {
         .chunk_service
         .map_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap()[0]
@@ -6725,7 +6725,7 @@ fn page_and_object_repair_large_ranges_with_cursors() {
         .chunk_service
         .map_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             metadata.length,
         )
         .unwrap();
@@ -6773,7 +6773,7 @@ fn page_and_object_repair_large_ranges_with_cursors() {
     for extent in &multi_extent_metadata.extents {
         for loc in multi_extent_store
             .chunk_service
-            .map_range(&extent.chunk_id, extent.offset, extent.length)
+            .map_range(&extent.chunk_id, extent.offset(), extent.length())
             .unwrap()
         {
             multi_extent_chunk_ids.insert(loc.page_id);
@@ -6841,7 +6841,7 @@ fn object_store_plans_and_runs_bounded_replica_repairs() {
         .unwrap();
     let first_chunk = store
         .chunk_service
-        .map_range(&first.extents[0].chunk_id, first.extents[0].offset, 4)
+        .map_range(&first.extents[0].chunk_id, first.extents[0].offset(), 4)
         .unwrap()[0]
         .page_id
         .clone();
@@ -6851,7 +6851,7 @@ fn object_store_plans_and_runs_bounded_replica_repairs() {
         .unwrap();
     let second_chunk = store
         .chunk_service
-        .map_range(&second.extents[0].chunk_id, second.extents[0].offset, 4)
+        .map_range(&second.extents[0].chunk_id, second.extents[0].offset(), 4)
         .unwrap()[0]
         .page_id
         .clone();
@@ -6897,7 +6897,7 @@ fn object_store_plans_and_runs_bounded_replica_repairs() {
 
     let post = store
         .chunk_service
-        .read_chunk_range(&first.extents[0].chunk_id, first.extents[0].offset, 4)
+        .read_chunk_range(&first.extents[0].chunk_id, first.extents[0].offset(), 4)
         .unwrap();
     assert_eq!(post.1.quorum_read_degraded_chunks, 0);
 }
@@ -6933,7 +6933,7 @@ fn object_store_decommissions_draining_replicas_after_repair() {
         .chunk_service
         .map_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap()[0]
@@ -6965,7 +6965,7 @@ fn object_store_decommissions_draining_replicas_after_repair() {
         .chunk_service
         .read_chunk_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap();
@@ -22111,7 +22111,7 @@ fn raft_backed_store_replays_bounded_page_repair() {
     let pages = replicated
         .store()
         .chunk_service
-        .map_range(&chunk_id, written.extents[0].offset, written.length)
+        .map_range(&chunk_id, written.extents[0].offset(), written.length)
         .unwrap();
     for loc in &pages {
         replicated
@@ -22124,7 +22124,7 @@ fn raft_backed_store_replays_bounded_page_repair() {
     assert!(matches!(
         replicated.propose_repair_page_range_bounded_linearizable_fenced(
             chunk_id.clone(),
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
             1,
             0,
@@ -22135,7 +22135,7 @@ fn raft_backed_store_replays_bounded_page_repair() {
     let first = replicated
         .propose_repair_page_range_bounded_linearizable_fenced(
             chunk_id.clone(),
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
             1,
             0,
@@ -22148,7 +22148,7 @@ fn raft_backed_store_replays_bounded_page_repair() {
     let second = replicated
         .propose_repair_page_range_bounded(
             chunk_id.clone(),
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
             0,
             first.update_time_ms,
@@ -22197,8 +22197,8 @@ fn raft_backed_store_replays_exact_page_chunk_repair() {
         .chunk_service
         .map_range(
             &chunk_id,
-            written.extents[0].offset,
-            written.extents[0].length,
+            written.extents[0].offset(),
+            written.extents[0].length(),
         )
         .unwrap()[0]
         .page_id
@@ -22296,7 +22296,7 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
     let pages = replicated
         .store()
         .chunk_service
-        .map_range(&chunk_id, written.extents[0].offset, written.length)
+        .map_range(&chunk_id, written.extents[0].offset(), written.length)
         .unwrap();
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
@@ -22316,7 +22316,7 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
     let prepared = replicated
         .prepare_repair_page_range_raft_entry_with_read_proof_linearizable_fenced(
             chunk_id.clone(),
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
             1,
             0,
@@ -22334,7 +22334,7 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
     let envelope = replicated
         .prepare_repair_page_range_envelope_with_read_proof_linearizable_fenced(
             chunk_id.clone(),
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
             1,
             0,
@@ -22360,7 +22360,7 @@ fn raft_backed_store_replays_prepared_bounded_page_repair() {
     assert!(matches!(
         replicated.propose_repair_page_range_prepared_linearizable_fenced(
             chunk_id.clone(),
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
             1,
             0,
@@ -22470,8 +22470,8 @@ fn raft_backed_store_replays_prepared_exact_page_chunk_repair() {
         .chunk_service
         .map_range(
             &chunk_id,
-            written.extents[0].offset,
-            written.extents[0].length,
+            written.extents[0].offset(),
+            written.extents[0].length(),
         )
         .unwrap()[0]
         .page_id
@@ -22664,7 +22664,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     let pages = replicated
         .store()
         .chunk_service
-        .map_range(&chunk_id, written.extents[0].offset, written.length)
+        .map_range(&chunk_id, written.extents[0].offset(), written.length)
         .unwrap();
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
@@ -22691,7 +22691,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     assert!(matches!(
         replicated.prepare_chunk_state_handoffs_linearizable_fenced(
             &chunk_id,
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
             0,
             0,
@@ -22703,7 +22703,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     let proven_handoffs = replicated
         .prepare_chunk_state_handoffs_with_read_proof_linearizable_fenced(
             &chunk_id,
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
             0,
             0,
@@ -22727,7 +22727,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     let handoff_envelope = replicated
         .prepare_chunk_state_handoff_envelope_with_read_proof_linearizable_fenced(
             &chunk_id,
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
             0,
             0,
@@ -22760,7 +22760,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     let tighter_handoff_envelope = replicated
         .prepare_chunk_state_handoff_envelope_with_read_proof_linearizable_fenced(
             &chunk_id,
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
             0,
             handoff_envelope.envelope.payload_bytes,
@@ -22873,7 +22873,7 @@ fn raft_backed_store_replays_audit_driven_page_repair() {
     let pages = replicated
         .store()
         .chunk_service
-        .map_range(&chunk_id, written.extents[0].offset, written.length)
+        .map_range(&chunk_id, written.extents[0].offset(), written.length)
         .unwrap();
     for loc in pages.iter().take(2) {
         replicated
@@ -22932,7 +22932,7 @@ fn raft_backed_store_replays_prepared_page_audit_repair_with_compact_fences() {
         .chunk_service
         .map_range(
             &written.extents[0].chunk_id,
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
         )
         .unwrap()[0]
@@ -23915,7 +23915,7 @@ fn raft_backed_storage_maintenance_repairs_degraded_chunks() {
         .chunk_service
         .map_range(
             &written.extents[0].chunk_id,
-            written.extents[0].offset,
+            written.extents[0].offset(),
             written.length,
         )
         .unwrap()[0]
@@ -24256,7 +24256,7 @@ fn raft_backed_object_chunk_cache_control_is_linearizable() {
         .chunk_service
         .map_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap()[0]
@@ -28333,7 +28333,7 @@ fn raft_backed_store_decommissions_draining_objects_after_page_repair() {
         .chunk_service
         .map_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap()[0]
@@ -28380,7 +28380,7 @@ fn raft_backed_store_decommissions_draining_objects_after_page_repair() {
         .chunk_service
         .read_chunk_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap();
@@ -28397,7 +28397,7 @@ fn raft_backed_store_decommissions_draining_objects_after_page_repair() {
         .chunk_service
         .read_chunk_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap();
@@ -28445,7 +28445,7 @@ fn raft_backed_store_repairs_planned_object_replicas() {
         .chunk_service
         .map_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap()[0]
@@ -28505,7 +28505,7 @@ fn raft_backed_store_repairs_planned_object_replicas() {
         .chunk_service
         .read_chunk_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap();
@@ -28517,7 +28517,7 @@ fn raft_backed_store_repairs_planned_object_replicas() {
         .chunk_service
         .read_chunk_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap();
@@ -28798,7 +28798,7 @@ fn raft_backed_store_replays_object_range_read_repair() {
         .chunk_service
         .map_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap()[0]
@@ -28828,7 +28828,7 @@ fn raft_backed_store_replays_object_range_read_repair() {
         .chunk_service
         .read_chunk_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap();
@@ -28847,7 +28847,7 @@ fn raft_backed_store_replays_object_range_read_repair() {
         .chunk_service
         .read_chunk_range(
             &metadata.extents[0].chunk_id,
-            metadata.extents[0].offset,
+            metadata.extents[0].offset(),
             4,
         )
         .unwrap();
@@ -28897,7 +28897,7 @@ fn raft_backed_store_replays_batch_object_read_repair() {
     let degraded_chunk = replicated
         .store
         .chunk_service
-        .map_range(&first.extents[0].chunk_id, first.extents[0].offset, 4)
+        .map_range(&first.extents[0].chunk_id, first.extents[0].offset(), 4)
         .unwrap()[0]
         .page_id
         .clone();
@@ -28951,7 +28951,7 @@ fn raft_backed_store_replays_batch_object_read_repair() {
     let post = replicated
         .store()
         .chunk_service
-        .read_chunk_range(&first.extents[0].chunk_id, first.extents[0].offset, 4)
+        .read_chunk_range(&first.extents[0].chunk_id, first.extents[0].offset(), 4)
         .unwrap();
     assert_eq!(post.1.quorum_read_degraded_chunks, 0);
 
@@ -28973,7 +28973,7 @@ fn raft_backed_store_replays_batch_object_read_repair() {
     );
     let follower_post = follower
         .chunk_service
-        .read_chunk_range(&first.extents[0].chunk_id, first.extents[0].offset, 4)
+        .read_chunk_range(&first.extents[0].chunk_id, first.extents[0].offset(), 4)
         .unwrap();
     assert_eq!(follower_post.1.quorum_read_degraded_chunks, 0);
     assert_eq!(
@@ -43572,5 +43572,120 @@ fn the_identity_each_map_names_twice_is_one_allocation() {
     assert!(
         objects_key_chars > 0 && record_key_chars > 0,
         "a zero here would make the saving above unmeasurable"
+    );
+}
+
+#[test]
+fn an_extent_is_twenty_four_bytes_and_its_wire_is_still_thirty_two() {
+    // THE CLAIM THIS CHANGE RESTS ON: the in-memory extent narrowed and the durable one did
+    // not. If the wire had narrowed too, every snapshot written before this would be
+    // unreadable and this would be a migration rather than a representation change.
+    assert_eq!(
+        std::mem::size_of::<ObjectExtent>(),
+        24,
+        "a chunk identity and two 32-bit numbers"
+    );
+    assert_eq!(
+        std::mem::size_of::<ObjectExtent>(),
+        std::mem::size_of::<ChunkId>() + 8,
+        "and nothing but the identity and those eight bytes"
+    );
+
+    // A real extent, from a store, rather than one built here: the point is what the store's
+    // own encoder writes.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 1,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "k", vec![b'x'; 1024], "application/octet-stream")
+        .unwrap();
+    let metadata = store.head_object("bucket", "k").unwrap();
+    assert_eq!(metadata.extents.len(), 1, "a 1 KiB object is one extent");
+    // CLONED, not moved: an extent is plain data but not `Copy`, and the closure below
+    // is called three times.
+    let extent = metadata.extents[0].clone();
+
+    // MEASURED AS A DIFFERENCE between one extent and two, so every other byte of the
+    // record cancels and what is left is exactly one extent's wire size.
+    let encoded_len = |count: usize| -> usize {
+        let mut with = metadata.clone();
+        with.extents = vec![extent.clone(); count].into_boxed_slice();
+        let mut out = Vec::new();
+        append_object_metadata_identity(&mut out, &with);
+        out.len()
+    };
+    let one = encoded_len(1);
+    let two = encoded_len(2);
+    assert_eq!(
+        two - one,
+        32,
+        "an extent on the wire is a 16-byte chunk identity and two u64, and it stays that \
+         way: {one} bytes for one extent and {two} for two"
+    );
+    // Not vacuous: a record with no extents is shorter still, so the difference above is
+    // measuring extents and not a constant.
+    assert!(encoded_len(0) < one);
+}
+
+#[test]
+fn an_extent_past_four_gibibytes_is_refused_rather_than_truncated() {
+    // A truncated offset is an object pointing at the wrong bytes, which is the one failure
+    // a narrowing must not have. The constructor refuses instead.
+    let chunk_id = ChunkId {
+        volume_id: 1,
+        id: 1,
+    };
+    let over = u64::from(u32::MAX) + 1;
+    assert!(
+        ObjectExtent::new(chunk_id.clone(), over, 1).is_err(),
+        "an offset past 32 bits should be refused"
+    );
+    assert!(
+        ObjectExtent::new(chunk_id.clone(), 0, over).is_err(),
+        "a length past 32 bits should be refused"
+    );
+    // THE BOUNDARY IS INCLUSIVE, asserted so the refusal above cannot be a off-by-one that
+    // also rejects the largest legal extent.
+    assert!(
+        ObjectExtent::new(chunk_id.clone(), u64::from(u32::MAX), u64::from(u32::MAX)).is_ok(),
+        "the largest values that fit should be accepted"
+    );
+    let extent = ObjectExtent::new(chunk_id, 4_096, 1_024).unwrap();
+    assert_eq!(extent.offset(), 4_096);
+    assert_eq!(extent.length(), 1_024);
+    assert_eq!(extent.end(), 5_120, "and end() adds them in 64 bits");
+
+    // AND THE STORE REFUSES THE CONFIGURATION THAT COULD PRODUCE ONE, which is what makes
+    // the refusals above unreachable in a running store rather than merely unlikely. An
+    // extent's offset is a position inside a chunk and its length is bounded by
+    // `max_extent_bytes`, itself validated as 1..=chunk_size.
+    let too_big = MatrixObjectStore::new(StoreOptions {
+        chunk_size: u64::from(u32::MAX) + 1,
+        max_extent_bytes: 4 * 1024 * 1024,
+        volume_count: 1,
+        ..StoreOptions::default()
+    });
+    match too_big {
+        Err(ObjectError::InvalidArgument(message)) => assert!(
+            message.contains("4 GiB"),
+            "the refusal should say what the bound is, and it says {message:?}"
+        ),
+        other => panic!("a chunk_size past 32 bits should be refused, and it gave {other:?}"),
+    }
+    // The shipped default is far under it, so this ceiling is not one a deployment meets.
+    assert!(
+        StoreOptions::default().chunk_size < u64::from(u32::MAX),
+        "the default chunk should be well inside the bound"
+    );
+    assert!(
+        MatrixObjectStore::new(StoreOptions {
+            volume_count: 1,
+            ..StoreOptions::default()
+        })
+        .is_ok(),
+        "and a default store should still build"
     );
 }

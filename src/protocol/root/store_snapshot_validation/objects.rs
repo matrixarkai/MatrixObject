@@ -70,7 +70,7 @@ impl StoreSnapshot {
             let extent_bytes = metadata.extents.iter().try_fold(
                 0u64,
                 |acc, extent| -> Result<u64, ObjectError> {
-                    extent.offset.checked_add(extent.length).ok_or_else(|| {
+                    extent.offset().checked_add(extent.length()).ok_or_else(|| {
                         ObjectError::Corruption("snapshot extent address overflows".to_string())
                     })?;
                     let chunk = self.chunks.get(&extent.chunk_id).ok_or_else(|| {
@@ -78,25 +78,25 @@ impl StoreSnapshot {
                             "snapshot object references missing chunk".to_string(),
                         )
                     })?;
-                    if extent.offset + extent.length > chunk.next_offset {
+                    if extent.offset() + extent.length() > chunk.next_offset {
                         return Err(ObjectError::Corruption(
                             "snapshot object extent exceeds chunk length".to_string(),
                         ));
                     }
                     let payload = self
                         .payloads
-                        .get(&(extent.chunk_id.clone(), extent.offset))
+                        .get(&(extent.chunk_id.clone(), extent.offset()))
                         .ok_or_else(|| {
                             ObjectError::Corruption(
                                 "snapshot object extent payload missing".to_string(),
                             )
                         })?;
-                    if payload.len() as u64 != extent.length {
+                    if payload.len() as u64 != extent.length() {
                         return Err(ObjectError::Corruption(
                             "snapshot payload length does not match extent".to_string(),
                         ));
                     }
-                    acc.checked_add(extent.length).ok_or_else(|| {
+                    acc.checked_add(extent.length()).ok_or_else(|| {
                         ObjectError::Corruption("snapshot object length overflows".to_string())
                     })
                 },

@@ -82,7 +82,7 @@ in both directions: a renamed constant fails it, and so does a new one.
   of the payload. At three replicas and one unit of redundancy that measures
   **1.5x against replication's 3.0x**, read out of `footprint_audit()` for the
   same objects put through two stores, and counting the metadata too the whole
-  store measures 2.15x against 3.64x at a thousand objects of 1 KiB. It is a
+  store measures 2.14x against 3.63x at a thousand objects of 1 KiB. It is a
   durability trade
   -- one loss survived where three-way replication survives two -- and a striped
   write needs every replica to accept it, so `write_quorum` must equal
@@ -112,11 +112,11 @@ At three replicas with the metadata counted, measured at 26-character keys:
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
 | 4 KiB | 4,000 | **3.13x** | 3.00x |
-| 1 KiB | 8,000 | **3.50x** | 3.02x |
+| 1 KiB | 8,000 | **3.49x** | 3.02x |
 
 The data term is exactly **3.00x** -- the replication floor for a store that
 copies every page to every replica -- so everything above it is metadata, which
-is **474 bytes an object plus 164,304 fixed** whatever the object size.
+is **466 bytes an object plus 164,304 fixed** whatever the object size.
 `footprint_audit()` names every resident byte and its breakdown sums to its own
 total with no remainder.
 
@@ -136,9 +136,9 @@ which is more hardware rather than less space.
 replicas to eight and fails if any of them undercuts that.
 
 Counted with the metadata, a thousand objects of 1 KiB measure
-**2.15x striped against 3.64x replicated**, both read out of `footprint_audit()` on a
+**2.14x striped against 3.63x replicated**, both read out of `footprint_audit()` on a
 store nothing has read back yet. What separates the total from the 1.5x data term is the
-metadata line above, which striping does not change: the same 474 bytes an object either
+metadata line above, which striping does not change: the same 466 bytes an object either
 way. Striping moves the payload and nothing else.
 
 A smaller point than the table's rows above, and deliberately: measuring both shapes at
@@ -215,11 +215,11 @@ cargo test --release --lib measure_what_a_mutation_batch_snapshot_costs -- --ign
 #### A delete does not reclaim, it trades
 
 Writing 500 objects of 1 KiB and then deleting every one leaves the store
-**24.9% larger** than when it held them:
+**25.2% larger** than when it held them:
 
 | | bytes |
 |---|---:|
-| holding 500 objects | 1,863,697 |
+| holding 500 objects | 1,859,697 |
 | after deleting all 500 | 2,328,702 |
 
 The payload index is given back in full. What replaces it is **822 bytes of

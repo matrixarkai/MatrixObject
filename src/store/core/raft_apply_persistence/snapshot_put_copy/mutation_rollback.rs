@@ -121,9 +121,9 @@ impl MatrixObjectStore {
             .map(|previous| {
                 let mut captured = Vec::with_capacity(previous.extents.len());
                 for extent in previous.extents.iter() {
-                    if let Some(payload) = self.payloads.get(&extent.chunk_id, extent.offset) {
+                    if let Some(payload) = self.payloads.get(&extent.chunk_id, extent.offset()) {
                         captured.push((
-                            (extent.chunk_id.clone(), extent.offset),
+                            (extent.chunk_id.clone(), extent.offset()),
                             payload.clone(),
                         ));
                     }

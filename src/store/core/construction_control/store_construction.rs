@@ -6,6 +6,16 @@ impl MatrixObjectStore {
                 "chunk_size must be positive".to_string(),
             ));
         }
+        // AN EXTENT'S OFFSET AND LENGTH ARE 32-BIT, and both are bounded by this, so a
+        // chunk at or above 4 GiB could produce one that does not fit. Refused here rather
+        // than at the extent, because a store that accepted the setting and then failed
+        // every write would have taken the configuration and not honoured it.
+        if options.chunk_size > u32::MAX as u64 {
+            return Err(ObjectError::InvalidArgument(
+                "chunk_size must be under 4 GiB, which is what an extent's offset holds"
+                    .to_string(),
+            ));
+        }
         if options.max_extent_bytes == 0 || options.max_extent_bytes > options.chunk_size {
             return Err(ObjectError::InvalidArgument(
                 "max_extent_bytes must be 1..chunk_size".to_string(),

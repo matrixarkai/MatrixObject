@@ -2,8 +2,62 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectExtent {
     pub chunk_id: ChunkId,
-    pub offset: u64,
-    pub length: u64,
+    /// Where in the chunk, in 32 bits.
+    ///
+    /// # WHY THIRTY-TWO IS ENOUGH, AND WHY THE FIELDS ARE PRIVATE
+    ///
+    /// Both numbers are bounded by `chunk_size`: the offset is a position inside one chunk,
+    /// and `max_extent_bytes` is validated as `1..=chunk_size` when a store is built. So a
+    /// chunk below 4 GiB cannot produce either number outside 32 bits, and
+    /// `StoreOptions` refuses a `chunk_size` at or above that bound rather than letting an
+    /// extent silently wrap. The default chunk is 64 MiB, sixty-four times under it.
+    ///
+    /// The SNAPSHOT STILL WRITES TWO `u64`, so this is a representation change and not a
+    /// migration -- the same shape as the projection and the etag digest before it.
+    ///
+    /// They are private because a retype alone would be dangerous: `extent.offset +
+    /// extent.length` would go on compiling as `u32 + u32` and overflow where it used to be
+    /// safe. Reading through `offset()` and `length()` returns `u64`, so every piece of
+    /// arithmetic stays in 64 bits and every one of the call sites had to be revisited by
+    /// the compiler.
+    offset: u32,
+    length: u32,
+}
+
+impl ObjectExtent {
+    /// An extent at `offset` of `length` bytes in `chunk_id`.
+    ///
+    /// Refused rather than truncated when either number does not fit: a wrapped offset is an
+    /// object pointing at the wrong bytes, which is the one failure this must not have.
+    pub fn new(chunk_id: ChunkId, offset: u64, length: u64) -> Result<Self, ObjectError> {
+        let narrow = |value: u64, what: &str| -> Result<u32, ObjectError> {
+            u32::try_from(value).map_err(|_| {
+                ObjectError::InvalidArgument(format!(
+                    "an extent's {what} is {value}, past what a chunk under 4 GiB can hold"
+                ))
+            })
+        };
+        Ok(Self {
+            chunk_id,
+            offset: narrow(offset, "offset")?,
+            length: narrow(length, "length")?,
+        })
+    }
+
+    /// Where in the chunk this extent starts.
+    pub fn offset(&self) -> u64 {
+        u64::from(self.offset)
+    }
+
+    /// How many bytes it covers.
+    pub fn length(&self) -> u64 {
+        u64::from(self.length)
+    }
+
+    /// One past its last byte, in 64 bits so the sum cannot wrap.
+    pub fn end(&self) -> u64 {
+        self.offset().saturating_add(self.length())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -13,7 +13,7 @@ impl MatrixObjectStore {
         let mut object_cursor = 0u64;
         for extent in &metadata.extents {
             let extent_start = object_cursor;
-            let extent_end = object_cursor.checked_add(extent.length).ok_or_else(|| {
+            let extent_end = object_cursor.checked_add(extent.length()).ok_or_else(|| {
                 ObjectError::InvalidArgument("object extent overflows".to_string())
             })?;
             object_cursor = extent_end;
@@ -29,7 +29,7 @@ impl MatrixObjectStore {
             let local_len = read_end - read_start;
             let stats = self.chunk_service.repair_chunk_range(
                 &extent.chunk_id,
-                extent.offset + local_offset,
+                extent.offset() + local_offset,
                 local_len,
             )?;
             merge_repair_stats(&mut aggregate, stats);
@@ -63,7 +63,7 @@ impl MatrixObjectStore {
         };
         for extent in &metadata.extents {
             let extent_start = object_cursor;
-            let extent_end = object_cursor.checked_add(extent.length).ok_or_else(|| {
+            let extent_end = object_cursor.checked_add(extent.length()).ok_or_else(|| {
                 ObjectError::InvalidArgument("object extent overflows".to_string())
             })?;
             object_cursor = extent_end;
@@ -79,7 +79,7 @@ impl MatrixObjectStore {
             let local_len = read_end - read_start;
             let extent_locations = self.chunk_service.map_range(
                 &extent.chunk_id,
-                extent.offset + local_offset,
+                extent.offset() + local_offset,
                 local_len,
             )?;
             let extent_chunk_count = extent_locations
@@ -121,7 +121,7 @@ impl MatrixObjectStore {
                 extent_start_chunk_index.saturating_add(local_start_chunk_index);
             let report = self.chunk_service.repair_chunk_range_bounded(
                 &extent.chunk_id,
-                extent.offset + local_offset,
+                extent.offset() + local_offset,
                 local_len,
                 remaining_chunks,
                 chunk_start_chunk_index,

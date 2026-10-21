@@ -189,7 +189,7 @@ impl MatrixObjectStore {
         let mut budget_left = max_bytes;
         for extent in &metadata.extents {
             let extent_start = object_cursor;
-            let extent_end = object_cursor.checked_add(extent.length).ok_or_else(|| {
+            let extent_end = object_cursor.checked_add(extent.length()).ok_or_else(|| {
                 ObjectError::InvalidArgument("object extent overflows".to_string())
             })?;
             object_cursor = extent_end;
@@ -205,7 +205,7 @@ impl MatrixObjectStore {
             let local_len = read_end - read_start;
             let stats = self.chunk_service.invalidate_chunk_range_cache_routed(
                 &extent.chunk_id,
-                extent.offset + local_offset,
+                extent.offset() + local_offset,
                 local_len,
                 budget_left,
                 target_replica_index,

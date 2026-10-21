@@ -74,7 +74,7 @@ at a hundred objects and 4.1% at eight thousand. Everything else is exactly
 linear, which makes the total a line once the feeds are full:
 
 ```
-metadata = 474 bytes an object + 164,304 bytes fixed      (remainder: zero)
+metadata = 466 bytes an object + 164,304 bytes fixed      (remainder: zero)
 ```
 
 reproducing every total above exactly, at every count where the feeds have
@@ -102,7 +102,7 @@ three store sizes and fails unless every one is a line and the fixed terms sum
 to the total's — so a leg that starts depending on the object count, or a fixed
 byte that stops being named, is caught rather than absorbed.
 
-That 474 is two items and a rounding error:
+That 466 is two items and a rounding error:
 
 | | per object | share |
 |---|---:|---:|
@@ -157,7 +157,7 @@ shared between holders is charged once per allocation — the characters and the
 two counts in front of them — so `mapkey_capacity` against `mapkey_len` is that
 header rather than slack.
 
-### What the 474 bytes are, and what each remaining part would cost to remove
+### What the 466 bytes are, and what each remaining part would cost to remove
 
 The slope is not one thing. Every leg below is fitted from the same two object counts the
 published line is fitted from, and they sum to it exactly:
@@ -167,12 +167,12 @@ METADATA LINE PARTS
 objects.mapkey_inline          32  two shared-text holders, which is what keys the map
 objects.mapkey_heap            42  the key's characters: ONE allocation, shared with the value
 objects.metadata_inline       144  ObjectMetadata itself
-objects.extents_bytes          32  one extent of a one-extent object
+objects.extents_bytes          24  one extent, whose offset and length are 32-bit
 meta.records.struct_inline     72  the map key's holder, plus MetadataRecord
 meta.records.mapkey_capacity   56  the record key's characters: ONE allocation, shared
 meta.records.value_capacity    88  the projection the record holds
 payloads.key_bytes              8  the payload index's key
-METADATA LINE TOTAL          474
+METADATA LINE TOTAL          466
 ```
 
 `the_published_metadata_decomposition_sums_to_the_line` measures each one and fails if this
@@ -192,17 +192,31 @@ characters, sixteen bytes once per allocation.
 
 #### The four reductions that are left, and what each one costs
 
-None of these is free, which is why none of them is taken. Each is priced against the 474.
+Each is priced against the 466. The fourth one on this list has since been **taken** --
+narrowing an extent's offset and length to 32 bits was priced at 8 bytes an object and cost a
+migration, until it turned out not to: the snapshot still writes two `u64` and only the
+in-memory form is narrow, so there was nothing to migrate. That is the 474 above becoming 466.
+The three that remain are not free.
 
 | | saves | what it costs |
 |---|---:|---|
 | The metadata records restate the objects map | **216** | It is the whole of `meta.records`: a separate metadata service's own store, with its own versioning, deletion markers and change log, modelled in this process. Removing the restatement means collapsing two services into one, which is a design decision and not a footprint one. |
 | A thin `SharedText` | **~48** | `SharedText` is `Arc<str>`, a fat pointer, so every holder costs 16 bytes. A thin representation (`Arc` of an owned box) costs 8 a holder but adds a second pointer chase to **every** string read, on a write path where a put is already dominated by copying. A footprint gain paid for in read latency everywhere. |
 | Interning content types and storage classes | **~48** | Both are `SharedText` and in practice take a handful of distinct values, so an index would be 4 bytes rather than 16. But a content type is arbitrary input, so the table is unbounded and needs eviction -- which is a cache, with a cache's failure modes, in the middle of object metadata. |
-| A 32-bit extent offset and length | **8** | An extent's offset and length are `u64` and a chunk is 64 MiB, so both fit in 32 bits today. Narrowing them caps a chunk at 4 GiB forever, and `chunk_size` is a setting. A durable encoding would have to be migrated to collect it. |
 
-Inlining the single extent is **not** on that list because it is not a saving: an enum of one
-extent or many is 40 bytes inline against the 16 a boxed slice costs, so a one-extent object
+**The one that was taken, and what it actually cost.** An extent's offset is a position
+inside one chunk and its length is bounded by `max_extent_bytes`, which is already validated
+as `1..=chunk_size`, so both fit in 32 bits for any chunk under 4 GiB. `StoreOptions` now
+refuses a `chunk_size` at or above that bound rather than letting an extent wrap, and that
+refusal is the whole price: a setting gained a documented ceiling 64 times above its default.
+
+The fields are **private**, with `offset()`, `length()` and `end()` returning `u64`. A retype
+alone would have left `extent.offset + extent.length` compiling as `u32 + u32` and overflowing
+where it had been safe; private fields made all 101 read sites a compile error and keep every
+piece of arithmetic in 64 bits.
+
+Inlining the single extent is still **not** on the list, because it is not a saving: an enum of
+one extent or many is 40 bytes inline against the 16 a boxed slice costs, so a one-extent object
 saves 8 and a two-extent object loses 24. It depends on the object, which means it depends on
 the workload, which is not a property a representation should have.
 

@@ -19,11 +19,7 @@ impl MatrixObjectStore {
             );
             self.physical_written_bytes =
                 saturating_add(self.physical_written_bytes, page_len as u64);
-            return Ok(vec![ObjectExtent {
-                chunk_id,
-                offset,
-                length: page_len as u64,
-            }]);
+            return Ok(vec![ObjectExtent::new(chunk_id, offset, page_len as u64)?]);
         }
         let chunk_id = self.ensure_writable_chunk(page_len as u64)?;
         let chunk = self
@@ -49,11 +45,7 @@ impl MatrixObjectStore {
         );
         self.physical_written_bytes =
             saturating_add(self.physical_written_bytes, page_len as u64);
-        Ok(vec![ObjectExtent {
-            chunk_id,
-            offset,
-            length: page_len as u64,
-        }])
+        Ok(vec![ObjectExtent::new(chunk_id, offset, page_len as u64)?])
     }
 
     fn allocate_extents(&mut self, data: &[u8]) -> Result<Vec<ObjectExtent>, ObjectError> {
@@ -96,11 +88,7 @@ impl MatrixObjectStore {
             );
             self.physical_written_bytes =
                 saturating_add(self.physical_written_bytes, page_len as u64);
-            extents.push(ObjectExtent {
-                chunk_id,
-                offset,
-                length: page_len as u64,
-            });
+            extents.push(ObjectExtent::new(chunk_id, offset, page_len as u64)?);
             cursor += page_len;
         }
         Ok(extents)
@@ -176,8 +164,8 @@ impl MatrixObjectStore {
         let mut grouped_ranges: BTreeMap<ChunkId, Vec<DataRange>> = BTreeMap::new();
         for extent in extents {
             extent
-                .offset
-                .checked_add(extent.length)
+                .offset()
+                .checked_add(extent.length())
                 .ok_or_else(|| ObjectError::InvalidArgument("extent overflows".to_string()))?;
             if !self.chunks.contains_key(&extent.chunk_id) {
                 return Err(ObjectError::NotFound("extent chunk missing".to_string()));
@@ -187,13 +175,13 @@ impl MatrixObjectStore {
             // old metadata is kept in `versions` and this function is not called),
             // and leaving the entry behind would both retain garbage and name a
             // range the page service can no longer return.
-            self.payloads.remove(&extent.chunk_id, extent.offset);
+            self.payloads.remove(&extent.chunk_id, extent.offset());
             grouped_ranges
                 .entry(extent.chunk_id.clone())
                 .or_default()
                 .push(DataRange {
-                    offset: extent.offset,
-                    length: extent.length,
+                    offset: extent.offset(),
+                    length: extent.length(),
                 });
         }
 
@@ -318,13 +306,13 @@ impl MatrixObjectStore {
         let mut fast_cursor = 0u64;
         for extent in extents {
             let extent_start = fast_cursor;
-            let extent_end = fast_cursor.checked_add(extent.length).ok_or_else(|| {
+            let extent_end = fast_cursor.checked_add(extent.length()).ok_or_else(|| {
                 ObjectError::InvalidArgument("object extent overflows".to_string())
             })?;
             if range_offset >= extent_start && range_end <= extent_end {
                 return self.chunk_service.read_chunk_range_bounded_by_chunks(
                     &extent.chunk_id,
-                    extent.offset + (range_offset - extent_start),
+                    extent.offset() + (range_offset - extent_start),
                     range_length,
                     max_payload_bytes,
                     max_chunk_read_count,
@@ -343,7 +331,7 @@ impl MatrixObjectStore {
         let mut object_cursor = 0u64;
         for extent in extents {
             let extent_start = object_cursor;
-            let extent_end = object_cursor.checked_add(extent.length).ok_or_else(|| {
+            let extent_end = object_cursor.checked_add(extent.length()).ok_or_else(|| {
                 ObjectError::InvalidArgument("object extent overflows".to_string())
             })?;
             object_cursor = extent_end;
@@ -366,7 +354,7 @@ impl MatrixObjectStore {
             };
             let (payload, read_stats) = self.chunk_service.read_chunk_range_bounded_by_chunks(
                 &extent.chunk_id,
-                extent.offset + local_offset,
+                extent.offset() + local_offset,
                 local_len,
                 remaining_budget,
                 remaining_chunk_budget,
