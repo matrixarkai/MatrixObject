@@ -22,29 +22,23 @@ impl MatrixObjectStore {
         require_control_plane_catalog_endpoint_set_env_checksums(endpoint_set)
     }
 
+    /// Always false: the control plane is the metaserver, and no mode reads a root catalog.
+    ///
+    /// Kept as a reported value rather than deleted, because it is observable output.
+    /// `rootserver_endpoint_configured` beside it still reports whether one was configured,
+    /// which is how an operator would see a setting being ignored -- though nothing can get
+    /// one past the refusals at construction, in the environment, and on snapshot load.
     pub fn rootserver_required(&self) -> bool {
         match self.options.control_plane_mode {
-            ControlPlaneMode::Auto => false,
-            ControlPlaneMode::MetaServer => false,
-            ControlPlaneMode::GlobalCatalog => true,
-            ControlPlaneMode::RootServer => {
-                self.configured_rootserver_fallback_endpoint().is_some()
-            }
+            ControlPlaneMode::Auto | ControlPlaneMode::MetaServer => false,
         }
     }
 
+    /// Matched rather than returned as a constant, so adding a mode is a compile error
+    /// here instead of a mode that silently reports itself as the metaserver.
     pub fn effective_control_plane_mode(&self) -> &'static str {
         match self.options.control_plane_mode {
-            ControlPlaneMode::GlobalCatalog => "globalcatalog",
-            ControlPlaneMode::RootServer => {
-                if self.configured_rootserver_fallback_endpoint().is_some() {
-                    "rootserver"
-                } else {
-                    "metaserver"
-                }
-            }
-            ControlPlaneMode::MetaServer => "metaserver",
-            ControlPlaneMode::Auto => "metaserver",
+            ControlPlaneMode::Auto | ControlPlaneMode::MetaServer => "metaserver",
         }
     }
 

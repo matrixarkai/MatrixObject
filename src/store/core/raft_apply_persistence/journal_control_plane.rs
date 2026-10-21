@@ -76,19 +76,9 @@ impl MatrixObjectStore {
         append_persistent_journal_frame(&self.persistent_journal_path, &payload)
     }
 
-    fn append_rootserver_fallback_endpoint_journal_record(
-        &self,
-        endpoint: &str,
-    ) -> Result<(), ObjectError> {
-        if self.persistent_journal_path.is_empty() {
-            return Ok(());
-        }
-        let mut payload =
-            Vec::with_capacity(std::mem::size_of::<u64>() + encoded_string_len(endpoint));
-        append_u64(&mut payload, 37);
-        append_string(&mut payload, endpoint);
-        append_persistent_journal_frame(&self.persistent_journal_path, &payload)
-    }
+    // Record 37, the root catalog endpoint, has no writer any more: nothing can configure
+    // one. Replay still READS a 37 from an existing journal and refuses it, by way of the
+    // configure function -- see `journal_replay::catalog_operations`.
 
     fn append_metadata_coordinator_config_journal_record(
         &self,

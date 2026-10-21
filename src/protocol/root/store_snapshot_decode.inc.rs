@@ -110,8 +110,13 @@ impl StoreSnapshot {
             options.local_replica_store_parallelism =
                 cursor.read_count("store snapshot local replica store parallelism")?;
         }
+        // READ HERE, RESOLVED BELOW. The retired rootserver mode means "metaserver" when
+        // no root catalog endpoint was configured and is refused when one was -- and the two
+        // fields arrive in the opposite order to the one that decision needs, the mode at
+        // version 9 and the endpoint at version 17.
+        let mut control_plane_mode_code = None;
         if snapshot_version >= 9 {
-            options.control_plane_mode = ControlPlaneMode::from_snapshot_code(cursor.read_u64()?)?;
+            control_plane_mode_code = Some(cursor.read_u64()?);
         }
         if snapshot_version >= 16 {
             options.object_manifest_checkpoint_interval = cursor.read_u64()?;
@@ -122,6 +127,23 @@ impl StoreSnapshot {
         }
         if snapshot_version >= 17 {
             options.rootserver_catalog_endpoint = cursor.read_string()?;
+        }
+        // WHATEVER THE MODE SAID. The endpoint was settable independently of the mode, so a
+        // snapshot written in metaserver mode can carry one too -- and this build has no
+        // mode that reads it, so loading the store would be accepting a setting it will not
+        // honour.
+        if !options.rootserver_catalog_endpoint.trim().is_empty() {
+            return Err(ObjectError::InvalidArgument(format!(
+                "this store snapshot carries the root catalog endpoint {:?}, and this build's \
+                 control plane is the metaserver, so nothing would read it",
+                options.rootserver_catalog_endpoint
+            )));
+        }
+        if let Some(code) = control_plane_mode_code {
+            options.control_plane_mode = ControlPlaneMode::from_snapshot_code_with_endpoint(
+                code,
+                &options.rootserver_catalog_endpoint,
+            )?;
         }
         let next_chunk_id = cursor.read_u64()?;
         let next_upload_sequence = cursor.read_u64()?;
