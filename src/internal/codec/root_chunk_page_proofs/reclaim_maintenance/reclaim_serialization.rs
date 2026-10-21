@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_chunk_reclaim_plan(out: &mut Vec<u8>, plan: &ReplicaReclaimPlan) {
     append_u64(out, plan.marker.is_some() as u64);
     if let Some(marker) = &plan.marker {

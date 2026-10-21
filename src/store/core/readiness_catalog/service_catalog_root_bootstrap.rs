@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn register_root_node(&mut self, node: RootNode) -> Result<RootNode, ObjectError> {
         self.meta_service.register_node(node)

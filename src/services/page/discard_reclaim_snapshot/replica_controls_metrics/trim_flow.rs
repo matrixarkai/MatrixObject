@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
     pub fn configure_chunk_trim_flow(
         &mut self,

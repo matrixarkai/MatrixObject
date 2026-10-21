@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("page_snapshot_export.rs");
 include!("page_snapshot_stream.rs");
 include!("page_snapshot_collection.rs");

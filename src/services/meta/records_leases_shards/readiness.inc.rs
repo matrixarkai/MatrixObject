@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
     pub fn metadata_shards(&self) -> Vec<MetadataShard> {
         self.shards.values().cloned().collect()

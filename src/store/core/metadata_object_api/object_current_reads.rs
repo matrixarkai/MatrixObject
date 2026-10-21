@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn get_object(&self, bucket: &str, key: &str) -> Result<ObjectData, ObjectError> {
         let metadata = self.head_object(bucket, key)?;

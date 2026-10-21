@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("repair_rebalance/draining_plan.rs");
 include!("repair_rebalance/draining_apply.rs");
 include!("repair_rebalance/unhealthy_plan.rs");

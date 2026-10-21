@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn prepared_chunk_discard_checksum(prepared: &PreparedChunkDiscard) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-PREPARED-SEGMENT-DISCARD1");

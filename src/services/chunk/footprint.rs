@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 // What a chunk service holds besides the pages themselves.
 //
 // `ACCOUNTED.byte_buffers` says it is the bytes the store can name, and the

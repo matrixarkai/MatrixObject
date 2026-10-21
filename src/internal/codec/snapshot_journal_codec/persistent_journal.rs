@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn saturating_add(left: u64, right: u64) -> u64 {
     left.saturating_add(right)
 }

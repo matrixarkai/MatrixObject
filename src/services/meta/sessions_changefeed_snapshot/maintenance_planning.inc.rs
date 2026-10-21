@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
     pub fn expire_transactions(&mut self, now_ms: u64) -> Vec<MetadataTransaction> {
         self.expire_transactions_bounded(now_ms, usize::MAX)

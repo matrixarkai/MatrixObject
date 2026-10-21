@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     fn record_consensus_read_observation(&self, readiness: &MetadataRaftReadiness) {
         if readiness.readable && readiness.read_lag == 0 && readiness.read_fence_applied_lag == 0 {

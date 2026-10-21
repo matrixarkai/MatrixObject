@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn metadata_shard_record_handoff_batch_checksum(
     source_node_id: &str,
     shard: &MetadataShard,

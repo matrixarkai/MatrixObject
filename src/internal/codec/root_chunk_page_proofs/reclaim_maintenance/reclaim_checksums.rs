@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_chunk_reclaim_candidate(out: &mut Vec<u8>, candidate: &ReplicaReclaimCandidate) {
     append_page_id(out, &candidate.page_id);
     append_u64(out, candidate.logical_length);

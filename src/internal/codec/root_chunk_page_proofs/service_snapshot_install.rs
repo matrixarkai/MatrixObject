@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn service_snapshot_install_source_proof_checksum(
     service: &str,
     expected_snapshot_read_proof_checksum: &str,

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl StoreSnapshot {
     fn validate_chunks(&self) -> Result<(), ObjectError> {
         let mut max_chunk_id = 0u64;

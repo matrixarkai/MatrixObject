@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_object_read_proof(material: &mut Vec<u8>, proof: &ObjectReadProof) {
     append_u64(material, proof.requested_read_index);
     append_u64(material, proof.consensus_read_index);

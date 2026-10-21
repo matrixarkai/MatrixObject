@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) struct SnapshotByteCursor<'a> {
     data: &'a [u8],
     cursor: usize,

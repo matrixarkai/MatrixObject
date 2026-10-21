@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 struct DistributedReadinessEvaluation<'a> {
     ready: bool,
     metadata_replication_ready: bool,

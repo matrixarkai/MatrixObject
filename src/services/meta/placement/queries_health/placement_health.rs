@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
     pub fn object_placement(&self, object_id: &ObjectId) -> Result<ObjectPlacement, ObjectError> {
         self.placements

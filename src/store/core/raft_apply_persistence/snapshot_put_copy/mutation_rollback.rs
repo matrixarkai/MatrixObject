@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub(crate) fn capture_object_mutation_rollback(&self) -> ObjectMutationRollback {
         self.capture_object_mutation_rollback_inner(None)

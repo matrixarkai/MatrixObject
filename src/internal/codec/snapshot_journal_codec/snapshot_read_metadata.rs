@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn read_metadata_record(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<MetadataRecord, ObjectError> {

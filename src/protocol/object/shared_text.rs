@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 /// Text that several holders can name the same object with, without each
 /// keeping its own copy of the characters.
 ///

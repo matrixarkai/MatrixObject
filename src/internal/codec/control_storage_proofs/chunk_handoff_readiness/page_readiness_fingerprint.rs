@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn page_storage_readiness_fingerprint_material(
     readiness: &ChunkStorageReadiness,
 ) -> Vec<u8> {

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn validate_bucket(bucket: &str) -> Result<(), ObjectError> {
     if bucket.is_empty() || bucket.len() > 255 {
         return Err(ObjectError::InvalidArgument(

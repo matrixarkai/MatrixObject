@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct RootServingGates {
     metadata_read_ready: bool,

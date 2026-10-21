@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
     fn record_repair_stats(&mut self, stats: &RepairStats) {
         self.cumulative_repair_checked_chunks = self

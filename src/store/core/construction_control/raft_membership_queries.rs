@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn raft_voter_node_ids(&self) -> &[String] {
         &self.raft_voter_node_ids

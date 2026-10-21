@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn canonical_raft_voters(mut voters: Vec<String>) -> Result<Vec<String>, ObjectError> {
     if voters.is_empty() {
         return Err(ObjectError::InvalidArgument(

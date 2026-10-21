@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 fn append_page_readiness(mut material: &mut Vec<u8>, report: &ObjectStoreDistributedReadiness) {
     append_u64(&mut material, report.page.ready as u64);
     append_u64(&mut material, report.page.write_quorum);

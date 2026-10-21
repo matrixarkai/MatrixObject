@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("chunk_lifecycle/object_writes.rs");
 include!("chunk_lifecycle/object_lifecycle.rs");
 include!("chunk_lifecycle/chunk_maintenance.rs");

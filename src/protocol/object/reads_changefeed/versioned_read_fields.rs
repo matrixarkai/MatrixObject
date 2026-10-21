@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 fn append_range_control_fields(
     range: &Option<DataRange>,
     field_prefix: &str,

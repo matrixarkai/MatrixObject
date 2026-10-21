@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_root_meta_health(out: &mut Vec<u8>, health: &RootMetaHealth) {
     let proof = &health.control_proof;
     append_string(out, &proof.state_format);

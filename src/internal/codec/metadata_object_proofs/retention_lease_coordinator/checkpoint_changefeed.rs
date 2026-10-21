@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn metadata_change_checkpoint_request_checksum(
     checkpoint: &MetadataChangeCheckpoint,
 ) -> String {

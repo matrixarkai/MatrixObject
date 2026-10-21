@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 fn append_module_identity(mut material: &mut Vec<u8>, status: &ObjectStoreModuleStatus) {
     append_string(&mut material, &status.control_checksum_format);
     append_u64(&mut material, status.ready as u64);

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
     pub fn chunk_replica_mutation_qos_configs(&self) -> Vec<ReplicaMutationQosConfig> {
         self.replicas

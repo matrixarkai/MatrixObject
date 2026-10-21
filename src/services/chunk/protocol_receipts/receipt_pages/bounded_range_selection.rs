@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn select_bounded_chunk_write_ranges_from(
     writes: Vec<(u64, Vec<u8>)>,
     max_write_bytes: u64,

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
     pub fn metadata_qos_config(&self) -> MetadataQosConfig {
         self.qos_config.clone()

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 // Construction, service policy, and bucket operations have separate ownership.
 include!("store_construction.rs");
 include!("page_receipt_retention_control.rs");

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn new(options: StoreOptions) -> Result<Self, ObjectError> {
         if options.chunk_size == 0 {

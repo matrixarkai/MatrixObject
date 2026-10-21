@@ -354,3 +354,12 @@ jobs:
             | tee /tmp/matrixraft.log
           grep -q '^test result: ok. 1 passed' /tmp/matrixraft.log \
             || { echo "::error::applying_an_entry_reports_the_codec_the_log_format_would_need did not run"; exit 1; }
+
+      - name: Every Rust source carries the licence header
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::every_rust_source_carries_the_licence_header -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::every_rust_source_carries_the_licence_header did not run"; exit 1; }

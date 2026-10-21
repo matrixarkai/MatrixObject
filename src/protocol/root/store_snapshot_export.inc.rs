@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn export_store_snapshot_chunk_bytes_with_checksum(
     snapshot_bytes: &[u8],
     full_checksum: &str,

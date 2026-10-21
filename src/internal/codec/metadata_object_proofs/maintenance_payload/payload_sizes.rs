@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn object_error_code(err: &ObjectError) -> &'static str {
     match err {
         ObjectError::NotFound(_) => "NotFound",

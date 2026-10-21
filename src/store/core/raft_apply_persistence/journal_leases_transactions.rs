@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     fn encoded_metadata_mutation_len(mutation: &MetadataMutation) -> usize {
         encoded_string_len(&mutation.key)

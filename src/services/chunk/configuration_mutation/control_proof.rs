@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixReplicaService {
     pub fn control_proof(&self) -> ReplicaServiceControlProof {
         let snapshot_checksum = self.export_snapshot().checksum;

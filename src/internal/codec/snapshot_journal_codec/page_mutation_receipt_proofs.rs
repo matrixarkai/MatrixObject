@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn replica_receipt_key<T: std::fmt::Debug>(
     prefix: &str,
     base_key: &str,

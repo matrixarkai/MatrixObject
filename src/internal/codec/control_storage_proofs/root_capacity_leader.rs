@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_root_capacity_rebalance_envelope(
     out: &mut Vec<u8>,
     envelope: &PreparedRootCapacityRebalanceEnvelope,

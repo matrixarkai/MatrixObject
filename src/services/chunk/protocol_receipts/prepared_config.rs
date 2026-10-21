@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("prepared_config/prepared_configs.rs");
 include!("prepared_config/control_fields.rs");
 include!("prepared_config/capacity_service.rs");

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn metadata_shard_receipt_page_proof_checksum(
     page: &MetadataShardReceiptPage,
 ) -> String {

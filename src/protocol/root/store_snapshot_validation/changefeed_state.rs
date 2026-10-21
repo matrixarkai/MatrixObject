@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl StoreSnapshot {
     fn validate_changefeed_state(&self) -> Result<(), ObjectError> {
         let mut previous_sequence = 0u64;

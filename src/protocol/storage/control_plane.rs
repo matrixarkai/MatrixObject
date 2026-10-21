@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("control_plane/mode_selection.rs");
 include!("control_plane/environment.rs");
 include!("control_plane/catalog_endpoints.rs");

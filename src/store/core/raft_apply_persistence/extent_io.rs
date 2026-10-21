@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     fn allocate_extents_owned(&mut self, data: Vec<u8>) -> Result<Vec<ObjectExtent>, ObjectError> {
         let max_extent = self.options.max_extent_bytes.max(1) as usize;

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl StoreSnapshot {
     fn validate_configuration(&self) -> Result<(), ObjectError> {
         if self.options.chunk_size == 0

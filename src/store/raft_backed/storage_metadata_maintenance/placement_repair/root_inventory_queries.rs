@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn root_nodes_linearizable(&self) -> Result<Vec<RootNode>, ObjectError> {
         self.ensure_root_read_index("list root nodes")?;

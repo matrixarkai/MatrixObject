@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 struct DistributedMetadataReadinessSnapshot {
     metadata_route_cache: MetadataRouteCacheStatus,
     metadata_control_proof: MetadataControlProof,

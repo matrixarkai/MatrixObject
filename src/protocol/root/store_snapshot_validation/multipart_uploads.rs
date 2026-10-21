@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl StoreSnapshot {
     fn validate_multipart_uploads(&self) -> Result<(), ObjectError> {
         for (upload_id, upload) in &self.multipart_uploads {

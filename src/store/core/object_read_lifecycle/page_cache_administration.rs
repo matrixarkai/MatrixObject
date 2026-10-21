@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn set_read_cache_max_bytes_per_replica(&self, max_bytes: u64) {
         self.chunk_service

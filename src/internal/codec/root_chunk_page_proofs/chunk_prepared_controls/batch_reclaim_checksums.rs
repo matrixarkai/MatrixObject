@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn prepared_chunk_batch_write_checksum(prepared: &PreparedChunkBatchWrite) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-PREPARED-CHUNK-WRITE2");

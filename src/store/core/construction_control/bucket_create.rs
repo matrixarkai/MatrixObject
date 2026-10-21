@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn create_bucket(&mut self, bucket: &str) -> Result<(), ObjectError> {
         self.create_bucket_fenced(bucket, 0, 0)

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl StoreSnapshot {
     fn validate_objects(&self) -> Result<(), ObjectError> {
         for (object_id, metadata) in &self.objects {

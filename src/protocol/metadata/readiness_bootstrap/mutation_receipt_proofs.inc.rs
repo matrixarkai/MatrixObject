@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn object_batch_delete_proof_checksum(
     operation: &str,
     report: &ObjectBatchDeleteReport,

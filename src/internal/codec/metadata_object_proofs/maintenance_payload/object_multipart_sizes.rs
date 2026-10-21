@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn sort_metadata_maintenance_actions(actions: &mut [MetadataMaintenanceAction]) {
     actions.sort_by(|a, b| {
         b.priority

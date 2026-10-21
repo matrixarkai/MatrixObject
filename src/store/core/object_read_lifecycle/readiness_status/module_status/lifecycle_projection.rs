@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 fn populate_lifecycle_module_status(
     status: &mut ObjectStoreModuleStatus,
     readiness: &ObjectStoreDistributedReadiness,

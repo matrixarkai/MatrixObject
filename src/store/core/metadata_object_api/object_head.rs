@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectMetadata, ObjectError> {
         let object_id = ObjectId::new(bucket, key);

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_metadata_retention_config_report(
     out: &mut Vec<u8>,
     report: &MetadataRetentionConfigReport,

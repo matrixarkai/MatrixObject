@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
     fn release_committed_bytes(&mut self, placement: &ObjectPlacement) {
         for node_id in &placement.node_ids {

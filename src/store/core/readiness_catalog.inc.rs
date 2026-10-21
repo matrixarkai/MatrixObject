@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("readiness_catalog/routing_leases_maintenance.rs");
 include!("readiness_catalog/coordinator_sessions.rs");
 include!("readiness_catalog/metadata_records_transactions_snapshot.rs");

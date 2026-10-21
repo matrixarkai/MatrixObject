@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 // Slab lifecycle operations are grouped by mutation and Raft phase.
 include!("chunk_discard_prepare.rs");
 include!("chunk_discard_propose.rs");

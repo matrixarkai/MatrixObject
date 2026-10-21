@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn validate_tags(tags: &BTreeMap<String, String>) -> Result<(), ObjectError> {
     if tags.len() > 10 {
         return Err(ObjectError::InvalidArgument(

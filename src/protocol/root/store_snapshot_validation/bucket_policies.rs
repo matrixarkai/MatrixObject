@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl StoreSnapshot {
     fn validate_bucket_policies(&self) -> Result<(), ObjectError> {
         for (bucket, retain_for_ms) in &self.bucket_retention {

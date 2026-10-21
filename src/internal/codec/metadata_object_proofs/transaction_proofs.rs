@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_metadata_mutation(out: &mut Vec<u8>, mutation: &MetadataMutation) {
     append_string(out, &mutation.key);
     // PROOF MATERIAL: the same characters as before, or every receipt's checksum moves.

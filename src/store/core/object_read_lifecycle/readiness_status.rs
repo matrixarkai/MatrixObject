@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 include!("readiness_status/distributed_readiness.rs");
 include!("readiness_status/module_status/health_labels.rs");
 include!("readiness_status/module_status/root_projection.rs");

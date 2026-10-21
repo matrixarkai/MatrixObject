@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     fn encoded_metadata_coordinator_config_len(config: &MetadataCoordinatorConfig) -> usize {
         std::mem::size_of::<u64>() * 4

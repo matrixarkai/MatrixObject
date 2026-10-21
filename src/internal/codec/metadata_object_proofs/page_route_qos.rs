@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 pub(crate) fn append_page_route_qos_config(out: &mut Vec<u8>, config: &ChunkRouteQosConfig) {
     append_u64(out, config.window_ms);
     append_u64(out, config.max_read_ops_per_window);

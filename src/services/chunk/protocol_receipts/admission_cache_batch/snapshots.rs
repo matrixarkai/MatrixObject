@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplicaServiceSnapshot {
     pub pages: BTreeMap<PageId, std::sync::Arc<PageState>>,

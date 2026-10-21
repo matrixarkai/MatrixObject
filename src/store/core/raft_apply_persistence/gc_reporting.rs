@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     pub fn gc_report(&self) -> GcReport {
         self.gc_report_with_discard_budget(0)

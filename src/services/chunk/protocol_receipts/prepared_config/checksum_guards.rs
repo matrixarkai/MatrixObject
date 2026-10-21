@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 macro_rules! impl_proven_prepared_chunk_config_control_fields {
     ($ty:ty) => {
         impl ProvenStorageRead<$ty> {

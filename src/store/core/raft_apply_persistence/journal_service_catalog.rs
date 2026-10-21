@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     fn encoded_catalog_identity_len(node_id: &str, endpoint: &str, failure_domain: &str) -> usize {
         encoded_string_len(node_id) + encoded_string_len(endpoint) + encoded_string_len(failure_domain)

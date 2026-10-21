@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
     fn replica_active(&self, replica_index: usize) -> bool {
         !self.quarantined_replicas.contains(&replica_index)

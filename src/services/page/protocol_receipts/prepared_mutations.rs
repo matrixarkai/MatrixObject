@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 // Prepared page mutations are grouped by execution and proof ownership.
 include!("prepared_batch_mutations.rs");
 include!("prepared_reclaim.rs");

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
     fn check_mutation_admission(&self, mutations: &[MetadataMutation]) -> Result<(), ObjectError> {
         if mutations.len() > self.admission_policy.max_batch_mutations {
