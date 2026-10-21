@@ -44001,3 +44001,103 @@ fn every_rust_source_carries_the_licence_header() {
         "the copyright line names MatrixArkAI, so the NOTICE must too"
     );
 }
+
+#[test]
+fn the_readme_describes_the_continuous_integration_it_has() {
+    // The README's continuous-integration section said three things the workflow does not do:
+    // that the library suite and a "measurement suite" run in CI, that CI gates on the
+    // recorded-failure list, and that it all happens "on every push". CI builds, documents
+    // and runs named guards, on pushes to `main` and on pull requests; the suite-against-
+    // baseline comparison is `tools/suite_gate.sh`, which runs locally.
+    //
+    // Correcting prose does not keep it correct. These are the four claims in that section
+    // that can be checked mechanically, so they are.
+    const README: &str = include_str!("../README.md");
+    const WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
+    const BASELINE: &str = include_str!("../tools/known_failures.txt");
+
+    // 1. The jobs the README names are the jobs the workflow declares.
+    for job in ["build & docs", "format and rollback guards"] {
+        assert!(
+            README.contains(job),
+            "the README should name the {job:?} job"
+        );
+        assert!(
+            WORKFLOW.contains(&format!("name: {job}")),
+            "the workflow should declare a job called {job:?}"
+        );
+    }
+
+    // 2. The number of recorded failures, which is a figure and so goes stale.
+    let recorded = BASELINE
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        .count();
+    assert!(
+        recorded > 0,
+        "the baseline should list failures, and it parsed as empty"
+    );
+    assert!(
+        README.contains(&format!("the {recorded} recorded in")),
+        "the README should say {recorded} failures are recorded, which is what \
+         tools/known_failures.txt lists"
+    );
+
+    // 3. "CI does not run the whole library suite." Every `cargo test` in the workflow must
+    //    carry a `tests::` filter -- an unfiltered one would run the suite, and 21 of its
+    //    tests fail, so the step would be red on arrival. Continuations are joined first,
+    //    because these commands are written across lines with a trailing backslash.
+    assert!(
+        README.contains("CI does not run the whole library suite"),
+        "this test is checking a claim the README no longer makes"
+    );
+    let mut joined: Vec<String> = Vec::new();
+    let mut pending = String::new();
+    for line in WORKFLOW.lines() {
+        let trimmed = line.trim();
+        if let Some(head) = trimmed.strip_suffix('\\') {
+            pending.push_str(head);
+            pending.push(' ');
+        } else {
+            pending.push_str(trimmed);
+            joined.push(std::mem::take(&mut pending));
+        }
+    }
+    // COMMANDS ONLY. The workflow explains in a comment why each guard checks that it ran,
+    // and that comment contains the words this looks for -- it flagged itself first time.
+    let is_command = |line: &&String| !line.trim_start().starts_with('#');
+    let unfiltered: Vec<&String> = joined
+        .iter()
+        .filter(is_command)
+        .filter(|command| command.contains("cargo test") && !command.contains("tests::"))
+        .collect();
+    assert!(
+        unfiltered.is_empty(),
+        "every cargo test in the workflow should name a test, and these do not: {unfiltered:?}"
+    );
+    // NOT VACUOUS: if the join produced nothing, the filter above would find nothing either.
+    let test_commands = joined
+        .iter()
+        .filter(is_command)
+        .filter(|command| command.contains("cargo test"))
+        .count();
+    assert!(
+        test_commands >= 20,
+        "only {test_commands} cargo test commands parsed out of the workflow, so the check \
+         above proved nothing"
+    );
+
+    // 4. When it runs.
+    assert!(
+        README.contains("On pushes to `main` and on every pull request"),
+        "the README should say when CI runs"
+    );
+    assert!(
+        WORKFLOW.contains("branches: [main]") && WORKFLOW.contains("pull_request:"),
+        "the workflow should trigger on pushes to main and on pull requests"
+    );
+
+    println!(
+        "READMECI jobs=2 recorded={recorded} cargo_test_commands={test_commands} unfiltered=0"
+    );
+}
