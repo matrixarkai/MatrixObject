@@ -141,6 +141,32 @@ impl MatrixReplicaService {
         self.write_chunk_ranges_borrowed_internal(page_id, writes, true)
     }
 
+    /// The same write, leaving no receipt behind.
+    ///
+    /// # WHEN THIS IS THE RIGHT ENTRY
+    ///
+    /// `write_chunk_ranges_borrowed` records a receipt keyed `direct-batch-write-<request
+    /// checksum>`. Deduplication looks receipts up by the CALLER's idempotency key, so that
+    /// one can never be matched -- and the caller-keyed entry
+    /// `write_chunk_ranges_idempotent_borrowed` already suppresses it and records its own.
+    ///
+    /// So a caller with no idempotency key gets a receipt that is written and cannot be
+    /// consulted. `write_chunk`, the single-range entry the replicated path uses, records
+    /// nothing for exactly that reason; this is the batch shape of the same decision.
+    ///
+    /// What it DOES give up, named rather than implied: the receipt map is encoded into a
+    /// replica snapshot and its length goes into the readiness fingerprint and the control
+    /// proof, and `list_chunk_batch_write_receipts` shows these to an operator. A write
+    /// through here is absent from all of that -- which is where a replicated single-range
+    /// write already is.
+    pub fn write_chunk_ranges_borrowed_without_receipt(
+        &mut self,
+        page_id: PageId,
+        writes: &[(u64, &[u8])],
+    ) -> Result<ReplicaWriteBatchStats, ObjectError> {
+        self.write_chunk_ranges_borrowed_internal(page_id, writes, false)
+    }
+
     pub fn write_chunk_ranges_fenced(
         &mut self,
         page_id: PageId,
