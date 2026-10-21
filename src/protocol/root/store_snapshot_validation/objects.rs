@@ -51,8 +51,8 @@ impl StoreSnapshot {
             }
             validate_user_metadata(&metadata.user_metadata)?;
             validate_tags(&metadata.tags)?;
-            validate_storage_class(&metadata.storage_class)?;
-            if !is_cold_storage_class(&metadata.storage_class) && metadata.lock.restore_until_ms != 0 {
+            validate_storage_class(metadata.storage_class.as_str())?;
+            if !metadata.storage_class.is_cold() && metadata.lock.restore_until_ms != 0 {
                 return Err(ObjectError::Corruption(
                     "snapshot warm object carries restore window".to_string(),
                 ));

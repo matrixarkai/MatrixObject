@@ -27,7 +27,7 @@ impl MatrixObjectStore {
             .ok_or_else(|| {
                 ObjectError::NotFound(format!("{}/{}", object_id.bucket, object_id.key))
             })?;
-        if !is_cold_storage_class(&metadata.storage_class) {
+        if !metadata.storage_class.is_cold() {
             return Err(ObjectError::PreconditionFailed(
                 "restore applies only to cold storage classes".to_string(),
             ));

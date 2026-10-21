@@ -137,9 +137,13 @@ impl MatrixObjectStore {
                 || options.user_metadata.clone(),
                 |metadata| metadata.user_metadata.clone().into(),
             ).into(),
-            storage_class: previous
-                .as_ref()
-                .map_or(storage_class.into(), |metadata| metadata.storage_class.clone()),
+            // An append keeps the object's class, and only parses the request's when
+            // there is no object yet -- written as a match because the parse can fail and
+            // `map_or` would have to run it either way.
+            storage_class: match previous.as_ref() {
+                Some(metadata) => metadata.storage_class,
+                None => StorageClass::parse(&storage_class)?,
+            },
             tags: previous
                 .as_ref()
                 .map_or_else(|| options.tags.clone(), |metadata| metadata.tags.clone().into()).into(),

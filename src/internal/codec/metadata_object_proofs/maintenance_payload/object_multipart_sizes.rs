@@ -30,7 +30,7 @@ pub(crate) fn object_metadata_payload_bytes(metadata: &ObjectMetadata) -> u64 {
         .saturating_add(metadata.etag().len())
         .saturating_add(metadata.content_type.len())
         .saturating_add(user_metadata_bytes)
-        .saturating_add(metadata.storage_class.len())
+        .saturating_add(metadata.storage_class.as_str().len())
         .saturating_add(tag_bytes)
         .saturating_add(metadata.extents.len().saturating_mul(32))
         .saturating_add(96) as u64

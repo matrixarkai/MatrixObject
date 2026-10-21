@@ -98,7 +98,7 @@ pub(crate) fn append_object_metadata_identity(out: &mut Vec<u8>, metadata: &Obje
     append_u64(out, metadata.length);
     append_string(out, &metadata.etag());
     append_string(out, &metadata.content_type);
-    append_string(out, &metadata.storage_class);
+    append_string(out, metadata.storage_class.as_str());
     append_u64(out, metadata.lock.restore_until_ms);
     append_string(out, &metadata.lock.legal_hold.to_string());
     append_u64(out, metadata.lock.legal_hold_update_time_ms);
@@ -132,7 +132,7 @@ pub(crate) fn append_metadata(out: &mut Vec<u8>, metadata: &ObjectMetadata) {
     append_string(out, &metadata.etag());
     append_string(out, &metadata.content_type);
     append_string_map(out, &metadata.user_metadata);
-    append_string(out, &metadata.storage_class);
+    append_string(out, metadata.storage_class.as_str());
     append_u64(out, metadata.lock.restore_until_ms);
     append_string_map(out, &metadata.tags);
     append_u64(out, metadata.lock.legal_hold as u64);

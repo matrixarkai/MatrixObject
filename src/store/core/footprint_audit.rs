@@ -113,7 +113,11 @@ fn audit_object_metadata_heap(ledger: &mut SharedTextLedger, metadata: &ObjectMe
         // The etag is a digest inline in the metadata, so it owns no heap.
         .saturating_add(0)
         .saturating_add(ledger.charge(&metadata.content_type))
-        .saturating_add(ledger.charge(&metadata.storage_class))
+        // A STORAGE CLASS OWNS NO CHARACTERS NOW. It was a `SharedText` of one of four
+        // names, interned so every object named the same allocation; as an enum it is a byte
+        // inside the struct and this leg is zero. Left here as an explicit zero rather than
+        // deleted, so the breakdown still names every item the metadata has.
+        .saturating_add(0)
         .saturating_add(audit_object_attributes_bytes(&metadata.user_metadata))
         .saturating_add(audit_object_attributes_bytes(&metadata.tags))
         .saturating_add(
@@ -423,7 +427,7 @@ impl MatrixObjectStore {
                 content_type_heap =
                     content_type_heap.saturating_add(detail_ledger.charge(&metadata.content_type));
                 storage_class_heap =
-                    storage_class_heap.saturating_add(detail_ledger.charge(&metadata.storage_class));
+                    storage_class_heap.saturating_add(0);
                 user_metadata_bytes = user_metadata_bytes
                     .saturating_add(audit_object_attributes_bytes(&metadata.user_metadata));
                 tags_bytes = tags_bytes.saturating_add(audit_object_attributes_bytes(&metadata.tags));

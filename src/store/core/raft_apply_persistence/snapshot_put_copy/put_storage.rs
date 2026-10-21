@@ -46,9 +46,8 @@ impl MatrixObjectStore {
         if metadata.object_id == object_id {
             metadata.object_id = object_id.clone();
         }
-        // Whichever path built this metadata, its storage class is one of four
-        // names, and this is where every mutation's object becomes resident.
-        metadata.storage_class = interned_storage_class(&metadata.storage_class);
+        // The storage class used to be interned here, one allocation for each of the
+        // four names. It is an enum now, so there is no allocation to share.
         metadata.content_type = self.shared_content_type(&metadata.content_type);
         self.objects.insert(object_id, metadata.clone());
     }
@@ -170,7 +169,7 @@ impl MatrixObjectStore {
             has_etag,
             content_type: content_type.into(),
             user_metadata: options.user_metadata.clone().into(),
-            storage_class: storage_class.into(),
+            storage_class: StorageClass::parse(&storage_class)?,
             lock: ObjectLock::default(),
             tags: options.tags.clone().into(),
             update_time_ms,

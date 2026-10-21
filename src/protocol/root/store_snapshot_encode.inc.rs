@@ -214,7 +214,7 @@ impl StoreSnapshot {
                 .saturating_add(U64 * 9)
                 .saturating_add(encoded_string_len(&metadata.etag()))
                 .saturating_add(encoded_string_len(&metadata.content_type))
-                .saturating_add(encoded_string_len(&metadata.storage_class))
+                .saturating_add(encoded_string_len(metadata.storage_class.as_str()))
                 .saturating_add(string_map_size(&metadata.user_metadata))
                 .saturating_add(string_map_size(&metadata.tags))
                 .saturating_add(metadata.extents.len().saturating_mul(U64 * 4))

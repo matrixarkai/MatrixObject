@@ -162,20 +162,20 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
 
-      - name: Four storage classes cost four allocations
+      - name: A storage class costs no heap at all
         run: |
           set -o pipefail
           cargo test --locked --lib \
-            tests::four_storage_classes_cost_four_allocations -- --exact \
+            tests::a_storage_class_costs_no_heap_at_all -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }
 
-      - name: The interned classes are the valid ones
+      - name: The storage class variants are the valid names
         run: |
           set -o pipefail
           cargo test --locked --lib \
-            tests::the_interned_storage_classes_are_the_valid_ones -- --exact \
+            tests::the_storage_class_variants_are_the_valid_names -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the guard did not run"; exit 1; }

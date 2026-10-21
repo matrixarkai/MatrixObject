@@ -74,7 +74,7 @@ at a hundred objects and 4.1% at eight thousand. Everything else is exactly
 linear, which makes the total a line once the feeds are full:
 
 ```
-metadata = 466 bytes an object + 164,304 bytes fixed      (remainder: zero)
+metadata = 434 bytes an object + 164,280 bytes fixed      (remainder: zero)
 ```
 
 reproducing every total above exactly, at every count where the feeds have
@@ -102,7 +102,7 @@ three store sizes and fails unless every one is a line and the fixed terms sum
 to the total's — so a leg that starts depending on the object count, or a fixed
 byte that stops being named, is caught rather than absorbed.
 
-That 466 is two items and a rounding error:
+That 434 is two items and a rounding error:
 
 | | per object | share |
 |---|---:|---:|
@@ -157,7 +157,7 @@ shared between holders is charged once per allocation — the characters and the
 two counts in front of them — so `mapkey_capacity` against `mapkey_len` is that
 header rather than slack.
 
-### What the 466 bytes are, and what each remaining part would cost to remove
+### What the 434 bytes are, and what each remaining part would cost to remove
 
 The slope is not one thing. Every leg below is fitted from the same two object counts the
 published line is fitted from, and they sum to it exactly:
@@ -166,13 +166,13 @@ published line is fitted from, and they sum to it exactly:
 METADATA LINE PARTS
 objects.mapkey_inline          32  two shared-text holders, which is what keys the map
 objects.mapkey_heap            42  the key's characters: ONE allocation, shared with the value
-objects.metadata_inline       144  ObjectMetadata itself
+objects.metadata_inline       128  ObjectMetadata itself
 objects.extents_bytes          24  one extent, whose offset and length are 32-bit
 meta.records.struct_inline     72  the map key's holder, plus MetadataRecord
 meta.records.mapkey_capacity   56  the record key's characters: ONE allocation, shared
-meta.records.value_capacity    88  the projection the record holds
+meta.records.value_capacity    72  the projection the record holds
 payloads.key_bytes              8  the payload index's key
-METADATA LINE TOTAL          466
+METADATA LINE TOTAL          434
 ```
 
 `the_published_metadata_decomposition_sums_to_the_line` measures each one and fails if this
@@ -192,7 +192,7 @@ characters, sixteen bytes once per allocation.
 
 #### The four reductions that are left, and what each one costs
 
-Each is priced against the 466. The fourth one on this list has since been **taken** --
+Each is priced against the 434. The fourth one on this list has since been **taken** --
 narrowing an extent's offset and length to 32 bits was priced at 8 bytes an object and cost a
 migration, until it turned out not to: the snapshot still writes two `u64` and only the
 in-memory form is narrow, so there was nothing to migrate. That is the 474 above becoming 466.
@@ -201,10 +201,26 @@ The three that remain are not free.
 | | saves | what it costs |
 |---|---:|---|
 | The metadata records restate the objects map | **216** | It is the whole of `meta.records`: a separate metadata service's own store, with its own versioning, deletion markers and change log, modelled in this process. Removing the restatement means collapsing two services into one, which is a design decision and not a footprint one. |
-| A thin `SharedText` | **~48** | `SharedText` is `Arc<str>`, a fat pointer, so every holder costs 16 bytes. A thin representation (`Arc` of an owned box) costs 8 a holder but adds a second pointer chase to **every** string read, on a write path where a put is already dominated by copying. A footprint gain paid for in read latency everywhere. |
-| Interning content types and storage classes | **~48** | Both are `SharedText` and in practice take a handful of distinct values, so an index would be 4 bytes rather than 16. But a content type is arbitrary input, so the table is unbounded and needs eviction -- which is a cache, with a cache's failure modes, in the middle of object metadata. |
+| A thin `SharedText` | ~40, **estimated** | `SharedText` is `Arc<str>`, a fat pointer, so every holder costs 16 bytes. A thin representation (`Arc` of an owned box) costs 8 a holder but adds a second pointer chase to **every** string read, on a write path where a put is already dominated by copying. A footprint gain paid for in read latency everywhere. |
+| Interning content types | ~24, **estimated** | A content type is arbitrary input, so an intern table for it is unbounded and needs eviction -- a cache, with a cache's failure modes, in the middle of object metadata. The **storage class** was on this row too, and it came off: its set is closed to four names, so it needed an enum rather than a table and no table means no eviction. That was 32 bytes an object. |
 
-**The one that was taken, and what it actually cost.** An extent's offset is a position
+**Two of these figures are marked "estimated", and that is not hedging.** The extent row
+below was priced at 8 bytes and a migration, and the migration turned out not to exist. The
+storage-class row was priced at "an unbounded intern table", and the set turned out to be
+closed. Both were corrected by MEASURING THE PROPOSED LAYOUT BY CONSTRUCTION -- a hand-built
+mirror of the struct, sized by the compiler, with the unchanged mirror as a control -- before
+touching any code. The two rows above have not had that done to them yet, so their figures are
+arithmetic rather than measurements, and their costs are arguments rather than findings.
+
+**The storage class, which came off the list.** `validate_storage_class` accepts exactly
+STANDARD, ARCHIVE, GLACIER and DEEP_ARCHIVE, so a `SharedText` was spending sixteen bytes to
+say one of four things. As a one-byte enum the byte lands in padding both structures already
+had: `ObjectMetadata` 144 to 128 and `ObjectProjection` 88 to 72, **32 bytes an object**. The
+snapshot still writes the same four names, so there was no migration here either, and the
+state it removes -- a class outside the set -- is one the store's own validation already
+refused.
+
+**The extent, which came off before it.** An extent's offset is a position
 inside one chunk and its length is bounded by `max_extent_bytes`, which is already validated
 as `1..=chunk_size`, so both fit in 32 bits for any chunk under 4 GiB. `StoreOptions` now
 refuses a `chunk_size` at or above that bound rather than letting an extent wrap, and that

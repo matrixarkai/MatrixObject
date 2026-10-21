@@ -131,7 +131,7 @@ pub(crate) fn object_inventory_record_payload_bytes(record: &ObjectInventoryReco
         .saturating_add(record.metadata.object_id.key.len() as u64)
         .saturating_add(record.metadata.etag().len() as u64)
         .saturating_add(record.metadata.content_type.len() as u64)
-        .saturating_add(record.metadata.storage_class.len() as u64)
+        .saturating_add(record.metadata.storage_class.as_str().len() as u64)
         .saturating_add((record.metadata.extents.len() as u64).saturating_mul(32));
     for (key, value) in &record.metadata.tags {
         bytes = bytes
@@ -192,7 +192,7 @@ pub struct ObjectProjection {
     pub has_etag: bool,
     pub content_type: SharedText,
     pub metadata_count: u32,
-    pub storage_class: SharedText,
+    pub storage_class: StorageClass,
     pub restore_until_ms: u64,
     pub deleted: bool,
     pub extent_count: u32,
