@@ -71,30 +71,26 @@ impl MatrixObjectStore {
         non_empty_endpoint(Some(self.options.rootserver_catalog_endpoint.as_str()))
     }
 
+    /// Refused: the control plane is the metaserver, so nothing reads a root catalog.
+    ///
+    /// # WHY THIS IS A REFUSAL AND NOT A NO-OP
+    ///
+    /// Accepting the endpoint and ignoring it would leave a store answering from the
+    /// metaserver while its own configuration said otherwise -- it would have taken the
+    /// setting and not honoured it.
+    ///
+    /// This is also the JOURNAL REPLAY path: `catalog_operations` replays a recorded
+    /// endpoint by calling this function, so a journal carrying one is refused on replay by
+    /// the same check, rather than quietly restoring a setting this build cannot serve.
     pub fn configure_rootserver_fallback_endpoint(
         &mut self,
         rootserver_endpoint: impl AsRef<str>,
     ) -> Result<ControlPlaneCatalogEndpointSet, ObjectError> {
-        let endpoint = non_empty_endpoint(Some(rootserver_endpoint.as_ref())).ok_or_else(|| {
-            ObjectError::InvalidArgument(
-                "rootserver fallback endpoint must not be empty".to_string(),
-            )
-        })?;
-        let previous_endpoint = self.options.rootserver_catalog_endpoint.clone();
-        self.options.rootserver_catalog_endpoint = endpoint.to_string();
-        if self.options.persistent_snapshot_flush_on_commit {
-            if let Err(err) = self.flush_persistent_snapshot() {
-                self.options.rootserver_catalog_endpoint = previous_endpoint;
-                return Err(err);
-            }
-        }
-        if let Err(err) = self.append_rootserver_fallback_endpoint_journal_record(
-            &self.options.rootserver_catalog_endpoint,
-        ) {
-            self.options.rootserver_catalog_endpoint = previous_endpoint;
-            return Err(err);
-        }
-        self.select_catalog_endpoint_set(None, None)
+        Err(ObjectError::InvalidArgument(format!(
+            "a root catalog endpoint ({:?}) cannot be configured: this store's control plane \
+             is the metaserver, so nothing would read it",
+            rootserver_endpoint.as_ref()
+        )))
     }
 
     pub fn select_catalog_endpoint(

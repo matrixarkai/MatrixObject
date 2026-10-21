@@ -117,7 +117,8 @@ impl StorageClass {
             .find(|class| class.as_str() == text)
             .ok_or_else(|| {
                 ObjectError::InvalidArgument(format!(
-                    "storage class must be STANDARD, ARCHIVE, GLACIER, or DEEP_ARCHIVE,                      and {text:?} is none of them"
+                    "storage class must be STANDARD, ARCHIVE, GLACIER, or DEEP_ARCHIVE, \
+                      and {text:?} is none of them"
                 ))
             })
     }

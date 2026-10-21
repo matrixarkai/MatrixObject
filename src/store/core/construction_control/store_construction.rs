@@ -27,6 +27,17 @@ impl MatrixObjectStore {
                 "volume_count must be positive".to_string(),
             ));
         }
+        // NO MODE READS A ROOT CATALOG. Refused here rather than ignored, for the reason the
+        // chunk_size ceiling above is refused here: a store that accepted the setting and
+        // then answered from the metaserver anyway would have taken the configuration and
+        // not honoured it.
+        if !options.rootserver_catalog_endpoint.trim().is_empty() {
+            return Err(ObjectError::InvalidArgument(
+                "rootserver_catalog_endpoint cannot be set: this store's control plane is the \
+                 metaserver, so nothing would read it"
+                    .to_string(),
+            ));
+        }
         if options.page_size == 0 || options.page_size > options.chunk_size {
             return Err(ObjectError::InvalidArgument(
                 "page_size must be 1..chunk_size".to_string(),

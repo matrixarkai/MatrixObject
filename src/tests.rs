@@ -621,41 +621,67 @@ fn persistent_journal_replays_control_plane_catalog_config() {
                 " meta-a.local:9105,meta-b.local:9105,meta-a.local:9105 ",
             )
             .unwrap();
+        // NOTHING CAN WRITE A ROOT CATALOG ENDPOINT, so the journal cannot come to carry
+        // one: the configure call is the only writer of record 37 and it refuses.
+        assert!(matches!(
+            store.configure_rootserver_fallback_endpoint(" root-a.local:9100 "),
+            Err(ObjectError::InvalidArgument(_))
+        ));
+        // And the retired mode is refused by name, so record 35 cannot carry one either.
+        assert!(matches!(
+            store.configure_control_plane_mode("rootserver", None, None),
+            Err(ObjectError::InvalidArgument(_))
+        ));
         store
-            .configure_rootserver_fallback_endpoint(" root-a.local:9100 ")
-            .unwrap();
-        store
-            .configure_control_plane_mode("rootserver", None, None)
+            .configure_control_plane_mode("metaserver", None, None)
             .unwrap();
         assert!(journal_path.exists());
     }
 
-    let reopened = MatrixObjectStore::new(options).unwrap();
+    let reopened = MatrixObjectStore::new(options.clone()).unwrap();
     assert_eq!(
         reopened.configured_metaserver_catalog_endpoints(),
         Some("meta-a.local:9105,meta-b.local:9105")
     );
-    assert_eq!(
-        reopened.configured_rootserver_fallback_endpoint(),
-        Some("root-a.local:9100")
-    );
+    assert_eq!(reopened.configured_rootserver_fallback_endpoint(), None);
     assert_eq!(
         reopened.configured_control_plane_mode().as_str(),
-        "rootserver"
+        "metaserver"
     );
     let selected = reopened
         .select_catalog_endpoint(None, None)
         .unwrap()
         .unwrap();
-    assert_eq!(selected.catalog_source, "rootserver");
-    assert_eq!(selected.catalog_endpoint, "root-a.local:9100");
+    assert_eq!(selected.catalog_source, "metaserver");
+    assert_eq!(selected.catalog_endpoint, "meta-a.local:9105");
+    assert!(!selected.rootserver_required);
+    assert!(!selected.rootserver_endpoint_configured);
     let endpoint_set = reopened.select_catalog_endpoint_set(None, None).unwrap();
-    assert_eq!(endpoint_set.effective_mode, "rootserver");
-    assert_eq!(endpoint_set.endpoint_count(), 1);
+    assert_eq!(endpoint_set.effective_mode, "metaserver");
+    assert_eq!(endpoint_set.endpoint_count(), 2);
     assert_eq!(
         endpoint_set.selected.as_ref().unwrap().catalog_endpoint,
-        "root-a.local:9100"
+        "meta-a.local:9105"
     );
+
+    // AN OLD JOURNAL IS REFUSED, NOT QUIETLY RESTORED. A journal written by a build that
+    // still had the mode can carry a record 37, and replay reaches the same configure
+    // function, so loading such a store fails rather than coming up with a root catalog
+    // endpoint nothing reads. The frame is appended by hand because this build has no
+    // writer left for it.
+    let mut record = Vec::new();
+    append_u64(&mut record, 37);
+    append_string(&mut record, "root-a.local:9100");
+    append_persistent_journal_frame(&options.persistent_journal_path, &record).unwrap();
+    match MatrixObjectStore::new(options) {
+        Err(ObjectError::InvalidArgument(message)) => assert!(
+            message.contains("root catalog endpoint"),
+            "the refusal should name what it refused, and it says {message:?}"
+        ),
+        other => panic!(
+            "a journal carrying a root catalog endpoint should be refused, and it gave {other:?}"
+        ),
+    }
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -9365,7 +9391,7 @@ fn rootserver_repairs_unhealthy_placements_from_health_audit() {
 #[test]
 fn distributed_put_uses_root_placement_and_releases_capacity() {
     let mut options = test_options();
-    options.control_plane_mode = ControlPlaneMode::RootServer;
+    options.control_plane_mode = ControlPlaneMode::MetaServer;
     let mut store = MatrixObjectStore::new(options).unwrap();
     store
         .register_root_node(root_node("chunk-a", "rack-a", 40))
@@ -9478,7 +9504,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     assert!(ready.root_leader_ready);
     assert_eq!(
         store.configured_control_plane_mode(),
-        ControlPlaneMode::RootServer
+        ControlPlaneMode::MetaServer
     );
     assert!(!store.rootserver_required());
     assert_eq!(store.effective_control_plane_mode(), "metaserver");
@@ -11307,35 +11333,20 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
     assert_eq!(root_only_auto_set.effective_mode, "metaserver");
     assert!(!root_only_auto_set.rootserver_required);
 
+    // A ROOT CATALOG ENDPOINT IS REFUSED, not stored and ignored, because nothing reads
+    // one: the control plane is the metaserver. This is also the journal-replay path, which
+    // reaches the same function.
     let mut configured_store = MatrixObjectStore::new(test_options()).unwrap();
-    let configured_set = configured_store
-        .configure_rootserver_fallback_endpoint(" root-config.local:9100 ")
-        .unwrap();
+    for endpoint in [" root-config.local:9100 ", "root.local:9100", "   ", ""] {
+        match configured_store.configure_rootserver_fallback_endpoint(endpoint) {
+            Err(ObjectError::InvalidArgument(_)) => {}
+            other => panic!("{endpoint:?} should be refused, and it gave {other:?}"),
+        }
+    }
     assert_eq!(
         configured_store.configured_rootserver_fallback_endpoint(),
-        Some("root-config.local:9100")
-    );
-    assert_eq!(configured_set.endpoint_count(), 1);
-    assert_eq!(
-        configured_set.selected.as_ref().unwrap().catalog_source,
-        "metaserver"
-    );
-    assert_eq!(configured_set.effective_mode, "metaserver");
-    let configured_mixed = configured_store
-        .select_catalog_endpoint_set(Some("meta-config.local:9105"), None)
-        .unwrap();
-    assert_eq!(configured_mixed.endpoint_count(), 1);
-    assert_eq!(
-        configured_mixed.selected.as_ref().unwrap().catalog_source,
-        "metaserver"
-    );
-    assert_eq!(
-        configured_store
-            .select_catalog_endpoint(None, None)
-            .unwrap()
-            .unwrap()
-            .catalog_endpoint,
-        EMBEDDED_METASERVER_CATALOG_ENDPOINT
+        None,
+        "a refused endpoint must not have been stored"
     );
     let configured_root_status = configured_store
         .module_status(0, 10, 0, 0, 2, 100, 0)
@@ -11346,82 +11357,54 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
         configured_root_status.catalog_endpoint,
         EMBEDDED_METASERVER_CATALOG_ENDPOINT
     );
-    assert!(!configured_root_status.metaserver_catalog_endpoint_configured);
-    assert!(configured_root_status.rootserver_catalog_endpoint_configured);
+    assert!(!configured_root_status.rootserver_catalog_endpoint_configured);
     assert!(!configured_root_status.rootserver_required);
+    // And a store cannot be built with one either.
+    let mut rejected_options = test_options();
+    rejected_options.rootserver_catalog_endpoint = "root.local:9100".to_string();
     assert!(matches!(
-        configured_store.configure_rootserver_fallback_endpoint("   "),
+        MatrixObjectStore::new(rejected_options),
         Err(ObjectError::InvalidArgument(_))
     ));
 
-    let mut root_options = test_options();
-    root_options.control_plane_mode = ControlPlaneMode::RootServer;
-    let root_store = MatrixObjectStore::new(root_options).unwrap();
-    let local_root = root_store
-        .select_catalog_endpoint(None, None)
-        .unwrap()
-        .unwrap();
-    assert_eq!(local_root.configured_mode, "rootserver");
-    assert_eq!(local_root.catalog_source, "metaserver");
-    assert_eq!(local_root.effective_mode, "metaserver");
-    assert_eq!(
-        local_root.catalog_endpoint,
-        EMBEDDED_METASERVER_CATALOG_ENDPOINT
-    );
-    assert!(!local_root.rootserver_required);
-    let local_root_endpoint_set = root_store.select_catalog_endpoint_set(None, None).unwrap();
-    assert_eq!(local_root_endpoint_set.endpoint_count(), 1);
-    assert_eq!(
-        local_root_endpoint_set
-            .selected
-            .as_ref()
-            .unwrap()
-            .catalog_source,
-        "metaserver"
-    );
-    assert_eq!(local_root_endpoint_set.effective_mode, "metaserver");
-    assert!(!local_root_endpoint_set.rootserver_required);
-    let explicit_root = root_store
-        .select_catalog_endpoint(Some("meta.local:9105"), Some("root.local:9100"))
-        .unwrap()
-        .unwrap();
-    assert_eq!(explicit_root.catalog_source, "rootserver");
-    assert_eq!(explicit_root.effective_mode, "rootserver");
-    assert!(explicit_root.rootserver_required);
-    let root_endpoint_set = root_store
-        .select_catalog_endpoint_set(Some("meta.local:9105"), Some("root.local:9100"))
-        .unwrap();
-    assert_eq!(root_endpoint_set.endpoint_count(), 1);
-    assert_eq!(
-        root_endpoint_set.selected.as_ref().unwrap().catalog_source,
-        "rootserver"
-    );
-    assert!(root_endpoint_set.rootserver_required);
-    let explicit_root_without_endpoint = root_store
-        .select_catalog_endpoint(Some("meta.local:9105"), None)
-        .unwrap()
-        .unwrap();
-    assert_eq!(explicit_root_without_endpoint.catalog_source, "metaserver");
-    assert_eq!(explicit_root_without_endpoint.effective_mode, "metaserver");
-    assert!(!explicit_root_without_endpoint.rootserver_required);
-
-    assert_eq!(
-        ControlPlaneMode::parse("globalcatalog").unwrap(),
-        ControlPlaneMode::GlobalCatalog
-    );
-    assert_eq!(
-        ControlPlaneMode::parse("global-catalog").unwrap(),
-        ControlPlaneMode::GlobalCatalog
-    );
-    assert_eq!(
-        ControlPlaneMode::parse("rootserver").unwrap(),
-        ControlPlaneMode::RootServer
-    );
-    assert_eq!(ControlPlaneMode::RootServer.snapshot_code(), 3);
-    assert_eq!(
-        ControlPlaneMode::from_snapshot_code(3).unwrap(),
-        ControlPlaneMode::RootServer
-    );
+    // THE RETIRED MODES are refused BY NAME rather than falling into the catch-all, so the
+    // error says what happened to them instead of only what is allowed.
+    for retired in ["globalcatalog", "global-catalog", "catalog", "rootserver", "root"] {
+        match ControlPlaneMode::parse(retired) {
+            Err(ObjectError::InvalidArgument(message)) => assert!(
+                message.contains("retired"),
+                "{retired:?} should be refused as retired, and the message is {message:?}"
+            ),
+            other => panic!("{retired:?} should be refused, and it gave {other:?}"),
+        }
+    }
+    // The surviving modes keep their durable codes: a snapshot written before this change
+    // names auto 0 and metaserver 1, and those must not move.
+    assert_eq!(ControlPlaneMode::Auto.snapshot_code(), 0);
+    assert_eq!(ControlPlaneMode::MetaServer.snapshot_code(), 1);
+    // A ROOTSERVER-MODE SNAPSHOT WITH NO ENDPOINT WAS A METASERVER -- it selected the
+    // embedded metaserver catalog -- so it loads as one rather than being refused.
+    for empty in ["", "   "] {
+        assert_eq!(
+            ControlPlaneMode::from_snapshot_code_with_endpoint(3, empty).unwrap(),
+            ControlPlaneMode::MetaServer,
+            "code 3 with no endpoint was already a metaserver"
+        );
+    }
+    // With an endpoint it was pointed at a catalog this build cannot reach, and
+    // globalcatalog always required one. Refused rather than silently repointed.
+    assert!(matches!(
+        ControlPlaneMode::from_snapshot_code_with_endpoint(3, "root.local:9100"),
+        Err(ObjectError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        ControlPlaneMode::from_snapshot_code_with_endpoint(2, ""),
+        Err(ObjectError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        ControlPlaneMode::from_snapshot_code_with_endpoint(4, ""),
+        Err(ObjectError::Corruption(_))
+    ));
 
     let mut meta_options = test_options();
     meta_options.control_plane_mode = ControlPlaneMode::MetaServer;

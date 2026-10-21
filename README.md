@@ -393,6 +393,19 @@ Every default above is `StoreOptions::default()`, and
 fails if a row names a field that does not exist or states a default the tree
 does not have.
 
+### The control plane
+
+The control plane is the **metaserver**: one metadata service, embedded by default.
+`control_plane_mode` takes `auto` (the default) or `metaserver`, and both select it --
+`auto` unconditionally, `metaserver` using whatever `metaserver_catalog_endpoints` names
+and the embedded catalog when it names nothing.
+
+Two earlier modes, `globalcatalog` and `rootserver`, selected a separate root catalog
+instead. Both are retired: the spellings are refused by name, a root catalog endpoint is
+refused at construction, in the environment and on snapshot load, and a snapshot written in
+`rootserver` mode **with no endpoint loads as a metaserver**, because that is what it already
+was. One written with an endpoint is refused rather than silently repointed.
+
 ### Picking the two that matter
 
 **`page_size` is the one worth setting deliberately.** It is the replicated
