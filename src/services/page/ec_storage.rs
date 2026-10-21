@@ -156,8 +156,15 @@ impl MatrixChunkService {
                             )
                             .map(|(stats, _)| stats)?
                     }
-                    None => self.replicas[replica]
-                        .write_chunk_ranges_borrowed(page_id.clone(), &[unit_write])?,
+                    // NO CALLER KEY, SO NO RECEIPT. A receipt here could only be keyed
+                    // on the request's own checksum, and nothing looks that up -- a retry
+                    // arrives with the caller's key or with nothing. The replicated
+                    // single-range path writes through `write_chunk`, which records none
+                    // either.
+                    None => self.replicas[replica].write_chunk_ranges_borrowed_without_receipt(
+                        page_id.clone(),
+                        &[unit_write],
+                    )?,
                 };
                 stats.physical_write_count = stats
                     .physical_write_count
@@ -219,13 +226,15 @@ impl MatrixChunkService {
         // let a retry SKIP it, which is the one thing a redundancy rewrite must never do
         // after the data has moved.
         //
-        // It is not receipt-free, though: `write_chunk_ranges_borrowed` records one of its
-        // own, keyed `direct-batch-write-<request checksum>`, which is why one striped write
-        // leaves one receipt per touched group on top of its unit receipts. That receipt is
-        // written and never consulted -- the function does not check it before writing -- so
-        // it costs a replica's receipt map and buys nothing here.
-        self.replicas[replica]
-            .write_chunk_ranges_borrowed(page_id.clone(), &[(base, &redundancy)])?;
+        // AND IT IS RECEIPT-FREE, which follows from the same fact. A receipt here could
+        // only be keyed on this rewrite's own request checksum, and nothing ever looks such
+        // a key up: the one receipt a retry can match is the caller's, recorded by the unit
+        // write above. One per touched group was being written and could not be consulted,
+        // which at 1 KiB objects was most of 636 bytes an object.
+        self.replicas[replica].write_chunk_ranges_borrowed_without_receipt(
+            page_id.clone(),
+            &[(base, &redundancy)],
+        )?;
         Ok(())
     }
 

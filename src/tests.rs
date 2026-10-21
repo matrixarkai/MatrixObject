@@ -39710,11 +39710,12 @@ fn a_retried_striped_write_is_deduplicated_at_each_replica() {
     // bytes. A key naming only the page and the replica would make the second look like the
     // first retried, and that replica would silently never receive its second unit.
     //
-    // PLUS ONE PER TOUCHED GROUP for the redundancy rewrite, which goes through
-    // `write_chunk_ranges_borrowed` -- and that records a `direct-batch-write-` receipt of
-    // its own without ever checking one. Three groups, so eight. Counted separately rather
-    // than folded into a total, because the two kinds are there for different reasons and a
-    // single number would hide one of them appearing or disappearing.
+    // AND NOTHING FOR THE THREE REDUNDANCY REWRITES, which is what this count is for.
+    // They used to go through `write_chunk_ranges_borrowed` and leave a
+    // `direct-batch-write-<checksum>` receipt each -- eight in total here -- keyed on
+    // something nothing looks up. Counting the two kinds separately rather than folding
+    // them into one total is exactly what made that disappearance visible: this assertion
+    // moved from 8 to 5 and the one above did not move at all.
     let unit_receipts = |service: &MatrixChunkService| -> usize {
         service
             .replicas
@@ -39730,8 +39731,8 @@ fn a_retried_striped_write_is_deduplicated_at_each_replica() {
     );
     assert_eq!(
         receipts(&service),
-        8,
-        "five unit receipts and one per touched group for the redundancy rewrite"
+        5,
+        "the five unit receipts and nothing else: a redundancy rewrite leaves none"
     );
 
     let bytes_held = |service: &MatrixChunkService| -> Vec<(u64, u64, Vec<u8>)> {
@@ -43305,5 +43306,76 @@ fn the_published_striped_amplification_is_the_one_this_tree_produces() {
     assert!(
         striped < replicated,
         "striping should hold less than replication at this size: {striped} against {replicated}"
+    );
+}
+
+#[test]
+fn a_striped_write_leaves_no_receipt_nothing_could_match() {
+    // A striped write used to leave a receipt per unit AND one per touched group, keyed on
+    // each request's own checksum. Deduplication looks receipts up by the CALLER's key, so
+    // none of those could ever be matched -- 636 bytes an object at 1 KiB, against 144 bytes
+    // in TOTAL for a replicated store doing the same work through `write_chunk`.
+    //
+    // BOTH ARMS GO THROUGH `write_striped_page_ranges`, which is the function that changed.
+    // Comparing a striped store against a replicated one would also pass if striping had
+    // stopped writing altogether.
+    fn receipts(service: &MatrixChunkService) -> usize {
+        service
+            .replicas
+            .iter()
+            .map(|replica| replica.batch_write_request_receipts.len())
+            .sum()
+    }
+    let chunk_id = ChunkId {
+        volume_id: 1,
+        id: 1,
+    };
+    let page_id = PageId {
+        chunk_id: chunk_id.clone(),
+        page_index: 0,
+    };
+    // 300 bytes over 64-byte units is five data units in three groups, which is what makes
+    // the two counts below different numbers rather than both being "some".
+    let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
+
+    let mut unkeyed = striped_chunk_service(64);
+    unkeyed
+        .write_striped_page_ranges(&page_id, &[(0, &payload)], None)
+        .unwrap();
+    // THE WRITE HAPPENED, asserted before the receipt count: zero receipts is also what a
+    // store that wrote nothing would report, and that reading is the one this test must
+    // rule out.
+    let (read, _) = unkeyed.read_striped_page_range(&page_id, 0, 300).unwrap();
+    assert_eq!(read, payload, "an unkeyed striped write did not read back");
+    assert_eq!(
+        receipts(&unkeyed),
+        0,
+        "a striped write with no caller key should leave no receipt, because the only key it \
+         could use is one nothing looks up"
+    );
+
+    // THE POSITIVE CONTROL: the same function, the same bytes, with a key. Five unit writes
+    // leave five receipts -- so the zero above is the absence of a key to dedupe against,
+    // not an inability to record. Three groups' redundancy rewrites leave none, which is
+    // the part this change removed.
+    let mut keyed = striped_chunk_service(64);
+    keyed
+        .write_striped_page_ranges(&page_id, &[(0, &payload)], Some(("sw", "keyed-1")))
+        .unwrap();
+    assert_eq!(
+        receipts(&keyed),
+        5,
+        "five data-unit writes, five caller-keyed receipts, and nothing for the three \
+         redundancy rewrites"
+    );
+    // And it still deduplicates, which is what the receipts are FOR. A retry of the same
+    // request must not add a sixth.
+    keyed
+        .write_striped_page_ranges(&page_id, &[(0, &payload)], Some(("sw", "keyed-1")))
+        .unwrap();
+    assert_eq!(
+        receipts(&keyed),
+        5,
+        "a retried striped write should be answered from the five receipts it already left"
     );
 }

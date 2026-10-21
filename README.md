@@ -82,7 +82,7 @@ in both directions: a renamed constant fails it, and so does a new one.
   of the payload. At three replicas and one unit of redundancy that measures
   **1.5x against replication's 3.0x**, read out of `footprint_audit()` for the
   same objects put through two stores, and counting the metadata too the whole
-  store measures 2.77x against 3.64x at a thousand objects of 1 KiB. It is a
+  store measures 2.15x against 3.64x at a thousand objects of 1 KiB. It is a
   durability trade
   -- one loss survived where three-way replication survives two -- and a striped
   write needs every replica to accept it, so `write_quorum` must equal
@@ -136,10 +136,10 @@ which is more hardware rather than less space.
 replicas to eight and fails if any of them undercuts that.
 
 Counted with the metadata, a thousand objects of 1 KiB measure
-**2.77x striped against 3.64x replicated**, both read out of `footprint_audit()` on a
-store nothing has read back yet. The two are closer together than their data terms are
-because a striped page pays a receipt for every unit it writes -- 636 bytes an object at
-this size, which is now the largest thing sitting above the floor.
+**2.15x striped against 3.64x replicated**, both read out of `footprint_audit()` on a
+store nothing has read back yet. What separates the total from the 1.5x data term is the
+metadata line above, which striping does not change: the same 474 bytes an object either
+way. Striping moves the payload and nothing else.
 
 A smaller point than the table's rows above, and deliberately: measuring both shapes at
 8,000 objects takes longer than the whole test suite, and a figure checked only by a test
