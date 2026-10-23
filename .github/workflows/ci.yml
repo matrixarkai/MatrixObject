@@ -480,3 +480,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the_chunk_identity_is_eight_bytes_and_the_wire_and_order_are_unchanged did not run"; exit 1; }
+
+      - name: The published amplification table agrees with the metadata line
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_published_amplification_table_agrees_with_the_metadata_line -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_published_amplification_table_agrees_with_the_metadata_line did not run"; exit 1; }
