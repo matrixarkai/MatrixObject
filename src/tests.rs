@@ -44395,6 +44395,132 @@ fn one_unit_of_redundancy_is_the_least_a_layout_can_hold() {
 }
 
 #[test]
+fn the_published_amplification_table_agrees_with_the_metadata_line() {
+    // Two documents publish this table and NOTHING derived either copy, so they drifted:
+    // `docs/footprint.md` read 3.13x and 3.50x where the README read 3.12x and 3.46x, and
+    // only one of them could have been right. Measuring at 8,000 objects costs about 240
+    // seconds in a debug build -- the reason the striped guard beside this one publishes a
+    // 1,000-object point instead -- so this does not re-measure.
+    //
+    // It does not need to. Everything above the data term IS the metadata line, so for each
+    // row `total - data` must equal `(slope * objects + fixed) / (objects * size)`, and the
+    // line is checked against the tree by
+    // `the_published_metadata_footprint_line_is_the_one_this_tree_produces`. The two
+    // together pin the table to the tree without either of them paying for the puts.
+    const README: &str = include_str!("../README.md");
+    const DOC: &str = include_str!("../docs/footprint.md");
+
+    // The line, read from the sentence the other guard also reads.
+    fn published_line(text: &str) -> (u64, u64) {
+        let marker = " bytes an object plus ";
+        let at = text
+            .find(marker)
+            .expect("the README should state the metadata line");
+        let slope: String = text[..at]
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let slope: u64 = slope
+            .chars()
+            .rev()
+            .collect::<String>()
+            .parse()
+            .expect("the slope should be a number");
+        let rest = &text[at + marker.len()..];
+        let fixed: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == ',')
+            .filter(char::is_ascii_digit)
+            .collect();
+        (slope, fixed.parse().expect("the fixed term should be a number"))
+    }
+    let (slope, fixed) = published_line(README);
+    assert!(
+        slope > 0 && fixed > 0,
+        "the line parsed as {slope} an object plus {fixed}, which cannot be right"
+    );
+
+    // Every row of either table, as (size, objects, total hundredths, data hundredths).
+    fn rows(text: &str) -> Vec<(u64, u64, u64, u64)> {
+        let mut found = Vec::new();
+        for line in text.lines() {
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            if cells.len() != 6 {
+                continue;
+            }
+            let size = match cells[1] {
+                "64 KiB" => 64 * 1024u64,
+                "4 KiB" => 4 * 1024,
+                "1 KiB" => 1024,
+                _ => continue,
+            };
+            let number = |cell: &str| -> Option<u64> {
+                let digits: String = cell.chars().filter(char::is_ascii_digit).collect();
+                digits.parse().ok()
+            };
+            match (number(cells[2]), number(cells[3]), number(cells[4])) {
+                (Some(objects), Some(total), Some(data)) if objects > 0 => {
+                    found.push((size, objects, total, data))
+                }
+                _ => continue,
+            }
+        }
+        found
+    }
+
+    let mut checked = 0usize;
+    for (document, text) in [("README.md", README), ("docs/footprint.md", DOC)] {
+        let table = rows(text);
+        assert!(
+            table.len() >= 3,
+            "{document} should publish at least three amplification rows and it parsed \
+             {} -- if the table moved, this guard stopped checking it",
+            table.len()
+        );
+        for (size, objects, total, data) in table {
+            // The metadata share of the row, in hundredths, from the published line.
+            let metadata = slope.saturating_mul(objects).saturating_add(fixed);
+            let logical = objects.saturating_mul(size);
+            let share = metadata.saturating_mul(100) / logical;
+            let published = total.saturating_sub(data);
+            // TOLERANCE 2, AND IT IS NOT SLACK: both columns are rounded to hundredths, so
+            // their difference carries up to one hundredth of rounding from each. A stale
+            // row misses by far more -- the 3.50 this guard was written for is out by four.
+            let apart = published.abs_diff(share);
+            assert!(
+                apart <= 2,
+                "{document}: the {objects}-object row at {size} bytes publishes \
+                 {total} - {data} = {published} hundredths above the data term, and the \
+                 metadata line says {share} -- {apart} apart. Correct the table in the \
+                 change that moved the line."
+            );
+            checked += 1;
+        }
+    }
+    // AND THE TWO DOCUMENTS MUST AGREE CELL FOR CELL, which is the clause the drift this
+    // guard was written for actually needed. The tolerance above is two hundredths because
+    // both published columns are rounded, so it catches the 3.50x copy -- four apart -- and
+    // NOT the 3.13x against 3.12x one, which is a single hundredth. Both documents publish
+    // the same table, so any difference between them is drift in one of the two, and this
+    // catches it exactly and for nothing.
+    assert_eq!(
+        rows(README),
+        rows(DOC),
+        "the README and docs/footprint.md publish the same amplification table and must \
+         agree cell for cell; they once read 3.13x and 3.50x against 3.12x and 3.46x"
+    );
+
+    // NOT VACUOUS: a parser that matched nothing would satisfy every assertion above, and
+    // two empty tables would agree with each other.
+    assert!(
+        checked >= 6,
+        "both tables should have been checked and only {checked} rows were"
+    );
+    println!("AMPTABLE rows_checked={checked} slope={slope} fixed={fixed}");
+}
+
+#[test]
 fn the_published_striped_amplification_is_the_one_this_tree_produces() {
     // The README publishes what a striped store holds AGAINST what a replicated one holds,
     // counted with the metadata. Both numbers are measured here, because the striped one
