@@ -44109,6 +44109,43 @@ fn every_metadata_leg_is_a_line_and_the_intercepts_are_named() {
         total_intercept, intercepts,
         "the fixed term must be the sum of the legs' fixed terms, with nothing          derived and nothing left over: {total_intercept} against {intercepts}"
     );
+
+    // WHICH SERVICE HOLDS WHICH BYTES. The README publishes the line above as a split, and
+    // without it a reader takes a storage node to carry all of it: `objects` and the
+    // payload index are a storage node's own, while `meta.records` is the metadata
+    // service's own record of the same object. This crate models both in one process, which
+    // is why the audit counts both.
+    //
+    // `fit` is arithmetic over audits already collected above, so this adds no fixture and
+    // no puts.
+    let storage_share = fit("objects.bytes").1 + fit("payloads.key_bytes").1;
+    let metadata_service_share = fit("meta.records.bytes").1;
+    println!(
+        "METASPLIT storage={storage_share} metadata_service={metadata_service_share}"
+    );
+    assert_eq!(
+        storage_share + metadata_service_share,
+        total_high,
+        "the two shares must account for the whole slope and nothing else: \
+         {storage_share} + {metadata_service_share} against {total_high}"
+    );
+    // NOT VACUOUS: a split where one side were zero would still sum, and would publish a
+    // figure that says nothing.
+    assert!(
+        storage_share > 0 && metadata_service_share > 0,
+        "both shares must be real: {storage_share} and {metadata_service_share}"
+    );
+    const PUBLISHED_SPLIT: &str = include_str!("../README.md");
+    for (share, what) in [
+        (storage_share, "a storage node's own"),
+        (metadata_service_share, "the metadata service's"),
+    ] {
+        assert!(
+            PUBLISHED_SPLIT.contains(&format!("**{share} ")),
+            "the README should publish {share} bytes an object as {what}, and it does not \
+             -- correct the README in the change that moved the split"
+        );
+    }
 }
 
 #[test]
