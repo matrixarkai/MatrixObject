@@ -144,8 +144,26 @@ pub(crate) fn evaluate_object_read_preconditions(
         && entity_tag_list_matches(&preconditions.if_none_match_etags, &metadata.etag()))
 }
 
+pub(crate) const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+
 pub(crate) fn fnv1a64(data: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
+    fnv1a64_resumed(FNV1A64_OFFSET_BASIS, data)
+}
+
+/// FNV-1a over `data`, starting from a digest already computed over the bytes
+/// that precede it.
+///
+/// # WHY A DIGEST IS A RESUMABLE STATE HERE
+///
+/// FNV-1a keeps no state beyond the 64 bits it returns: each byte is
+/// `hash ^= byte; hash *= prime`. So the digest of a prefix *is* the
+/// hash state after that prefix, and
+/// `fnv1a64_resumed(fnv1a64(a), b) == fnv1a64(a ++ b)` exactly -- not an
+/// approximation of it. That identity is what lets an append produce the whole
+/// object's digest without reading the whole object back, and it is asserted
+/// directly rather than left as a comment, because it is the only thing
+/// standing between the append path and a silently wrong etag.
+pub(crate) fn fnv1a64_resumed(mut hash: u64, data: &[u8]) -> u64 {
     for byte in data {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);

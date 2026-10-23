@@ -242,6 +242,159 @@ fn append_object_extends_existing_blob_without_staling_old_extents() {
 }
 
 #[test]
+fn fnv1a64_resumed_equals_hashing_the_concatenation() {
+    // THE IDENTITY THE APPEND PATH RESTS ON. `apply_append_inner` no longer reads an
+    // object back to hash it; it resumes the previous digest over the appended bytes.
+    // That is only sound because FNV-1a's state IS its output, and this asserts it at
+    // every split point of a payload rather than at one convenient one -- a single
+    // split would pass for a function that only handled empty prefixes, or only
+    // non-empty ones.
+    let whole: Vec<u8> = (0u8..=250).collect();
+    for split in 0..=whole.len() {
+        let (head, tail) = whole.split_at(split);
+        assert_eq!(
+            fnv1a64_resumed(fnv1a64(head), tail),
+            fnv1a64(&whole),
+            "resuming at split {split} of {} disagreed with hashing the whole",
+            whole.len()
+        );
+    }
+    // And the empty-prefix case is the offset basis itself, which is what the
+    // no-previous-object arm of the append relies on.
+    assert_eq!(
+        fnv1a64_resumed(FNV1A64_OFFSET_BASIS, &whole),
+        fnv1a64(&whole)
+    );
+}
+
+#[test]
+fn appending_does_not_read_the_object_back_and_still_agrees_on_the_etag() {
+    // MEASURED, AND THE REASON THIS TEST EXISTS. Appending used to read the whole
+    // object through its extents to recompute the etag, so the Nth append read N-1
+    // appends' worth of bytes: O(N) per append, O(N-squared) to build a log. On a
+    // five-node shared-store sweep that single line was 42.65% of the program's
+    // instructions, and per-entry append cost doubled whenever the corpus did.
+    //
+    // The guard is an ACCOUNTING IDENTITY, not a threshold: the store's cumulative
+    // physical chunk read count must not move AT ALL across the appends. A threshold
+    // ("not more than k per append") would keep passing if the read-back came back in
+    // a cheaper form, and a timing would be a fact about the machine rather than about
+    // the code.
+    //
+    // THE REGIME IS REACHED ON PURPOSE. `test_options` gives 4-byte pages and a
+    // 4-byte extent cap, so each 4-byte append is its own extent and twenty appends
+    // leave twenty of them. A read-back here would be unmissable -- 190 extent reads
+    // against the zero asserted below -- which is the point: a probe sized so the
+    // contested case cannot arise would agree with the fix for no reason.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+
+    const APPENDS: usize = 20;
+    let mut whole: Vec<u8> = Vec::new();
+    store
+        .append_object(
+            "bucket",
+            "wal",
+            b"seed".to_vec(),
+            "application/octet-stream",
+        )
+        .unwrap();
+    whole.extend_from_slice(b"seed");
+
+    let reads_before = store
+        .distributed_readiness(0, 2, 0, 0, 1, 100, 0)
+        .unwrap()
+        .storage_physical_read_count;
+
+    let mut last = None;
+    for index in 1..APPENDS {
+        let page = [b'a' + (index % 26) as u8; 4];
+        last = Some(
+            store
+                .append_object("bucket", "wal", page.to_vec(), "application/octet-stream")
+                .unwrap(),
+        );
+        whole.extend_from_slice(&page);
+    }
+    let last = last.expect("the loop appended at least once");
+
+    let reads_after = store
+        .distributed_readiness(0, 2, 0, 0, 1, 100, 0)
+        .unwrap()
+        .storage_physical_read_count;
+    assert_eq!(
+        reads_after, reads_before,
+        "{} appends read the stored object back {} times; the digest is supposed to be \
+         carried forward, not recomputed from the bytes",
+        APPENDS - 1,
+        reads_after - reads_before
+    );
+
+    // THE OTHER HALF: carrying the digest forward has to give the SAME etag reading
+    // every byte would. Without this the test above would pass for an append that
+    // skipped the hash entirely.
+    assert_eq!(last.length, whole.len() as u64);
+    assert_eq!(last.etag(), etag(&whole));
+    assert_eq!(store.get_object("bucket", "wal").unwrap().data, whole);
+    assert!(
+        last.extents.len() >= APPENDS,
+        "the object holds {} extents, so a read-back would have been cheap enough to \
+         hide and this test would prove nothing",
+        last.extents.len()
+    );
+}
+
+#[test]
+fn an_append_with_an_expected_checksum_still_reads_every_byte() {
+    // THE ARM THAT MUST NOT TAKE THE SHORTCUT. An expected checksum is a claim about
+    // the whole object's bytes after the append, and a resumed digest cannot answer it
+    // -- the digest is what the caller is trying to verify, so using it would make the
+    // check circular and always true. This pins both directions on an object that
+    // ALREADY EXISTS, which is the case the fast path otherwise covers.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .append_object("bucket", "wal", b"head".to_vec(), "application/octet-stream")
+        .unwrap();
+
+    let correct = etag(b"headtail");
+    let refused = store.append_object_with_options(
+        "bucket",
+        "wal",
+        b"tail".to_vec(),
+        "application/octet-stream",
+        PutOptions {
+            expected_checksum: Some(etag(b"wrong")),
+            ..PutOptions::default()
+        },
+    );
+    assert!(
+        matches!(refused, Err(ObjectError::PreconditionFailed(_))),
+        "an append whose expected checksum names other bytes must be refused, got {refused:?}"
+    );
+    assert_eq!(
+        store.head_object("bucket", "wal").unwrap().length,
+        4,
+        "the refused append must leave the object as it was"
+    );
+
+    let accepted = store
+        .append_object_with_options(
+            "bucket",
+            "wal",
+            b"tail".to_vec(),
+            "application/octet-stream",
+            PutOptions {
+                expected_checksum: Some(correct.clone()),
+                ..PutOptions::default()
+            },
+        )
+        .expect("an append whose expected checksum names the resulting bytes is accepted");
+    assert_eq!(accepted.etag(), correct);
+    assert_eq!(store.get_object("bucket", "wal").unwrap().data, b"headtail");
+}
+
+#[test]
 fn persistent_snapshot_reopens_append_blob_offsets() {
     let root = std::env::temp_dir().join(format!(
         "matrixobjectstore-persistent-{}-{}",
