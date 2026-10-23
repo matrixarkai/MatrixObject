@@ -59,6 +59,32 @@ types and fields are already `ChunkId`, `chunk_size`, `PageId`, `page_size`.
 | **page** | allocation, placement, the write and read quorums, repair and scrub |
 | **chunk** | the data itself: one replica of each chunk, with its checksum and discard map |
 
+### What a compaction gives back
+
+A superseded object leaves its bytes behind, and the space ratio says so:
+`space_amplification_ppm` is the logical bytes a chunk occupies over the bytes still live
+in it. Overwrite one object in ten and it reads **1,100,000** — a tenth of the payload left
+behind. Overwrite half and it reads 1,500,000.
+
+`compact_all(min_stale_bytes)` moves every live object out of the chunks above that
+threshold and retires them, which takes the ratio back to **1,000,000** and then finds
+nothing to do: a second pass compacts zero chunks. Two things make that true, and both were
+wrong before:
+
+- **the chunk being drained is out of the allocator** for the whole rewrite, or the rewrite
+  lands back in its own source — and the compaction then marks it stale, including the bytes
+  it has just written there;
+- **a drained chunk is retired**, or its logical bytes keep counting against the ratio and
+  each pass makes the figure worse than the last.
+
+A **retained version refuses** the compaction of its chunk. Compaction rewrites current
+objects and has no path to move a version, and a version's bytes are never marked stale, so
+compacting underneath one would declare them stale and offer them to the next writer.
+
+`reuse_stale_chunk_space` is the other way to get the space back — the next write takes it
+instead of growing the chunk — and it holds the ratio at 1,000,000 at any overwrite rate.
+It is off by default because it changes what the collector sees accumulate.
+
 ### What a lease closes, and what it does not
 
 A metadata lease is held over a key prefix by an owner at an epoch. While it is active, a

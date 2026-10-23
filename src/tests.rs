@@ -21178,9 +21178,14 @@ fn raft_backed_store_fences_prepared_chunk_compaction() {
         fields.get("segment_compact.metadata.content_type"),
         Some(&"segment/prepared-compaction".to_string())
     );
-    let source_after = replicated.store().chunks.get(&source_chunk).unwrap();
-    assert_eq!(source_after.live_bytes, 0);
-    assert_eq!(source_after.stale_bytes, source_after.next_offset);
+    // RETIRED, not left behind holding its own size. This test used to assert the
+    // opposite -- live=0 with stale=next_offset and the record still in the ledger -- which
+    // is what kept a drained chunk counting against the space ratio and made every
+    // compaction pass report a worse figure than the last.
+    assert!(
+        !replicated.store().chunks.contains_key(&source_chunk),
+        "a drained chunk must leave the ledger"
+    );
     assert_eq!(
         replicated
             .store()
@@ -21200,9 +21205,12 @@ fn raft_backed_store_fences_prepared_chunk_compaction() {
         follower.get_object("bucket", "compact-me").unwrap().data,
         b"new-data".to_vec()
     );
-    let follower_source = follower.chunks.get(&source_chunk).unwrap();
-    assert_eq!(follower_source.live_bytes, 0);
-    assert_eq!(follower_source.stale_bytes, follower_source.next_offset);
+    // And the follower reaches the same state by replaying the entry, which is what
+    // proves the retirement is in the APPLY path rather than only in the direct call.
+    assert!(
+        !follower.chunks.contains_key(&source_chunk),
+        "a replayed compaction must retire the drained chunk too"
+    );
 }
 
 #[test]
@@ -29942,6 +29950,134 @@ fn the_idempotent_multipart_doors_carry_the_same_fences() {
     replicated
         .propose_abort_multipart_upload_idempotent("mpu-held", now, "held-abort")
         .unwrap();
+}
+
+#[test]
+fn compaction_converges_and_takes_the_space_ratio_back_to_one() {
+    // `ensure_writable_chunk` takes the first chunk with room. With a chunk size that holds
+    // the corpus that is the chunk being compacted, so the rewrite landed back in its own
+    // source and the compaction then zeroed the live bytes it had just written. Measured
+    // before the fix, 200 objects of 4 KiB with one in ten overwritten:
+    //
+    //   after the overwrite   logical=901,120   live=819,200  stale=81,920    ppm=1,100,000
+    //   after compact_all     logical=1,720,320 live=0        stale=1,720,320 ppm=0
+    //   after a second pass   logical=2,539,520 live=0        stale=2,539,520 ppm=0
+    //
+    // Every object still read back, so `live=0` was false -- and the ratio reports ZERO
+    // when its denominator collapses, so the figure read perfect exactly when the ledger
+    // was most wrong. It never converged: each pass added the whole live set again.
+    let objects = 200u64;
+    let size = 4096u64;
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..objects {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}"),
+                vec![b'x'; size as usize],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let fresh = store.gc_report();
+    assert_eq!(fresh.space_amplification_ppm, 1_000_000);
+    let source_chunks: Vec<ChunkId> = store.chunks.keys().cloned().collect();
+
+    for index in (0..objects).step_by(10) {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}"),
+                vec![b'y'; size as usize],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let overwritten = store.gc_report();
+    assert_eq!(
+        overwritten.space_amplification_ppm, 1_100_000,
+        "one object in ten overwritten is a tenth of the payload left behind"
+    );
+    assert_eq!(overwritten.stale_bytes, objects / 10 * size);
+
+    assert_eq!(store.compact_all(1).unwrap(), 1);
+    let compacted = store.gc_report();
+    assert_eq!(
+        compacted.space_amplification_ppm, 1_000_000,
+        "compaction must give the space back, not report zero"
+    );
+    assert_eq!(compacted.stale_bytes, 0);
+    assert_eq!(compacted.live_bytes, objects * size);
+    assert_eq!(compacted.logical_bytes, objects * size);
+
+    // THE REWRITE LANDED SOMEWHERE ELSE, which is the mechanism. The drained chunk is
+    // retired, so what remains cannot be the chunk that was compacted.
+    for chunk_id in &source_chunks {
+        assert!(
+            !store.chunks.contains_key(chunk_id),
+            "a drained chunk must be retired, and {chunk_id:?} is still in the ledger"
+        );
+    }
+
+    // IT CONVERGES. Before the fix a second pass inflated the figure further.
+    assert_eq!(store.compact_all(1).unwrap(), 0);
+    assert_eq!(store.compact_all(1).unwrap(), 0);
+    assert_eq!(store.gc_report().space_amplification_ppm, 1_000_000);
+
+    // And every object is the version it should be.
+    for index in 0..objects {
+        let expected = if index % 10 == 0 { b'y' } else { b'x' };
+        let read = store
+            .get_object("bucket", &format!("prefix/{index:08}"))
+            .unwrap();
+        assert_eq!(read.data.len() as u64, size);
+        assert!(
+            read.data.iter().all(|byte| *byte == expected),
+            "object {index} came back as the wrong version after compaction"
+        );
+    }
+}
+
+#[test]
+fn a_retained_version_refuses_the_compaction_of_its_chunk() {
+    // `collect_chunk_compaction_live_objects` walks the CURRENT objects. A retained version
+    // lives in `versions` and its bytes are never marked stale, so compacting the chunk
+    // would declare them stale underneath it -- and the next writer that reuses stale space
+    // would take them. Compaction does not move a version, so it refuses.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    store.set_bucket_versioning("bucket", true).unwrap();
+    let first = store
+        .put_object("bucket", "object", vec![b'a'; 4096], "text/plain")
+        .unwrap();
+    store
+        .put_object("bucket", "object", vec![b'b'; 4096], "text/plain")
+        .unwrap();
+    let chunk_id = store.chunks.keys().next().cloned().unwrap();
+    match store.compact_chunk(&chunk_id) {
+        Err(ObjectError::PreconditionFailed(message)) => assert!(
+            message.contains("retained version"),
+            "the refusal should say what pinned the chunk, and it says {message:?}"
+        ),
+        other => panic!("a pinned chunk must not be compacted, and it gave {other:?}"),
+    }
+    assert!(
+        store.chunks.contains_key(&chunk_id),
+        "a refused compaction must leave the chunk where it was"
+    );
+    let read = store
+        .get_object_version("bucket", "object", first.version)
+        .unwrap();
+    assert!(read.data.iter().all(|byte| *byte == b'a'));
 }
 
 #[test]

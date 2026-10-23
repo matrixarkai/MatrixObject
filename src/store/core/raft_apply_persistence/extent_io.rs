@@ -129,11 +129,12 @@ impl MatrixObjectStore {
                 "extent length exceeds chunk_size".to_string(),
             ));
         }
-        if let Some((id, _)) = self
-            .chunks
-            .iter()
-            .find(|(_, info)| info.next_offset + length <= self.options.chunk_size)
-        {
+        if let Some((id, _)) = self.chunks.iter().find(|(chunk_id, info)| {
+            // NOT THE CHUNK BEING DRAINED. Allocating into it is how a compaction came to
+            // rewrite its own source and then declare the result stale.
+            self.compacting_chunk.as_ref() != Some(*chunk_id)
+                && info.next_offset + length <= self.options.chunk_size
+        }) {
             return Ok(id.clone());
         }
         let id = self.next_chunk_id;
