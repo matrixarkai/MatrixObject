@@ -444,3 +444,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::a_retained_version_refuses_the_compaction_of_its_chunk did not run"; exit 1; }
+
+      - name: A write that fails part way did not happen
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_write_that_fails_part_way_through_its_pages_did_not_happen -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_write_that_fails_part_way_through_its_pages_did_not_happen did not run"; exit 1; }
