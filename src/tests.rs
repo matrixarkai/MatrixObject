@@ -3509,6 +3509,155 @@ fn chunk_service_prepares_and_applies_chunk_state_handoff_batches() {
 }
 
 #[test]
+fn a_scrub_can_be_bounded_and_resumed_without_missing_a_page() {
+    // `scrub_chunk_replicas(repair)` read and validated every page of every active replica
+    // in ONE call. A scrub is the one maintenance pass meant to run at a throttled rate over
+    // days, so the only store that needs one could not have it. The audit over these same
+    // pages has carried `marker`, `next_marker` and `has_more` all along.
+    let chunk_id = ChunkId {
+        volume_id: 0,
+        id: 91,
+    };
+    let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
+    // Twelve four-byte pages, so a bound of five takes three calls.
+    page.write_chunk_range(&chunk_id, 0, &[b'x'; 48]).unwrap();
+    // Two degraded pages, one near each end, so coverage is not argued from counts alone:
+    // a slice that skipped a region, or one that rescanned it, loses or doubles a witness.
+    let first_page = page.map_range(&chunk_id, 0, 4).unwrap()[0].page_id.clone();
+    let last_page = page.map_range(&chunk_id, 44, 4).unwrap()[0].page_id.clone();
+    page.remove_replica_chunk_for_repair(0, &first_page).unwrap();
+    std::sync::Arc::make_mut(page.replicas[1].pages.get_mut(&last_page).unwrap())
+        .checksum_fnv1a64 = 0;
+
+    let whole = page.scrub_chunk_replicas(false).unwrap();
+    assert_eq!(
+        whole.checked_chunks, 12,
+        "the fixture must really hold twelve pages, or the bound below never binds"
+    );
+    assert_eq!(whole.degraded_chunks, 2, "both witnesses must be degraded");
+    assert!(!whole.has_more, "an unbounded scrub never asks to be resumed");
+    assert!(
+        whole.next_marker.is_some(),
+        "it still reports the last page it scanned, as the audit does"
+    );
+    assert!(whole.marker.is_none(), "it was not resuming from anywhere");
+
+    // BOUNDED, AND IT RESUMES.
+    let mut marker: Option<PageId> = None;
+    let mut calls = 0u64;
+    let mut scanned = 0u64;
+    let mut degraded = 0u64;
+    loop {
+        let slice = page
+            .scrub_chunk_replicas_bounded(marker.as_ref(), 5, false)
+            .unwrap();
+        calls += 1;
+        assert_eq!(
+            slice.marker, marker,
+            "the report must echo the cursor it was given"
+        );
+        assert!(
+            slice.checked_chunks <= 5,
+            "the bound must hold, and this call scanned {}",
+            slice.checked_chunks
+        );
+        scanned += slice.checked_chunks;
+        degraded += slice.degraded_chunks;
+        if !slice.has_more {
+            break;
+        }
+        let next = slice
+            .next_marker
+            .clone()
+            .expect("an unfinished slice must say where to carry on");
+        assert!(
+            Some(&next) > marker.as_ref(),
+            "the cursor must advance, or a resume rescans a page forever"
+        );
+        marker = Some(next);
+        assert!(
+            calls < 10,
+            "the loop must terminate, and it has run {calls} times"
+        );
+    }
+    assert_eq!(
+        calls, 3,
+        "twelve pages in slices of five is three calls, so the bound really bound"
+    );
+    // Exactly the whole-store scan: one page skipped reads eleven, one rescanned reads
+    // thirteen, and either way the witness count below disagrees too.
+    assert_eq!(scanned, whole.checked_chunks);
+    assert_eq!(
+        degraded, whole.degraded_chunks,
+        "each witness must be seen by exactly one slice"
+    );
+
+    // A BOUND OF ZERO IS REFUSED, exactly as the sibling audit refuses it. Asserting the
+    // audit here as well means a later change that loosens one of the pair fails this test
+    // rather than leaving two calls over the same pages disagreeing about what zero means.
+    assert!(matches!(
+        page.scrub_chunk_replicas_bounded(None, 0, false),
+        Err(ObjectError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        page.audit_chunk_replicas(None, 0, 0),
+        Err(ObjectError::InvalidArgument(_))
+    ));
+
+    // AND THE NAME THE README GIVES A READER IS THE STORE'S, not the inner service's.
+    // Documenting `scrub_page_replicas_bounded` is only useful if that call works, so it
+    // is driven here at the tightest bound there is -- one page per call.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    for index in 0..6 {
+        store
+            .put_object(
+                "bucket",
+                &format!("object-{index}"),
+                b"payload".to_vec(),
+                "text/plain",
+            )
+            .unwrap();
+    }
+    let whole_store = store.scrub_page_replicas(false).unwrap();
+    assert!(
+        whole_store.checked_chunks > 1,
+        "the fixture must hold more than one page, and it holds {}",
+        whole_store.checked_chunks
+    );
+    let mut store_marker: Option<PageId> = None;
+    let mut store_calls = 0u64;
+    let mut store_scanned = 0u64;
+    loop {
+        let slice = store
+            .scrub_page_replicas_bounded(store_marker.as_ref(), 1, false)
+            .unwrap();
+        store_calls += 1;
+        assert!(
+            slice.checked_chunks <= 1,
+            "a bound of one page scanned {}",
+            slice.checked_chunks
+        );
+        store_scanned += slice.checked_chunks;
+        if !slice.has_more {
+            break;
+        }
+        store_marker = slice.next_marker;
+        assert!(
+            store_calls < 1_000,
+            "the store-level loop must terminate, and it has run {store_calls} times"
+        );
+    }
+    assert_eq!(
+        store_scanned, whole_store.checked_chunks,
+        "the store's bounded scrub must cover exactly what its unbounded one covers"
+    );
+    assert!(
+        store_calls > 1,
+        "a bound of one page must take more than one call, and it took {store_calls}"
+    );
+}
+
+#[test]
 fn chunk_service_scrubs_missing_and_corrupt_replicas() {
     let chunk_id = ChunkId {
         volume_id: 0,

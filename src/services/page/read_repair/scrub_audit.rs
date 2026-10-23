@@ -1,7 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
+    /// Scrub every page of every active replica in one call.
+    ///
+    /// Right for a store small enough to finish, and the only shape there was until
+    /// `scrub_chunk_replicas_bounded` -- which is what a store large enough to need a
+    /// throttled scrub has to use.
     pub fn scrub_chunk_replicas(&mut self, repair: bool) -> Result<ReplicaScrubReport, ObjectError> {
+        self.scrub_chunk_replicas_bounded(None, usize::MAX, repair)
+    }
+
+    /// Scrub at most `max_chunks` pages, resuming after `after_page_id`.
+    ///
+    /// This is `audit_chunk_replicas`'s contract over the same pages, and it follows that
+    /// sibling exactly rather than inventing its own: `max_chunks` of zero is REFUSED
+    /// (`usize::MAX` is how the unbounded call says "no bound"), `marker` echoes the
+    /// request, and `next_marker` carries the last page scanned whether or not the bound
+    /// stopped the scan. `has_more` is the field that says whether to come back.
+    pub fn scrub_chunk_replicas_bounded(
+        &mut self,
+        after_page_id: Option<&PageId>,
+        max_chunks: usize,
+        repair: bool,
+    ) -> Result<ReplicaScrubReport, ObjectError> {
+        if max_chunks == 0 {
+            return Err(ObjectError::InvalidArgument(
+                "page replica scrub max_chunks must be positive".to_string(),
+            ));
+        }
         let mut page_ids = BTreeSet::new();
         for (index, replica) in self.replicas.iter().enumerate() {
             if !self.replica_active(index) {
@@ -11,9 +37,23 @@ impl MatrixChunkService {
                 page_ids.insert(page_id);
             }
         }
-        let mut report = ReplicaScrubReport::default();
+        let mut report = ReplicaScrubReport {
+            marker: after_page_id.cloned(),
+            ..ReplicaScrubReport::default()
+        };
         for page_id in page_ids {
+            if after_page_id.map_or(false, |marker| &page_id <= marker) {
+                continue;
+            }
+            if report.checked_chunks as usize >= max_chunks {
+                report.has_more = true;
+                break;
+            }
             report.checked_chunks = report.checked_chunks.saturating_add(1);
+            // Advanced HERE and not at the tail of the body: a healthy page and a page that
+            // could not be repaired each `continue`, so a cursor written at the tail would
+            // hand back a page that was already scanned and scan it twice on resume.
+            report.next_marker = Some(page_id.clone());
             let mut valid_states: Vec<(usize, PageState)> =
                 Vec::with_capacity(self.replicas.len());
             let mut missing = 0u64;
