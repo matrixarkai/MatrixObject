@@ -35316,6 +35316,13 @@ fn measure_the_metadata_footprint() {
     // A six-character bucket understates what the bucket name costs, since
     // every object named it through an allocation of its own.
     let bucket_len = env_usize("MEASURE_BUCKETLEN", 6);
+    // How many DISTINCT content types the corpus carries. One allocation is
+    // shared by every object naming the same type, up to
+    // `MAX_SHARED_CONTENT_TYPES`, so a corpus of one type and a corpus of
+    // thousands are two different regimes -- and this leg could not tell them
+    // apart until this could vary. The default is 1, which is what every
+    // published figure was measured at.
+    let content_types = env_usize("MEASURE_CONTENT_TYPES", 1).max(1);
     let mut bucket = String::from("bucket");
     while bucket.len() < bucket_len {
         bucket.push('b');
@@ -35332,8 +35339,13 @@ fn measure_the_metadata_footprint() {
             key.push('k');
         }
         key.truncate(key_len.max(stem.len()));
+        let content_type = if content_types == 1 {
+            "application/octet-stream".to_string()
+        } else {
+            format!("application/x-{}", index % content_types)
+        };
         store
-            .put_object(&bucket, &key, vec![b'x'; size], "application/octet-stream")
+            .put_object(&bucket, &key, vec![b'x'; size], &content_type)
             .unwrap();
         for _ in 0..versions {
             store
@@ -35342,7 +35354,7 @@ fn measure_the_metadata_footprint() {
         }
     }
     let written = (objects * size * (1 + versions)) as u64;
-    println!("MEASURE objects={objects} size={size} key_len={key_len} bucket_len={bucket_len} versions={versions} written={written}");
+    println!("MEASURE objects={objects} size={size} key_len={key_len} bucket_len={bucket_len} versions={versions} content_types={content_types} written={written}");
     for (key, value) in store.footprint_audit() {
         if value != 0 {
             println!("MEASURE {key}={value}");
@@ -36492,6 +36504,222 @@ fn measure_what_each_record_value_representation_would_cost() {
         "REPR a representation is only worth taking if its TEXT column does not \
          exceed {} -- that is what a freshly loaded store pays",
         text_now + TEXT
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_a_one_word_text_handle_would_save() {
+    // `SharedText` is `Arc<str>`, a FAT pointer: every holder spends two words to
+    // name one allocation, and the second word is a length that the allocation
+    // could carry itself. The footprint document priced a one-word handle at
+    // "about forty bytes, estimated".
+    //
+    // An estimate is exactly how the extent row and the storage-class row were
+    // both priced WRONGLY before being measured: one turned out to need no
+    // migration at all, the other turned out to be a closed set of four names
+    // that wanted an enum rather than a table. Both were corrected by MEASURING
+    // THE PROPOSED LAYOUT BY CONSTRUCTION, and this does the same for the handle.
+    //
+    // THE CONTROL IS THE WHOLE POINT. A mirror that has drifted from the struct
+    // it mirrors measures nothing, and no other test in the suite would notice,
+    // so every control below is asserted equal to the real type BEFORE any
+    // saving is read off it.
+
+    // A one-word handle. Only its size is under measurement, so it holds a
+    // pointer and nothing else; a real one would keep the length in the
+    // allocation beside the characters, which is where the heap column below
+    // comes from.
+    #[allow(dead_code)]
+    struct OneWord(std::ptr::NonNull<u8>);
+
+    #[allow(dead_code)]
+    struct IdControl {
+        bucket: SharedText,
+        key: SharedText,
+    }
+    #[allow(dead_code)]
+    struct IdThin {
+        bucket: OneWord,
+        key: OneWord,
+    }
+
+    #[allow(dead_code)]
+    struct MetadataControl {
+        object_id: IdControl,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        user_metadata: ObjectAttributes,
+        storage_class: StorageClass,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: Box<[ObjectExtent]>,
+        deleted: bool,
+    }
+    #[allow(dead_code)]
+    struct MetadataThin {
+        object_id: IdThin,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: OneWord,
+        user_metadata: ObjectAttributes,
+        storage_class: StorageClass,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: Box<[ObjectExtent]>,
+        deleted: bool,
+    }
+
+    #[allow(dead_code)]
+    struct RecordControl {
+        key: SharedText,
+        value: RecordValue,
+        version: u64,
+        update_time_ms: u64,
+        deleted: bool,
+    }
+    #[allow(dead_code)]
+    struct RecordThin {
+        key: OneWord,
+        value: RecordValue,
+        version: u64,
+        update_time_ms: u64,
+        deleted: bool,
+    }
+
+    #[allow(dead_code)]
+    struct ProjectionControl {
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        metadata_count: u32,
+        storage_class: StorageClass,
+        restore_until_ms: u64,
+        deleted: bool,
+        extent_count: u32,
+        tag_count: u32,
+        legal_hold: bool,
+        retention_until_ms: u64,
+    }
+    #[allow(dead_code)]
+    struct ProjectionThin {
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: OneWord,
+        metadata_count: u32,
+        storage_class: StorageClass,
+        restore_until_ms: u64,
+        deleted: bool,
+        extent_count: u32,
+        tag_count: u32,
+        legal_hold: bool,
+        retention_until_ms: u64,
+    }
+
+    let size = std::mem::size_of::<OneWord>();
+    assert_eq!(size, 8, "the candidate handle is one word, or this measures nothing");
+    assert_eq!(
+        std::mem::size_of::<SharedText>(),
+        16,
+        "the handle in the tree is two words, which is what the saving is against"
+    );
+
+    // Each control against the type it mirrors. A mismatch means a field was
+    // added or retyped and this measurement has gone stale, which is the one
+    // failure mode a by-construction figure has.
+    assert_eq!(
+        std::mem::size_of::<IdControl>(),
+        std::mem::size_of::<ObjectId>(),
+        "the ObjectId mirror has drifted from ObjectId"
+    );
+    assert_eq!(
+        std::mem::size_of::<MetadataControl>(),
+        std::mem::size_of::<ObjectMetadata>(),
+        "the ObjectMetadata mirror has drifted from ObjectMetadata"
+    );
+    assert_eq!(
+        std::mem::size_of::<RecordControl>(),
+        std::mem::size_of::<MetadataRecord>(),
+        "the MetadataRecord mirror has drifted from MetadataRecord"
+    );
+    assert_eq!(
+        std::mem::size_of::<ProjectionControl>(),
+        std::mem::size_of::<ObjectProjection>(),
+        "the ObjectProjection mirror has drifted from ObjectProjection"
+    );
+
+    // The four legs of the metadata line that hold text handles, named as the
+    // footprint document names them.
+    let legs = [
+        (
+            "objects.mapkey_inline",
+            std::mem::size_of::<IdControl>(),
+            std::mem::size_of::<IdThin>(),
+        ),
+        (
+            "objects.metadata_inline",
+            std::mem::size_of::<MetadataControl>(),
+            std::mem::size_of::<MetadataThin>(),
+        ),
+        (
+            "meta.records.struct_inline",
+            std::mem::size_of::<SharedText>() + std::mem::size_of::<RecordControl>(),
+            std::mem::size_of::<OneWord>() + std::mem::size_of::<RecordThin>(),
+        ),
+        (
+            "meta.records.value_capacity",
+            std::mem::size_of::<ProjectionControl>(),
+            std::mem::size_of::<ProjectionThin>(),
+        ),
+    ];
+
+    let mut saved = 0usize;
+    for (leg, control, thin) in legs {
+        println!("HANDLE {leg:<28} now={control:<4} one_word={thin:<4} saves={}", control - thin);
+        saved += control - thin;
+    }
+
+    // Padding is why this had to be measured rather than multiplied. Eight
+    // handles at eight bytes each is sixty-four, and the structs do not
+    // necessarily give all of it back: a narrower field can leave padding
+    // behind it instead of closing up.
+    println!("HANDLE inline saving per object = {saved}");
+
+    // And what the allocation pays back. A one-word handle cannot carry the
+    // length, so the allocation does -- one extra word ONCE per allocation,
+    // against one saved per HOLDER. The safe shape in today's standard library
+    // is `Arc<Box<str>>`, which is also one word but keeps the length in a
+    // second allocation: two words of header there instead of one.
+    //
+    // Two allocations an object are charged on the metadata line:
+    // `objects.mapkey_heap` is the object key and `meta.records.mapkey_capacity`
+    // is the record key, each ONE allocation shared by the two holders that
+    // name it.
+    const ALLOCATIONS_PER_OBJECT: usize = 2;
+    for (shape, per_allocation) in [
+        ("one word, length in the allocation", 8usize),
+        ("Arc<Box<str>>, length in a second allocation", 16usize),
+    ] {
+        let paid = ALLOCATIONS_PER_OBJECT * per_allocation;
+        println!(
+            "HANDLE {shape:<44} saves {saved} inline, pays {paid} heap, NET {}",
+            saved as i64 - paid as i64
+        );
+    }
+    println!(
+        "HANDLE the net is what the document should publish; the inline figure alone \
+         counts a saving the allocation gives back"
     );
 }
 

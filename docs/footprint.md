@@ -190,29 +190,71 @@ The difference between `mapkey_capacity` and `mapkey_len` is not slack to reclai
 text has no spare capacity; the difference is the strong and weak counts in front of the
 characters, sixteen bytes once per allocation.
 
-#### The four reductions that are left, and what each one costs
+#### The reductions that are left, and what each one costs
 
-Each is priced against the 434. The fourth one on this list has since been **taken** --
-narrowing an extent's offset and length to 32 bits was priced at 8 bytes an object and cost a
-migration, until it turned out not to: the snapshot still writes two `u64` and only the
-in-memory form is narrow, so there was nothing to migrate. That is the 474 above becoming 466.
-The three that remain are not free.
+Each is priced against the 434. Two rows have come **off** this list, and both came off the
+same way -- by being measured instead of argued. Narrowing an extent's offset and length to 32
+bits was priced at 8 bytes an object and a migration, until the migration turned out not to
+exist: the snapshot still writes two `u64` and only the in-memory form is narrow. Interning
+content types was priced at "about twenty-four bytes" behind an unbounded table, and it is
+already done -- the section after the table has the measurement. What is left is one design
+decision and one representation.
 
 | | saves | what it costs |
 |---|---:|---|
 | The metadata records restate the objects map | **216** | It is the whole of `meta.records`: a separate metadata service's own store, with its own versioning, deletion markers and change log, modelled in this process. Removing the restatement means collapsing two services into one, which is a design decision and not a footprint one. |
-| A thin `SharedText` | ~40, **estimated** | `SharedText` is `Arc<str>`, a fat pointer, so every holder costs 16 bytes. A thin representation (`Arc` of an owned box) costs 8 a holder but adds a second pointer chase to **every** string read, on a write path where a put is already dominated by copying. A footprint gain paid for in read latency everywhere. |
-| Interning content types | ~24, **estimated** | A content type is arbitrary input, so an intern table for it is unbounded and needs eviction -- a cache, with a cache's failure modes, in the middle of object metadata. The **storage class** was on this row too, and it came off: its set is closed to four names, so it needed an enum rather than a table and no table means no eviction. That was 32 bytes an object. |
+| A one-word text handle | **48**, or **32** without unsafe code | `SharedText` is `Arc<str>`, a fat pointer, so every holder spends two words to name one allocation. Eight holders an object carry it -- two keying `objects`, three inside `ObjectMetadata`, two around a metadata record and one in the projection -- so one word each is **64 bytes of inline saving**, measured by construction rather than multiplied, because a narrowed field can leave its padding behind instead of closing up. The allocation pays part of it back by carrying the length the handle stops carrying: one word per allocation, two allocations an object, **net 48**. The shape that needs no unsafe code is `Arc<Box<str>>`, which puts the length in a second allocation instead and nets **32**. Both add a dependent load to a string read, and neither can be priced against latency on this tree, whose benches hold everything in memory and never write a byte to disk. |
 
-**Two of these figures are marked "estimated", and that is not hedging.** The extent row
-below was priced at 8 bytes and a migration, and the migration turned out not to exist. The
-storage-class row was priced at "an unbounded intern table", and the set turned out to be
-closed. Both were corrected by MEASURING THE PROPOSED LAYOUT BY CONSTRUCTION -- a hand-built
-mirror of the struct, sized by the compiler, with the unchanged mirror as a control -- before
-touching any code. The two rows above have not had that done to them yet, so their figures are
-arithmetic rather than measurements, and their costs are arguments rather than findings.
+**Both figures above are measurements now, and the difference has mattered three times.**
+The extent row was priced at 8 bytes and a migration, and the migration turned out not to
+exist. The storage-class row was priced at "an unbounded intern table", and the set turned out
+to be closed to four names. The handle row was priced at "about forty", which is neither of
+the two numbers it actually has. All three were settled by MEASURING THE PROPOSED LAYOUT BY
+CONSTRUCTION -- a hand-built mirror of the struct, sized by the compiler, with the unchanged
+mirror as a control -- before touching any code.
+`measure_what_a_one_word_text_handle_would_save` does it for the handle, and it asserts every
+control equal to the type it mirrors before reading a saving off it: a mirror that has drifted
+from its struct measures nothing, and nothing else in the suite would notice.
 
-**The storage class, which came off the list.** `validate_storage_class` accepts exactly
+**Interning content types, which is already done.** It sat on this list reading "about
+twenty-four bytes, estimated", behind an objection that a content type is arbitrary input, so
+its table would be unbounded and need eviction -- a cache, with a cache's failure modes, in the
+middle of object metadata. The table exists, and it is bounded by a COUNT rather than by
+eviction: `MAX_SHARED_CONTENT_TYPES` is 256, and past the bound an object owns its own string,
+which is what every object did before. So the behaviour degrades instead of failing and there
+is no cache to go wrong. `objects_of_one_content_type_name_it_through_one_allocation` and
+`past_the_bound_an_object_owns_its_content_type` pin the two halves.
+
+What it saves is **larger** than the estimate it replaced. `objects.content_type_heap` is a
+constant **40 bytes** -- one 24-character allocation and its two counts -- at every object
+count from 600 to 8,000, where an unshared string would have cost those same 40 bytes **an
+object**. So the row was stale and under-priced at once.
+
+That it is measurable at all is new. The measurement leg put every object under one content
+type, so it could not vary the one thing interning acts on, and the saving had to be argued
+from the code instead of read off the audit. `MEASURE_CONTENT_TYPES` varies it, and the leg
+moves with it -- 2,000 objects, 1 KiB each:
+
+| distinct content types | `objects.content_type_heap` | per object |
+|---:|---:|---:|
+| 1 | 40 | 0.02 B |
+| 2 | 62 | 0.03 B |
+| 256 — the bound | 8,338 | 4.2 B |
+| 2,000 — past it | 66,890 | 33.4 B |
+
+So the saving is **40 bytes an object** on a corpus whose types repeat, and **nothing** on one
+where every object carries a type of its own: past the bound each object owns its string, which
+is the row's last line and now a number rather than a claim. A deployment with more than 256
+live content types gets no sharing, and that is the case to size for.
+
+```
+MEASURE_OBJECTS=2000 MEASURE_CONTENT_TYPES=2000 cargo test --release --lib \
+  measure_the_metadata_footprint -- --ignored --nocapture
+```
+
+Its default is 1, which is the shape every figure in this document was measured at.
+
+**The storage class, which came off before it.** `validate_storage_class` accepts exactly
 STANDARD, ARCHIVE, GLACIER and DEEP_ARCHIVE, so a `SharedText` was spending sixteen bytes to
 say one of four things. As a one-byte enum the byte lands in padding both structures already
 had: `ObjectMetadata` 144 to 128 and `ObjectProjection` 88 to 72, **32 bytes an object**. The
@@ -220,7 +262,7 @@ snapshot still writes the same four names, so there was no migration here either
 state it removes -- a class outside the set -- is one the store's own validation already
 refused.
 
-**The extent, which came off before it.** An extent's offset is a position
+**The extent, which came off before that.** An extent's offset is a position
 inside one chunk and its length is bounded by `max_extent_bytes`, which is already validated
 as `1..=chunk_size`, so both fit in 32 bits for any chunk under 4 GiB. `StoreOptions` now
 refuses a `chunk_size` at or above that bound rather than letting an extent wrap, and that
