@@ -202,8 +202,8 @@ impl MatrixObjectStore {
             let _ = write!(
                 material,
                 "|p:{}/{}@{}:{}:",
-                chunk_id.volume_id,
-                chunk_id.id,
+                chunk_id.volume_id(),
+                chunk_id.id(),
                 offset,
                 payload.len
             );

@@ -36,7 +36,7 @@ impl MatrixObjectStore {
                 )?;
                 Ok(metadata_control_metadata(
                     "_blockwrite",
-                    &format!("{}:{}:{}", chunk_id.volume_id, chunk_id.id, offset),
+                    &format!("{}:{}:{}", chunk_id.volume_id(), chunk_id.id(), offset),
                     receipt.deduped as u64,
                     receipt.length,
                     "blockserver/idempotent-write",
@@ -87,7 +87,7 @@ impl MatrixObjectStore {
                 )?;
                 Ok(metadata_control_metadata(
                     "_blockdiscard",
-                    &format!("{}:{}:{}", chunk_id.volume_id, chunk_id.id, offset),
+                    &format!("{}:{}:{}", chunk_id.volume_id(), chunk_id.id(), offset),
                     receipt.deduped as u64,
                     receipt.length,
                     "blockserver/idempotent-discard",

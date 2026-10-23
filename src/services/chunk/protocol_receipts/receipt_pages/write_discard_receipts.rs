@@ -45,11 +45,11 @@ impl ReplicaWriteReceipt {
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.page_id.chunk_id.volume_id.to_string(),
+            self.page_id.chunk_id.volume_id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.page_id.chunk_id.id.to_string(),
+            self.page_id.chunk_id.id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
@@ -126,11 +126,11 @@ impl ReplicaDiscardReceipt {
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.page_id.chunk_id.volume_id.to_string(),
+            self.page_id.chunk_id.volume_id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.page_id.chunk_id.id.to_string(),
+            self.page_id.chunk_id.id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
@@ -203,11 +203,11 @@ impl ReplicaBatchWriteReceipt {
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.page_id.chunk_id.volume_id.to_string(),
+            self.page_id.chunk_id.volume_id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.page_id.chunk_id.id.to_string(),
+            self.page_id.chunk_id.id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),
@@ -285,11 +285,11 @@ impl ReplicaBatchDiscardReceipt {
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.page_id.chunk_id.volume_id.to_string(),
+            self.page_id.chunk_id.volume_id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.page_id.chunk_id.id.to_string(),
+            self.page_id.chunk_id.id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),

@@ -158,10 +158,11 @@ impl ReplicaServiceSnapshot {
         };
         let mut pages = BTreeMap::new();
         for _ in 0..cursor.read_count("chunk service snapshot chunk count")? {
-            let chunk_id = ChunkId {
-                volume_id: cursor.read_u64()?,
-                id: cursor.read_u64()?,
-            };
+            let chunk_id = ChunkId::new(cursor.read_u64()?, cursor.read_u64()?).map_err(|_| {
+                ObjectError::Corruption(
+                    "snapshot chunk id is past thirty-two bits".to_string(),
+                )
+            })?;
             let page_id = PageId {
                 chunk_id,
                 page_index: cursor.read_u64()?,

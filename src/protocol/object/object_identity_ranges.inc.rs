@@ -24,20 +24,70 @@ impl ObjectId {
     }
 }
 
+/// Which chunk, and which volume holds it.
+///
+/// # WHY THIRTY-TWO IS ENOUGH, AND WHY THE FIELDS ARE PRIVATE
+///
+/// `id` counts the chunks of a store and a chunk is `chunk_size` bytes, 64 MiB by default.
+/// Four billion of them is over two hundred exabytes in one store, so a 32-bit count is not
+/// the thing that runs out. `volume_id` is `(id - 1) % volume_count`, so it is bounded by
+/// `volume_count`, which a store refuses above `u32::MAX` rather than letting a chunk id
+/// silently wrap.
+///
+/// THE WIRE AND THE ORDER ARE BOTH UNCHANGED, which is what makes this a representation
+/// change and not a migration. `append_chunk_id` still writes two `u64`, and the derived
+/// `Ord` is still lexicographic on `(volume_id, id)` -- a 32-bit comparison orders the same
+/// values the same way a 64-bit one does. Every `BTreeMap` keyed by a chunk or a page
+/// therefore iterates in the order it iterated before, so the snapshot material built from
+/// those walks and the checksums over it are byte for byte what they were. Same shape as
+/// the extent offset and the storage class before it.
+///
+/// The fields are private for the reason the extent's are: a retype alone would leave
+/// `chunk_id.id + 1` compiling as `u32 + u32` and wrapping where it used to be safe.
+/// `volume_id()` and `id()` return `u64`, so arithmetic stays in 64 bits and every call
+/// site had to be revisited by the compiler.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ChunkId {
-    pub volume_id: u64,
-    pub id: u64,
+    volume_id: u32,
+    id: u32,
 }
 
 impl ChunkId {
+    /// The chunk `id` in `volume_id`.
+    ///
+    /// Refused rather than truncated when either number does not fit: a wrapped chunk id
+    /// names a different chunk, which would hand back another object's bytes.
+    pub fn new(volume_id: u64, id: u64) -> Result<Self, ObjectError> {
+        let narrow = |value: u64, what: &str| -> Result<u32, ObjectError> {
+            u32::try_from(value).map_err(|_| {
+                ObjectError::InvalidArgument(format!(
+                    "a chunk's {what} is {value}, past what thirty-two bits can hold"
+                ))
+            })
+        };
+        Ok(Self {
+            volume_id: narrow(volume_id, "volume id")?,
+            id: narrow(id, "id")?,
+        })
+    }
+
+    /// Which volume holds the chunk.
+    pub fn volume_id(&self) -> u64 {
+        u64::from(self.volume_id)
+    }
+
+    /// Which chunk, counting from one.
+    pub fn id(&self) -> u64 {
+        u64::from(self.id)
+    }
+
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.volume_id.to_string(),
+            self.volume_id().to_string(),
         );
-        fields.insert(format!("{field_prefix}segment_id"), self.id.to_string());
+        fields.insert(format!("{field_prefix}segment_id"), self.id().to_string());
         fields
     }
 }

@@ -14,10 +14,10 @@ pub(crate) fn metadata_shard_overlaps_prefix(shard: &MetadataShard, prefix: &str
 pub(crate) fn chunk_replica_audit_item_payload_bytes(item: &ChunkReplicaAuditItem) -> u64 {
     item.page_id
         .chunk_id
-        .volume_id
+        .volume_id()
         .to_string()
         .len()
-        .saturating_add(item.page_id.chunk_id.id.to_string().len())
+        .saturating_add(item.page_id.chunk_id.id().to_string().len())
         .saturating_add(item.page_id.page_index.to_string().len())
         .saturating_add(item.status.len())
         .saturating_add(item.checksum.len())

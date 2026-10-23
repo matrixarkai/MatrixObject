@@ -142,10 +142,7 @@ impl MatrixObjectStore {
             .next_chunk_id
             .checked_add(1)
             .ok_or_else(|| ObjectError::InvalidArgument("chunk id overflow".to_string()))?;
-        let chunk_id = ChunkId {
-            volume_id: (id - 1) % self.options.volume_count,
-            id,
-        };
+        let chunk_id = ChunkId::new((id - 1) % self.options.volume_count, id)?;
         self.chunks.insert(
             chunk_id.clone(),
             ChunkInfo {

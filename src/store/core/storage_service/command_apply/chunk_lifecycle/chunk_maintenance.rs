@@ -8,7 +8,7 @@ impl MatrixObjectStore {
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new(
                         "_segment",
-                        format!("{}:{}", chunk_id.volume_id, chunk_id.id),
+                        format!("{}:{}", chunk_id.volume_id(), chunk_id.id()),
                     ),
                     version: 0,
                     length: 0,
@@ -30,7 +30,7 @@ impl MatrixObjectStore {
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new(
                         "_segment",
-                        format!("{}:{}", chunk_id.volume_id, chunk_id.id),
+                        format!("{}:{}", chunk_id.volume_id(), chunk_id.id()),
                     ),
                     version: 0,
                     length: 0,
@@ -54,7 +54,7 @@ impl MatrixObjectStore {
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new(
                         "_segment",
-                        format!("{}:{}", chunk_id.volume_id, chunk_id.id),
+                        format!("{}:{}", chunk_id.volume_id(), chunk_id.id()),
                     ),
                     version: 0,
                     length: 0,
@@ -130,7 +130,7 @@ impl MatrixObjectStore {
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new(
                         "_segment",
-                        format!("{}:{}", chunk_id.volume_id, chunk_id.id),
+                        format!("{}:{}", chunk_id.volume_id(), chunk_id.id()),
                     ),
                     version: 0,
                     length: 0,

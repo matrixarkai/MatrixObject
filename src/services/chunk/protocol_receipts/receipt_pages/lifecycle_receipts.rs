@@ -46,8 +46,8 @@ impl ReplicaStateInstallReceipt {
             .page_id
             .to_control_fields(&format!("{field_prefix}chunk."));
         for (name, value) in [
-            ("volume_id", self.page_id.chunk_id.volume_id),
-            ("segment_id", self.page_id.chunk_id.id),
+            ("volume_id", self.page_id.chunk_id.volume_id()),
+            ("segment_id", self.page_id.chunk_id.id()),
             ("chunk_index", self.page_id.page_index),
             ("logical_length", self.logical_length),
             ("write_sequence", self.write_sequence),
@@ -198,11 +198,11 @@ impl ReplicaRepairReceipt {
             .to_control_fields(&format!("{field_prefix}chunk."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.page_id.chunk_id.volume_id.to_string(),
+            self.page_id.chunk_id.volume_id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.page_id.chunk_id.id.to_string(),
+            self.page_id.chunk_id.id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),

@@ -25,11 +25,11 @@ impl PageId {
             .to_control_fields(&format!("{field_prefix}segment."));
         fields.insert(
             format!("{field_prefix}volume_id"),
-            self.chunk_id.volume_id.to_string(),
+            self.chunk_id.volume_id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}segment_id"),
-            self.chunk_id.id.to_string(),
+            self.chunk_id.id().to_string(),
         );
         fields.insert(
             format!("{field_prefix}chunk_index"),

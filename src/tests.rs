@@ -1091,10 +1091,7 @@ fn persistent_journal_replays_page_mutations() {
     let journal_path_string = journal_path.to_string_lossy().to_string();
     let mut options = test_options();
     options.persistent_journal_path = journal_path_string;
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7,
-    };
+    let chunk_id = ChunkId::new(0, 7).unwrap();
     {
         let mut store = MatrixObjectStore::new(options.clone()).unwrap();
         let write = store
@@ -1280,10 +1277,7 @@ fn persistent_journal_replays_direct_chunk_mutations() {
     let mut options = test_options();
     options.persistent_journal_path = journal_path_string;
     let page_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 11,
-        },
+        chunk_id: ChunkId::new(0, 11).unwrap(),
         page_index: 3,
     };
     let replica_index = 1;
@@ -2399,10 +2393,7 @@ fn object_inventory_pages_metadata_and_placement() {
 fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 710,
-        },
+        chunk_id: ChunkId::new(0, 710).unwrap(),
         page_index: 0,
     };
     chunk
@@ -2466,10 +2457,7 @@ fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
 fn replicaserver_batch_admission_reports_continuation_cursors() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 711,
-        },
+        chunk_id: ChunkId::new(0, 711).unwrap(),
         page_index: 0,
     };
     chunk
@@ -2671,10 +2659,7 @@ fn replicaserver_batch_admission_reports_continuation_cursors() {
 
 #[test]
 fn chunk_service_maps_writes_to_replicated_chunks() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7,
-    };
+    let chunk_id = ChunkId::new(0, 7).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 2, b"abcdefgh")
@@ -2708,10 +2693,7 @@ fn chunk_service_maps_writes_to_replicated_chunks() {
 
 #[test]
 fn chunk_service_preflights_chunk_write_admission_before_mutation() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 707,
-    };
+    let chunk_id = ChunkId::new(0, 707).unwrap();
     let page_id = PageId {
         chunk_id: chunk_id.clone(),
         page_index: 0,
@@ -2771,10 +2753,7 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
 
 #[test]
 fn chunk_service_preflights_chunk_discard_admission_before_mutation() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 708,
-    };
+    let chunk_id = ChunkId::new(0, 708).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefgh")
@@ -2837,10 +2816,7 @@ fn a_returning_replica_does_not_vote_until_it_is_checked_in() {
     //
     // The second line is the defect. One vote is a quorum of one, and the returning
     // replica is read first.
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 4242,
-    };
+    let chunk_id = ChunkId::new(0, 4242).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page.write_chunk_range(&chunk_id, 0, b"abcdefgh").unwrap();
     assert!(page.stale_replica_indices().is_empty());
@@ -2921,10 +2897,7 @@ fn the_authority_record_of_a_stale_replica_is_durable() {
     // Without this the hole comes back on the next restart: the snapshot already carries
     // the quarantine set, so a restored service knows a replica was out and has forgotten
     // that it is behind.
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 4343,
-    };
+    let chunk_id = ChunkId::new(0, 4343).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page.write_chunk_range(&chunk_id, 0, b"abcdefgh").unwrap();
     page.set_replica_quarantine(0, true).unwrap();
@@ -2969,10 +2942,7 @@ fn the_authority_record_of_a_stale_replica_is_durable() {
 
 #[test]
 fn chunk_service_quarantines_replicas_and_restores_with_repair() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 77,
-    };
+    let chunk_id = ChunkId::new(0, 77).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefgh")
@@ -3041,10 +3011,7 @@ fn chunk_service_quarantines_replicas_and_restores_with_repair() {
 
 #[test]
 fn chunk_service_freezes_chunk_replicas_for_maintenance() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 79,
-    };
+    let chunk_id = ChunkId::new(0, 79).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefgh")
@@ -3087,10 +3054,7 @@ fn chunk_service_freezes_chunk_replicas_for_maintenance() {
 
 #[test]
 fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 81,
-    };
+    let chunk_id = ChunkId::new(0, 81).unwrap();
     let mut chunk = MatrixReplicaService::new();
     chunk.set_capacity_bytes(8).unwrap();
     let page_id = PageId {
@@ -3170,10 +3134,7 @@ fn chunk_replica_capacity_gates_page_writes_and_survives_snapshot() {
 
 #[test]
 fn chunk_replica_service_mode_gates_writes_and_survives_snapshot() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 82,
-    };
+    let chunk_id = ChunkId::new(0, 82).unwrap();
     let page_id = PageId {
         chunk_id: chunk_id.clone(),
         page_index: 0,
@@ -3286,10 +3247,7 @@ fn chunk_replica_service_mode_gates_writes_and_survives_snapshot() {
 
 #[test]
 fn chunk_state_handoff_proofs_gate_replica_repair_installs() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 83,
-    };
+    let chunk_id = ChunkId::new(0, 83).unwrap();
     let page_id = PageId {
         chunk_id: chunk_id.clone(),
         page_index: 0,
@@ -3439,10 +3397,7 @@ fn chunk_state_handoff_proofs_gate_replica_repair_installs() {
 
 #[test]
 fn chunk_service_prepares_and_applies_chunk_state_handoff_batches() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 84,
-    };
+    let chunk_id = ChunkId::new(0, 84).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
@@ -3514,10 +3469,7 @@ fn a_scrub_can_be_bounded_and_resumed_without_missing_a_page() {
     // in ONE call. A scrub is the one maintenance pass meant to run at a throttled rate over
     // days, so the only store that needs one could not have it. The audit over these same
     // pages has carried `marker`, `next_marker` and `has_more` all along.
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 91,
-    };
+    let chunk_id = ChunkId::new(0, 91).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     // Twelve four-byte pages, so a bound of five takes three calls.
     page.write_chunk_range(&chunk_id, 0, &[b'x'; 48]).unwrap();
@@ -3659,10 +3611,7 @@ fn a_scrub_can_be_bounded_and_resumed_without_missing_a_page() {
 
 #[test]
 fn chunk_service_scrubs_missing_and_corrupt_replicas() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 78,
-    };
+    let chunk_id = ChunkId::new(0, 78).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefgh")
@@ -3705,10 +3654,7 @@ fn chunk_service_scrubs_missing_and_corrupt_replicas() {
 
 #[test]
 fn chunk_service_repairs_exact_chunk_without_broad_scan() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7801,
-    };
+    let chunk_id = ChunkId::new(0, 7801).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefgh")
@@ -3793,10 +3739,7 @@ fn object_store_exposes_exact_page_chunk_repair() {
 
 #[test]
 fn chunk_service_prefers_local_ec_repair_for_corrupt_payloads() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 79,
-    };
+    let chunk_id = ChunkId::new(0, 79).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefgh")
@@ -3839,10 +3782,7 @@ fn chunk_service_prefers_local_ec_repair_for_corrupt_payloads() {
 
 #[test]
 fn chunk_service_pages_replica_audit_for_repair_controllers() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 80,
-    };
+    let chunk_id = ChunkId::new(0, 80).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
@@ -3900,10 +3840,7 @@ fn chunk_service_pages_replica_audit_for_repair_controllers() {
 
 #[test]
 fn chunk_service_repairs_from_replica_audit_page() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 81,
-    };
+    let chunk_id = ChunkId::new(0, 81).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
@@ -3951,10 +3888,7 @@ fn chunk_service_repairs_from_replica_audit_page() {
 #[test]
 fn chunk_service_batches_coalesce_reads_and_discards() {
     let page_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 700,
-        },
+        chunk_id: ChunkId::new(0, 700).unwrap(),
         page_index: 0,
     };
     let mut chunk = MatrixReplicaService::new();
@@ -4218,10 +4152,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
         }]
     );
 
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 70,
-    };
+    let chunk_id = ChunkId::new(0, 70).unwrap();
     let mut page = MatrixChunkService::new(8, 3, 2).unwrap();
     let write_stats = page
         .write_slab_ranges(vec![
@@ -4628,10 +4559,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
 #[test]
 fn replica_service_dedupes_idempotent_batch_mutations_across_snapshots() {
     let page_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 701,
-        },
+        chunk_id: ChunkId::new(0, 701).unwrap(),
         page_index: 0,
     };
     let writes = vec![(0, b"abcd".to_vec()), (4, b"efgh".to_vec())];
@@ -4770,10 +4698,7 @@ fn replica_service_dedupes_idempotent_batch_mutations_across_snapshots() {
 fn replica_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 707,
-        },
+        chunk_id: ChunkId::new(0, 707).unwrap(),
         page_index: 0,
     };
     let first_write = chunk
@@ -4817,10 +4742,7 @@ fn replica_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
     assert_eq!(discard_page.total_receipt_count, 1);
     assert_eq!(discard_page.receipts[0].idempotency_key, "chunk-discard-a");
     let missing_chunk_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 708,
-        },
+        chunk_id: ChunkId::new(0, 708).unwrap(),
         page_index: 0,
     };
     let missing_write_page = chunk
@@ -4871,10 +4793,7 @@ fn replica_service_dedupes_idempotent_scalar_mutations_across_snapshots() {
 fn replica_service_dedupes_state_install_and_reclaim_receipts_across_snapshots() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 709,
-        },
+        chunk_id: ChunkId::new(0, 709).unwrap(),
         page_index: 0,
     };
     let mut install_state = PageState {
@@ -4963,10 +4882,7 @@ fn replica_service_dedupes_state_install_and_reclaim_receipts_across_snapshots()
 #[test]
 fn chunk_service_partially_reclaims_chunk_discard_ranges() {
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 71,
-    };
+    let chunk_id = ChunkId::new(0, 71).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
@@ -5010,10 +4926,7 @@ fn chunk_service_partially_reclaims_chunk_discard_ranges() {
 #[test]
 fn replicaserver_plans_reclaim_with_fragmentation_and_trim_budgets() {
     let mut chunk = MatrixReplicaService::new();
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 72,
-    };
+    let chunk_id = ChunkId::new(0, 72).unwrap();
     let tail_chunk = PageId {
         chunk_id: chunk_id.clone(),
         page_index: 0,
@@ -5114,10 +5027,7 @@ fn replicaserver_plans_reclaim_with_fragmentation_and_trim_budgets() {
 #[test]
 fn replicaserver_persists_trim_flow_and_throttles_reclaim() {
     let mut chunk = MatrixReplicaService::new();
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 721,
-    };
+    let chunk_id = ChunkId::new(0, 721).unwrap();
     let page_id = PageId {
         chunk_id,
         page_index: 0,
@@ -5157,10 +5067,7 @@ fn replicaserver_persists_trim_flow_and_throttles_reclaim() {
 #[test]
 fn pageserver_plans_reclaim_across_active_replicas() {
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 73,
-    };
+    let chunk_id = ChunkId::new(0, 73).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefgh")
         .unwrap();
@@ -5256,10 +5163,7 @@ fn pageserver_plans_reclaim_across_active_replicas() {
 #[test]
 fn pageserver_enforces_global_reclaim_rewrite_budget() {
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 730,
-    };
+    let chunk_id = ChunkId::new(0, 730).unwrap();
     page.write_chunk_range(&chunk_id, 0, b"abcd").unwrap();
     page.discard_chunk_range(&chunk_id, 2, 2).unwrap();
 
@@ -5328,13 +5232,13 @@ fn chunk_service_allocator_tracks_pending_commit_and_release() {
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page.configure_allocator(16).unwrap();
     let first = page.allocate_page_range(8, 10).unwrap();
-    assert_eq!(first.chunk_id.id, 1);
+    assert_eq!(first.chunk_id.id(), 1);
     assert_eq!(first.offset, 0);
     let second = page.allocate_page_range(8, 11).unwrap();
-    assert_eq!(second.chunk_id.id, 1);
+    assert_eq!(second.chunk_id.id(), 1);
     assert_eq!(second.offset, 8);
     let third = page.allocate_page_range(4, 12).unwrap();
-    assert_eq!(third.chunk_id.id, 2);
+    assert_eq!(third.chunk_id.id(), 2);
     assert_eq!(third.offset, 0);
     assert_eq!(page.pending_page_allocations().len(), 3);
 
@@ -5392,7 +5296,7 @@ fn chunk_service_dedupes_idempotent_allocations_across_snapshots() {
     let third = page
         .allocate_page_range_idempotent(4, 14, "alloc-request-c")
         .unwrap();
-    assert_eq!(third.allocation.chunk_id.id, 2);
+    assert_eq!(third.allocation.chunk_id.id(), 2);
     assert_eq!(third.allocation.offset, 0);
     assert_eq!(page.pending_page_allocations().len(), 3);
 
@@ -5544,10 +5448,7 @@ fn chunk_service_dedupes_idempotent_batch_allocations_across_snapshots() {
 
 #[test]
 fn chunk_service_dedupes_idempotent_writes_across_snapshots() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 42,
-    };
+    let chunk_id = ChunkId::new(0, 42).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     let first = page
         .write_chunk_range_idempotent(&chunk_id, 0, b"abcdefgh", "block-write-a")
@@ -5655,10 +5556,7 @@ fn chunk_service_dedupes_idempotent_writes_across_snapshots() {
 
 #[test]
 fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 43,
-    };
+    let chunk_id = ChunkId::new(0, 43).unwrap();
     let batch = vec![
         ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
@@ -5789,10 +5687,7 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
 
 #[test]
 fn chunk_service_dedupes_idempotent_discards_across_snapshots() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 43,
-    };
+    let chunk_id = ChunkId::new(0, 43).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
@@ -5896,10 +5791,7 @@ fn chunk_service_dedupes_idempotent_discards_across_snapshots() {
 
 #[test]
 fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 44,
-    };
+    let chunk_id = ChunkId::new(0, 44).unwrap();
     let requests = vec![
         ChunkRangeRequest {
             chunk_id: chunk_id.clone(),
@@ -6018,10 +5910,7 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
 
 #[test]
 fn replica_service_snapshot_chunks_restore_replacement_nodes() {
-    let chunk_id = ChunkId {
-        volume_id: 1,
-        id: 99,
-    };
+    let chunk_id = ChunkId::new(1, 99).unwrap();
     let chunk_a = PageId {
         chunk_id: chunk_id.clone(),
         page_index: 0,
@@ -6226,10 +6115,7 @@ fn replica_service_snapshot_chunks_restore_replacement_nodes() {
 
 #[test]
 fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 11,
-    };
+    let chunk_id = ChunkId::new(0, 11).unwrap();
     let mut source = MatrixChunkService::new(4, 3, 2).unwrap();
     source.configure_allocator(16).unwrap();
     let pending = source.allocate_page_range(8, 10).unwrap();
@@ -6449,10 +6335,7 @@ fn chunk_service_snapshot_chunks_restore_replacement_nodes() {
 
 #[test]
 fn page_and_object_cache_control_coalesce_ranges() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 8,
-    };
+    let chunk_id = ChunkId::new(0, 8).unwrap();
     let page_id = PageId {
         chunk_id: chunk_id.clone(),
         page_index: 99,
@@ -6881,10 +6764,7 @@ fn page_and_object_cache_control_coalesce_ranges() {
 
 #[test]
 fn page_and_object_reads_repair_missing_replicas() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 9,
-    };
+    let chunk_id = ChunkId::new(0, 9).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefgh")
@@ -6996,10 +6876,7 @@ fn page_and_object_reads_repair_missing_replicas() {
 
 #[test]
 fn page_and_object_repair_large_ranges_with_cursors() {
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 91,
-    };
+    let chunk_id = ChunkId::new(0, 91).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     page
         .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
@@ -16311,10 +16188,7 @@ fn raft_backed_store_applies_prepared_chunk_batches() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     let page_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 991,
-        },
+        chunk_id: ChunkId::new(0, 991).unwrap(),
         page_index: 0,
     };
     let writes = vec![(0, b"alpha".to_vec()), (5, b"-beta".to_vec())];
@@ -18305,10 +18179,7 @@ fn raft_backed_store_applies_prepared_page_batches() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 1,
-        id: 773,
-    };
+    let chunk_id = ChunkId::new(1, 773).unwrap();
     let writes = vec![
         ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
@@ -19998,10 +19869,7 @@ fn raft_backed_store_replays_storage_receipt_retention_configuration() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     let page_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 9901,
-        },
+        chunk_id: ChunkId::new(0, 9901).unwrap(),
         page_index: 0,
     };
     store
@@ -20434,10 +20302,7 @@ fn raft_backed_store_replays_page_route_qos() {
     assert_eq!(proof.qos_max_read_ops_per_window, 1);
     assert_eq!(proof.qos_max_write_ops_per_window, 1);
 
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7017,
-    };
+    let chunk_id = ChunkId::new(0, 7017).unwrap();
     let first = replicated
         .propose_write_page_range_idempotent(
             chunk_id.clone(),
@@ -20514,10 +20379,7 @@ fn raft_backed_store_applies_prepared_page_route_qos() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7018,
-    };
+    let chunk_id = ChunkId::new(0, 7018).unwrap();
     replicated
         .propose_write_page_range_idempotent(
             chunk_id.clone(),
@@ -20679,10 +20541,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7019,
-    };
+    let chunk_id = ChunkId::new(0, 7019).unwrap();
     let stale_route_checksum = replicated
         .store()
         .chunk_service
@@ -20958,10 +20817,7 @@ fn rust_page_mutations_reject_stale_route_control_fences() {
     let proven_prepared_discard = replicated
         .prepare_page_batch_discard_raft_entry_bounded_with_read_proof_linearizable_fenced(
             vec![ChunkRangeRequest {
-                chunk_id: ChunkId {
-                    volume_id: 0,
-                    id: 7019,
-                },
+                chunk_id: ChunkId::new(0, 7019).unwrap(),
                 offset: 8,
                 length: 4,
             }],
@@ -21682,10 +21538,7 @@ fn raft_backed_store_replays_chunk_mutation_qos() {
         .iter()
         .all(|replica_config| replica_config == &config));
 
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7018,
-    };
+    let chunk_id = ChunkId::new(0, 7018).unwrap();
     let first = replicated
         .propose_write_page_range_idempotent(
             chunk_id.clone(),
@@ -21850,10 +21703,7 @@ fn raft_backed_store_applies_prepared_chunk_mutation_qos() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7020,
-    };
+    let chunk_id = ChunkId::new(0, 7020).unwrap();
     replicated
         .propose_write_page_range_idempotent(
             chunk_id.clone(),
@@ -21990,10 +21840,7 @@ fn raft_backed_store_replays_idempotent_page_writes() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7000,
-    };
+    let chunk_id = ChunkId::new(0, 7000).unwrap();
     let first = replicated
         .propose_write_page_range_idempotent(
             chunk_id.clone(),
@@ -22069,10 +21916,7 @@ fn raft_backed_store_replays_idempotent_batch_page_writes() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7006,
-    };
+    let chunk_id = ChunkId::new(0, 7006).unwrap();
     let batch = vec![
         ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
@@ -22148,10 +21992,7 @@ fn raft_backed_store_replays_idempotent_page_discards() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7001,
-    };
+    let chunk_id = ChunkId::new(0, 7001).unwrap();
     replicated
         .propose_write_page_range_idempotent(
             chunk_id.clone(),
@@ -22216,10 +22057,7 @@ fn raft_backed_store_gates_page_and_chunk_receipt_reads() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7003,
-    };
+    let chunk_id = ChunkId::new(0, 7003).unwrap();
     replicated
         .propose_write_page_range_idempotent(
             chunk_id.clone(),
@@ -22295,10 +22133,7 @@ fn raft_backed_store_replays_idempotent_batch_page_discards() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7002,
-    };
+    let chunk_id = ChunkId::new(0, 7002).unwrap();
     replicated
         .propose_write_page_range_idempotent(
             chunk_id.clone(),
@@ -22924,10 +22759,7 @@ fn raft_backed_store_replays_chunk_state_handoff_batches() {
     let stale = RaftBackedObjectStore::new(stale_raft, stale_store);
     let stale_err = stale
         .prepare_chunk_state_handoffs_with_read_proof_linearizable_fenced(
-            &ChunkId {
-                volume_id: 0,
-                id: 0,
-            },
+            &ChunkId::new(0, 0).unwrap(),
             0,
             1,
             0,
@@ -23521,10 +23353,7 @@ fn raft_backed_store_replays_chunk_partial_reclaim() {
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 1,
-    };
+    let chunk_id = ChunkId::new(0, 1).unwrap();
     let chunk0 = PageId {
         chunk_id: chunk_id.clone(),
         page_index: 0,
@@ -23796,10 +23625,7 @@ fn raft_backed_store_replays_targeted_chunk_reclaim() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     let chunk1 = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 1,
-        },
+        chunk_id: ChunkId::new(0, 1).unwrap(),
         page_index: 1,
     };
     assert_eq!(
@@ -24036,10 +23862,7 @@ fn raft_backed_store_replays_prepared_chunk_reclaim_with_compact_fences() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     let chunk1 = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 1,
-        },
+        chunk_id: ChunkId::new(0, 1).unwrap(),
         page_index: 1,
     };
     assert_eq!(
@@ -24302,10 +24125,7 @@ fn raft_backed_store_replays_chunk_trim_flow_throttling() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     let page_id = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 1,
-        },
+        chunk_id: ChunkId::new(0, 1).unwrap(),
         page_index: 0,
     };
     let follower_replica = &follower.chunk_service.replicas[0];
@@ -24363,10 +24183,7 @@ fn raft_backed_store_applies_prepared_chunk_trim_flow_control() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7021,
-    };
+    let chunk_id = ChunkId::new(0, 7021).unwrap();
     replicated
         .propose_write_page_range_idempotent(
             chunk_id,
@@ -24700,10 +24517,7 @@ fn raft_backed_store_applies_prepared_chunk_read_cache_configuration() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let chunk_id = ChunkId {
-        volume_id: 0,
-        id: 7022,
-    };
+    let chunk_id = ChunkId::new(0, 7022).unwrap();
     replicated
         .propose_write_page_range_idempotent(
             chunk_id,
@@ -24890,10 +24704,7 @@ fn raft_backed_store_replays_page_chunk_endpoint_topology() {
     );
     assert!(matches!(
         replicated.store().chunk_service.replicas[2].read_chunk_state(&PageId {
-            chunk_id: ChunkId {
-                volume_id: 0,
-                id: 1
-            },
+            chunk_id: ChunkId::new(0, 1).unwrap(),
             page_index: 0,
         }),
         Err(ObjectError::NotFound(_))
@@ -35476,6 +35287,44 @@ fn measure_what_an_applied_raft_receipt_costs() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_the_mutation_batch_copies() {
+    // The README states this copy as four parts: page service state, replica state, shared
+    // receipt handles, and a per-chunk term. Only the TOTAL is guarded, so parts that move
+    // by offsetting amounts leave four wrong numbers published with every test green.
+    let objects = std::env::var("MEASURE_OBJECTS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(250);
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    for index in 0..objects {
+        store
+            .put_object(
+                "bucket",
+                &format!("prefix/{index:08}/kkkkkkkkkk"),
+                vec![b'x'; 1024],
+                "application/octet-stream",
+            )
+            .unwrap();
+    }
+    let audit: std::collections::BTreeMap<String, u64> = store
+        .chunk_service
+        .export_snapshot_unsealed()
+        .footprint_audit()
+        .into_iter()
+        .collect();
+    println!("BATCHCOPY objects={objects}");
+    for (name, value) in &audit {
+        println!("BATCHCOPY {name}={value}");
+    }
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_space_amplification() {
     // What a stored byte costs in resident bytes, at several object sizes.
     //
@@ -36667,6 +36516,83 @@ fn a_storage_class_costs_no_heap_at_all() {
             .all(|metadata| metadata.storage_class == StorageClass::Standard),
         "and the class came back as the variant it went out as"
     );
+}
+
+#[test]
+fn the_chunk_identity_is_eight_bytes_and_the_wire_and_order_are_unchanged() {
+    // `ChunkId` was two `u64`. Its `id` counts the chunks of a store and a chunk is 64 MiB
+    // by default, so four billion of them is over two hundred exabytes; its `volume_id` is
+    // `(id - 1) % volume_count`, which a store now refuses above `u32::MAX`. Both fit in
+    // thirty-two bits, and halving the identity halves `PageId` -- one per page per replica
+    // -- and `ObjectExtent`, one per object.
+    assert_eq!(std::mem::size_of::<ChunkId>(), 8);
+    assert_eq!(std::mem::size_of::<PageId>(), 16);
+    assert_eq!(std::mem::size_of::<ObjectExtent>(), 16);
+
+    // THE WIRE DID NOT NARROW WITH IT. Still two 64-bit words, which is what makes this a
+    // representation change rather than a migration.
+    let chunk_id = ChunkId::new(3, 9).unwrap();
+    let mut encoded = Vec::new();
+    append_chunk_id(&mut encoded, &chunk_id);
+    let mut two_words = Vec::new();
+    append_u64(&mut two_words, 3);
+    append_u64(&mut two_words, 9);
+    assert_eq!(
+        encoded, two_words,
+        "a chunk id is still a volume word followed by an id word"
+    );
+    assert_eq!(encoded.len(), 16);
+
+    // THE ORDER DID NOT CHANGE EITHER, and that is the other half of why this is not a
+    // migration: every map keyed by a chunk or a page iterates in this order, and the
+    // snapshot material and the checksums over it are built from those walks. Asserted
+    // against the order computed from the accessors rather than trusted to the derive.
+    let mut spread: Vec<ChunkId> = Vec::new();
+    for volume in [0u64, 1, 2] {
+        for id in [1u64, 2, 300, u64::from(u32::MAX)] {
+            spread.push(ChunkId::new(volume, id).unwrap());
+        }
+    }
+    let walked: Vec<ChunkId> = spread
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<ChunkId>>()
+        .into_iter()
+        .collect();
+    let mut by_accessor = spread.clone();
+    by_accessor.sort_by_key(|chunk_id| (chunk_id.volume_id(), chunk_id.id()));
+    assert_eq!(
+        walked, by_accessor,
+        "a chunk id sorts by volume first and then by id"
+    );
+    // NOT VACUOUS: the fixture crosses volumes, so which field sorts first decides the
+    // answer -- an id-only order would put volume 1 id 1 ahead of volume 0 id 300.
+    assert!(
+        walked.iter().any(|chunk_id| chunk_id.volume_id() > 0),
+        "the fixture must span more than one volume"
+    );
+    assert_eq!(walked[3].id(), u64::from(u32::MAX));
+    assert_eq!(walked[4].volume_id(), 1);
+
+    // PAST THE BOUND IS REFUSED RATHER THAN TRUNCATED, on each field on its own: a wrapped
+    // chunk id names a different chunk, which would hand back another object's bytes.
+    let past = u64::from(u32::MAX) + 1;
+    assert!(matches!(
+        ChunkId::new(0, past),
+        Err(ObjectError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        ChunkId::new(past, 1),
+        Err(ObjectError::InvalidArgument(_))
+    ));
+    // And a store refuses the setting that could mint one, rather than taking it and
+    // failing the first write that reached a high volume.
+    let mut options = test_options();
+    options.volume_count = past;
+    assert!(matches!(
+        MatrixObjectStore::new(options),
+        Err(ObjectError::InvalidArgument(_))
+    ));
 }
 
 #[test]
@@ -38770,10 +38696,7 @@ fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
     // back mutation left its record behind. So the restore semantics are pinned
     // here, and any cheaper undo has to keep them.
     let page = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 11,
-        },
+        chunk_id: ChunkId::new(0, 11).unwrap(),
         page_index: 0,
     };
 
@@ -38843,10 +38766,7 @@ fn only_the_first_write_in_a_batch_should_copy_its_page() {
     }
 
     let page = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 23,
-        },
+        chunk_id: ChunkId::new(0, 23).unwrap(),
         page_index: 0,
     };
 
@@ -38929,10 +38849,7 @@ fn an_open_batch_makes_every_write_copy_the_whole_page() {
     }
 
     let page = PageId {
-        chunk_id: ChunkId {
-            volume_id: 0,
-            id: 7,
-        },
+        chunk_id: ChunkId::new(0, 7).unwrap(),
         page_index: 0,
     };
 
@@ -39552,7 +39469,7 @@ fn a_striped_page_reads_back_what_was_written_to_it() {
     // THE QUESTION THAT DECIDES WHETHER ANY OF THIS IS WIRED. Everything else about the
     // layout can be right while the storage path still copies pages to every replica.
     let mut service = striped_chunk_service(64);
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     // Five units' worth, so the write spans three groups and the last unit is partial.
     let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
     service
@@ -39588,7 +39505,7 @@ fn a_striped_page_holds_one_and_a_half_copies_and_replication_holds_three() {
         } else {
             MatrixChunkService::new(64 * 1024, 3, 3).unwrap()
         };
-        let chunk_id = ChunkId { volume_id: 1, id: 1 };
+        let chunk_id = ChunkId::new(1, 1).unwrap();
         service
             .write_slab_ranges(vec![ChunkRangeWrite {
                 chunk_id,
@@ -39642,7 +39559,7 @@ fn a_striped_page_still_reads_with_one_replica_gone() {
     let payload: Vec<u8> = (0..500u32).map(|index| (index % 251) as u8).collect();
     for gone in 0..3usize {
         let mut service = striped_chunk_service(64);
-        let chunk_id = ChunkId { volume_id: 1, id: 1 };
+        let chunk_id = ChunkId::new(1, 1).unwrap();
         service
             .write_slab_ranges(vec![ChunkRangeWrite {
                 chunk_id: chunk_id.clone(),
@@ -39667,7 +39584,7 @@ fn a_striped_page_still_reads_with_one_replica_gone() {
     // TWO GONE IS REFUSED, not answered with something. One unit of redundancy recovers
     // one unit, and a read that returned anyway would be serving invented bytes.
     let mut service = striped_chunk_service(64);
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     service
         .write_slab_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
@@ -39743,7 +39660,7 @@ fn a_stripe_layout_is_refused_where_it_could_not_be_honoured() {
 
     // And once pages exist, the layout is fixed.
     service.configure_stripe_layout(Some(layout)).unwrap();
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     service
         .write_slab_ranges(vec![ChunkRangeWrite {
             chunk_id,
@@ -40084,7 +40001,7 @@ fn a_damaged_fragment_is_located_by_its_digest_rather_than_searched_for() {
     // WHICH fragment is rebuilt and WHAT is said when one cannot be, and both are asserted
     // below.
     let mut service = one_replica_chunk_service();
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     // Large enough for several fragments: the floor is 8 KiB a fragment, so 64 KiB is 8.
     let payload: Vec<u8> = (0..65_536u32).map(|index| (index % 251) as u8).collect();
     service
@@ -40262,7 +40179,7 @@ fn a_replica_with_peers_stores_neither_sidecar_nor_digests() {
     // The digests go with the sidecar. On their own they can say a fragment is damaged and
     // do nothing about it, so a replica that keeps no sidecar should pay for neither.
     let mut service = MatrixChunkService::new(1024 * 1024, 3, 2).unwrap();
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     service
         .write_slab_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
@@ -40289,7 +40206,7 @@ fn a_replica_with_peers_stores_neither_sidecar_nor_digests() {
     // And the one-replica case does keep both, so the assertion above is about the policy
     // rather than about the digests never being stored at all.
     let mut alone = one_replica_chunk_service();
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     alone
         .write_slab_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
@@ -40316,7 +40233,7 @@ fn a_snapshot_cannot_carry_a_damaged_page() {
     // changed nothing observable, because nothing the format carried could ever differ
     // from what the decoder recomputes. The format went; this pins why.
     let mut service = one_replica_chunk_service();
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     let payload: Vec<u8> = (0..65_536u32).map(|index| (index % 251) as u8).collect();
     service
         .write_slab_ranges(vec![ChunkRangeWrite {
@@ -40396,7 +40313,7 @@ fn a_digest_table_of_the_wrong_width_is_refused_on_install() {
     let mut service = one_replica_chunk_service();
     let payload: Vec<u8> = (0..65_536u32).map(|index| (index % 251) as u8).collect();
     let page_id = PageId {
-        chunk_id: ChunkId { volume_id: 1, id: 1 },
+        chunk_id: ChunkId::new(1, 1).unwrap(),
         page_index: 0,
     };
     let sound = PageState {
@@ -40452,7 +40369,7 @@ fn a_page_that_moves_to_a_replica_with_peers_gives_up_its_digests() {
     //
     // A page carrying both arrives from a service that kept them, and is then written.
     let mut alone = one_replica_chunk_service();
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     alone
         .write_slab_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
@@ -40621,9 +40538,9 @@ fn the_payload_index_behaves_like_the_map_it_replaced() {
     assert_eq!(index.len(), 0);
     assert_eq!(index.chunk_count(), 0);
 
-    let one = ChunkId { volume_id: 1, id: 1 };
-    let two = ChunkId { volume_id: 1, id: 2 };
-    let other_volume = ChunkId { volume_id: 2, id: 1 };
+    let one = ChunkId::new(1, 1).unwrap();
+    let two = ChunkId::new(1, 2).unwrap();
+    let other_volume = ChunkId::new(2, 1).unwrap();
     let payload = |len: u64| StoredPayload { len, etag_fnv1a64: len * 7 };
 
     // Inserted out of order, and in two chunks, so the ordering assertion below is not
@@ -40648,7 +40565,7 @@ fn the_payload_index_behaves_like_the_map_it_replaced() {
     assert_eq!(index.get(&one, 64), Some(&payload(20)));
     assert_eq!(index.get(&one, 1), None, "a wrong offset is not a hit");
     assert_eq!(
-        index.get(&ChunkId { volume_id: 9, id: 9 }, 0),
+        index.get(&ChunkId::new(9, 9).unwrap(), 0),
         None,
         "a wrong chunk is not a hit"
     );
@@ -40772,7 +40689,20 @@ fn the_payload_index_pays_the_chunk_identity_once_per_chunk() {
     );
 
     // NOT VACUOUS: a store that wrote nothing would satisfy every relation above.
-    assert!(key_bytes > 0 && flat > key_bytes * 2);
+    //
+    // This line used to read `flat > key_bytes * 2`, which is a MAGNITUDE CLAIM wearing a
+    // non-vacuity label: it held only while a chunk identity was sixteen bytes, where the
+    // pair key was three times the nested one. The identity is eight bytes now, so the pair
+    // key is twice the offset rather than three times it and the ratio sits just under two.
+    // NARROWING THE IDENTITY HALVED WHAT THE NESTING SAVES -- from the identity at every
+    // entry to half of it -- which is a real consequence and not a reason to move a
+    // threshold. The exact relation is asserted above; this says only that the fixture
+    // wrote something for it to be about.
+    assert!(
+        entries > 0 && chunks > 0 && key_bytes > 0,
+        "the fixture must have written something, and it wrote {entries} entries in \
+         {chunks} chunks"
+    );
 }
 
 #[cfg(test)]
@@ -40802,7 +40732,7 @@ fn a_striped_service_stripes_a_single_range_write_too() {
     // interpreted those copies as units, rebuilt a page that was not what had been written,
     // and RETURNED it.
     let mut service = striped_chunk_service(64);
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     // Five units' worth, so the write spans three groups and the last unit is partial.
     let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
     service.write_chunk_range(&chunk_id, 0, &payload).unwrap();
@@ -40853,7 +40783,7 @@ fn a_retried_striped_write_is_deduplicated_at_each_replica() {
     // at all. A retry through either of them is answered from that map, so it would pass with
     // the replica keying deleted. The physical write count is what sees the layer below.
     let mut service = striped_chunk_service(64);
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     let page_id = PageId {
         chunk_id: chunk_id.clone(),
         page_index: 0,
@@ -40989,7 +40919,7 @@ fn a_striped_services_public_idempotent_write_is_answered_from_its_own_receipts(
     // The layer ABOVE the one the test before this measures, kept separate so neither is
     // read as evidence for the other.
     let mut service = striped_chunk_service(64);
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
     let writes = vec![ChunkRangeWrite {
         chunk_id: chunk_id.clone(),
@@ -41229,7 +41159,7 @@ fn a_striped_page_that_has_lost_a_replica_is_reported_unrepaired() {
     // It does NOT destroy the page, which is the thing worth pinning: a repair that took one
     // replica's units for the page and copied them everywhere would lose the data.
     let mut service = striped_chunk_service(64);
-    let chunk_id = ChunkId { volume_id: 1, id: 1 };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
     service
         .write_slab_ranges(vec![ChunkRangeWrite {
@@ -42359,10 +42289,7 @@ fn a_refused_mutation_leaves_exactly_the_receipts_it_found() {
 #[cfg(feature = "matrix-raft")]
 fn chunk_raft_page() -> PageId {
     PageId {
-        chunk_id: ChunkId {
-            volume_id: 7,
-            id: 11,
-        },
+        chunk_id: ChunkId::new(7, 11).unwrap(),
         page_index: 3,
     }
 }
@@ -44508,10 +44435,7 @@ fn a_striped_write_leaves_no_receipt_nothing_could_match() {
             .map(|replica| replica.batch_write_request_receipts.len())
             .sum()
     }
-    let chunk_id = ChunkId {
-        volume_id: 1,
-        id: 1,
-    };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     let page_id = PageId {
         chunk_id: chunk_id.clone(),
         page_index: 0,
@@ -44758,13 +44682,13 @@ fn the_identity_each_map_names_twice_is_one_allocation() {
 }
 
 #[test]
-fn an_extent_is_twenty_four_bytes_and_its_wire_is_still_thirty_two() {
+fn an_extent_is_sixteen_bytes_and_its_wire_is_still_thirty_two() {
     // THE CLAIM THIS CHANGE RESTS ON: the in-memory extent narrowed and the durable one did
     // not. If the wire had narrowed too, every snapshot written before this would be
     // unreadable and this would be a migration rather than a representation change.
     assert_eq!(
         std::mem::size_of::<ObjectExtent>(),
-        24,
+        16,
         "a chunk identity and two 32-bit numbers"
     );
     assert_eq!(
@@ -44816,10 +44740,7 @@ fn an_extent_is_twenty_four_bytes_and_its_wire_is_still_thirty_two() {
 fn an_extent_past_four_gibibytes_is_refused_rather_than_truncated() {
     // A truncated offset is an object pointing at the wrong bytes, which is the one failure
     // a narrowing must not have. The constructor refuses instead.
-    let chunk_id = ChunkId {
-        volume_id: 1,
-        id: 1,
-    };
+    let chunk_id = ChunkId::new(1, 1).unwrap();
     let over = u64::from(u32::MAX) + 1;
     assert!(
         ObjectExtent::new(chunk_id.clone(), over, 1).is_err(),

@@ -30,7 +30,7 @@ impl MatrixChunkService {
             ));
         }
         let inserted = self.sealed_chunks.insert(chunk_id.clone());
-        if self.allocator_next_chunk_id == chunk_id.id
+        if self.allocator_next_chunk_id == chunk_id.id()
             && self.allocator_next_offset < self.allocator_chunk_size
         {
             self.roll_allocator_to_next_unsealed_chunk()?;
@@ -46,15 +46,19 @@ impl MatrixChunkService {
         self.sealed_chunks.contains(chunk_id)
     }
 
-    pub fn allocator_active_chunk_id(&self) -> ChunkId {
-        ChunkId {
-            volume_id: 0,
-            id: self.allocator_next_chunk_id,
-        }
+    /// The chunk the allocator is filling, or `None` when its cursor has run past what
+    /// a chunk id can hold.
+    ///
+    /// `None` rather than an error because the only question asked of it is whether that
+    /// chunk is sealed, and a cursor past thirty-two bits cannot equal any sealed chunk --
+    /// every one of those was built through `ChunkId::new` and is inside the bound.
+    pub fn allocator_active_chunk_id(&self) -> Option<ChunkId> {
+        ChunkId::new(0, self.allocator_next_chunk_id).ok()
     }
 
     pub fn allocator_active_chunk_sealed(&self) -> bool {
-        self.is_chunk_sealed(&self.allocator_active_chunk_id())
+        self.allocator_active_chunk_id()
+            .is_some_and(|chunk_id| self.is_chunk_sealed(&chunk_id))
     }
 
     pub fn list_sealed_chunks(
@@ -91,12 +95,12 @@ impl MatrixChunkService {
     }
 
     fn validate_page_chunk_id(&self, chunk_id: &ChunkId) -> Result<(), ObjectError> {
-        if chunk_id.volume_id != 0 {
+        if chunk_id.volume_id() != 0 {
             return Err(ObjectError::InvalidArgument(
                 "page chunk volume_id must be zero".to_string(),
             ));
         }
-        if chunk_id.id == 0 {
+        if chunk_id.id() == 0 {
             return Err(ObjectError::InvalidArgument(
                 "page chunk id must be positive".to_string(),
             ));
@@ -110,10 +114,7 @@ impl MatrixChunkService {
             next_id = next_id.checked_add(1).ok_or_else(|| {
                 ObjectError::InvalidArgument("page allocator chunk id overflow".to_string())
             })?;
-            let candidate = ChunkId {
-                volume_id: 0,
-                id: next_id,
-            };
+            let candidate = ChunkId::new(0, next_id)?;
             if !self.sealed_chunks.contains(&candidate) {
                 self.allocator_next_chunk_id = next_id;
                 self.allocator_next_offset = 0;
@@ -156,10 +157,7 @@ impl MatrixChunkService {
                 self.roll_allocator_to_next_unsealed_chunk()?;
             }
         }
-        let chunk_id = ChunkId {
-            volume_id: 0,
-            id: self.allocator_next_chunk_id,
-        };
+        let chunk_id = ChunkId::new(0, self.allocator_next_chunk_id)?;
         let offset = self.allocator_next_offset;
         self.allocator_next_offset = self
             .allocator_next_offset
@@ -167,7 +165,7 @@ impl MatrixChunkService {
             .ok_or_else(|| ObjectError::InvalidArgument("page allocation overflow".to_string()))?;
         let allocation_id = format!(
             "{}:{}:{}:{}",
-            chunk_id.volume_id, chunk_id.id, offset, length
+            chunk_id.volume_id(), chunk_id.id(), offset, length
         );
         if self.pending_allocations.contains_key(&allocation_id) {
             return Err(ObjectError::Corruption(
