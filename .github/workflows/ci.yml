@@ -453,3 +453,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::a_write_that_fails_part_way_through_its_pages_did_not_happen did not run"; exit 1; }
+
+      - name: The space ratio is the overwrite count unless the space is taken back
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_space_ratio_is_the_overwrite_count_unless_the_space_is_taken_back -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_space_ratio_is_the_overwrite_count_unless_the_space_is_taken_back did not run"; exit 1; }

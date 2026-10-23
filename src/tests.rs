@@ -30077,6 +30077,103 @@ fn a_write_that_fails_part_way_through_its_pages_did_not_happen() {
 }
 
 #[test]
+fn the_space_ratio_is_the_overwrite_count_unless_the_space_is_taken_back() {
+    // `logical_bytes` is a chunk's high-water mark and `live_bytes` is what is still
+    // referenced, so overwriting ONE object n times leaves n copies of its space charged
+    // against one object's worth of live bytes: the ratio is n. Nothing in this tree drives
+    // compaction -- no timer, no threshold, `compact_all` only when something calls it --
+    // so a store that is never maintained accumulates without bound.
+    //
+    // Two routes end at 1.0x. `reuse_stale_chunk_space` takes the space back on the next
+    // write, eagerly and invisibly; `compact_all` takes it back on demand, after the
+    // collector has been able to see it. This pins both, and the unbounded growth that
+    // neither one is doing.
+    fn ratio_after_overwrites(reuse: bool, overwrites: u64) -> u64 {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            reuse_stale_chunk_space: reuse,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for round in 0..=overwrites {
+            store
+                .put_object("bucket", "object", vec![b'a' + round as u8; 4096], "text/plain")
+                .unwrap();
+        }
+        // The bytes are the last round's, whichever route was taken.
+        let expected = b'a' + overwrites as u8;
+        let read = store.get_object("bucket", "object").unwrap();
+        assert!(
+            read.data.len() == 4096 && read.data.iter().all(|byte| *byte == expected),
+            "the object must read back as the last version written"
+        );
+        store.gc_report().space_amplification_ppm
+    }
+
+    // WITHOUT reuse, the ratio is the number of copies the chunk has accumulated.
+    assert_eq!(ratio_after_overwrites(false, 1), 2_000_000);
+    assert_eq!(ratio_after_overwrites(false, 4), 5_000_000);
+    assert_eq!(ratio_after_overwrites(false, 9), 10_000_000);
+
+    // WITH it, the space is taken back by the next write and the ratio does not move.
+    assert_eq!(ratio_after_overwrites(true, 1), 1_000_000);
+    assert_eq!(ratio_after_overwrites(true, 4), 1_000_000);
+    assert_eq!(ratio_after_overwrites(true, 9), 1_000_000);
+
+    // AND THE OTHER ROUTE, with reuse off: the collector can see the garbage and then take
+    // it back, which is what the old default was protecting -- visibility before reclaim.
+    let mut collected = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        reuse_stale_chunk_space: false,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    collected.create_bucket("bucket").unwrap();
+    for round in 0..5u64 {
+        collected
+            .put_object("bucket", "object", vec![b'a' + round as u8; 4096], "text/plain")
+            .unwrap();
+    }
+    assert_eq!(collected.gc_report().space_amplification_ppm, 5_000_000);
+    assert_eq!(collected.gc_report().stale_bytes, 4 * 4096);
+    assert_eq!(collected.compact_all(1).unwrap(), 1);
+    assert_eq!(collected.gc_report().space_amplification_ppm, 1_000_000);
+    assert_eq!(collected.gc_report().stale_bytes, 0);
+
+    // A RETAINED VERSION IS NOT STALE, so neither route can take its bytes. This is why
+    // reuse is safe to have on: it only ever takes space nothing references.
+    let mut versioned = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        reuse_stale_chunk_space: true,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    versioned.create_bucket("bucket").unwrap();
+    versioned.set_bucket_versioning("bucket", true).unwrap();
+    let first = versioned
+        .put_object("bucket", "object", vec![b'a'; 4096], "text/plain")
+        .unwrap();
+    for round in 1..4u64 {
+        versioned
+            .put_object("bucket", "object", vec![b'a' + round as u8; 4096], "text/plain")
+            .unwrap();
+    }
+    assert_eq!(
+        versioned.gc_report().stale_bytes,
+        0,
+        "a retained version's bytes are live, so there is nothing for reuse to take"
+    );
+    let retained = versioned
+        .get_object_version("bucket", "object", first.version)
+        .unwrap();
+    assert!(
+        retained.data.iter().all(|byte| *byte == b'a'),
+        "the first version must survive three overwrites under reuse"
+    );
+}
+
+#[test]
 fn compaction_converges_and_takes_the_space_ratio_back_to_one() {
     // `ensure_writable_chunk` takes the first chunk with room. With a chunk size that holds
     // the corpus that is the chunk being compacted, so the rewrite landed back in its own
@@ -30092,8 +30189,15 @@ fn compaction_converges_and_takes_the_space_ratio_back_to_one() {
     // was most wrong. It never converged: each pass added the whole live set again.
     let objects = 200u64;
     let size = 4096u64;
+    // THIS GUARD IS ABOUT THE COLLECTOR'S ROUTE, so it pins the setting that leaves
+    // something to collect. With `reuse_stale_chunk_space` on -- the default -- the next
+    // write takes the space the overwrite freed, stale never accumulates and `compact_all`
+    // correctly finds nothing to do. Both routes end at 1.0x and
+    // `the_space_ratio_is_the_overwrite_count_unless_the_space_is_taken_back` pins the
+    // other one.
     let mut store = MatrixObjectStore::new(StoreOptions {
         volume_count: 2,
+        reuse_stale_chunk_space: false,
         ..StoreOptions::default()
     })
     .unwrap();
@@ -38759,8 +38863,13 @@ fn the_documented_way_to_set_receipt_retention_works() {
     // so this exercises exactly the snippet that section now carries. It
     // compiles the method name, which is what a documented API most needs, and
     // checks the receipts it bounds actually fall.
+    //
+    // Pinned to the setting that accumulates, as the per-unit guard is: by default the put
+    // takes back the range the delete freed, so the deletes repeat one range and leave one
+    // receipt -- and a retention bound has nothing to trim.
     let mut store = MatrixObjectStore::new(StoreOptions {
         volume_count: 2,
+        reuse_stale_chunk_space: false,
         ..StoreOptions::default()
     })
     .unwrap();
@@ -43679,8 +43788,13 @@ fn a_per_unit_figure_is_a_slope_and_not_a_total_divided_by_a_count() {
     // what makes a published per-unit figure valid at a bound nobody measured
     // at.
     fn receipts_at(objects: u32) -> (u64, u64) {
+        // PINNED TO THE SETTING THAT ACCUMULATES. By default the put takes back the range
+        // the delete freed, so every object's delete discards the same range and records
+        // the same receipt -- the counts read 3, 3, 3 and this guard has nothing to
+        // measure. It is about what a receipt costs, so it needs receipts.
         let mut store = MatrixObjectStore::new(StoreOptions {
             volume_count: 2,
+            reuse_stale_chunk_space: false,
             ..StoreOptions::default()
         })
         .unwrap();

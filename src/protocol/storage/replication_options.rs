@@ -162,7 +162,7 @@ impl Default for StoreOptions {
             // every replica to accept a write, so it is asked for rather than inherited.
             stripe_redundancy_units: 0,
             stripe_unit_bytes: DEFAULT_STRIPE_UNIT_BYTES,
-            reuse_stale_chunk_space: false,
+            reuse_stale_chunk_space: true,
             compaction_fragment_threshold: 128,
             object_manifest_checkpoint_interval: 1,
             object_metadata_checkpoint_interval: 1,
