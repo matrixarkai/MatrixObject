@@ -117,8 +117,8 @@ pub(crate) fn append_object_metadata_identity(out: &mut Vec<u8>, metadata: &Obje
 }
 
 pub(crate) fn append_chunk_id(out: &mut Vec<u8>, chunk_id: &ChunkId) {
-    append_u64(out, chunk_id.volume_id);
-    append_u64(out, chunk_id.id);
+    append_u64(out, chunk_id.volume_id());
+    append_u64(out, chunk_id.id());
 }
 
 pub(crate) fn append_range(out: &mut Vec<u8>, range: &DataRange) {

@@ -27,6 +27,17 @@ impl MatrixObjectStore {
                 "volume_count must be positive".to_string(),
             ));
         }
+        // A CHUNK'S VOLUME IS 32-BIT, and a chunk's volume is `(id - 1) % volume_count`, so
+        // a count above that bound could mint one that does not fit. Refused here for the
+        // same reason the chunk_size ceiling above is refused here: a store that took the
+        // setting and then failed the first write to reach a high volume would have accepted
+        // the configuration without honouring it.
+        if options.volume_count > u64::from(u32::MAX) {
+            return Err(ObjectError::InvalidArgument(
+                "volume_count must be under 2^32, which is what a chunk's volume holds"
+                    .to_string(),
+            ));
+        }
         // NO MODE READS A ROOT CATALOG. Refused here rather than ignored, for the reason the
         // chunk_size ceiling above is refused here: a store that accepted the setting and
         // then answered from the metaserver anyway would have taken the configuration and

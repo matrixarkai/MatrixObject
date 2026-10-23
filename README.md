@@ -238,11 +238,11 @@ At three replicas with the metadata counted, measured at 26-character keys:
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
 | 4 KiB | 4,000 | **3.12x** | 3.00x |
-| 1 KiB | 8,000 | **3.46x** | 3.02x |
+| 1 KiB | 8,000 | **3.45x** | 3.02x |
 
 The data term is exactly **3.00x** -- the replication floor for a store that
 copies every page to every replica -- so everything above it is metadata, which
-is **434 bytes an object plus 164,280 fixed** whatever the object size.
+is **426 bytes an object plus 164,256 fixed** whatever the object size.
 `footprint_audit()` names every resident byte and its breakdown sums to its own
 total with no remainder.
 
@@ -260,9 +260,9 @@ which is more hardware rather than less space.
 replicas to eight and fails if any of them undercuts that.
 
 Counted with the metadata, a thousand objects of 1 KiB measure
-**2.11x striped against 3.60x replicated**, both read out of `footprint_audit()` on a
+**2.10x striped against 3.59x replicated**, both read out of `footprint_audit()` on a
 store nothing has read back yet. What separates the total from the 1.5x data term is the
-metadata line above, which striping does not change: the same 434 bytes an object either
+metadata line above, which striping does not change: the same 426 bytes an object either
 way. Striping moves the payload and nothing else.
 
 Both numbers are for the same object count, so the comparison is between two
@@ -314,12 +314,12 @@ only names:
 
 | stored objects | copied | named |
 |---:|---:|---:|
-| 250 | 2,509 B | 768,312 B |
-| 1,000 | **2,509 B** | 3,072,312 B |
+| 250 | 2,485 B | 768,312 B |
+| 1,000 | **2,485 B** | 3,072,312 B |
 
 Also flat in the object count, because a chunk's payload is shared rather than
 copied and so are the receipt maps. The copy is 847 bytes of page service state,
-1,398 bytes of replica state, 168 bytes of shared receipt handles, and 32 bytes
+1,398 bytes of replica state, 168 bytes of shared receipt handles, and 24 bytes
 for each chunk — so what moves it is the chunk count, which the object SIZE
 drives rather than the object count.
 
@@ -337,19 +337,19 @@ cargo test --release --lib measure_what_a_mutation_batch_snapshot_costs -- --ign
 #### A delete does not reclaim, it trades
 
 Writing 500 objects of 1 KiB and then deleting every one leaves the store
-**25.4% larger** than when it held them:
+**25.0% larger** than when it held them:
 
 | | bytes |
 |---|---:|
-| holding 500 objects | 1,843,673 |
-| after deleting all 500 | 2,312,678 |
+| holding 500 objects | 1,839,649 |
+| after deleting all 500 | 2,300,662 |
 
 The payload index is given back in full. What replaces it is **822 bytes of
 idempotency receipt per delete** across three replicas, bounded only by
 `receipt_retention`, which defaults to 100,000; plus 106 bytes of change feed and
 57 of metadata change log per delete, both bounded by their retention constants.
 The object's own entry does not go away either — a delete files a delete marker,
-so 226 of the 282 bytes an object cost stay, which is what the change feed and
+so the 218 bytes of its `objects` entry stay, which is what the change feed and
 the versioned paths read.
 
 Those receipts are also the term that makes the mutation batch grow: after N

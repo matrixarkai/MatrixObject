@@ -298,11 +298,11 @@ impl ObjectMetadata {
             let prefix = format!("{field_prefix}extent.{index}.");
             fields.insert(
                 format!("{prefix}segment_volume_id"),
-                extent.chunk_id.volume_id.to_string().into(),
+                extent.chunk_id.volume_id().to_string().into(),
             );
             fields.insert(
                 format!("{prefix}segment_id"),
-                extent.chunk_id.id.to_string().into(),
+                extent.chunk_id.id().to_string().into(),
             );
             fields.insert(format!("{prefix}offset"), extent.offset.to_string().into());
             fields.insert(format!("{prefix}length"), extent.length.to_string().into());

@@ -53,8 +53,8 @@ impl ChunkServiceSnapshot {
         for (allocation_id, allocation) in &self.pending_allocations {
             if allocation_id != &allocation.allocation_id
                 || allocation.length == 0
-                || allocation.chunk_id.volume_id != 0
-                || allocation.chunk_id.id == 0
+                || allocation.chunk_id.volume_id() != 0
+                || allocation.chunk_id.id() == 0
                 || allocation.offset.saturating_add(allocation.length) > self.allocator_chunk_size
             {
                 return Err(ObjectError::Corruption(
@@ -65,8 +65,8 @@ impl ChunkServiceSnapshot {
         for (idempotency_key, allocation) in &self.allocation_request_receipts {
             validate_idempotency_key(idempotency_key)?;
             if allocation.length == 0
-                || allocation.chunk_id.volume_id != 0
-                || allocation.chunk_id.id == 0
+                || allocation.chunk_id.volume_id() != 0
+                || allocation.chunk_id.id() == 0
                 || allocation.offset.saturating_add(allocation.length) > self.allocator_chunk_size
             {
                 return Err(ObjectError::Corruption(
@@ -83,8 +83,8 @@ impl ChunkServiceSnapshot {
             }
             for allocation in allocations {
                 if allocation.length == 0
-                    || allocation.chunk_id.volume_id != 0
-                    || allocation.chunk_id.id == 0
+                    || allocation.chunk_id.volume_id() != 0
+                    || allocation.chunk_id.id() == 0
                     || allocation.offset.saturating_add(allocation.length)
                         > self.allocator_chunk_size
                 {
@@ -97,8 +97,8 @@ impl ChunkServiceSnapshot {
         for (idempotency_key, allocation) in &self.release_allocation_request_receipts {
             validate_idempotency_key(idempotency_key)?;
             if allocation.length == 0
-                || allocation.chunk_id.volume_id != 0
-                || allocation.chunk_id.id == 0
+                || allocation.chunk_id.volume_id() != 0
+                || allocation.chunk_id.id() == 0
                 || allocation.offset.saturating_add(allocation.length) > self.allocator_chunk_size
             {
                 return Err(ObjectError::Corruption(
@@ -110,8 +110,8 @@ impl ChunkServiceSnapshot {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.length == 0
-                || receipt.chunk_id.volume_id != 0
-                || receipt.chunk_id.id == 0
+                || receipt.chunk_id.volume_id() != 0
+                || receipt.chunk_id.id() == 0
                 || receipt.request_checksum
                     != page_write_receipt_request_checksum(
                         &receipt.chunk_id,
@@ -143,8 +143,8 @@ impl ChunkServiceSnapshot {
             validate_idempotency_key(idempotency_key)?;
             if idempotency_key != &receipt.idempotency_key
                 || receipt.length == 0
-                || receipt.chunk_id.volume_id != 0
-                || receipt.chunk_id.id == 0
+                || receipt.chunk_id.volume_id() != 0
+                || receipt.chunk_id.id() == 0
                 || receipt.request_checksum
                     != page_discard_request_checksum(
                         &receipt.chunk_id,
@@ -249,16 +249,17 @@ impl ChunkServiceSnapshot {
             replica.validate()?;
         }
         for chunk in &self.sealed_chunks {
-            if chunk.volume_id != 0 || chunk.id == 0 {
+            if chunk.volume_id() != 0 || chunk.id() == 0 {
                 return Err(ObjectError::Corruption(
                     "page service snapshot sealed chunk is invalid".to_string(),
                 ));
             }
         }
-        let active_chunk = ChunkId {
-            volume_id: 0,
-            id: self.allocator_next_chunk_id,
-        };
+        let active_chunk = ChunkId::new(0, self.allocator_next_chunk_id).map_err(|_| {
+            ObjectError::Corruption(
+                "page service snapshot allocator cursor is past thirty-two bits".to_string(),
+            )
+        })?;
         if self.sealed_chunks.contains(&active_chunk)
             && self.allocator_next_offset < self.allocator_chunk_size
         {

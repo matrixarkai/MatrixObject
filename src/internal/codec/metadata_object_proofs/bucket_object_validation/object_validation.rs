@@ -89,7 +89,7 @@ pub(crate) fn validate_storage_class(storage_class: &str) -> Result<(), ObjectEr
 }
 
 pub(crate) fn validate_chunk_id(chunk_id: &ChunkId) -> Result<(), ObjectError> {
-    if chunk_id.id == 0 {
+    if chunk_id.id() == 0 {
         return Err(ObjectError::InvalidArgument(
             "chunk id must be positive".to_string(),
         ));

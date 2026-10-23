@@ -93,8 +93,8 @@ impl MatrixReplicaService {
             let _ = write!(
                 stamp,
                 "|c:{}/{}:{}:{}:{}:{}:{}:{}",
-                page_id.chunk_id.volume_id,
-                page_id.chunk_id.id,
+                page_id.chunk_id.volume_id(),
+                page_id.chunk_id.id(),
                 page_id.page_index,
                 state.logical_length,
                 state.write_sequence,

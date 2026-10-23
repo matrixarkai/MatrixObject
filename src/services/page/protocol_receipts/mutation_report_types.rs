@@ -95,8 +95,8 @@ impl ChunkRangeRepairReceipt {
             .chunk_id
             .to_control_fields(&format!("{field_prefix}segment."));
         for (name, value) in [
-            ("volume_id", self.chunk_id.volume_id),
-            ("segment_id", self.chunk_id.id),
+            ("volume_id", self.chunk_id.volume_id()),
+            ("segment_id", self.chunk_id.id()),
             ("offset", self.offset),
             ("length", self.length),
             ("max_repair_chunks", self.max_repair_chunks),

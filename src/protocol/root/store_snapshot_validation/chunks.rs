@@ -9,7 +9,7 @@ impl StoreSnapshot {
                     "snapshot chunk key does not match chunk info".to_string(),
                 ));
             }
-            max_chunk_id = max_chunk_id.max(chunk_id.id);
+            max_chunk_id = max_chunk_id.max(chunk_id.id());
             if chunk.next_offset > self.options.chunk_size
                 || chunk.live_bytes.saturating_add(chunk.stale_bytes) < chunk.live_bytes
                 || chunk.discarded_bytes > chunk.stale_bytes

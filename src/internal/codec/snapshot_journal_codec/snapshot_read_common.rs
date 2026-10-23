@@ -44,10 +44,8 @@ pub(crate) fn read_object_id(cursor: &mut SnapshotByteCursor<'_>) -> Result<Obje
 pub(crate) fn read_chunk_id(
     cursor: &mut SnapshotByteCursor<'_>,
 ) -> Result<ChunkId, ObjectError> {
-    Ok(ChunkId {
-        volume_id: cursor.read_u64()?,
-        id: cursor.read_u64()?,
-    })
+    ChunkId::new(cursor.read_u64()?, cursor.read_u64()?)
+        .map_err(|_| ObjectError::Corruption("snapshot chunk id is past 32 bits".to_string()))
 }
 
 pub(crate) fn read_page_id(cursor: &mut SnapshotByteCursor<'_>) -> Result<PageId, ObjectError> {

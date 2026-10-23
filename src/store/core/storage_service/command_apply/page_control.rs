@@ -155,7 +155,7 @@ impl MatrixObjectStore {
                     "_chunkwrite",
                     &format!(
                         "{}:{}",
-                        receipt.page_id.chunk_id.id, receipt.page_id.page_index
+                        receipt.page_id.chunk_id.id(), receipt.page_id.page_index
                     ),
                     receipt.stats.physical_write_bytes,
                     receipt.deduped as u64,
@@ -173,7 +173,7 @@ impl MatrixObjectStore {
                     "_chunkdiscard",
                     &format!(
                         "{}:{}",
-                        receipt.page_id.chunk_id.id, receipt.page_id.page_index
+                        receipt.page_id.chunk_id.id(), receipt.page_id.page_index
                     ),
                     receipt.stats.physical_discard_bytes,
                     receipt.deduped as u64,
@@ -301,7 +301,7 @@ impl MatrixObjectStore {
                 let proof = self.chunk_service.route_control_proof();
                 Ok(metadata_control_metadata(
                     "_blockseal",
-                    &format!("{}:{}", chunk_id.volume_id, chunk_id.id),
+                    &format!("{}:{}", chunk_id.volume_id(), chunk_id.id()),
                     self.chunk_service.sealed_chunk_count(),
                     inserted as u64,
                     "blockserver/seal-segment",

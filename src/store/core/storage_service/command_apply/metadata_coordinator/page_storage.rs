@@ -92,7 +92,7 @@ impl MatrixObjectStore {
                 report.expected_route_control_checksum = expected_route_control_checksum.clone();
                 Ok(metadata_control_metadata(
                     "_blockrepair",
-                    &format!("{}:{}", chunk_id.volume_id, chunk_id.id),
+                    &format!("{}:{}", chunk_id.volume_id(), chunk_id.id()),
                     report.selected_chunk_count,
                     report.stats.repaired_replicas,
                     if report.has_more {
@@ -116,7 +116,7 @@ impl MatrixObjectStore {
                     "_blockrepair",
                     &format!(
                         "{}:{}:{}",
-                        page_id.chunk_id.volume_id, page_id.chunk_id.id, page_id.page_index
+                        page_id.chunk_id.volume_id(), page_id.chunk_id.id(), page_id.page_index
                     ),
                     report.checked_chunks,
                     report.repaired_replicas,

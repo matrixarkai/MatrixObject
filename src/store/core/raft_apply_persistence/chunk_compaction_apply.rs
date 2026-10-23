@@ -120,7 +120,7 @@ impl MatrixObjectStore {
                 }
             })
             .collect::<Vec<_>>();
-        candidates.sort_by_key(|chunk_id| (chunk_id.volume_id, chunk_id.id));
+        candidates.sort_by_key(|chunk_id| (chunk_id.volume_id(), chunk_id.id()));
         let mut compacted = 0u64;
         for chunk_id in candidates {
             self.compact_chunk_at(&chunk_id, update_time_ms)?;
@@ -165,7 +165,7 @@ impl MatrixObjectStore {
                     saturating_add(candidate_logical_bytes, chunk.logical_bytes);
             }
         }
-        candidate_chunk_ids.sort_by_key(|chunk_id| (chunk_id.volume_id, chunk_id.id));
+        candidate_chunk_ids.sort_by_key(|chunk_id| (chunk_id.volume_id(), chunk_id.id()));
         Ok(FullCompactionPlan {
             min_stale_bytes,
             candidate_count: candidate_chunk_ids.len() as u64,

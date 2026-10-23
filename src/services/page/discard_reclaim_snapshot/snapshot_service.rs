@@ -144,7 +144,7 @@ impl MatrixChunkService {
             let _ = write!(stamp, "|qr:{index}");
         }
         for chunk in &self.sealed_chunks {
-            let _ = write!(stamp, "|ss:{}/{}", chunk.volume_id, chunk.id);
+            let _ = write!(stamp, "|ss:{}/{}", chunk.volume_id(), chunk.id());
         }
         for replica in &self.replicas {
             stamp.push_str("|rep:");

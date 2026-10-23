@@ -78,8 +78,8 @@ impl ChunkWriteCommand {
         out.extend_from_slice(&CHUNK_RAFT_COMMAND_MAGIC);
         out.push(CHUNK_RAFT_COMMAND_VERSION);
         out.push(CHUNK_RAFT_COMMAND_WRITE_RANGES);
-        out.extend_from_slice(&self.page_id.chunk_id.volume_id.to_be_bytes());
-        out.extend_from_slice(&self.page_id.chunk_id.id.to_be_bytes());
+        out.extend_from_slice(&self.page_id.chunk_id.volume_id().to_be_bytes());
+        out.extend_from_slice(&self.page_id.chunk_id.id().to_be_bytes());
         out.extend_from_slice(&self.page_id.page_index.to_be_bytes());
         out.extend_from_slice(&(self.ranges.len() as u32).to_be_bytes());
         for (offset, data) in &self.ranges {
@@ -172,10 +172,7 @@ impl ChunkWriteCommand {
         }
         Ok(Self {
             page_id: PageId {
-                chunk_id: ChunkId {
-                    volume_id,
-                    id: chunk_id,
-                },
+                chunk_id: ChunkId::new(volume_id, chunk_id)?,
                 page_index,
             },
             ranges,

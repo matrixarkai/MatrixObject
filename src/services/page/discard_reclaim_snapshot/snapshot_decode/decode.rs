@@ -54,10 +54,11 @@ impl ChunkServiceSnapshot {
         for _ in 0..cursor.read_count("block service snapshot pending allocation count")? {
             let map_allocation_id = cursor.read_string()?;
             let allocation_id = cursor.read_string()?;
-            let chunk_id = ChunkId {
-                volume_id: cursor.read_u64()?,
-                id: cursor.read_u64()?,
-            };
+            let chunk_id = ChunkId::new(cursor.read_u64()?, cursor.read_u64()?).map_err(|_| {
+                ObjectError::Corruption(
+                    "snapshot chunk id is past thirty-two bits".to_string(),
+                )
+            })?;
             let allocation = ChunkAllocation {
                 allocation_id,
                 chunk_id,
@@ -72,10 +73,11 @@ impl ChunkServiceSnapshot {
             for _ in 0..cursor.read_count("block service snapshot allocation receipt count")? {
                 let idempotency_key = cursor.read_string()?;
                 let allocation_id = cursor.read_string()?;
-                let chunk_id = ChunkId {
-                    volume_id: cursor.read_u64()?,
-                    id: cursor.read_u64()?,
-                };
+                let chunk_id = ChunkId::new(cursor.read_u64()?, cursor.read_u64()?).map_err(|_| {
+                    ObjectError::Corruption(
+                        "snapshot chunk id is past thirty-two bits".to_string(),
+                    )
+                })?;
                 let allocation = ChunkAllocation {
                     allocation_id,
                     chunk_id,
@@ -97,10 +99,11 @@ impl ChunkServiceSnapshot {
                 let mut allocations = Vec::with_capacity(allocation_count);
                 for _ in 0..allocation_count {
                     let allocation_id = cursor.read_string()?;
-                    let chunk_id = ChunkId {
-                        volume_id: cursor.read_u64()?,
-                        id: cursor.read_u64()?,
-                    };
+                    let chunk_id = ChunkId::new(cursor.read_u64()?, cursor.read_u64()?).map_err(|_| {
+                        ObjectError::Corruption(
+                            "snapshot chunk id is past thirty-two bits".to_string(),
+                        )
+                    })?;
                     allocations.push(ChunkAllocation {
                         allocation_id,
                         chunk_id,
@@ -119,10 +122,11 @@ impl ChunkServiceSnapshot {
             {
                 let idempotency_key = cursor.read_string()?;
                 let allocation_id = cursor.read_string()?;
-                let chunk_id = ChunkId {
-                    volume_id: cursor.read_u64()?,
-                    id: cursor.read_u64()?,
-                };
+                let chunk_id = ChunkId::new(cursor.read_u64()?, cursor.read_u64()?).map_err(|_| {
+                    ObjectError::Corruption(
+                        "snapshot chunk id is past thirty-two bits".to_string(),
+                    )
+                })?;
                 let allocation = ChunkAllocation {
                     allocation_id,
                     chunk_id,
@@ -213,10 +217,11 @@ impl ChunkServiceSnapshot {
         let mut sealed_chunks = BTreeSet::new();
         if has_sealed_chunks {
             for _ in 0..cursor.read_count("block service snapshot sealed segment count")? {
-                sealed_chunks.insert(ChunkId {
-                    volume_id: cursor.read_u64()?,
-                    id: cursor.read_u64()?,
-                });
+                sealed_chunks.insert(ChunkId::new(cursor.read_u64()?, cursor.read_u64()?).map_err(|_| {
+                    ObjectError::Corruption(
+                        "snapshot chunk id is past thirty-two bits".to_string(),
+                    )
+                })?);
             }
         }
         if has_stale_replicas {
