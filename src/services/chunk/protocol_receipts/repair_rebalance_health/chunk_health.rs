@@ -2,6 +2,8 @@
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReplicaScrubReport {
+    pub marker: Option<PageId>,
+    pub next_marker: Option<PageId>,
     pub checked_chunks: u64,
     pub healthy_chunks: u64,
     pub degraded_chunks: u64,
@@ -12,6 +14,7 @@ pub struct ReplicaScrubReport {
     pub corrupt_replicas: u64,
     pub divergent_replicas: u64,
     pub unrepaired_chunks: u64,
+    pub has_more: bool,
 }
 
 impl ReplicaScrubReport {

@@ -5,6 +5,16 @@ impl MatrixObjectStore {
         self.chunk_service.scrub_chunk_replicas(repair)
     }
 
+    pub fn scrub_page_replicas_bounded(
+        &mut self,
+        after_page_id: Option<&PageId>,
+        max_chunks: usize,
+        repair: bool,
+    ) -> Result<ReplicaScrubReport, ObjectError> {
+        self.chunk_service
+            .scrub_chunk_replicas_bounded(after_page_id, max_chunks, repair)
+    }
+
     pub fn plan_repair_page_chunk(
         &self,
         page_id: &PageId,

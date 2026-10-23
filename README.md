@@ -172,6 +172,30 @@ It costs one `BTreeSet` field on the page service, which is empty on a healthy s
 so allocates nothing: staleness is a property of a replica rather than of a page, so there
 is no per-page term at all.
 
+### What a scrub can be asked to do
+
+A scrub reads every stored byte of every active replica, verifies it against its checksum
+and, when asked, repairs from quorum. It is the one maintenance pass meant to run at a
+throttled rate over days -- which means it has to be able to stop and carry on, and
+`scrub_page_replicas(repair)` cannot: it does the whole store in one call.
+
+That is the right shape for a store small enough to finish and the wrong one for a store
+large enough to need throttling, so the bounded form is additive:
+`scrub_page_replicas_bounded(after_page_id, max_chunks, repair)` scans at most `max_chunks`
+pages and says where it stopped.
+
+| field | what it carries |
+|---|---|
+| `marker` | the cursor the call was given |
+| `next_marker` | the last page the call scanned |
+| `has_more` | whether there is more to do -- **this is the field to loop on** |
+
+A `max_chunks` of zero is refused rather than taken to mean "no bound", and all three
+fields carry the meanings they already carry on `audit_page_replicas`, which bounds and
+resumes over these same pages. Two calls over one set of pages, taking the same argument
+names, should not mean different things -- so a test asserts the pair agree, rather than a
+comment claiming they do.
+
 ## What it does
 
 - **Quorum writes and reads.** A write needs `write_quorum` replicas to accept.
