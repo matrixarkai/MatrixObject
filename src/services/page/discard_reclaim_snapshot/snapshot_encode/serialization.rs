@@ -3,7 +3,7 @@
 impl ChunkServiceSnapshot {
     fn encoded_size_hint(&self) -> usize {
         const U64: usize = std::mem::size_of::<u64>();
-        let mut bytes = encoded_string_len("MOSRSBLOCK23")
+        let mut bytes = encoded_string_len("MOSRSBLOCK24")
             .saturating_add(U64 * 42)
             .saturating_add(encoded_string_len(&self.checksum));
         for (allocation_id, allocation) in &self.pending_allocations {
@@ -58,7 +58,8 @@ impl ChunkServiceSnapshot {
         bytes = bytes
             .saturating_add(U64 * self.quarantined_replicas.len())
             .saturating_add(U64 * self.disabled_chunk_endpoints.len())
-            .saturating_add(U64 * 2 * self.sealed_chunks.len());
+            .saturating_add(U64 * 2 * self.sealed_chunks.len())
+            .saturating_add(U64 * (1 + self.stale_replicas.len()));
         for replica in &self.replicas {
             bytes = bytes
                 .saturating_add(U64)
@@ -85,7 +86,7 @@ impl ChunkServiceSnapshot {
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         self.validate()?;
         let mut out = Vec::with_capacity(self.encoded_size_hint());
-        append_string(&mut out, "MOSRSBLOCK23");
+        append_string(&mut out, "MOSRSBLOCK24");
         append_u64(&mut out, self.page_size);
         append_u64(&mut out, self.write_quorum as u64);
         append_u64(&mut out, self.read_quorum as u64);
@@ -178,6 +179,15 @@ impl ChunkServiceSnapshot {
         append_u64(&mut out, self.sealed_chunks.len() as u64);
         for chunk in &self.sealed_chunks {
             append_chunk_id(&mut out, chunk);
+        }
+        // VERSION 24: the replicas the authority does not believe, in the shape the
+        // quarantine set above already uses. Position in the record costs nothing in
+        // compatibility -- a version-23 reader never sees a version-24 record, the magic
+        // differs -- and it cannot go after the trailing checksums, which cover everything
+        // before them.
+        append_u64(&mut out, self.stale_replicas.len() as u64);
+        for index in &self.stale_replicas {
+            append_u64(&mut out, *index as u64);
         }
         append_u64(&mut out, self.cumulative_quorum_write_degraded_chunks);
         append_u64(&mut out, self.cumulative_quorum_read_degraded_chunks);

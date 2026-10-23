@@ -15,6 +15,17 @@ impl MatrixChunkService {
             read_quorum,
             self.replicas.len(),
         )?;
+        // A REPLICA TAKEN OUT OF THE ENDPOINT SET stops receiving writes just as surely
+        // as a quarantined one. One bump covers the call however many it disables: the
+        // epoch counts membership changes, not replicas.
+        let newly_disabled: BTreeSet<usize> = disabled_endpoints
+            .iter()
+            .filter(|index| !self.disabled_chunk_endpoints.contains(index))
+            .copied()
+            .collect();
+        if !newly_disabled.is_empty() {
+            self.record_replica_membership_change(&newly_disabled);
+        }
         self.chunk_endpoints = endpoints;
         self.disabled_chunk_endpoints = disabled_endpoints;
         self.write_quorum = write_quorum;

@@ -59,6 +59,43 @@ types and fields are already `ChunkId`, `chunk_size`, `PageId`, `page_size`.
 | **page** | allocation, placement, the write and read quorums, repair and scrub |
 | **chunk** | the data itself: one replica of each chunk, with its checksum and discard map |
 
+### A replica that missed a write does not get a vote
+
+A page carries a write sequence on each replica that holds it, and a read takes a majority
+over those. That compares the replicas with **each other**, so a replica that missed a
+committed write and came back is only ever *outvoted* -- and when it is not outvoted, it
+wins. With a read quorum of one it won, and served its superseded bytes as current.
+
+So the page service keeps its own record, which the replicas cannot write to: the replicas
+it will not believe. A replica goes in when it stops being able to receive writes --
+quarantined, frozen, or taken out of the endpoint set -- and comes out only through
+`check_in_replica`, which reads its pages and refuses while any of them trails a replica
+that is believed, naming the page and both sequences.
+
+| | |
+|---|---|
+| a believable replica | counts toward the read quorum |
+| a replica in the record | still readable, still holds its bytes, still a repair target -- but it does not count |
+| a read that cannot reach a quorum of believable replicas | **refused**, and the refusal says staleness was why |
+| a read served without one | reported as degraded |
+
+Three consequences worth stating plainly, because each is a choice:
+
+- **A repair is not a check-in.** Repairing a page brings the bytes across; it does not
+  establish that the replica holds every page it should, which is a different statement and
+  the one the record is about.
+- **Nothing is deleted.** A stale copy is kept -- it may be the last copy of something --
+  which is also why a refused check-in can cite the evidence rather than having thrown it
+  away.
+- **A restart does not forget.** The record is in the page service snapshot, at format
+  version 24; a snapshot written before that version has its record reconstructed from the
+  quarantine and endpoint sets it does carry, because a replica that was not receiving
+  writes is not believable whatever wrote the snapshot.
+
+It costs one `BTreeSet` field on the page service, which is empty on a healthy store and
+so allocates nothing: staleness is a property of a replica rather than of a page, so there
+is no per-page term at all.
+
 ## What it does
 
 - **Quorum writes and reads.** A write needs `write_quorum` replicas to accept.
@@ -177,11 +214,11 @@ only names:
 
 | stored objects | copied | named |
 |---:|---:|---:|
-| 250 | 2,485 B | 768,312 B |
-| 1,000 | **2,485 B** | 3,072,312 B |
+| 250 | 2,509 B | 768,312 B |
+| 1,000 | **2,509 B** | 3,072,312 B |
 
 Also flat in the object count, because a chunk's payload is shared rather than
-copied and so are the receipt maps. The copy is 823 bytes of page service state,
+copied and so are the receipt maps. The copy is 847 bytes of page service state,
 1,398 bytes of replica state, 168 bytes of shared receipt handles, and 32 bytes
 for each chunk — so what moves it is the chunk count, which the object SIZE
 drives rather than the object count.

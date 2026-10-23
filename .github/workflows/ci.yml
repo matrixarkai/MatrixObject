@@ -381,3 +381,21 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the_repository_carries_what_an_outside_contributor_needs did not run"; exit 1; }
+
+      - name: A returning replica does not vote until it is checked in
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_returning_replica_does_not_vote_until_it_is_checked_in -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_returning_replica_does_not_vote_until_it_is_checked_in did not run"; exit 1; }
+
+      - name: The record of a stale replica is durable
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_authority_record_of_a_stale_replica_is_durable -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_authority_record_of_a_stale_replica_is_durable did not run"; exit 1; }

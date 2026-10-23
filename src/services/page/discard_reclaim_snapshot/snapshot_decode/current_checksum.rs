@@ -133,6 +133,18 @@ impl ChunkServiceSnapshot {
         for replica in &self.replicas {
             append_string(&mut material, &replica.checksum);
         }
+        // HASHED ONLY WHEN THERE IS SOMETHING TO HASH. This material is positional, so
+        // appending unconditionally would change the checksum of every snapshot ever
+        // written and need a second copy of this whole function kept as a legacy form. An
+        // empty set is the state of a service that has had no membership change, which is
+        // what every pre-version-24 snapshot describes -- so for those the material is
+        // byte for byte what it was and the three legacy forms beside it stay correct.
+        if !self.stale_replicas.is_empty() {
+            append_u64(&mut material, self.stale_replicas.len() as u64);
+            for index in &self.stale_replicas {
+                append_u64(&mut material, *index as u64);
+            }
+        }
         append_u64(&mut material, self.repair_request_receipts.len() as u64);
         for (idempotency_key, receipt) in &self.repair_request_receipts {
             append_string(&mut material, idempotency_key);

@@ -2825,6 +2825,149 @@ fn chunk_service_preflights_chunk_discard_admission_before_mutation() {
 }
 
 #[test]
+fn a_returning_replica_does_not_vote_until_it_is_checked_in() {
+    // A page's `write_sequence` lives on the replica holding it, and a read takes a
+    // majority over it. That compares the replicas against EACH OTHER, so a replica that
+    // missed a committed write and came back is only ever OUTVOTED -- and when it is not
+    // outvoted, it wins. Measured before this change, on exactly the sequence below:
+    //
+    //   quorum 2, three active -> "ABCDEFGH"   the two current replicas outvote it
+    //   quorum 1               -> "abcdefgh"   ITS OWN STALE BYTES, served as current
+    //   quorum 2, two active   -> refused as "divergent chunk data"
+    //
+    // The second line is the defect. One vote is a quorum of one, and the returning
+    // replica is read first.
+    let chunk_id = ChunkId {
+        volume_id: 0,
+        id: 4242,
+    };
+    let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
+    page.write_chunk_range(&chunk_id, 0, b"abcdefgh").unwrap();
+    assert!(page.stale_replica_indices().is_empty());
+    // Replica 0 goes away and misses a write, which still meets its quorum on 1 and 2.
+    page.set_replica_quarantine(0, true).unwrap();
+    page.write_chunk_range(&chunk_id, 0, b"ABCDEFGH").unwrap();
+    // And comes back. Coming back is not evidence of anything: the authority recorded the
+    // membership change and nothing has checked this replica since.
+    page.set_replica_quarantine(0, false).unwrap();
+    assert_eq!(page.stale_replica_indices(), vec![0]);
+
+    // Quorum 2, all three active: it was already outvoted here, and still is.
+    let (payload, degraded) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
+    assert_eq!(payload, b"ABCDEFGH".to_vec());
+    // Two, because the page size here is 4 bytes and the read is 8: the counter counts
+    // pages, and both of them were served without a replica that was there.
+    assert_eq!(degraded.quorum_read_degraded_chunks, 2);
+
+    // QUORUM 1, which is where the stale bytes used to be served. The replica does not
+    // vote, so the quorum is met by a replica that does.
+    page.configure_read_quorum(1).unwrap();
+    let (payload, _) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
+    assert_eq!(
+        payload,
+        b"ABCDEFGH".to_vec(),
+        "a replica that missed the write must not be able to answer for the page"
+    );
+
+    // Quorum 2 with one current replica away: one believable answer against a quorum of
+    // two is REFUSED, and the refusal says which it was -- not "divergent", which sent a
+    // reader looking for a failure that did not happen.
+    page.configure_read_quorum(2).unwrap();
+    page.set_replica_quarantine(2, true).unwrap();
+    match page.read_chunk_range(&chunk_id, 0, 8) {
+        Err(ObjectError::Corruption(message)) => assert!(
+            message.contains("have not been checked in"),
+            "the refusal should name staleness, and it says {message:?}"
+        ),
+        other => panic!("one believable replica against a quorum of two should be refused, and it gave {other:?}"),
+    }
+    // Replica 2 was taken out to produce that case, so it is recorded too. Nothing was
+    // written while it was away, so its pages are level with the rest and the check-in
+    // clears it on the first try -- the record is a question about evidence, not a
+    // punishment for having been absent.
+    page.set_replica_quarantine(2, false).unwrap();
+    assert_eq!(page.stale_replica_indices(), vec![0, 2]);
+    page.check_in_replica(2).unwrap();
+    assert_eq!(page.stale_replica_indices(), vec![0]);
+
+    // THE STALE REPLICA STILL HOLDS ITS BYTES. Nothing here deletes a copy: a stale copy
+    // may be the last copy of something, and keeping it is also what lets a refused
+    // check-in cite the evidence instead of having thrown it away.
+    match page.check_in_replica(0) {
+        Err(ObjectError::PreconditionFailed(message)) => {
+            assert!(
+                message.contains("write sequence"),
+                "a refused check-in should name the page and both sequences, and it says {message:?}"
+            );
+        }
+        other => panic!("a replica whose page still trails must not check in, and it gave {other:?}"),
+    }
+    assert_eq!(page.stale_replica_indices(), vec![0]);
+
+    // A repair brings the page across. That is not the same statement as the authority
+    // believing the replica, so the read is still degraded until the check-in.
+    let repaired = page.repair_chunk_range(&chunk_id, 0, 8).unwrap();
+    assert!(repaired.repaired_replicas >= 1);
+    assert_eq!(page.stale_replica_indices(), vec![0]);
+    page.check_in_replica(0).unwrap();
+    assert!(page.stale_replica_indices().is_empty());
+    let (payload, healthy) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
+    assert_eq!(payload, b"ABCDEFGH".to_vec());
+    assert_eq!(healthy.quorum_read_degraded_chunks, 0);
+}
+
+#[test]
+fn the_authority_record_of_a_stale_replica_is_durable() {
+    // Without this the hole comes back on the next restart: the snapshot already carries
+    // the quarantine set, so a restored service knows a replica was out and has forgotten
+    // that it is behind.
+    let chunk_id = ChunkId {
+        volume_id: 0,
+        id: 4343,
+    };
+    let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
+    page.write_chunk_range(&chunk_id, 0, b"abcdefgh").unwrap();
+    page.set_replica_quarantine(0, true).unwrap();
+    page.write_chunk_range(&chunk_id, 0, b"ABCDEFGH").unwrap();
+    page.set_replica_quarantine(0, false).unwrap();
+    assert_eq!(page.stale_replica_indices(), vec![0]);
+
+    let snapshot = page.export_snapshot();
+    snapshot.validate().unwrap();
+    assert_eq!(snapshot.stale_replicas, BTreeSet::from([0]));
+    let bytes = snapshot.to_bytes().unwrap();
+    let mut restored = MatrixChunkService::new(4, 3, 2).unwrap();
+    restored.install_snapshot_bytes(&bytes).unwrap();
+    assert_eq!(
+        restored.stale_replica_indices(),
+        vec![0],
+        "a restart must not hand back the belief that a returning replica is current"
+    );
+    restored.configure_read_quorum(1).unwrap();
+    let (payload, _) = restored.read_chunk_range(&chunk_id, 0, 8).unwrap();
+    assert_eq!(payload, b"ABCDEFGH".to_vec());
+
+    // AND A SNAPSHOT WITH NO RECORD AT ALL still carries the evidence. A quarantined
+    // replica was not receiving writes, so it is not believable whatever wrote the
+    // snapshot -- which is how a snapshot from before this format version is read, and the
+    // reason that reconstruction is not version-gated: it can be reached, as here,
+    // through the encoder this build has.
+    let mut forgetful = page.export_snapshot_unsealed();
+    forgetful.quarantined_replicas = BTreeSet::from([2]);
+    forgetful.stale_replicas = BTreeSet::new();
+    forgetful.seal_checksum();
+    let mut reconstructed = MatrixChunkService::new(4, 3, 2).unwrap();
+    reconstructed
+        .install_snapshot_bytes(&forgetful.to_bytes().unwrap())
+        .unwrap();
+    assert_eq!(
+        reconstructed.stale_replica_indices(),
+        vec![2],
+        "a replica recorded as quarantined is not believable, with or without the record"
+    );
+}
+
+#[test]
 fn chunk_service_quarantines_replicas_and_restores_with_repair() {
     let chunk_id = ChunkId {
         volume_id: 0,
@@ -2883,6 +3026,14 @@ fn chunk_service_quarantines_replicas_and_restores_with_repair() {
     assert_eq!(degraded.quorum_read_degraded_chunks, 2);
     let repaired = restored.repair_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(repaired.repaired_replicas, 2);
+    // THE REPAIR IS NOT THE CHECK-IN. Replica 0 missed a write while it was quarantined,
+    // and the repair has brought the page across -- but the authority recorded that it
+    // stopped receiving writes, and only a check-in that reads its pages clears that. So
+    // the read is still degraded here, and undegraded one line later.
+    assert_eq!(restored.stale_replica_indices(), vec![0]);
+    let (_, still_degraded) = restored.read_chunk_range(&chunk_id, 0, 8).unwrap();
+    assert_eq!(still_degraded.quorum_read_degraded_chunks, 2);
+    restored.check_in_replica(0).unwrap();
     let (healthy_payload, healthy) = restored.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(healthy_payload, b"ABCDEFGH".to_vec());
     assert_eq!(healthy.quorum_read_degraded_chunks, 0);
@@ -33096,7 +33247,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSBLOCK",
         "MOSRSBLOCK-CHUNK-CONTROL-PROOF1",
         "MOSRSBLOCK-FINGERPRINT17",
-        "MOSRSBLOCK23",
+        "MOSRSBLOCK24",
         "MOSRSBLOCKROUTE10",
         "MOSRSCHUNK",
         "MOSRSCHUNK-AGG-FINGERPRINT8",
