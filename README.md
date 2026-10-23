@@ -106,7 +106,13 @@ compacting underneath one would declare them stale and offer them to the next wr
 
 `reuse_stale_chunk_space` is the other way to get the space back — the next write takes it
 instead of growing the chunk — and it holds the ratio at 1,000,000 at any overwrite rate.
-It is off by default because it changes what the collector sees accumulate.
+**It is on by default**, because the alternative is to accumulate without bound: nothing
+here drives compaction, so a store nobody maintains keeps every superseded copy. Overwrite
+one object nine times and the ratio reads 10,000,000.
+
+Set it to `false` to get the other behaviour — the garbage accumulates where the collector
+can see it, and `compact_all(min_stale_bytes)` takes it back on demand. Either way a
+retained version's bytes are never stale, so neither route can take them.
 
 ### What a lease closes, and what it does not
 
@@ -191,7 +197,7 @@ is no per-page term at all.
   reconstructing on demand, so it is readable and one loss from unreadable at the
   same time. [Footprint](#footprint) has the whole-store figures.
 - **Space reuse.** Overwriting an object normally leaves its previous version
-  resident until collection. With `reuse_stale_chunk_space` the next write takes
+  resident until collection unless `reuse_stale_chunk_space` is left on, when the next write takes
   that space directly, which measures about 9% off resident footprint on an
   overwrite-heavy workload.
 - **Idempotent mutations.** Allocation, write, discard and repair carry
@@ -493,7 +499,7 @@ Nothing external is required to build or run the tests.
 | `write_quorum` | 2 | replicas that must accept a write |
 | `stripe_redundancy_units` | 0 | units of redundancy in a stripe group; 0 copies every page to every replica |
 | `stripe_unit_bytes` | 64 KiB | bytes in one stripe unit, when striping |
-| `reuse_stale_chunk_space` | false | take the space a superseded object left instead of growing the chunk |
+| `reuse_stale_chunk_space` | true | take the space a superseded object left instead of growing the chunk; set it false to let the collector see the garbage first |
 
 Every default above is `StoreOptions::default()`, and
 `every_option_in_the_table_is_a_field_with_that_default` reads this table and
