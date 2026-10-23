@@ -213,6 +213,18 @@ pub struct MatrixObjectStore {
     metadata_route_cache_capacity_evictions: u64,
     metadata_route_cache_sequence: u64,
     pub(crate) chunks: BTreeMap<ChunkId, ChunkInfo>,
+    /// The chunk a compaction is draining, which must not be allocated into.
+    ///
+    /// `ensure_writable_chunk` takes the first chunk with room, and with a chunk size that
+    /// holds the whole corpus that is always the chunk being compacted -- so the rewrite
+    /// landed back where it came from and the compaction then zeroed the live bytes it had
+    /// just written. Measured before this: `live_bytes` 819,200 -> 0 with all 200 objects
+    /// still readable, and a ratio of 0 because the formula reports zero when its
+    /// denominator collapses.
+    ///
+    /// Transient on purpose: it is set and cleared inside one function and is not in the
+    /// snapshot, because a store that is reopened is not mid-compaction.
+    pub(crate) compacting_chunk: Option<ChunkId>,
     // Visible to the crate as `chunks` is, so that the invariant the targeted
     // undo derives from -- a stale range holds no payload entry -- can be
     // asserted from a test rather than argued for in a comment.

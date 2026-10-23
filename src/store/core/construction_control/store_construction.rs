@@ -203,6 +203,7 @@ impl MatrixObjectStore {
             payloads: PayloadIndex::default(),
             chunk_service,
             next_chunk_id: 1,
+            compacting_chunk: None,
             next_upload_sequence: 1,
             logical_written_bytes: 0,
             physical_written_bytes: 0,

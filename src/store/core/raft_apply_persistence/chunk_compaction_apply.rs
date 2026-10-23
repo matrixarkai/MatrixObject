@@ -24,33 +24,79 @@ impl MatrixObjectStore {
         Ok(live_objects)
     }
 
+    /// Retained versions holding an extent in this chunk, which compaction does not move.
+    ///
+    /// `collect_chunk_compaction_live_objects` walks the CURRENT objects. A retained
+    /// version lives in `versions` and its bytes are never marked stale -- the comment on
+    /// `mark_extents_stale` says so -- so declaring the whole chunk stale underneath one
+    /// would hand its bytes to the next writer that reuses stale space. Compaction refuses
+    /// instead of moving a version it has no path to rewrite.
+    fn chunk_compaction_version_pins(&self, chunk_id: &ChunkId) -> u64 {
+        self.versions
+            .values()
+            .flat_map(|retained| retained.iter())
+            .filter(|metadata| {
+                metadata
+                    .extents
+                    .iter()
+                    .any(|extent| &extent.chunk_id == chunk_id)
+            })
+            .count() as u64
+    }
+
     pub fn compact_chunk_at(
         &mut self,
         chunk_id: &ChunkId,
         update_time_ms: u64,
     ) -> Result<(), ObjectError> {
+        let pinned = self.chunk_compaction_version_pins(chunk_id);
+        if pinned > 0 {
+            return Err(ObjectError::PreconditionFailed(format!(
+                "chunk {chunk_id:?} cannot be compacted: {pinned} retained version(s) hold an extent in it, and compaction does not move a version"
+            )));
+        }
         let live_objects = self.collect_chunk_compaction_live_objects(chunk_id)?;
-        for object_id in live_objects {
-            let object = self.get_object(&object_id.bucket, &object_id.key)?;
-            self.apply_put_storage_batched(
-                object_id.bucket.to_string(),
-                object_id.key.to_string(),
-                object.data,
-                object.metadata.content_type.to_string(),
-                update_time_ms,
-                PutOptions::default(),
-                "compact_segment_put",
-            )?;
-        }
-        if let Some(chunk) = self.chunks.get_mut(chunk_id) {
-            chunk.stale_ranges.push(DataRange {
+        // THE SOURCE IS OUT OF THE ALLOCATOR for the whole rewrite, or the rewrite lands
+        // back in it. Cleared on every exit, including the error one, because a stuck
+        // exclusion would leave the chunk unwritable for the life of the store.
+        let previous = self.compacting_chunk.replace(chunk_id.clone());
+        let rewritten = (|| -> Result<(), ObjectError> {
+            for object_id in live_objects {
+                let object = self.get_object(&object_id.bucket, &object_id.key)?;
+                self.apply_put_storage_batched(
+                    object_id.bucket.to_string(),
+                    object_id.key.to_string(),
+                    object.data,
+                    object.metadata.content_type.to_string(),
+                    update_time_ms,
+                    PutOptions::default(),
+                    "compact_segment_put",
+                )?;
+            }
+            Ok(())
+        })();
+        self.compacting_chunk = previous;
+        rewritten?;
+        // RETIRED, so the pass converges. The chunk holds nothing live, nothing points at
+        // it, and leaving the record behind kept its whole logical size counting against
+        // the space ratio -- which is why a second compaction pass made the figure worse
+        // than the first.
+        //
+        // The old code marked the record fully stale and zeroed its live bytes before
+        // leaving it in place. Those writes are dead now that the record is removed, and a
+        // plant proved it: setting a live byte on the drained chunk changed nothing any
+        // test could see. What the release needs from the record is one number.
+        let Some(drained) = self.chunks.get(chunk_id).map(|chunk| chunk.next_offset) else {
+            return Ok(());
+        };
+        if drained > 0 {
+            self.chunk_service.discard_slab_ranges(vec![ChunkRangeRequest {
+                chunk_id: chunk_id.clone(),
                 offset: 0,
-                length: chunk.next_offset,
-            });
-            chunk.stale_ranges = merge_ranges(std::mem::take(&mut chunk.stale_ranges));
-            chunk.stale_bytes = chunk.next_offset;
-            chunk.live_bytes = 0;
+                length: drained,
+            }])?;
         }
+        self.chunks.remove(chunk_id);
         Ok(())
     }
 
