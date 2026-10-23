@@ -29743,6 +29743,239 @@ fn snapshot_round_trips_validated_versioned_state() {
 }
 
 #[test]
+fn a_multipart_upload_cannot_be_continued_or_destroyed_past_its_fences() {
+    // `put_object` and `create_multipart_upload` both check the metadata shard fence and
+    // then the lease fence. `upload_part` and `abort_multipart_upload` checked NEITHER,
+    // measured on this tree: a second writer added a part to an upload a lease covered and
+    // destroyed another one outright, and a draining shard stopped a put and a create
+    // while letting a part and an abort through.
+    //
+    // The credentials used are the UPLOAD's, recorded when it was created, which is what
+    // `complete_multipart_upload` already did -- its put carries the upload's own options.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    let now = now_millis();
+    let open_upload = store
+        .create_multipart_upload("bucket", "multi", "text/plain", PutOptions::default())
+        .unwrap();
+    store
+        .upload_part(&open_upload.upload_id, 1, vec![b'x'; 16])
+        .unwrap();
+    let doomed = store
+        .create_multipart_upload("bucket", "multi-abort", "text/plain", PutOptions::default())
+        .unwrap();
+
+    let lease = store
+        .acquire_metadata_lease("object/bucket/", "writer-a", 600_000, now)
+        .unwrap();
+
+    // A STRANGER IS REFUSED, and the upload is left exactly as it was.
+    assert!(matches!(
+        store.upload_part(&open_upload.upload_id, 2, vec![b'y'; 16]),
+        Err(ObjectError::PreconditionFailed(_))
+    ));
+    assert_eq!(
+        store.multipart_upload(&open_upload.upload_id).unwrap().parts.len(),
+        1,
+        "a refused part must not have arrived"
+    );
+    assert!(matches!(
+        store.abort_multipart_upload(&doomed.upload_id),
+        Err(ObjectError::PreconditionFailed(_))
+    ));
+    assert!(
+        store.multipart_upload(&doomed.upload_id).is_ok(),
+        "a refused abort must not have destroyed the upload"
+    );
+
+    // THE WRITER THAT HOLDS THE LEASE IS NOT SHUT OUT WITH THE STRANGER. An upload created
+    // under the lease carries its owner and epoch, so every door stays open to it.
+    let held = store
+        .create_multipart_upload(
+            "bucket",
+            "multi-held",
+            "text/plain",
+            PutOptions {
+                lease_owner: Some("writer-a".to_string()),
+                lease_epoch: Some(lease.epoch),
+                ..PutOptions::default()
+            },
+        )
+        .unwrap();
+    store.upload_part(&held.upload_id, 1, vec![b'z'; 16]).unwrap();
+    assert_eq!(store.multipart_upload(&held.upload_id).unwrap().parts.len(), 1);
+    let completed = store
+        .complete_multipart_upload(&held.upload_id, None, None)
+        .unwrap();
+    assert_eq!(completed.length, 16);
+    // And an abort by the holder, on a second upload of their own.
+    let held_abort = store
+        .create_multipart_upload(
+            "bucket",
+            "multi-held-abort",
+            "text/plain",
+            PutOptions {
+                lease_owner: Some("writer-a".to_string()),
+                lease_epoch: Some(lease.epoch),
+                ..PutOptions::default()
+            },
+        )
+        .unwrap();
+    store.abort_multipart_upload(&held_abort.upload_id).unwrap();
+
+    // THE OTHER FENCE, the same two doors. A draining shard stops a put and a create, and
+    // now stops these as well.
+    let mut draining = MatrixObjectStore::new(test_options()).unwrap();
+    let upload = draining
+        .create_multipart_upload("bucket", "multi", "text/plain", PutOptions::default())
+        .unwrap();
+    draining
+        .configure_metadata_shard(MetadataShard {
+            shard_id: "objects-a".to_string(),
+            start_key: "object/bucket/".to_string(),
+            end_key: "object/bucket0".to_string(),
+            owner_node_id: "meta-a".to_string(),
+            epoch: 1,
+            draining: true,
+        })
+        .unwrap();
+    for (door, result) in [
+        (
+            "put",
+            draining
+                .put_object("bucket", "object", b"x".to_vec(), "text/plain")
+                .map(|_| ()),
+        ),
+        (
+            "create",
+            draining
+                .create_multipart_upload("bucket", "two", "text/plain", PutOptions::default())
+                .map(|_| ()),
+        ),
+        (
+            "upload_part",
+            draining
+                .upload_part(&upload.upload_id, 1, vec![b'z'; 8])
+                .map(|_| ()),
+        ),
+        (
+            "abort",
+            draining.abort_multipart_upload(&upload.upload_id).map(|_| ()),
+        ),
+    ] {
+        assert!(
+            matches!(result, Err(ObjectError::PreconditionFailed(_))),
+            "a draining shard should refuse {door}, and it gave {result:?}"
+        );
+    }
+}
+
+#[test]
+fn the_idempotent_multipart_doors_carry_the_same_fences() {
+    // The idempotent arms of upload-part and abort are reached only through the
+    // raft-backed store, so the guard over the plain doors cannot see them -- which is how
+    // they came to be missing both fences in the first place. Two plants proved it: with
+    // the fence deleted from each idempotent arm, every other test stayed green.
+    let raft = InMemoryRustRaft::new(1).unwrap();
+    let store = MatrixObjectStore::new(test_options()).unwrap();
+    let mut replicated = RaftBackedObjectStore::new(raft, store);
+    let now = now_millis();
+    replicated
+        .propose_create_multipart_upload(
+            "mpu-fence",
+            "bucket",
+            "multi",
+            "text/plain",
+            PutOptions::default(),
+            now,
+        )
+        .unwrap();
+    replicated
+        .propose_upload_part_idempotent("mpu-fence", 1, vec![b'x'; 16], now, "part-one")
+        .unwrap();
+    let lease = replicated
+        .store
+        .acquire_metadata_lease("object/bucket/", "writer-a", 600_000, now)
+        .unwrap();
+
+    // A STRANGER IS REFUSED on both idempotent doors, and nothing moves.
+    assert!(matches!(
+        replicated.propose_upload_part_idempotent("mpu-fence", 2, vec![b'y'; 16], now, "part-two"),
+        Err(ObjectError::PreconditionFailed(_))
+    ));
+    assert_eq!(
+        replicated
+            .store
+            .multipart_upload("mpu-fence")
+            .unwrap()
+            .parts
+            .len(),
+        1,
+        "a refused idempotent part must not have arrived"
+    );
+    assert!(matches!(
+        replicated.propose_abort_multipart_upload_idempotent("mpu-fence", now, "abort-one"),
+        Err(ObjectError::PreconditionFailed(_))
+    ));
+    assert!(
+        replicated.store.multipart_upload("mpu-fence").is_ok(),
+        "a refused idempotent abort must not have destroyed the upload"
+    );
+
+    // AND THE HOLDER IS NOT SHUT OUT, on an upload created under the lease.
+    replicated
+        .propose_create_multipart_upload(
+            "mpu-held",
+            "bucket",
+            "multi-held",
+            "text/plain",
+            PutOptions {
+                lease_owner: Some("writer-a".to_string()),
+                lease_epoch: Some(lease.epoch),
+                ..PutOptions::default()
+            },
+            now,
+        )
+        .unwrap();
+    replicated
+        .propose_upload_part_idempotent("mpu-held", 1, vec![b'z'; 16], now, "held-part")
+        .unwrap();
+    replicated
+        .propose_abort_multipart_upload_idempotent("mpu-held", now, "held-abort")
+        .unwrap();
+}
+
+#[test]
+fn a_prefix_delete_reports_the_object_a_lease_saved_rather_than_failing() {
+    // Worth pinning because it was the first thing this looked like a hole in and is not:
+    // a batch delete collects per-item errors into its report instead of failing the call,
+    // so the call returns Ok while the leased object is untouched. A probe that reads the
+    // return type rather than the EFFECT scores that as a door standing open.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    let now = now_millis();
+    store
+        .put_object("bucket", "object", b"original".to_vec(), "text/plain")
+        .unwrap();
+    store
+        .acquire_metadata_lease("object/bucket/", "writer-a", 600_000, now)
+        .unwrap();
+
+    let report = store
+        .delete_objects_by_prefix("bucket", "", None, 10, false, now)
+        .unwrap();
+    assert_eq!(report.batch.deleted_objects, 0);
+    assert_eq!(report.batch.failed_objects, 1);
+    assert_eq!(
+        report.batch.items[0].error_code.as_deref(),
+        Some("PreconditionFailed")
+    );
+    assert_eq!(
+        store.head_object("bucket", "object").unwrap().length,
+        8,
+        "the object a lease protects must survive a prefix delete that reported it failed"
+    );
+}
+
+#[test]
 fn metaserver_projects_object_metadata_and_enforces_leases() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     let now = now_millis();

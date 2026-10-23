@@ -1,6 +1,40 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
+    /// The two fences a mutation of an existing upload owes, in the order
+    /// `create_multipart_upload` and `put_object` check them.
+    ///
+    /// # WHY THE UPLOAD CARRIES THE CREDENTIALS
+    ///
+    /// The lease owner and epoch are the ones recorded on the upload when it was created,
+    /// not any the caller passes now -- an upload created under a lease keeps working for
+    /// the writer that holds it, and a second writer arriving with no credentials is
+    /// refused. `complete_multipart_upload` already behaves this way, because the put it
+    /// performs carries the upload's own options; this makes the other two agree.
+    ///
+    /// The consequence worth naming: an upload created with NO credentials cannot be
+    /// continued or aborted while a lease covers its key, until that lease expires. That is
+    /// exactly what `complete` already did, and the alternative -- letting a stranger
+    /// abort it -- is what this closes.
+    fn check_multipart_upload_fences(
+        &self,
+        upload_id: &str,
+        now_ms: u64,
+    ) -> Result<(), ObjectError> {
+        let upload = self.multipart_upload(upload_id)?;
+        let meta_key = meta_object_key(&ObjectId::new(
+            upload.bucket.clone(),
+            upload.key.clone(),
+        ));
+        self.meta_service.check_shard_fence(&meta_key)?;
+        self.meta_service.check_lease_fence(
+            &meta_key,
+            upload.options.lease_owner.as_deref(),
+            upload.options.lease_epoch,
+            now_ms,
+        )
+    }
+
     fn apply_multipart_command(
         &mut self,
         command: ObjectCommand,
@@ -98,6 +132,7 @@ impl MatrixObjectStore {
                 data,
                 update_time_ms,
             } => {
+                self.check_multipart_upload_fences(&upload_id, update_time_ms)?;
                 let part =
                     self.apply_upload_part(upload_id.clone(), part_number, data, update_time_ms)?;
                 let (etag_digest_bits, has_etag) =
@@ -125,6 +160,7 @@ impl MatrixObjectStore {
                 update_time_ms,
                 idempotency_key,
             } => {
+                self.check_multipart_upload_fences(&upload_id, update_time_ms)?;
                 let part = self.apply_upload_part_idempotent(
                     upload_id.clone(),
                     part_number,
@@ -198,6 +234,7 @@ impl MatrixObjectStore {
                 upload_id,
                 update_time_ms,
             } => {
+                self.check_multipart_upload_fences(&upload_id, update_time_ms)?;
                 let upload = self.apply_abort_multipart_upload(upload_id)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new("_multipart", upload.upload_id),

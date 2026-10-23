@@ -399,3 +399,30 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the_authority_record_of_a_stale_replica_is_durable did not run"; exit 1; }
+
+      - name: A multipart upload keeps its fences
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_multipart_upload_cannot_be_continued_or_destroyed_past_its_fences -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_multipart_upload_cannot_be_continued_or_destroyed_past_its_fences did not run"; exit 1; }
+
+      - name: The idempotent multipart doors carry the same fences
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_idempotent_multipart_doors_carry_the_same_fences -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_idempotent_multipart_doors_carry_the_same_fences did not run"; exit 1; }
+
+      - name: A prefix delete reports what a lease saved
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_prefix_delete_reports_the_object_a_lease_saved_rather_than_failing -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_prefix_delete_reports_the_object_a_lease_saved_rather_than_failing did not run"; exit 1; }
