@@ -12,6 +12,7 @@ impl MatrixObjectStore {
                 update_time_ms,
                 idempotency_key,
             } => {
+                self.check_multipart_upload_fences(&upload_id, update_time_ms)?;
                 let upload = self.apply_abort_multipart_upload_idempotent(
                     upload_id,
                     update_time_ms,

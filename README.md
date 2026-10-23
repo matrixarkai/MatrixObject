@@ -59,6 +59,27 @@ types and fields are already `ChunkId`, `chunk_size`, `PageId`, `page_size`.
 | **page** | allocation, placement, the write and read quorums, repair and scrub |
 | **chunk** | the data itself: one replica of each chunk, with its checksum and discard map |
 
+### What a lease closes, and what it does not
+
+A metadata lease is held over a key prefix by an owner at an epoch. While it is active, a
+mutation of a key under that prefix must carry the owner and the epoch, and every object
+door checks it: put, append, copy, delete, tags, retention, legal hold, restore, and all
+four multipart doors -- create, upload-part, complete and abort.
+
+A **multipart upload is fenced on the credentials recorded when it was created**, not on
+anything the caller passes later. An upload created under a lease keeps working for the
+writer holding it; a second writer is refused. The consequence: an upload created with no
+credentials cannot be continued or aborted while a lease covers its key, until the lease
+expires.
+
+A **batch or prefix delete does not fail** when a lease protects one of its objects. It
+reports that item as failed -- `deleted=0, failed=1, error_code=PreconditionFailed` -- and
+leaves the object alone, so one protected key does not abandon the rest of the batch. Read
+the report, not the return value.
+
+The same doors also check the **metadata shard fence**, which refuses a mutation whose shard
+is draining or owned elsewhere.
+
 ### A replica that missed a write does not get a vote
 
 A page carries a write sequence on each replica that holds it, and a read takes a majority
