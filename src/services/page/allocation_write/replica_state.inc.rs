@@ -6,6 +6,16 @@ impl MatrixChunkService {
             && !self.replica_endpoint_disabled(replica_index)
     }
 
+    /// Whether this replica is believable: it has not missed a membership change, or it
+    /// has been checked back in since.
+    ///
+    /// A replica that is NOT current may hold superseded pages. It is still readable,
+    /// still holds its bytes and is still a repair target -- it simply does not get a
+    /// vote.
+    fn replica_current(&self, replica_index: usize) -> bool {
+        !self.stale_replicas.contains(&replica_index)
+    }
+
     fn replica_writable(&self, replica_index: usize) -> bool {
         self.replica_active(replica_index)
             && !self.replicas[replica_index].is_frozen()

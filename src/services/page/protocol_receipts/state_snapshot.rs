@@ -217,6 +217,12 @@ pub struct ChunkServiceSnapshot {
     pub audit_repair_request_receipts: BTreeMap<String, ChunkAuditRepairReceipt>,
     pub released_allocation_count: u64,
     pub quarantined_replicas: BTreeSet<usize>,
+    /// The replicas the authority will not believe until each is checked back in.
+    ///
+    /// Durable because the alternative is a restart declaring a returning replica current
+    /// again -- the snapshot already carries the quarantine set, so without this the
+    /// restored service knows a replica was out and has forgotten that it is behind.
+    pub stale_replicas: BTreeSet<usize>,
     pub chunk_endpoints: Vec<String>,
     pub disabled_chunk_endpoints: BTreeSet<usize>,
     pub chunk_route_control_commit_index: u64,

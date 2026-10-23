@@ -29,6 +29,38 @@ pub struct MatrixChunkService {
     pub(crate) audit_repair_request_receipts: BTreeMap<String, ChunkAuditRepairReceipt>,
     pub(crate) released_allocation_count: u64,
     pub(crate) quarantined_replicas: BTreeSet<usize>,
+    /// The replicas this service knows are behind, and so will not believe.
+    ///
+    /// # WHY THE AUTHORITY NEEDS A RECORD AT ALL
+    ///
+    /// A page's `write_sequence` lives on the replica that holds it, and a read takes a
+    /// majority over it. That compares replicas against EACH OTHER and never against
+    /// anything that knows what was committed, so a replica that missed a write and came
+    /// back is merely outvoted -- and when it is not outvoted it wins. Measured, before
+    /// this: a read quorum of one served a returning replica's superseded bytes.
+    ///
+    /// This is the other half, and the replicas cannot write to it. A replica goes in on a
+    /// MEMBERSHIP CHANGE -- quarantined, frozen, or taken out of the endpoint set, each of
+    /// which stops it receiving writes -- and comes out only through `check_in_replica`,
+    /// which checks its pages rather than taking anyone at their word.
+    ///
+    /// # WHY A SET AND NOT A VERSION NUMBER
+    ///
+    /// The first version of this was an epoch on the service and one per replica, which
+    /// is the general form: a lease number, moved further on a membership change so that a
+    /// returning node cannot be mistaken for current. Every use of it was the
+    /// one comparison `epoch[i] >= authority` -- a single bit -- and the number cost a
+    /// `Vec<u64>` the mutation rollback copies on every clone: the published copy figure
+    /// moved 2,485 to 2,517 at 250 objects. An empty `BTreeSet` allocates nothing, so a
+    /// store with nothing stale pays nothing, and `quarantined_replicas` above is the same
+    /// shape for the same reason. What is given up is HOW FAR behind a replica is, which
+    /// nothing read.
+    ///
+    /// Staleness is a property of a replica, not of a page, so this costs nothing per
+    /// page -- which an authoritative sequence per page would not: a 1 TiB store at a
+    /// 1 MiB page is a million pages, and a map keyed by `PageId` is tens of megabytes
+    /// before the value.
+    pub(crate) stale_replicas: BTreeSet<usize>,
     pub(crate) chunk_endpoints: Vec<String>,
     pub(crate) disabled_chunk_endpoints: BTreeSet<usize>,
     chunk_route_control_commit_index: u64,

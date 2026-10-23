@@ -108,7 +108,92 @@ impl MatrixChunkService {
                 ));
             }
         }
+        // A FROZEN REPLICA STOPS RECEIVING WRITES, so from here on it may be behind. The
+        // epoch moves and this replica is left at the old one; thawing does not bring it
+        // back, only a check-in does.
+        if frozen && !self.replicas[replica_index].is_frozen() {
+            self.record_replica_membership_change(&BTreeSet::from([replica_index]));
+        }
         self.replicas[replica_index].set_frozen(frozen);
+        Ok(())
+    }
+
+    /// Record that these replicas have stopped receiving writes, so nothing may be
+    /// concluded from what they hold until each is checked back in.
+    ///
+    /// Only the leaving replicas are touched. A replica that stayed is believable because
+    /// it stayed, and one that was ALREADY stale must not be cleared by somebody else's
+    /// membership change -- both of which fall out of adding rather than of comparing,
+    /// which is the second reason the epoch arithmetic went: its first version advanced
+    /// nobody, and quarantining one replica of three made all three unbelievable.
+    pub(crate) fn record_replica_membership_change(&mut self, leaving: &BTreeSet<usize>) {
+        for index in leaving {
+            if *index < self.replicas.len() {
+                self.stale_replicas.insert(*index);
+            }
+        }
+    }
+
+    /// The replicas the authority will not believe, so they do not count in a read.
+    pub fn stale_replica_indices(&self) -> Vec<usize> {
+        self.stale_replicas.iter().copied().collect()
+    }
+
+    /// Declare a replica current again -- but only once its pages say so.
+    ///
+    /// # WHY THIS VERIFIES INSTEAD OF BEING TOLD
+    ///
+    /// The epoch exists so that a returning replica cannot be mistaken for current. An
+    /// entry point that simply set it would hand that mistake straight back to whichever
+    /// caller felt confident. So this reads the evidence: for every page any believable
+    /// replica holds, the candidate must hold one whose `write_sequence` is at least as
+    /// high. One page behind and the check-in is refused, naming the page and both
+    /// sequences.
+    ///
+    /// # WHAT IT DOES NOT DO
+    ///
+    /// It repairs nothing and deletes nothing. A refused check-in leaves the replica
+    /// exactly as it was, still holding its bytes -- which is the one case the design this
+    /// follows is explicit about: a stale copy is kept, never dropped, because it may be
+    /// the last copy of something.
+    pub fn check_in_replica(&mut self, replica_index: usize) -> Result<(), ObjectError> {
+        if replica_index >= self.replicas.len() {
+            return Err(ObjectError::InvalidArgument(
+                "replica index is out of range".to_string(),
+            ));
+        }
+        if !self.replica_active(replica_index) {
+            return Err(ObjectError::PreconditionFailed(
+                "a quarantined or disabled replica cannot be checked in: it is not serving"
+                    .to_string(),
+            ));
+        }
+        // The best sequence any believable replica holds, per page. Taken from the current
+        // replicas only: a stale replica's own sequence is exactly what is in question.
+        let mut best: BTreeMap<PageId, u64> = BTreeMap::new();
+        for index in 0..self.replicas.len() {
+            if index == replica_index || !self.replica_current(index) {
+                continue;
+            }
+            for (page_id, state) in &self.replicas[index].pages {
+                let entry = best.entry(page_id.clone()).or_default();
+                *entry = (*entry).max(state.write_sequence);
+            }
+        }
+        let candidate = &self.replicas[replica_index];
+        for (page_id, required) in &best {
+            let held = candidate
+                .pages
+                .get(page_id)
+                .map(|state| state.write_sequence)
+                .unwrap_or_default();
+            if held < *required {
+                return Err(ObjectError::PreconditionFailed(format!(
+                    "replica {replica_index} cannot be checked in: page {page_id:?} is at write sequence {held} and a current replica holds {required}",
+                )));
+            }
+        }
+        self.stale_replicas.remove(&replica_index);
         Ok(())
     }
 
@@ -151,8 +236,16 @@ impl MatrixChunkService {
                     "replica quarantine would violate page write quorum".to_string(),
                 ));
             }
+            // AFTER THE PRECONDITIONS, NOT BEFORE. Quarantine stops both reads and
+            // writes to this replica, so from here it is behind whatever happens next --
+            // but a quarantine the quorum checks above REFUSED did not happen, and the
+            // first version of this marked the replica stale anyway. An existing test
+            // caught that, by failing a read it had always been able to serve.
+            self.record_replica_membership_change(&BTreeSet::from([replica_index]));
             self.quarantined_replicas.insert(replica_index);
         } else {
+            // Coming back does NOT clear the record: that is the moment this whole
+            // mechanism exists for. `check_in_replica` is the way out.
             self.quarantined_replicas.remove(&replica_index);
         }
         Ok(())

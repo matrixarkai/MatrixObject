@@ -7,7 +7,7 @@ impl ChunkServiceSnapshot {
         let version = magic
             .strip_prefix("MOSRSBLOCK")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=23).contains(version))
+            .filter(|version| (1..=24).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("page service snapshot byte magic mismatch".to_string())
             })?;
@@ -37,6 +37,7 @@ impl ChunkServiceSnapshot {
         let has_range_repair_receipts = version >= 21;
         let has_audit_repair_receipts = version >= 22;
         let has_sealed_chunks = version >= 23;
+        let has_stale_replicas = version >= 24;
         let page_size = cursor.read_u64()?;
         let write_quorum = cursor.read_count("block service snapshot write quorum")?;
         let read_quorum = cursor.read_count("block service snapshot read quorum")?;
@@ -208,6 +209,7 @@ impl ChunkServiceSnapshot {
                 ChunkRouteQosState::default(),
             )
         };
+        let mut stale_replicas: BTreeSet<usize> = BTreeSet::new();
         let mut sealed_chunks = BTreeSet::new();
         if has_sealed_chunks {
             for _ in 0..cursor.read_count("block service snapshot sealed segment count")? {
@@ -215,6 +217,11 @@ impl ChunkServiceSnapshot {
                     volume_id: cursor.read_u64()?,
                     id: cursor.read_u64()?,
                 });
+            }
+        }
+        if has_stale_replicas {
+            for _ in 0..cursor.read_count("block service snapshot stale replica count")? {
+                stale_replicas.insert(cursor.read_count("block service snapshot stale replica")?);
             }
         }
         let (
@@ -329,6 +336,7 @@ impl ChunkServiceSnapshot {
             audit_repair_request_receipts,
             released_allocation_count,
             quarantined_replicas,
+            stale_replicas,
             chunk_endpoints,
             disabled_chunk_endpoints,
             chunk_route_control_commit_index,
@@ -351,6 +359,26 @@ impl ChunkServiceSnapshot {
             replicas,
             checksum,
         };
+        // A REPLICA THAT WAS NOT RECEIVING WRITES IS NOT BELIEVABLE, whatever version
+        // wrote this snapshot. Quarantined or out of the endpoint set is exactly that, so
+        // those indices join the record unconditionally: for a version-24 snapshot the
+        // membership change already put them there and this is a no-op, and for an older
+        // one -- which has no record at all -- it IS the record, reconstructed from the
+        // evidence that version does carry. Restoring such a replica as believable is the
+        // defect this format version exists to close.
+        //
+        // Unconditional on purpose: a version-gated arm could only be reached with
+        // version-23 bytes, which nothing in the suite builds, and a decode path no test
+        // can reach is one that may be wrong in silence.
+        for index in snapshot
+            .quarantined_replicas
+            .union(&snapshot.disabled_chunk_endpoints)
+        {
+            if *index < snapshot.replicas.len() {
+                snapshot.stale_replicas.insert(*index);
+            }
+        }
+        snapshot.stale_replicas.retain(|index| *index < snapshot.replicas.len());
         if version != 19 && version != 20 && version != 21 && version != 22 {
             if snapshot.chunk_endpoints.is_empty() {
                 snapshot.chunk_endpoints = default_chunk_endpoints(snapshot.replicas.len());

@@ -108,6 +108,8 @@ impl MatrixChunkService {
             audit_repair_request_receipts: BTreeMap::new(),
             released_allocation_count: 0,
             quarantined_replicas: BTreeSet::new(),
+            // Everything starts current: a fresh service has had no membership change.
+            stale_replicas: BTreeSet::new(),
             chunk_endpoints: default_chunk_endpoints(replica_count),
             disabled_chunk_endpoints: BTreeSet::new(),
             chunk_route_control_commit_index: 0,

@@ -459,6 +459,12 @@ impl ChunkServiceSnapshot {
                 (self.disabled_chunk_endpoints.len() as u64)
                     .saturating_mul(std::mem::size_of::<usize>() as u64),
             )
+            // `stale_replicas` is the same shape and is weighed the same way: nothing
+            // while it is empty, which is every healthy store.
+            .saturating_add(
+                (self.stale_replicas.len() as u64)
+                    .saturating_mul(std::mem::size_of::<usize>() as u64),
+            )
             .saturating_add(
                 (self.sealed_chunks.len() as u64).saturating_mul(std::mem::size_of::<ChunkId>() as u64),
             );

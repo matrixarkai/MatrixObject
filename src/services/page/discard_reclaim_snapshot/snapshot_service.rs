@@ -200,6 +200,7 @@ impl MatrixChunkService {
             audit_repair_request_receipts: self.audit_repair_request_receipts.clone(),
             released_allocation_count: self.released_allocation_count,
             quarantined_replicas: self.quarantined_replicas.clone(),
+            stale_replicas: self.stale_replicas.clone(),
             chunk_endpoints: self.chunk_endpoints.clone(),
             disabled_chunk_endpoints: self.disabled_chunk_endpoints.clone(),
             chunk_route_control_commit_index: self.chunk_route_control_commit_index,
@@ -384,6 +385,7 @@ impl MatrixChunkService {
         self.audit_repair_request_receipts = snapshot.audit_repair_request_receipts;
         self.released_allocation_count = snapshot.released_allocation_count;
         self.quarantined_replicas = snapshot.quarantined_replicas;
+        self.stale_replicas = snapshot.stale_replicas;
         self.chunk_endpoints = snapshot.chunk_endpoints;
         self.disabled_chunk_endpoints = snapshot.disabled_chunk_endpoints;
         self.chunk_route_control_commit_index = snapshot.chunk_route_control_commit_index;

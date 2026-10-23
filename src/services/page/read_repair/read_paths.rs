@@ -160,8 +160,18 @@ impl MatrixChunkService {
         let mut selected_index: Option<usize> = None;
         let mut selected_count = 0usize;
         let mut votes: BTreeMap<(u64, String, String), (usize, usize)> = BTreeMap::new();
+        let mut skipped_stale = 0usize;
         for (index, replica) in self.replicas.iter().enumerate() {
             if !self.replica_active(index) {
+                continue;
+            }
+            // A REPLICA THE AUTHORITY DOES NOT BELIEVE DOES NOT VOTE. It missed a
+            // membership change and has not been checked back in, so its copy of a page
+            // may be superseded -- and a vote cannot tell, because a vote compares
+            // replicas against each other. Skipped rather than read, because reading it
+            // would also fill its read cache with bytes nothing should serve.
+            if !self.replica_current(index) {
+                skipped_stale += 1;
                 continue;
             }
             attempted += 1;
@@ -203,6 +213,16 @@ impl MatrixChunkService {
             }
         }
         if successful.len() < self.read_quorum {
+            // NAME STALENESS WHEN IT IS THE REASON. "Quorum was not met" sends a reader
+            // looking for a failure that did not happen: every replica answered, and some
+            // of them were not allowed to count.
+            if skipped_stale > 0 {
+                return Err(ObjectError::Corruption(format!(
+                    "page read quorum was not met: {skipped_stale} active replica(s) have not been checked in since a membership change, leaving {} that may be counted against a read quorum of {}",
+                    successful.len(),
+                    self.read_quorum
+                )));
+            }
             return Err(first_error.unwrap_or_else(|| {
                 ObjectError::Corruption("page read quorum was not met".to_string())
             }));
@@ -218,6 +238,9 @@ impl MatrixChunkService {
         if failed_before_quorum > 0
             || !self.quarantined_replicas.is_empty()
             || selected_count < successful.len()
+            // A read served without a replica that was there and could not be believed is
+            // a degraded read, which is what this counter already means.
+            || skipped_stale > 0
         {
             stats.quorum_read_degraded_chunks = 1;
         }
