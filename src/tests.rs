@@ -36782,6 +36782,236 @@ fn measure_what_a_one_word_text_handle_costs_to_read() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_the_route_to_under_a_hundred_bytes_an_object() {
+    // A storage node carries 226 bytes an object of the 426-byte line:
+    //   mapkey_inline 32 + mapkey_heap 42 + metadata_inline 128 + extents 16 + payloads 8
+    // Everything below is a candidate for the 128, the 16, or the 32. Each is a MIRROR sized
+    // by the compiler, and the control is asserted equal to the real struct before any
+    // saving is read off it -- a mirror that has drifted measures nothing, and no other test
+    // in the suite would notice.
+    use std::mem::size_of;
+
+    #[allow(dead_code)]
+    struct Control {
+        object_id: ObjectId,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        user_metadata: ObjectAttributes,
+        storage_class: StorageClass,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: Box<[ObjectExtent]>,
+        deleted: bool,
+    }
+    let control = size_of::<Control>();
+    assert_eq!(
+        control,
+        size_of::<ObjectMetadata>(),
+        "the control has drifted from ObjectMetadata, so nothing below means anything"
+    );
+
+    // (a) ONE HANDLE FOR THE IDENTITY instead of two. `ObjectId` is two fat pointers naming
+    // two allocations; one `SharedText` spelling `bucket<sep>key` names one. It saves the
+    // same again on the MAP KEY, which is the same type -- so this candidate is worth twice
+    // what the struct column shows.
+    //
+    // THE SEPARATOR IS THE WHOLE QUESTION, and the obvious choice is wrong: with '/' the
+    // concatenated order does NOT equal the pair order, because '-' (0x2D) and '.' (0x2E)
+    // are legal in a bucket name and sort BELOW '/' (0x2F). A separator under every legal
+    // character does preserve it.
+    #[allow(dead_code)]
+    struct OneHandleIdentity {
+        object_id: SharedText,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        user_metadata: ObjectAttributes,
+        storage_class: StorageClass,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: Box<[ObjectExtent]>,
+        deleted: bool,
+    }
+
+    // (b) THE THREE RARE SIDE TABLES BEHIND ONE POINTER. `ObjectLock` is already
+    // `Option<Box<..>>` for exactly this reason -- its doc says an object under none of the
+    // three pays eight bytes rather than twenty-five -- but it is not folded WITH the other
+    // two, so an object with no user metadata, no tags and no lock still pays three words.
+    #[allow(dead_code)]
+    struct Extras {
+        user_metadata: ObjectAttributes,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+    }
+    #[allow(dead_code)]
+    struct OneExtrasPointer {
+        object_id: ObjectId,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        storage_class: StorageClass,
+        update_time_ms: u64,
+        extents: Box<[ObjectExtent]>,
+        deleted: bool,
+        extras: Option<Box<Extras>>,
+    }
+
+    // (c) THE CONTENT TYPE AS AN INDEX. It is already interned behind a table bounded by a
+    // count of 256, but the holder is still a fat pointer.
+    #[allow(dead_code)]
+    struct IndexedContentType {
+        object_id: ObjectId,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: u16,
+        user_metadata: ObjectAttributes,
+        storage_class: StorageClass,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: Box<[ObjectExtent]>,
+        deleted: bool,
+    }
+
+    // (d) ONE EXTENT INLINE. Nearly every object has exactly one, and it costs sixteen
+    // inline for the slice plus sixteen on the heap for the extent.
+    #[allow(dead_code)]
+    enum InlineExtents {
+        One(ObjectExtent),
+        Many(Box<[ObjectExtent]>),
+    }
+    #[allow(dead_code)]
+    struct InlineOneExtent {
+        object_id: ObjectId,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        user_metadata: ObjectAttributes,
+        storage_class: StorageClass,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: InlineExtents,
+        deleted: bool,
+    }
+
+    // (e) ALL OF THEM, which is not the sum of the parts: a field that leaves can free
+    // padding another was already sitting in, and one that arrives can land in it.
+    #[allow(dead_code)]
+    struct Everything {
+        object_id: SharedText,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: u16,
+        storage_class: StorageClass,
+        update_time_ms: u64,
+        extents: InlineExtents,
+        deleted: bool,
+        extras: Option<Box<Extras>>,
+    }
+
+    println!(
+        "ROUTE parts attributes={} lock={} extent={} extras={} id={} text={}",
+        size_of::<ObjectAttributes>(),
+        size_of::<ObjectLock>(),
+        size_of::<ObjectExtent>(),
+        size_of::<Extras>(),
+        size_of::<ObjectId>(),
+        size_of::<SharedText>()
+    );
+    // (candidate, inline size, heap delta, extra saving on the map key)
+    //
+    // THE HEAP COLUMN IS NOT DECORATION. Sizing only the inline part made candidate (a)
+    // look worth twice what it is. `ObjectId`'s two handles name TWO allocations and the
+    // bucket's is SHARED by every object in the bucket -- `audit_object_id_heap` charges
+    // through a `SharedTextLedger`, which charges an allocation once, so the 42 bytes an
+    // object of `objects.mapkey_heap` are the KEY's allocation and the bucket's sits in the
+    // intercept. Collapsing the pair into one string DE-DUPLICATES the bucket: every object
+    // then carries its own copy of those characters. So (a) is -32 inline AND +bucket_len
+    // on the heap, which is -26 for the six-character bucket this fixture uses, break-even
+    // near thirty-two characters, and a LOSS beyond -- and a bucket name may be sixty-three.
+    const FIXTURE_BUCKET_LEN: i64 = 6;
+    let rows: [(&str, usize, i64, i64); 5] = [
+        ("a. one handle for the identity", size_of::<OneHandleIdentity>(),
+         FIXTURE_BUCKET_LEN, 16),
+        ("b. three rare tables behind one pointer", size_of::<OneExtrasPointer>(), 0, 0),
+        ("c. the content type as an index", size_of::<IndexedContentType>(), 0, 0),
+        ("d. one extent inline", size_of::<InlineOneExtent>(), -16, 0),
+        ("e. all of them together", size_of::<Everything>(),
+         -16 + FIXTURE_BUCKET_LEN, 16),
+    ];
+    for (what, inline, heap_delta, key_delta) in rows {
+        let saved = control as i64 - inline as i64 - heap_delta + key_delta;
+        println!(
+            "ROUTE {what}: inline {control} -> {inline}, heap {heap_delta:+}, \
+             map key {key_delta:+}, saves {saved}"
+        );
+    }
+
+    // WHERE IT LANDS. The storage share is the two key legs, the struct, the extent heap
+    // and the payload index key.
+    let storage_now = 32 + 42 + control + 16 + 8;
+    assert_eq!(
+        storage_now, 226,
+        "the storage share should be the 226 the README publishes, and it computes \
+         {storage_now} -- if this moved, the candidates below are priced against the \
+         wrong baseline"
+    );
+    // WITHOUT candidate (a), whose saving depends on how long the bucket's name is and
+    // turns negative on a long one. These three are workload-independent -- and the total
+    // is MEASURED, not summed: doing it by hand gave 162 because the extent fold is +8
+    // inline and -16 heap, not -16 inline.
+    #[allow(dead_code)]
+    struct CleanThree {
+        object_id: ObjectId,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: u16,
+        storage_class: StorageClass,
+        update_time_ms: u64,
+        extents: InlineExtents,
+        deleted: bool,
+        extras: Option<Box<Extras>>,
+    }
+    let clean_only = 32 + 42 + size_of::<CleanThree>() + 0 + 8;
+    let key_inline_then = 32 - 16;
+    let storage_then = key_inline_then + 42 + FIXTURE_BUCKET_LEN as usize
+        + size_of::<Everything>() + 0 + 8;
+    println!("ROUTE storage_node now={storage_now} clean_three_only={clean_only} \
+              with_the_identity_too={storage_then}");
+    println!(
+        "ROUTE what is left after all of it: key_inline={key_inline_then} key_chars=42 \
+         struct={} payload_key=8",
+        size_of::<Everything>()
+    );
+    // AND THE HONEST REMAINDER: the name's characters are the biggest single thing left,
+    // and nothing above touches them. Under a hundred needs them too.
+    assert!(
+        storage_then > 100,
+        "if this now reaches a hundred, the comment below is stale and the remainder \
+         needs restating: {storage_then}"
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_what_a_one_word_text_handle_would_save() {
     // `SharedText` is `Arc<str>`, a FAT pointer: every holder spends two words to
     // name one allocation, and the second word is a length that the allocation
