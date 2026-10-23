@@ -489,3 +489,12 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the_published_amplification_table_agrees_with_the_metadata_line did not run"; exit 1; }
+
+      - name: Every metadata leg is a line and the intercepts are named
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::every_metadata_leg_is_a_line_and_the_intercepts_are_named -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::every_metadata_leg_is_a_line_and_the_intercepts_are_named did not run"; exit 1; }

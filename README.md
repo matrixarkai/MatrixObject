@@ -243,6 +243,15 @@ At three replicas with the metadata counted, measured at 26-character keys:
 The data term is exactly **3.00x** -- the replication floor for a store that
 copies every page to every replica -- so everything above it is metadata, which
 is **426 bytes an object plus 164,256 fixed** whatever the object size.
+
+Those bytes are not all in one place. **226 of them are a storage node's own** -- the
+object's entry in its map, and its key in the payload index -- and **200 are the metadata
+service's**, which keeps its own record of every object with its own versioning, deletion
+markers and change log. This crate models both services in one process, so the audit counts
+both; a deployment runs them on different machines, where a storage node carries 226 bytes
+an object rather than 426.
+`every_metadata_leg_is_a_line_and_the_intercepts_are_named` measures both shares and fails
+if either stops being what this file publishes.
 `footprint_audit()` names every resident byte and its breakdown sums to its own
 total with no remainder.
 
