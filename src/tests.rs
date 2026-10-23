@@ -36688,6 +36688,100 @@ fn measure_what_each_record_value_representation_would_cost() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_what_a_one_word_text_handle_costs_to_read() {
+    // The companion to the size measurement below. `SharedText` is `Arc<str>`, a FAT
+    // pointer: the length rides in the handle, so `.len()` touches no heap at all. The
+    // one-word shape `Arc<Box<str>>` is a thin pointer to a box, so the length costs one
+    // dependent load and the characters cost two. That is the whole trade -- 8 bytes of
+    // inline per holder against an extra load per read -- and this prints its price.
+    //
+    // NO THRESHOLD IS ASSERTED. A timing figure from this box is not stable enough to
+    // gate on, and a number too unstable to publish is too unstable to assert. What is
+    // asserted is only that the loops did the work.
+    const N: usize = 200_000;
+    let names: Vec<String> = (0..N).map(|index| format!("bucket/object-{index:012}")).collect();
+    let fat: Vec<std::sync::Arc<str>> = names
+        .iter()
+        .map(|name| std::sync::Arc::from(name.as_str()))
+        .collect();
+    let thin: Vec<std::sync::Arc<Box<str>>> = names
+        .iter()
+        .map(|name| std::sync::Arc::new(name.clone().into_boxed_str()))
+        .collect();
+
+    // A SHUFFLED ORDER, or the prefetcher hides the second load and this reports that a
+    // dependent load is free. A CONSTANT STRIDE IS NOT ENOUGH -- stepping by a fixed
+    // amount is the pattern a hardware prefetcher exists to detect, and so is an odd
+    // multiplier, whose consecutive differences are also constant. This is a deterministic
+    // Fisher-Yates, so both shapes are read the same number of times in the same order.
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut order: Vec<usize> = (0..N).collect();
+    for index in (1..N).rev() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let swap_with = (state % (index as u64 + 1)) as usize;
+        order.swap(index, swap_with);
+    }
+    // NOT VACUOUS: if the shuffle did nothing the order would be 0, 1, 2, ... and the
+    // whole measurement would be about sequential access instead of scattered access.
+    let adjacent = order
+        .windows(2)
+        .filter(|pair| pair[1] == pair[0] + 1)
+        .count();
+    assert!(
+        adjacent < N / 100,
+        "the order must be shuffled, and {adjacent} of its steps are still +1"
+    );
+
+    // LENGTH ONLY: free for the fat handle, one dependent load for the thin one.
+    let started = std::time::Instant::now();
+    let mut fat_len = 0usize;
+    for index in &order {
+        fat_len += fat[*index].len();
+    }
+    let fat_len_ns = started.elapsed().as_nanos();
+    let started = std::time::Instant::now();
+    let mut thin_len = 0usize;
+    for index in &order {
+        thin_len += thin[*index].len();
+    }
+    let thin_len_ns = started.elapsed().as_nanos();
+    assert_eq!(fat_len, thin_len, "both shapes hold the same characters");
+    assert!(fat_len > 0, "the loops must have read something");
+
+    // THE CHARACTERS: one dependent load for the fat handle, two for the thin one.
+    let started = std::time::Instant::now();
+    let mut fat_bytes = 0u64;
+    for index in &order {
+        fat_bytes += u64::from(fat[*index].as_bytes()[0]);
+    }
+    let fat_bytes_ns = started.elapsed().as_nanos();
+    let started = std::time::Instant::now();
+    let mut thin_bytes = 0u64;
+    for index in &order {
+        thin_bytes += u64::from(thin[*index].as_bytes()[0]);
+    }
+    let thin_bytes_ns = started.elapsed().as_nanos();
+    assert_eq!(fat_bytes, thin_bytes);
+    assert!(fat_bytes > 0, "the loops must have read something");
+
+    let reads = order.len() as u128;
+    println!(
+        "HANDLEREAD reads={reads} \
+         len_fat_ns_per_read={:.2} len_thin_ns_per_read={:.2} len_ratio={:.2} \
+         bytes_fat_ns_per_read={:.2} bytes_thin_ns_per_read={:.2} bytes_ratio={:.2}",
+        fat_len_ns as f64 / reads as f64,
+        thin_len_ns as f64 / reads as f64,
+        thin_len_ns as f64 / fat_len_ns.max(1) as f64,
+        fat_bytes_ns as f64 / reads as f64,
+        thin_bytes_ns as f64 / reads as f64,
+        thin_bytes_ns as f64 / fat_bytes_ns.max(1) as f64,
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_what_a_one_word_text_handle_would_save() {
     // `SharedText` is `Arc<str>`, a FAT pointer: every holder spends two words to
     // name one allocation, and the second word is a length that the allocation
