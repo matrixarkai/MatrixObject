@@ -29953,6 +29953,130 @@ fn the_idempotent_multipart_doors_carry_the_same_fences() {
 }
 
 #[test]
+fn a_write_that_fails_part_way_through_its_pages_did_not_happen() {
+    // THE CONTRACT: a put either completes or it did not happen. The sibling guard
+    // `a_put_that_fails_after_mutating_leaves_the_store_unchanged` pins a late REFUSAL --
+    // the expected-checksum check, which fires after `mark_extents_stale` has already
+    // moved counters. This pins the other shape: a failure INSIDE the write loop.
+    //
+    // `allocate_extents` writes one page at a time and each page admits against the route
+    // QoS byte window, so a window of two pages refuses the third. Pages one and two have
+    // been written to every replica by then, which is exactly the state the contract is
+    // about.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        max_extent_bytes: 4096,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "settled", vec![b'a'; 4096], "application/octet-stream")
+        .unwrap();
+
+    let before_bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
+    let before_audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let before_metadata = store.metadata_state_fingerprint();
+    let before_gc = store.gc_report();
+
+    let window = ChunkRouteQosConfig {
+        window_ms: 600_000,
+        max_read_ops_per_window: 0,
+        max_read_bytes_per_window: 0,
+        max_write_ops_per_window: 0,
+        max_write_bytes_per_window: 4096 * 4,
+        max_discard_ops_per_window: 0,
+        max_discard_bytes_per_window: 0,
+    };
+    store.chunk_service.configure_route_qos(window.clone()).unwrap();
+    let refused = store.put_object(
+        "bucket",
+        "straddles",
+        vec![b'b'; 4096 * 5],
+        "application/octet-stream",
+    );
+    assert!(
+        matches!(refused, Err(ObjectError::PreconditionFailed(_))),
+        "a five-page put under a four-page byte window must be refused, and it gave {refused:?}"
+    );
+    store
+        .chunk_service
+        .configure_route_qos(ChunkRouteQosConfig::default())
+        .unwrap();
+
+    // NOT VACUOUS, and `write_bytes_in_window` cannot say so: the rollback restores the
+    // route QoS state with everything else, so it reads zero afterwards. The witness is a
+    // second store under the SAME window, where a four-page put succeeds -- so in the
+    // store above, four pages had been written when the fifth was refused.
+    let mut control = MatrixObjectStore::new(StoreOptions {
+        volume_count: 2,
+        max_extent_bytes: 4096,
+        ..StoreOptions::default()
+    })
+    .unwrap();
+    control.create_bucket("bucket").unwrap();
+    control.chunk_service.configure_route_qos(window).unwrap();
+    assert_eq!(
+        control
+            .put_object("bucket", "four-pages", vec![b'b'; 4096 * 4], "application/octet-stream")
+            .unwrap()
+            .length,
+        4096 * 4,
+        "four pages must fit the window, or the refusal above came before any page was written"
+    );
+
+    // IT DID NOT HAPPEN, in four views.
+    assert!(
+        store.head_object("bucket", "straddles").is_err(),
+        "a refused put must not leave the object behind"
+    );
+    assert_eq!(
+        store.get_object("bucket", "settled").unwrap().data.len(),
+        4096,
+        "the object beside it must be untouched"
+    );
+    assert_eq!(
+        store.metadata_state_fingerprint(),
+        before_metadata,
+        "a refused put must leave no metadata record"
+    );
+    let after_gc = store.gc_report();
+    assert_eq!(after_gc.chunk_count, before_gc.chunk_count);
+    assert_eq!(after_gc.logical_bytes, before_gc.logical_bytes);
+    assert_eq!(after_gc.live_bytes, before_gc.live_bytes);
+    assert_eq!(after_gc.stale_bytes, before_gc.stale_bytes);
+    assert_eq!(
+        store.export_snapshot().unwrap().to_bytes().unwrap(),
+        before_bytes,
+        "the snapshot bytes must be identical after a refused put"
+    );
+
+    // And the audit, which names the container if one moved. One key is allowed to FALL and
+    // required never to rise: the rollback clones the receipt maps and a clone allocates
+    // exactly, so a restored receipt holds the same text in a tighter allocation. The
+    // sibling guard records the same 144-to-111 movement.
+    let after_audit: std::collections::BTreeMap<String, u64> =
+        store.footprint_audit().into_iter().collect();
+    let tightened = ["page.receipts.bytes", "ACCOUNTED.byte_buffers", "ACCOUNTED.total_bytes"];
+    let mut moved: Vec<String> = Vec::new();
+    for (name, before) in &before_audit {
+        let after = after_audit.get(name).copied().unwrap_or_default();
+        if after == *before {
+            continue;
+        }
+        if tightened.contains(&name.as_str()) && after < *before {
+            continue;
+        }
+        moved.push(format!("{name} {before} -> {after}"));
+    }
+    assert!(
+        moved.is_empty(),
+        "a refused put must move nothing the rollback does not tighten: {moved:?}"
+    );
+}
+
+#[test]
 fn compaction_converges_and_takes_the_space_ratio_back_to_one() {
     // `ensure_writable_chunk` takes the first chunk with room. With a chunk size that holds
     // the corpus that is the chunk being compacted, so the rewrite landed back in its own

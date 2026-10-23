@@ -59,6 +59,29 @@ types and fields are already `ChunkId`, `chunk_size`, `PageId`, `page_size`.
 | **page** | allocation, placement, the write and read quorums, repair and scrub |
 | **chunk** | the data itself: one replica of each chunk, with its checksum and discard map |
 
+### What a write promises
+
+**A put either completes or it did not happen.** There is no partial object and no stated
+size below which that holds and above which it does not: the guarantee is the same for a
+one-page object and a five-page one.
+
+A put is split into pages by `max_extent_bytes` and written one page at a time, so a
+failure part way through is the case that matters. Both shapes are pinned:
+
+| the failure | the guard |
+|---|---|
+| refused *after* mutating — the expected-checksum check fires once counters have moved | `a_put_that_fails_after_mutating_leaves_the_store_unchanged` |
+| refused *inside* the write loop — four pages written, the fifth refused | `a_write_that_fails_part_way_through_its_pages_did_not_happen` |
+
+Each asserts the store is unchanged in four views: the object is absent, its neighbour is
+intact, the metadata fingerprint is unchanged, the chunk ledger is byte-identical and the
+**snapshot bytes are identical**. One audit key is allowed to fall and never to rise — a
+rollback clones the receipt maps and a clone allocates exactly, so a restored receipt holds
+the same text in a tighter allocation.
+
+What the store does **not** promise: a partial write does not report how far it got. The
+error names why it was refused, not how many pages had landed.
+
 ### What a compaction gives back
 
 A superseded object leaves its bytes behind, and the space ratio says so:
