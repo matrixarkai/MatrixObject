@@ -1537,12 +1537,10 @@ fn run_replica_repair_fault_probe(
         let metadata = with_store(store, lock_stats, |locked| {
             locked.head_object("bench", &format!("object-{index}"))
         })?;
-        for extent in metadata.extents {
-            // Read BEFORE the identity is moved out: a struct literal evaluates its
-            // fields in the order they are written.
+        for extent in metadata.extents.iter() {
             let page_index = extent.offset() / cfg.page_size;
             let page_id = PageId {
-                chunk_id: extent.chunk_id,
+                chunk_id: extent.chunk_id.clone(),
                 page_index,
             };
             if !target_chunks.contains(&page_id) {

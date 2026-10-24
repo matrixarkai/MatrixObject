@@ -6,7 +6,7 @@ impl MatrixObjectStore {
         metadata: &ObjectMetadata,
     ) -> Result<(u64, u64), ObjectError> {
         let mut pages: BTreeMap<PageId, u64> = BTreeMap::new();
-        for extent in &metadata.extents {
+        for extent in metadata.extents.iter() {
             for loc in
                 self.chunk_service
                     .map_range(&extent.chunk_id, extent.offset(), extent.length())?

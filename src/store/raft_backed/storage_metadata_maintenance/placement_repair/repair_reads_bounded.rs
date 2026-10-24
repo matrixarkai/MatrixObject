@@ -35,7 +35,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             max_repair_chunks
         };
         let mut next_chunk_index = start_chunk_index;
-        for extent in &metadata.extents {
+        for extent in metadata.extents.iter() {
             if remaining_chunks == 0 {
                 break;
             }
