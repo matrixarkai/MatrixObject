@@ -58,8 +58,8 @@ impl MatrixObjectStore {
                 }
             }
             let object_ids: Vec<ObjectId> = self
-                .objects
-                .keys()
+                .objects_iter()
+                .map(|(object_id, _)| object_id)
                 .filter(|object_id| object_id.bucket == bucket)
                 .cloned()
                 .collect();
@@ -69,7 +69,7 @@ impl MatrixObjectStore {
                     result.truncated = true;
                     break;
                 }
-                let Some(current) = self.objects.get(&object_id).cloned() else {
+                let Some(current) = self.object(&object_id).cloned() else {
                     continue;
                 };
                 if current.deleted {
@@ -120,7 +120,7 @@ impl MatrixObjectStore {
                         }
                     }
                 }
-                let latest = self.objects.get(&object_id).cloned();
+                let latest = self.object(&object_id).cloned();
                 if policy.expire_current_after_ms > 0
                     && latest.as_ref().map_or(false, |metadata| {
                         !metadata.deleted

@@ -184,7 +184,7 @@ impl MatrixObjectStore {
             buckets: BTreeSet::new(),
             content_types: BTreeSet::new(),
             bucket_versioning: BTreeSet::new(),
-            objects: BTreeMap::new(),
+            objects: BTreeSet::new(),
             versions: BTreeMap::new(),
             bucket_retention: BTreeMap::new(),
             bucket_quotas: BTreeMap::new(),

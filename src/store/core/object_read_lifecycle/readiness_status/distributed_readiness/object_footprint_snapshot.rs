@@ -31,18 +31,15 @@ struct DistributedObjectFootprintSnapshot {
 impl DistributedObjectFootprintSnapshot {
     fn capture(store: &MatrixObjectStore, page: &ChunkStorageReadiness) -> Self {
         let live_object_count = store
-            .objects
-            .values()
+            .objects_values()
             .filter(|object| !object.deleted)
             .count() as u64;
         let deleted_object_count = store
-            .objects
-            .values()
+            .objects_values()
             .filter(|object| object.deleted)
             .count() as u64;
         let live_bytes = store
-            .objects
-            .values()
+            .objects_values()
             .filter(|object| !object.deleted)
             .fold(0u64, |total, object| total.saturating_add(object.length));
         let gc = store.gc_report();

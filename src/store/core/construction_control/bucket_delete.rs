@@ -61,8 +61,7 @@ impl MatrixObjectStore {
             return Err(ObjectError::NotFound(format!("bucket not found: {bucket}")));
         }
         if self
-            .objects
-            .values()
+            .objects_values()
             .any(|metadata| metadata.object_id.bucket == bucket && !metadata.deleted)
         {
             return Err(ObjectError::InvalidArgument(format!(

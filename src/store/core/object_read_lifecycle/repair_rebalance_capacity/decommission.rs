@@ -17,7 +17,7 @@ impl MatrixObjectStore {
         let items = report.plan.items.clone();
         for item in items {
             let object_id = item.plan.object_id.clone();
-            let metadata = match self.objects.get(&object_id) {
+            let metadata = match self.object(&object_id) {
                 Some(metadata) if !metadata.deleted => metadata.clone(),
                 _ => {
                     report.failed_repair_objects = report.failed_repair_objects.saturating_add(1);

@@ -21,8 +21,8 @@ Measured at three replicas, 26-character keys, with the metadata counted:
 | object size | objects | amplification | data-only figure |
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
-| 4 KiB | 4,000 | **3.09x** | 3.00x |
-| 1 KiB | 8,000 | **3.36x** | 3.02x |
+| 4 KiB | 4,000 | **3.08x** | 3.00x |
+| 1 KiB | 8,000 | **3.33x** | 3.02x |
 
 Reproduce any row with the measurement harness:
 
@@ -67,7 +67,7 @@ are bounded rather than per object:
 
 | objects | 100 | 1,000 | 4,000 | 8,000 |
 |---:|---:|---:|---:|---:|
-| metadata per object | 538 B | 494 B | 371 B | **350 B** |
+| metadata per object | 506 B | 462 B | 339 B | **318 B** |
 
 Both change feeds cap at 1,024 records, so together they are **163,866 bytes**
 once full -- the two intercepts in the table below, which is where that figure is
@@ -75,7 +75,7 @@ checked rather than derived from a percentage of a moving total. Everything else
 is exactly linear, which makes the total a line once the feeds are full:
 
 ```
-metadata = 330 bytes an object + 164,240 bytes fixed      (remainder: zero)
+metadata = 298 bytes an object + 164,240 bytes fixed      (remainder: zero)
 ```
 
 reproducing every total above exactly, at every count where the feeds have
@@ -103,13 +103,13 @@ three store sizes and fails unless every one is a line and the fixed terms sum
 to the total's — so a leg that starts depending on the object count, or a fixed
 byte that stops being named, is caught rather than absorbed.
 
-That 330 is two items and a rounding error:
+That 298 is two items and a rounding error:
 
 | | per object | share |
 |---|---:|---:|
-| `objects` — the structured metadata | 210 B | 63.6% |
-| `meta.records` — the metadata digest record | 112 B | 33.9% |
-| payload index keys | 8 B | 2.4% |
+| `objects` — the structured metadata | 178 B | 59.7% |
+| `meta.records` — the metadata digest record | 112 B | 37.6% |
+| payload index keys | 8 B | 2.7% |
 
 Those two halves no longer hold the same facts twice. `objects` is a binary struct —
 136 bytes inline, with the object id, length, etag, content type, storage class
@@ -164,14 +164,14 @@ shared between holders is charged once per allocation — the characters and the
 two counts in front of them — so `mapkey_capacity` against `mapkey_len` is that
 header rather than slack.
 
-### What the 330 bytes are, and what each remaining part would cost to remove
+### What the 298 bytes are, and what each remaining part would cost to remove
 
 The slope is not one thing. Every leg below is fitted from the same two object counts the
 published line is fitted from, and they sum to it exactly:
 
 ```
 METADATA LINE PARTS
-objects.mapkey_inline          32  two shared-text holders, which is what keys the map
+objects.mapkey_inline           0  the collection is ordered by the identity the metadata holds
 objects.mapkey_heap            42  the key's characters: ONE allocation, shared with the value
 objects.metadata_inline       136  ObjectMetadata itself, one extent held inline
 objects.extents_bytes           0  the one extent is INLINE above, so it owns no heap
@@ -179,17 +179,23 @@ meta.records.struct_inline     56  MetadataRecord, and no map key beside it
 meta.records.mapkey_capacity   56  the record key's characters: ONE allocation, ONE holder
 meta.records.value_capacity     0  the value is an eight-byte digest, held INLINE above
 payloads.key_bytes              8  the payload index's key
-METADATA LINE TOTAL          330
+METADATA LINE TOTAL          298
 ```
 
 `the_published_metadata_decomposition_sums_to_the_line` measures each one and fails if this
 block disagrees with the tree or if the parts stop adding up.
 
-**The objects map names the identity twice and the two holders share**, so
-`objects.inner_id_heap` reads **zero**, and
-`the_identity_each_map_names_twice_is_one_allocation` pins it: unsharing it would add back the
-characters plus a 16-byte header for every object, silently, with no test failing on the
-behaviour.
+**Neither map names its entry's identity twice any more.** `objects` is ordered by the
+identity inside each `ObjectMetadata`, so there is no map key to share with — `objects.inner_id_heap`
+and `objects.mapkey_inline` both read **zero**, the first by construction rather than by a
+sharing discipline. `the_identity_each_map_names_twice_is_one_allocation` still pins the
+counters, because a change that reintroduced a second copy of the identity would move them.
+
+What the bucket half of the identity still shares is real and load-bearing: `filed_object_key`
+interns the bucket name from the store's own set, so every object in a bucket names it through
+one allocation. Dropping that call while reimplementing the rest of the funnel cost 22 bytes an
+object and still measured as an improvement, because the 32 it saved was larger — which is why
+`objects.mapkey_heap` is published per-term and not only inside the total.
 
 `meta.records` no longer names its key twice at all. The collection is a set ordered by each
 record's own key, so `meta.records.record_key_capacity` reads zero **by construction** rather
@@ -203,7 +209,7 @@ characters, sixteen bytes once per allocation.
 
 #### The reductions that are left, and what each one costs
 
-Each is priced against the 330. Two rows have come **off** this list, and both came off the
+Each is priced against the 298. Two rows have come **off** this list, and both came off the
 same way -- by being measured instead of argued. Narrowing an extent's offset and length to 32
 bits was priced at 8 bytes an object and a migration, until the migration turned out not to
 exist: the snapshot still writes two `u64` and only the in-memory form is narrow. Interning

@@ -3859,8 +3859,7 @@ fn object_store_exposes_exact_page_chunk_repair() {
         )
         .unwrap();
     let metadata = store
-        .objects
-        .get(&ObjectId::new("bucket", "exact-repair"))
+        .object(&ObjectId::new("bucket", "exact-repair"))
         .unwrap()
         .clone();
     let first_extent = metadata.extents.first().unwrap();
@@ -12941,8 +12940,7 @@ fn bucket_lifecycle_transitions_only_preserve_expirable_versions() {
         2
     );
     assert!(store
-        .objects
-        .contains_key(&ObjectId::new("bucket", "marker")));
+        .objects.contains(&ObjectId::new("bucket", "marker")));
 }
 
 #[test]
@@ -12972,8 +12970,7 @@ fn bucket_lifecycle_expires_current_and_delete_markers() {
     assert_eq!(result.removed_delete_markers, 1);
     assert!(store.head_object("expire", "current").is_err());
     assert!(store
-        .objects
-        .get(&ObjectId::new("expire", "marker"))
+        .object(&ObjectId::new("expire", "marker"))
         .is_none());
 
     let mut semantic_store = MatrixObjectStore::new(test_options()).unwrap();
@@ -12989,7 +12986,7 @@ fn bucket_lifecycle_expires_current_and_delete_markers() {
         .delete_object("expire", "tombstoned-marker")
         .unwrap();
     let tombstoned_id = ObjectId::new("expire", "tombstoned-marker");
-    let mut tombstoned_archived = semantic_store.objects.get(&tombstoned_id).unwrap().clone();
+    let mut tombstoned_archived = semantic_store.object(&tombstoned_id).unwrap().clone();
     tombstoned_archived.version = tombstoned_archived.version.saturating_sub(1);
     semantic_store
         .versions
@@ -13009,7 +13006,7 @@ fn bucket_lifecycle_expires_current_and_delete_markers() {
         .apply_bucket_lifecycle_policies_at(10, u64::MAX / 2)
         .unwrap();
     assert_eq!(semantic_result.removed_delete_markers, 1);
-    assert!(semantic_store.objects.get(&tombstoned_id).is_none());
+    assert!(semantic_store.object(&tombstoned_id).is_none());
 }
 
 #[test]
@@ -34445,7 +34442,7 @@ fn measure_what_the_object_metadata_struct_is_made_of() {
     let mut with_tags = 0u64;
     let mut with_extents_over_one = 0u64;
     let mut objects = 0u64;
-    for (_, metadata) in store.objects.iter() {
+    for (_, metadata) in store.objects_iter() {
         objects += 1;
         if !metadata.user_metadata.is_empty() {
             with_user_metadata += 1;
@@ -34862,7 +34859,7 @@ fn measure_how_much_of_the_metadata_projection_is_recomputable() {
             continue;
         };
         let id = ObjectId::new(bucket, object_key);
-        match store.objects.get(&id) {
+        match store.object(&id) {
             Some(metadata) if !metadata.deleted => {
                 if record.value.as_text().as_ref() == metadata_projection_value(metadata).as_str() {
                     exact.0 += 1;
@@ -35075,7 +35072,7 @@ fn measure_how_many_places_hold_one_object_key() {
     // Every holder of a key's characters that a test can reach.
     let mut map_key: std::collections::BTreeSet<usize> = Default::default();
     let mut metadata_id: std::collections::BTreeSet<usize> = Default::default();
-    for (object_id, metadata) in store.objects.iter() {
+    for (object_id, metadata) in store.objects_iter() {
         map_key.insert(object_id.key.allocation_id());
         metadata_id.insert(metadata.object_id.key.allocation_id());
     }
@@ -36127,8 +36124,7 @@ fn the_holders_that_name_one_object_share_its_key_characters() {
         .unwrap();
 
     let (map_key, metadata) = store
-        .objects
-        .iter()
+        .objects_iter()
         .next()
         .expect("the object was just written");
     assert_eq!(map_key.key.as_str(), KEY);
@@ -36160,8 +36156,7 @@ fn the_holders_that_name_one_object_share_its_key_characters() {
         .put_object("bucket", KEY, vec![b'w'; 48], "text/plain")
         .unwrap();
     let (rewritten_key, rewritten) = store
-        .objects
-        .iter()
+        .objects_iter()
         .next()
         .expect("the object is still there");
     assert!(
@@ -36178,8 +36173,7 @@ fn the_holders_that_name_one_object_share_its_key_characters() {
     let mut restored = MatrixObjectStore::new(test_options()).unwrap();
     restored.install_snapshot_bytes(&bytes).unwrap();
     let (restored_key, restored_metadata) = restored
-        .objects
-        .iter()
+        .objects_iter()
         .next()
         .expect("the snapshot carried the object");
     assert_eq!(restored_key.key.as_str(), KEY);
@@ -36501,7 +36495,7 @@ fn every_object_in_a_bucket_names_it_through_one_allocation() {
             .unwrap();
     }
 
-    let identities: Vec<_> = store.objects.keys().collect();
+    let identities: Vec<_> = store.objects_iter().map(|(id, _)| id).collect();
     assert_eq!(identities.len(), OBJECTS);
     let first = identities[0];
     for other in &identities[1..] {
@@ -36768,8 +36762,7 @@ fn a_storage_class_costs_no_heap_at_all() {
     // allocation -- the characters plus a 16-byte header, charged once. A class is a
     // one-byte enum now, so the answer is stronger and simpler: there is no allocation.
     let classes: Vec<_> = store
-        .objects
-        .values()
+        .objects_values()
         .map(|metadata| metadata.storage_class)
         .collect();
     assert_eq!(classes.len(), OBJECTS);
@@ -36800,8 +36793,7 @@ fn a_storage_class_costs_no_heap_at_all() {
     );
     assert!(
         restored
-            .objects
-            .values()
+            .objects_values()
             .all(|metadata| metadata.storage_class == StorageClass::Standard),
         "and the class came back as the variant it went out as"
     );
@@ -37069,6 +37061,62 @@ fn measure_what_a_one_word_text_handle_costs_to_read() {
     );
 }
 
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_the_metadata_per_object_at_the_published_counts() {
+    // The document publishes metadata-per-object at a hundred objects and at three counts
+    // above the change feeds' 1,024-record bound. Above the bound the published LINE reproduces
+    // them exactly, and `every_metadata_leg_is_a_line_and_the_intercepts_are_named` ties that
+    // line to this tree -- so those three follow from a guarded model rather than from
+    // arithmetic on an older figure.
+    //
+    // A HUNDRED DOES NOT. The feeds grow by doubling and are charged at capacity, so a store
+    // of a hundred objects sits ABOVE the line. That column has to be measured, and deriving
+    // it by adjusting the previous figure is how a published number goes stale while looking
+    // deliberate.
+    fn total_at(objects: u64) -> u64 {
+        let mut store = MatrixObjectStore::new(StoreOptions {
+            volume_count: 2,
+            ..StoreOptions::default()
+        })
+        .unwrap();
+        store.create_bucket("bucket").unwrap();
+        for index in 0..objects {
+            store
+                .put_object(
+                    "bucket",
+                    &format!("prefix/{index:08}/kkkkkkkkkk"),
+                    vec![b'x'; 256],
+                    "application/octet-stream",
+                )
+                .unwrap();
+        }
+        let audit: std::collections::BTreeMap<String, u64> =
+            store.footprint_audit().into_iter().collect();
+        *audit
+            .get("ACCOUNTED.metadata_bytes")
+            .expect("the audit should report the metadata total")
+    }
+
+    for objects in [100u64, 1_000] {
+        let total = total_at(objects);
+        println!(
+            "PEROBJECT objects={objects} total={total} per_object={}",
+            total / objects
+        );
+    }
+    // NO HARDCODED LINE. This printed what a copied slope and fixed term predicted at each
+    // published count, and the moment the slope moved those rows were stale while still
+    // looking deliberate -- a constant copied into a measurement rots exactly like one copied
+    // into a document. The counts at or above the feeds' bound come from the published line,
+    // which `the_published_metadata_footprint_line_is_the_one_this_tree_produces` ties to this
+    // tree; what cannot be taken from there is measured above.
+    println!(
+        "PEROBJECT the counts at or above the feeds' bound follow from the published line, \
+         whose own guard checks it against this tree"
+    );
+}
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_route_to_eighty_bytes_a_metadata_record() {
@@ -37783,7 +37831,7 @@ fn the_packed_projection_spells_the_same_text() {
     let mut with_tags = 0u64;
     let mut with_hold = 0u64;
     let mut deleted = 0u64;
-    for (_, metadata) in store.objects.iter() {
+    for (_, metadata) in store.objects_iter() {
         let packed = ObjectProjection::from_metadata(metadata);
         assert_eq!(
             packed.to_text(),
@@ -38107,8 +38155,7 @@ fn objects_of_one_content_type_name_it_through_one_allocation() {
     }
 
     let types: Vec<_> = store
-        .objects
-        .values()
+        .objects_values()
         .map(|metadata| metadata.content_type.clone())
         .collect();
     assert_eq!(types.len(), OBJECTS);
@@ -38200,8 +38247,7 @@ fn past_the_bound_an_object_owns_its_content_type() {
         .put_object("bucket", "repeat", vec![b'v'; 4], "application/x-0")
         .unwrap();
     let first = store
-        .objects
-        .values()
+        .objects_values()
         .find(|metadata| metadata.content_type.as_str() == "application/x-0")
         .expect("the first object is still there");
     assert!(
@@ -45799,18 +45845,19 @@ fn a_storage_class_is_one_byte_and_its_wire_is_still_a_name() {
         store
             .put_object("bucket", "k", vec![b'v'; 4], "text/plain")
             .unwrap();
-        store
-            .objects
-            .get_mut(&ObjectId::new("bucket", "k"))
-            .expect("the object just written")
-            .storage_class = class;
+        // No `get_mut` on a collection ordered by its elements: take it out, change it,
+        // file it back.
+        let mut taken = store
+            .take_object(&ObjectId::new("bucket", "k"))
+            .expect("the object just written");
+        taken.storage_class = class;
+        store.objects.replace(KeyedObject::new(taken));
         let bytes = store.export_snapshot().unwrap().to_bytes().unwrap();
         let mut restored = MatrixObjectStore::new(test_options()).unwrap();
         restored.install_snapshot_bytes(&bytes).unwrap();
         assert_eq!(
             restored
-                .objects
-                .get(&ObjectId::new("bucket", "k"))
+                .object(&ObjectId::new("bucket", "k"))
                 .expect("the object should survive the round trip")
                 .storage_class,
             class,

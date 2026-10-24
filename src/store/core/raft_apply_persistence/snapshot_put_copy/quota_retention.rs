@@ -2,8 +2,7 @@
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
     fn live_bucket_usage(&self, bucket: &str) -> (u64, u64) {
-        self.objects
-            .values()
+        self.objects_values()
             .filter(|metadata| metadata.object_id.bucket == bucket && !metadata.deleted)
             .fold((0u64, 0u64), |(bytes, objects), metadata| {
                 (
@@ -26,8 +25,7 @@ impl MatrixObjectStore {
         }
         let (live_bytes, live_objects) = self.live_bucket_usage(&object_id.bucket);
         let previous_live = self
-            .objects
-            .get(object_id)
+            .object(object_id)
             .filter(|metadata| !metadata.deleted);
         let projected_bytes = live_bytes
             .saturating_sub(previous_live.map_or(0, |metadata| metadata.length))

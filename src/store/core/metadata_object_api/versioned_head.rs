@@ -14,8 +14,7 @@ impl MatrixObjectStore {
         }
         let object_id = ObjectId::new(bucket, key);
         let metadata = self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .filter(|metadata| metadata.version == version)
             .or_else(|| {
                 self.versions.get(&object_id).and_then(|versions| {

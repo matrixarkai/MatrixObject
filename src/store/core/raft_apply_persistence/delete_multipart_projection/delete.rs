@@ -47,7 +47,7 @@ impl MatrixObjectStore {
         self.meta_service.check_shard_fence(&meta_key)?;
         self.meta_service
             .check_lease_fence(&meta_key, None, None, update_time_ms)?;
-        let previous = self.objects.get(&object_id).cloned().ok_or_else(|| {
+        let previous = self.object(&object_id).cloned().ok_or_else(|| {
             ObjectError::NotFound(format!("{}/{}", object_id.bucket, object_id.key))
         })?;
         if previous.deleted {
@@ -205,8 +205,7 @@ impl MatrixObjectStore {
             update_time_ms,
         )?;
         if self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .map_or(false, |metadata| metadata.version == version)
         {
             return self.apply_delete_inner(object_id.bucket.to_string(), object_id.key.to_string(), update_time_ms, None);

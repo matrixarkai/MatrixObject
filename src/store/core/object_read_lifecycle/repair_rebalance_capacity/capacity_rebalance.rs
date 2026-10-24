@@ -37,7 +37,7 @@ impl MatrixObjectStore {
                 report.next_marker = last_selected.clone();
                 break;
             }
-            let Some(metadata) = self.objects.get(&item.plan.object_id) else {
+            let Some(metadata) = self.object(&item.plan.object_id) else {
                 report.errors.push(format!(
                     "{}/{}: object missing during capacity rebalance planning",
                     item.plan.object_id.bucket, item.plan.object_id.key
@@ -80,7 +80,7 @@ impl MatrixObjectStore {
         for item in items {
             report.attempted_migration_objects =
                 report.attempted_migration_objects.saturating_add(1);
-            let current = match self.objects.get(&item.object.object_id) {
+            let current = match self.object(&item.object.object_id) {
                 Some(metadata) if !metadata.deleted => metadata,
                 _ => {
                     report.skipped_migration_objects =

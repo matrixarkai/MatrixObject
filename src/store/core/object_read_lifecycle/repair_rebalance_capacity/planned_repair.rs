@@ -42,7 +42,7 @@ impl MatrixObjectStore {
             max_objects
         };
         let mut last_selected: Option<ObjectId> = None;
-        for (object_id, metadata) in &self.objects {
+        for (object_id, metadata) in self.objects_iter() {
             if marker.is_some_and(|marker| object_id <= marker) {
                 continue;
             }
@@ -89,7 +89,7 @@ impl MatrixObjectStore {
         for item in items {
             report.attempted_repair_objects = report.attempted_repair_objects.saturating_add(1);
             let object = item.object;
-            let current = match self.objects.get(&object.object_id) {
+            let current = match self.object(&object.object_id) {
                 Some(metadata) if !metadata.deleted => metadata,
                 _ => {
                     report.skipped_repair_objects = report.skipped_repair_objects.saturating_add(1);

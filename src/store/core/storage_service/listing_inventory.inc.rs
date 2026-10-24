@@ -30,7 +30,7 @@ impl MatrixObjectStore {
             .saturating_mul(64)
             .clamp(limit.saturating_add(1), 65_536);
         let mut scanned = 0_usize;
-        for (object_id, metadata) in self.objects.range(ObjectId::new(bucket, start_key)..) {
+        for (object_id, metadata) in self.objects_range(ObjectId::new(bucket, start_key)..) {
             if object_id.bucket != bucket {
                 break;
             }

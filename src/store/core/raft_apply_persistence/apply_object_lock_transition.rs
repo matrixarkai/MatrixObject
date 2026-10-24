@@ -16,8 +16,7 @@ impl MatrixObjectStore {
         self.meta_service
             .check_lease_fence(&meta_key, None, None, update_time_ms)?;
         let mut metadata = self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .filter(|metadata| !metadata.deleted)
             .cloned()
             .ok_or_else(|| {
@@ -53,8 +52,7 @@ impl MatrixObjectStore {
         self.meta_service
             .check_lease_fence(&meta_key, None, None, update_time_ms)?;
         let mut metadata = self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .filter(|metadata| !metadata.deleted)
             .cloned()
             .ok_or_else(|| {
@@ -98,8 +96,7 @@ impl MatrixObjectStore {
         self.meta_service
             .check_lease_fence(&meta_key, None, None, update_time_ms)?;
         let mut metadata = self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .filter(|metadata| !metadata.deleted)
             .cloned()
             .ok_or_else(|| {
@@ -148,8 +145,7 @@ impl MatrixObjectStore {
         self.meta_service
             .check_lease_fence(&meta_key, None, None, update_time_ms)?;
         let current = self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .filter(|metadata| !metadata.deleted)
             .cloned()
             .ok_or_else(|| {

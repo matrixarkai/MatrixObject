@@ -130,7 +130,7 @@ impl MatrixObjectStore {
             audit.audited_objects = audit.audited_objects.saturating_add(1);
             let object_id = ObjectId::new(bucket, object_key.clone());
             audited_ids.insert(object_id.clone());
-            let metadata = self.objects.get(&object_id).cloned();
+            let metadata = self.object(&object_id).cloned();
             let mut issues = Vec::new();
             if projection.deleted {
                 audit.deleted_projection_count = audit.deleted_projection_count.saturating_add(1);
@@ -169,7 +169,7 @@ impl MatrixObjectStore {
             }
         }
 
-        for (object_id, metadata) in &self.objects {
+        for (object_id, metadata) in self.objects_iter() {
             if object_id.bucket != bucket || metadata.deleted {
                 continue;
             }

@@ -58,7 +58,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         for item in items {
             report.attempted_repair_objects = report.attempted_repair_objects.saturating_add(1);
             let object = item.object;
-            let current = match self.store.objects.get(&object.object_id) {
+            let current = match self.store.object(&object.object_id) {
                 Some(metadata) if !metadata.deleted => metadata,
                 _ => {
                     report.skipped_repair_objects = report.skipped_repair_objects.saturating_add(1);

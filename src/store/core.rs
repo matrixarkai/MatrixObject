@@ -180,7 +180,9 @@ pub struct MatrixObjectStore {
     /// bound is reached, and is why the per-mutation undo does not capture it.
     pub(crate) content_types: BTreeSet<SharedText>,
     bucket_versioning: BTreeSet<String>,
-    pub(crate) objects: BTreeMap<ObjectId, ObjectMetadata>,
+    /// Ordered by each object's own identity, which its metadata already holds -- see
+    /// `KeyedObject`. A map would keep that identity twice.
+    pub(crate) objects: BTreeSet<KeyedObject>,
     pub(crate) versions: BTreeMap<ObjectId, Vec<ObjectMetadata>>,
     bucket_retention: BTreeMap<String, u64>,
     bucket_quotas: BTreeMap<String, BucketQuota>,
@@ -290,7 +292,7 @@ pub(crate) struct ObjectMutationRollback {
     bucket_cors: BTreeMap<String, BucketCorsPolicy>,
     bucket_policy_receipts: BTreeMap<String, BucketPolicyMutationReceipt>,
     bucket_cors_receipts: BTreeMap<String, BucketCorsMutationReceipt>,
-    objects: BTreeMap<ObjectId, ObjectMetadata>,
+    objects: BTreeSet<KeyedObject>,
     versions: BTreeMap<ObjectId, Vec<ObjectMetadata>>,
     object_changes: Vec<ObjectChangeRecord>,
     next_object_change_sequence: u64,

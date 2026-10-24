@@ -3,8 +3,7 @@
 impl MatrixObjectStore {
     pub fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectMetadata, ObjectError> {
         let object_id = ObjectId::new(bucket, key);
-        self.objects
-            .get(&object_id)
+        self.object(&object_id)
             .filter(|metadata| !metadata.deleted)
             .cloned()
             .ok_or_else(|| ObjectError::NotFound(format!("{}/{}", bucket, key)))

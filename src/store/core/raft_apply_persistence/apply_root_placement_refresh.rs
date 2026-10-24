@@ -27,8 +27,7 @@ impl MatrixObjectStore {
         self.meta_service
             .check_lease_fence(&meta_key, None, None, update_time_ms)?;
         let metadata = self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .filter(|metadata| !metadata.deleted)
             .cloned()
             .ok_or_else(|| {
@@ -88,8 +87,7 @@ impl MatrixObjectStore {
             max_objects
         };
         let object_ids = self
-            .objects
-            .iter()
+            .objects_iter()
             .filter(|(object_id, metadata)| {
                 !metadata.deleted && marker.as_ref().map_or(true, |marker| *object_id > marker)
             })
@@ -123,8 +121,7 @@ impl MatrixObjectStore {
         report.has_more = limit != usize::MAX
             && object_ids.len() == limit
             && report.next_marker.as_ref().map_or(false, |marker| {
-                self.objects
-                    .iter()
+                self.objects_iter()
                     .any(|(object_id, metadata)| !metadata.deleted && object_id > marker)
             });
         Ok(report)

@@ -21,8 +21,7 @@ impl MatrixObjectStore {
 
     fn next_object_version(&self, object_id: &ObjectId) -> u64 {
         let mut version = self
-            .objects
-            .get(object_id)
+            .object(object_id)
             .map_or(0, |metadata| metadata.version);
         if let Some(versions) = self.versions.get(object_id) {
             for metadata in versions {

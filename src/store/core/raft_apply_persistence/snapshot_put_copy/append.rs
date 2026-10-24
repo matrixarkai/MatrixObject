@@ -80,8 +80,7 @@ impl MatrixObjectStore {
         )?;
 
         let previous = self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .filter(|metadata| !metadata.deleted)
             .cloned();
         if let Some(previous) = &previous {
@@ -231,8 +230,7 @@ impl MatrixObjectStore {
         validate_key(&key)?;
         let object_id = ObjectId::new(bucket.clone(), key.clone());
         let previous_length = self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .filter(|metadata| !metadata.deleted)
             .map_or(0, |metadata| metadata.length);
         let planned_length = previous_length
