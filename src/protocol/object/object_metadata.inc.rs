@@ -61,6 +61,74 @@ impl ObjectExtent {
     }
 }
 
+/// An object's extents, with the single one nearly every object has held inline.
+///
+/// # WHY ONE IS INLINE
+///
+/// `Box<[ObjectExtent]>` costs sixteen bytes inline AND a heap allocation of sixteen more
+/// for the one extent every object under `max_extent_bytes` has. Holding that one inline
+/// costs twenty-four inline and nothing on the heap: eight bytes an object, and ONE FEWER
+/// ALLOCATION PER OBJECT, which the byte figure does not show and the allocator does.
+///
+/// It DEREFS TO A SLICE, so every reader that indexed, counted or iterated the old field
+/// still does, and `From<Vec<ObjectExtent>>` is how it is built -- which is how the old
+/// field was built too, so no construction site moved. The wire is untouched: the snapshot
+/// writes a count and then each extent, read off the slice either way.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ObjectExtents {
+    One(ObjectExtent),
+    Many(Box<[ObjectExtent]>),
+}
+
+impl ObjectExtents {
+    /// Every extent, in order.
+    pub fn as_slice(&self) -> &[ObjectExtent] {
+        match self {
+            Self::One(extent) => std::slice::from_ref(extent),
+            Self::Many(extents) => extents,
+        }
+    }
+
+    /// How many extents sit on the HEAP. The audit needs this and not `len()`: a single
+    /// extent is inline and owns nothing, so charging it heap bytes would report a saving
+    /// that did not happen.
+    pub fn heap_len(&self) -> usize {
+        match self {
+            Self::One(_) => 0,
+            Self::Many(extents) => extents.len(),
+        }
+    }
+}
+
+impl std::ops::Deref for ObjectExtents {
+    type Target = [ObjectExtent];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl From<Vec<ObjectExtent>> for ObjectExtents {
+    fn from(mut extents: Vec<ObjectExtent>) -> Self {
+        if extents.len() == 1 {
+            // `pop` rather than `remove(0)`: the same element without the shift.
+            Self::One(
+                extents
+                    .pop()
+                    .expect("a vector of length one has an element to pop"),
+            )
+        } else {
+            Self::Many(extents.into_boxed_slice())
+        }
+    }
+}
+
+impl From<Box<[ObjectExtent]>> for ObjectExtents {
+    fn from(extents: Box<[ObjectExtent]>) -> Self {
+        Self::from(extents.into_vec())
+    }
+}
+
 /// Which storage class an object carries.
 ///
 /// # WHY THIS IS NOT TEXT
@@ -198,7 +266,7 @@ pub struct ObjectMetadata {
     pub tags: ObjectAttributes,
     pub lock: ObjectLock,
     pub update_time_ms: u64,
-    pub extents: Box<[ObjectExtent]>,
+    pub extents: ObjectExtents,
     pub deleted: bool,
 }
 

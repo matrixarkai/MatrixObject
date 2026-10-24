@@ -67,7 +67,7 @@ impl MatrixObjectStore {
                                 && !retention_active(&self.bucket_retention, &metadata, now_ms))
                         {
                             expired = expired.saturating_add(1);
-                            stale_extents.extend(metadata.extents);
+                            stale_extents.extend(metadata.extents.iter().cloned());
                         } else {
                             retained.push(metadata);
                         }

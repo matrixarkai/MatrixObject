@@ -30,7 +30,7 @@ impl MatrixObjectStore {
         };
         self.attach_storage_admission_context(&mut report, now_millis());
         let mut consumed_discard_budget = 0u64;
-        for extent in &metadata.extents {
+        for extent in metadata.extents.iter() {
             let mut admitted_extent_len = extent.length();
             if max_discard_bytes > 0 {
                 let remaining_budget = max_discard_bytes.saturating_sub(consumed_discard_budget);

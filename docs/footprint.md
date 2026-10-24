@@ -22,7 +22,7 @@ Measured at three replicas, 26-character keys, with the metadata counted:
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
 | 4 KiB | 4,000 | **3.12x** | 3.00x |
-| 1 KiB | 8,000 | **3.45x** | 3.02x |
+| 1 KiB | 8,000 | **3.44x** | 3.02x |
 
 Reproduce any row with the measurement harness:
 
@@ -67,14 +67,14 @@ are bounded rather than per object:
 
 | objects | 100 | 1,000 | 4,000 | 8,000 |
 |---:|---:|---:|---:|---:|
-| metadata per object | 634 B | 590 B | 467 B | **446 B** |
+| metadata per object | 626 B | 582 B | 459 B | **438 B** |
 
 Both change feeds cap at 1,024 records, so together they are 30.0% of metadata
 at a hundred objects and 4.1% at eight thousand. Everything else is exactly
 linear, which makes the total a line once the feeds are full:
 
 ```
-metadata = 426 bytes an object + 164,256 bytes fixed      (remainder: zero)
+metadata = 418 bytes an object + 164,256 bytes fixed      (remainder: zero)
 ```
 
 reproducing every total above exactly, at every count where the feeds have
@@ -102,12 +102,12 @@ three store sizes and fails unless every one is a line and the fixed terms sum
 to the total's — so a leg that starts depending on the object count, or a fixed
 byte that stops being named, is caught rather than absorbed.
 
-That 426 is two items and a rounding error:
+That 418 is two items and a rounding error:
 
 | | per object | share |
 |---|---:|---:|
-| `objects` — the structured metadata | 218 B | 51.2% |
-| `meta.records` — the metadata projection record | 200 B | 46.9% |
+| `objects` — the structured metadata | 210 B | 50.2% |
+| `meta.records` — the metadata projection record | 200 B | 47.8% |
 | payload index keys | 8 B | 1.9% |
 
 Those two halves hold the **same facts twice**. `objects` is a binary struct —
@@ -157,7 +157,7 @@ shared between holders is charged once per allocation — the characters and the
 two counts in front of them — so `mapkey_capacity` against `mapkey_len` is that
 header rather than slack.
 
-### What the 426 bytes are, and what each remaining part would cost to remove
+### What the 418 bytes are, and what each remaining part would cost to remove
 
 The slope is not one thing. Every leg below is fitted from the same two object counts the
 published line is fitted from, and they sum to it exactly:
@@ -166,13 +166,13 @@ published line is fitted from, and they sum to it exactly:
 METADATA LINE PARTS
 objects.mapkey_inline          32  two shared-text holders, which is what keys the map
 objects.mapkey_heap            42  the key's characters: ONE allocation, shared with the value
-objects.metadata_inline       128  ObjectMetadata itself
-objects.extents_bytes          16  one extent: a chunk identity and two 32-bit numbers
+objects.metadata_inline       136  ObjectMetadata itself, one extent held inline
+objects.extents_bytes           0  the one extent is INLINE above, so it owns no heap
 meta.records.struct_inline     72  the map key's holder, plus MetadataRecord
 meta.records.mapkey_capacity   56  the record key's characters: ONE allocation, shared
 meta.records.value_capacity    72  the projection the record holds
 payloads.key_bytes              8  the payload index's key
-METADATA LINE TOTAL          426
+METADATA LINE TOTAL          418
 ```
 
 `the_published_metadata_decomposition_sums_to_the_line` measures each one and fails if this
@@ -192,7 +192,7 @@ characters, sixteen bytes once per allocation.
 
 #### The reductions that are left, and what each one costs
 
-Each is priced against the 426. Two rows have come **off** this list, and both came off the
+Each is priced against the 418. Two rows have come **off** this list, and both came off the
 same way -- by being measured instead of argued. Narrowing an extent's offset and length to 32
 bits was priced at 8 bytes an object and a migration, until the migration turned out not to
 exist: the snapshot still writes two `u64` and only the in-memory form is narrow. Interning

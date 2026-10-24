@@ -194,7 +194,7 @@ impl MatrixObjectStore {
         let mut data = Vec::with_capacity(range_length);
         let mut stats = ChunkReadStats::default();
         let mut object_cursor = 0u64;
-        for extent in &metadata.extents {
+        for extent in metadata.extents.iter() {
             let extent_start = object_cursor;
             let extent_end = object_cursor.checked_add(extent.length()).ok_or_else(|| {
                 ObjectError::InvalidArgument("object extent overflows".to_string())

@@ -53,7 +53,7 @@ impl MatrixObjectStore {
                     {
                         result.expired_noncurrent_versions =
                             result.expired_noncurrent_versions.saturating_add(1);
-                        stale_extents.extend(metadata.extents);
+                        stale_extents.extend(metadata.extents.iter().cloned());
                     } else {
                         retained.push(metadata);
                     }

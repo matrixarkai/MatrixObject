@@ -7127,7 +7127,7 @@ fn page_and_object_repair_large_ranges_with_cursors() {
         .unwrap();
     assert!(multi_extent_metadata.extents.len() > 1);
     let mut multi_extent_chunk_ids = BTreeSet::new();
-    for extent in &multi_extent_metadata.extents {
+    for extent in multi_extent_metadata.extents.iter() {
         for loc in multi_extent_store
             .chunk_service
             .map_range(&extent.chunk_id, extent.offset(), extent.length())
@@ -34487,86 +34487,6 @@ fn measure_how_much_of_a_record_value_is_scaffolding() {
         );
     }
 }
-
-#[test]
-#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
-fn measure_what_inlining_a_single_extent_would_save() {
-    // Every stored object holds its extent list as a `Box<[ObjectExtent]>`:
-    // 16 bytes of pointer and length inline, plus a separate heap allocation.
-    // Measured, `objects.extents_bytes` is 32 bytes an object with an intercept
-    // of zero, and `extents_capacity` equals the object count at every size
-    // tried -- including 2 MiB objects, twice the page size. So the list is one
-    // element, always, and each one is its own allocation.
-    //
-    // The alternative is to carry the single extent inline and box only the
-    // many-extent case. What that saves is a struct-size question, so it is
-    // measured here rather than reasoned about: a mirror of `ObjectMetadata`
-    // built from the same field types, validated against the real struct's
-    // size, and then the same mirror with the extents field replaced.
-    #[allow(dead_code)]
-    struct MirrorToday {
-        object_id: ObjectId,
-        version: u64,
-        length: u64,
-        etag: Box<str>,
-        content_type: SharedText,
-        user_metadata: ObjectAttributes,
-        storage_class: SharedText,
-        tags: ObjectAttributes,
-        lock: ObjectLock,
-        update_time_ms: u64,
-        extents: Box<[ObjectExtent]>,
-        deleted: bool,
-    }
-
-    #[allow(dead_code)]
-    enum InlineExtents {
-        One(ObjectExtent),
-        Many(Box<[ObjectExtent]>),
-    }
-
-    #[allow(dead_code)]
-    struct MirrorInlined {
-        object_id: ObjectId,
-        version: u64,
-        length: u64,
-        etag: Box<str>,
-        content_type: SharedText,
-        user_metadata: ObjectAttributes,
-        storage_class: SharedText,
-        tags: ObjectAttributes,
-        lock: ObjectLock,
-        update_time_ms: u64,
-        extents: InlineExtents,
-        deleted: bool,
-    }
-
-    let real = std::mem::size_of::<ObjectMetadata>();
-    let mirror = std::mem::size_of::<MirrorToday>();
-    // The mirror is only evidence if it matches the struct it mirrors.
-    assert_eq!(
-        real, mirror,
-        "the mirror must have the same size as ObjectMetadata, or it is not \
-         measuring the same thing: {real} against {mirror}"
-    );
-
-    let inlined = std::mem::size_of::<MirrorInlined>();
-    let heap_today = std::mem::size_of::<ObjectExtent>();
-    println!(
-        "EXTENTINLINE size_of_ObjectMetadata={real} inlined={inlined} \
-         heap_per_object_today={heap_today}"
-    );
-    println!(
-        "EXTENTINLINE inline_delta={} heap_delta=-{heap_today} net={}",
-        inlined as i64 - real as i64,
-        (inlined as i64 - real as i64) - heap_today as i64
-    );
-    println!(
-        "EXTENTINLINE one_fewer_allocation_per_object, and allocator overhead \
-         is NOT counted by the audit so the resident saving exceeds the net"
-    );
-}
-
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_what_the_object_metadata_struct_is_made_of() {
@@ -36957,7 +36877,7 @@ fn measure_the_route_to_under_a_hundred_bytes_an_object() {
         tags: ObjectAttributes,
         lock: ObjectLock,
         update_time_ms: u64,
-        extents: Box<[ObjectExtent]>,
+        extents: ObjectExtents,
         deleted: bool,
     }
     let control = size_of::<Control>();
@@ -36989,7 +36909,7 @@ fn measure_the_route_to_under_a_hundred_bytes_an_object() {
         tags: ObjectAttributes,
         lock: ObjectLock,
         update_time_ms: u64,
-        extents: Box<[ObjectExtent]>,
+        extents: ObjectExtents,
         deleted: bool,
     }
 
@@ -37013,7 +36933,7 @@ fn measure_the_route_to_under_a_hundred_bytes_an_object() {
         content_type: SharedText,
         storage_class: StorageClass,
         update_time_ms: u64,
-        extents: Box<[ObjectExtent]>,
+        extents: ObjectExtents,
         deleted: bool,
         extras: Option<Box<Extras>>,
     }
@@ -37033,17 +36953,14 @@ fn measure_the_route_to_under_a_hundred_bytes_an_object() {
         tags: ObjectAttributes,
         lock: ObjectLock,
         update_time_ms: u64,
-        extents: Box<[ObjectExtent]>,
+        extents: ObjectExtents,
         deleted: bool,
     }
 
-    // (d) ONE EXTENT INLINE. Nearly every object has exactly one, and it costs sixteen
-    // inline for the slice plus sixteen on the heap for the extent.
-    #[allow(dead_code)]
-    enum InlineExtents {
-        One(ObjectExtent),
-        Many(Box<[ObjectExtent]>),
-    }
+    // (d) ONE EXTENT INLINE HAS LANDED -- `ObjectMetadata::extents` is `ObjectExtents`,
+    // which holds the single extent nearly every object has inline and owns no heap for it.
+    // The baseline below is therefore the struct AFTER it, and this mirror is kept as the
+    // thing that proves it: it must equal the control exactly now.
     #[allow(dead_code)]
     struct InlineOneExtent {
         object_id: ObjectId,
@@ -37057,7 +36974,7 @@ fn measure_the_route_to_under_a_hundred_bytes_an_object() {
         tags: ObjectAttributes,
         lock: ObjectLock,
         update_time_ms: u64,
-        extents: InlineExtents,
+        extents: ObjectExtents,
         deleted: bool,
     }
 
@@ -37073,7 +36990,7 @@ fn measure_the_route_to_under_a_hundred_bytes_an_object() {
         content_type: u16,
         storage_class: StorageClass,
         update_time_ms: u64,
-        extents: InlineExtents,
+        extents: ObjectExtents,
         deleted: bool,
         extras: Option<Box<Extras>>,
     }
@@ -37104,7 +37021,8 @@ fn measure_the_route_to_under_a_hundred_bytes_an_object() {
          FIXTURE_BUCKET_LEN, 16),
         ("b. three rare tables behind one pointer", size_of::<OneExtrasPointer>(), 0, 0),
         ("c. the content type as an index", size_of::<IndexedContentType>(), 0, 0),
-        ("d. one extent inline", size_of::<InlineOneExtent>(), -16, 0),
+        ("d. one extent inline, LANDED (so it saves nothing more)",
+         size_of::<InlineOneExtent>(), 0, 0),
         ("e. all of them together", size_of::<Everything>(),
          -16 + FIXTURE_BUCKET_LEN, 16),
     ];
@@ -37118,10 +37036,10 @@ fn measure_the_route_to_under_a_hundred_bytes_an_object() {
 
     // WHERE IT LANDS. The storage share is the two key legs, the struct, the extent heap
     // and the payload index key.
-    let storage_now = 32 + 42 + control + 16 + 8;
+    let storage_now = 32 + 42 + control + 0 + 8;
     assert_eq!(
-        storage_now, 226,
-        "the storage share should be the 226 the README publishes, and it computes \
+        storage_now, 218,
+        "the storage share should be the 218 the README publishes, and it computes \
          {storage_now} -- if this moved, the candidates below are priced against the \
          wrong baseline"
     );
@@ -37139,11 +37057,16 @@ fn measure_the_route_to_under_a_hundred_bytes_an_object() {
         content_type: u16,
         storage_class: StorageClass,
         update_time_ms: u64,
-        extents: InlineExtents,
+        extents: ObjectExtents,
         deleted: bool,
         extras: Option<Box<Extras>>,
     }
     let clean_only = 32 + 42 + size_of::<CleanThree>() + 0 + 8;
+    assert_eq!(
+        size_of::<InlineOneExtent>(),
+        control,
+        "one extent inline has landed, so its mirror must equal the control"
+    );
     let key_inline_then = 32 - 16;
     let storage_then = key_inline_then + 42 + FIXTURE_BUCKET_LEN as usize
         + size_of::<Everything>() + 0 + 8;
@@ -37213,7 +37136,7 @@ fn measure_what_a_one_word_text_handle_would_save() {
         tags: ObjectAttributes,
         lock: ObjectLock,
         update_time_ms: u64,
-        extents: Box<[ObjectExtent]>,
+        extents: ObjectExtents,
         deleted: bool,
     }
     #[allow(dead_code)]
@@ -37229,7 +37152,7 @@ fn measure_what_a_one_word_text_handle_would_save() {
         tags: ObjectAttributes,
         lock: ObjectLock,
         update_time_ms: u64,
-        extents: Box<[ObjectExtent]>,
+        extents: ObjectExtents,
         deleted: bool,
     }
 
@@ -40381,7 +40304,7 @@ fn an_optional_digest_costs_eight_bytes_and_not_sixteen() {
         tags: ObjectAttributes,
         lock: ObjectLock,
         update_time_ms: u64,
-        extents: Box<[ObjectExtent]>,
+        extents: ObjectExtents,
         deleted: bool,
     }
     assert_eq!(
@@ -40404,7 +40327,7 @@ fn an_optional_digest_costs_eight_bytes_and_not_sixteen() {
         tags: ObjectAttributes,
         lock: ObjectLock,
         update_time_ms: u64,
-        extents: Box<[ObjectExtent]>,
+        extents: ObjectExtents,
         deleted: bool,
     }
     assert_eq!(
@@ -45358,7 +45281,7 @@ fn an_extent_is_sixteen_bytes_and_its_wire_is_still_thirty_two() {
     // record cancels and what is left is exactly one extent's wire size.
     let encoded_len = |count: usize| -> usize {
         let mut with = metadata.clone();
-        with.extents = vec![extent.clone(); count].into_boxed_slice();
+        with.extents = vec![extent.clone(); count].into();
         let mut out = Vec::new();
         append_object_metadata_identity(&mut out, &with);
         out.len()
@@ -45439,10 +45362,16 @@ fn a_storage_class_is_one_byte_and_its_wire_is_still_a_name() {
     // If the wire had narrowed too, every snapshot written before this would be unreadable
     // and it would be a migration rather than a representation change.
     assert_eq!(std::mem::size_of::<StorageClass>(), 1, "four names, one byte");
+    // AN ABSOLUTE SIZE, so this trips on any change to the struct's layout and not only on
+    // a storage class. That is worth having as a cheap tripwire, but it means the message
+    // has to name what the current figure is made of rather than this claim's history
+    // alone: the storage class took the struct from 144 to 128, and holding one extent
+    // inline has since taken it to 136.
     assert_eq!(
         std::mem::size_of::<ObjectMetadata>(),
-        128,
-        "and the byte lands in padding the struct already had: 144 became 128"
+        136,
+        "the byte lands in padding the struct already had -- the storage class took 144 to \
+         128 -- and one extent held inline has since taken 128 to 136"
     );
     assert_eq!(
         std::mem::size_of::<ObjectProjection>(),

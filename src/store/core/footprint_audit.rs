@@ -121,8 +121,9 @@ fn audit_object_metadata_heap(ledger: &mut SharedTextLedger, metadata: &ObjectMe
         .saturating_add(0)
         .saturating_add(audit_object_attributes_bytes(&metadata.user_metadata))
         .saturating_add(audit_object_attributes_bytes(&metadata.tags))
+        // `heap_len` and not `len`: one extent is inline and owns no heap.
         .saturating_add(
-            (metadata.extents.len() as u64)
+            (metadata.extents.heap_len() as u64)
                 .saturating_mul(std::mem::size_of::<ObjectExtent>() as u64),
         )
 }
@@ -435,8 +436,12 @@ impl MatrixObjectStore {
                 extents_len = extents_len.saturating_add(metadata.extents.len() as u64);
                 extents_capacity =
                     extents_capacity.saturating_add(metadata.extents.len() as u64);
+                // HEAP, not length. `extents_len` and `extents_capacity` above stay
+                // logical -- an object with one extent still HAS one, and
+                // `an_extent_list_carries_no_spare_capacity` compares those two -- but the
+                // bytes are what the heap holds, and a lone extent is inline.
                 extents_bytes = extents_bytes.saturating_add(
-                    (metadata.extents.len() as u64)
+                    (metadata.extents.heap_len() as u64)
                         .saturating_mul(std::mem::size_of::<ObjectExtent>() as u64),
                 );
                 if object_id.bucket == metadata.object_id.bucket
