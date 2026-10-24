@@ -237,19 +237,19 @@ At three replicas with the metadata counted, measured at 26-character keys:
 | object size | objects | amplification | data-only figure |
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
-| 4 KiB | 4,000 | **3.12x** | 3.00x |
+| 4 KiB | 4,000 | **3.11x** | 3.00x |
 | 1 KiB | 8,000 | **3.44x** | 3.02x |
 
 The data term is exactly **3.00x** -- the replication floor for a store that
 copies every page to every replica -- so everything above it is metadata, which
-is **418 bytes an object plus 164,256 fixed** whatever the object size.
+is **410 bytes an object plus 164,256 fixed** whatever the object size.
 
 Those bytes are not all in one place. **218 of them are a storage node's own** -- the
-object's entry in its map, and its key in the payload index -- and **200 are the metadata
+object's entry in its map, and its key in the payload index -- and **192 are the metadata
 service's**, which keeps its own record of every object with its own versioning, deletion
 markers and change log. This crate models both services in one process, so the audit counts
 both; a deployment runs them on different machines, where a storage node carries 218 bytes
-an object rather than 418.
+an object rather than 410.
 `every_metadata_leg_is_a_line_and_the_intercepts_are_named` measures both shares and fails
 if either stops being what this file publishes.
 `footprint_audit()` names every resident byte and its breakdown sums to its own
@@ -269,9 +269,9 @@ which is more hardware rather than less space.
 replicas to eight and fails if any of them undercuts that.
 
 Counted with the metadata, a thousand objects of 1 KiB measure
-**2.10x striped against 3.58x replicated**, both read out of `footprint_audit()` on a
+**2.09x striped against 3.58x replicated**, both read out of `footprint_audit()` on a
 store nothing has read back yet. What separates the total from the 1.5x data term is the
-metadata line above, which striping does not change: the same 418 bytes an object either
+metadata line above, which striping does not change: the same 410 bytes an object either
 way. Striping moves the payload and nothing else.
 
 Both numbers are for the same object count, so the comparison is between two
@@ -346,12 +346,12 @@ cargo test --release --lib measure_what_a_mutation_batch_snapshot_costs -- --ign
 #### A delete does not reclaim, it trades
 
 Writing 500 objects of 1 KiB and then deleting every one leaves the store
-**25.5% larger** than when it held them:
+**25.6% larger** than when it held them:
 
 | | bytes |
 |---|---:|
-| holding 500 objects | 1,835,649 |
-| after deleting all 500 | 2,304,662 |
+| holding 500 objects | 1,831,649 |
+| after deleting all 500 | 2,300,662 |
 
 The payload index is given back in full. What replaces it is **822 bytes of
 idempotency receipt per delete** across three replicas, bounded only by
