@@ -8,7 +8,7 @@ impl MatrixObjectStore {
     /// the map key and everything the mutation builds in two allocations of
     /// the same characters.
     pub(crate) fn filed_object_key(&self, object_id: ObjectId) -> ObjectId {
-        if let Some((existing, _)) = self.objects.get_key_value(&object_id) {
+        if let Some(existing) = self.objects.get(&object_id).map(KeyedObject::id) {
             return existing.clone();
         }
         // A new object: its key is new, but its bucket is not. Every object
@@ -40,17 +40,58 @@ impl MatrixObjectStore {
 
     /// File an object, making the stored value name it through the key the map
     /// keeps rather than through the mutation's own copy.
+    /// The metadata at an identity, without the collection's wrapper.
+    pub(crate) fn object(&self, object_id: &ObjectId) -> Option<&ObjectMetadata> {
+        self.objects.get(object_id).map(KeyedObject::metadata)
+    }
+
+    /// Every object with its identity, in identity order -- the shape the map this replaced
+    /// had, and the order `list_objects` serves a prefix and a marker from.
+    pub(crate) fn objects_iter(&self) -> impl Iterator<Item = (&ObjectId, &ObjectMetadata)> {
+        self.objects.iter().map(|held| (held.id(), held.metadata()))
+    }
+
+    /// Every object, in identity order.
+    pub(crate) fn objects_values(&self) -> impl Iterator<Item = &ObjectMetadata> {
+        self.objects.iter().map(KeyedObject::metadata)
+    }
+
+    /// The objects in a span of identities, with their identities.
+    pub(crate) fn objects_range<R>(
+        &self,
+        range: R,
+    ) -> impl Iterator<Item = (&ObjectId, &ObjectMetadata)>
+    where
+        R: std::ops::RangeBounds<ObjectId>,
+    {
+        self.objects
+            .range::<ObjectId, R>(range)
+            .map(|held| (held.id(), held.metadata()))
+    }
+
+    /// Take an object out, so a caller can change it and file it back.
+    ///
+    /// There is no `get_mut`: changing an object in place could change where it belongs in
+    /// the collection, which is the one thing a set ordered by its elements cannot allow.
+    pub(crate) fn take_object(&mut self, object_id: &ObjectId) -> Option<ObjectMetadata> {
+        self.objects.take(object_id).map(KeyedObject::into_metadata)
+    }
+
+    /// File an object under its own identity.
+    ///
+    /// `replace`, NOT `insert`: `BTreeSet::insert` keeps the element already there, so filing
+    /// a new version with it would leave the old one in place and report success.
     pub(crate) fn file_object(&mut self, object_id: ObjectId, metadata: &mut ObjectMetadata) {
-        let object_id = self.filed_object_key(object_id);
-        // Equal characters by construction; the assignment only collapses the
-        // two into one allocation.
-        if metadata.object_id == object_id {
-            metadata.object_id = object_id.clone();
-        }
+        // ONE ALLOCATION ACROSS REWRITES, AND ONE FOR THE BUCKET. `filed_object_key`
+        // adopts the identity the collection already holds -- so a repeated put does not mint
+        // a fresh allocation for the same name -- AND interns the bucket name from
+        // `self.buckets`, which every object in that bucket shares. Reimplementing only the
+        // first of those is how a 32-byte saving measured as 10.
+        metadata.object_id = self.filed_object_key(object_id);
         // The storage class used to be interned here, one allocation for each of the
         // four names. It is an enum now, so there is no allocation to share.
         metadata.content_type = self.shared_content_type(&metadata.content_type);
-        self.objects.insert(object_id, metadata.clone());
+        self.objects.replace(KeyedObject::new(metadata.clone()));
     }
 
     fn apply_put_storage_batched(
@@ -125,8 +166,7 @@ impl MatrixObjectStore {
             update_time_ms,
         )?;
         if let Some(previous) = self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .filter(|metadata| !metadata.deleted)
             .cloned()
         {

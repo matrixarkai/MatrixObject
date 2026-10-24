@@ -14,7 +14,7 @@ impl MatrixObjectStore {
         let start_key = marker
             .filter(|marker| prefix.is_empty() || *marker >= prefix)
             .unwrap_or(prefix);
-        for (object_id, metadata) in self.objects.range(ObjectId::new(bucket, start_key)..) {
+        for (object_id, metadata) in self.objects_range(ObjectId::new(bucket, start_key)..) {
             if object_id.bucket != bucket {
                 break;
             }
@@ -101,7 +101,7 @@ impl MatrixObjectStore {
         let max_scan = limit
             .saturating_mul(16)
             .clamp(limit.saturating_add(1), 65_536);
-        for (object_id, metadata) in self.objects.range(ObjectId::new(bucket, start_key)..) {
+        for (object_id, metadata) in self.objects_range(ObjectId::new(bucket, start_key)..) {
             if object_id.bucket != bucket {
                 break;
             }

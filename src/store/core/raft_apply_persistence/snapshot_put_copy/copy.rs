@@ -75,8 +75,7 @@ impl MatrixObjectStore {
         let source = if let Some(version) = source_version {
             self.head_object_version(&source_id.bucket, &source_id.key, version)?
         } else {
-            self.objects
-                .get(&source_id)
+            self.object(&source_id)
                 .filter(|metadata| !metadata.deleted)
                 .cloned()
                 .ok_or_else(|| {
@@ -90,8 +89,7 @@ impl MatrixObjectStore {
             replica_count,
         )?;
         let previous = self
-            .objects
-            .get(&destination_id)
+            .object(&destination_id)
             .filter(|metadata| !metadata.deleted)
             .cloned();
         // Captured here, not on entry: the four validations above, the source and

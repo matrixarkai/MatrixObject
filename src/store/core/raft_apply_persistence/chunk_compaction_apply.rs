@@ -9,7 +9,7 @@ impl MatrixObjectStore {
             return Err(ObjectError::NotFound(format!("chunk {:?}", chunk_id)));
         }
         let mut live_objects = Vec::new();
-        for metadata in self.objects.values() {
+        for metadata in self.objects_values() {
             if metadata.deleted {
                 continue;
             }

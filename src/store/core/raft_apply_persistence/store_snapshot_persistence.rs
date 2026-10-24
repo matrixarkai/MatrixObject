@@ -119,7 +119,13 @@ impl MatrixObjectStore {
             bucket_cors: self.bucket_cors.clone(),
             bucket_policy_receipts: self.bucket_policy_receipts.clone(),
             bucket_cors_receipts: self.bucket_cors_receipts.clone(),
-            objects: self.objects.clone(),
+            // The snapshot states each identity once in front of its metadata, so it
+            // rebuilds the pairs; the collection itself is ordered by the identity the
+            // metadata holds.
+            objects: self
+                .objects_iter()
+                .map(|(object_id, metadata)| (object_id.clone(), metadata.clone()))
+                .collect(),
             versions: self.versions.clone(),
             multipart_uploads,
             multipart_complete_receipts: self.multipart_complete_receipts.clone(),
@@ -372,7 +378,7 @@ impl MatrixObjectStore {
         append_string(&mut material, &root_snapshot.checksum);
         append_u64(&mut material, self.next_upload_sequence);
         append_u64(&mut material, self.next_object_change_sequence);
-        for (object_id, metadata) in &self.objects {
+        for (object_id, metadata) in self.objects_iter() {
             append_object_id(&mut material, object_id);
             append_metadata(&mut material, metadata);
         }
@@ -646,14 +652,23 @@ impl MatrixObjectStore {
         self.bucket_cors = snapshot.bucket_cors;
         self.bucket_policy_receipts = snapshot.bucket_policy_receipts;
         self.bucket_cors_receipts = snapshot.bucket_cors_receipts;
-        self.objects = snapshot.objects;
+        self.objects = snapshot
+            .objects
+            .into_values()
+            .map(KeyedObject::new)
+            .collect();
         // The pool is derived, so a snapshot does not carry it. Rebuilt in map
         // order, which may intern a different subset past the bound than a
         // replica that replayed the log -- a footprint difference and not a
         // state one, since nothing reads the pool but this sharing.
         self.content_types.clear();
         let mut shared: Vec<(ObjectId, SharedText)> = Vec::new();
-        for (object_id, metadata) in self.objects.iter() {
+        // THE FIELD, NOT THE HELPER. `objects_iter()` is a method, so it borrows all of
+        // `self` for this loop -- and the body inserts into `self.content_types`. Reading the
+        // field directly keeps the two borrows disjoint, which is what the borrow checker can
+        // see and a method call hides.
+        for held in self.objects.iter() {
+            let (object_id, metadata) = (held.id(), held.metadata());
             if let Some(existing) = self.content_types.get(metadata.content_type.as_str()) {
                 if !existing.shares_with(&metadata.content_type) {
                     shared.push((object_id.clone(), existing.clone()));
@@ -665,8 +680,13 @@ impl MatrixObjectStore {
             }
         }
         for (object_id, content_type) in shared {
-            if let Some(metadata) = self.objects.get_mut(&object_id) {
+            // A collection ordered by its elements has no `get_mut`: changing an object in
+            // place could change where it belongs. Take it out, change it, file it back --
+            // and with `replace` rather than `file_object`, because that funnel re-interns
+            // the content type and would undo the assignment this loop exists to make.
+            if let Some(mut metadata) = self.take_object(&object_id) {
                 metadata.content_type = content_type;
+                self.objects.replace(KeyedObject::new(metadata));
             }
         }
         self.versions = snapshot.versions;

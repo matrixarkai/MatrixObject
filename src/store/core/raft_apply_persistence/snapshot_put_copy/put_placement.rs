@@ -21,8 +21,7 @@ impl MatrixObjectStore {
             replica_count,
         )?;
         let previous = self
-            .objects
-            .get(&object_id)
+            .object(&object_id)
             .filter(|metadata| !metadata.deleted)
             .cloned();
         let metadata = match self.apply_put_storage_batched(

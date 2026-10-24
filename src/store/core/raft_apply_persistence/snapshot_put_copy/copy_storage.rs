@@ -20,8 +20,7 @@ impl MatrixObjectStore {
         let source = if let Some(version) = source_version {
             self.head_object_version(&source_id.bucket, &source_id.key, version)?
         } else {
-            self.objects
-                .get(&source_id)
+            self.object(&source_id)
                 .filter(|metadata| !metadata.deleted)
                 .cloned()
                 .ok_or_else(|| {
@@ -54,7 +53,7 @@ impl MatrixObjectStore {
         metadata.lock.retention_until_ms = source.lock.retention_until_ms;
         metadata.lock.restore_until_ms = source.lock.restore_until_ms;
         self.objects
-            .insert(metadata.object_id.clone(), metadata.clone());
+            .replace(KeyedObject::new(metadata.clone()));
         self.commit_meta_projection(
             &metadata.object_id,
             RecordValue::of_object(&metadata),

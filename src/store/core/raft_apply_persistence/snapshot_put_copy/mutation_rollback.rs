@@ -111,7 +111,7 @@ impl MatrixObjectStore {
         key: &str,
     ) -> ObjectMutationRollback {
         let object_id = ObjectId::new(bucket.to_string(), key.to_string());
-        let previous_object = self.objects.get(&object_id).cloned();
+        let previous_object = self.object(&object_id).cloned();
         // Sized to the extents it may hold rather than collected, because a
         // `Vec` grown from an iterator whose lower bound is zero takes four
         // slots to hold one entry -- 160 bytes where 40 will do, resident for

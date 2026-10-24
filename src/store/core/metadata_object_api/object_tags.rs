@@ -66,7 +66,7 @@ impl MatrixObjectStore {
         let take = if limit == 0 { usize::MAX } else { limit };
         let start_key = marker.unwrap_or("");
         let mut out = Vec::with_capacity(take.min(self.objects.len()));
-        for (object_id, metadata) in self.objects.range(ObjectId::new(bucket, start_key)..) {
+        for (object_id, metadata) in self.objects_range(ObjectId::new(bucket, start_key)..) {
             if object_id.bucket != bucket {
                 break;
             }
@@ -124,7 +124,7 @@ impl MatrixObjectStore {
             .saturating_mul(64)
             .clamp(limit.saturating_add(1), 65_536);
         let mut last_marker = marker.map(str::to_string);
-        for (object_id, metadata) in self.objects.range(ObjectId::new(bucket, start_key)..) {
+        for (object_id, metadata) in self.objects_range(ObjectId::new(bucket, start_key)..) {
             if object_id.bucket != bucket {
                 break;
             }

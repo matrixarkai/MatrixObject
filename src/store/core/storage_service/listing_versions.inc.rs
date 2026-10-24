@@ -53,8 +53,7 @@ impl MatrixObjectStore {
         let start_key = start.unwrap_or(prefix);
         let mut keys: Vec<SharedText> = Vec::new();
         for map_keys in [
-            self.objects
-                .range(ObjectId::new(bucket, start_key)..)
+            self.objects_range(ObjectId::new(bucket, start_key)..)
                 .map(|(object_id, _)| object_id)
                 .collect::<Vec<_>>(),
             self.versions
@@ -88,7 +87,7 @@ impl MatrixObjectStore {
             }
             let object_id = ObjectId::new(bucket, key.as_str());
             let mut versions: Vec<ObjectMetadata> = Vec::new();
-            if let Some(current) = self.objects.get(&object_id) {
+            if let Some(current) = self.object(&object_id) {
                 versions.push(current.clone());
             }
             if let Some(older) = self.versions.get(&object_id) {
@@ -124,7 +123,7 @@ impl MatrixObjectStore {
             .get(&object_id)
             .map_or(0usize, Vec::len);
         let mut out = Vec::with_capacity(version_count.saturating_add(1));
-        if let Some(current) = self.objects.get(&object_id) {
+        if let Some(current) = self.object(&object_id) {
             out.push(current.clone());
         }
         if let Some(versions) = self.versions.get(&object_id) {
@@ -257,8 +256,7 @@ impl MatrixObjectStore {
             .filter(|marker| prefix.is_empty() || *marker >= prefix)
             .unwrap_or(prefix);
         let mut object_iter = self
-            .objects
-            .range(ObjectId::new(bucket, start_key)..)
+            .objects_range(ObjectId::new(bucket, start_key)..)
             .peekable();
         let mut version_iter = self
             .versions

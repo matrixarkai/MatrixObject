@@ -2,6 +2,79 @@
 // Copyright 2026 MatrixArkAI
 use super::*;
 
+/// An object's metadata, ordered and identified BY THE IDENTITY IT ALREADY HOLDS, so the
+/// collection does not keep a second copy of it.
+///
+/// # EQUALITY IS THE IDENTITY ALONE, AND THAT IS NOT A PREFERENCE
+///
+/// `BTreeSet` requires `Ord` and `Eq` to agree: if `a == b` then `a.cmp(&b)` must be `Equal`,
+/// or the set's ordering invariant is unspecified rather than merely wrong. The ordering has to
+/// be the identity, because **that order is the listing contract** -- it is what `list_objects`
+/// serves a prefix and a marker from. So equality is the identity too.
+///
+/// This type therefore says NOTHING about whether two objects have the same metadata. Ask the
+/// metadata, through [`KeyedObject::metadata`]. The field is private so nothing outside the
+/// collection can compare two of them by accident.
+///
+/// # AND FILING USES `replace`, NOT `insert`
+///
+/// `BTreeSet::insert` KEEPS the element already there and returns `false`; it does not
+/// overwrite. Filing a new version of an object with `insert` would leave the old version in
+/// place and report success.
+#[derive(Clone, Debug)]
+pub struct KeyedObject(ObjectMetadata);
+
+impl KeyedObject {
+    pub fn new(metadata: ObjectMetadata) -> Self {
+        Self(metadata)
+    }
+
+    pub fn metadata(&self) -> &ObjectMetadata {
+        &self.0
+    }
+
+    pub fn into_metadata(self) -> ObjectMetadata {
+        self.0
+    }
+
+    pub fn id(&self) -> &ObjectId {
+        &self.0.object_id
+    }
+}
+
+impl Ord for KeyedObject {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.object_id.cmp(&other.0.object_id)
+    }
+}
+
+impl PartialOrd for KeyedObject {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Eq for KeyedObject {}
+
+impl PartialEq for KeyedObject {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.object_id == other.0.object_id
+    }
+}
+
+/// So the collection can be searched by an identity without building a metadata value.
+impl std::borrow::Borrow<ObjectId> for KeyedObject {
+    fn borrow(&self) -> &ObjectId {
+        &self.0.object_id
+    }
+}
+
+impl From<ObjectMetadata> for KeyedObject {
+    fn from(metadata: ObjectMetadata) -> Self {
+        Self(metadata)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ObjectId {
     pub bucket: SharedText,

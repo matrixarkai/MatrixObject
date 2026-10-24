@@ -105,8 +105,7 @@ pub(crate) fn object_list_page_proof_checksum(operation: &str, page: &ObjectList
         .map(|prefix| encoded_string_len(prefix))
         .sum::<usize>();
     let objects_len = page
-        .objects
-        .iter()
+        .objects.iter()
         .map(listing_object_metadata_encoded_len)
         .sum::<usize>();
     let mut material = Vec::with_capacity(
@@ -295,8 +294,7 @@ pub(crate) fn stamp_bucket_object_version_page_proof(
 
 pub(crate) fn object_tag_list_page_proof_checksum(operation: &str, page: &ObjectTagPage) -> String {
     let objects_len = page
-        .objects
-        .iter()
+        .objects.iter()
         .map(listing_object_metadata_encoded_len)
         .sum::<usize>();
     let mut material = Vec::with_capacity(

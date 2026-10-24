@@ -288,9 +288,8 @@ impl MatrixObjectStore {
         // objects, and the characters are one allocation between them.
         let mut ledger = SharedTextLedger::default();
         let mut objects_bytes = 0u64;
-        for (object_id, metadata) in self.objects.iter() {
+        for (object_id, metadata) in self.objects_iter() {
             objects_bytes = objects_bytes
-                .saturating_add(std::mem::size_of::<ObjectId>() as u64)
                 .saturating_add(std::mem::size_of::<ObjectMetadata>() as u64)
                 .saturating_add(audit_object_id_heap(&mut ledger, object_id))
                 .saturating_add(audit_object_metadata_heap(&mut ledger, metadata));
@@ -383,10 +382,11 @@ impl MatrixObjectStore {
         // from equal-and-shared.
         {
             let n = self.objects.len() as u64;
-            push(
-                "objects.mapkey_inline",
-                n.saturating_mul(std::mem::size_of::<ObjectId>() as u64),
-            );
+            // NO MAP KEY. The collection is ordered by the identity the metadata already
+            // holds, so an entry is the metadata and nothing beside it. Reported as zero
+            // rather than dropped, because it is what the document names and because a change
+            // that reintroduced a second copy of the identity would move it.
+            push("objects.mapkey_inline", 0);
             push(
                 "objects.metadata_inline",
                 n.saturating_mul(std::mem::size_of::<ObjectMetadata>() as u64),
@@ -409,7 +409,7 @@ impl MatrixObjectStore {
             // and the parts still sum to the total: charged in holder order,
             // the map key pays for the characters and the value pays nothing.
             let mut detail_ledger = SharedTextLedger::default();
-            for (object_id, metadata) in self.objects.iter() {
+            for (object_id, metadata) in self.objects_iter() {
                 mapkey_heap =
                     mapkey_heap.saturating_add(audit_object_id_heap(&mut detail_ledger, object_id));
                 inner_id_heap = inner_id_heap.saturating_add(audit_object_id_heap(
@@ -989,9 +989,12 @@ impl ObjectMutationRollback {
             .saturating_add(audit_bucket_keyed_inline_bytes(&self.bucket_cors_receipts));
 
         let mut objects_bytes = 0u64;
-        for (object_id, metadata) in self.objects.iter() {
+        // THE FIELD, not a store helper: this `self` is the rollback's own copy of the
+        // collection. It is also ordered by each object's own identity, so like the store's
+        // leg it no longer charges a map key beside the metadata.
+        for held in self.objects.iter() {
+            let (object_id, metadata) = (held.id(), held.metadata());
             objects_bytes = objects_bytes
-                .saturating_add(std::mem::size_of::<ObjectId>() as u64)
                 .saturating_add(std::mem::size_of::<ObjectMetadata>() as u64)
                 .saturating_add(audit_object_id_heap(&mut ledger, object_id))
                 .saturating_add(audit_object_metadata_heap(&mut ledger, metadata));
