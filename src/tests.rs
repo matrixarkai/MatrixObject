@@ -36855,6 +36855,183 @@ fn measure_what_a_one_word_text_handle_costs_to_read() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_the_route_to_under_a_hundred_bytes_a_metadata_record() {
+    // The metaserver's share of the line is 200 bytes an object, against a per-key record of
+    // TWENTY-FOUR in the time-series engine beside it. The difference is what the record IS:
+    // there it locates the data -- an address, a size, a deadline, flags -- and here it
+    // RESTATES the object, thirteen fields of it, behind a box.
+    //
+    // 16 map key handle + 16 duplicate key handle + 16 RecordValue + 24 scalars
+    //    + 56 key characters + 72 boxed projection = 200
+    //
+    // Mirrors sized by the compiler, controls asserted equal to the real types first.
+    use std::mem::size_of;
+
+    assert_eq!(
+        size_of::<MetadataRecord>() + size_of::<SharedText>(),
+        72,
+        "the record plus the map key's handle should be the 72 the document publishes as \
+         meta.records.struct_inline"
+    );
+    assert_eq!(
+        size_of::<ObjectProjection>(),
+        72,
+        "and the boxed projection should be the 72 published as value_capacity"
+    );
+
+    #[allow(dead_code)]
+    struct ProjectionControl {
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        metadata_count: u32,
+        storage_class: StorageClass,
+        restore_until_ms: u64,
+        deleted: bool,
+        extent_count: u32,
+        tag_count: u32,
+        legal_hold: bool,
+        retention_until_ms: u64,
+    }
+    let control = size_of::<ProjectionControl>();
+    assert_eq!(
+        control,
+        size_of::<ObjectProjection>(),
+        "the projection control has drifted, so nothing below means anything"
+    );
+
+    // (a) THE CONTENT TYPE AS AN INDEX. Already interned behind a table bounded by a count,
+    // and still held as a fat pointer.
+    #[allow(dead_code)]
+    struct IndexedContentType {
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: u16,
+        metadata_count: u32,
+        storage_class: StorageClass,
+        restore_until_ms: u64,
+        deleted: bool,
+        extent_count: u32,
+        tag_count: u32,
+        legal_hold: bool,
+        retention_until_ms: u64,
+    }
+
+    // (b) THE THREE COUNTS ARE NOT 32-BIT QUANTITIES. A user-metadata entry count, a tag
+    // count and an extent count are each bounded far below 65,536 by the store's own limits.
+    #[allow(dead_code)]
+    struct NarrowCounts {
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        metadata_count: u16,
+        storage_class: StorageClass,
+        restore_until_ms: u64,
+        deleted: bool,
+        extent_count: u16,
+        tag_count: u16,
+        legal_hold: bool,
+        retention_until_ms: u64,
+    }
+
+    // (c) THE TWO RETENTION STAMPS AND THE HOLD ARE RARE. An object under neither a
+    // restore nor a retention nor a legal hold pays sixteen bytes to say so -- the same
+    // shape `ObjectLock` already uses on the object side, whose doc says an object under
+    // none of the three should pay eight rather than twenty-five.
+    #[allow(dead_code)]
+    struct Retention {
+        restore_until_ms: u64,
+        retention_until_ms: u64,
+        legal_hold: bool,
+    }
+    #[allow(dead_code)]
+    struct BoxedRetention {
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        metadata_count: u32,
+        storage_class: StorageClass,
+        deleted: bool,
+        extent_count: u32,
+        tag_count: u32,
+        retention: Option<Box<Retention>>,
+    }
+
+    // (d) ALL THREE.
+    #[allow(dead_code)]
+    struct Everything {
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: u16,
+        metadata_count: u16,
+        storage_class: StorageClass,
+        deleted: bool,
+        extent_count: u16,
+        tag_count: u16,
+        retention: Option<Box<Retention>>,
+    }
+
+    // (e) THE CLEAN SUBSET: (b) and (c), without the content type. (a) needs the shared
+    // content-type table to be addressable by index, and it is bounded by a COUNT of 256
+    // with an object past the bound owning its own string -- which a `u16` cannot
+    // represent, and an enum over the two cases is sixteen bytes again. So (a) is not
+    // available, and this is what is.
+    #[allow(dead_code)]
+    struct CleanSubset {
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        metadata_count: u16,
+        storage_class: StorageClass,
+        deleted: bool,
+        extent_count: u16,
+        tag_count: u16,
+        retention: Option<Box<Retention>>,
+    }
+    let rows: [(&str, usize); 5] = [
+        ("a. the content type as an index (BLOCKED: the table is bounded by a count)",
+         size_of::<IndexedContentType>()),
+        ("b. the three counts as 16-bit", size_of::<NarrowCounts>()),
+        ("c. the retention stamps behind a pointer", size_of::<BoxedRetention>()),
+        ("d. all three together", size_of::<Everything>()),
+        ("e. the CLEAN subset, b and c only", size_of::<CleanSubset>()),
+    ];
+    println!("METAREC control={control} record={} handle={}",
+        size_of::<MetadataRecord>(), size_of::<SharedText>());
+    for (what, size) in rows {
+        println!("METAREC {what}: {control} -> {size}, saves {}", control as i64 - size as i64);
+    }
+
+    // WHERE THE METASERVER LANDS. The projection is the only part of the 200 that is not a
+    // migration: the duplicate key handle is encoded into the snapshot and the record travels
+    // without its map, and the Arc header exists only to serve that duplicate.
+    let now = 16 + 16 + 16 + 24 + 56 + control;
+    let after = 16 + 16 + 16 + 24 + 56 + size_of::<CleanSubset>();
+    println!("METAREC metaserver now={now} after_the_projection={after}");
+    assert_eq!(now, 200, "the metaserver share should be the 200 published, and it is {now}");
+    // AND WHAT IT WOULD TAKE TO REACH A HUNDRED, stated so the next reader does not have to
+    // re-derive it: dropping the duplicate handle and its Arc header is -32 and a migration,
+    // which would leave 168 - (control - Everything).
+    println!(
+        "METAREC with the migration too={}",
+        after - 32
+    );
+}
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_route_to_under_a_hundred_bytes_an_object() {
     // A storage node carries 226 bytes an object of the 426-byte line:
     //   mapkey_inline 32 + mapkey_heap 42 + metadata_inline 128 + extents 16 + payloads 8
