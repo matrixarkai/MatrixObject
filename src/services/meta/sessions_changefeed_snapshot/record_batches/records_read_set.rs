@@ -47,8 +47,7 @@ impl MatrixMetaService {
     }
 
     pub fn get_record(&self, key: &str) -> Result<MetadataRecord, ObjectError> {
-        self.records
-            .get(key)
+        self.record(key)
             .filter(|record| !record.deleted)
             .cloned()
             .ok_or_else(|| ObjectError::NotFound(format!("metadata record {}", key)))
@@ -72,7 +71,7 @@ impl MatrixMetaService {
         }
         let mut page = MetadataRecordPage::default();
         let mut next_key = None;
-        for (key, record) in self.records.range::<str, _>((
+        for (key, record) in self.records_range((
                 std::ops::Bound::Included(prefix),
                 std::ops::Bound::Unbounded,
             )) {
@@ -131,7 +130,7 @@ impl MatrixMetaService {
             }
             self.check_shard_fence(&condition.key)?;
             report.checked_records = report.checked_records.saturating_add(1);
-            let current = self.records.get(condition.key.as_str());
+            let current = self.record(condition.key.as_str());
             let current_version = current.map_or(0, |record| record.version);
             if current_version != condition.expected_version {
                 return Err(ObjectError::PreconditionFailed(

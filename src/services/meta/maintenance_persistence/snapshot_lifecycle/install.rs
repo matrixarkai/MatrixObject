@@ -5,7 +5,13 @@ impl MatrixMetaService {
         snapshot.validate()?;
         self.metadata_snapshot_assembler.reset();
         *self.snapshot_export_cache.borrow_mut() = None;
-        self.records = snapshot.records;
+        // The snapshot's pairs become records ordered by their own key. A record already
+        // names the key it was filed under, so the pair's key is dropped rather than kept.
+        self.records = snapshot
+            .records
+            .into_values()
+            .map(KeyedRecord::new)
+            .collect();
         self.leases = snapshot.leases;
         self.lease_receipts = snapshot.lease_receipts;
         self.coordinator_config = snapshot.coordinator_config;

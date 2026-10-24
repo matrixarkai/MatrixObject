@@ -114,7 +114,7 @@ impl MatrixMetaService {
                     "metadata prepared shard handoff deleted record carries value".to_string(),
                 ));
             }
-            if let Some(existing) = self.records.get(&record.key) {
+            if let Some(existing) = self.record(record.key.as_str()) {
                 if existing.version > record.version {
                     return Err(ObjectError::PreconditionFailed(
                         "metadata prepared shard handoff would overwrite newer record".to_string(),
@@ -136,7 +136,7 @@ impl MatrixMetaService {
             ));
         }
         for record in &installed {
-            let should_emit_change = self.records.get(&record.key) != Some(record);
+            let should_emit_change = self.record(record.key.as_str()) != Some(record);
             self.file_record(record.key.clone(), record.clone());
             if should_emit_change {
                 self.append_metadata_change(MetadataChange {

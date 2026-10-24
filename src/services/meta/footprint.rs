@@ -143,10 +143,11 @@ fn meta_transaction_heap(ledger: &mut SharedTextLedger, transaction: &MetadataTr
 
 impl MatrixMetaService {
     pub(crate) fn footprint_bytes(&self, ledger: &mut SharedTextLedger) -> MetaServiceFootprint {
-        let mut records = (self.records.len() as u64).saturating_mul(
-            (std::mem::size_of::<SharedText>() + std::mem::size_of::<MetadataRecord>()) as u64,
-        );
-        for (key, record) in self.records.iter() {
+        // ONE ENTRY IS ONE RECORD. The collection is ordered by each record's own key, so
+        // there is no map-key handle beside it any more.
+        let mut records = (self.records.len() as u64)
+            .saturating_mul(std::mem::size_of::<MetadataRecord>() as u64);
+        for (key, record) in self.records_iter() {
             records = records
                 .saturating_add(ledger.charge(key))
                 .saturating_add(meta_record_heap(ledger, record));

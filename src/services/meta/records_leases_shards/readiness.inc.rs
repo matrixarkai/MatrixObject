@@ -160,8 +160,7 @@ impl MatrixMetaService {
                 .count() as u64,
             metadata_records: self.records.len() as u64,
             deleted_metadata_records: self
-                .records
-                .values()
+                .records_values()
                 .filter(|record| record.deleted)
                 .count() as u64,
             retained_change_records: self.changes.len() as u64,

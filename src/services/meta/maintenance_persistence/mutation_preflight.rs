@@ -40,8 +40,8 @@ impl MatrixMetaService {
     /// mutation's own copy would otherwise become a second one.
     pub(crate) fn filed_record_key(&self, key: SharedText) -> SharedText {
         self.records
-            .get_key_value(key.as_str())
-            .map(|(existing, _)| existing.clone())
+            .get(key.as_str())
+            .map(|held| held.key().clone())
             .unwrap_or(key)
     }
 
@@ -49,11 +49,51 @@ impl MatrixMetaService {
     /// keeps. `BTreeMap::insert` keeps the key it already holds, so without
     /// this an update leaves the map key and the record's own naming of it in
     /// two allocations.
+    /// The record at a key, without the collection's wrapper.
+    pub(crate) fn record(&self, key: &str) -> Option<&MetadataRecord> {
+        self.records.get(key).map(KeyedRecord::record)
+    }
+
+    /// Every record with its key, in key order -- the shape the map this replaced had.
+    pub(crate) fn records_iter(&self) -> impl Iterator<Item = (&SharedText, &MetadataRecord)> {
+        self.records
+            .iter()
+            .map(|held| (held.key(), held.record()))
+    }
+
+    /// Every record, in key order.
+    pub(crate) fn records_values(&self) -> impl Iterator<Item = &MetadataRecord> {
+        self.records.iter().map(KeyedRecord::record)
+    }
+
+    /// The records in a span of keys, with their keys.
+    pub(crate) fn records_range<R>(
+        &self,
+        range: R,
+    ) -> impl Iterator<Item = (&SharedText, &MetadataRecord)>
+    where
+        R: std::ops::RangeBounds<str>,
+    {
+        self.records
+            .range::<str, R>(range)
+            .map(|held| (held.key(), held.record()))
+    }
+
+    /// File a record under a key.
+    ///
+    /// `replace`, NOT `insert`: `BTreeSet::insert` keeps the element already there, so filing a
+    /// new version with it would leave the old one in place and report success.
+    /// `filing_a_record_over_an_existing_key_replaces_it` is the guard.
     pub(crate) fn file_record(&mut self, key: SharedText, mut record: MetadataRecord) {
-        if let Some((existing, _)) = self.records.get_key_value(key.as_str()) {
-            record.key = existing.clone();
+        // The record names the key it is filed under, through the allocation the collection
+        // already holds -- so a record filed over an existing one keeps that allocation
+        // rather than adding a second copy of the same characters.
+        if let Some(existing) = self.records.get(key.as_str()) {
+            record.key = existing.key().clone();
+        } else {
+            record.key = key;
         }
-        self.records.insert(key, record);
+        self.records.replace(KeyedRecord::new(record));
     }
 
     fn preflight_mutations(
@@ -76,8 +116,7 @@ impl MatrixMetaService {
             self.check_shard_fence(&mutation.key)?;
             self.check_lease_fence(&mutation.key, lease_owner, lease_epoch, now_ms)?;
             let base_version = self
-                .records
-                .get(&mutation.key)
+                .record(mutation.key.as_str())
                 .map_or(0, |record| record.version);
             read_versions
                 .entry(mutation.key.to_string())
@@ -191,8 +230,7 @@ impl MatrixMetaService {
             self.check_shard_owner_serving(&mutation.key, expected_owner, expected_epoch, now_ms)?;
             self.check_lease_fence(&mutation.key, lease_owner, lease_epoch, now_ms)?;
             let base_version = self
-                .records
-                .get(&mutation.key)
+                .record(mutation.key.as_str())
                 .map_or(0, |record| record.version);
             read_versions
                 .entry(mutation.key.to_string())
@@ -226,8 +264,7 @@ impl MatrixMetaService {
             validate_meta_key(key)?;
             self.check_shard_fence(key)?;
             let current_version = self
-                    .records
-                    .get(key.as_str())
+                    .record(key.as_str())
                     .map_or(0, |record| record.version);
             if current_version != *expected_version {
                 return Err(ObjectError::PreconditionFailed(
@@ -242,7 +279,7 @@ impl MatrixMetaService {
     /// without copying the service.
     pub(crate) fn capture_record_undo(&self, key: &str) -> MetaRecordUndo {
         MetaRecordUndo {
-            previous_record: self.records.get(key).cloned(),
+            previous_record: self.record(key).cloned(),
             key: key.to_string(),
             next_commit_index: self.next_commit_index,
             next_change_sequence: self.next_change_sequence,
@@ -303,8 +340,7 @@ impl MatrixMetaService {
         now_ms: u64,
     ) -> Result<MetadataRecord, ObjectError> {
         let current_version = self
-            .records
-            .get(&mutation.key)
+            .record(mutation.key.as_str())
             .map_or(0, |record| record.version);
         if current_version != mutation.expected_version {
             return Err(ObjectError::PreconditionFailed(
@@ -324,7 +360,7 @@ impl MatrixMetaService {
             deleted: mutation.delete,
         };
         self.next_commit_index = self.next_commit_index.saturating_add(1);
-        self.records.insert(key.clone(), record.clone());
+        self.file_record(key.clone(), record.clone());
         self.append_metadata_change(MetadataChange {
             sequence: self.next_change_sequence,
             commit_index: self.next_commit_index.saturating_sub(1),

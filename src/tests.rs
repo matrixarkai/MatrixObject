@@ -30511,12 +30511,15 @@ fn metaserver_projects_object_metadata_and_enforces_leases() {
         .unwrap();
     assert_eq!(clean_audit.issue_count, 0);
     assert_eq!(clean_audit.audited_objects, 1);
-    store
+    // A collection ordered by the record's own key has no `get_mut`: changing a record in
+    // place could change where it belongs. Take it out, change it, put it back.
+    let mut stale = store
         .meta_service
-        .records
-        .get_mut(meta_object_key(&metadata.object_id).as_str())
-        .unwrap()
-        .value = "stale-projection".to_string().into();
+        .record(meta_object_key(&metadata.object_id).as_str())
+        .expect("the record the put filed")
+        .clone();
+    stale.value = "stale-projection".to_string().into();
+    store.meta_service.file_record(stale.key.clone(), stale);
     let stale_audit = store
         .audit_object_metadata("bucket", "", None, 10, 1024, MetadataReadOptions::default())
         .unwrap();
@@ -34382,7 +34385,7 @@ fn measure_what_a_metadata_record_value_actually_holds() {
             "application/octet-stream",
         )
         .unwrap();
-    for (key, record) in store.meta_service.records.iter() {
+    for (key, record) in store.meta_service.records_iter() {
         println!("RECORDVALUE key_len={} key={}", key.len(), key.as_str());
         println!(
             "RECORDVALUE value_len={} value={}",
@@ -34845,7 +34848,7 @@ fn measure_how_much_of_the_metadata_projection_is_recomputable() {
     let mut drifted = (0u64, 0u64);
     let mut no_object = (0u64, 0u64);
     let mut not_an_object_key = (0u64, 0u64);
-    for (key, record) in store.meta_service.records.iter() {
+    for (key, record) in store.meta_service.records_iter() {
         let text: &str = key.as_str();
         let bytes = record.value.len() as u64;
         let Some(rest) = text.strip_prefix("object/") else {
@@ -35078,7 +35081,7 @@ fn measure_how_many_places_hold_one_object_key() {
     }
     let mut record_map_key: std::collections::BTreeSet<usize> = Default::default();
     let mut record_own_key: std::collections::BTreeSet<usize> = Default::default();
-    for (key, record) in store.meta_service.records.iter() {
+    for (key, record) in store.meta_service.records_iter() {
         record_map_key.insert(key.allocation_id());
         record_own_key.insert(record.key.allocation_id());
     }
@@ -35564,6 +35567,88 @@ fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_
             "a header with no body is not a snapshot, whatever its version: {stamp}"
         );
     }
+}
+
+#[test]
+fn filing_a_record_over_an_existing_key_replaces_it() {
+    // The collection holding metadata records is a SET ordered by each record's own key, which
+    // is how it stops holding a second copy of that key. That buys sixteen bytes an object and
+    // introduces one hazard, and the hazard is not in the ordering:
+    //
+    //   `BTreeSet::insert` KEEPS the element already there and returns `false`.
+    //
+    // A map's `insert` overwrites. So filing a new version of a record with `insert` would
+    // leave the OLD version in the collection, return a value that reads like success, and
+    // leave every byte figure, every count and every ordering assertion correct. A write would
+    // simply not take effect. `file_record` uses `replace`, and this is what says so.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "object", b"first".to_vec(), "text/plain")
+        .unwrap();
+
+    let key = meta_object_key(&ObjectId::new("bucket", "object"));
+    let before = store
+        .meta_service
+        .record(key.as_str())
+        .expect("the put files a record")
+        .clone();
+    let count_before = store.meta_service.records.len();
+
+    // A second write at the same key.
+    store
+        .put_object("bucket", "object", b"second payload".to_vec(), "text/plain")
+        .unwrap();
+    let after = store
+        .meta_service
+        .record(key.as_str())
+        .expect("the record is still there")
+        .clone();
+
+    assert_eq!(
+        store.meta_service.records.len(),
+        count_before,
+        "a second write at one key must not add a second record"
+    );
+    assert_ne!(
+        before.version, after.version,
+        "the filed record must be the NEW one -- `insert` on a set keeps the old element and \
+         reports success, so a write would silently not take effect"
+    );
+    assert_ne!(
+        before.value, after.value,
+        "and its value must be the new object's, not the first object's"
+    );
+    assert_eq!(
+        after.value,
+        RecordValue::of_object(&store.head_object("bucket", "object").unwrap()),
+        "the filed record must agree with the object as it now stands"
+    );
+
+    // A RECORD IS ALWAYS FILED UNDER ITS OWN KEY, which is the invariant the set makes
+    // impossible to break: there is no second key to disagree with. Asserted rather than
+    // assumed, because it is what every caller that reads a key off the iteration relies on.
+    for (key, record) in store.meta_service.records_iter() {
+        assert_eq!(
+            key.as_str(),
+            record.key.as_str(),
+            "the key a record is found under is the key it holds"
+        );
+        assert!(
+            key.shares_with(&record.key),
+            "and it is the same allocation, not a second copy of the characters"
+        );
+    }
+
+    // AND THE KEY'S CHARACTERS ARE NOT COPIED ON AN UPDATE. `file_record` makes the incoming
+    // record name the key through the allocation the collection already holds; without that,
+    // every rewrite of an object would leave the record naming its key through a fresh
+    // allocation and the audit's key figure would climb with the write count rather than with
+    // the object count.
+    assert!(
+        before.key.shares_with(&after.key),
+        "a record filed over an existing one keeps the allocation already there"
+    );
 }
 
 #[test]
@@ -36148,8 +36233,7 @@ fn the_metadata_record_key_is_one_allocation_across_its_holders() {
     let store = store_with_keys_of_length(64);
     let (map_key, record) = store
         .meta_service
-        .records
-        .iter()
+        .records_iter()
         .find(|(key, _)| key.starts_with("object/"))
         .expect("a put writes a projection record");
     assert_eq!(map_key.as_str(), record.key.as_str());
@@ -37516,9 +37600,13 @@ fn measure_what_a_one_word_text_handle_would_save() {
             std::mem::size_of::<MetadataThin>(),
         ),
         (
+            // ONE HANDLE, NOT TWO. The collection is ordered by the record's own key, so the
+            // leg is the record alone -- it was `SharedText + RecordControl` while a map key
+            // sat beside each record, and leaving that in would have published a saving of
+            // sixteen where eight is available.
             "meta.records.struct_inline",
-            std::mem::size_of::<SharedText>() + std::mem::size_of::<RecordControl>(),
-            std::mem::size_of::<OneWord>() + std::mem::size_of::<RecordThin>(),
+            std::mem::size_of::<RecordControl>(),
+            std::mem::size_of::<RecordThin>(),
         ),
     ];
 
@@ -37528,8 +37616,8 @@ fn measure_what_a_one_word_text_handle_would_save() {
         saved += control - thin;
     }
 
-    // Padding is why this had to be measured rather than multiplied. Seven
-    // handles at eight bytes each is fifty-six, and the structs do not
+    // Padding is why this had to be measured rather than multiplied. Six
+    // handles at eight bytes each is forty-eight, and the structs do not
     // necessarily give all of it back: a narrower field can leave padding
     // behind it instead of closing up.
     println!("HANDLE inline saving per object = {saved}");

@@ -12,8 +12,7 @@ impl MatrixObjectStore {
         let key = meta_object_key(object_id);
         let expected_version = self
             .meta_service
-            .records
-            .get(key.as_str())
+            .record(key.as_str())
             .map_or(0, |record| record.version);
         self.meta_service.commit_record(
             &key,

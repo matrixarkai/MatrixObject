@@ -86,8 +86,7 @@ impl MatrixMetaService {
                 ));
             }
             let current_version = self
-                .records
-                .get(&mutation.key)
+                .record(mutation.key.as_str())
                 .map_or(0, |record| record.version);
             if image.key != mutation.key
                 || image.deleted != mutation.delete

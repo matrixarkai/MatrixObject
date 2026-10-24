@@ -508,6 +508,12 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::a_hold_reaches_the_digest_and_an_object_under_none_spells_zeros did not run"; exit 1; }
 
+      - name: Filing a record over an existing key replaces it
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \n            tests::filing_a_record_over_an_existing_key_replaces_it -- --exact \n            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \n            || { echo "::error::filing_a_record_over_an_existing_key_replaces_it did not run"; exit 1; }
+
       - name: A digest equals the text it is a digest of and refuses a corrupt tag
         run: |
           set -o pipefail

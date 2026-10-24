@@ -137,8 +137,7 @@ impl MatrixMetaService {
                 self.check_transaction_read_versions(current)?;
                 for record in &prepared.receipt.records {
                     let current_version = self
-                        .records
-                        .get(&record.key)
+                        .record(record.key.as_str())
                         .map_or(0, |existing| existing.version);
                     if record.version != current_version.saturating_add(1)
                         || record.update_time_ms != prepared.receipt.update_time_ms

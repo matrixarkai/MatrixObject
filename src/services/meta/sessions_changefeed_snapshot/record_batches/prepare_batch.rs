@@ -66,8 +66,7 @@ impl MatrixMetaService {
         let mut images = Vec::with_capacity(mutations.len());
         for mutation in &mutations {
             let base_version = self
-                .records
-                .get(&mutation.key)
+                .record(mutation.key.as_str())
                 .map_or(0, |record| record.version);
             let current_version = projected_versions
                 .get(&mutation.key)

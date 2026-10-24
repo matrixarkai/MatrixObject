@@ -71,7 +71,7 @@ impl MatrixMetaService {
 
     fn metadata_shard_record_stats(&self, shard: &MetadataShard) -> MetadataShardRecordStats {
         let mut stats = MetadataShardRecordStats::default();
-        for (key, record) in self.records.range::<str, _>((
+        for (key, record) in self.records_range((
                 std::ops::Bound::Included(shard.start_key.as_str()),
                 std::ops::Bound::Unbounded,
             )) {

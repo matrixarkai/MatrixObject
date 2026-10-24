@@ -21,7 +21,12 @@ fn metadata_fingerprint_reserve_hint(service: &MatrixMetaService) -> usize {
 impl MatrixMetaService {
     pub fn export_snapshot(&self) -> MetaSnapshot {
         let mut snapshot = MetaSnapshot {
-            records: self.records.clone(),
+            // The collection is ordered by each record's own key; the snapshot states the
+            // key once in front of each record, so it rebuilds the pairs.
+            records: self
+                .records_iter()
+                .map(|(key, record)| (key.clone(), record.clone()))
+                .collect(),
             leases: self.leases.clone(),
             lease_receipts: self.lease_receipts.clone(),
             coordinator_config: self.coordinator_config.clone(),
@@ -80,7 +85,7 @@ impl MatrixMetaService {
         }
 
         append_u64(&mut material, self.records.len() as u64);
-        for (key, record) in &self.records {
+        for (key, record) in self.records_iter() {
             append_string(&mut material, key);
             append_string(&mut material, &etag(record.value.as_text().as_bytes()));
             append_u64(&mut material, record.version);

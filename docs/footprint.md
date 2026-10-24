@@ -22,7 +22,7 @@ Measured at three replicas, 26-character keys, with the metadata counted:
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
 | 4 KiB | 4,000 | **3.09x** | 3.00x |
-| 1 KiB | 8,000 | **3.38x** | 3.02x |
+| 1 KiB | 8,000 | **3.36x** | 3.02x |
 
 Reproduce any row with the measurement harness:
 
@@ -67,7 +67,7 @@ are bounded rather than per object:
 
 | objects | 100 | 1,000 | 4,000 | 8,000 |
 |---:|---:|---:|---:|---:|
-| metadata per object | 554 B | 510 B | 387 B | **366 B** |
+| metadata per object | 538 B | 494 B | 371 B | **350 B** |
 
 Both change feeds cap at 1,024 records, so together they are **163,866 bytes**
 once full -- the two intercepts in the table below, which is where that figure is
@@ -75,7 +75,7 @@ checked rather than derived from a percentage of a moving total. Everything else
 is exactly linear, which makes the total a line once the feeds are full:
 
 ```
-metadata = 346 bytes an object + 164,256 bytes fixed      (remainder: zero)
+metadata = 330 bytes an object + 164,240 bytes fixed      (remainder: zero)
 ```
 
 reproducing every total above exactly, at every count where the feeds have
@@ -92,24 +92,24 @@ feeds at all:
 | object change feed | 106,522 | 1,024 records at its bound |
 | metadata change log | 57,344 | 1,024 records at its bound |
 | inside `objects` | 62 | the content-type and storage-class text, shared by every object |
-| inside `meta.records` | 108 | one record more than there are objects — the bucket's |
+| inside `meta.records` | 92 | one record more than there are objects — the bucket's |
 | `meta.entities` | 84 | |
 | `chunks` | 104 | |
 | payload index | 32 | the chunk identity, paid once per chunk rather than once per entry |
-| **fixed total** | **164,256** | |
+| **fixed total** | **164,240** | |
 
 `every_metadata_leg_is_a_line_and_the_intercepts_are_named` fits each leg over
 three store sizes and fails unless every one is a line and the fixed terms sum
 to the total's — so a leg that starts depending on the object count, or a fixed
 byte that stops being named, is caught rather than absorbed.
 
-That 346 is two items and a rounding error:
+That 330 is two items and a rounding error:
 
 | | per object | share |
 |---|---:|---:|
-| `objects` — the structured metadata | 210 B | 60.7% |
-| `meta.records` — the metadata digest record | 128 B | 37.0% |
-| payload index keys | 8 B | 2.3% |
+| `objects` — the structured metadata | 210 B | 63.6% |
+| `meta.records` — the metadata digest record | 112 B | 33.9% |
+| payload index keys | 8 B | 2.4% |
 
 Those two halves no longer hold the same facts twice. `objects` is a binary struct —
 136 bytes inline, with the object id, length, etag, content type, storage class
@@ -164,7 +164,7 @@ shared between holders is charged once per allocation — the characters and the
 two counts in front of them — so `mapkey_capacity` against `mapkey_len` is that
 header rather than slack.
 
-### What the 346 bytes are, and what each remaining part would cost to remove
+### What the 330 bytes are, and what each remaining part would cost to remove
 
 The slope is not one thing. Every leg below is fitted from the same two object counts the
 published line is fitted from, and they sum to it exactly:
@@ -175,23 +175,27 @@ objects.mapkey_inline          32  two shared-text holders, which is what keys t
 objects.mapkey_heap            42  the key's characters: ONE allocation, shared with the value
 objects.metadata_inline       136  ObjectMetadata itself, one extent held inline
 objects.extents_bytes           0  the one extent is INLINE above, so it owns no heap
-meta.records.struct_inline     72  the map key's holder, plus MetadataRecord
-meta.records.mapkey_capacity   56  the record key's characters: ONE allocation, shared
+meta.records.struct_inline     56  MetadataRecord, and no map key beside it
+meta.records.mapkey_capacity   56  the record key's characters: ONE allocation, ONE holder
 meta.records.value_capacity     0  the value is an eight-byte digest, held INLINE above
 payloads.key_bytes              8  the payload index's key
-METADATA LINE TOTAL          346
+METADATA LINE TOTAL          330
 ```
 
 `the_published_metadata_decomposition_sums_to_the_line` measures each one and fails if this
 block disagrees with the tree or if the parts stop adding up.
 
-**Two of these are already one allocation each, and that is load-bearing rather than
-incidental.** Both maps name the identity twice -- once as the map key and once inside the
-value -- and both times the two holders share. `objects.inner_id_heap` and
-`meta.records.record_key_capacity` therefore read **zero**, and
-`the_identity_each_map_names_twice_is_one_allocation` pins it: unsharing either would add
-back the characters plus a 16-byte header for every object, silently, with no test failing
-on the behaviour.
+**The objects map names the identity twice and the two holders share**, so
+`objects.inner_id_heap` reads **zero**, and
+`the_identity_each_map_names_twice_is_one_allocation` pins it: unsharing it would add back the
+characters plus a 16-byte header for every object, silently, with no test failing on the
+behaviour.
+
+`meta.records` no longer names its key twice at all. The collection is a set ordered by each
+record's own key, so `meta.records.record_key_capacity` reads zero **by construction** rather
+than by a sharing discipline — a type is doing the work a tripwire used to, and the figure is
+kept because it is what the next reader will look for and because reintroducing a second
+holder would move it.
 
 The difference between `mapkey_capacity` and `mapkey_len` is not slack to reclaim. Shared
 text has no spare capacity; the difference is the strong and weak counts in front of the
@@ -199,7 +203,7 @@ characters, sixteen bytes once per allocation.
 
 #### The reductions that are left, and what each one costs
 
-Each is priced against the 346. Two rows have come **off** this list, and both came off the
+Each is priced against the 330. Two rows have come **off** this list, and both came off the
 same way -- by being measured instead of argued. Narrowing an extent's offset and length to 32
 bits was priced at 8 bytes an object and a migration, until the migration turned out not to
 exist: the snapshot still writes two `u64` and only the in-memory form is narrow. Interning
@@ -209,8 +213,8 @@ decision and one representation.
 
 | | saves | what it costs |
 |---|---:|---|
-| The metadata records are a second store of the same objects | **128** | It is the whole of `meta.records`. They no longer RESTATE the objects map — a record holds a name, two stamps and a digest, and the digest is what lets it prove agreement without a second copy. What is left is a separate metadata service's own store, with its own versioning, deletion markers and change log, modelled in this process; removing it means collapsing two services into one, which is a design decision and not a footprint one. |
-| A one-word text handle | **40**, or **24** without unsafe code | `SharedText` is `Arc<str>`, a fat pointer, so every holder spends two words to name one allocation. Seven holders an object carry it -- two keying `objects`, three inside `ObjectMetadata` and two around a metadata record -- so one word each is **56 bytes of inline saving**, measured by construction rather than multiplied, because a narrowed field can leave its padding behind instead of closing up. The allocation pays part of it back by carrying the length the handle stops carrying: one word per allocation, two allocations an object, **net 40**. The shape that needs no unsafe code is `Arc<Box<str>>`, which puts the length in a second allocation instead and nets **24**. Both add a dependent load to a string read, and THAT LOAD IS NOW PRICED. Measured in release over 200,000 names visited in a shuffled order -- shuffled because a constant stride is the pattern a prefetcher exists to hide -- the thin handle costs **2.6x to 3.1x on a length read** and **1.1x to 1.3x on a character read**, four to nine nanoseconds either way. The length case is the whole story: `Arc<str>` carries the length IN THE HANDLE and touches no heap at all, where `Arc<Box<str>>` must reach the box first. The comparison favours the thin handle, whose index is half the size and so has the better locality, and it still loses. `measure_what_a_one_word_text_handle_costs_to_read` prints it. So the trade is 24 bytes an object -- 6.9% of the metadata line -- against roughly tripling the cost of asking a name its length, and the saving is largest for the small objects that do the most string reads per stored byte. |
+| The metadata records are a second store of the same objects | **112** | It is the whole of `meta.records`. They no longer RESTATE the objects map — a record holds a name, two stamps and a digest, and the digest is what lets it prove agreement without a second copy. What is left is a separate metadata service's own store, with its own versioning, deletion markers and change log, modelled in this process; removing it means collapsing two services into one, which is a design decision and not a footprint one. |
+| A one-word text handle | **32**, or **16** without unsafe code | `SharedText` is `Arc<str>`, a fat pointer, so every holder spends two words to name one allocation. Six holders an object carry it -- two keying `objects`, three inside `ObjectMetadata` and one in a metadata record -- so one word each is **48 bytes of inline saving**, measured by construction rather than multiplied, because a narrowed field can leave its padding behind instead of closing up. The allocation pays part of it back by carrying the length the handle stops carrying: one word per allocation, two allocations an object, **net 32**. The shape that needs no unsafe code is `Arc<Box<str>>`, which puts the length in a second allocation instead and nets **16**. Both add a dependent load to a string read, and THAT LOAD IS NOW PRICED. Measured in release over 200,000 names visited in a shuffled order -- shuffled because a constant stride is the pattern a prefetcher exists to hide -- the thin handle costs **2.6x to 3.1x on a length read** and **1.1x to 1.3x on a character read**, four to nine nanoseconds either way. The length case is the whole story: `Arc<str>` carries the length IN THE HANDLE and touches no heap at all, where `Arc<Box<str>>` must reach the box first. The comparison favours the thin handle, whose index is half the size and so has the better locality, and it still loses. `measure_what_a_one_word_text_handle_costs_to_read` prints it. So the trade is 16 bytes an object -- 4.8% of the metadata line -- against roughly tripling the cost of asking a name its length, and the saving is largest for the small objects that do the most string reads per stored byte. |
 
 **Both figures above are measurements now, and the difference has mattered three times.**
 The extent row was priced at 8 bytes and a migration, and the migration turned out not to
