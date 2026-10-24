@@ -13264,8 +13264,22 @@ fn raft_backed_store_exports_and_installs_chunked_snapshots() {
         .store()
         .metadata_record("object/bucket/snapshot-object")
         .unwrap();
-    assert!(restored_record.value.as_text().contains("version=1"));
-    assert!(restored_record.value.as_text().contains("length=192"));
+    // THE RESTORED VALUE IS A DIGEST, NOT THE OBJECT'S FIELDS. What a restored record can
+    // still do is agree with the object: the digest it carries must be the digest of the
+    // object's rendered metadata, which is what makes a restored metaserver able to VERIFY a
+    // value it can no longer reproduce. Taken from the FOLLOWER's own object, so this also
+    // says the follower's two copies of the object agree after an install.
+    let restored_metadata = follower
+        .store()
+        .head_object("bucket", "snapshot-object")
+        .unwrap();
+    assert_eq!(restored_metadata.version, 1);
+    assert_eq!(restored_metadata.length, 192);
+    assert_eq!(
+        restored_record.value,
+        RecordValue::Digest(RecordValue::digest_of_object(&restored_metadata)),
+        "a restored object record must carry the digest of the object it names"
+    );
 }
 
 #[test]
@@ -13543,14 +13557,17 @@ fn raft_backed_store_replays_object_tag_updates() {
         follower.get_object_tags("bucket", "tagged").unwrap(),
         tags(&[("team", "infra")])
     );
+    // The replayed record must agree with the replayed object. Taken from the FOLLOWER's own
+    // object, so a replay that updated one copy and not the other fails here.
     assert_eq!(
         follower
             .metadata_record(&meta_object_key(&ObjectId::new("bucket", "tagged")))
             .unwrap()
-            .value
-            .as_text()
-            .contains("tag_count=1"),
-        true
+            .value,
+        RecordValue::Digest(RecordValue::digest_of_object(
+            &follower.head_object("bucket", "tagged").unwrap()
+        )),
+        "a replayed object record must carry the digest of the replayed object"
     );
     assert_eq!(follower.last_applied_index(), 2);
 }
@@ -30481,8 +30498,14 @@ fn metaserver_projects_object_metadata_and_enforces_leases() {
     let record = store
         .metadata_record(&meta_object_key(&metadata.object_id))
         .unwrap();
-    assert!(record.value.as_text().contains("version=1"));
-    assert!(record.value.as_text().contains("length=6"));
+    // THE RECORD AGREES WITH THE OBJECT, which is a stronger claim than the one that stood
+    // here: `contains("version=1")` also passes for a record describing a DIFFERENT object
+    // that happens to be at version one. The digest is of the whole rendering.
+    assert_eq!(
+        record.value,
+        RecordValue::Digest(RecordValue::digest_of_object(&metadata)),
+        "the record at an object key must carry the digest of that object's metadata"
+    );
     let clean_audit = store
         .audit_object_metadata("bucket", "", None, 10, 1024, MetadataReadOptions::default())
         .unwrap();
@@ -33231,7 +33254,7 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
     }
     let snapshot_bytes = assembled.expect("final metadata snapshot image");
     let mut snapshot_cursor = SnapshotByteCursor::new(&snapshot_bytes);
-    assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSMETA16");
+    assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSMETA17");
     let snapshot = MetaSnapshot::from_bytes(&snapshot_bytes).unwrap();
     assert_eq!(
         snapshot.next_commit_index.saturating_sub(1),
@@ -33969,7 +33992,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSMETA-CONTROL12",
         "MOSRSMETA-FINGERPRINT1",
         "MOSRSMETA-INTEGRITY1",
-        "MOSRSMETA16",
+        "MOSRSMETA17",
         "MOSRSMODULESTATUS32",
         "MOSRSOBJECTREADY77",
         "MOSRSROOT",
@@ -34369,124 +34392,6 @@ fn measure_what_a_metadata_record_value_actually_holds() {
     }
 }
 
-#[test]
-#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
-fn measure_how_much_of_a_record_value_is_scaffolding() {
-    // At 1 KiB objects the store sits at 3.93x where three-way replication
-    // allows 3.00x, and every byte of the difference is metadata: ~933 an
-    // object. The largest single piece is the metadata record's value, 227
-    // bytes of formatted text restating fields the `objects` map already holds
-    // structured.
-    //
-    // Before proposing anything, split those bytes into the part that VARIES
-    // between objects and the part that is the same characters every time --
-    // field names, separators and values that do not differ. The second part is
-    // what a structured representation would remove, and it is the only part
-    // worth a design change.
-    fn env_usize(name: &str, fallback: usize) -> usize {
-        std::env::var(name)
-            .ok()
-            .and_then(|raw| raw.parse().ok())
-            .unwrap_or(fallback)
-    }
-    let objects = env_usize("MEASURE_OBJECTS", 200);
-    let mut store = MatrixObjectStore::new(StoreOptions {
-        volume_count: 2,
-        ..StoreOptions::default()
-    })
-    .unwrap();
-    store.create_bucket("bucket").unwrap();
-    // The objects have to DIFFER from each other or this measures nothing: a
-    // run of identical payloads gives every record the same length and the same
-    // etag, and the split between "the same characters every time" and "varies
-    // per object" then reports the fixture rather than the system. The first
-    // version of this measurement did exactly that and found zero varying
-    // bytes, which is impossible for a store holding different objects.
-    let content_types = [
-        "application/octet-stream",
-        "text/plain",
-        "image/png",
-        "application/json",
-    ];
-    for index in 0..objects {
-        let size = 512 + (index % 97) * 37;
-        store
-            .put_object(
-                "bucket",
-                &format!("prefix/{index:08}/kkkkkkkkkk"),
-                vec![b'a' + (index % 26) as u8; size],
-                content_types[index % content_types.len()],
-            )
-            .unwrap();
-    }
-
-    // Every record value is a run of `name=value` pairs separated by spaces.
-    // The names and the separators are the same in all of them; so is a value
-    // that never differs between objects.
-    let mut total = 0u64;
-    let mut names_and_separators = 0u64;
-    let mut values_that_never_differ = 0u64;
-    let mut values_that_differ = 0u64;
-    let mut seen: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
-        std::collections::BTreeMap::new();
-    let mut records = 0u64;
-    for (_, record) in store.meta_service.records.iter() {
-        if !record.value.as_text().contains('=') {
-            continue;
-        }
-        records += 1;
-        total += record.value.len() as u64;
-        for (position, field) in record.value.as_text().split(' ').enumerate() {
-            let Some((name, value)) = field.split_once('=') else {
-                continue;
-            };
-            // the name, the '=', and the space before every field but the first
-            names_and_separators += name.len() as u64 + 1 + u64::from(position > 0);
-            seen.entry(name.to_string())
-                .or_default()
-                .insert(value.to_string());
-        }
-    }
-    for (_, record) in store.meta_service.records.iter() {
-        if !record.value.as_text().contains('=') {
-            continue;
-        }
-        for field in record.value.as_text().split(' ') {
-            let Some((name, value)) = field.split_once('=') else {
-                continue;
-            };
-            if seen.get(name).map(|set| set.len()) == Some(1) {
-                values_that_never_differ += value.len() as u64;
-            } else {
-                values_that_differ += value.len() as u64;
-            }
-        }
-    }
-    println!("RECORDSHAPE records={records} total={total} per_record={}", total / records.max(1));
-    println!(
-        "RECORDSHAPE names_and_separators={names_and_separators} per_record={}",
-        names_and_separators / records.max(1)
-    );
-    println!(
-        "RECORDSHAPE values_that_never_differ={values_that_never_differ} per_record={}",
-        values_that_never_differ / records.max(1)
-    );
-    println!(
-        "RECORDSHAPE values_that_differ={values_that_differ} per_record={}",
-        values_that_differ / records.max(1)
-    );
-    println!(
-        "RECORDSHAPE removable_per_record={}",
-        (names_and_separators + values_that_never_differ) / records.max(1)
-    );
-    for (name, values) in seen.iter() {
-        println!(
-            "RECORDSHAPE   field {name} distinct_values={} example={}",
-            values.len(),
-            values.iter().next().map(|v| v.as_str()).unwrap_or("")
-        );
-    }
-}
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_what_the_object_metadata_struct_is_made_of() {
@@ -35600,13 +35505,250 @@ fn the_audit_counts_what_the_metadata_service_holds() {
 }
 
 #[test]
-fn the_record_value_conversion_is_free_after_a_snapshot_load_and_better_before_it() {
-    // A record built by a write holds a projection; a record decoded from a snapshot holds the
-    // text the snapshot carried, because that is all a snapshot carries. So the saving applies to
-    // a live store and goes away on load, which is exactly the trade the representation was
-    // chosen for -- and the half that needs checking is that the loaded form is no WORSE than
-    // the `Box<str>` it replaced. If it were, this would be a regression hidden behind an
-    // improvement.
+fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_after() {
+    // This change added a `u64` in front of every record's value in a metadata snapshot. That
+    // is only safe because the decoder reads the version FIRST and gates the field on it --
+    // without the stamp bump that came with it, a snapshot written before this change would be
+    // accepted and the string length in front of the value read as the new field.
+    //
+    // What is checkable here is the RANGE, which is the part this change touched. A build that
+    // narrowed it would refuse every snapshot written before this one; a build that widened it
+    // too far would read a FUTURE version's field as one of its own.
+    //
+    // It does NOT prove an old snapshot decodes: there is no stored snapshot fixture in this
+    // tree, for this version or for any of the sixteen before it, so a round-trip test writes
+    // and reads with the same build and both halves are wrong together. Saying so is the point
+    // -- the gap is in the fixtures, not in the reasoning.
+    fn header(stamp: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_string(&mut bytes, stamp);
+        bytes
+    }
+    fn magic_rejected(stamp: &str) -> bool {
+        match MetaSnapshot::from_bytes(&header(stamp)) {
+            Err(ObjectError::Corruption(message)) => message.contains("magic mismatch"),
+            _ => false,
+        }
+    }
+
+    assert!(
+        !magic_rejected("MOSRSMETA17"),
+        "the version this build writes must not be refused by its own decoder"
+    );
+    assert!(
+        !magic_rejected("MOSRSMETA16"),
+        "the version before this one must still get past the magic, or this change made every \
+         snapshot written before it unreadable"
+    );
+    assert!(
+        magic_rejected("MOSRSMETA18"),
+        "a version after this one must be refused, or a field this build does not know would be \
+         read as one of its own"
+    );
+    assert!(magic_rejected("MOSRSMETA0"), "zero is not a version this format ever had");
+    assert!(
+        magic_rejected("MOSRSMETA017"),
+        "a stamp must match the version it parses as, or `MOSRSMETA017` reads as seventeen"
+    );
+    assert!(
+        magic_rejected("MOSRSROOT17"),
+        "another format's stamp at the same version is not this format's"
+    );
+
+    // NOT VACUOUS. The two accepted stamps above are accepted at the MAGIC and must still fail
+    // on the body, which is what says those assertions are about the version check rather than
+    // about an empty snapshot being tolerated.
+    for stamp in ["MOSRSMETA17", "MOSRSMETA16"] {
+        assert!(
+            MetaSnapshot::from_bytes(&header(stamp)).is_err(),
+            "a header with no body is not a snapshot, whatever its version: {stamp}"
+        );
+    }
+}
+
+#[test]
+fn a_digest_equals_the_text_it_is_a_digest_of_and_refuses_a_corrupt_tag() {
+    // A record at an object key holds a DIGEST; a record anywhere else holds TEXT. Two things
+    // have to hold for that split to be safe, and neither is checked by anything that merely
+    // reads a byte figure.
+    //
+    // FIRST, a digest must EQUAL the text it is a digest of. The listing audit renders a
+    // projection from the live object and compares it to the stored record; if that comparison
+    // went through `as_text`, a correctly written object would read as drifted, because the
+    // stored value spells `fnv1a64:...` and the rendered one spells twelve fields. That exact
+    // bug happened once already, when this equality was derived rather than written.
+    //
+    // SECOND, the digest's spelling is now part of the durable format, and a format with a
+    // writer and no reader is a one-way door. `from_kind_tag` is the reader, and what it does
+    // with bytes that are NOT a digest decides whether a corrupt snapshot is caught or read as
+    // the digest zero.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    let metadata = store
+        .put_object("bucket", "object", b"payload".to_vec(), "text/plain")
+        .unwrap();
+    let record = store
+        .metadata_record(&meta_object_key(&metadata.object_id))
+        .unwrap();
+
+    // The stored value is a digest, and the object is what it is a digest OF.
+    let rendered = metadata_projection_value(&metadata);
+    assert_eq!(
+        record.value,
+        RecordValue::Digest(RecordValue::digest_of_object(&metadata)),
+        "the record at an object key should hold the digest of that object"
+    );
+    assert_eq!(
+        record.value,
+        RecordValue::from(rendered.as_str()),
+        "a digest must equal the text it is a digest of, or every audit that renders a \
+         projection and compares it reads a correct object as drifted"
+    );
+    assert_eq!(
+        RecordValue::from(rendered.as_str()),
+        record.value,
+        "and the equality must hold in both directions, which a hand-written impl can get \
+         wrong one way round"
+    );
+
+    // NOT VACUOUS: a value that is not that text must NOT be equal. Without this the clause
+    // above would pass for an equality that returned true for everything.
+    let mut other = rendered.clone();
+    other.push('x');
+    assert_ne!(
+        record.value,
+        RecordValue::from(other.as_str()),
+        "a digest must not equal text it is not a digest of"
+    );
+
+    // THE SPELLING IS THE DIGEST'S, NOT THE OBJECT'S. This is the trade stated as a test: a
+    // record can no longer be read for the object's fields, which is why the restore is not
+    // self-sufficient.
+    let spelled = record.value.as_text().into_owned();
+    assert!(
+        spelled.starts_with("fnv1a64:") && spelled.len() == 24,
+        "a digest should spell `fnv1a64:` and sixteen hex digits: {spelled}"
+    );
+    assert!(
+        !spelled.contains("version="),
+        "a stored object record no longer spells the object's fields, and a test asserting it \
+         does is asserting the old representation: {spelled}"
+    );
+    assert_eq!(record.value.heap_bytes(), 0, "a digest owns nothing on the heap");
+    assert!(!record.value.is_empty(), "a digest is never empty");
+
+    // THE TAG ROUND-TRIPS, for both shapes, through exactly the pair the encoders write.
+    for value in [
+        record.value.clone(),
+        RecordValue::from("bucket/bucket versioning=off"),
+        RecordValue::empty(),
+    ] {
+        let text = value.as_text().into_owned();
+        let back = RecordValue::from_kind_tag(value.kind_tag(), &text)
+            .expect("a value this tree wrote must read back");
+        assert_eq!(
+            back, value,
+            "a value must survive its own tag and spelling: {text}"
+        );
+        // AND THE SHAPE SURVIVES, not merely the equality. A digest that read back as text
+        // would still compare EQUAL -- by the clause above -- while owning its characters on
+        // the heap, which is the whole saving given away silently.
+        assert_eq!(
+            back.heap_bytes(),
+            value.heap_bytes(),
+            "the shape must survive too, not just the comparison: {text}"
+        );
+    }
+
+    // AND IT REFUSES WHAT IT CANNOT READ, rather than reading it as zero.
+    for (tag, text, why) in [
+        (1u64, "not-a-digest", "no prefix"),
+        (1, "fnv1a64:", "no digits"),
+        (1, "fnv1a64:0123", "too few digits"),
+        (1, "fnv1a64:zzzzzzzzzzzzzzzz", "not hexadecimal"),
+        (2, "fnv1a64:0123456789abcdef", "a shape this build does not know"),
+    ] {
+        assert!(
+            RecordValue::from_kind_tag(tag, text).is_err(),
+            "tag {tag} spelling {text} should be refused -- {why}"
+        );
+    }
+}
+
+#[test]
+fn two_records_spelling_the_same_thing_in_different_shapes_hash_differently() {
+    // `append_metadata_record` is a PURE FUNCTION OF A RECORD: no store is in reach, so the
+    // material a proof hashes cannot depend on a replica's local state. That is the property
+    // the stored value exists to keep, and it is why an object record could not render its text
+    // by asking the storage node.
+    //
+    // The digest keeps it, and adds a consequence worth writing down: a record holding a digest
+    // and a record holding the digest's SPELLING as text are EQUAL -- same characters -- and
+    // hash DIFFERENTLY, because the material states the shape first. That is correct. They are
+    // different records, and a proof that could not tell them apart would be hashing less than
+    // the record contains. It is also safe: within a replica set the shape is decided by the
+    // entry being applied, so two replicas applying the same entry hold the same shape.
+    //
+    // Written as a test because the obvious "fix" -- dropping the tag so equal values hash
+    // alike -- would silently make a corrupt snapshot indistinguishable from a valid one.
+    let digest = RecordValue::Digest(0x0123_4567_89ab_cdef);
+    let spelling = digest.as_text().into_owned();
+    let as_text = RecordValue::from(spelling.as_str());
+    assert_eq!(
+        digest.as_text(),
+        as_text.as_text(),
+        "the two shapes must spell the same thing, or this test is about nothing"
+    );
+
+    let material = |value: &RecordValue| -> Vec<u8> {
+        let mut out = Vec::new();
+        append_metadata_record(
+            &mut out,
+            &MetadataRecord {
+                key: "object/bucket/object".into(),
+                value: value.clone(),
+                version: 7,
+                update_time_ms: 11,
+                deleted: false,
+            },
+        );
+        out
+    };
+
+    // A FUNCTION OF THE RECORD ALONE: the same record twice is the same bytes.
+    assert_eq!(
+        material(&digest),
+        material(&digest),
+        "the material for one record must not depend on anything outside it"
+    );
+    assert_ne!(
+        material(&digest),
+        material(&as_text),
+        "the material must state the shape, or a digest and its own spelling as text would be \
+         indistinguishable in every proof and every snapshot"
+    );
+    // And the difference is the TAG, not the characters: everything after the first eight
+    // bytes of the value field is the same text.
+    assert_ne!(
+        digest.kind_tag(),
+        as_text.kind_tag(),
+        "the two shapes must carry different tags, which is what makes the material differ"
+    );
+}
+
+#[test]
+fn an_object_record_owns_no_heap_before_or_after_a_snapshot_load() {
+    // A record at an object key holds a DIGEST of the object's rendered metadata: eight bytes
+    // inline, nothing on the heap. The half that needs proving is the LOADED half. A snapshot
+    // carries the digest's SPELLING -- `fnv1a64:` and sixteen hex digits -- and a decoder that
+    // read those twenty-four characters back as text would rebuild a boxed string and give the
+    // whole saving away on every restore, silently, while every byte figure in a live store
+    // still looked right.
+    //
+    // So the occupied bytes are asserted EQUAL before and after a round-trip. The previous
+    // representation could not make that claim: a projection shrank a live store and went back
+    // to text on load, and the test that stood here asserted only that the loaded form was no
+    // worse than what it replaced.
     fn records_value_legs(store: &MatrixObjectStore) -> (u64, u64) {
         let audit: std::collections::BTreeMap<String, u64> =
             store.footprint_audit().into_iter().collect();
@@ -35625,16 +35767,24 @@ fn the_record_value_conversion_is_free_after_a_snapshot_load_and_better_before_i
     // and a hundred objects cost seven minutes. The facts this test establishes are structural,
     // so they hold at any size and the smallest honest one is the right one.
     const OBJECTS: u64 = 25;
+    // `fnv1a64:` and sixteen hex digits. Spelled out rather than read off the type, so a change
+    // to the spelling fails here instead of being absorbed.
+    const SPELLED: u64 = 24;
 
-    // A ZERO-OBJECT BASELINE, because not every record is an object projection: creating the
-    // bucket files a record of its own, and it is text. Subtracted rather than tolerated -- a
-    // tolerance would hide a second text record appearing later, which is the drift this is
-    // written to catch.
+    // A ZERO-OBJECT BASELINE, because not every record is an object: creating the bucket files a
+    // record of its own, and a bucket's value is TEXT -- it is the only copy there is, so it
+    // cannot be a digest. Subtracted rather than tolerated; a tolerance would hide a second text
+    // record appearing later, which is the drift this is written to catch.
     let baseline = {
         let mut empty = MatrixObjectStore::new(test_options()).unwrap();
         empty.create_bucket("bucket").unwrap();
         records_value_legs(&empty)
     };
+    assert!(
+        baseline.1 > 0,
+        "the bucket's own record should own heap, or the baseline is not measuring text: {}",
+        baseline.1
+    );
     println!(
         "RECORDVALUESTATES baseline len={} capacity={}",
         baseline.0, baseline.1
@@ -35665,60 +35815,42 @@ fn the_record_value_conversion_is_free_after_a_snapshot_load_and_better_before_i
          loaded len={loaded_len} capacity={loaded_capacity}"
     );
 
-    // THE TEXT IS THE SAME IN BOTH STATES, which is the invariant everything else rests on: the
-    // snapshot carries the characters, so a loaded store spells exactly what the live one did.
+    // THE SPELLING SURVIVES THE ROUND-TRIP, which is what every proof and every checksum over a
+    // set of records rests on.
     assert_eq!(
         live_len, loaded_len,
         "a snapshot round-trip changed what the records spell, which would mean the encoding \
-         and the projection disagree"
+         and the value disagree"
     );
 
-    // LIVE: the projection occupies less than it spells.
-    assert!(
-        live_capacity < live_len,
-        "a live store should hold projections, which occupy less than they spell: {live_capacity} \
-         against {live_len}"
-    );
-
-    // LOADED: text, so it occupies exactly what it spells -- no slack, because the decoded value
-    // is a boxed string. That is the `Box<str>` figure this conversion replaced, so the worst
-    // case is EQUAL and not worse.
+    // AND SO DOES THE OCCUPANCY. Both halves are asserted against the BASELINE rather than
+    // against each other: two stores that had both rebuilt text would also agree with each
+    // other, and the comparison alone would pass.
     assert_eq!(
-        loaded_capacity, loaded_len,
-        "a loaded store holds text, which has no spare capacity, so capacity must equal len: \
-         {loaded_capacity} against {loaded_len}"
+        live_capacity, baseline.1,
+        "an object record's value should own no heap at all, so a live store should owe exactly \
+         what the bucket's own text record owes: {live_capacity} against {}",
+        baseline.1
     );
-    assert!(
-        loaded_capacity >= live_capacity,
-        "the loaded form must not be cheaper than the live one, or the claim is the wrong way \
-         round: {loaded_capacity} against {live_capacity}"
-    );
-
-    // STRUCTURAL, so it holds at any probe size: a live record's value occupies exactly the
-    // projection box and nothing else. Pinning the SAVING as a constant would pin the probe --
-    // these records average 229 characters where a canonical projection spells 227, so the
-    // figure moves with the key lengths and the version digits.
-    let projection_box = std::mem::size_of::<ObjectProjection>() as u64;
     assert_eq!(
-        live_capacity - baseline.1,
-        OBJECTS * projection_box,
-        "every record an object added should occupy one projection box of {projection_box} \
-         bytes: {live_capacity} less the {} the bucket's own record costs, against {}",
+        loaded_capacity,
         baseline.1,
-        OBJECTS * projection_box
+        "a loaded store should owe the same, and a decoder that read the digest's spelling back \
+         as text would owe {} more: {loaded_capacity} against {}",
+        OBJECTS * SPELLED,
+        baseline.1
     );
 
-    // The saving is PRINTED with its denominator named, not asserted as a constant.
-    let saved_per_record = (loaded_capacity - live_capacity) / OBJECTS;
-    let spelled_per_record = (loaded_len - baseline.0) / OBJECTS;
+    // WHAT A RECORD SPELLS, asserted rather than printed: the digest's spelling is part of the
+    // durable format now, and a change to it moves every snapshot and every proof.
+    let spelled_per_record = (live_len - baseline.0) / OBJECTS;
+    assert_eq!(
+        spelled_per_record, SPELLED,
+        "an object record should spell a digest: {spelled_per_record} characters against {SPELLED}"
+    );
     println!(
         "RECORDVALUESTATES objects={OBJECTS} spelled_per_record={spelled_per_record} \
-         occupied_live={projection_box} saved_per_record={saved_per_record}"
-    );
-    assert_eq!(
-        saved_per_record,
-        spelled_per_record - projection_box,
-        "the saving is what a record spells minus the box it occupies"
+         occupied_per_record=0"
     );
 }
 
@@ -36855,173 +36987,168 @@ fn measure_what_a_one_word_text_handle_costs_to_read() {
 
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
-fn measure_the_route_to_under_a_hundred_bytes_a_metadata_record() {
-    // The metaserver's share of the line is 200 bytes an object, against a per-key record of
-    // TWENTY-FOUR in the time-series engine beside it. The difference is what the record IS:
-    // there it locates the data -- an address, a size, a deadline, flags -- and here it
-    // RESTATES the object, thirteen fields of it, behind a box.
+fn measure_the_route_to_eighty_bytes_a_metadata_record() {
+    // The boxed projection is GONE -- a record at an object key holds an eight-byte digest
+    // inline -- so what is left is three parts, and two of them are the object's own name:
     //
-    // 16 map key handle + 16 duplicate key handle + 16 RecordValue + 24 scalars
-    //    + 56 key characters + 72 boxed projection = 200
+    //   16  the map key's handle
+    //   56  the record struct: 16 key handle + 16 value + 8 version + 8 time + 8 for a bool
+    //   56  the key's characters: 40 of them behind a 16-byte Arc header
+    //  ---
+    //   128
     //
-    // Mirrors sized by the compiler, controls asserted equal to the real types first.
+    // Every candidate below is a mirror sized by the compiler, and every control is asserted
+    // equal to the real type FIRST -- arithmetic has lost to the compiler three times in this
+    // file, and a mirror measured against a stale baseline reads as a finding when it is a
+    // drift.
     use std::mem::size_of;
 
+    assert_eq!(size_of::<SharedText>(), 16, "a shared handle should be a fat pointer");
     assert_eq!(
-        size_of::<MetadataRecord>() + size_of::<SharedText>(),
-        72,
-        "the record plus the map key's handle should be the 72 the document publishes as \
-         meta.records.struct_inline"
+        size_of::<RecordValue>(),
+        16,
+        "the value should be the 16 its own doc claims: a boxed string or a digest, and the \
+         niche absorbs both the discriminant and the digest's own eight bytes"
     );
     assert_eq!(
-        size_of::<ObjectProjection>(),
-        64,
-        "and the boxed projection should be the 64 published as value_capacity -- the three
-         holds moved behind a pointer"
+        size_of::<MetadataRecord>(),
+        56,
+        "the record struct should be 56: two handles, two stamps and a bool in its own word"
     );
 
     #[allow(dead_code)]
-    struct ProjectionControl {
+    struct RecordControl {
+        key: SharedText,
+        value: RecordValue,
         version: u64,
-        length: u64,
-        etag_digest_bits: u64,
-        has_etag: bool,
-        content_type: SharedText,
-        metadata_count: u32,
-        storage_class: StorageClass,
+        update_time_ms: u64,
         deleted: bool,
-        extent_count: u32,
-        tag_count: u32,
-        holds: Option<Box<ProjectedHolds>>,
     }
-    let control = size_of::<ProjectionControl>();
     assert_eq!(
-        control,
-        size_of::<ObjectProjection>(),
-        "the projection control has drifted, so nothing below means anything"
+        size_of::<RecordControl>(),
+        size_of::<MetadataRecord>(),
+        "the record control has drifted, so nothing below means anything"
     );
 
-    // (a) THE CONTENT TYPE AS AN INDEX. Already interned behind a table bounded by a count,
-    // and still held as a fat pointer.
+    // (a) THE BOOL HAS ITS OWN EIGHT-BYTE WORD. `deleted` is one bit and `version` is a
+    // counter that will not reach 2^63. The wire writes the flag as its own `u64` and reads
+    // it back with `read_bool`, so an accessor returning the bit keeps both byte-identical.
     #[allow(dead_code)]
-    struct IndexedContentType {
-        version: u64,
-        length: u64,
-        etag_digest_bits: u64,
-        has_etag: bool,
-        content_type: u16,
-        metadata_count: u32,
-        storage_class: StorageClass,
-        holds: Option<Box<ProjectedHolds>>,
-        deleted: bool,
-        extent_count: u32,
-        tag_count: u32,
+    struct FoldedFlag {
+        key: SharedText,
+        value: RecordValue,
+        version_and_deleted: u64,
+        update_time_ms: u64,
     }
 
-    // (b) THE THREE COUNTS ARE NOT 32-BIT QUANTITIES. A user-metadata entry count, a tag
-    // count and an extent count are each bounded far below 65,536 by the store's own limits.
+    // (b) THE VALUE AS TEXT OR A DIGEST, AS AN ENUM. A record at an object key could hold a
+    // digest of the text instead of the text, because the object itself is the authority. A
+    // record at a bucket, lifecycle or multipart key could NOT -- its text is the only copy
+    // there is -- so the value has to be able to hold either, and the question is whether an
+    // enum over the two still fits in sixteen bytes or grows to twenty-four.
     #[allow(dead_code)]
-    struct NarrowCounts {
-        version: u64,
-        length: u64,
-        etag_digest_bits: u64,
-        has_etag: bool,
-        content_type: SharedText,
-        metadata_count: u16,
-        storage_class: StorageClass,
-        holds: Option<Box<ProjectedHolds>>,
-        deleted: bool,
-        extent_count: u16,
-        tag_count: u16,
+    enum TextOrDigest {
+        Text(Box<str>),
+        Digest(u64),
     }
 
-    // (c) THE TWO RETENTION STAMPS AND THE HOLD ARE RARE. An object under neither a
-    // restore nor a retention nor a legal hold pays sixteen bytes to say so -- the same
-    // shape `ObjectLock` already uses on the object side, whose doc says an object under
-    // none of the three should pay eight rather than twenty-five.
+    // (c) THE SAME THING AS A TAGGED PAIR OF WORDS, which cannot grow: a digest with the low
+    // bit of the first word set, a boxed string otherwise. Sized here only to say what (b)
+    // costs by comparison -- it needs `unsafe` to read back, and this file is not where that
+    // is decided.
     #[allow(dead_code)]
-    struct BoxedRetention {
-        version: u64,
-        length: u64,
-        etag_digest_bits: u64,
-        has_etag: bool,
-        content_type: SharedText,
-        metadata_count: u32,
-        storage_class: StorageClass,
-        deleted: bool,
-        extent_count: u32,
-        tag_count: u32,
-        retention: Option<Box<ProjectedHolds>>,
+    struct TaggedValue {
+        tag_or_pointer: u64,
+        length_or_digest: u64,
     }
 
-    // (d) ALL THREE.
+    // (d) THE RECORD WITHOUT ITS KEY. The map it lives in is keyed by the same characters
+    // through the same allocation, so the record's handle is a second holder of one
+    // allocation.
+    #[allow(dead_code)]
+    struct KeylessRecord {
+        value: RecordValue,
+        version_and_deleted: u64,
+        update_time_ms: u64,
+    }
+
+    // (e) ALL OF IT: no key, the flag folded, the value a tagged pair.
     #[allow(dead_code)]
     struct Everything {
-        version: u64,
-        length: u64,
-        etag_digest_bits: u64,
-        has_etag: bool,
-        content_type: u16,
-        metadata_count: u16,
-        storage_class: StorageClass,
-        deleted: bool,
-        extent_count: u16,
-        tag_count: u16,
-        retention: Option<Box<ProjectedHolds>>,
+        value: TaggedValue,
+        version_and_deleted: u64,
+        update_time_ms: u64,
     }
 
-    // (e) THE CLEAN SUBSET: (b) and (c), without the content type. (a) needs the shared
-    // content-type table to be addressable by index, and it is bounded by a COUNT of 256
-    // with an object past the bound owning its own string -- which a `u16` cannot
-    // represent, and an enum over the two cases is sixteen bytes again. So (a) is not
-    // available, and this is what is.
-    #[allow(dead_code)]
-    struct CleanSubset {
-        version: u64,
-        length: u64,
-        etag_digest_bits: u64,
-        has_etag: bool,
-        content_type: SharedText,
-        metadata_count: u16,
-        storage_class: StorageClass,
-        deleted: bool,
-        extent_count: u16,
-        tag_count: u16,
-        retention: Option<Box<ProjectedHolds>>,
-    }
-    let rows: [(&str, usize); 5] = [
-        ("a. the content type as an index (BLOCKED: the table is bounded by a count)",
-         size_of::<IndexedContentType>()),
-        ("b. the three counts as 16-bit", size_of::<NarrowCounts>()),
-        ("c. the retention stamps behind a pointer", size_of::<BoxedRetention>()),
-        ("d. all three together", size_of::<Everything>()),
-        ("e. the CLEAN subset, b and c only", size_of::<CleanSubset>()),
-    ];
-    println!("METAREC control={control} record={} handle={}",
-        size_of::<MetadataRecord>(), size_of::<SharedText>());
-    for (what, size) in rows {
-        println!("METAREC {what}: {control} -> {size}, saves {}", control as i64 - size as i64);
-    }
-
-    // WHERE THE METASERVER LANDS. The projection is the only part of the 200 that is not a
-    // migration: the duplicate key handle is encoded into the snapshot and the record travels
-    // without its map, and the Arc header exists only to serve that duplicate.
-    let now = 16 + 16 + 16 + 24 + 56 + control;
-    // The holds fold has LANDED, so the control is the struct after it and (c) is no
-    // longer a candidate -- it is the baseline.
-    assert_eq!(control, 64, "the control should be the projection after the holds fold");
-    let after = 16 + 16 + 16 + 24 + 56 + size_of::<CleanSubset>();
-    println!("METAREC metaserver now={now} after_the_projection={after}");
-    assert_eq!(now, 192, "the metaserver share should be the 192 published, and it is {now}");
-    // AND WHAT IT WOULD TAKE TO REACH A HUNDRED, stated so the next reader does not have to
-    // re-derive it: dropping the duplicate handle and its Arc header is -32 and a migration,
-    // which would leave 168 - (control - Everything).
+    let record = size_of::<MetadataRecord>();
     println!(
-        "METAREC with the migration too={}",
-        after - 32
+        "EIGHTY control record={record} value={} folded={} \
+         text_or_digest={} tagged={} keyless={} everything={}",
+        size_of::<RecordValue>(),
+        size_of::<FoldedFlag>(),
+        size_of::<TextOrDigest>(),
+        size_of::<TaggedValue>(),
+        size_of::<KeylessRecord>(),
+        size_of::<Everything>(),
+    );
+    // THE DIGEST HAS LANDED, so `TextOrDigest` is no longer a candidate -- it is a mirror of
+    // the real `RecordValue`, and it is kept only to say that the sixteen bytes are a
+    // measured fact rather than a hope about niche layout, and that the `unsafe` tagged pair
+    // beside it buys nothing.
+    assert_eq!(
+        size_of::<TextOrDigest>(),
+        size_of::<RecordValue>(),
+        "the value mirror has drifted from the real type, so nothing below means anything"
+    );
+
+    // THE KEY'S CHARACTERS. `object/{bucket}/{key}` at the published fixture's shape is 40
+    // characters. Shared, they cost a 16-byte Arc header once however many holders name them;
+    // owned by one holder, they cost nothing beyond themselves.
+    const CHARS: usize = 40;
+    const SHARED_HEADER: usize = 16;
+    let shared_chars = CHARS + SHARED_HEADER;
+
+    // THE LADDER. Each rung is the per-object total, and each is the SUM OF MEASURED PARTS
+    // rather than a figure carried forward by hand.
+    let map_handle = size_of::<SharedText>();
+    let now = map_handle + record + shared_chars;
+    assert_eq!(now, 128, "the rung we are standing on should be the published 128, not {now}");
+
+    let folded = map_handle + size_of::<FoldedFlag>() + shared_chars;
+    let keyless = map_handle + size_of::<KeylessRecord>() + shared_chars;
+    // A key nothing else holds wants no header. What that costs is a copy of the characters
+    // for every OTHER resident holder -- the change log holds one per retained change, and it
+    // is bounded by `change_log_retention_limit`, so the cost is a fixed term and the saving
+    // is a slope. That is the one rung below that carries a trade rather than being free.
+    let owned_key = map_handle + size_of::<KeylessRecord>() + CHARS;
+
+    println!("EIGHTY rung now={now}");
+    println!("EIGHTY rung the_flag_folded={folded} saves={}", now - folded);
+    println!("EIGHTY rung and_the_key_dropped={keyless} saves={}", now - keyless);
+    println!("EIGHTY rung and_the_header_gone={owned_key} saves={}", now - owned_key);
+    // AND WHAT IS LEFT AT THE BOTTOM is the object's own name and one handle to it. Eighty
+    // needs the records map SPLIT BY KIND so an object record's value slot can be eight bytes
+    // rather than sixteen: the slot is wide enough for a boxed string because a bucket record
+    // shares the map and its text is the only copy there is.
+    println!(
+        "EIGHTY floor name_chars={CHARS} one_handle={map_handle} two_stamps={} \
+         value_slot={} -- and a split map would make the slot {}",
+        2 * size_of::<u64>(),
+        size_of::<RecordValue>(),
+        size_of::<u64>(),
+    );
+
+    // WHAT THE FIXED TERM PAYS FOR THE HEADER'S REMOVAL, stated so the trade is a number
+    // rather than a judgement. One copy of the characters per retained change.
+    const RETENTION: usize = 1024;
+    println!(
+        "EIGHTY the header trades {} bytes an object against {} bytes of fixed term, \
+         so it pays above {} objects",
+        SHARED_HEADER,
+        RETENTION * CHARS,
+        (RETENTION * CHARS) / SHARED_HEADER.max(1),
     );
 }
-
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_route_to_under_a_hundred_bytes_an_object() {
@@ -37342,35 +37469,6 @@ fn measure_what_a_one_word_text_handle_would_save() {
         deleted: bool,
     }
 
-    #[allow(dead_code)]
-    struct ProjectionControl {
-        version: u64,
-        length: u64,
-        etag_digest_bits: u64,
-        has_etag: bool,
-        content_type: SharedText,
-        metadata_count: u32,
-        storage_class: StorageClass,
-        holds: Option<Box<ProjectedHolds>>,
-        deleted: bool,
-        extent_count: u32,
-        tag_count: u32,
-    }
-    #[allow(dead_code)]
-    struct ProjectionThin {
-        version: u64,
-        length: u64,
-        etag_digest_bits: u64,
-        has_etag: bool,
-        content_type: OneWord,
-        metadata_count: u32,
-        storage_class: StorageClass,
-        holds: Option<Box<ProjectedHolds>>,
-        deleted: bool,
-        extent_count: u32,
-        tag_count: u32,
-    }
-
     let size = std::mem::size_of::<OneWord>();
     assert_eq!(size, 8, "the candidate handle is one word, or this measures nothing");
     assert_eq!(
@@ -37397,14 +37495,15 @@ fn measure_what_a_one_word_text_handle_would_save() {
         std::mem::size_of::<MetadataRecord>(),
         "the MetadataRecord mirror has drifted from MetadataRecord"
     );
-    assert_eq!(
-        std::mem::size_of::<ProjectionControl>(),
-        std::mem::size_of::<ObjectProjection>(),
-        "the ObjectProjection mirror has drifted from ObjectProjection"
-    );
 
-    // The four legs of the metadata line that hold text handles, named as the
+    // The three legs of the metadata line that hold text handles, named as the
     // footprint document names them.
+    //
+    // THERE WERE FOUR. The fourth was the handle inside the stored projection, and a record
+    // stores an eight-byte digest now -- no handle, so no saving available to anyone. Leaving
+    // the leg in would have published eight bytes an object that cannot be collected, which is
+    // precisely the stale-baseline mistake a mirror makes when the type it mirrors stops being
+    // resident.
     let legs = [
         (
             "objects.mapkey_inline",
@@ -37421,11 +37520,6 @@ fn measure_what_a_one_word_text_handle_would_save() {
             std::mem::size_of::<SharedText>() + std::mem::size_of::<RecordControl>(),
             std::mem::size_of::<OneWord>() + std::mem::size_of::<RecordThin>(),
         ),
-        (
-            "meta.records.value_capacity",
-            std::mem::size_of::<ProjectionControl>(),
-            std::mem::size_of::<ProjectionThin>(),
-        ),
     ];
 
     let mut saved = 0usize;
@@ -37434,8 +37528,8 @@ fn measure_what_a_one_word_text_handle_would_save() {
         saved += control - thin;
     }
 
-    // Padding is why this had to be measured rather than multiplied. Eight
-    // handles at eight bytes each is sixty-four, and the structs do not
+    // Padding is why this had to be measured rather than multiplied. Seven
+    // handles at eight bytes each is fifty-six, and the structs do not
     // necessarily give all of it back: a narrower field can leave padding
     // behind it instead of closing up.
     println!("HANDLE inline saving per object = {saved}");
@@ -37468,119 +37562,99 @@ fn measure_what_a_one_word_text_handle_would_save() {
 }
 
 #[test]
-#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
-fn measure_whether_a_projection_can_be_parsed_back() {
-    // The packed projection spells the text exactly, which is half of what a
-    // conversion needs. The other half is the DECODE: a snapshot stores the
-    // text, so a restored record can only be packed again if the text can be
-    // read back into twelve values.
+fn a_hold_reaches_the_digest_and_an_object_under_none_spells_zeros() {
+    // A record at an object key holds a digest of the object's RENDERED metadata, and the
+    // three holds -- a restore, a retention, a legal hold -- are three of the twelve fields
+    // that get rendered. So they have to reach the digest.
     //
-    // It cannot in general, and nothing stops it. There is no
-    // validate_content_type -- storage_class is a closed set of four and the
-    // content type is whatever the caller passed -- so a content type carrying
-    // a space puts an unquoted space inside a space-separated format, and one
-    // carrying `=` puts a second `k=v` where a parser expects a value.
-    let mut store = MatrixObjectStore::new(StoreOptions {
-        volume_count: 2,
-        ..StoreOptions::default()
-    })
-    .unwrap();
-    store.create_bucket("bucket").unwrap();
-    for (index, content_type) in [
-        "application/octet-stream",
-        "text/plain; charset=utf-8",
-        "x metadata_count=9 storage_class=GLACIER",
-    ]
-    .iter()
-    .enumerate()
-    {
-        let key = format!("object{index}");
-        store
-            .put_object("bucket", &key, vec![b'x'; 8], *content_type)
-            .unwrap();
-        let metadata = store
-            .objects
-            .get(&ObjectId::new("bucket", &key))
-            .expect("the object was just written");
-        let text = metadata_projection_value(metadata);
-        // The field count a naive parser would see, against the twelve there are.
-        let fields = text.split(' ').filter(|part| part.contains('=')).count();
-        println!("PARSEBACK content_type={content_type:?} fields_seen={fields} of 12");
-        println!("PARSEBACK   {text}");
-        assert_eq!(
-            ObjectProjection::from_metadata(metadata).to_text(),
-            text,
-            "packing still spells it exactly, whatever the content type"
-        );
-    }
-    // And the pair that matters for a proof: two DIFFERENT states cannot
-    // produce the same text, because an injected copy of the literals adds
-    // length that the real fields still follow. So the format is unparseable
-    // without being ambiguous -- it is safe to hash and unsafe to read back.
-    let a = store
-        .objects
-        .get(&ObjectId::new("bucket", "object1"))
-        .unwrap();
-    let b = store
-        .objects
-        .get(&ObjectId::new("bucket", "object2"))
-        .unwrap();
-    assert_ne!(
-        metadata_projection_value(a),
-        metadata_projection_value(b),
-        "two states must not share a projection"
-    );
-}
-
-#[test]
-fn a_projection_holds_nothing_for_an_object_under_no_hold() {
-    // The three holds sit behind a pointer now, and `RecordValue` compares `Projection` to
-    // `Projection` with a DERIVED `PartialEq` -- so a `None` box and an all-zero box would
-    // be different values while spelling identical text, which the type's own doc forbids:
-    // two values that spell the same thing are the same value.
+    // If `legal_hold()` ever returned a constant, placing a legal hold would leave the
+    // record's value UNCHANGED and the metadata service could not see the change at all.
+    // Nothing else would fail: the object's own copy would be right, every byte figure would
+    // be right, and the two services would silently disagree about an object under a hold.
     //
-    // So the constructor must never build an all-zero box, and this asserts that rather
-    // than trusting the `.then(..)` to keep saying so.
+    // The guard that stood here asserted the holds owed no HEAP for an object under none of
+    // the three, because a stored projection charged the audit for its box. Nothing stores a
+    // projection now, so that figure does not exist -- but this property does, and it is the
+    // more important of the two.
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store.create_bucket("bucket").unwrap();
     store
         .put_object("bucket", "plain", b"x".to_vec(), "text/plain")
         .unwrap();
-    let plain = ObjectProjection::from_metadata(&store.head_object("bucket", "plain").unwrap());
-    assert_eq!(
-        plain.holds_heap_bytes(),
-        0,
-        "an object under no restore, no retention and no legal hold owes nothing for them"
-    );
+    let plain_metadata = store.head_object("bucket", "plain").unwrap();
+    let plain = ObjectProjection::from_metadata(&plain_metadata);
+
+    // AN OBJECT UNDER NONE OF THE THREE STILL SPELLS THE ZEROS. The rendered text is what is
+    // digested, so a field that stopped being spelled would change every object's digest.
     assert_eq!(plain.restore_until_ms(), 0);
     assert_eq!(plain.retention_until_ms(), 0);
     assert!(!plain.legal_hold());
+    for spelled in ["restore_until_ms=0", "legal_hold=false", "retention_until_ms=0"] {
+        assert!(
+            plain.to_text().contains(spelled),
+            "a projection with no holds still spells {spelled}: {}",
+            plain.to_text()
+        );
+    }
 
-    // AND THE TEXT IS THE SAME EITHER WAY, which is the property the box must not break:
-    // the rendered characters are what every proof and every snapshot carries.
-    assert!(
-        plain.to_text().contains("restore_until_ms=0"),
-        "a projection with no holds still spells the zeros: {}",
-        plain.to_text()
-    );
-    assert!(plain.to_text().contains("legal_hold=false"));
-    assert!(plain.to_text().contains("retention_until_ms=0"));
+    // AND FLIPPING ONE OF THEM CHANGES THE DIGEST. One field, on a clone of the same object,
+    // so nothing else can account for the difference -- not the version, not the length, not
+    // the etag. The rendered text carries no object name, which is what makes this isolation
+    // exact: these two metadata values differ in the legal hold and in nothing else.
+    for (what, mutate) in [
+        (
+            "a legal hold",
+            Box::new(|m: &mut ObjectMetadata| m.lock.legal_hold = true)
+                as Box<dyn Fn(&mut ObjectMetadata)>,
+        ),
+        (
+            "a retention",
+            Box::new(|m: &mut ObjectMetadata| m.lock.retention_until_ms = 1_700_000_000_000),
+        ),
+        (
+            "a restore",
+            Box::new(|m: &mut ObjectMetadata| m.lock.restore_until_ms = 1_700_000_000_000),
+        ),
+    ] {
+        let mut held_metadata = plain_metadata.clone();
+        mutate(&mut held_metadata);
+        assert_ne!(
+            RecordValue::of_object(&plain_metadata),
+            RecordValue::of_object(&held_metadata),
+            "{what} must change the record's digest, or the metadata service cannot see it"
+        );
+        assert_ne!(
+            ObjectProjection::from_metadata(&held_metadata).to_text(),
+            plain.to_text(),
+            "{what} must change the rendered text, which is what the digest is taken of"
+        );
+    }
 
-    // NOT VACUOUS: an object that DOES carry one allocates, so the zero above is a
-    // statement about this object and not about the accessor always returning zero.
+    // AND IT REACHES THE STORED RECORD, not merely the renderer: the write path has to
+    // re-derive the digest when a hold is placed.
     store
         .put_object("bucket", "held", b"x".to_vec(), "text/plain")
         .unwrap();
+    let before = store
+        .metadata_record(&meta_object_key(&ObjectId::new("bucket", "held")))
+        .unwrap()
+        .value;
     store.set_object_legal_hold("bucket", "held", true).unwrap();
-    let held = ObjectProjection::from_metadata(&store.head_object("bucket", "held").unwrap());
-    assert!(
-        held.holds_heap_bytes() > 0,
-        "an object under a legal hold keeps the three behind a pointer"
-    );
-    assert!(held.legal_hold());
+    let after = store
+        .metadata_record(&meta_object_key(&ObjectId::new("bucket", "held")))
+        .unwrap()
+        .value;
     assert_ne!(
-        plain, held,
-        "and the two are different values, which the derived equality must still see"
+        before, after,
+        "placing a legal hold must move the stored record's value, or the two services \
+         disagree about an object under a hold"
+    );
+    let held_metadata = store.head_object("bucket", "held").unwrap();
+    assert!(held_metadata.lock.legal_hold, "the hold should be on the object");
+    assert_eq!(
+        after,
+        RecordValue::of_object(&held_metadata),
+        "and the stored value must be the digest of the object as it now stands"
     );
 }
 
@@ -45595,7 +45669,7 @@ fn a_storage_class_is_one_byte_and_its_wire_is_still_a_name() {
     assert_eq!(
         std::mem::size_of::<ObjectProjection>(),
         64,
-        "the same in the projection -- the storage class took 88 to 72 -- and the three          holds behind a pointer have since taken 72 to 64"
+        "the same in the projection -- the storage class took 88 to 72 -- and the three holds behind a pointer have since taken 72 to 64"
     );
 
     let mut store = MatrixObjectStore::new(StoreOptions {

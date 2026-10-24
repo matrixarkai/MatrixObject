@@ -10,6 +10,12 @@ pub(crate) fn append_metadata_mutation(out: &mut Vec<u8>, mutation: &MetadataMut
 
 pub(crate) fn append_metadata_record(out: &mut Vec<u8>, record: &MetadataRecord) {
     append_string(out, &record.key);
+    // THE SHAPE, THEN THE CHARACTERS, and `read_metadata_record` reads them in that
+    // order. This function is both the durable encoding of a receipt's embedded records
+    // and the material a proof hashes, so the tag lands in both -- which is the point: a
+    // digest and a text that spelled the same thing are different records, and a proof
+    // that could not tell them apart would be hashing less than the record.
+    append_u64(out, record.value.kind_tag());
     append_string(out, &record.value.as_text());
     append_u64(out, record.version);
     append_u64(out, record.update_time_ms);

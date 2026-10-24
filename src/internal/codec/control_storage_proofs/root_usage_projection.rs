@@ -259,15 +259,6 @@ impl ObjectProjection {
         self.holds.as_deref().is_some_and(|holds| holds.legal_hold)
     }
 
-    /// What the holds own on the heap, which the audit needs: an object under none of the
-    /// three owes nothing for them.
-    pub(crate) fn holds_heap_bytes(&self) -> u64 {
-        match self.holds {
-            Some(_) => std::mem::size_of::<ProjectedHolds>() as u64,
-            None => 0,
-        }
-    }
-
     /// The same bytes `metadata_projection_value` produces, which is the whole
     /// requirement: `the_packed_projection_spells_the_same_text` asserts it
     /// against a seeded store rather than against a reading of the format.
@@ -297,23 +288,27 @@ impl ObjectProjection {
 
 /// What a metadata record holds as its value.
 ///
-/// A record at an object key holds a projection of that object; a record at a
-/// bucket, lifecycle or multipart key holds arbitrary text, and so does any
-/// record a metadata transaction wrote directly. Both shapes are BOXED, which
-/// is what keeps this sixteen bytes inline -- the same as the `Box<str>` it
-/// replaces, because a `Box` is non-null and the niche absorbs the
-/// discriminant. So a record that still holds text costs exactly what it cost
-/// before, and one holding a projection costs 112 bytes instead of 243.
+/// A record at an object key holds a DIGEST of the object's rendered metadata;
+/// a record at a bucket, lifecycle or multipart key holds the text itself, and
+/// so does any record a metadata transaction wrote directly.
 ///
-/// An inline projection would be 96 bytes inline and look better: 96 against
-/// 243 for a packed record. It would also be 323 for a text one, so a store
-/// that had just loaded a snapshot would be worse off until every record was
-/// rewritten. `measure_what_each_record_value_representation_would_cost`
-/// prints all three.
+/// # WHY AN OBJECT'S VALUE CAN BE A DIGEST AND A BUCKET'S CANNOT
+///
+/// The characters at an object key are a RENDERING of the object, and the
+/// object is the authority: anything that needs them can ask it. The characters
+/// at a bucket key are the only copy there is, so a digest would destroy them.
+/// That asymmetry is the whole design, and it is why this is an enum rather
+/// than one representation.
+///
+/// Sixteen bytes inline either way. A `Box<str>` is a non-null fat pointer, so
+/// the niche absorbs both the discriminant and the digest's own eight bytes --
+/// measured, not assumed, by `measure_the_route_to_eighty_bytes_a_metadata_record`,
+/// which is also what ruled out a hand-rolled tagged pointer: it is the same
+/// sixteen and needs `unsafe` to read back.
 #[derive(Clone, Debug)]
 pub enum RecordValue {
     Text(Box<str>),
-    Projection(Box<ObjectProjection>),
+    Digest(u64),
 }
 
 /// Equality is on the CHARACTERS, not on the variant.
@@ -337,8 +332,15 @@ impl PartialEq for RecordValue {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (RecordValue::Text(left), RecordValue::Text(right)) => left == right,
-            (RecordValue::Projection(left), RecordValue::Projection(right)) => left == right,
-            _ => self.as_text() == other.as_text(),
+            (RecordValue::Digest(left), RecordValue::Digest(right)) => left == right,
+            // A DIGEST EQUALS THE TEXT IT IS A DIGEST OF. Not the digest's own
+            // spelling -- comparing `as_text` to `as_text` would make a stored
+            // digest differ from the freshly rendered projection it was taken
+            // from, which is the exact drift this impl exists to prevent.
+            (RecordValue::Digest(digest), RecordValue::Text(text))
+            | (RecordValue::Text(text), RecordValue::Digest(digest)) => {
+                *digest == fnv1a64(text.as_bytes())
+            }
         }
     }
 }
@@ -355,8 +357,46 @@ impl RecordValue {
         RecordValue::Text(Box::from(""))
     }
 
+    /// The digest of an object's rendered metadata.
+    ///
+    /// `ObjectProjection` is still the renderer -- it is what defines the
+    /// characters, and `the_packed_projection_spells_the_same_text` is what
+    /// keeps that definition honest. It is no longer what gets STORED.
     pub(crate) fn of_object(metadata: &ObjectMetadata) -> Self {
-        RecordValue::Projection(Box::new(ObjectProjection::from_metadata(metadata)))
+        RecordValue::Digest(Self::digest_of_object(metadata))
+    }
+
+    pub(crate) fn digest_of_object(metadata: &ObjectMetadata) -> u64 {
+        fnv1a64(ObjectProjection::from_metadata(metadata).to_text().as_bytes())
+    }
+
+    /// Which shape the value is, for a durable encoding that must not guess.
+    ///
+    /// The key cannot be used to tell them apart: `meta_object_key` returns a
+    /// BUCKET key for an object whose key is empty, so an object-keyed test
+    /// would misread those. The encoding states the shape instead.
+    pub(crate) fn kind_tag(&self) -> u64 {
+        match self {
+            RecordValue::Text(_) => 0,
+            RecordValue::Digest(_) => 1,
+        }
+    }
+
+    /// Rebuild a value from what a snapshot or journal stated.
+    pub(crate) fn from_kind_tag(tag: u64, text: &str) -> Result<Self, ObjectError> {
+        match tag {
+            0 => Ok(RecordValue::Text(text.into())),
+            1 => parse_etag_digest(text)
+                .map(RecordValue::Digest)
+                .ok_or_else(|| {
+                    ObjectError::Corruption(format!(
+                        "metadata record value is tagged as a digest and spells {text}"
+                    ))
+                }),
+            other => Err(ObjectError::Corruption(format!(
+                "metadata record value kind {other} is not a shape this build knows"
+            ))),
+        }
     }
 
     /// The text the record has always carried. Borrowed when it is stored and
@@ -365,8 +405,10 @@ impl RecordValue {
     pub fn as_text(&self) -> std::borrow::Cow<'_, str> {
         match self {
             RecordValue::Text(text) => std::borrow::Cow::Borrowed(text),
-            RecordValue::Projection(projection) => {
-                std::borrow::Cow::Owned(projection.to_text())
+            RecordValue::Digest(digest) => {
+                let mut spelled = String::with_capacity(24);
+                append_etag_of_digest(&mut spelled, *digest);
+                std::borrow::Cow::Owned(spelled)
             }
         }
     }
@@ -374,30 +416,24 @@ impl RecordValue {
     pub fn len(&self) -> usize {
         match self {
             RecordValue::Text(text) => text.len(),
-            RecordValue::Projection(projection) => projection.to_text().len(),
+            RecordValue::Digest(_) => self.as_text().len(),
         }
     }
 
-    /// What the value owns on the heap. A projection's box is its own size; a
-    /// text's is its characters. Neither has spare capacity.
+    /// What the value owns on the heap. A text's is its characters, with no
+    /// spare capacity; a digest owns NOTHING -- it is eight bytes inline.
     pub fn heap_bytes(&self) -> u64 {
         match self {
             RecordValue::Text(text) => text.len() as u64,
-            // PLUS WHAT THE HOLDS OWN. An object under a restore, a retention or a legal
-            // hold keeps them behind a pointer, and charging only the struct would report a
-            // saving those objects did not get.
-            RecordValue::Projection(projection) => {
-                (std::mem::size_of::<ObjectProjection>() as u64)
-                    .saturating_add(projection.holds_heap_bytes())
-            }
+            RecordValue::Digest(_) => 0,
         }
     }
 
     pub fn is_empty(&self) -> bool {
         match self {
             RecordValue::Text(text) => text.is_empty(),
-            // A projection always formats twelve fields, so it is never empty.
-            RecordValue::Projection(_) => false,
+            // A digest always spells twenty-four characters, so it is never empty.
+            RecordValue::Digest(_) => false,
         }
     }
 }

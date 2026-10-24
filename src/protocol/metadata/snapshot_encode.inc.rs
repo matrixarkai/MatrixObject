@@ -10,7 +10,7 @@ impl MetaSnapshot {
 
     pub(crate) fn append_to_bytes(&self, mut out: &mut Vec<u8>) {
         let snapshot_start = out.len();
-        append_string(&mut out, "MOSRSMETA16");
+        append_string(&mut out, "MOSRSMETA17");
         append_u64(&mut out, self.next_commit_index);
         append_u64(&mut out, self.next_change_sequence);
         append_u64(&mut out, self.compacted_tombstone_count);
@@ -32,6 +32,9 @@ impl MetaSnapshot {
         append_u64(&mut out, self.records.len() as u64);
         for (key, record) in &self.records {
             append_string(&mut out, key);
+            // THE SHAPE, THEN THE CHARACTERS. A value's text alone cannot say
+            // whether it is a digest or a text that happens to spell like one.
+            append_u64(&mut out, record.value.kind_tag());
             append_string(&mut out, &record.value.as_text());
             append_u64(&mut out, record.version);
             append_u64(&mut out, record.update_time_ms);
@@ -285,7 +288,7 @@ fn metadata_record_encoded_size(record: &MetadataRecord) -> usize {
 
 fn metadata_record_value_encoded_size(record: &MetadataRecord) -> usize {
     encoded_string_len(&record.value.as_text())
-        .saturating_add(3 * std::mem::size_of::<u64>())
+        .saturating_add(4 * std::mem::size_of::<u64>())
 }
 
 fn metadata_lease_encoded_size(lease: &MetadataLease) -> usize {
@@ -353,7 +356,7 @@ fn metadata_transaction_value_encoded_size(transaction: &MetadataTransaction) ->
 fn metadata_change_checkpoint_encoded_size(checkpoint: &MetadataChangeCheckpoint) -> usize {
     encoded_string_len(&checkpoint.consumer_id)
         .saturating_add(encoded_string_len(&checkpoint.prefix))
-        .saturating_add(3 * std::mem::size_of::<u64>())
+        .saturating_add(4 * std::mem::size_of::<u64>())
         .saturating_add(encoded_string_len(&checkpoint.owner))
         .saturating_add(encoded_string_len(&checkpoint.note))
 }
@@ -376,7 +379,7 @@ fn metadata_lease_receipt_encoded_size(receipt: &MetadataLeaseReceipt) -> usize 
         .saturating_add(encoded_string_len(&receipt.operation))
         .saturating_add(encoded_string_len(&receipt.request_checksum))
         .saturating_add(metadata_lease_encoded_size(&receipt.lease))
-        .saturating_add(3 * std::mem::size_of::<u64>())
+        .saturating_add(4 * std::mem::size_of::<u64>())
 }
 
 fn coordinator_session_receipt_encoded_size(receipt: &CoordinatorSessionReceipt) -> usize {
@@ -384,7 +387,7 @@ fn coordinator_session_receipt_encoded_size(receipt: &CoordinatorSessionReceipt)
         .saturating_add(encoded_string_len(&receipt.operation))
         .saturating_add(encoded_string_len(&receipt.request_checksum))
         .saturating_add(coordinator_session_encoded_size(&receipt.session))
-        .saturating_add(3 * std::mem::size_of::<u64>())
+        .saturating_add(4 * std::mem::size_of::<u64>())
 }
 
 fn metadata_shard_receipt_encoded_size(receipt: &MetadataShardReceipt) -> usize {
@@ -392,7 +395,7 @@ fn metadata_shard_receipt_encoded_size(receipt: &MetadataShardReceipt) -> usize 
         encoded_string_len(&receipt.idempotency_key)
             .saturating_add(encoded_string_len(&receipt.operation))
             .saturating_add(encoded_string_len(&receipt.request_checksum))
-            .saturating_add(3 * std::mem::size_of::<u64>()),
+            .saturating_add(4 * std::mem::size_of::<u64>()),
         |total, shard| total.saturating_add(metadata_shard_encoded_size(shard)),
     )
 }
@@ -416,7 +419,7 @@ fn metadata_transaction_receipt_encoded_size(receipt: &MetadataTransactionReceip
             .saturating_add(encoded_string_len(&receipt.operation))
             .saturating_add(encoded_string_len(&receipt.request_checksum))
             .saturating_add(metadata_transaction_encoded_size(&receipt.transaction))
-            .saturating_add(3 * std::mem::size_of::<u64>()),
+            .saturating_add(4 * std::mem::size_of::<u64>()),
         |total, record| total.saturating_add(metadata_record_encoded_size(record)),
     )
 }

@@ -499,11 +499,44 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::every_metadata_leg_is_a_line_and_the_intercepts_are_named did not run"; exit 1; }
 
-      - name: A projection holds nothing for an object under no hold
+      - name: A hold reaches the digest and an object under none spells zeros
         run: |
           set -o pipefail
           cargo test --locked --lib \
-            tests::a_projection_holds_nothing_for_an_object_under_no_hold -- --exact \
+            tests::a_hold_reaches_the_digest_and_an_object_under_none_spells_zeros -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
-            || { echo "::error::a_projection_holds_nothing_for_an_object_under_no_hold did not run"; exit 1; }
+            || { echo "::error::a_hold_reaches_the_digest_and_an_object_under_none_spells_zeros did not run"; exit 1; }
+
+      - name: A digest equals the text it is a digest of and refuses a corrupt tag
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_digest_equals_the_text_it_is_a_digest_of_and_refuses_a_corrupt_tag -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_digest_equals_the_text_it_is_a_digest_of_and_refuses_a_corrupt_tag did not run"; exit 1; }
+
+      - name: The snapshot decoder accepts the version before this one and refuses the one after
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \n            tests::the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_after -- --exact \n            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \n            || { echo "::error::the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_after did not run"; exit 1; }
+
+      - name: Two records spelling the same thing in different shapes hash differently
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::two_records_spelling_the_same_thing_in_different_shapes_hash_differently -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::two_records_spelling_the_same_thing_in_different_shapes_hash_differently did not run"; exit 1; }
+
+      - name: An object record owns no heap before or after a snapshot load
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::an_object_record_owns_no_heap_before_or_after_a_snapshot_load -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::an_object_record_owns_no_heap_before_or_after_a_snapshot_load did not run"; exit 1; }
