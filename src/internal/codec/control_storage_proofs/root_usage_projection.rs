@@ -194,12 +194,24 @@ pub struct ObjectProjection {
     pub content_type: SharedText,
     pub metadata_count: u32,
     pub storage_class: StorageClass,
-    pub restore_until_ms: u64,
     pub deleted: bool,
     pub extent_count: u32,
     pub tag_count: u32,
-    pub legal_hold: bool,
+    /// A restore deadline, a retention deadline and a legal hold -- behind one pointer,
+    /// because most objects are under none of the three and paid sixteen bytes to say so.
+    ///
+    /// `None` and an all-zero box would spell the SAME TEXT, and a derived `PartialEq`
+    /// would call them different values. So `from_metadata` never builds the second, and
+    /// `a_projection_with_no_holds_is_the_same_value_as_one_with_empty_holds` asserts it.
+    holds: Option<Box<ProjectedHolds>>,
+}
+
+/// The three deadlines and the hold, for an object that has any of them.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProjectedHolds {
+    pub restore_until_ms: u64,
     pub retention_until_ms: u64,
+    pub legal_hold: bool,
 }
 
 impl ObjectProjection {
@@ -212,12 +224,47 @@ impl ObjectProjection {
             content_type: metadata.content_type.clone(),
             metadata_count: metadata.user_metadata.len() as u32,
             storage_class: metadata.storage_class.clone(),
-            restore_until_ms: metadata.lock.restore_until_ms,
             deleted: metadata.deleted,
             extent_count: metadata.extents.len() as u32,
             tag_count: metadata.tags.len() as u32,
-            legal_hold: metadata.lock.legal_hold,
-            retention_until_ms: metadata.lock.retention_until_ms,
+            // ONLY WHEN THERE IS SOMETHING TO HOLD. An all-zero box spells the same text
+            // as no box, and a derived `PartialEq` would call the two different values.
+            holds: (metadata.lock.restore_until_ms != 0
+                || metadata.lock.retention_until_ms != 0
+                || metadata.lock.legal_hold)
+                .then(|| {
+                    Box::new(ProjectedHolds {
+                        restore_until_ms: metadata.lock.restore_until_ms,
+                        retention_until_ms: metadata.lock.retention_until_ms,
+                        legal_hold: metadata.lock.legal_hold,
+                    })
+                }),
+        }
+    }
+
+    /// When a restore expires, or zero for an object under none.
+    pub fn restore_until_ms(&self) -> u64 {
+        self.holds.as_deref().map_or(0, |holds| holds.restore_until_ms)
+    }
+
+    /// When a retention expires, or zero for an object under none.
+    pub fn retention_until_ms(&self) -> u64 {
+        self.holds
+            .as_deref()
+            .map_or(0, |holds| holds.retention_until_ms)
+    }
+
+    /// Whether a legal hold is in force.
+    pub fn legal_hold(&self) -> bool {
+        self.holds.as_deref().is_some_and(|holds| holds.legal_hold)
+    }
+
+    /// What the holds own on the heap, which the audit needs: an object under none of the
+    /// three owes nothing for them.
+    pub(crate) fn holds_heap_bytes(&self) -> u64 {
+        match self.holds {
+            Some(_) => std::mem::size_of::<ProjectedHolds>() as u64,
+            None => 0,
         }
     }
 
@@ -238,12 +285,12 @@ impl ObjectProjection {
             self.content_type,
             self.metadata_count,
             self.storage_class,
-            self.restore_until_ms,
+            self.restore_until_ms(),
             self.deleted,
             self.extent_count,
             self.tag_count,
-            self.legal_hold,
-            self.retention_until_ms
+            self.legal_hold(),
+            self.retention_until_ms()
         )
     }
 }
@@ -336,7 +383,13 @@ impl RecordValue {
     pub fn heap_bytes(&self) -> u64 {
         match self {
             RecordValue::Text(text) => text.len() as u64,
-            RecordValue::Projection(_) => std::mem::size_of::<ObjectProjection>() as u64,
+            // PLUS WHAT THE HOLDS OWN. An object under a restore, a retention or a legal
+            // hold keeps them behind a pointer, and charging only the struct would report a
+            // saving those objects did not get.
+            RecordValue::Projection(projection) => {
+                (std::mem::size_of::<ObjectProjection>() as u64)
+                    .saturating_add(projection.holds_heap_bytes())
+            }
         }
     }
 

@@ -36875,8 +36875,9 @@ fn measure_the_route_to_under_a_hundred_bytes_a_metadata_record() {
     );
     assert_eq!(
         size_of::<ObjectProjection>(),
-        72,
-        "and the boxed projection should be the 72 published as value_capacity"
+        64,
+        "and the boxed projection should be the 64 published as value_capacity -- the three
+         holds moved behind a pointer"
     );
 
     #[allow(dead_code)]
@@ -36888,12 +36889,10 @@ fn measure_the_route_to_under_a_hundred_bytes_a_metadata_record() {
         content_type: SharedText,
         metadata_count: u32,
         storage_class: StorageClass,
-        restore_until_ms: u64,
         deleted: bool,
         extent_count: u32,
         tag_count: u32,
-        legal_hold: bool,
-        retention_until_ms: u64,
+        holds: Option<Box<ProjectedHolds>>,
     }
     let control = size_of::<ProjectionControl>();
     assert_eq!(
@@ -36913,12 +36912,10 @@ fn measure_the_route_to_under_a_hundred_bytes_a_metadata_record() {
         content_type: u16,
         metadata_count: u32,
         storage_class: StorageClass,
-        restore_until_ms: u64,
+        holds: Option<Box<ProjectedHolds>>,
         deleted: bool,
         extent_count: u32,
         tag_count: u32,
-        legal_hold: bool,
-        retention_until_ms: u64,
     }
 
     // (b) THE THREE COUNTS ARE NOT 32-BIT QUANTITIES. A user-metadata entry count, a tag
@@ -36932,24 +36929,16 @@ fn measure_the_route_to_under_a_hundred_bytes_a_metadata_record() {
         content_type: SharedText,
         metadata_count: u16,
         storage_class: StorageClass,
-        restore_until_ms: u64,
+        holds: Option<Box<ProjectedHolds>>,
         deleted: bool,
         extent_count: u16,
         tag_count: u16,
-        legal_hold: bool,
-        retention_until_ms: u64,
     }
 
     // (c) THE TWO RETENTION STAMPS AND THE HOLD ARE RARE. An object under neither a
     // restore nor a retention nor a legal hold pays sixteen bytes to say so -- the same
     // shape `ObjectLock` already uses on the object side, whose doc says an object under
     // none of the three should pay eight rather than twenty-five.
-    #[allow(dead_code)]
-    struct Retention {
-        restore_until_ms: u64,
-        retention_until_ms: u64,
-        legal_hold: bool,
-    }
     #[allow(dead_code)]
     struct BoxedRetention {
         version: u64,
@@ -36962,7 +36951,7 @@ fn measure_the_route_to_under_a_hundred_bytes_a_metadata_record() {
         deleted: bool,
         extent_count: u32,
         tag_count: u32,
-        retention: Option<Box<Retention>>,
+        retention: Option<Box<ProjectedHolds>>,
     }
 
     // (d) ALL THREE.
@@ -36978,7 +36967,7 @@ fn measure_the_route_to_under_a_hundred_bytes_a_metadata_record() {
         deleted: bool,
         extent_count: u16,
         tag_count: u16,
-        retention: Option<Box<Retention>>,
+        retention: Option<Box<ProjectedHolds>>,
     }
 
     // (e) THE CLEAN SUBSET: (b) and (c), without the content type. (a) needs the shared
@@ -36998,7 +36987,7 @@ fn measure_the_route_to_under_a_hundred_bytes_a_metadata_record() {
         deleted: bool,
         extent_count: u16,
         tag_count: u16,
-        retention: Option<Box<Retention>>,
+        retention: Option<Box<ProjectedHolds>>,
     }
     let rows: [(&str, usize); 5] = [
         ("a. the content type as an index (BLOCKED: the table is bounded by a count)",
@@ -37018,9 +37007,12 @@ fn measure_the_route_to_under_a_hundred_bytes_a_metadata_record() {
     // migration: the duplicate key handle is encoded into the snapshot and the record travels
     // without its map, and the Arc header exists only to serve that duplicate.
     let now = 16 + 16 + 16 + 24 + 56 + control;
+    // The holds fold has LANDED, so the control is the struct after it and (c) is no
+    // longer a candidate -- it is the baseline.
+    assert_eq!(control, 64, "the control should be the projection after the holds fold");
     let after = 16 + 16 + 16 + 24 + 56 + size_of::<CleanSubset>();
     println!("METAREC metaserver now={now} after_the_projection={after}");
-    assert_eq!(now, 200, "the metaserver share should be the 200 published, and it is {now}");
+    assert_eq!(now, 192, "the metaserver share should be the 192 published, and it is {now}");
     // AND WHAT IT WOULD TAKE TO REACH A HUNDRED, stated so the next reader does not have to
     // re-derive it: dropping the duplicate handle and its Arc header is -32 and a migration,
     // which would leave 168 - (control - Everything).
@@ -37359,12 +37351,10 @@ fn measure_what_a_one_word_text_handle_would_save() {
         content_type: SharedText,
         metadata_count: u32,
         storage_class: StorageClass,
-        restore_until_ms: u64,
+        holds: Option<Box<ProjectedHolds>>,
         deleted: bool,
         extent_count: u32,
         tag_count: u32,
-        legal_hold: bool,
-        retention_until_ms: u64,
     }
     #[allow(dead_code)]
     struct ProjectionThin {
@@ -37375,12 +37365,10 @@ fn measure_what_a_one_word_text_handle_would_save() {
         content_type: OneWord,
         metadata_count: u32,
         storage_class: StorageClass,
-        restore_until_ms: u64,
+        holds: Option<Box<ProjectedHolds>>,
         deleted: bool,
         extent_count: u32,
         tag_count: u32,
-        legal_hold: bool,
-        retention_until_ms: u64,
     }
 
     let size = std::mem::size_of::<OneWord>();
@@ -37541,6 +37529,58 @@ fn measure_whether_a_projection_can_be_parsed_back() {
         metadata_projection_value(a),
         metadata_projection_value(b),
         "two states must not share a projection"
+    );
+}
+
+#[test]
+fn a_projection_holds_nothing_for_an_object_under_no_hold() {
+    // The three holds sit behind a pointer now, and `RecordValue` compares `Projection` to
+    // `Projection` with a DERIVED `PartialEq` -- so a `None` box and an all-zero box would
+    // be different values while spelling identical text, which the type's own doc forbids:
+    // two values that spell the same thing are the same value.
+    //
+    // So the constructor must never build an all-zero box, and this asserts that rather
+    // than trusting the `.then(..)` to keep saying so.
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .put_object("bucket", "plain", b"x".to_vec(), "text/plain")
+        .unwrap();
+    let plain = ObjectProjection::from_metadata(&store.head_object("bucket", "plain").unwrap());
+    assert_eq!(
+        plain.holds_heap_bytes(),
+        0,
+        "an object under no restore, no retention and no legal hold owes nothing for them"
+    );
+    assert_eq!(plain.restore_until_ms(), 0);
+    assert_eq!(plain.retention_until_ms(), 0);
+    assert!(!plain.legal_hold());
+
+    // AND THE TEXT IS THE SAME EITHER WAY, which is the property the box must not break:
+    // the rendered characters are what every proof and every snapshot carries.
+    assert!(
+        plain.to_text().contains("restore_until_ms=0"),
+        "a projection with no holds still spells the zeros: {}",
+        plain.to_text()
+    );
+    assert!(plain.to_text().contains("legal_hold=false"));
+    assert!(plain.to_text().contains("retention_until_ms=0"));
+
+    // NOT VACUOUS: an object that DOES carry one allocates, so the zero above is a
+    // statement about this object and not about the accessor always returning zero.
+    store
+        .put_object("bucket", "held", b"x".to_vec(), "text/plain")
+        .unwrap();
+    store.set_object_legal_hold("bucket", "held", true).unwrap();
+    let held = ObjectProjection::from_metadata(&store.head_object("bucket", "held").unwrap());
+    assert!(
+        held.holds_heap_bytes() > 0,
+        "an object under a legal hold keeps the three behind a pointer"
+    );
+    assert!(held.legal_hold());
+    assert_ne!(
+        plain, held,
+        "and the two are different values, which the derived equality must still see"
     );
 }
 
@@ -45550,10 +45590,12 @@ fn a_storage_class_is_one_byte_and_its_wire_is_still_a_name() {
         "the byte lands in padding the struct already had -- the storage class took 144 to \
          128 -- and one extent held inline has since taken 128 to 136"
     );
+    // The same absolute-size tripwire as above, and it has now moved twice for reasons
+    // unrelated to storage classes. The claim stands; the figure names its causes.
     assert_eq!(
         std::mem::size_of::<ObjectProjection>(),
-        72,
-        "the same in the projection: 88 became 72"
+        64,
+        "the same in the projection -- the storage class took 88 to 72 -- and the three          holds behind a pointer have since taken 72 to 64"
     );
 
     let mut store = MatrixObjectStore::new(StoreOptions {
