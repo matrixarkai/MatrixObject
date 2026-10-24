@@ -7,7 +7,7 @@ impl MetaSnapshot {
         let version = magic
             .strip_prefix("MOSRSMETA")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=16).contains(version))
+            .filter(|version| (1..=17).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("metadata snapshot byte magic mismatch".to_string())
             })?;
@@ -30,6 +30,11 @@ impl MetaSnapshot {
         let has_qos = version >= 13;
         let has_coordinator_config = version >= 14;
         let has_coordinator_config_receipts = version >= 15;
+        // A RECORD'S VALUE STATES ITS SHAPE from 17 on. Before that every value was text --
+        // an object record carried the whole rendering -- so an older snapshot reads as text
+        // and is EQUAL to the digest a live write produces, which is what makes this
+        // readable rather than a migration a deployment has to perform.
+        let has_record_value_kind = version >= 17;
         let next_commit_index = cursor.read_u64()?;
         let next_change_sequence = cursor.read_u64()?;
         let compacted_tombstone_count = if has_tombstone_compaction_counters {
@@ -101,9 +106,15 @@ impl MetaSnapshot {
             // it and the record names it again, and both now do so through one
             // allocation. Building each separately would rebuild the copy.
             let key: SharedText = cursor.read_string()?.into();
+            let value_kind = if has_record_value_kind {
+                cursor.read_u64()?
+            } else {
+                0
+            };
+            let value_text = cursor.read_string()?;
             let record = MetadataRecord {
                 key: key.clone(),
-                value: cursor.read_string()?.into(),
+                value: RecordValue::from_kind_tag(value_kind, &value_text)?,
                 version: cursor.read_u64()?,
                 update_time_ms: cursor.read_u64()?,
                 deleted: cursor.read_bool()?,
@@ -182,7 +193,10 @@ impl MetaSnapshot {
             for _ in 0..cursor.read_count("metadata snapshot batch receipt count")? {
                 let idempotency_key = cursor.read_string()?;
                 batch_request_receipts
-                    .insert(idempotency_key, read_metadata_batch_receipt(&mut cursor)?);
+                    .insert(
+                        idempotency_key,
+                        read_metadata_batch_receipt(&mut cursor, has_record_value_kind)?,
+                    );
             }
         }
         let mut transactions = BTreeMap::new();
@@ -228,7 +242,7 @@ impl MetaSnapshot {
                 let idempotency_key = cursor.read_string()?;
                 transaction_receipts.insert(
                     idempotency_key,
-                    read_metadata_transaction_receipt(&mut cursor)?,
+                    read_metadata_transaction_receipt(&mut cursor, has_record_value_kind)?,
                 );
             }
         }

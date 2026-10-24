@@ -2,10 +2,14 @@
 // Copyright 2026 MatrixArkAI
 pub(crate) fn read_metadata_record(
     cursor: &mut SnapshotByteCursor<'_>,
+    has_value_kind: bool,
 ) -> Result<MetadataRecord, ObjectError> {
+    let key = cursor.read_string()?;
+    let value_kind = if has_value_kind { cursor.read_u64()? } else { 0 };
+    let value_text = cursor.read_string()?;
     Ok(MetadataRecord {
-        key: cursor.read_string()?.into(),
-        value: cursor.read_string()?.into(),
+        key: key.into(),
+        value: RecordValue::from_kind_tag(value_kind, &value_text)?,
         version: cursor.read_u64()?,
         update_time_ms: cursor.read_u64()?,
         deleted: cursor.read_bool()?,
@@ -109,6 +113,7 @@ pub(crate) fn read_coordinator_session_receipt(
 
 pub(crate) fn read_metadata_batch_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
+    has_value_kind: bool,
 ) -> Result<MetadataBatchReceipt, ObjectError> {
     let idempotency_key = cursor.read_string()?;
     let request_checksum = cursor.read_string()?;
@@ -131,7 +136,7 @@ pub(crate) fn read_metadata_batch_receipt(
     let record_count = cursor.read_count("metadata batch receipt record count")?;
     let mut records = Vec::with_capacity(record_count);
     for _ in 0..record_count {
-        records.push(read_metadata_record(cursor)?);
+        records.push(read_metadata_record(cursor, has_value_kind)?);
     }
     Ok(MetadataBatchReceipt {
         idempotency_key,
@@ -186,6 +191,7 @@ pub(crate) fn read_metadata_transaction(
 
 pub(crate) fn read_metadata_transaction_receipt(
     cursor: &mut SnapshotByteCursor<'_>,
+    has_value_kind: bool,
 ) -> Result<MetadataTransactionReceipt, ObjectError> {
     let idempotency_key = cursor.read_string()?;
     let operation = cursor.read_string()?;
@@ -194,7 +200,7 @@ pub(crate) fn read_metadata_transaction_receipt(
     let record_count = cursor.read_count("metadata transaction receipt record count")?;
     let mut records = Vec::with_capacity(record_count);
     for _ in 0..record_count {
-        records.push(read_metadata_record(cursor)?);
+        records.push(read_metadata_record(cursor, has_value_kind)?);
     }
     Ok(MetadataTransactionReceipt {
         idempotency_key,

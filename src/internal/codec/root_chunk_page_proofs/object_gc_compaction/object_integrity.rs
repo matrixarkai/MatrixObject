@@ -146,6 +146,20 @@ pub(crate) fn evaluate_object_read_preconditions(
 
 pub(crate) const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 
+/// Read back what [`append_etag_of_digest`] spelled.
+///
+/// `None` for anything else, which is how a durable decoder tells a corrupt
+/// value from a digest rather than silently reading one as zero. A spelling
+/// with a writer and no reader is a one-way door, and this one now opens both
+/// ways.
+pub(crate) fn parse_etag_digest(spelled: &str) -> Option<u64> {
+    let hex = spelled.strip_prefix("fnv1a64:")?;
+    if hex.len() != 16 {
+        return None;
+    }
+    u64::from_str_radix(hex, 16).ok()
+}
+
 pub(crate) fn fnv1a64(data: &[u8]) -> u64 {
     fnv1a64_resumed(FNV1A64_OFFSET_BASIS, data)
 }
