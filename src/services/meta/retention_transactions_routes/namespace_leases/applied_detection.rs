@@ -58,7 +58,7 @@ impl MatrixMetaService {
             && prepared
                 .compacted_tombstones
                 .iter()
-                .all(|record| !self.records.contains_key(&record.key))
+                .all(|record| !self.records.contains(record.key.as_str()))
             && (prepared.tombstone_report.compacted_records == 0
                 || (self.compacted_tombstone_count
                     >= prepared.tombstone_report.compacted_tombstone_count

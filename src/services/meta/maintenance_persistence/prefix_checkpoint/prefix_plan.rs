@@ -18,8 +18,7 @@ impl MatrixMetaService {
         self.check_shard_fence(prefix)?;
         self.check_lease_fence(prefix, lease_owner, lease_epoch, now_ms)?;
         let keys: Vec<String> = self
-            .records
-            .iter()
+            .records_iter()
             .filter(|(key, record)| key.starts_with(prefix) && !record.deleted)
             .map(|(key, _)| key.to_string())
             .take(max_records)
@@ -33,8 +32,7 @@ impl MatrixMetaService {
                 key: key.clone().into(),
                 record_value: RecordValue::empty(),
                 expected_version: self
-                        .records
-                        .get(key.as_str())
+                        .record(key.as_str())
                         .map_or(0, |record| record.version),
                 delete: true,
             })
@@ -67,8 +65,7 @@ impl MatrixMetaService {
         self.check_shard_fence(prefix)?;
         self.check_lease_fence(prefix, lease_owner, lease_epoch, now_ms)?;
         let keys: Vec<String> = self
-            .records
-            .iter()
+            .records_iter()
             .filter(|(key, record)| key.starts_with(prefix) && !record.deleted)
             .map(|(key, _)| key.to_string())
             .take(max_records)
@@ -79,8 +76,7 @@ impl MatrixMetaService {
                 key: key.clone().into(),
                 record_value: RecordValue::empty(),
                 expected_version: self
-                        .records
-                        .get(key.as_str())
+                        .record(key.as_str())
                         .map_or(0, |record| record.version),
                 delete: true,
             })
@@ -171,8 +167,7 @@ impl MatrixMetaService {
         let mut payload_bytes = 0_u64;
         let mut mutations = Vec::new();
         for (key, record) in self
-            .records
-            .iter()
+            .records_iter()
             .filter(|(key, record)| key.starts_with(prefix) && !record.deleted)
         {
             if mutations.len() >= max_records {

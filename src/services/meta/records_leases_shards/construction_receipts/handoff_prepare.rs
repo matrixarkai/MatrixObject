@@ -54,7 +54,7 @@ impl MatrixMetaService {
         let mut payload_bytes = 0u64;
         let mut truncated = false;
         let mut next_marker = None;
-        for (key, record) in self.records.range::<str, _>((
+        for (key, record) in self.records_range((
                 std::ops::Bound::Included(shard.start_key.as_str()),
                 std::ops::Bound::Unbounded,
             )) {

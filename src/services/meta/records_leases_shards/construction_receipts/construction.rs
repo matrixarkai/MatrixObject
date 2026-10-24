@@ -14,7 +14,7 @@ impl MatrixMetaService {
             placement_commit_index: 1,
             placement_snapshot_export_cache: RefCell::new(None),
             root_state_fingerprint_cache: RefCell::new(None),
-            records: BTreeMap::new(),
+            records: BTreeSet::new(),
             leases: BTreeMap::new(),
             lease_receipts: BTreeMap::new(),
             coordinator_config: MetadataCoordinatorConfig::default(),

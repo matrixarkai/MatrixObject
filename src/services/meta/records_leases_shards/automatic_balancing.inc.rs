@@ -70,7 +70,7 @@ impl MatrixMetaService {
             report.scanned_shards = report.scanned_shards.saturating_add(1);
             let mut keys = Vec::new();
             let mut payload_bytes = 0u64;
-            for (key, record) in self.records.range::<str, _>((
+            for (key, record) in self.records_range((
                 std::ops::Bound::Included(shard.start_key.as_str()),
                 std::ops::Bound::Unbounded,
             )) {

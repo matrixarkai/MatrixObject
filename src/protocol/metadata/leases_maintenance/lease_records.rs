@@ -13,6 +13,90 @@ pub struct MetadataRecord {
     pub deleted: bool,
 }
 
+/// A metadata record ordered and identified BY ITS OWN KEY, so the collection holding it
+/// does not keep a second copy of that key.
+///
+/// # EQUALITY IS THE KEY ALONE, AND THAT IS NOT A PREFERENCE
+///
+/// `BTreeSet` requires `Ord` and `Eq` to agree: if `a == b` then `a.cmp(&b)` must be `Equal`,
+/// or the set's ordering invariant is unspecified behaviour rather than a bug you can see. The
+/// ordering has to be the key, because **the key order is the listing contract** -- it is what
+/// `list_objects` serves a prefix and a marker from. So equality is the key too.
+///
+/// This type therefore says NOTHING about whether two records hold the same value. Ask the
+/// record, through [`KeyedRecord::record`]. Nothing outside the collection should compare these
+/// to each other, which is why the record is private rather than a public field.
+///
+/// # AND FILING USES `replace`, NOT `insert`
+///
+/// `BTreeSet::insert` KEEPS the element already there and returns `false`; it does not
+/// overwrite. Filing a new version of a record with `insert` would therefore leave the old
+/// version in place and report success.
+/// `filing_a_record_over_an_existing_key_replaces_it` is the guard for that.
+#[derive(Clone, Debug)]
+pub struct KeyedRecord(MetadataRecord);
+
+impl KeyedRecord {
+    pub fn new(record: MetadataRecord) -> Self {
+        Self(record)
+    }
+
+    pub fn record(&self) -> &MetadataRecord {
+        &self.0
+    }
+
+    pub fn into_record(self) -> MetadataRecord {
+        self.0
+    }
+
+    pub fn key(&self) -> &SharedText {
+        &self.0.key
+    }
+}
+
+impl Ord for KeyedRecord {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.key.cmp(&other.0.key)
+    }
+}
+
+impl PartialOrd for KeyedRecord {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Eq for KeyedRecord {}
+
+impl PartialEq for KeyedRecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.key == other.0.key
+    }
+}
+
+/// So the collection can be searched by `&str` without building a record.
+///
+/// `Borrow` requires this type's `Ord` to agree with `str`'s, which it does: `SharedText`
+/// orders by its characters.
+impl std::borrow::Borrow<str> for KeyedRecord {
+    fn borrow(&self) -> &str {
+        self.0.key.as_str()
+    }
+}
+
+/// The same, for callers holding the key as a shared handle rather than as characters.
+impl std::borrow::Borrow<SharedText> for KeyedRecord {
+    fn borrow(&self) -> &SharedText {
+        &self.0.key
+    }
+}
+
+impl From<MetadataRecord> for KeyedRecord {
+    fn from(record: MetadataRecord) -> Self {
+        Self(record)
+    }
+}
+
 impl MetadataRecord {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();

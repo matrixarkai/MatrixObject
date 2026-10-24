@@ -39,7 +39,7 @@ impl MatrixMetaService {
         let mut remove_keys = Vec::new();
         let start = after_key.unwrap_or(prefix).to_string();
         let mut last_selected_key: Option<String> = None;
-        for (key, record) in self.records.range::<str, _>((
+        for (key, record) in self.records_range((
                 std::ops::Bound::Included(start.as_str()),
                 std::ops::Bound::Unbounded,
             )) {

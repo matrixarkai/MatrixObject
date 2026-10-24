@@ -122,7 +122,7 @@ impl MatrixMetaService {
             }
         }
         for record in &prepared.compacted_tombstones {
-            match self.records.get(&record.key) {
+            match self.record(record.key.as_str()) {
                 Some(current) if current == record => {}
                 _ => {
                     return Err(ObjectError::PreconditionFailed(
@@ -144,7 +144,7 @@ impl MatrixMetaService {
             }
         }
         for record in &prepared.compacted_tombstones {
-            self.records.remove(&record.key);
+            self.records.remove(record.key.as_str());
         }
         if prepared.tombstone_report.compacted_records > 0 {
             self.compacted_tombstone_count = prepared.tombstone_report.compacted_tombstone_count;

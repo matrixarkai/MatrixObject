@@ -150,7 +150,7 @@ impl MatrixMetaService {
         };
         let compacted_tombstones: Vec<MetadataRecord> = tombstone_keys
             .iter()
-            .filter_map(|key| self.records.get(key.as_str()).cloned())
+            .filter_map(|key| self.record(key.as_str()).cloned())
             .collect();
         if compacted_tombstones.len() != tombstone_keys.len() {
             return Err(ObjectError::Corruption(

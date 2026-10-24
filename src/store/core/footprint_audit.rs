@@ -497,14 +497,12 @@ impl MatrixObjectStore {
         // `the_metadata_breakdown_accounts_for_every_byte_of_its_total` pins both
         // readings, so neither can drift back into the other.
         {
-            let records = &self.meta_service.records;
-            let n = records.len() as u64;
+            let n = self.meta_service.records.len() as u64;
+            // NO MAP KEY HANDLE. The collection is ordered by each record's OWN key, so an
+            // entry is the record and nothing beside it.
             push(
                 "meta.records.struct_inline",
-                n.saturating_mul(
-                    (std::mem::size_of::<SharedText>() + std::mem::size_of::<MetadataRecord>())
-                        as u64,
-                ),
+                n.saturating_mul(std::mem::size_of::<MetadataRecord>() as u64),
             );
             push("meta.records.record_size", std::mem::size_of::<MetadataRecord>() as u64);
             let mut mapkey_len = 0u64;
@@ -515,12 +513,15 @@ impl MatrixObjectStore {
             let mut key_text_duplicated = 0u64;
             let mut key_text_shared = 0u64;
             let mut detail_record_ledger = SharedTextLedger::default();
-            for (key, record) in records.iter() {
+            for (key, record) in self.meta_service.records_iter() {
                 mapkey_len = mapkey_len.saturating_add(key.len() as u64);
-                // Shared text has no spare capacity, and the record's own
-                // naming of the key is the map key's allocation, so it adds
-                // nothing -- charged in holder order by one ledger, as the
-                // objects breakdown above is.
+                // THE KEY THE COLLECTION ORDERS BY *IS* THE RECORD'S OWN -- there is no
+                // second handle to share with any more, so `record_key_capacity`,
+                // `key_text_duplicated` and `key_text_shared` below are now true BY
+                // CONSTRUCTION rather than by a sharing discipline. They are kept because
+                // they are what the document publishes and what the next reader will look
+                // for, and because a change that reintroduced a second holder would move
+                // them -- but a type is doing the work a tripwire used to.
                 mapkey_capacity =
                     mapkey_capacity.saturating_add(detail_record_ledger.charge(key));
                 record_key_capacity = record_key_capacity

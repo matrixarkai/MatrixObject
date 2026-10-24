@@ -31,7 +31,9 @@ pub struct MatrixMetaService {
     pub(crate) placement_commit_index: u64,
     placement_snapshot_export_cache: RefCell<Option<RootSnapshotExportCache>>,
     root_state_fingerprint_cache: RefCell<Option<String>>,
-    pub(crate) records: BTreeMap<SharedText, MetadataRecord>,
+    /// Ordered by each record's own key, which the record already holds -- see
+    /// `KeyedRecord`. A map would keep that key twice.
+    pub(crate) records: BTreeSet<KeyedRecord>,
     pub(crate) leases: BTreeMap<String, MetadataLease>,
     lease_receipts: BTreeMap<String, MetadataLeaseReceipt>,
     pub(crate) coordinator_config: MetadataCoordinatorConfig,

@@ -111,8 +111,7 @@ impl MatrixObjectStore {
 
         for (record_key, projection) in self
                 .meta_service
-                .records
-                .range::<str, _>((
+                .records_range((
                 std::ops::Bound::Included(projection_prefix.as_str()),
                 std::ops::Bound::Unbounded,
             ))
@@ -188,8 +187,7 @@ impl MatrixObjectStore {
             let projection_key = meta_object_key(object_id);
             let projection = self
                 .meta_service
-                .records
-                .get(projection_key.as_str())
+                .record(projection_key.as_str())
                 .cloned();
             if projection.as_ref().map_or(true, |record| record.deleted) {
                 audit.missing_projection_count = audit.missing_projection_count.saturating_add(1);
