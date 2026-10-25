@@ -101,6 +101,48 @@ mod processes {
         pub endpoint: String,
     }
 
+    /// Reap the process when this goes out of scope, INCLUDING ON A PANIC.
+    ///
+    /// Found by running this test against a deliberately broken store rather than by reading
+    /// it: an assertion fires partway through, the cleanup at the end of the test body never
+    /// runs, and three replica processes are left holding three ports. Nine such runs left
+    /// twenty-seven of them competing with the next run for the machine. A panic unwinds and
+    /// runs `Drop`, so this is the cleanup that happens on the path that needs it.
+    ///
+    /// Errors are ignored on purpose: the test's own kill step is meant to have killed one of
+    /// these already, and a destructor that panicked about an already-reaped child would
+    /// replace the real failure with its own.
+    impl Drop for ReplicaProcess {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    /// Wait for `child` to exit, for at most `within`. `None` means it was still running.
+    ///
+    /// Bounded, and not with `wait()`. `Child::wait` blocks until the process exits, which is
+    /// correct after a signal that cannot be caught and an unbounded hang when the signal did
+    /// not land. A test that hangs is worse in continuous integration than a test that fails:
+    /// the job spends its whole budget and the log says nothing about why. This was measured,
+    /// not imagined -- during development a deliberately removed `kill` turned the `wait()`
+    /// that used to be here into an eighteen-minute hang with no output.
+    pub fn reap_within(child: &mut Child, within: std::time::Duration) -> Option<i32> {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return Some(status.code().unwrap_or(-1)),
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        return None;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(err) => panic!("a replica process could not be reaped: {err}"),
+            }
+        }
+    }
+
     /// Start one replica process on a kernel-chosen port and wait for it to say where.
     ///
     /// `token` is put in the environment so that the test can later read
@@ -452,10 +494,11 @@ fn three_replica_processes_keep_the_data_when_one_is_killed() {
         "the child handle about to be killed is not the PID that was confirmed"
     );
     nodes[0].child.kill().expect("the replica could be killed");
-    nodes[0]
-        .child
-        .wait()
-        .expect("the killed replica could be reaped");
+    assert!(
+        processes::reap_within(&mut nodes[0].child, Duration::from_secs(10)).is_some(),
+        "replica {doomed_pid} was still running ten seconds after it was killed, so the \
+         survivors below are not survivors of anything"
+    );
 
     assert!(
         !processes::is_live(doomed_pid),
@@ -536,10 +579,10 @@ fn three_replica_processes_keep_the_data_when_one_is_killed() {
          quorum is not being enforced: {after:?}"
     );
 
-    for node in nodes.iter_mut().skip(1) {
-        let _ = node.child.kill();
-        let _ = node.child.wait();
-    }
+    // The survivors are reaped by `ReplicaProcess::drop`, which also runs when one of the
+    // assertions above fires. An explicit cleanup here would only cover the passing path,
+    // which is the path that does not need it.
+    drop(nodes);
 }
 
 // ---------------------------------------------------------------------------------------
