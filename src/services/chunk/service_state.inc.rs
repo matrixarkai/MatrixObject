@@ -18,7 +18,7 @@ pub struct MatrixReplicaService {
     /// and the chunk is the container above the replica, which
     /// `MatrixChunkService` owns. This field was called `chunks` while holding
     /// neither.
-    pub(crate) pages: BTreeMap<PageId, std::sync::Arc<PageState>>,
+    pages: BTreeMap<PageId, std::sync::Arc<PageState>>,
     /// Whether this replica keeps the XOR sidecar for its pages.
     ///
     /// True only when this replica is the only copy. Above one replica a damaged
@@ -26,27 +26,27 @@ pub struct MatrixReplicaService {
     /// path writes the winning state back. Must be uniform across the replica set --
     /// `repair_chunk_from_quorum` compares whole page states to find agreement, so
     /// replicas disagreeing about whether a sidecar exists would never agree.
-    pub(crate) keep_ec_sidecar: bool,
-    pub(crate) receipt_retention: usize,
+    keep_ec_sidecar: bool,
+    receipt_retention: usize,
     /// The seven receipt maps, each behind a shared handle so that a snapshot
     /// of this service clones handles rather than maps. A write takes
     /// `Arc::make_mut`, which copies the one map it is about to change -- so an
     /// open batch copies the maps it WRITES rather than all seven.
     ///
     /// Measured: an ordinary put writes none of them.
-    pub(crate) write_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaWriteReceipt>>,
-    pub(crate) discard_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaDiscardReceipt>>,
-    pub(crate) batch_write_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaBatchWriteReceipt>>,
-    pub(crate) batch_discard_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaBatchDiscardReceipt>>,
+    write_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaWriteReceipt>>,
+    discard_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaDiscardReceipt>>,
+    batch_write_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaBatchWriteReceipt>>,
+    batch_discard_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaBatchDiscardReceipt>>,
     state_install_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaStateInstallReceipt>>,
     reclaim_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaReclaimReceipt>>,
     repair_request_receipts: std::sync::Arc<BTreeMap<String, ReplicaRepairReceipt>>,
     accepting_writes: bool,
     draining: bool,
     frozen: bool,
-    pub(crate) capacity_bytes: u64,
-    pub(crate) capacity_rejected_writes: u64,
-    pub(crate) service_mode_rejected_mutations: u64,
+    capacity_bytes: u64,
+    capacity_rejected_writes: u64,
+    service_mode_rejected_mutations: u64,
     metadata_dirty: bool,
     metadata_dirty_mutations: u64,
     metadata_checkpoint_interval: u64,
@@ -66,17 +66,17 @@ pub struct MatrixReplicaService {
     trim_flow_throttled_bytes: u64,
     partial_reclaim_failures: u64,
     last_partial_reclaim_failure_status: String,
-    pub(crate) physical_write_count: u64,
-    pub(crate) physical_write_bytes: u64,
-    pub(crate) physical_discard_ranges: u64,
-    pub(crate) physical_discard_bytes: u64,
+    physical_write_count: u64,
+    physical_write_bytes: u64,
+    physical_discard_ranges: u64,
+    physical_discard_bytes: u64,
     ec_reconstructed_reads: Cell<u64>,
     ec_reconstruction_failures: Cell<u64>,
     chunk_mutation_control_commit_index: u64,
-    pub(crate) chunk_mutation_control_next_log_index: u64,
+    chunk_mutation_control_next_log_index: u64,
     mutation_qos_config: ReplicaMutationQosConfig,
     mutation_qos_state: ReplicaMutationQosState,
-    pub(crate) read_cache: RefCell<HashMap<ReplicaReadCacheKey, ReplicaReadCacheEntry>>,
+    read_cache: RefCell<HashMap<ReplicaReadCacheKey, ReplicaReadCacheEntry>>,
     /// Runtime-only: (write_sequence, checksum, per-page fnv1a64) for pages whose
     /// payload has been fully validated once, so later reads verify only their own
     /// pages instead of re-hashing the whole chunk. Never persisted.

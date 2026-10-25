@@ -362,7 +362,7 @@ impl MatrixChunkService {
             // replica keeps sidecars its peers do not and never agrees with them again --
             // quorum agreement compares whole chunk states. Set after the install so it
             // cannot be undone by what that assigns.
-            replica.keep_ec_sidecar = restored_replica_count <= 1;
+            replica.set_keep_ec_sidecar(restored_replica_count <= 1);
             replicas.push(replica);
         }
         self.page_size = snapshot.page_size;

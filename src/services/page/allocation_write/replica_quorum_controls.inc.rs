@@ -175,18 +175,18 @@ impl MatrixChunkService {
             if index == replica_index || !self.replica_current(index) {
                 continue;
             }
-            for (page_id, state) in &self.replicas[index].pages {
-                let entry = best.entry(page_id.clone()).or_default();
-                *entry = (*entry).max(state.write_sequence);
+            // ONE BATCHED READ PER REPLICA, of a page index and not a page map: a
+            // `(PageId, write_sequence)` pair per page and no payload. The whole set is
+            // needed -- this is deciding about pages the returning replica may not hold --
+            // so asking page by page would be a round trip per page.
+            for (page_id, sequence) in self.replicas[index].page_write_sequences() {
+                let entry = best.entry(page_id).or_default();
+                *entry = (*entry).max(sequence);
             }
         }
         let candidate = &self.replicas[replica_index];
         for (page_id, required) in &best {
-            let held = candidate
-                .pages
-                .get(page_id)
-                .map(|state| state.write_sequence)
-                .unwrap_or_default();
+            let held = candidate.page_write_sequence(page_id).unwrap_or_default();
             if held < *required {
                 return Err(ObjectError::PreconditionFailed(format!(
                     "replica {replica_index} cannot be checked in: page {page_id:?} is at write sequence {held} and a current replica holds {required}",

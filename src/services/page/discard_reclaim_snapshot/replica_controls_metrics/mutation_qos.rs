@@ -8,7 +8,7 @@ impl MatrixChunkService {
         let commit_index = self
             .replicas
             .iter()
-            .map(|replica| replica.chunk_mutation_control_next_log_index)
+            .map(|replica| replica.chunk_mutation_control_next_log_index())
             .max()
             .unwrap_or(1);
         self.configure_chunk_mutation_qos_at_commit(config, commit_index)
@@ -22,7 +22,7 @@ impl MatrixChunkService {
         let commit_index = self
             .replicas
             .get(replica_index)
-            .map(|replica| replica.chunk_mutation_control_next_log_index)
+            .map(|replica| replica.chunk_mutation_control_next_log_index())
             .ok_or_else(|| {
                 ObjectError::InvalidArgument("replica index out of range".to_string())
             })?;

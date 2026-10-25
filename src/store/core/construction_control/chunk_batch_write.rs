@@ -275,10 +275,7 @@ impl MatrixObjectStore {
             .ok_or_else(|| {
                 ObjectError::InvalidArgument("replica index out of range".to_string())
             })?;
-        if let Some(existing) = replica
-            .batch_write_request_receipts
-            .get(&prepared.receipt.idempotency_key)
-        {
+        if let Some(existing) = replica.batch_write_receipt(&prepared.receipt.idempotency_key) {
             if existing.page_id != prepared.receipt.page_id
                 || existing.request_checksum != prepared.receipt.request_checksum
                 || existing.payload_checksum != prepared.receipt.payload_checksum
@@ -312,26 +309,25 @@ impl MatrixObjectStore {
         let projected_len = prepared.state.data.len() as u64;
         let projected_physical = replica
             .projected_physical_bytes_for_chunk_len(&prepared.receipt.page_id, projected_len)?;
-        if replica.capacity_bytes > 0 && projected_physical > replica.capacity_bytes {
-            replica.capacity_rejected_writes = replica.capacity_rejected_writes.saturating_add(1);
+        let capacity_bytes = replica.capacity_bytes();
+        if capacity_bytes > 0 && projected_physical > capacity_bytes {
+            replica.note_capacity_rejected_writes(1);
             return Err(ObjectError::PreconditionFailed(
                 "chunk prepared batch write capacity exceeded".to_string(),
             ));
         }
-        replica
-            .pages
-            .insert(
-                prepared.receipt.page_id.clone(),
-                std::sync::Arc::new(prepared.state),
-            );
+        // UNFENCED ON PURPOSE, and the fence is the three comparisons above: this entry's
+        // whole control proof -- state checksum, commit index and next log index -- was
+        // required to match the proof it was prepared against. Re-running the writability
+        // check here would let a service-mode change between prepare and apply abandon an
+        // entry the log has already committed.
+        replica.install_page_unfenced(prepared.receipt.page_id.clone(), prepared.state);
         let _ = replica.invalidate_chunk_cache(&prepared.receipt.page_id, 0, projected_len);
-        replica.physical_write_count = replica
-            .physical_write_count
-            .saturating_add(prepared.receipt.stats.physical_write_count);
-        replica.physical_write_bytes = replica
-            .physical_write_bytes
-            .saturating_add(prepared.receipt.stats.physical_write_bytes);
-        std::sync::Arc::make_mut(&mut replica.batch_write_request_receipts).insert(
+        replica.note_physical_write(
+            prepared.receipt.stats.physical_write_count,
+            prepared.receipt.stats.physical_write_bytes,
+        );
+        replica.record_batch_write_receipt(
             prepared.receipt.idempotency_key.clone(),
             prepared.receipt.clone(),
         );

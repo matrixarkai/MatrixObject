@@ -2881,7 +2881,7 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
     assert!(page
         .replicas
         .iter()
-        .all(|replica| replica.pages.is_empty()));
+        .all(|replica| replica.pages_local().is_empty()));
 
     page.replicas[0].set_capacity_bytes(8).unwrap();
     page.replicas[1].set_capacity_bytes(8).unwrap();
@@ -2901,7 +2901,7 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
     assert!(blocked
         .replicas
         .iter()
-        .all(|replica| replica.pages.is_empty()));
+        .all(|replica| replica.pages_local().is_empty()));
 }
 
 #[test]
@@ -2934,7 +2934,7 @@ fn chunk_service_preflights_chunk_discard_admission_before_mutation() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     for replica in &page.replicas {
-        if let Some(chunk) = replica.pages.get(&page_id) {
+        if let Some(chunk) = replica.pages_local().get(&page_id) {
             assert!(chunk.discarded_ranges.is_empty());
         }
     }
@@ -2948,7 +2948,7 @@ fn chunk_service_preflights_chunk_discard_admission_before_mutation() {
         .iter()
         .filter(|replica| {
             replica
-                .pages
+                .pages_local()
                 .get(&page_id)
                 .map_or(false, |chunk| !chunk.discarded_ranges.is_empty())
         })
@@ -3631,7 +3631,7 @@ fn a_scrub_can_be_bounded_and_resumed_without_missing_a_page() {
     let first_page = page.map_range(&chunk_id, 0, 4).unwrap()[0].page_id.clone();
     let last_page = page.map_range(&chunk_id, 44, 4).unwrap()[0].page_id.clone();
     page.remove_replica_chunk_for_repair(0, &first_page).unwrap();
-    std::sync::Arc::make_mut(page.replicas[1].pages.get_mut(&last_page).unwrap())
+    std::sync::Arc::make_mut(page.replicas[1].pages_local_mut().get_mut(&last_page).unwrap())
         .checksum_fnv1a64 = 0;
 
     let whole = page.scrub_chunk_replicas(false).unwrap();
@@ -3778,7 +3778,7 @@ fn chunk_service_scrubs_missing_and_corrupt_replicas() {
     page
         .remove_replica_chunk_for_repair(0, &first_chunk)
         .unwrap();
-    std::sync::Arc::make_mut(page.replicas[1].pages.get_mut(&second_chunk).unwrap())
+    std::sync::Arc::make_mut(page.replicas[1].pages_local_mut().get_mut(&second_chunk).unwrap())
         .checksum_fnv1a64 = 0;
 
     let plan = page.scrub_chunk_replicas(false).unwrap();
@@ -3948,7 +3948,7 @@ fn chunk_service_pages_replica_audit_for_repair_controllers() {
     page
         .remove_replica_chunk_for_repair(0, &first_chunk)
         .unwrap();
-    std::sync::Arc::make_mut(page.replicas[1].pages.get_mut(&second_chunk).unwrap())
+    std::sync::Arc::make_mut(page.replicas[1].pages_local_mut().get_mut(&second_chunk).unwrap())
         .checksum_fnv1a64 = 0;
     page.configure_quorums(1, 1).unwrap();
     page.set_replica_frozen(2, true).unwrap();
@@ -5686,7 +5686,7 @@ fn chunk_service_dedupes_idempotent_writes_across_snapshots() {
         restored
             .replicas
             .iter()
-            .map(|replica| replica.write_request_receipts.len())
+            .map(|replica| replica.write_receipts_local().len())
             .sum::<usize>(),
         6
     );
@@ -5735,7 +5735,7 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
         page
             .replicas
             .iter()
-            .map(|replica| replica.batch_write_request_receipts.len())
+            .map(|replica| replica.batch_write_receipts_local().len())
             .sum::<usize>(),
         6
     );
@@ -5812,7 +5812,7 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
         restored
             .replicas
             .iter()
-            .map(|replica| replica.batch_write_request_receipts.len())
+            .map(|replica| replica.batch_write_receipts_local().len())
             .sum::<usize>(),
         6
     );
@@ -5927,7 +5927,7 @@ fn chunk_service_dedupes_idempotent_discards_across_snapshots() {
         restored
             .replicas
             .iter()
-            .map(|replica| replica.discard_request_receipts.len())
+            .map(|replica| replica.discard_receipts_local().len())
             .sum::<usize>(),
         6
     );
@@ -5970,7 +5970,7 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
         page
             .replicas
             .iter()
-            .map(|replica| replica.batch_discard_request_receipts.len())
+            .map(|replica| replica.batch_discard_receipts_local().len())
             .sum::<usize>(),
         6
     );
@@ -6046,7 +6046,7 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
         restored
             .replicas
             .iter()
-            .map(|replica| replica.batch_discard_request_receipts.len())
+            .map(|replica| replica.batch_discard_receipts_local().len())
             .sum::<usize>(),
         6
     );
@@ -6568,7 +6568,7 @@ fn page_and_object_cache_control_coalesce_ranges() {
             .1
     );
     {
-        let mut cache = lru_chunk.read_cache.borrow_mut();
+        let mut cache = lru_chunk.read_cache_local().borrow_mut();
         let entry = cache.get_mut(&(lru_chunk_id.clone(), 0, 4)).unwrap();
         entry.result.data[0] = b'Z';
     }
@@ -38856,7 +38856,7 @@ fn a_retained_idempotency_key_carries_no_slack() {
     }
     let mut checked = 0usize;
     for replica in store.chunk_service.replicas.iter() {
-        for key in replica.batch_discard_request_receipts.keys() {
+        for key in replica.batch_discard_receipts_local().keys() {
             assert_eq!(
                 key.capacity(),
                 key.len(),
@@ -38867,7 +38867,7 @@ fn a_retained_idempotency_key_carries_no_slack() {
             );
             checked += 1;
         }
-        for key in replica.batch_write_request_receipts.keys() {
+        for key in replica.batch_write_receipts_local().keys() {
             assert_eq!(
                 key.capacity(),
                 key.len(),
@@ -39686,7 +39686,7 @@ fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
 
     let mut service = MatrixReplicaService::new();
     service.write_chunk(page.clone(), 0, &[b'a'; 4096]).unwrap();
-    let original: Vec<u8> = service.pages.get(&page).unwrap().data.as_ref().clone();
+    let original: Vec<u8> = service.pages_local().get(&page).unwrap().data.as_ref().clone();
     assert_eq!(original.len(), 4096);
 
     // An in-place overwrite: the length never moves, so only the bytes can say
@@ -39694,12 +39694,12 @@ fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
     service.begin_mutation_batch("batch-overwrite").unwrap();
     service.write_chunk(page.clone(), 0, &[b'b'; 1024]).unwrap();
     assert_eq!(
-        service.pages.get(&page).unwrap().data[0],
+        service.pages_local().get(&page).unwrap().data[0],
         b'b',
         "the write should have taken effect before the abort"
     );
     service.abort_mutation_batch("batch-overwrite").unwrap();
-    let after_overwrite: Vec<u8> = service.pages.get(&page).unwrap().data.as_ref().clone();
+    let after_overwrite: Vec<u8> = service.pages_local().get(&page).unwrap().data.as_ref().clone();
     println!(
         "ABORTRESTORE overwrite len={} first={} restored={}",
         after_overwrite.len(),
@@ -39716,9 +39716,9 @@ fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
     // are not confused for each other.
     service.begin_mutation_batch("batch-append").unwrap();
     service.write_chunk(page.clone(), 4096, &[b'c'; 2048]).unwrap();
-    assert_eq!(service.pages.get(&page).unwrap().data.len(), 6144);
+    assert_eq!(service.pages_local().get(&page).unwrap().data.len(), 6144);
     service.abort_mutation_batch("batch-append").unwrap();
-    let after_append: Vec<u8> = service.pages.get(&page).unwrap().data.as_ref().clone();
+    let after_append: Vec<u8> = service.pages_local().get(&page).unwrap().data.as_ref().clone();
     println!(
         "ABORTRESTORE append len={} restored={}",
         after_append.len(),
@@ -39746,7 +39746,7 @@ fn only_the_first_write_in_a_batch_should_copy_its_page() {
     // Pointer identity settles which, and the answer is a property worth
     // pinning either way.
     fn data_pointer(service: &MatrixReplicaService, page: &PageId) -> *const Vec<u8> {
-        std::sync::Arc::as_ptr(&service.pages.get(page).expect("the page exists").data)
+        std::sync::Arc::as_ptr(&service.pages_local().get(page).expect("the page exists").data)
     }
 
     let page = PageId {
@@ -39795,7 +39795,7 @@ fn only_the_first_write_in_a_batch_should_copy_its_page() {
     // The batch must still restore everything when it aborts, whatever the
     // copies did.
     service.abort_mutation_batch("batch-two-writes").unwrap();
-    let restored = service.pages.get(&page).unwrap();
+    let restored = service.pages_local().get(&page).unwrap();
     assert_eq!(restored.data.len(), 4096, "the abort restores the length");
     assert!(
         restored.data.iter().all(|byte| *byte == b'a'),
@@ -39825,7 +39825,7 @@ fn an_open_batch_makes_every_write_copy_the_whole_page() {
     fn data_pointer(service: &MatrixReplicaService, page: &PageId) -> *const Vec<u8> {
         std::sync::Arc::as_ptr(
             &service
-                .pages
+                .pages_local()
                 .get(page)
                 .expect("the page should exist after a write")
                 .data,
@@ -39847,7 +39847,7 @@ fn an_open_batch_makes_every_write_copy_the_whole_page() {
     println!(
         "PAGECOPY no_batch moved={} len={}",
         before_quiet != after_quiet,
-        quiet.pages.get(&page).unwrap().data.len()
+        quiet.pages_local().get(&page).unwrap().data.len()
     );
     assert_eq!(
         before_quiet, after_quiet,
@@ -39868,7 +39868,7 @@ fn an_open_batch_makes_every_write_copy_the_whole_page() {
     println!(
         "PAGECOPY with_batch moved={} len={}",
         before_batched != after_batched,
-        batched.pages.get(&page).unwrap().data.len()
+        batched.pages_local().get(&page).unwrap().data.len()
     );
     assert_ne!(
         before_batched, after_batched,
@@ -40500,7 +40500,7 @@ fn a_striped_page_holds_one_and_a_half_copies_and_replication_holds_three() {
         service
             .replicas
             .iter()
-            .flat_map(|replica| replica.pages.values())
+            .flat_map(|replica| replica.pages_local().values())
             .map(|state| state.data.len() as u64)
             .sum()
     }
@@ -40554,7 +40554,7 @@ fn a_striped_page_still_reads_with_one_replica_gone() {
         // LOST THE WAY A REPLICA IS ACTUALLY LOST: its data is gone. Quarantine cannot
         // express this -- see the assertion at the end of this test -- and clearing the
         // pages is the state a failed node leaves behind anyway.
-        service.replicas[gone].pages.clear();
+        service.replicas[gone].pages_local_mut().clear();
         let (read, stats) = service
             .read_chunk_range(&chunk_id, 0, payload.len() as u64)
             .unwrap_or_else(|err| panic!("replica {gone} gone and the page did not read: {err}"));
@@ -40576,8 +40576,8 @@ fn a_striped_page_still_reads_with_one_replica_gone() {
             data: payload.clone(),
         }])
         .unwrap();
-    service.replicas[0].pages.clear();
-    service.replicas[1].pages.clear();
+    service.replicas[0].pages_local_mut().clear();
+    service.replicas[1].pages_local_mut().clear();
     assert!(
         service.read_chunk_range(&chunk_id, 0, payload.len() as u64).is_err(),
         "two replicas gone must be refused rather than answered"
@@ -41001,7 +41001,7 @@ fn a_damaged_fragment_is_located_by_its_digest_rather_than_searched_for() {
     };
 
     let digests = service.replicas[0]
-        .pages
+        .pages_local()
         .get(&page_id)
         .expect("the page should exist")
         .fragment_digests()
@@ -41024,14 +41024,14 @@ fn a_damaged_fragment_is_located_by_its_digest_rather_than_searched_for() {
     let damaged_at = damaged_fragment * shard_len + 7;
     {
         let state = std::sync::Arc::make_mut(
-            service.replicas[0].pages.get_mut(&page_id).expect("the page"),
+            service.replicas[0].pages_local_mut().get_mut(&page_id).expect("the page"),
         );
         let data = std::sync::Arc::make_mut(&mut state.data);
         data[damaged_at] ^= 0xFF;
     }
 
     // The digests name exactly the fragment that was damaged, which is the whole point.
-    let state = service.replicas[0].pages.get(&page_id).expect("the page");
+    let state = service.replicas[0].pages_local().get(&page_id).expect("the page");
     assert_eq!(
         chunk_ec_damaged_fragments(&state.data, state.fragment_digests()),
         vec![damaged_fragment],
@@ -41176,7 +41176,7 @@ fn a_replica_with_peers_stores_neither_sidecar_nor_digests() {
         page_index: 0,
     };
     for (index, replica) in service.replicas.iter().enumerate() {
-        let state = replica.pages.get(&page_id).expect("every replica holds it");
+        let state = replica.pages_local().get(&page_id).expect("every replica holds it");
         assert!(
             state.fragment_bytes().is_empty(),
             "replica {index} has peers and should keep no sidecar"
@@ -41199,7 +41199,7 @@ fn a_replica_with_peers_stores_neither_sidecar_nor_digests() {
         }])
         .unwrap();
     let state = alone.replicas[0]
-        .pages
+        .pages_local()
         .get(&PageId { chunk_id, page_index: 0 })
         .expect("the page");
     assert!(!state.fragment_bytes().is_empty());
@@ -41238,7 +41238,7 @@ fn a_snapshot_cannot_carry_a_damaged_page() {
     let mut restored = one_replica_chunk_service();
     restored.install_snapshot_bytes(&bytes).unwrap();
     let after = restored.replicas[0]
-        .pages
+        .pages_local()
         .get(&page_id)
         .expect("the restored page")
         .fragment_digests()
@@ -41254,12 +41254,12 @@ fn a_snapshot_cannot_carry_a_damaged_page() {
     let shard_len = chunk_ec_fragment_len(payload.len());
     {
         let state = std::sync::Arc::make_mut(
-            restored.replicas[0].pages.get_mut(&page_id).expect("the page"),
+            restored.replicas[0].pages_local_mut().get_mut(&page_id).expect("the page"),
         );
         let data = std::sync::Arc::make_mut(&mut state.data);
         data[2 * shard_len + 5] ^= 0xFF;
     }
-    let state = restored.replicas[0].pages.get(&page_id).expect("the page");
+    let state = restored.replicas[0].pages_local().get(&page_id).expect("the page");
     assert_eq!(
         chunk_ec_damaged_fragments(&state.data, state.fragment_digests()),
         vec![2],
@@ -41366,7 +41366,7 @@ fn a_page_that_moves_to_a_replica_with_peers_gives_up_its_digests() {
         page_index: 0,
     };
     let carried = alone.replicas[0]
-        .pages
+        .pages_local()
         .get(&page_id)
         .expect("the page")
         .as_ref()
@@ -41393,7 +41393,7 @@ fn a_page_that_moves_to_a_replica_with_peers_gives_up_its_digests() {
         }])
         .unwrap();
     let state = with_peers.replicas[0]
-        .pages
+        .pages_local()
         .get(&page_id)
         .expect("the page");
     assert!(
@@ -41738,7 +41738,7 @@ fn a_striped_service_stripes_a_single_range_write_too() {
     let held: u64 = service
         .replicas
         .iter()
-        .flat_map(|replica| replica.pages.values())
+        .flat_map(|replica| replica.pages_local().values())
         .map(|state| state.data.len() as u64)
         .sum();
     assert_eq!(
@@ -41782,7 +41782,7 @@ fn a_retried_striped_write_is_deduplicated_at_each_replica() {
         service
             .replicas
             .iter()
-            .map(|replica| replica.batch_write_request_receipts.len())
+            .map(|replica| replica.batch_write_receipts_local().len())
             .sum()
     };
     assert_eq!(receipts(&service), 0, "nothing has been written yet");
@@ -41811,7 +41811,7 @@ fn a_retried_striped_write_is_deduplicated_at_each_replica() {
         service
             .replicas
             .iter()
-            .flat_map(|replica| replica.batch_write_request_receipts.keys())
+            .flat_map(|replica| replica.batch_write_receipts_local().keys())
             .filter(|key| key.starts_with("sw:"))
             .count()
     };
@@ -41831,7 +41831,7 @@ fn a_retried_striped_write_is_deduplicated_at_each_replica() {
             .replicas
             .iter()
             .map(|replica| {
-                let state = replica.pages.get(&page_id).expect("every replica holds a unit");
+                let state = replica.pages_local().get(&page_id).expect("every replica holds a unit");
                 (
                     state.logical_length,
                     state.checksum_fnv1a64,
@@ -41844,7 +41844,7 @@ fn a_retried_striped_write_is_deduplicated_at_each_replica() {
     let sequences_before: Vec<u64> = service
         .replicas
         .iter()
-        .map(|replica| replica.pages.get(&page_id).unwrap().write_sequence)
+        .map(|replica| replica.pages_local().get(&page_id).unwrap().write_sequence)
         .collect();
     service
         .write_striped_page_ranges(&page_id, &[(0, &payload)], Some(("sw", "stripe-retry-1")))
@@ -41870,7 +41870,7 @@ fn a_retried_striped_write_is_deduplicated_at_each_replica() {
     let sequences_after: Vec<u64> = service
         .replicas
         .iter()
-        .map(|replica| replica.pages.get(&page_id).unwrap().write_sequence)
+        .map(|replica| replica.pages_local().get(&page_id).unwrap().write_sequence)
         .collect();
     assert!(
         sequences_after
@@ -42156,7 +42156,7 @@ fn a_striped_page_that_has_lost_a_replica_is_reported_unrepaired() {
         chunk_id: chunk_id.clone(),
         page_index: 0,
     };
-    service.replicas[1].pages.clear();
+    service.replicas[1].pages_local_mut().clear();
 
     let report = service.repair_chunk_replicas(&page_id).unwrap();
     assert_eq!(
@@ -42496,9 +42496,9 @@ fn measure_what_the_redundancy_fragment_buys_at_each_replica_count() {
         // Done to all of them because a surviving peer would make the repair trivially possible
         // and the fragment irrelevant, which is the point of the policy.
         for replica in store.chunk_service.replicas.iter_mut() {
-            let page_ids: Vec<PageId> = replica.pages.keys().cloned().collect();
+            let page_ids: Vec<PageId> = replica.pages_local().keys().cloned().collect();
             for page_id in page_ids {
-                let state = std::sync::Arc::make_mut(replica.pages.get_mut(&page_id).unwrap());
+                let state = std::sync::Arc::make_mut(replica.pages_local_mut().get_mut(&page_id).unwrap());
                 let bytes = std::sync::Arc::make_mut(&mut state.data);
                 if bytes.is_empty() {
                     continue;
@@ -42598,9 +42598,9 @@ fn measure_what_the_redundancy_fragment_buys_at_each_replica_count() {
             .unwrap();
         // The FIRST replica only.
         let replica = store.chunk_service.replicas.get_mut(0).expect("a replica");
-        let page_ids: Vec<PageId> = replica.pages.keys().cloned().collect();
+        let page_ids: Vec<PageId> = replica.pages_local().keys().cloned().collect();
         for page_id in page_ids {
-            let state = std::sync::Arc::make_mut(replica.pages.get_mut(&page_id).unwrap());
+            let state = std::sync::Arc::make_mut(replica.pages_local_mut().get_mut(&page_id).unwrap());
             let bytes = std::sync::Arc::make_mut(&mut state.data);
             if bytes.is_empty() {
                 continue;
@@ -42669,7 +42669,7 @@ fn a_write_reaches_every_replica_from_the_coordinator_in_one_hop() {
         .chunk_service
         .replicas
         .iter()
-        .map(|replica| replica.physical_write_count)
+        .map(|replica| replica.physical_write_count())
         .collect();
     assert!(
         writes_before.len() >= 3,
@@ -42690,7 +42690,7 @@ fn a_write_reaches_every_replica_from_the_coordinator_in_one_hop() {
         .chunk_service
         .replicas
         .iter()
-        .map(|replica| replica.physical_write_count)
+        .map(|replica| replica.physical_write_count())
         .collect();
     let advanced: Vec<u64> = writes_before
         .iter()
@@ -42716,7 +42716,7 @@ fn a_write_reaches_every_replica_from_the_coordinator_in_one_hop() {
     let mut contents: Vec<Vec<(PageId, Vec<u8>)>> = Vec::new();
     for replica in store.chunk_service.replicas.iter() {
         let mut held: Vec<(PageId, Vec<u8>)> = replica
-            .pages
+            .pages_local()
             .iter()
             .map(|(id, state)| (id.clone(), state.data.as_ref().clone()))
             .collect();
@@ -42778,28 +42778,28 @@ fn a_batch_shares_the_receipt_maps_until_it_writes_one() {
             let pairs: [(bool, &str); 4] = [
                 (
                     std::sync::Arc::ptr_eq(
-                        &live.write_request_receipts,
+                        live.write_receipts_handle(),
                         &taken.write_request_receipts,
                     ),
                     "write",
                 ),
                 (
                     std::sync::Arc::ptr_eq(
-                        &live.discard_request_receipts,
+                        live.discard_receipts_handle(),
                         &taken.discard_request_receipts,
                     ),
                     "discard",
                 ),
                 (
                     std::sync::Arc::ptr_eq(
-                        &live.batch_write_request_receipts,
+                        live.batch_write_receipts_handle(),
                         &taken.batch_write_request_receipts,
                     ),
                     "batch_write",
                 ),
                 (
                     std::sync::Arc::ptr_eq(
-                        &live.batch_discard_request_receipts,
+                        live.batch_discard_receipts_handle(),
                         &taken.batch_discard_request_receipts,
                     ),
                     "batch_discard",
@@ -42989,7 +42989,7 @@ fn a_write_while_a_snapshot_is_held_copies_only_the_chunk_it_touches() {
             };
             for (page_id, state) in taken.pages.iter() {
                 held += 1;
-                if let Some(live) = replica.pages.get(page_id) {
+                if let Some(live) = replica.pages_local().get(page_id) {
                     if std::sync::Arc::ptr_eq(live, state) {
                         shared += 1;
                     }
@@ -43184,19 +43184,19 @@ fn a_refused_mutation_leaves_exactly_the_receipts_it_found() {
         for (index, replica) in page.replicas.iter().enumerate() {
             take(
                 &format!("replica{index}.write"),
-                replica.write_request_receipts.keys().collect(),
+                replica.write_receipts_local().keys().collect(),
             );
             take(
                 &format!("replica{index}.discard"),
-                replica.discard_request_receipts.keys().collect(),
+                replica.discard_receipts_local().keys().collect(),
             );
             take(
                 &format!("replica{index}.batch_write"),
-                replica.batch_write_request_receipts.keys().collect(),
+                replica.batch_write_receipts_local().keys().collect(),
             );
             take(
                 &format!("replica{index}.batch_discard"),
-                replica.batch_discard_request_receipts.keys().collect(),
+                replica.batch_discard_receipts_local().keys().collect(),
             );
             // A replica's state-install, reclaim and repair receipt maps are
             // private to the chunk service, and widening them for a test is the
@@ -43425,7 +43425,7 @@ fn three_replicas_driven_only_by_the_log_reach_the_same_bytes() {
         .map(|machine| {
             let page = machine
                 .replica()
-                .pages.get(&page_id)
+                .pages_local().get(&page_id)
                 .expect("the page the log wrote");
             (page.logical_length, page.checksum_fnv1a64, page.data.to_vec())
         })
@@ -43486,8 +43486,8 @@ fn the_range_order_inside_one_entry_cannot_make_two_replicas_diverge() {
     matrixraft::StateMachine::apply(&mut one, chunk_raft_entry(4, 1, ascending)).unwrap();
     matrixraft::StateMachine::apply(&mut other, chunk_raft_entry(4, 1, descending)).unwrap();
 
-    let one_bytes = one.replica().pages.get(&page_id).unwrap().data.to_vec();
-    let other_bytes = other.replica().pages.get(&page_id).unwrap().data.to_vec();
+    let one_bytes = one.replica().pages_local().get(&page_id).unwrap().data.to_vec();
+    let other_bytes = other.replica().pages_local().get(&page_id).unwrap().data.to_vec();
     assert_eq!(one_bytes, b"aabb", "{one_bytes:?}");
     assert_eq!(
         one_bytes, other_bytes,
@@ -43522,8 +43522,8 @@ fn the_order_the_log_fixes_is_what_makes_the_replicas_agree() {
     matrixraft::StateMachine::apply(&mut backwards, chunk_raft_entry(3, 1, second)).unwrap();
     matrixraft::StateMachine::apply(&mut backwards, chunk_raft_entry(3, 2, first)).unwrap();
 
-    let forwards_bytes = forwards.replica().pages.get(&page_id).unwrap().data.to_vec();
-    let backwards_bytes = backwards.replica().pages.get(&page_id).unwrap().data.to_vec();
+    let forwards_bytes = forwards.replica().pages_local().get(&page_id).unwrap().data.to_vec();
+    let backwards_bytes = backwards.replica().pages_local().get(&page_id).unwrap().data.to_vec();
     assert_eq!(forwards_bytes, b"aaaabbbbbbbb", "{forwards_bytes:?}");
     assert_eq!(backwards_bytes, b"aaaaaaaabbbb", "{backwards_bytes:?}");
     assert_ne!(
@@ -43532,8 +43532,8 @@ fn the_order_the_log_fixes_is_what_makes_the_replicas_agree() {
          incidental and this whole path buys nothing over a star write"
     );
     assert_ne!(
-        forwards.replica().pages.get(&page_id).unwrap().checksum_fnv1a64,
-        backwards.replica().pages.get(&page_id).unwrap().checksum_fnv1a64,
+        forwards.replica().pages_local().get(&page_id).unwrap().checksum_fnv1a64,
+        backwards.replica().pages_local().get(&page_id).unwrap().checksum_fnv1a64,
         "two different page contents must not share a checksum"
     );
 }
@@ -43556,8 +43556,8 @@ fn a_redelivered_entry_is_acknowledged_and_not_applied_twice() {
     let mut machine = ChunkStateMachine::new(1, MatrixReplicaService::new());
 
     matrixraft::StateMachine::apply(&mut machine, chunk_raft_entry(1, 1, payload.clone())).unwrap();
-    let after_first = machine.replica().pages.get(&page_id).unwrap().clone();
-    let writes_after_first = machine.replica().physical_write_count;
+    let after_first = machine.replica().pages_local().get(&page_id).unwrap().clone();
+    let writes_after_first = machine.replica().physical_write_count();
 
     let response =
         matrixraft::StateMachine::apply(&mut machine, chunk_raft_entry(1, 1, payload.clone()))
@@ -43567,12 +43567,12 @@ fn a_redelivered_entry_is_acknowledged_and_not_applied_twice() {
             );
     assert_eq!(response.applied_index, 1);
     assert_eq!(
-        machine.replica().physical_write_count,
+        machine.replica().physical_write_count(),
         writes_after_first,
         "the redelivered entry was applied a second time, so the replica counted a physical \
          write that happened once -- and the page service reads those counters"
     );
-    let after_second = machine.replica().pages.get(&page_id).unwrap();
+    let after_second = machine.replica().pages_local().get(&page_id).unwrap();
     assert_eq!(
         after_second.write_sequence, after_first.write_sequence,
         "the write sequence advanced for an entry that was already applied"
@@ -43581,14 +43581,14 @@ fn a_redelivered_entry_is_acknowledged_and_not_applied_twice() {
 
     // An index BELOW the last applied one is the same situation, and a later entry still applies.
     matrixraft::StateMachine::apply(&mut machine, chunk_raft_entry(1, 1, payload.clone())).unwrap();
-    assert_eq!(machine.replica().physical_write_count, writes_after_first);
+    assert_eq!(machine.replica().physical_write_count(), writes_after_first);
     matrixraft::StateMachine::apply(
         &mut machine,
         chunk_raft_entry(1, 2, ChunkStateMachine::encode_write(page_id.clone(), vec![(8, vec![b'y'; 8])])),
     )
     .unwrap();
     assert_eq!(
-        machine.replica().pages.get(&page_id).unwrap().data.len(),
+        machine.replica().pages_local().get(&page_id).unwrap().data.len(),
         16,
         "a genuinely new entry after a redelivery must still apply"
     );
@@ -43617,7 +43617,7 @@ fn an_entry_for_another_group_is_refused_rather_than_written_into_this_one() {
     }
     assert_eq!(machine.last_applied_index(), 0, "nothing should have applied");
     assert!(
-        machine.replica().pages.get(&chunk_raft_page()).is_none(),
+        machine.replica().pages_local().get(&chunk_raft_page()).is_none(),
         "a misrouted entry wrote a page into this group"
     );
 }
@@ -43694,7 +43694,7 @@ fn an_entry_whose_write_is_refused_does_not_move_the_applied_index_either() {
         "the applied index moved past an entry whose write was refused"
     );
     assert_eq!(
-        machine.replica().pages.get(&page_id).unwrap().data.len(),
+        machine.replica().pages_local().get(&page_id).unwrap().data.len(),
         2,
         "the refused write left bytes behind"
     );
@@ -43740,13 +43740,13 @@ fn a_chunk_snapshot_carries_the_applied_index_as_well_as_the_pages() {
         4,
         "the applied index must move with the data"
     );
-    let installed = target.replica().pages.get(&page_id).expect("the pages");
-    let original = source.replica().pages.get(&page_id).unwrap();
+    let installed = target.replica().pages_local().get(&page_id).expect("the pages");
+    let original = source.replica().pages_local().get(&page_id).unwrap();
     assert_eq!(installed.data, original.data, "the pages did not cross intact");
     assert_eq!(installed.checksum_fnv1a64, original.checksum_fnv1a64);
 
     // And a replay of an entry the snapshot already contains changes nothing.
-    let writes_before = target.replica().physical_write_count;
+    let writes_before = target.replica().physical_write_count();
     matrixraft::StateMachine::apply(
         &mut target,
         chunk_raft_entry(
@@ -43757,7 +43757,7 @@ fn a_chunk_snapshot_carries_the_applied_index_as_well_as_the_pages() {
     )
     .unwrap();
     assert_eq!(
-        target.replica().physical_write_count,
+        target.replica().physical_write_count(),
         writes_before,
         "an entry the installed snapshot already contained was applied again"
     );
@@ -43829,13 +43829,13 @@ fn one_proposal_through_the_applier_reaches_every_replica() {
         let handler = group.handler(node_id).unwrap();
         assert_eq!(handler.applied_index(), 1, "node {node_id}");
         let (length, checksum) = handler.with_replica(|replica| {
-            let page = replica.pages.get(&page_id).expect("the page");
+            let page = replica.pages_local().get(&page_id).expect("the page");
             (page.data.len(), page.checksum_fnv1a64)
         });
         assert_eq!(length, 32, "node {node_id} holds the wrong length");
         if node_id > 1 {
             let first = group.handler(1).unwrap().with_replica(|replica| {
-                replica.pages.get(&page_id).unwrap().checksum_fnv1a64
+                replica.pages_local().get(&page_id).unwrap().checksum_fnv1a64
             });
             assert_eq!(checksum, first, "node {node_id} disagrees with node 1");
         }
@@ -43866,7 +43866,7 @@ fn a_proposal_a_quorum_did_not_reach_is_reported_as_not_committed() {
         let held = group
             .handler(node_id)
             .unwrap()
-            .with_replica(|replica| replica.pages.contains_key(&page_id));
+            .with_replica(|replica| replica.pages_local().contains_key(&page_id));
         assert!(!held, "node {node_id} holds a write it was never sent");
         assert_eq!(group.handler(node_id).unwrap().applied_index(), 0);
     }
@@ -43921,7 +43921,7 @@ fn a_replica_that_missed_an_entry_refuses_to_apply_over_the_hole() {
         !group
             .handler(3)
             .unwrap()
-            .with_replica(|replica| replica.pages.contains_key(&page_id)),
+            .with_replica(|replica| replica.pages_local().contains_key(&page_id)),
         "the refused entry wrote a page anyway"
     );
     group.stop();
@@ -43965,11 +43965,11 @@ fn a_replica_that_fell_behind_is_caught_up_from_a_snapshot_and_converges() {
         group
             .handler(3)
             .unwrap()
-            .with_replica(|replica| replica.pages.get(&page_id).unwrap().data.to_vec()),
+            .with_replica(|replica| replica.pages_local().get(&page_id).unwrap().data.to_vec()),
         group
             .handler(1)
             .unwrap()
-            .with_replica(|replica| replica.pages.get(&page_id).unwrap().data.to_vec()),
+            .with_replica(|replica| replica.pages_local().get(&page_id).unwrap().data.to_vec()),
     );
     assert_eq!(caught_up, b"aaaaaaaabbbbbbbbcccccccc", "{caught_up:?}");
     assert_eq!(caught_up, leader, "the caught-up replica holds different bytes");
@@ -43985,7 +43985,7 @@ fn a_replica_that_fell_behind_is_caught_up_from_a_snapshot_and_converges() {
         let bytes = group
             .handler(node_id)
             .unwrap()
-            .with_replica(|replica| replica.pages.get(&page_id).unwrap().data.to_vec());
+            .with_replica(|replica| replica.pages_local().get(&page_id).unwrap().data.to_vec());
         assert_eq!(bytes, b"aaaaaaaabbbbbbbbccccccccdddddddd", "node {node_id}: {bytes:?}");
     }
     group.stop();
@@ -44027,7 +44027,7 @@ fn an_entry_the_replica_refuses_stops_the_group_reporting_progress_past_it() {
         assert_eq!(handler.applied_index(), 1, "node {node_id}");
         assert_eq!(handler.refusals().len(), 1, "node {node_id}");
         assert_eq!(
-            handler.with_replica(|replica| replica.pages.get(&page_id).unwrap().data.len()),
+            handler.with_replica(|replica| replica.pages_local().get(&page_id).unwrap().data.len()),
             4,
             "node {node_id} kept bytes from the refused write"
         );
@@ -44094,7 +44094,7 @@ fn a_batch_stops_at_its_first_refusal_rather_than_cascading() {
         "the state machine applied past its own refusal"
     );
     assert_eq!(
-        handler.with_replica(|replica| replica.pages.get(&page_id).unwrap().data.len()),
+        handler.with_replica(|replica| replica.pages_local().get(&page_id).unwrap().data.len()),
         4,
         "entry 3 was applied over the hole left by entry 2"
     );
@@ -44356,15 +44356,15 @@ fn measure_which_receipt_maps_a_batch_actually_writes() {
     let lengths = |store: &MatrixObjectStore| -> Vec<(String, usize)> {
         let mut out = Vec::new();
         for (index, replica) in store.chunk_service.replicas.iter().enumerate() {
-            out.push((format!("r{index}.write"), replica.write_request_receipts.len()));
-            out.push((format!("r{index}.discard"), replica.discard_request_receipts.len()));
+            out.push((format!("r{index}.write"), replica.write_receipts_local().len()));
+            out.push((format!("r{index}.discard"), replica.discard_receipts_local().len()));
             out.push((
                 format!("r{index}.batch_write"),
-                replica.batch_write_request_receipts.len(),
+                replica.batch_write_receipts_local().len(),
             ));
             out.push((
                 format!("r{index}.batch_discard"),
-                replica.batch_discard_request_receipts.len(),
+                replica.batch_discard_receipts_local().len(),
             ));
             // The state-install, reclaim and repair maps are private to the
             // service; the four here are the ones an ordinary put or delete can
@@ -45579,7 +45579,7 @@ fn a_striped_write_leaves_no_receipt_nothing_could_match() {
         service
             .replicas
             .iter()
-            .map(|replica| replica.batch_write_request_receipts.len())
+            .map(|replica| replica.batch_write_receipts_local().len())
             .sum()
     }
     let chunk_id = ChunkId::new(1, 1).unwrap();
@@ -46486,5 +46486,140 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     println!(
         "READMECI jobs=2 recorded={recorded} cargo_test_commands={test_commands} \
          library_filtered={library_filtered} integration_named={integration_named} unfiltered=0"
+    );
+}
+
+/// Both terms of each folded counter move, and a dropped one is visible.
+///
+/// # WHY THIS TESTS THE HELPER DIRECTLY RATHER THAN A PATH THROUGH IT
+///
+/// `note_physical_write` and `note_physical_discard` each advance two counters in one call,
+/// which is the shape that stops a caller advancing one and forgetting the other. The folding
+/// also creates one place where a term can be dropped for every call site at once, so it
+/// wants a guard.
+///
+/// It is tested here, on the helper, because of what the production callers are: each has
+/// exactly ONE, the apply half of a prepared batch mutation, and every test that drives those
+/// paths is in `tools/known_failures.txt`. Measured rather than assumed -- deleting the bytes
+/// term from each helper and running the whole library suite left it at exactly its recorded
+/// baseline, 412 passing and the same 21 failing, both times. So there was no green path to
+/// hang this on, and a test of the path would have been a test of a path that already fails.
+#[test]
+fn the_folded_replica_counters_advance_every_term_they_fold() {
+    let mut replica = MatrixReplicaService::new();
+    assert_eq!(replica.physical_write_count(), 0);
+    assert_eq!(replica.physical_write_bytes(), 0);
+    assert_eq!(replica.physical_discard_ranges(), 0);
+    assert_eq!(replica.physical_discard_bytes(), 0);
+
+    replica.note_physical_write(3, 128);
+    assert_eq!(
+        replica.physical_write_count(),
+        3,
+        "note_physical_write must advance the write count"
+    );
+    assert_eq!(
+        replica.physical_write_bytes(),
+        128,
+        "note_physical_write must advance the write BYTES as well as the count; a counter \
+         that moves alone reads afterwards as writes of no bytes"
+    );
+    // AND IT ACCUMULATES rather than assigning, so a second call adds to the first. Without
+    // this the two assertions above would pass against an implementation that overwrote.
+    replica.note_physical_write(1, 7);
+    assert_eq!(replica.physical_write_count(), 4);
+    assert_eq!(replica.physical_write_bytes(), 135);
+
+    replica.note_physical_discard(2, 64);
+    assert_eq!(
+        replica.physical_discard_ranges(),
+        2,
+        "note_physical_discard must advance the range count"
+    );
+    assert_eq!(
+        replica.physical_discard_bytes(),
+        64,
+        "note_physical_discard must advance the discarded BYTES as well as the ranges"
+    );
+    replica.note_physical_discard(1, 2);
+    assert_eq!(replica.physical_discard_ranges(), 3);
+    assert_eq!(replica.physical_discard_bytes(), 66);
+
+    // SATURATING, NOT WRAPPING. A counter that wrapped because one of these used `+` would
+    // read as a success: a huge figure becoming a small one looks like a quiet store.
+    replica.note_physical_write(u64::MAX, u64::MAX);
+    assert_eq!(replica.physical_write_count(), u64::MAX);
+    assert_eq!(replica.physical_write_bytes(), u64::MAX);
+    replica.note_physical_discard(u64::MAX, u64::MAX);
+    assert_eq!(replica.physical_discard_ranges(), u64::MAX);
+    assert_eq!(replica.physical_discard_bytes(), u64::MAX);
+}
+
+/// A replica current on an early page and behind on a later one is still refused check-in.
+///
+/// # THE CASE THE EXISTING GUARD CANNOT SEE
+///
+/// `check_in_replica` collects, for every page any believable replica holds, the best write
+/// sequence seen, and refuses the returning replica unless it is level on ALL of them. The
+/// guard that covers it drives a replica which missed a write affecting every page it holds,
+/// so a check that looked at only the FIRST page would reach the same verdict.
+///
+/// Measured, not supposed: truncating that whole-set read to its first entry left the entire
+/// library suite at its recorded baseline -- 412 passing, the same 21 failing. Nothing
+/// distinguished "every page" from "one page".
+///
+/// So this is the discriminating fixture. The returning replica is level on page 0 and behind
+/// on page 1 only, which is exactly the case a per-page comparison has to reach past its
+/// first entry to catch.
+#[test]
+fn a_replica_behind_on_only_a_later_page_is_refused_check_in() {
+    // A 4-byte page, so eight bytes is two pages: page 0 and page 1.
+    let chunk_id = ChunkId::new(0, 909).unwrap();
+    let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
+    page.write_chunk_range(&chunk_id, 0, b"abcdefgh").unwrap();
+    assert!(page.stale_replica_indices().is_empty());
+
+    // THE POSITIVE ARM FIRST, so that a refusal below is not a blanket one. Replica 1 goes
+    // away and comes back with nothing written while it was gone: it is level on every page
+    // and checks in on the first try.
+    page.set_replica_quarantine(1, true).unwrap();
+    page.set_replica_quarantine(1, false).unwrap();
+    assert_eq!(page.stale_replica_indices(), vec![1]);
+    page.check_in_replica(1)
+        .expect("a replica that missed nothing is level on every page and checks in");
+    assert!(
+        page.stale_replica_indices().is_empty(),
+        "a successful check-in must clear the record"
+    );
+
+    // Now replica 0 goes away and misses a write to the SECOND page only. Page 0 is
+    // untouched, so replica 0 stays level there and falls behind on page 1 alone.
+    page.set_replica_quarantine(0, true).unwrap();
+    page.write_chunk_range(&chunk_id, 4, b"WXYZ").unwrap();
+    page.set_replica_quarantine(0, false).unwrap();
+    assert_eq!(page.stale_replica_indices(), vec![0]);
+
+    match page.check_in_replica(0) {
+        Err(ObjectError::PreconditionFailed(message)) => {
+            assert!(
+                message.contains("write sequence"),
+                "the refusal should say which page is behind and by how much, and it says \
+                 {message:?}"
+            );
+            assert!(
+                message.contains("page_index: 1"),
+                "the page named should be the LATER one, which is the only one this replica \
+                 is behind on -- a check that stopped at the first page would have found \
+                 nothing to refuse. The refusal says {message:?}"
+            );
+        }
+        other => panic!(
+            "a replica behind on a later page must be refused check-in, and it gave {other:?}"
+        ),
+    }
+    assert_eq!(
+        page.stale_replica_indices(),
+        vec![0],
+        "a refused check-in must leave the record in place"
     );
 }
