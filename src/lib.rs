@@ -304,5 +304,14 @@ pub use internal_codec::*;
 #[cfg(feature = "http-server")]
 pub mod net;
 
+/// Replicas in other processes, reached over a socket.
+///
+/// On by default, and it adds no dependencies -- the standard library alone, for the same
+/// reason [`net`] gives. What the feature gates is the listener, the client and the quorum
+/// over them; none of it costs anything until something binds a port, and the default
+/// [`cluster::ReplicaPlacement`] is the in-process arrangement this store has always had.
+#[cfg(feature = "replica-server")]
+pub mod cluster;
+
 #[cfg(test)]
 mod tests;

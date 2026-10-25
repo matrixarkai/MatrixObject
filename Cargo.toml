@@ -17,7 +17,7 @@ categories = ["database-implementations", "filesystem"]
 exclude = ["pages/", "scratchpad/", "target/"]
 
 [features]
-default = ["raft-rs", "http-server"]
+default = ["raft-rs", "http-server", "replica-server"]
 raft-rs = ["dep:raft"]
 # The S3-compatible HTTP front door (`src/net`, and the `object_server` binary).
 #
@@ -35,6 +35,18 @@ http-server = []
 # anything other than S3 -- so this is an alias and is documented as one rather than implying a
 # choice that does not exist.
 s3 = ["http-server"]
+# Replicas in other processes (`src/cluster`, and the `replica_server` binary).
+#
+# ON by default, and it adds NO dependencies -- the standard library alone, for the same
+# reason `http-server` gives. What the feature gates is a listener, a client and the quorum
+# over them, none of which costs anything until something binds a port: the default
+# `ReplicaPlacement` is the in-process arrangement this store has always had, so a build with
+# this feature on behaves exactly as it did before something asks for remote replicas.
+#
+# On by default rather than opt-in because the thing it makes possible -- surviving the loss
+# of one replica process -- is what the replication factor this store already pays for is
+# supposed to buy. A flag standing between a user and that is a barrier in front of the point.
+replica-server = []
 matrix-raft = ["dep:matrixraft"]
 
 [dependencies]
