@@ -553,6 +553,29 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::an_object_record_owns_no_heap_before_or_after_a_snapshot_load did not run"; exit 1; }
 
+      # THESE TWO GUARD WHAT A FOLD AND A BATCHED READ COULD DROP, and both were added
+      # because a plant against them left the whole suite at its recorded baseline. Each
+      # counter helper has exactly one production caller, in a prepared batch mutation's
+      # apply half, and every test driving those paths is in tools/known_failures.txt -- so
+      # without these steps the only cover for that accounting is a failing test.
+      - name: The folded replica counters advance every term they fold
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_folded_replica_counters_advance_every_term_they_fold -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_folded_replica_counters_advance_every_term_they_fold did not run"; exit 1; }
+
+      - name: A replica behind on only a later page is refused check-in
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_replica_behind_on_only_a_later_page_is_refused_check_in -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_replica_behind_on_only_a_later_page_is_refused_check_in did not run"; exit 1; }
+
       # THESE FOUR RUN A BINARY, NOT A LIBRARY. Every guard above is `--lib`, which
       # never links an integration test, so the kill test below would be COMPILED by
       # the build job and RUN by nothing -- which is the state a measurement rots in.
