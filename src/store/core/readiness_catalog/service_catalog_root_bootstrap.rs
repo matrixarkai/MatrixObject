@@ -69,8 +69,6 @@ impl MatrixObjectStore {
             chunk_health: RootChunkHealth::default(),
         };
         let embedded_root_node = self.register_root_node(embedded_root_node)?;
-        let root_leader_lease =
-            self.campaign_root_leader(&root_node_id, root_lease_ttl_ms, now_ms)?;
 
         let metadata_control_proof = self.metadata_control_proof_at(now_ms);
         let metadata_route_cache = self.metadata_route_cache_status_at(now_ms);
@@ -100,6 +98,18 @@ impl MatrixObjectStore {
             chunk_health: RootChunkHealth::default(),
         };
         let metaserver_node = self.register_root_node(metaserver_node)?;
+        // THE LEASE IS CAMPAIGNED FOR THE METASERVER NODE, and it is campaigned here rather
+        // than earlier because `campaign_root_leader` refuses a candidate that is not in the
+        // roster yet -- so the node has to be registered first. It used to be campaigned for
+        // the embedded root node, two statements above its own registration.
+        //
+        // This store has one control plane and it is the metaserver, so the metaserver node
+        // is where the lease belongs. A store reopened from a snapshot written before this
+        // change still carries a lease held by the root node, and still loads: see
+        // `is_control_plane_leader_candidate`, which accepts the old kind for exactly that
+        // reason.
+        let root_leader_lease =
+            self.campaign_root_leader(metaserver_node_id, root_lease_ttl_ms, now_ms)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
                 if let Some(rollback) = rollback {

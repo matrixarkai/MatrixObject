@@ -60,7 +60,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 .root_nodes()
                 .into_iter()
                 .filter(|node| {
-                    node.service_kind == "rootserver"
+                    is_control_plane_leader_candidate(node)
                         && preferred_node_id
                             .as_ref()
                             .map_or(true, |node_id| &node.node_id == node_id)
