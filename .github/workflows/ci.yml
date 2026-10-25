@@ -511,8 +511,11 @@ jobs:
       - name: Filing a record over an existing key replaces it
         run: |
           set -o pipefail
-          cargo test --locked --lib \n            tests::filing_a_record_over_an_existing_key_replaces_it -- --exact \n            | tee /tmp/guard.log
-          grep -q '^test result: ok. 1 passed' /tmp/guard.log \n            || { echo "::error::filing_a_record_over_an_existing_key_replaces_it did not run"; exit 1; }
+          cargo test --locked --lib \
+            tests::filing_a_record_over_an_existing_key_replaces_it -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::filing_a_record_over_an_existing_key_replaces_it did not run"; exit 1; }
 
       - name: A digest equals the text it is a digest of and refuses a corrupt tag
         run: |
@@ -526,8 +529,11 @@ jobs:
       - name: The snapshot decoder accepts the version before this one and refuses the one after
         run: |
           set -o pipefail
-          cargo test --locked --lib \n            tests::the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_after -- --exact \n            | tee /tmp/guard.log
-          grep -q '^test result: ok. 1 passed' /tmp/guard.log \n            || { echo "::error::the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_after did not run"; exit 1; }
+          cargo test --locked --lib \
+            tests::the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_after -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_after did not run"; exit 1; }
 
       - name: Two records spelling the same thing in different shapes hash differently
         run: |
