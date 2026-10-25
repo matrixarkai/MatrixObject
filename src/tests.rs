@@ -46488,3 +46488,138 @@ fn the_readme_describes_the_continuous_integration_it_has() {
          library_filtered={library_filtered} integration_named={integration_named} unfiltered=0"
     );
 }
+
+/// Both terms of each folded counter move, and a dropped one is visible.
+///
+/// # WHY THIS TESTS THE HELPER DIRECTLY RATHER THAN A PATH THROUGH IT
+///
+/// `note_physical_write` and `note_physical_discard` each advance two counters in one call,
+/// which is the shape that stops a caller advancing one and forgetting the other. The folding
+/// also creates one place where a term can be dropped for every call site at once, so it
+/// wants a guard.
+///
+/// It is tested here, on the helper, because of what the production callers are: each has
+/// exactly ONE, the apply half of a prepared batch mutation, and every test that drives those
+/// paths is in `tools/known_failures.txt`. Measured rather than assumed -- deleting the bytes
+/// term from each helper and running the whole library suite left it at exactly its recorded
+/// baseline, 412 passing and the same 21 failing, both times. So there was no green path to
+/// hang this on, and a test of the path would have been a test of a path that already fails.
+#[test]
+fn the_folded_replica_counters_advance_every_term_they_fold() {
+    let mut replica = MatrixReplicaService::new();
+    assert_eq!(replica.physical_write_count(), 0);
+    assert_eq!(replica.physical_write_bytes(), 0);
+    assert_eq!(replica.physical_discard_ranges(), 0);
+    assert_eq!(replica.physical_discard_bytes(), 0);
+
+    replica.note_physical_write(3, 128);
+    assert_eq!(
+        replica.physical_write_count(),
+        3,
+        "note_physical_write must advance the write count"
+    );
+    assert_eq!(
+        replica.physical_write_bytes(),
+        128,
+        "note_physical_write must advance the write BYTES as well as the count; a counter \
+         that moves alone reads afterwards as writes of no bytes"
+    );
+    // AND IT ACCUMULATES rather than assigning, so a second call adds to the first. Without
+    // this the two assertions above would pass against an implementation that overwrote.
+    replica.note_physical_write(1, 7);
+    assert_eq!(replica.physical_write_count(), 4);
+    assert_eq!(replica.physical_write_bytes(), 135);
+
+    replica.note_physical_discard(2, 64);
+    assert_eq!(
+        replica.physical_discard_ranges(),
+        2,
+        "note_physical_discard must advance the range count"
+    );
+    assert_eq!(
+        replica.physical_discard_bytes(),
+        64,
+        "note_physical_discard must advance the discarded BYTES as well as the ranges"
+    );
+    replica.note_physical_discard(1, 2);
+    assert_eq!(replica.physical_discard_ranges(), 3);
+    assert_eq!(replica.physical_discard_bytes(), 66);
+
+    // SATURATING, NOT WRAPPING. A counter that wrapped because one of these used `+` would
+    // read as a success: a huge figure becoming a small one looks like a quiet store.
+    replica.note_physical_write(u64::MAX, u64::MAX);
+    assert_eq!(replica.physical_write_count(), u64::MAX);
+    assert_eq!(replica.physical_write_bytes(), u64::MAX);
+    replica.note_physical_discard(u64::MAX, u64::MAX);
+    assert_eq!(replica.physical_discard_ranges(), u64::MAX);
+    assert_eq!(replica.physical_discard_bytes(), u64::MAX);
+}
+
+/// A replica current on an early page and behind on a later one is still refused check-in.
+///
+/// # THE CASE THE EXISTING GUARD CANNOT SEE
+///
+/// `check_in_replica` collects, for every page any believable replica holds, the best write
+/// sequence seen, and refuses the returning replica unless it is level on ALL of them. The
+/// guard that covers it drives a replica which missed a write affecting every page it holds,
+/// so a check that looked at only the FIRST page would reach the same verdict.
+///
+/// Measured, not supposed: truncating that whole-set read to its first entry left the entire
+/// library suite at its recorded baseline -- 412 passing, the same 21 failing. Nothing
+/// distinguished "every page" from "one page".
+///
+/// So this is the discriminating fixture. The returning replica is level on page 0 and behind
+/// on page 1 only, which is exactly the case a per-page comparison has to reach past its
+/// first entry to catch.
+#[test]
+fn a_replica_behind_on_only_a_later_page_is_refused_check_in() {
+    // A 4-byte page, so eight bytes is two pages: page 0 and page 1.
+    let chunk_id = ChunkId::new(0, 909).unwrap();
+    let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
+    page.write_chunk_range(&chunk_id, 0, b"abcdefgh").unwrap();
+    assert!(page.stale_replica_indices().is_empty());
+
+    // THE POSITIVE ARM FIRST, so that a refusal below is not a blanket one. Replica 1 goes
+    // away and comes back with nothing written while it was gone: it is level on every page
+    // and checks in on the first try.
+    page.set_replica_quarantine(1, true).unwrap();
+    page.set_replica_quarantine(1, false).unwrap();
+    assert_eq!(page.stale_replica_indices(), vec![1]);
+    page.check_in_replica(1)
+        .expect("a replica that missed nothing is level on every page and checks in");
+    assert!(
+        page.stale_replica_indices().is_empty(),
+        "a successful check-in must clear the record"
+    );
+
+    // Now replica 0 goes away and misses a write to the SECOND page only. Page 0 is
+    // untouched, so replica 0 stays level there and falls behind on page 1 alone.
+    page.set_replica_quarantine(0, true).unwrap();
+    page.write_chunk_range(&chunk_id, 4, b"WXYZ").unwrap();
+    page.set_replica_quarantine(0, false).unwrap();
+    assert_eq!(page.stale_replica_indices(), vec![0]);
+
+    match page.check_in_replica(0) {
+        Err(ObjectError::PreconditionFailed(message)) => {
+            assert!(
+                message.contains("write sequence"),
+                "the refusal should say which page is behind and by how much, and it says \
+                 {message:?}"
+            );
+            assert!(
+                message.contains("page_index: 1"),
+                "the page named should be the LATER one, which is the only one this replica \
+                 is behind on -- a check that stopped at the first page would have found \
+                 nothing to refuse. The refusal says {message:?}"
+            );
+        }
+        other => panic!(
+            "a replica behind on a later page must be refused check-in, and it gave {other:?}"
+        ),
+    }
+    assert_eq!(
+        page.stale_replica_indices(),
+        vec![0],
+        "a refused check-in must leave the record in place"
+    );
+}
