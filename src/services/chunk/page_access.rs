@@ -99,7 +99,7 @@ impl MatrixReplicaService {
     ///
     /// What makes this affordable is what it leaves out: a `(PageId, u64)` pair per page and
     /// **no payload**. That is the difference between a page index and a page map, and it is
-    /// why this call can stand behind a socket while [`MatrixReplicaService::pages_local`]
+    /// why this call can stand behind a socket while `pages_local`
     /// cannot.
     pub fn page_write_sequences(&self) -> BTreeMap<PageId, u64> {
         self.pages
