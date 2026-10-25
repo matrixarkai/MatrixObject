@@ -210,6 +210,18 @@ impl RemoteReplicaSet {
         // The bytes are in the key rather than trusted to follow from the checksum, because
         // two replicas agreeing on a checksum while returning different bytes is exactly the
         // case a vote exists to catch.
+        //
+        // WHAT THIS COSTS, SAID RATHER THAN HIDDEN: the key holds a COPY of the payload, so a
+        // quorum read of an `n`-byte range over `r` replicas holds about `2rn` bytes at its
+        // peak -- the answers plus the vote keys -- against `rn` for a vote over a digest. At
+        // a 1 MiB page and three replicas that is roughly 6 MiB transient instead of 3 MiB.
+        // The in-process path votes over `(write_sequence, checksum, etag)` and pays the
+        // smaller figure. This one is deliberately the stricter comparison while the
+        // arrangement is new: a digest collision here would hand back bytes a quorum never
+        // agreed on, and the first thing worth being sure of about a remote replica is that
+        // what arrived is what the others have. Replacing the payload in this key with a
+        // digest is a change worth making once that is established, and it is a change to
+        // this line.
         let mut votes: BTreeMap<(u64, String, Vec<u8>), usize> = BTreeMap::new();
         for read in &answered {
             let key = (read.write_sequence, read.checksum.clone(), read.data.clone());

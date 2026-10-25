@@ -98,16 +98,13 @@ pub struct ReplicaNodeServer {
 
 impl ReplicaNodeServer {
     /// Bind `addr` and serve a fresh, empty replica.
+    ///
+    /// There is deliberately no `bind_with_replica` taking a preloaded one. It was written,
+    /// and removed before this landed: nothing calls it, because this node has no durable
+    /// state to load from, so its only possible caller is a recovery path that does not
+    /// exist. It belongs in the change that gives a node something to recover.
     pub fn bind(addr: &str, options: ReplicaNodeOptions) -> std::io::Result<Self> {
-        Self::bind_with_replica(addr, MatrixReplicaService::new(), options)
-    }
-
-    /// Bind `addr` and serve `replica`, however it was built or loaded.
-    pub fn bind_with_replica(
-        addr: &str,
-        replica: MatrixReplicaService,
-        options: ReplicaNodeOptions,
-    ) -> std::io::Result<Self> {
+        let replica = MatrixReplicaService::new();
         let listener = TcpListener::bind(addr)?;
         Ok(Self {
             listener,

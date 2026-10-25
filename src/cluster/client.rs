@@ -6,7 +6,7 @@
 //! # THE SIGNATURES, AND THE ONE THAT COULD NOT MATCH
 //!
 //! Three of the four calls here have the same name, the same arguments and the same return
-//! type as the method of the same name on [`MatrixReplicaService`]:
+//! type as the method of the same name on [`crate::MatrixReplicaService`]:
 //!
 //! | this client | the in-process replica |
 //! |---|---|

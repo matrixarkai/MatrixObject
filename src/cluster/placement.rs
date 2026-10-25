@@ -60,79 +60,17 @@ impl Default for ReplicaPlacement {
 }
 
 impl ReplicaPlacement {
-    /// Read a placement from the environment, defaulting to the in-process arrangement.
-    ///
-    /// | variable | meaning |
-    /// |---|---|
-    /// | `MATRIXOBJECT_REPLICA_ENDPOINTS` | comma-separated `host:port` list; its presence selects the remote arm |
-    /// | `MATRIXOBJECT_WRITE_QUORUM` | acknowledgements a write needs |
-    /// | `MATRIXOBJECT_READ_QUORUM` | agreeing answers a read needs |
-    /// | `MATRIXOBJECT_REPLICA_COUNT` | replicas, in-process arm only |
-    ///
-    /// An unparseable number is REFUSED rather than replaced by the default. A quorum the
-    /// operator set and the process ignored is how a store ends up running at a durability
-    /// nobody chose, with nothing in the log saying so.
-    pub fn from_env() -> Result<Self, ObjectError> {
-        fn number(name: &str, default: usize) -> Result<usize, ObjectError> {
-            match std::env::var(name) {
-                Ok(raw) if !raw.trim().is_empty() => raw.trim().parse::<usize>().map_err(|err| {
-                    ObjectError::InvalidArgument(format!("{name}={raw:?} is not a number: {err}"))
-                }),
-                _ => Ok(default),
-            }
-        }
-        let endpoints: Vec<String> = std::env::var("MATRIXOBJECT_REPLICA_ENDPOINTS")
-            .ok()
-            .map(|raw| {
-                raw.split(',')
-                    .map(|part| part.trim().to_string())
-                    .filter(|part| !part.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-        if endpoints.is_empty() {
-            let replica_count = number("MATRIXOBJECT_REPLICA_COUNT", 3)?;
-            return Ok(ReplicaPlacement::InProcess {
-                replica_count,
-                write_quorum: number("MATRIXOBJECT_WRITE_QUORUM", 2)?,
-                read_quorum: number("MATRIXOBJECT_READ_QUORUM", 2)?,
-            });
-        }
-        let default_quorum = endpoints.len().div_ceil(2);
-        Ok(ReplicaPlacement::Remote {
-            write_quorum: number("MATRIXOBJECT_WRITE_QUORUM", default_quorum)?,
-            read_quorum: number("MATRIXOBJECT_READ_QUORUM", default_quorum)?,
-            endpoints,
-        })
-    }
+    // DELIBERATELY ABSENT: a `from_env` reading `MATRIXOBJECT_REPLICA_ENDPOINTS` and a
+    // `describe` for a startup line. Both were written and then removed before this landed,
+    // because nothing in this slice reads either one: the fan-out is a library type, and the
+    // process that would parse an endpoint list and log the arrangement it chose is the
+    // coordinator binary that does not exist yet. A setting nothing reads is not
+    // configuration, it is a promise about a future caller, and it rots silently because no
+    // test can tell it from a working one. They belong in the change that adds that binary.
 
     /// True when this placement puts replicas in other processes.
     pub fn is_remote(&self) -> bool {
         matches!(self, ReplicaPlacement::Remote { .. })
-    }
-
-    /// One line naming the arrangement, for the first line of a process's log.
-    pub fn describe(&self) -> String {
-        match self {
-            ReplicaPlacement::InProcess {
-                replica_count,
-                write_quorum,
-                read_quorum,
-            } => format!(
-                "placement=in-process replicas={replica_count} write_quorum={write_quorum} \
-                 read_quorum={read_quorum} fault_tolerance=none-one-process-holds-all"
-            ),
-            ReplicaPlacement::Remote {
-                endpoints,
-                write_quorum,
-                read_quorum,
-            } => format!(
-                "placement=remote replicas={} write_quorum={write_quorum} \
-                 read_quorum={read_quorum} endpoints={}",
-                endpoints.len(),
-                endpoints.join(",")
-            ),
-        }
     }
 
     /// Build the fan-out this placement describes.
@@ -293,6 +231,35 @@ impl InProcessReplicaSet {
         })
     }
 
+    /// Discard a byte range on every replica, requiring a write quorum.
+    pub fn discard_chunk(
+        &mut self,
+        page_id: &PageId,
+        offset: u64,
+        length: u64,
+    ) -> Result<usize, ObjectError> {
+        let mut acknowledged = 0usize;
+        let mut first_error: Option<ObjectError> = None;
+        for replica in self.replicas.iter_mut() {
+            match replica.discard_chunk(page_id, offset, length) {
+                Ok(()) => acknowledged += 1,
+                Err(err) if first_error.is_none() => first_error = Some(err),
+                Err(_) => {}
+            }
+        }
+        if acknowledged < self.write_quorum {
+            return Err(first_error.unwrap_or_else(|| {
+                ObjectError::Corruption(format!(
+                    "a page discard was acknowledged by {acknowledged} of {} replica(s), \
+                     short of a write quorum of {}",
+                    self.replicas.len(),
+                    self.write_quorum
+                ))
+            }));
+        }
+        Ok(acknowledged)
+    }
+
     pub fn head_chunk(&mut self, page_id: &PageId) -> Result<ReplicaHead, ObjectError> {
         let replica_count = self.replicas.len();
         let read_quorum = self.read_quorum;
@@ -396,6 +363,18 @@ impl ReplicaFanout {
         match self {
             ReplicaFanout::InProcess(set) => set.head_chunk(page_id),
             ReplicaFanout::Remote(set) => set.head_chunk(page_id),
+        }
+    }
+
+    pub fn discard_chunk(
+        &mut self,
+        page_id: &PageId,
+        offset: u64,
+        length: u64,
+    ) -> Result<usize, ObjectError> {
+        match self {
+            ReplicaFanout::InProcess(set) => set.discard_chunk(page_id, offset, length),
+            ReplicaFanout::Remote(set) => set.discard_chunk(page_id, offset, length),
         }
     }
 }

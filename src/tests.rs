@@ -46399,14 +46399,43 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     // COMMANDS ONLY. The workflow explains in a comment why each guard checks that it ran,
     // and that comment contains the words this looks for -- it flagged itself first time.
     let is_command = |line: &&String| !line.trim_start().starts_with('#');
+
+    // THE CLAIM IS THAT NO STEP RUNS THE FAILING LIBRARY SUITE, and there are two bounded
+    // shapes that satisfy it, so the check admits exactly those two:
+    //
+    //   * a `tests::` filter -- the library suite is 21 failures deep, so an unfiltered run
+    //     of it would be red on arrival;
+    //   * `--test <target> <name>` -- an integration target, which links no library tests at
+    //     all and so cannot pull that suite in however it is filtered.
+    //
+    // THE SECOND SHAPE WAS ADDED WHEN THE FIRST INTEGRATION TARGET ARRIVED, and this guard
+    // flagged it: four new steps met the claim -- none of them can run a library test -- while
+    // failing a check that only knew the one spelling which used to achieve it. Widened to
+    // assert the claim rather than the spelling, because the spelling was never the point.
+    let names_a_library_test = |command: &str| command.contains("tests::");
+    let names_an_integration_test = |command: &str| {
+        // `cargo test ... --test <target> <name> -- --exact`: the word two past `--test` is
+        // the test being named. A `--test <target>` with nothing after it would run every
+        // test in that target, which is not a named test, so it is refused here too.
+        command
+            .split_whitespace()
+            .skip_while(|word| *word != "--test")
+            .nth(2)
+            .is_some_and(|word| !word.starts_with('-') && word != "|")
+    };
     let unfiltered: Vec<&String> = joined
         .iter()
         .filter(is_command)
-        .filter(|command| command.contains("cargo test") && !command.contains("tests::"))
+        .filter(|command| {
+            command.contains("cargo test")
+                && !names_a_library_test(command)
+                && !names_an_integration_test(command)
+        })
         .collect();
     assert!(
         unfiltered.is_empty(),
-        "every cargo test in the workflow should name a test, and these do not: {unfiltered:?}"
+        "every cargo test in the workflow should name one test, either with a `tests::` \
+         filter or as a named test of a `--test` target, and these do neither: {unfiltered:?}"
     );
     // NOT VACUOUS: if the join produced nothing, the filter above would find nothing either.
     let test_commands = joined
@@ -46418,6 +46447,30 @@ fn the_readme_describes_the_continuous_integration_it_has() {
         test_commands >= 20,
         "only {test_commands} cargo test commands parsed out of the workflow, so the check \
          above proved nothing"
+    );
+    // AND NEITHER CLAUSE IS VACUOUS ON ITS OWN. Both shapes have to be present, or one of
+    // the two is admitting nothing and the check has quietly become the narrower one again.
+    let library_filtered = joined
+        .iter()
+        .filter(is_command)
+        .filter(|command| command.contains("cargo test") && names_a_library_test(command))
+        .count();
+    let integration_named = joined
+        .iter()
+        .filter(is_command)
+        .filter(|command| {
+            command.contains("cargo test") && names_an_integration_test(command)
+        })
+        .count();
+    assert!(
+        library_filtered >= 20,
+        "only {library_filtered} steps name a library test, so the `tests::` clause is not \
+         carrying the weight this check thinks it is"
+    );
+    assert!(
+        integration_named >= 1,
+        "no step names a test of a `--test` target, so the clause admitting that shape is \
+         admitting nothing and could be removed without failing anything"
     );
 
     // 4. When it runs.
@@ -46431,6 +46484,7 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     );
 
     println!(
-        "READMECI jobs=2 recorded={recorded} cargo_test_commands={test_commands} unfiltered=0"
+        "READMECI jobs=2 recorded={recorded} cargo_test_commands={test_commands} \
+         library_filtered={library_filtered} integration_named={integration_named} unfiltered=0"
     );
 }

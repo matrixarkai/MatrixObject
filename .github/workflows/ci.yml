@@ -552,3 +552,54 @@ jobs:
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::an_object_record_owns_no_heap_before_or_after_a_snapshot_load did not run"; exit 1; }
+
+      # THESE FOUR RUN A BINARY, NOT A LIBRARY. Every guard above is `--lib`, which
+      # never links an integration test, so the kill test below would be COMPILED by
+      # the build job and RUN by nothing -- which is the state a measurement rots in.
+      #
+      # `--test` names the one integration target, and the `running 1 test` check is
+      # here as well as the `1 passed` one because `cargo test` exits 0 when a filter
+      # matches nothing: without it, renaming the test would turn this step green.
+      - name: Three replica processes keep the data when one is killed
+        run: |
+          set -o pipefail
+          cargo test --locked --test a_replica_is_its_own_process \
+            three_replica_processes_keep_the_data_when_one_is_killed -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log \
+            || { echo "::error::three_replica_processes_keep_the_data_when_one_is_killed did not run"; exit 1; }
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::three_replica_processes_keep_the_data_when_one_is_killed did not pass"; exit 1; }
+
+      - name: The two replica placements read back the same bytes
+        run: |
+          set -o pipefail
+          cargo test --locked --test a_replica_is_its_own_process \
+            the_two_placements_read_back_the_same_bytes -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log \
+            || { echo "::error::the_two_placements_read_back_the_same_bytes did not run"; exit 1; }
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_two_placements_read_back_the_same_bytes did not pass"; exit 1; }
+
+      - name: A replica frame with an unknown protocol stamp is refused by name
+        run: |
+          set -o pipefail
+          cargo test --locked --test a_replica_is_its_own_process \
+            a_frame_with_an_unknown_protocol_stamp_is_refused_by_name -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log \
+            || { echo "::error::a_frame_with_an_unknown_protocol_stamp_is_refused_by_name did not run"; exit 1; }
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_frame_with_an_unknown_protocol_stamp_is_refused_by_name did not pass"; exit 1; }
+
+      - name: A replica payload past the bound is refused before it is allocated
+        run: |
+          set -o pipefail
+          cargo test --locked --test a_replica_is_its_own_process \
+            a_payload_past_the_declared_bound_is_refused_before_it_is_allocated -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log \
+            || { echo "::error::a_payload_past_the_declared_bound_is_refused_before_it_is_allocated did not run"; exit 1; }
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_payload_past_the_declared_bound_is_refused_before_it_is_allocated did not pass"; exit 1; }

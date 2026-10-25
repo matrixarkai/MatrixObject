@@ -15,19 +15,19 @@
 //! One process ending takes all three copies with it, because all three are on its heap.
 //!
 //! This module is the other arrangement, as a vertical slice: a
-//! [`server::ReplicaNodeServer`] owns one replica and nothing else can reach it except
-//! through a socket; a [`client::RemoteReplicaClient`] makes the same four calls remotely;
-//! a [`replica_set::RemoteReplicaSet`] fans out over several of them under the same quorum
-//! rule; and [`placement::ReplicaPlacement`] is the one place that chooses between the two,
+//! [`crate::cluster::server::ReplicaNodeServer`] owns one replica and nothing else can reach it except
+//! through a socket; a [`crate::cluster::client::RemoteReplicaClient`] makes the same four calls remotely;
+//! a [`crate::cluster::replica_set::RemoteReplicaSet`] fans out over several of them under the same quorum
+//! rule; and [`crate::cluster::placement::ReplicaPlacement`] is the one place that chooses between the two,
 //! defaulting to the in-process arrangement so that nothing existing changes.
 //!
 //! # WHAT 3.00x MEANS AFTER THIS, AND WHAT IT MEANT BEFORE
 //!
 //! The payload amplification figure this store publishes for replication is 3.00x, and the
 //! number is unchanged by this module: three copies are three copies. What changed is what
-//! the three are. Under [`placement::ReplicaPlacement::InProcess`] they are three
+//! the three are. Under [`crate::cluster::placement::ReplicaPlacement::InProcess`] they are three
 //! `BTreeMap`s on one heap, and the figure is the price of a guarantee the arrangement cannot
-//! provide. Under [`placement::ReplicaPlacement::Remote`] they are three copies in three
+//! provide. Under [`crate::cluster::placement::ReplicaPlacement::Remote`] they are three copies in three
 //! address spaces, and the same 3.00x is the price of surviving the loss of one of them --
 //! which the suite demonstrates by killing a replica process and reading every acknowledged
 //! byte back from the survivors.
@@ -37,7 +37,7 @@
 //! Four calls cross the socket: `write_chunk`, `read_chunk`, `head_chunk`, `discard_chunk`.
 //! Everything else a replica can do is in-process only, and `MatrixChunkService` -- the
 //! service that holds `replicas` and runs the historic fan-out -- is UNCHANGED by this
-//! module. It does not route through [`placement::ReplicaFanout`].
+//! module. It does not route through [`crate::cluster::placement::ReplicaFanout`].
 //!
 //! That is a deliberate stop, and the size of what it stops short of was measured rather than
 //! guessed. Replacing `MatrixChunkService`'s `replicas: Vec<MatrixReplicaService>` with
@@ -69,7 +69,7 @@
 //!
 //! There is one more difference that no amount of mechanical work removes: a remote read
 //! takes `&mut self` because sending a request frame is a write, while the local read takes
-//! `&self`. See [`client`] for why that is recorded rather than smoothed over.
+//! `&self`. See [`crate::cluster::client`] for why that is recorded rather than smoothed over.
 //!
 //! # IT IS UNAUTHENTICATED
 //!

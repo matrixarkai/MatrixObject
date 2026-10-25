@@ -649,6 +649,23 @@ fn the_two_placements_read_back_the_same_bytes() {
     let mut remote_fanout = remote.open(&options).expect("the remote arm opens");
     assert!(!local_fanout.is_remote());
     assert!(remote_fanout.is_remote());
+    assert_eq!(
+        local_fanout.replica_count(),
+        remote_fanout.replica_count(),
+        "the two arms must be the same width, or they are not comparable"
+    );
+    assert_eq!(local_fanout.replica_count(), 3);
+    if let store::cluster::ReplicaFanout::Remote(set) = &remote_fanout {
+        assert_eq!(set.write_quorum(), 3, "the remote arm carries its write quorum");
+        assert_eq!(set.read_quorum(), 2, "the remote arm carries its read quorum");
+        assert_eq!(
+            set.endpoints().len(),
+            3,
+            "the remote arm knows the three endpoints it fans out to"
+        );
+    } else {
+        panic!("the remote arm opened as the in-process one");
+    }
 
     for index in 0..8u64 {
         let page_id = corpus_page_id(index);
@@ -696,6 +713,49 @@ fn the_two_placements_read_back_the_same_bytes() {
             "page {index} has a different head through the two placements"
         );
     }
+
+    // THE FOURTH VERB. `discard_chunk` is the one call that crosses the socket and is not
+    // exercised by the kill test, so it is exercised here or not at all -- and a verb in the
+    // API that no test ever sends is worse than one that is absent, because its absence is
+    // visible and its brokenness is not. A discarded range is refused on a later read, which
+    // is what makes the effect observable rather than merely acknowledged.
+    let discarded = corpus_page_id(0);
+    assert_eq!(
+        local_fanout
+            .discard_chunk(&discarded, 0, 64)
+            .expect("the in-process arm accepts the discard"),
+        3
+    );
+    assert_eq!(
+        remote_fanout
+            .discard_chunk(&discarded, 0, 64)
+            .expect("the remote arm accepts the discard"),
+        3
+    );
+    let local_after = local_fanout.read_chunk(&discarded, 0, 64);
+    let remote_after = remote_fanout.read_chunk(&discarded, 0, 64);
+    assert_eq!(
+        local_after.is_ok(),
+        remote_after.is_ok(),
+        "a read over a discarded range turned out differently through the two placements: \
+         in-process {local_after:?}, remote {remote_after:?}"
+    );
+    assert!(
+        local_after.is_err(),
+        "a read over a range that was just discarded should be refused, and the in-process \
+         arm returned {local_after:?}"
+    );
+    assert_eq!(
+        local_fanout
+            .head_chunk(&discarded)
+            .expect("the in-process arm heads the discarded page")
+            .discarded_ranges,
+        remote_fanout
+            .head_chunk(&discarded)
+            .expect("the remote arm heads the discarded page")
+            .discarded_ranges,
+        "the discard landed in a different place through the two placements"
+    );
 
     // The absent case, through both arms, so that the two agree about a miss as well as a hit.
     let control = never_written_page_id();
