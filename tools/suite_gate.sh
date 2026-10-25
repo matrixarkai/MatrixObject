@@ -7,9 +7,14 @@
 #
 #   tools/suite_gate.sh
 #
-# 21 tests have failed since the repository's first commit. They are listed in
-# tools/known_failures.txt. This script is how you tell a pre-existing failure
-# from one you just caused.
+# 20 tests fail on a clean checkout. They are listed in tools/known_failures.txt,
+# and this script is how you tell a pre-existing failure from one you just caused.
+#
+# It was 21 until one of them turned out to be a stale literal rather than a broken
+# surface: a test asserted the root snapshot stamp MOSRSROOT30 while the format had
+# moved to MOSRSROOT32, which `every_durable_format_constant_is_accounted_for` had
+# been pinning correctly all along. A recorded failure is a record of a FAILURE, not
+# of a reason, so it is worth reading one before assuming the code is at fault.
 set -u
 
 cd "$(dirname "$0")/.." || exit 2

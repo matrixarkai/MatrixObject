@@ -695,7 +695,7 @@ review you cannot obtain. [CODEOWNERS](.github/CODEOWNERS) requests a reviewer; 
 gates nothing.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) is the guide -- what CI runs and what it does not,
-the 21 recorded test failures and how to tell yours from them, and the shape a change
+the 20 recorded test failures and how to tell yours from them, and the shape a change
 is expected to take. [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) applies. There is a
 pull-request template and two issue templates; a security or durability report goes
 privately through [SECURITY.md](SECURITY.md) instead of an issue.
@@ -730,7 +730,7 @@ On pushes to `main` and on every pull request, two jobs:
   `1 passed` line absent rather than wrong.
 
 CI does not run the whole library suite. `tools/suite_gate.sh` does, locally: it
-compares the failures by name against the 21 recorded in
+compares the failures by name against the 20 recorded in
 `tools/known_failures.txt`, and fails in **both** directions -- a failure that is
 new, and a recorded one that has started passing and should come off the list.
 

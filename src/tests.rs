@@ -7586,7 +7586,13 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
     }
     let snapshot_bytes = assembled.expect("final root snapshot");
     let mut snapshot_cursor = SnapshotByteCursor::new(&snapshot_bytes);
-    assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSROOT30");
+    // THE CURRENT STAMP, and the authority for it is elsewhere. This assertion is a sanity
+    // check that the reassembled stream is a root snapshot at all -- what the test is about
+    // is the chunk assembler above it and the contents below. The durable format itself is
+    // pinned by `every_durable_format_constant_is_accounted_for`, which already names
+    // MOSRSROOT32; this literal said MOSRSROOT30 and had simply been left behind by two
+    // version bumps, so the test failed on a stamp nothing else in the tree still expected.
+    assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSROOT32");
     let snapshot = RootSnapshot::from_bytes(&snapshot_bytes).unwrap();
     assert_eq!(snapshot.nodes.len(), 4);
     assert_eq!(snapshot.placements.len(), 1);
