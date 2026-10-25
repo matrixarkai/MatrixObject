@@ -150,7 +150,7 @@ impl MatrixChunkService {
                     let mut replica = MatrixReplicaService::new();
                     // Uniform across the set, and only kept when this replica is the
                     // only copy of the data.
-                    replica.keep_ec_sidecar = replica_count <= 1;
+                    replica.set_keep_ec_sidecar(replica_count <= 1);
                     replica
                 })
                 .collect(),

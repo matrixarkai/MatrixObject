@@ -48,8 +48,8 @@ pub(crate) fn page_audit_repair_image_fingerprint(chunk_service: &MatrixChunkSer
             chunk_service.quarantined_replicas.contains(&replica_index) as u64,
         );
         append_u64(&mut material, replica.is_frozen() as u64);
-        append_u64(&mut material, replica.pages.len() as u64);
-        for (page_id, state) in &replica.pages {
+        append_u64(&mut material, replica.page_count() as u64);
+        for (page_id, state) in replica.pages_local() {
             append_page_id(&mut material, page_id);
             append_chunk_state(&mut material, state);
         }
@@ -82,8 +82,8 @@ pub(crate) fn page_batch_mutation_image_fingerprint(chunk_service: &MatrixChunkS
     for (replica_index, replica) in chunk_service.replicas.iter().enumerate() {
         append_u64(&mut material, replica_index as u64);
         append_u64(&mut material, replica.is_frozen() as u64);
-        append_u64(&mut material, replica.pages.len() as u64);
-        for (page_id, state) in &replica.pages {
+        append_u64(&mut material, replica.page_count() as u64);
+        for (page_id, state) in replica.pages_local() {
             append_page_id(&mut material, page_id);
             append_chunk_state(&mut material, state);
         }
@@ -258,7 +258,7 @@ pub(crate) fn replica_receipt_retention_control_image_fingerprint(
     }
     for (index, replica) in chunk_service.replicas.iter().enumerate() {
         append_u64(&mut material, index as u64);
-        append_u64(&mut material, replica.receipt_retention as u64);
+        append_u64(&mut material, replica.receipt_retention() as u64);
     }
     etag(&material)
 }

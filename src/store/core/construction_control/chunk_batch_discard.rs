@@ -269,10 +269,7 @@ impl MatrixObjectStore {
             .ok_or_else(|| {
                 ObjectError::InvalidArgument("replica index out of range".to_string())
             })?;
-        if let Some(existing) = replica
-            .batch_discard_request_receipts
-            .get(&prepared.receipt.idempotency_key)
-        {
+        if let Some(existing) = replica.batch_discard_receipt(&prepared.receipt.idempotency_key) {
             if existing.page_id != prepared.receipt.page_id
                 || existing.request_checksum != prepared.receipt.request_checksum
             {
@@ -303,20 +300,15 @@ impl MatrixObjectStore {
         }
         replica.check_expected_control_checksum(Some(&current_control_proof.state_checksum))?;
         let projected_len = prepared.state.logical_length;
-        replica
-            .pages
-            .insert(
-                prepared.receipt.page_id.clone(),
-                std::sync::Arc::new(prepared.state),
-            );
+        // UNFENCED ON PURPOSE, for the reason given at the same point in the batch write
+        // apply path: the control proof comparison above is the stronger fence.
+        replica.install_page_unfenced(prepared.receipt.page_id.clone(), prepared.state);
         let _ = replica.invalidate_chunk_cache(&prepared.receipt.page_id, 0, projected_len);
-        replica.physical_discard_ranges = replica
-            .physical_discard_ranges
-            .saturating_add(prepared.receipt.stats.physical_discard_ranges);
-        replica.physical_discard_bytes = replica
-            .physical_discard_bytes
-            .saturating_add(prepared.receipt.stats.physical_discard_bytes);
-        std::sync::Arc::make_mut(&mut replica.batch_discard_request_receipts).insert(
+        replica.note_physical_discard(
+            prepared.receipt.stats.physical_discard_ranges,
+            prepared.receipt.stats.physical_discard_bytes,
+        );
+        replica.record_batch_discard_receipt(
             prepared.receipt.idempotency_key.clone(),
             prepared.receipt.clone(),
         );

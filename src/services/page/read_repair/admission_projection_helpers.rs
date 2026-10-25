@@ -40,10 +40,7 @@ impl MatrixChunkService {
         }
         let mut projected_physical = replica.physical_bytes();
         for (page_id, new_len) in projected_lengths {
-            let current_len = replica
-                .pages
-                .get(page_id)
-                .map_or(0u64, |state| state.data.len() as u64);
+            let current_len = replica.page_physical_len(page_id);
             projected_physical = projected_physical
                 .checked_sub(current_len)
                 .and_then(|base| base.checked_add((*new_len).max(current_len)))
@@ -53,7 +50,8 @@ impl MatrixChunkService {
                     )
                 })?;
         }
-        if replica.capacity_bytes > 0 && projected_physical > replica.capacity_bytes {
+        let capacity_bytes = replica.capacity_bytes();
+        if capacity_bytes > 0 && projected_physical > capacity_bytes {
             return Err(ObjectError::PreconditionFailed(
                 "chunk service capacity exceeded".to_string(),
             ));
@@ -71,13 +69,9 @@ impl MatrixChunkService {
         }
         if let ObjectError::PreconditionFailed(message) = err {
             if message.contains("capacity") {
-                replica.capacity_rejected_writes = replica
-                    .capacity_rejected_writes
-                    .saturating_add(rejected_chunks);
+                replica.note_capacity_rejected_writes(rejected_chunks);
             } else {
-                replica.service_mode_rejected_mutations = replica
-                    .service_mode_rejected_mutations
-                    .saturating_add(rejected_chunks);
+                replica.note_service_mode_rejected_mutations(rejected_chunks);
             }
         }
     }

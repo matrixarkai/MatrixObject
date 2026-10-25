@@ -68,7 +68,7 @@ impl MatrixChunkService {
                 )));
             }
         }
-        if self.replicas.iter().any(|replica| !replica.pages.is_empty()) {
+        if self.replicas.iter().any(|replica| replica.holds_any_page()) {
             return Err(ObjectError::PreconditionFailed(
                 "the stripe layout decides where a byte lives, so it cannot change once \
                  pages have been written"
@@ -264,13 +264,13 @@ impl MatrixChunkService {
         base: u64,
         intent: ReadCacheIntent,
     ) -> Result<Option<Vec<u8>>, ObjectError> {
-        let Some(state) = self.replicas[replica].pages.get(page_id) else {
+        let Some(logical_length) = self.replicas[replica].page_logical_length(page_id) else {
             return Ok(None);
         };
-        if base >= state.logical_length {
+        if base >= logical_length {
             return Ok(None);
         }
-        let available = (state.logical_length - base).min(layout.unit_bytes as u64) as usize;
+        let available = (logical_length - base).min(layout.unit_bytes as u64) as usize;
         let (read, _) = self.replicas[replica].read_chunk_with_cache_status(
             page_id,
             base,

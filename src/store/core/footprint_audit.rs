@@ -213,8 +213,14 @@ impl MatrixObjectStore {
         let mut discard_rows = 0u64;
         let mut replica_receipts = 0u64;
         for replica in &b.replicas {
-            pages = pages.saturating_add(replica.pages.len() as u64);
-            for state in replica.pages.values() {
+            // STAYS LOCAL. This is a whole-state traversal and not a query: it sums payload
+            // lengths, capacities, fragment bytes and discarded-range rows over every page.
+            // Answering it over a socket means shipping the replica's state to its caller,
+            // which is a snapshot transfer rather than a remote method -- so the remote form
+            // of this leg is a different call, asking each node for its own footprint and
+            // adding the answers. `pages_local` is named so that this caller is findable.
+            pages = pages.saturating_add(replica.page_count() as u64);
+            for state in replica.pages_local().values() {
                 data_len = data_len.saturating_add(state.data.len() as u64);
                 data_cap = data_cap.saturating_add(state.data.capacity() as u64);
                 // The digest is inline in the page state, so it owns no heap.
@@ -263,11 +269,11 @@ impl MatrixObjectStore {
                     digest_count = digest_count.saturating_add(digests.len() as u64);
                 }
             }
-            replica_receipts = replica_receipts
-                .saturating_add(replica.write_request_receipts.len() as u64)
-                .saturating_add(replica.discard_request_receipts.len() as u64)
-                .saturating_add(replica.batch_write_request_receipts.len() as u64)
-                .saturating_add(replica.batch_discard_request_receipts.len() as u64);
+            // ALL FOUR MAPS, summed inside the replica. The four terms are written out at
+            // the one place they could be dropped from -- see `retained_receipt_count` --
+            // because a helper that quietly summed three of four would move this published
+            // figure while still looking like the sum of a list.
+            replica_receipts = replica_receipts.saturating_add(replica.retained_receipt_count());
         }
         push("replica.chunks", pages);
         push("replica.data.len", data_len);
