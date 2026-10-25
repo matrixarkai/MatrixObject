@@ -238,18 +238,18 @@ At three replicas with the metadata counted, measured at 26-character keys:
 |---:|---:|---:|---:|
 | 64 KiB | 1,000 | **3.01x** | 3.00x |
 | 4 KiB | 4,000 | **3.08x** | 3.00x |
-| 1 KiB | 8,000 | **3.33x** | 3.02x |
+| 1 KiB | 8,000 | **3.32x** | 3.02x |
 
 The data term is exactly **3.00x** -- the replication floor for a store that
 copies every page to every replica -- so everything above it is metadata, which
-is **298 bytes an object plus 164,240 fixed** whatever the object size.
+is **290 bytes an object plus 164,232 fixed** whatever the object size.
 
 Those bytes are not all in one place. **186 of them are a storage node's own** -- the
-object's entry in its map, and its key in the payload index -- and **112 are the metadata
+object's entry in its map, and its key in the payload index -- and **104 are the metadata
 service's**, which keeps its own record of every object with its own versioning, deletion
 markers and change log. This crate models both services in one process, so the audit counts
 both; a deployment runs them on different machines, where a storage node carries 186 bytes
-an object rather than 298.
+an object rather than 290.
 
 Neither map keys its entries by a copy of what the entry already holds. `objects` is ordered by
 the identity inside each `ObjectMetadata` and `meta.records` by the key inside each record, so
@@ -282,9 +282,9 @@ which is more hardware rather than less space.
 replicas to eight and fails if any of them undercuts that.
 
 Counted with the metadata, a thousand objects of 1 KiB measure
-**1.98x striped against 3.47x replicated**, both read out of `footprint_audit()` on a
+**1.97x striped against 3.46x replicated**, both read out of `footprint_audit()` on a
 store nothing has read back yet. What separates the total from the 1.5x data term is the
-metadata line above, which striping does not change: the same 298 bytes an object either
+metadata line above, which striping does not change: the same 290 bytes an object either
 way. Striping moves the payload and nothing else.
 
 Both numbers are for the same object count, so the comparison is between two
@@ -363,8 +363,8 @@ Writing 500 objects of 1 KiB and then deleting every one leaves the store
 
 | | bytes |
 |---|---:|
-| holding 500 objects | 1,775,633 |
-| after deleting all 500 | 2,244,646 |
+| holding 500 objects | 1,771,625 |
+| after deleting all 500 | 2,240,638 |
 
 The payload index is given back in full. What replaces it is **822 bytes of
 idempotency receipt per delete** across three replicas, bounded only by

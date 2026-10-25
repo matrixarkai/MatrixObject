@@ -145,10 +145,10 @@ impl MatrixObjectStore {
         if batch.images.len() != 2
             || batch.images[0].key != current_key
             || batch.images[0].value != current_value.into()
-            || batch.images[0].deleted
+            || batch.images[0].deleted()
             || batch.images[1].key != object_record_key
             || batch.images[1].value.as_text() != object_mutation_value.as_str()
-            || batch.images[1].deleted != delete_object
+            || batch.images[1].deleted() != delete_object
         {
             return Err(ObjectError::Corruption(
                 "prepared object metadata images do not match request".to_string(),

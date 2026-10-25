@@ -80,7 +80,7 @@ impl MatrixMetaService {
             }
             let payload_bytes = metadata_record_payload_bytes(record);
             stats.total_payload_bytes = stats.total_payload_bytes.saturating_add(payload_bytes);
-            if record.deleted {
+            if record.deleted() {
                 stats.deleted_records = stats.deleted_records.saturating_add(1);
                 stats.deleted_value_bytes = stats
                     .deleted_value_bytes

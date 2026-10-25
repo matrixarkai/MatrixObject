@@ -55,7 +55,7 @@ impl MatrixMetaService {
                 report.next_key_marker = last_selected_key;
                 break;
             }
-            if !record.deleted {
+            if !record.deleted() {
                 report.skipped_records = report.skipped_records.saturating_add(1);
                 continue;
             }
@@ -92,7 +92,7 @@ impl MatrixMetaService {
         }
         self.changes.iter().any(|change| {
             change.key == record.key
-                && change.version == record.version
+                && change.version == record.version()
                 && change.deleted
                 && change.sequence <= safe_sequence
         })

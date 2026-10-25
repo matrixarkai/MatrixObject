@@ -132,7 +132,7 @@ impl MatrixObjectStore {
             audited_ids.insert(object_id.clone());
             let metadata = self.object(&object_id).cloned();
             let mut issues = Vec::new();
-            if projection.deleted {
+            if projection.deleted() {
                 audit.deleted_projection_count = audit.deleted_projection_count.saturating_add(1);
                 issues.push("deleted_projection");
             } else if projection.value.is_empty() {
@@ -142,7 +142,7 @@ impl MatrixObjectStore {
             match metadata.as_ref() {
                 Some(current) if !current.deleted => {
                     let expected = metadata_projection_value(current);
-                    if !projection.deleted && projection.value != expected.into() {
+                    if !projection.deleted() && projection.value != expected.into() {
                         audit.stale_projection_count =
                             audit.stale_projection_count.saturating_add(1);
                         issues.push("projection_payload_mismatch");
@@ -189,7 +189,7 @@ impl MatrixObjectStore {
                 .meta_service
                 .record(projection_key.as_str())
                 .cloned();
-            if projection.as_ref().map_or(true, |record| record.deleted) {
+            if projection.as_ref().map_or(true, |record| record.deleted()) {
                 audit.missing_projection_count = audit.missing_projection_count.saturating_add(1);
                 emit_issue(
                     &mut audit,

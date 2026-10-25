@@ -117,7 +117,7 @@ impl MatrixMetaService {
             self.check_lease_fence(&mutation.key, lease_owner, lease_epoch, now_ms)?;
             let base_version = self
                 .record(mutation.key.as_str())
-                .map_or(0, |record| record.version);
+                .map_or(0, |record| record.version());
             read_versions
                 .entry(mutation.key.to_string())
                 .or_insert(base_version);
@@ -231,7 +231,7 @@ impl MatrixMetaService {
             self.check_lease_fence(&mutation.key, lease_owner, lease_epoch, now_ms)?;
             let base_version = self
                 .record(mutation.key.as_str())
-                .map_or(0, |record| record.version);
+                .map_or(0, |record| record.version());
             read_versions
                 .entry(mutation.key.to_string())
                 .or_insert(base_version);
@@ -265,7 +265,7 @@ impl MatrixMetaService {
             self.check_shard_fence(key)?;
             let current_version = self
                     .record(key.as_str())
-                    .map_or(0, |record| record.version);
+                    .map_or(0, |record| record.version());
             if current_version != *expected_version {
                 return Err(ObjectError::PreconditionFailed(
                     "metadata transaction read set changed".to_string(),
@@ -341,7 +341,7 @@ impl MatrixMetaService {
     ) -> Result<MetadataRecord, ObjectError> {
         let current_version = self
             .record(mutation.key.as_str())
-            .map_or(0, |record| record.version);
+            .map_or(0, |record| record.version());
         if current_version != mutation.expected_version {
             return Err(ObjectError::PreconditionFailed(
                 "metadata expected version mismatch".to_string(),
@@ -350,23 +350,23 @@ impl MatrixMetaService {
         // One allocation for the three holders: the map files the record under
         // it, the record states it again, and the change log names it.
         let key = self.filed_record_key(mutation.key);
-        let record = MetadataRecord {
-            key: key.clone(),
+        let record = MetadataRecord::new(
+            key.clone(),
             // THE CARRY, and the reason the whole conversion was blocked here: a projection
             // reaches the record only if the mutation could hold one.
-            value: mutation.record_value,
-            version: current_version.saturating_add(1),
-            update_time_ms: now_ms,
-            deleted: mutation.delete,
-        };
+            mutation.record_value,
+            current_version.saturating_add(1),
+            now_ms,
+            mutation.delete,
+        );
         self.next_commit_index = self.next_commit_index.saturating_add(1);
         self.file_record(key.clone(), record.clone());
         self.append_metadata_change(MetadataChange {
             sequence: self.next_change_sequence,
             commit_index: self.next_commit_index.saturating_sub(1),
             key,
-            version: record.version,
-            deleted: record.deleted,
+            version: record.version(),
+            deleted: record.deleted(),
             update_time_ms: now_ms,
         });
         self.next_change_sequence = self.next_change_sequence.saturating_add(1);

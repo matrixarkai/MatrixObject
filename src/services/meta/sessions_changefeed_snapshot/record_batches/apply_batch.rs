@@ -87,10 +87,10 @@ impl MatrixMetaService {
             }
             let current_version = self
                 .record(mutation.key.as_str())
-                .map_or(0, |record| record.version);
+                .map_or(0, |record| record.version());
             if image.key != mutation.key
-                || image.deleted != mutation.delete
-                || image.version != current_version.saturating_add(1)
+                || image.deleted() != mutation.delete
+                || image.version() != current_version.saturating_add(1)
                 || (mutation.delete && !image.value.is_empty())
                 || (!mutation.delete && image.value != mutation.record_value)
                 || image.update_time_ms != prepared.now_ms
@@ -106,8 +106,8 @@ impl MatrixMetaService {
                 sequence: self.next_change_sequence,
                 commit_index: prepared.prepared_commit_index,
                 key: image.key.clone(),
-                version: image.version,
-                deleted: image.deleted,
+                version: image.version(),
+                deleted: image.deleted(),
                 update_time_ms: image.update_time_ms,
             });
             self.next_change_sequence = self.next_change_sequence.saturating_add(1);

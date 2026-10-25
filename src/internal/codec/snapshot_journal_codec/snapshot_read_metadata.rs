@@ -7,13 +7,17 @@ pub(crate) fn read_metadata_record(
     let key = cursor.read_string()?;
     let value_kind = if has_value_kind { cursor.read_u64()? } else { 0 };
     let value_text = cursor.read_string()?;
-    Ok(MetadataRecord {
-        key: key.into(),
-        value: RecordValue::from_kind_tag(value_kind, &value_text)?,
-        version: cursor.read_u64()?,
-        update_time_ms: cursor.read_u64()?,
-        deleted: cursor.read_bool()?,
-    })
+    // THE ORDER IS THE FORMAT. These three read from the cursor, and a call evaluates its
+    // arguments left to right exactly as a struct literal evaluated its fields -- so this
+    // reads the same bytes in the same order. Reordering them would decode a different
+    // record and still compile.
+    Ok(MetadataRecord::new(
+        key.into(),
+        RecordValue::from_kind_tag(value_kind, &value_text)?,
+        cursor.read_u64()?,
+        cursor.read_u64()?,
+        cursor.read_bool()?,
+    ))
 }
 
 pub(crate) fn read_metadata_lease(

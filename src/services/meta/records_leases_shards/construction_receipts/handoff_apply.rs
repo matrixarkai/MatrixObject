@@ -104,23 +104,23 @@ impl MatrixMetaService {
                     "metadata prepared shard handoff contains duplicate record key".to_string(),
                 ));
             }
-            if record.version == 0 || record.update_time_ms == 0 {
+            if record.version() == 0 || record.update_time_ms == 0 {
                 return Err(ObjectError::InvalidArgument(
                     "metadata prepared shard handoff record image is incomplete".to_string(),
                 ));
             }
-            if record.deleted && !record.value.is_empty() {
+            if record.deleted() && !record.value.is_empty() {
                 return Err(ObjectError::InvalidArgument(
                     "metadata prepared shard handoff deleted record carries value".to_string(),
                 ));
             }
             if let Some(existing) = self.record(record.key.as_str()) {
-                if existing.version > record.version {
+                if existing.version() > record.version() {
                     return Err(ObjectError::PreconditionFailed(
                         "metadata prepared shard handoff would overwrite newer record".to_string(),
                     ));
                 }
-                if existing.version == record.version && existing != record {
+                if existing.version() == record.version() && existing != record {
                     return Err(ObjectError::PreconditionFailed(
                         "metadata prepared shard handoff record version image mismatch".to_string(),
                     ));
@@ -143,8 +143,8 @@ impl MatrixMetaService {
                     sequence: self.next_change_sequence,
                     commit_index: prepared.prepared_commit_index,
                     key: record.key.clone(),
-                    version: record.version,
-                    deleted: record.deleted,
+                    version: record.version(),
+                    deleted: record.deleted(),
                     update_time_ms: record.update_time_ms,
                 });
                 self.next_change_sequence = self.next_change_sequence.saturating_add(1);

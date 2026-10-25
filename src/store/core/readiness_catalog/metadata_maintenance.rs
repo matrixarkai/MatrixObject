@@ -159,12 +159,12 @@ impl MatrixObjectStore {
         let live_record_count = snapshot
             .records
             .values()
-            .filter(|record| !record.deleted)
+            .filter(|record| !record.deleted())
             .count() as u64;
         let deleted_record_count = snapshot
             .records
             .values()
-            .filter(|record| record.deleted)
+            .filter(|record| record.deleted())
             .count() as u64;
         let tombstone_report =
             self.plan_metadata_tombstone_compaction(tombstone_prefix, None, sample_limit, 0)?;
@@ -172,7 +172,7 @@ impl MatrixObjectStore {
         let compactable_tombstones = snapshot
             .records
             .values()
-            .filter(|record| record.deleted && record.key.starts_with(tombstone_prefix))
+            .filter(|record| record.deleted() && record.key.starts_with(tombstone_prefix))
             .take(sample_limit)
             .cloned()
             .collect::<Vec<_>>();

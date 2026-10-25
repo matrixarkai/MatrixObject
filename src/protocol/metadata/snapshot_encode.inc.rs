@@ -36,9 +36,9 @@ impl MetaSnapshot {
             // whether it is a digest or a text that happens to spell like one.
             append_u64(&mut out, record.value.kind_tag());
             append_string(&mut out, &record.value.as_text());
-            append_u64(&mut out, record.version);
+            append_u64(&mut out, record.version());
             append_u64(&mut out, record.update_time_ms);
-            append_u64(&mut out, record.deleted as u64);
+            append_u64(&mut out, record.deleted() as u64);
         }
         append_u64(&mut out, self.leases.len() as u64);
         for (namespace, lease) in &self.leases {

@@ -65,7 +65,7 @@ impl MatrixMetaService {
                 continue;
             }
             scanned_records = scanned_records.saturating_add(1);
-            if record.deleted && !include_deleted {
+            if record.deleted() && !include_deleted {
                 continue;
             }
             if records.len() >= limit {
