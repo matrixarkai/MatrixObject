@@ -201,6 +201,12 @@ comment claiming they do.
 - **Quorum writes and reads.** A write needs `write_quorum` replicas to accept.
   A read votes on `(write_sequence, checksum, etag)` across replicas, so a
   replica that has fallen behind cannot answer with stale bytes.
+- **A replica can be its own process.** `ReplicaPlacement` chooses between replicas in this
+  address space -- the default, and what this store has always been -- and replicas in other
+  processes reached over a socket. The second is what makes the replication factor survivable
+  rather than only paid for; see
+  [replicas in their own processes](#replicas-in-their-own-processes) for the kill test and
+  for the measured size of what is not remote yet.
 - **Repair.** `repair_chunk_from_quorum` rebuilds one chunk on one replica from
   the others, so a diverged replica costs one chunk of recopying.
 - **Erasure coding.** A page with no peers keeps a redundancy fragment, so a
@@ -243,6 +249,16 @@ At three replicas with the metadata counted, measured at 26-character keys:
 The data term is exactly **3.00x** -- the replication floor for a store that
 copies every page to every replica -- so everything above it is metadata, which
 is **290 bytes an object plus 164,232 fixed** whatever the object size.
+
+**What that 3.00x buys depends on where the replicas are, and the figure cannot tell you.**
+Three copies measure 3.00x whether they are three `BTreeMap`s on one heap or three copies in
+three processes, and only the second arrangement survives losing one of them. Under the
+default [`ReplicaPlacement::InProcess`](#replicas-in-their-own-processes) they are on one
+heap, and the three copies are the price of a guarantee that arrangement cannot provide; under
+`ReplicaPlacement::Remote` the same 3.00x is the price of surviving the loss of one replica
+process, which `tests/a_replica_is_its_own_process.rs` demonstrates by killing one and reading
+every acknowledged byte back from the survivors. Read any amplification figure in this
+section together with the placement it was measured under.
 
 Those bytes are not all in one place. **186 of them are a storage node's own** -- the
 object's entry in its map, and its key in the payload index -- and **104 are the metadata
@@ -522,6 +538,96 @@ alone -- see the comment at the top of `src/net/http.rs` for why that is a delib
 for a crate that other people's data sits inside, and for the list of framings it refuses rather
 than guesses at.
 
+## Replicas in their own processes
+
+The front door above lets a **client** reach the store from another machine. This is the
+other direction: letting a **replica** live somewhere other than the coordinator's heap.
+
+Until `src/cluster`, every replica in this store was an element of
+`replicas: Vec<MatrixReplicaService>`. The fan-out was a `for` loop over
+`self.replicas.iter_mut()`, and a write quorum was a count of loop iterations that returned
+`Ok`. Three replicas were three `BTreeMap`s in one address space, which pays the full cost of
+three copies and buys none of what three copies are for: one process ending takes all three.
+
+`replica_server` is one replica in its own process, reachable over a socket:
+
+```
+MATRIXOBJECT_REPLICA_ADDR=127.0.0.1:17301 cargo run --release --bin replica_server
+```
+
+| variable | default | meaning |
+|---|---|---|
+| `MATRIXOBJECT_REPLICA_ADDR` | `127.0.0.1:17300` | address to bind; port `0` lets the kernel choose |
+| `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
+| `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
+
+The bound address and the PID are printed on the first line of stdout and flushed before the
+accept loop starts, so a supervisor -- or a test standing three of these up on port `0` --
+can learn which port the kernel chose.
+
+`ReplicaPlacement` is the one place that chooses, and **its default is the in-process
+arrangement**, so nothing that exists today behaves differently:
+
+```rust
+use matrixobjectstore_rs::cluster::{ReplicaClientOptions, ReplicaPlacement};
+
+let placement = ReplicaPlacement::Remote {
+    endpoints: vec!["127.0.0.1:17301".into(), "127.0.0.1:17302".into(), "127.0.0.1:17303".into()],
+    write_quorum: 2,
+    read_quorum: 2,
+};
+let mut fanout = placement.open(&ReplicaClientOptions::default())?;
+fanout.write_chunk(&page_id, 0, &bytes)?;      // three processes, one quorum
+```
+
+It adds **no dependencies**: a six-byte frame header and a payload, on the standard library
+alone, for the reason `src/net` gives. The frame carries a protocol stamp in both directions
+so that a rolling restart -- a new coordinator reaching an old replica -- refuses the frame
+by name instead of taking its length field from the wrong offset.
+
+### What the kill test establishes, and in what order
+
+`tests/a_replica_is_its_own_process.rs` is the test this arrangement exists to pass. A test
+that wrote bytes, killed something and read the bytes back would pass identically against
+three replicas on one heap, so the regime is asserted first:
+
+| | what is asserted |
+|---|---|
+| 1 | **the regime** -- three distinct live PIDs, none of them the test's, and an ESTABLISHED socket per replica attributed to that replica's PID. Read twice, from `ss -tnp` and from `/proc/<pid>/fd` against `/proc/net/tcp`, and the two readings must agree |
+| 2 | 24 pages written, each acknowledged by **all three** replicas, each replica then reporting all 24 |
+| 3 | one replica **killed by PID**, after confirming from `/proc/<pid>/environ` that the process carries this run's token |
+| 4 | all 24 pages read back from the survivors: exact count, **zero missing, zero wrong byte** |
+| 5 | **the negative control** -- a page never written reads absent, on the same survivors at the same moment |
+| 6 | a write needing all three is now **refused**, so the count in step 2 was counting replicas and not iterations |
+
+Steps 1 and 5 are why 2-4 mean anything. Without the regime, the test is a statement about
+one heap; without the control, 24 hits are consistent with a read path that answers for every
+address it is given.
+
+### What is not remote yet, and how large it is
+
+Four calls cross the socket: `write_chunk`, `read_chunk`, `head_chunk`, `discard_chunk`.
+**`MatrixChunkService` -- the service that holds `replicas` and runs the fan-out described
+above -- is unchanged and does not route through `ReplicaPlacement`.**
+
+The size of that stop was measured with the compiler rather than estimated. Giving the
+`replicas` field a type with no methods and asking what broke produced 298 errors:
+
+| what the compiler found | count |
+|---|---:|
+| distinct replica **methods** called through the field | 82 |
+| call sites for them | 198 |
+| distinct **private fields** of the replica read directly through it | 13 |
+| sites reading those fields | 35 |
+| files involved | 57 |
+
+The 35 field reads are the part that is a redesign and not a port. `replica.pages` alone is
+read at 12 sites, as a borrow of the whole chunk map by callers that walk it; there is no
+socket call behind that, only a snapshot transfer with a different name. So the work is two
+pieces in order -- turn those reads into methods, deciding for each whether the answer is a
+value or a stream, and only then put the 82 methods behind a dispatch. `src/cluster/mod.rs`
+carries the table and the reasoning.
+
 ## Building
 
 ```
@@ -617,7 +723,11 @@ On pushes to `main` and on every pull request, two jobs:
   default features and for `--all-features`, with warnings denied.
 - **format and rollback guards** -- each guard run on its own with `--exact`, and
   its output checked for `test result: ok. 1 passed`, because `cargo test` exits 0
-  when a filter matches nothing.
+  when a filter matches nothing. The guards over
+  [replica processes](#replicas-in-their-own-processes) check their output for
+  `running 1 test` as well: they name a test of an integration target rather than a
+  `tests::` filter, so a rename would leave the filter matching nothing and the
+  `1 passed` line absent rather than wrong.
 
 CI does not run the whole library suite. `tools/suite_gate.sh` does, locally: it
 compares the failures by name against the 21 recorded in
