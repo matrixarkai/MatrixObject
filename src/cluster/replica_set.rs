@@ -59,18 +59,7 @@ impl RemoteReplicaSet {
                 "a remote replica set needs at least one endpoint".to_string(),
             ));
         }
-        if write_quorum == 0 || write_quorum > endpoints.len() {
-            return Err(ObjectError::InvalidArgument(format!(
-                "a write quorum of {write_quorum} cannot be met by {} replica(s)",
-                endpoints.len()
-            )));
-        }
-        if read_quorum == 0 || read_quorum > endpoints.len() {
-            return Err(ObjectError::InvalidArgument(format!(
-                "a read quorum of {read_quorum} cannot be met by {} replica(s)",
-                endpoints.len()
-            )));
-        }
+        crate::cluster::placement::check_quorums(endpoints.len(), write_quorum, read_quorum)?;
         let mut replicas = Vec::with_capacity(endpoints.len());
         for endpoint in endpoints {
             replicas.push(RemoteReplicaClient::connect(endpoint, options)?);

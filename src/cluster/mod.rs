@@ -86,7 +86,9 @@ pub mod wire;
 
 pub use client::{ReplicaClientOptions, RemoteReplicaClient};
 pub use message::{ReplicaReply, ReplicaRequest};
-pub use placement::{InProcessReplicaSet, ReplicaFanout, ReplicaPlacement};
+pub use placement::{
+    check_quorums, majority, InProcessReplicaSet, ReplicaFanout, ReplicaPlacement,
+};
 pub use replica_set::RemoteReplicaSet;
 pub use server::{ReplicaNodeOptions, ReplicaNodeServer, ReplicaNodeShutdown};
 pub use wire::{RequestCode, StatusCode, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP};
