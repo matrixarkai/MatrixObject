@@ -48,7 +48,7 @@ impl MatrixMetaService {
 
     pub fn get_record(&self, key: &str) -> Result<MetadataRecord, ObjectError> {
         self.record(key)
-            .filter(|record| !record.deleted)
+            .filter(|record| !record.deleted())
             .cloned()
             .ok_or_else(|| ObjectError::NotFound(format!("metadata record {}", key)))
     }
@@ -81,7 +81,7 @@ impl MatrixMetaService {
             if after_key.map_or(false, |marker| key.as_str() <= marker) {
                 continue;
             }
-            if record.deleted {
+            if record.deleted() {
                 continue;
             }
             page.scanned_records = page.scanned_records.saturating_add(1);
@@ -131,14 +131,14 @@ impl MatrixMetaService {
             self.check_shard_fence(&condition.key)?;
             report.checked_records = report.checked_records.saturating_add(1);
             let current = self.record(condition.key.as_str());
-            let current_version = current.map_or(0, |record| record.version);
+            let current_version = current.map_or(0, |record| record.version());
             if current_version != condition.expected_version {
                 return Err(ObjectError::PreconditionFailed(
                     "metadata read set version changed".to_string(),
                 ));
             }
             match current {
-                Some(record) if record.deleted => {
+                Some(record) if record.deleted() => {
                     report.deleted_records = report.deleted_records.saturating_add(1);
                     if condition.require_present {
                         return Err(ObjectError::PreconditionFailed(

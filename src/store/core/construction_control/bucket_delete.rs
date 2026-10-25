@@ -88,7 +88,7 @@ impl MatrixObjectStore {
         let expected_version = self
             .meta_service
             .record(key.as_str())
-            .map_or(0, |record| record.version);
+            .map_or(0, |record| record.version());
         match self
             .meta_service
             .delete_record(&key, expected_version, None, None, update_time_ms)

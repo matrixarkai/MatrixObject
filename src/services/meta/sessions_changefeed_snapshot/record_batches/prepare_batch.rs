@@ -67,23 +67,23 @@ impl MatrixMetaService {
         for mutation in &mutations {
             let base_version = self
                 .record(mutation.key.as_str())
-                .map_or(0, |record| record.version);
+                .map_or(0, |record| record.version());
             let current_version = projected_versions
                 .get(&mutation.key)
                 .copied()
                 .unwrap_or(base_version);
             projected_versions.insert(mutation.key.clone(), current_version.saturating_add(1));
-            images.push(MetadataRecord {
-                key: mutation.key.clone(),
-                value: if mutation.delete {
+            images.push(MetadataRecord::new(
+                mutation.key.clone(),
+                if mutation.delete {
                     String::new().into()
                 } else {
                     mutation.record_value.clone()
                 },
-                version: current_version.saturating_add(1),
-                update_time_ms: now_ms,
-                deleted: mutation.delete,
-            });
+                current_version.saturating_add(1),
+                now_ms,
+                mutation.delete,
+            ));
         }
         let (metadata_control_proof_checksum, metadata_control_proof_bytes) =
             self.metadata_control_proof_digest_at(now_ms);

@@ -135,8 +135,8 @@ pub(crate) fn metadata_integrity_plan_checksum(plan: &MetadataIntegrityPlan) -> 
     append_u64(&mut material, plan.compactable_tombstones.len() as u64);
     for record in &plan.compactable_tombstones {
         append_string(&mut material, &record.key);
-        append_u64(&mut material, record.version);
-        append_u64(&mut material, record.deleted as u64);
+        append_u64(&mut material, record.version());
+        append_u64(&mut material, record.deleted() as u64);
     }
     (etag(&material), material.len() as u64)
 }

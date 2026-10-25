@@ -89,7 +89,7 @@ pub(crate) fn metadata_snapshot_install_report(
     let deleted_record_count = snapshot
         .records
         .values()
-        .filter(|record| record.deleted)
+        .filter(|record| record.deleted())
         .count() as u64;
     let last_applied_index = snapshot.next_commit_index.saturating_sub(1);
     MetadataSnapshotInstallReport {

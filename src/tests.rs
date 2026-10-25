@@ -1166,7 +1166,7 @@ fn persistent_journal_replays_metadata_transactions() {
     assert_eq!(expired.update_time_ms, 20);
     let record = snapshot.records.get("object/txn/commit").unwrap();
     assert_eq!(record.value, "committed".into());
-    assert_eq!(record.version, 1);
+    assert_eq!(record.version(), 1);
     assert!(!snapshot.records.contains_key("object/txn/abort"));
     assert!(!snapshot.records.contains_key("object/txn/expire"));
     let _ = std::fs::remove_dir_all(root);
@@ -13621,7 +13621,7 @@ fn raft_backed_store_replays_metaserver_shards_and_leases() {
         follower
             .metadata_record(&meta_object_key(&ObjectId::new("bucket", "object")))
             .unwrap()
-            .version,
+            .version(),
         1
     );
     let snapshot = follower.export_snapshot().unwrap();
@@ -14795,7 +14795,7 @@ fn raft_backed_store_replays_metaserver_read_set_checks() {
 
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
-    assert_eq!(follower.metadata_record(&meta_key).unwrap().version, 2);
+    assert_eq!(follower.metadata_record(&meta_key).unwrap().version(), 2);
     assert_eq!(follower.last_applied_index(), 3);
 }
 
@@ -14955,7 +14955,7 @@ fn raft_backed_store_replays_metaserver_qos_config() {
     replicated.replay_into(&mut follower).unwrap();
     assert_eq!(follower.metadata_qos_config(), config);
     assert_eq!(follower.metadata_qos_state().write_ops_in_window, 1);
-    assert_eq!(follower.metadata_record("object/qos/a").unwrap().version, 1);
+    assert_eq!(follower.metadata_record("object/qos/a").unwrap().version(), 1);
 
     let snapshot = replicated.store().export_snapshot().unwrap();
     let mut restored = MatrixObjectStore::new(test_options()).unwrap();
@@ -15112,7 +15112,7 @@ fn raft_backed_store_replays_owner_fenced_metaserver_writes() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     let record = follower.metadata_record("object/ownerfence/item").unwrap();
-    assert_eq!(record.version, 1);
+    assert_eq!(record.version(), 1);
     assert_eq!(record.value, "etag=owner-fenced length=1".into());
     assert_eq!(follower.last_applied_index(), 3);
 }
@@ -15720,7 +15720,7 @@ fn raft_backed_store_replays_idempotent_generic_metaserver_batches() {
         follower
             .metadata_record("object/raft-meta-generic/a")
             .unwrap()
-            .version,
+            .version(),
         1
     );
     assert_eq!(follower.last_applied_index(), 2);
@@ -15733,7 +15733,7 @@ fn raft_backed_store_replays_idempotent_generic_metaserver_batches() {
         .unwrap();
     assert!(restored_retry.deduped);
     assert_eq!(records.len(), 2);
-    assert_eq!(records[0].version, 1);
+    assert_eq!(records[0].version(), 1);
 }
 
 #[test]
@@ -15759,7 +15759,7 @@ fn raft_backed_store_applies_prepared_metaserver_batches() {
     assert_eq!(prepared.expected_previous_commit_index, 0);
     assert_eq!(prepared.prepared_commit_index, 1);
     assert_eq!(prepared.images.len(), 1);
-    assert_eq!(prepared.images[0].version, 1);
+    assert_eq!(prepared.images[0].version(), 1);
     assert_eq!(prepared.images[0].value, "etag=prepared length=1".into());
     assert!(!prepared.request_checksum.is_empty());
     assert!(!prepared.metadata_control_proof_checksum.is_empty());
@@ -15816,7 +15816,7 @@ fn raft_backed_store_applies_prepared_metaserver_batches() {
     replicated.replay_into(&mut follower).unwrap();
     assert_eq!(follower.last_applied_index(), 1);
     let record = follower.metadata_record("object/prepared-meta/a").unwrap();
-    assert_eq!(record.version, 1);
+    assert_eq!(record.version(), 1);
     assert_eq!(record.value, "etag=prepared length=1".into());
     assert_eq!(
         follower
@@ -16303,7 +16303,7 @@ fn raft_backed_store_applies_prepared_metaserver_transactions() {
         follower
             .metadata_record("object/prepared-txn/a")
             .unwrap()
-            .version,
+            .version(),
         1
     );
     assert_eq!(
@@ -17641,7 +17641,7 @@ fn raft_backed_store_replays_idempotent_owner_fenced_metaserver_writes() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     let record = follower.metadata_record("object/owner-idem/item").unwrap();
-    assert_eq!(record.version, 1);
+    assert_eq!(record.version(), 1);
     assert_eq!(record.value, "etag=owner-idem length=1".into());
     let snapshot = follower.export_snapshot().unwrap();
     assert_eq!(snapshot.meta_snapshot.batch_request_receipts.len(), 1);
@@ -17659,7 +17659,7 @@ fn raft_backed_store_replays_idempotent_owner_fenced_metaserver_writes() {
         )
         .unwrap();
     assert!(restored_retry.deduped);
-    assert_eq!(records[0].version, 1);
+    assert_eq!(records[0].version(), 1);
 }
 
 #[test]
@@ -30608,7 +30608,7 @@ fn metaserver_shard_fence_and_snapshot_round_trip() {
         restored
             .metadata_record(&meta_object_key(&metadata.object_id))
             .unwrap()
-            .version,
+            .version(),
         1
     );
     assert_eq!(
@@ -32363,7 +32363,7 @@ fn metaserver_owner_fenced_writes_require_live_shard_owner() {
             20,
         )
         .unwrap();
-    assert_eq!(records[0].version, 1);
+    assert_eq!(records[0].version(), 1);
     assert!(matches!(
         store.commit_owner_fenced_metadata_batch(
             vec![MetadataMutation {
@@ -32457,7 +32457,7 @@ fn metaserver_dedupes_idempotent_metadata_batches_across_snapshots() {
         .unwrap();
     assert!(!first.deduped);
     assert_eq!(records.len(), 2);
-    assert_eq!(records[0].version, 1);
+    assert_eq!(records[0].version(), 1);
     let (retry_records, retry) = store
         .commit_metadata_batch_idempotent(mutations.clone(), None, None, 20, "meta-batch-write-a")
         .unwrap();
@@ -32510,7 +32510,7 @@ fn metaserver_dedupes_idempotent_metadata_batches_across_snapshots() {
         )
         .unwrap();
     assert!(!owner_first.deduped);
-    assert_eq!(owner_records[0].version, 1);
+    assert_eq!(owner_records[0].version(), 1);
     let (_, owner_retry) = store
         .commit_owner_fenced_metadata_batch_idempotent(
             owner_mutations.clone(),
@@ -32681,7 +32681,7 @@ fn metaserver_batches_transactions_and_changefeed_are_snapshot_safe() {
         .commit_metadata_batch(batch, None, None, now)
         .expect("batch commit");
     assert_eq!(records.len(), 2);
-    assert_eq!(records[0].version, 1);
+    assert_eq!(records[0].version(), 1);
 
     let rejected = store.commit_metadata_batch(
         vec![
@@ -32725,7 +32725,7 @@ fn metaserver_batches_transactions_and_changefeed_are_snapshot_safe() {
     let committed = store
         .commit_metadata_transaction("txn-1", "writer-a", now.saturating_add(3))
         .unwrap();
-    assert_eq!(committed[0].version, 2);
+    assert_eq!(committed[0].version(), 2);
 
     let conflict_txn = store
         .begin_metadata_transaction(
@@ -33740,7 +33740,7 @@ fn metaserver_prefix_delete_and_change_checkpoints_are_durable() {
         .delete_metadata_by_prefix("object/gc/", 1, None, None, now.saturating_add(2))
         .unwrap();
     assert_eq!(first_page.len(), 1);
-    assert!(first_page[0].deleted);
+    assert!(first_page[0].deleted());
     assert_eq!(
         store.metadata_record("object/keep/c").unwrap().value,
         "live-c".into()
@@ -35608,7 +35608,7 @@ fn filing_a_record_over_an_existing_key_replaces_it() {
         "a second write at one key must not add a second record"
     );
     assert_ne!(
-        before.version, after.version,
+        before.version(), after.version(),
         "the filed record must be the NEW one -- `insert` on a set keeps the old element and \
          reports success, so a write would silently not take effect"
     );
@@ -35786,13 +35786,13 @@ fn two_records_spelling_the_same_thing_in_different_shapes_hash_differently() {
         let mut out = Vec::new();
         append_metadata_record(
             &mut out,
-            &MetadataRecord {
-                key: "object/bucket/object".into(),
-                value: value.clone(),
-                version: 7,
-                update_time_ms: 11,
-                deleted: false,
-            },
+            &MetadataRecord::new(
+                "object/bucket/object".into(),
+                value.clone(),
+                7,
+                11,
+                false,
+            ),
         );
         out
     };
@@ -37117,44 +37117,235 @@ fn measure_the_metadata_per_object_at_the_published_counts() {
          whose own guard checks it against this tree"
     );
 }
+
+#[test]
+#[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
+fn measure_the_route_to_under_a_hundred_bytes_a_storage_node() {
+    // The metadata line splits into a storage node's own bytes and the metadata service's. The
+    // service's share is a name, two stamps and a digest, because the OBJECT is the authority
+    // on what the characters say and the service only has to prove it agrees.
+    //
+    // A storage node has no such move available. It IS the authority: it cannot hold a digest
+    // of its own metadata and ask someone else for the rest. So this prices what is left,
+    // field by field, and names what the floor is made of.
+    //
+    //   42  objects.mapkey_heap     -- the key's characters, one allocation plus its header
+    //  136  objects.metadata_inline -- ObjectMetadata
+    //    0  objects.extents_bytes   -- the one extent is inline above
+    //    8  payloads.key_bytes
+    //  ---
+    //  186  after the collection stopped keying by a copy of the identity
+    //
+    // Every candidate is a mirror sized by the compiler, and every control is asserted equal
+    // to the real type FIRST.
+    use std::mem::size_of;
+
+    assert_eq!(size_of::<SharedText>(), 16);
+    assert_eq!(size_of::<ObjectId>(), 32, "two shared handles name an object");
+    assert_eq!(
+        size_of::<ObjectMetadata>(),
+        136,
+        "the struct this prices should be the 136 the document publishes"
+    );
+
+    #[allow(dead_code)]
+    struct IdControl {
+        bucket: SharedText,
+        key: SharedText,
+    }
+    #[allow(dead_code)]
+    struct MetadataControl {
+        object_id: IdControl,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        user_metadata: ObjectAttributes,
+        storage_class: StorageClass,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: ObjectExtents,
+        deleted: bool,
+    }
+    assert_eq!(
+        size_of::<IdControl>(),
+        size_of::<ObjectId>(),
+        "the id mirror has drifted, so nothing below means anything"
+    );
+    assert_eq!(
+        size_of::<MetadataControl>(),
+        size_of::<ObjectMetadata>(),
+        "the metadata mirror has drifted, so nothing below means anything"
+    );
+
+    // WHAT IS ALREADY DONE, asserted rather than re-proposed. Two candidates I priced before
+    // reading the struct were wrong in opposite directions, which is why they are here as
+    // assertions instead of as mirrors:
+    //
+    //   - an extent's offset and length are ALREADY 32-bit, bounded by `chunk_size`;
+    //   - the etag is ALREADY split into a `u64` and a flag, because `Option<u64>` has no
+    //     niche and would COST eight bytes, and because a digest of zero is a real value
+    //     rather than an absent one, so `NonZeroU64` would be wrong as well as larger.
+    assert_eq!(
+        size_of::<ObjectExtent>(),
+        16,
+        "an extent is an identity and two 32-bit numbers; if this is 24 the narrowing was \
+         undone and is a candidate again"
+    );
+    #[allow(dead_code)]
+    struct EtagAsOption {
+        object_id: IdControl,
+        version: u64,
+        length: u64,
+        etag: Option<u64>,
+        content_type: SharedText,
+        user_metadata: ObjectAttributes,
+        storage_class: StorageClass,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+        update_time_ms: u64,
+        extents: ObjectExtents,
+        deleted: bool,
+    }
+    assert!(
+        size_of::<EtagAsOption>() > size_of::<MetadataControl>(),
+        "an `Option<u64>` etag should be BIGGER than the split pair, which is why the pair \
+         exists: {} against {}",
+        size_of::<EtagAsOption>(),
+        size_of::<MetadataControl>()
+    );
+
+    // (a) THE THREE RARE SIDE TABLES BEHIND ONE POINTER. `user_metadata`, `tags` and `lock`
+    // are each a pointer that is null for most objects. An object with none of the three pays
+    // twenty-four bytes to say so; behind one pointer it pays eight.
+    #[allow(dead_code)]
+    struct RareSides {
+        user_metadata: ObjectAttributes,
+        tags: ObjectAttributes,
+        lock: ObjectLock,
+    }
+    #[allow(dead_code)]
+    struct ExtrasFolded {
+        object_id: IdControl,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: SharedText,
+        storage_class: StorageClass,
+        extras: Option<Box<RareSides>>,
+        update_time_ms: u64,
+        extents: ObjectExtents,
+        deleted: bool,
+    }
+
+    // (b) AND THE CONTENT TYPE AS AN INDEX, priced so the blocker is a number rather than a
+    // memory. The shared table is bounded by a COUNT, and an object past the bound owns its
+    // own string -- which a `u16` cannot represent, and an enum over the two cases is sixteen
+    // bytes again. Measured, then declined.
+    #[allow(dead_code)]
+    struct ContentTypeIndexed {
+        object_id: IdControl,
+        version: u64,
+        length: u64,
+        etag_digest_bits: u64,
+        has_etag: bool,
+        content_type: u16,
+        storage_class: StorageClass,
+        extras: Option<Box<RareSides>>,
+        update_time_ms: u64,
+        extents: ObjectExtents,
+        deleted: bool,
+    }
+
+    const KEY_CHARS: usize = 26;
+    const SHARED_HEADER: usize = 16;
+    const PAYLOAD_INDEX_KEY: usize = 8;
+    let name = KEY_CHARS + SHARED_HEADER;
+
+    println!(
+        "PAYLOAD control metadata={} id={} extent={} extents={} rare_sides={}",
+        size_of::<MetadataControl>(),
+        size_of::<IdControl>(),
+        size_of::<ObjectExtent>(),
+        size_of::<ObjectExtents>(),
+        size_of::<RareSides>(),
+    );
+
+    let now = name + size_of::<MetadataControl>() + PAYLOAD_INDEX_KEY;
+    println!("PAYLOAD rung now={now}");
+    let folded = name + size_of::<ExtrasFolded>() + PAYLOAD_INDEX_KEY;
+    println!(
+        "PAYLOAD rung the_three_rare_sides_behind_one_pointer={folded} saves={}",
+        now as i64 - folded as i64
+    );
+    let indexed = name + size_of::<ContentTypeIndexed>() + PAYLOAD_INDEX_KEY;
+    println!(
+        "PAYLOAD rung and_the_content_type_as_an_index={indexed} saves={} \
+         (DECLINED: the table is bounded by a count)",
+        folded as i64 - indexed as i64
+    );
+
+    // AND THE FLOOR, named rather than implied. What is left cannot be a digest, cannot be
+    // interned and cannot be dropped:
+    //
+    //   - the object's NAME, as characters, because the key order IS the listing contract and
+    //     an integer id would need a second name-ordered index that costs more than it saves;
+    //   - a handle to those characters, which cannot be owned rather than shared: the bounded
+    //     change feed names them too, and `an_object_key_costs_two_bytes_a_character_however_
+    //     many_places_name_it` measures copies as the SLOPE against key length, so an owned
+    //     copy costs one byte a character for every holder;
+    //   - where the bytes are, and what they are.
+    println!(
+        "PAYLOAD floor name_chars={KEY_CHARS} handle={} two_stamps_and_a_length={} \
+         etag={} where_the_bytes_are={} payload_index_key={PAYLOAD_INDEX_KEY}",
+        2 * size_of::<SharedText>(),
+        3 * size_of::<u64>(),
+        size_of::<u64>(),
+        size_of::<ObjectExtents>(),
+    );
+    println!(
+        "PAYLOAD UNDER A HUNDRED NEEDS metadata_inline<={}, and the smallest COMPLETE struct \
+         measured above is {} -- so it is not reachable by field width. It needs a storage \
+         node that does not hold complete metadata resident, which is a paged index rather \
+         than a packed struct.",
+        100usize.saturating_sub(name + PAYLOAD_INDEX_KEY),
+        size_of::<ExtrasFolded>(),
+    );
+}
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_route_to_eighty_bytes_a_metadata_record() {
-    // The boxed projection is GONE -- a record at an object key holds an eight-byte digest
-    // inline -- so what is left is three parts, and two of them are the object's own name:
+    // The metadata service holds 104 bytes an object:
     //
-    //   16  the map key's handle
-    //   56  the record struct: 16 key handle + 16 value + 8 version + 8 time + 8 for a bool
-    //   56  the key's characters: 40 of them behind a 16-byte Arc header
+    //   48  the record: a 16-byte key handle, a 16-byte value, and two stamps in one word
+    //       each -- the deleted flag now rides the version's top bit
+    //   56  the key's characters: 40 of them behind a 16-byte allocation header
     //  ---
-    //   128
+    //  104
     //
-    // Every candidate below is a mirror sized by the compiler, and every control is asserted
-    // equal to the real type FIRST -- arithmetic has lost to the compiler three times in this
-    // file, and a mirror measured against a stale baseline reads as a finding when it is a
-    // drift.
+    // Under a hundred is 5 bytes away, so this prices every candidate by construction rather
+    // than by argument. Mirrors sized by the compiler; controls asserted equal to the real
+    // types FIRST, because arithmetic has lost to the compiler four times in this file.
     use std::mem::size_of;
 
     assert_eq!(size_of::<SharedText>(), 16, "a shared handle should be a fat pointer");
-    assert_eq!(
-        size_of::<RecordValue>(),
-        16,
-        "the value should be the 16 its own doc claims: a boxed string or a digest, and the \
-         niche absorbs both the discriminant and the digest's own eight bytes"
-    );
+    assert_eq!(size_of::<RecordValue>(), 16, "a boxed string or a digest, in a niche");
     assert_eq!(
         size_of::<MetadataRecord>(),
-        56,
-        "the record struct should be 56: two handles, two stamps and a bool in its own word"
+        48,
+        "the record should be 48: a key handle, a value, and two stamps sharing one word with \
+         the deleted flag"
     );
 
     #[allow(dead_code)]
     struct RecordControl {
         key: SharedText,
         value: RecordValue,
-        version: u64,
+        version_and_deleted: u64,
         update_time_ms: u64,
-        deleted: bool,
     }
     assert_eq!(
         size_of::<RecordControl>(),
@@ -37162,125 +37353,91 @@ fn measure_the_route_to_eighty_bytes_a_metadata_record() {
         "the record control has drifted, so nothing below means anything"
     );
 
-    // (a) THE BOOL HAS ITS OWN EIGHT-BYTE WORD. `deleted` is one bit and `version` is a
-    // counter that will not reach 2^63. The wire writes the flag as its own `u64` and reads
-    // it back with `read_bool`, so an accessor returning the bit keeps both byte-identical.
-    #[allow(dead_code)]
-    struct FoldedFlag {
-        key: SharedText,
-        value: RecordValue,
-        version_and_deleted: u64,
-        update_time_ms: u64,
-    }
+    const KEY_CHARS: usize = 40;
+    const SHARED_HEADER: usize = 16;
+    const KIND_PREFIX: usize = 7; // "object/"
 
-    // (b) THE VALUE AS TEXT OR A DIGEST, AS AN ENUM. A record at an object key could hold a
-    // digest of the text instead of the text, because the object itself is the authority. A
-    // record at a bucket, lifecycle or multipart key could NOT -- its text is the only copy
-    // there is -- so the value has to be able to hold either, and the question is whether an
-    // enum over the two still fits in sixteen bytes or grows to twenty-four.
+    // (a) AN EIGHT-BYTE VALUE SLOT. A record at an object key needs 8 bytes of digest; one at
+    // a bucket, lifecycle or multipart key needs a pointer to its text, because that text is
+    // the only copy there is. The question is whether SAFE Rust can hold either in eight
+    // bytes, and the answer is what decides whether the collection has to be split by kind.
     #[allow(dead_code)]
-    enum TextOrDigest {
-        Text(Box<str>),
+    enum ThinText {
+        // A thin pointer: the length lives in the inner box, so this variant is 8 bytes.
+        Text(Box<Box<str>>),
         Digest(u64),
     }
-
-    // (c) THE SAME THING AS A TAGGED PAIR OF WORDS, which cannot grow: a digest with the low
-    // bit of the first word set, a boxed string otherwise. Sized here only to say what (b)
-    // costs by comparison -- it needs `unsafe` to read back, and this file is not where that
-    // is decided.
     #[allow(dead_code)]
-    struct TaggedValue {
-        tag_or_pointer: u64,
-        length_or_digest: u64,
+    enum ThinTextNonZero {
+        Text(Box<Box<str>>),
+        // Both variants now have a niche at zero, which is the same niche -- so this cannot
+        // be smaller than the one above however it looks.
+        Digest(std::num::NonZeroU64),
     }
-
-    // (d) THE RECORD WITHOUT ITS KEY. The map it lives in is keyed by the same characters
-    // through the same allocation, so the record's handle is a second holder of one
-    // allocation.
     #[allow(dead_code)]
-    struct KeylessRecord {
-        value: RecordValue,
+    struct TaggedWord(u64); // what it WOULD cost, with `unsafe` to read a pointer back out
+
+    println!(
+        "EIGHTY value thin_enum={} thin_enum_nonzero={} tagged_word={} today={}",
+        size_of::<ThinText>(),
+        size_of::<ThinTextNonZero>(),
+        size_of::<TaggedWord>(),
+        size_of::<RecordValue>(),
+    );
+
+    #[allow(dead_code)]
+    struct ThinValueRecord {
+        key: SharedText,
+        value: TaggedWord,
         version_and_deleted: u64,
         update_time_ms: u64,
     }
 
-    // (e) ALL OF IT: no key, the flag folded, the value a tagged pair.
-    #[allow(dead_code)]
-    struct Everything {
-        value: TaggedValue,
-        version_and_deleted: u64,
-        update_time_ms: u64,
-    }
-
+    // (b) THE KIND OUT OF THE STORED KEY. Every object record's key begins `object/`, which is
+    // seven characters of kind tag stored once per record. A collection that knows the kind
+    // would not store it -- but the full spelling is what the snapshot writes and what every
+    // proof hashes, so the encoder would have to rebuild it, which is an allocation on the
+    // proof path for seven bytes of residency.
     let record = size_of::<MetadataRecord>();
-    println!(
-        "EIGHTY control record={record} value={} folded={} \
-         text_or_digest={} tagged={} keyless={} everything={}",
-        size_of::<RecordValue>(),
-        size_of::<FoldedFlag>(),
-        size_of::<TextOrDigest>(),
-        size_of::<TaggedValue>(),
-        size_of::<KeylessRecord>(),
-        size_of::<Everything>(),
-    );
-    // THE DIGEST HAS LANDED, so `TextOrDigest` is no longer a candidate -- it is a mirror of
-    // the real `RecordValue`, and it is kept only to say that the sixteen bytes are a
-    // measured fact rather than a hope about niche layout, and that the `unsafe` tagged pair
-    // beside it buys nothing.
-    assert_eq!(
-        size_of::<TextOrDigest>(),
-        size_of::<RecordValue>(),
-        "the value mirror has drifted from the real type, so nothing below means anything"
-    );
-
-    // THE KEY'S CHARACTERS. `object/{bucket}/{key}` at the published fixture's shape is 40
-    // characters. Shared, they cost a 16-byte Arc header once however many holders name them;
-    // owned by one holder, they cost nothing beyond themselves.
-    const CHARS: usize = 40;
-    const SHARED_HEADER: usize = 16;
-    let shared_chars = CHARS + SHARED_HEADER;
-
-    // THE LADDER. Each rung is the per-object total, and each is the SUM OF MEASURED PARTS
-    // rather than a figure carried forward by hand.
-    let map_handle = size_of::<SharedText>();
-    let now = map_handle + record + shared_chars;
-    assert_eq!(now, 128, "the rung we are standing on should be the published 128, not {now}");
-
-    let folded = map_handle + size_of::<FoldedFlag>() + shared_chars;
-    let keyless = map_handle + size_of::<KeylessRecord>() + shared_chars;
-    // A key nothing else holds wants no header. What that costs is a copy of the characters
-    // for every OTHER resident holder -- the change log holds one per retained change, and it
-    // is bounded by `change_log_retention_limit`, so the cost is a fixed term and the saving
-    // is a slope. That is the one rung below that carries a trade rather than being free.
-    let owned_key = map_handle + size_of::<KeylessRecord>() + CHARS;
-
+    let chars = KEY_CHARS + SHARED_HEADER;
+    let now = record + chars;
+    assert_eq!(now, 104, "the rung we are standing on should be the published 104, not {now}");
     println!("EIGHTY rung now={now}");
-    println!("EIGHTY rung the_flag_folded={folded} saves={}", now - folded);
-    println!("EIGHTY rung and_the_key_dropped={keyless} saves={}", now - keyless);
-    println!("EIGHTY rung and_the_header_gone={owned_key} saves={}", now - owned_key);
-    // AND WHAT IS LEFT AT THE BOTTOM is the object's own name and one handle to it. Eighty
-    // needs the records map SPLIT BY KIND so an object record's value slot can be eight bytes
-    // rather than sixteen: the slot is wide enough for a boxed string because a bucket record
-    // shares the map and its text is the only copy there is.
-    println!(
-        "EIGHTY floor name_chars={CHARS} one_handle={map_handle} two_stamps={} \
-         value_slot={} -- and a split map would make the slot {}",
-        2 * size_of::<u64>(),
-        size_of::<RecordValue>(),
-        size_of::<u64>(),
-    );
 
-    // WHAT THE FIXED TERM PAYS FOR THE HEADER'S REMOVAL, stated so the trade is a number
-    // rather than a judgement. One copy of the characters per retained change.
-    const RETENTION: usize = 1024;
+    let thin_value = size_of::<ThinValueRecord>() + chars;
     println!(
-        "EIGHTY the header trades {} bytes an object against {} bytes of fixed term, \
-         so it pays above {} objects",
-        SHARED_HEADER,
-        RETENTION * CHARS,
-        (RETENTION * CHARS) / SHARED_HEADER.max(1),
+        "EIGHTY rung an_eight_byte_value_slot={thin_value} saves={} \
+         (needs `unsafe`, or the collection split by kind)",
+        now as i64 - thin_value as i64
+    );
+    let no_prefix = record + (KEY_CHARS - KIND_PREFIX) + SHARED_HEADER;
+    println!(
+        "EIGHTY rung and_the_kind_out_of_the_stored_key={no_prefix} saves={}",
+        now as i64 - no_prefix as i64
+    );
+    let both = size_of::<ThinValueRecord>() + (KEY_CHARS - KIND_PREFIX) + SHARED_HEADER;
+    println!("EIGHTY rung both={both} saves={}", now as i64 - both as i64);
+
+    // (c) THE ALLOCATION HEADER IS REFUSED, and by a guard rather than by an opinion. Owning
+    // the key's characters would drop 16 bytes an object, and
+    // `an_object_key_costs_two_bytes_a_character_however_many_places_name_it` measures
+    // resident copies as the SLOPE of metadata against key length. The bounded change log
+    // names the same characters, so an owned copy makes that slope 3 instead of 2 -- a cost
+    // of one byte per character per holder, which for a 1,024-byte key is a megabyte.
+    println!(
+        "EIGHTY the allocation header is {SHARED_HEADER} bytes and is NOT a candidate: the \
+         change log shares these characters, so owning them costs one byte a character per \
+         retained change -- measured and refused once already"
+    );
+    println!(
+        "EIGHTY UNDER A HUNDRED NEEDS {} off {now}, and the two candidates above are worth \
+         {} and {}",
+        now - 99,
+        now as i64 - thin_value as i64,
+        now as i64 - no_prefix as i64,
     );
 }
+
 #[test]
 #[ignore = "a measurement, not an assertion: cargo test -- --ignored --nocapture"]
 fn measure_the_route_to_under_a_hundred_bytes_an_object() {
@@ -37588,17 +37745,19 @@ fn measure_what_a_one_word_text_handle_would_save() {
     struct RecordControl {
         key: SharedText,
         value: RecordValue,
-        version: u64,
+        // ONE WORD FOR BOTH. The deleted flag rides the version's top bit; spelling them as
+        // separate fields here measured 56 where the record is 48, and the control assertion
+        // below would have caught it -- except that this measurement is `#[ignore]`d and so
+        // is run by nothing.
+        version_and_deleted: u64,
         update_time_ms: u64,
-        deleted: bool,
     }
     #[allow(dead_code)]
     struct RecordThin {
         key: OneWord,
         value: RecordValue,
-        version: u64,
+        version_and_deleted: u64,
         update_time_ms: u64,
-        deleted: bool,
     }
 
     let size = std::mem::size_of::<OneWord>();

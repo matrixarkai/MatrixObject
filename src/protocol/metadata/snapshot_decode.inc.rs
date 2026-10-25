@@ -112,13 +112,15 @@ impl MetaSnapshot {
                 0
             };
             let value_text = cursor.read_string()?;
-            let record = MetadataRecord {
-                key: key.clone(),
-                value: RecordValue::from_kind_tag(value_kind, &value_text)?,
-                version: cursor.read_u64()?,
-                update_time_ms: cursor.read_u64()?,
-                deleted: cursor.read_bool()?,
-            };
+            // THE ORDER IS THE FORMAT -- see `read_metadata_record`. These three read from
+            // the cursor and must stay in this order.
+            let record = MetadataRecord::new(
+                key.clone(),
+                RecordValue::from_kind_tag(value_kind, &value_text)?,
+                cursor.read_u64()?,
+                cursor.read_u64()?,
+                cursor.read_bool()?,
+            );
             records.insert(key, record);
         }
         let mut leases = BTreeMap::new();

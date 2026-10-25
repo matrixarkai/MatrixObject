@@ -138,8 +138,8 @@ impl MatrixMetaService {
                 for record in &prepared.receipt.records {
                     let current_version = self
                         .record(record.key.as_str())
-                        .map_or(0, |existing| existing.version);
-                    if record.version != current_version.saturating_add(1)
+                        .map_or(0, |existing| existing.version());
+                    if record.version() != current_version.saturating_add(1)
                         || record.update_time_ms != prepared.receipt.update_time_ms
                     {
                         return Err(ObjectError::Corruption(
@@ -153,8 +153,8 @@ impl MatrixMetaService {
                         sequence: self.next_change_sequence,
                         commit_index: prepared.prepared_commit_index,
                         key: record.key.clone(),
-                        version: record.version,
-                        deleted: record.deleted,
+                        version: record.version(),
+                        deleted: record.deleted(),
                         update_time_ms: record.update_time_ms,
                     });
                     self.next_change_sequence = self.next_change_sequence.saturating_add(1);

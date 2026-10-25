@@ -27,9 +27,9 @@ impl MetaSnapshot {
         for (key, record) in &self.records {
             append_string(&mut material, key);
             append_string(&mut material, &record.value.as_text());
-            append_u64(&mut material, record.version);
+            append_u64(&mut material, record.version());
             append_u64(&mut material, record.update_time_ms);
-            append_u64(&mut material, record.deleted as u64);
+            append_u64(&mut material, record.deleted() as u64);
         }
         for (namespace, lease) in &self.leases {
             append_string(&mut material, namespace);

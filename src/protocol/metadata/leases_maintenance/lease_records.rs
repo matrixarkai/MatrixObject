@@ -8,9 +8,76 @@ pub struct MetadataRecord {
     /// A projection of the object at this key, or the text any other record
     /// carries. Sixteen bytes inline either way -- see `RecordValue`.
     pub value: RecordValue,
-    pub version: u64,
+    /// The version, with the deleted flag in its top bit.
+    ///
+    /// # WHY THESE SHARE A WORD
+    ///
+    /// The version is a per-key mutation counter and `deleted` is one bit, but alignment gave
+    /// the bool a whole eight-byte word after two `u64`s -- 8 bytes an object for one bit.
+    /// The top bit of a counter that cannot reach 2^63 is free space.
+    ///
+    /// The WIRE IS UNCHANGED: `append_metadata_record` and the snapshot encoder both write
+    /// the version and the flag as separate `u64`s, and they still do, through the accessors.
+    /// A representation change.
+    ///
+    /// Read them with [`MetadataRecord::version`] and [`MetadataRecord::deleted`].
+    version_and_deleted: u64,
     pub update_time_ms: u64,
-    pub deleted: bool,
+}
+
+impl MetadataRecord {
+    /// The flag's bit. The version is masked off it on the way in and out, so a version that
+    /// somehow reached this bound would be capped rather than flipping the flag -- which is
+    /// the failure a shared word has to rule out, not merely make unlikely.
+    const DELETED_BIT: u64 = 1 << 63;
+    /// The largest version the shared word can hold. Reaching it would take more writes to
+    /// one key than a store can perform in any span of time worth modelling, which is why
+    /// the top bit is free space rather than a range being borrowed.
+    pub const MAX_VERSION: u64 = Self::DELETED_BIT - 1;
+
+    pub fn new(
+        key: SharedText,
+        value: RecordValue,
+        version: u64,
+        update_time_ms: u64,
+        deleted: bool,
+    ) -> Self {
+        let mut record = Self {
+            key,
+            value,
+            version_and_deleted: 0,
+            update_time_ms,
+        };
+        record.set_version(version);
+        record.set_deleted(deleted);
+        record
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version_and_deleted & Self::MAX_VERSION
+    }
+
+    pub fn deleted(&self) -> bool {
+        self.version_and_deleted & Self::DELETED_BIT != 0
+    }
+
+    pub fn set_version(&mut self, version: u64) {
+        debug_assert!(
+            version <= Self::MAX_VERSION,
+            "a version past {} cannot share a word with the deleted flag",
+            Self::MAX_VERSION
+        );
+        self.version_and_deleted =
+            (self.version_and_deleted & Self::DELETED_BIT) | version.min(Self::MAX_VERSION);
+    }
+
+    pub fn set_deleted(&mut self, deleted: bool) {
+        if deleted {
+            self.version_and_deleted |= Self::DELETED_BIT;
+        } else {
+            self.version_and_deleted &= Self::MAX_VERSION;
+        }
+    }
 }
 
 /// A metadata record ordered and identified BY ITS OWN KEY, so the collection holding it
@@ -102,12 +169,12 @@ impl MetadataRecord {
         let mut fields = BTreeMap::new();
         fields.insert(format!("{field_prefix}key"), self.key.to_string());
         fields.insert(format!("{field_prefix}value"), self.value.as_text().into_owned());
-        fields.insert(format!("{field_prefix}version"), self.version.to_string().into());
+        fields.insert(format!("{field_prefix}version"), self.version().to_string().into());
         fields.insert(
             format!("{field_prefix}update_time_ms"),
             self.update_time_ms.to_string().into(),
         );
-        fields.insert(format!("{field_prefix}deleted"), self.deleted.to_string().into());
+        fields.insert(format!("{field_prefix}deleted"), self.deleted().to_string().into());
         fields
     }
 }

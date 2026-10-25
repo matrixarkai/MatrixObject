@@ -19,7 +19,7 @@ impl MatrixMetaService {
         self.check_lease_fence(prefix, lease_owner, lease_epoch, now_ms)?;
         let keys: Vec<String> = self
             .records_iter()
-            .filter(|(key, record)| key.starts_with(prefix) && !record.deleted)
+            .filter(|(key, record)| key.starts_with(prefix) && !record.deleted())
             .map(|(key, _)| key.to_string())
             .take(max_records)
             .collect();
@@ -33,7 +33,7 @@ impl MatrixMetaService {
                 record_value: RecordValue::empty(),
                 expected_version: self
                         .record(key.as_str())
-                        .map_or(0, |record| record.version),
+                        .map_or(0, |record| record.version()),
                 delete: true,
             })
             .collect();
@@ -66,7 +66,7 @@ impl MatrixMetaService {
         self.check_lease_fence(prefix, lease_owner, lease_epoch, now_ms)?;
         let keys: Vec<String> = self
             .records_iter()
-            .filter(|(key, record)| key.starts_with(prefix) && !record.deleted)
+            .filter(|(key, record)| key.starts_with(prefix) && !record.deleted())
             .map(|(key, _)| key.to_string())
             .take(max_records)
             .collect();
@@ -77,7 +77,7 @@ impl MatrixMetaService {
                 record_value: RecordValue::empty(),
                 expected_version: self
                         .record(key.as_str())
-                        .map_or(0, |record| record.version),
+                        .map_or(0, |record| record.version()),
                 delete: true,
             })
             .collect();
@@ -102,12 +102,14 @@ impl MatrixMetaService {
         let prepared_commit_index = expected_previous_commit_index.saturating_add(1);
         let images: Vec<MetadataRecord> = mutations
             .iter()
-            .map(|mutation| MetadataRecord {
-                key: mutation.key.clone(),
-                value: String::new().into(),
-                version: mutation.expected_version.saturating_add(1),
-                update_time_ms: now_ms,
-                deleted: true,
+            .map(|mutation| {
+                MetadataRecord::new(
+                    mutation.key.clone(),
+                    String::new().into(),
+                    mutation.expected_version.saturating_add(1),
+                    now_ms,
+                    true,
+                )
             })
             .collect();
         let (metadata_control_proof_checksum, metadata_control_proof_bytes) =
@@ -168,7 +170,7 @@ impl MatrixMetaService {
         let mut mutations = Vec::new();
         for (key, record) in self
             .records_iter()
-            .filter(|(key, record)| key.starts_with(prefix) && !record.deleted)
+            .filter(|(key, record)| key.starts_with(prefix) && !record.deleted())
         {
             if mutations.len() >= max_records {
                 break;
@@ -191,7 +193,7 @@ impl MatrixMetaService {
             mutations.push(MetadataMutation {
                 key: key.clone(),
                 record_value: RecordValue::empty(),
-                expected_version: record.version,
+                expected_version: record.version(),
                 delete: true,
             });
         }
@@ -216,12 +218,14 @@ impl MatrixMetaService {
         let prepared_commit_index = expected_previous_commit_index.saturating_add(1);
         let images: Vec<MetadataRecord> = mutations
             .iter()
-            .map(|mutation| MetadataRecord {
-                key: mutation.key.clone(),
-                value: String::new().into(),
-                version: mutation.expected_version.saturating_add(1),
-                update_time_ms: now_ms,
-                deleted: true,
+            .map(|mutation| {
+                MetadataRecord::new(
+                    mutation.key.clone(),
+                    String::new().into(),
+                    mutation.expected_version.saturating_add(1),
+                    now_ms,
+                    true,
+                )
             })
             .collect();
         let (metadata_control_proof_checksum, metadata_control_proof_bytes) =

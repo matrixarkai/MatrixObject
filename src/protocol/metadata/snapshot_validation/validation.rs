@@ -40,7 +40,7 @@ impl MetaSnapshot {
         }
         for (key, record) in &self.records {
             validate_meta_key(key)?;
-            if record.key != *key || record.version == 0 {
+            if record.key != *key || record.version() == 0 {
                 return Err(ObjectError::Corruption(
                     "metadata snapshot record is invalid".to_string(),
                 ));
@@ -184,7 +184,7 @@ impl MetaSnapshot {
             }
             for record in &receipt.records {
                 validate_meta_key(&record.key)?;
-                if record.version == 0 {
+                if record.version() == 0 {
                     return Err(ObjectError::Corruption(
                         "metadata snapshot batch receipt record is invalid".to_string(),
                     ));
@@ -247,7 +247,7 @@ impl MetaSnapshot {
             }
             for record in &receipt.records {
                 validate_meta_key(&record.key)?;
-                if record.version == 0 {
+                if record.version() == 0 {
                     return Err(ObjectError::Corruption(
                         "metadata snapshot transaction receipt record is invalid".to_string(),
                     ));

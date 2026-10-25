@@ -17,9 +17,9 @@ pub(crate) fn append_metadata_record(out: &mut Vec<u8>, record: &MetadataRecord)
     // that could not tell them apart would be hashing less than the record.
     append_u64(out, record.value.kind_tag());
     append_string(out, &record.value.as_text());
-    append_u64(out, record.version);
+    append_u64(out, record.version());
     append_u64(out, record.update_time_ms);
-    append_u64(out, record.deleted as u64);
+    append_u64(out, record.deleted() as u64);
 }
 
 pub(crate) fn append_metadata_transaction(out: &mut Vec<u8>, transaction: &MetadataTransaction) {
