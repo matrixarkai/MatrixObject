@@ -86,252 +86,21 @@ fn never_written_page_id() -> PageId {
 }
 
 // ---------------------------------------------------------------------------------------
-// Standing replica processes up
+// The regime instruments, in one place
 // ---------------------------------------------------------------------------------------
+
+// MOVED, NOT COPIED. These readings -- live PIDs, an ESTABLISHED socket per node attributed
+// to that node's PID two independent ways, and the `/proc/<pid>/environ` check that stands
+// between killing a PID and killing one of ours -- are now `tests/node_regime/mod.rs`,
+// shared with every other node test. They were written here first, for one test. A second
+// test needing the same readings would otherwise have taken a second copy, and a regime
+// assertion whose copy has quietly stopped checking anything looks exactly like one that
+// passes.
+#[cfg(target_os = "linux")]
+mod node_regime;
 
 #[cfg(target_os = "linux")]
-mod processes {
-    use std::io::{BufRead, BufReader};
-    use std::process::{Child, Command, Stdio};
-
-    /// A replica process this test started.
-    pub struct ReplicaProcess {
-        pub child: Child,
-        pub pid: u32,
-        pub endpoint: String,
-    }
-
-    /// Reap the process when this goes out of scope, INCLUDING ON A PANIC.
-    ///
-    /// Found by running this test against a deliberately broken store rather than by reading
-    /// it: an assertion fires partway through, the cleanup at the end of the test body never
-    /// runs, and three replica processes are left holding three ports. Nine such runs left
-    /// twenty-seven of them competing with the next run for the machine. A panic unwinds and
-    /// runs `Drop`, so this is the cleanup that happens on the path that needs it.
-    ///
-    /// Errors are ignored on purpose: the test's own kill step is meant to have killed one of
-    /// these already, and a destructor that panicked about an already-reaped child would
-    /// replace the real failure with its own.
-    impl Drop for ReplicaProcess {
-        fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
-
-    /// Wait for `child` to exit, for at most `within`. `None` means it was still running.
-    ///
-    /// Bounded, and not with `wait()`. `Child::wait` blocks until the process exits, which is
-    /// correct after a signal that cannot be caught and an unbounded hang when the signal did
-    /// not land. A test that hangs is worse in continuous integration than a test that fails:
-    /// the job spends its whole budget and the log says nothing about why. This was measured,
-    /// not imagined -- during development a deliberately removed `kill` turned the `wait()`
-    /// that used to be here into an eighteen-minute hang with no output.
-    pub fn reap_within(child: &mut Child, within: std::time::Duration) -> Option<i32> {
-        let deadline = std::time::Instant::now() + within;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => return Some(status.code().unwrap_or(-1)),
-                Ok(None) => {
-                    if std::time::Instant::now() >= deadline {
-                        return None;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                Err(err) => panic!("a replica process could not be reaped: {err}"),
-            }
-        }
-    }
-
-    /// Start one replica process on a kernel-chosen port and wait for it to say where.
-    ///
-    /// `token` is put in the environment so that the test can later read
-    /// `/proc/<pid>/environ` and confirm the process it is about to kill is one it started.
-    /// Killing by name would be the easy way to do this and would also kill a replica
-    /// belonging to a run happening alongside it.
-    pub fn start(binary: &str, token: &str) -> ReplicaProcess {
-        let mut child = Command::new(binary)
-            // PORT 0: the kernel picks, so parallel runs of this test cannot collide on a
-            // number either of them chose.
-            .env("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0")
-            .env("MATRIXOBJECT_REPLICA_THREADS", "2")
-            .env("MATRIXOBJECT_REPLICA_TEST_TOKEN", token)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("the replica_server binary could be started");
-        let stdout = child.stdout.take().expect("the child's stdout is a pipe");
-        let mut line = String::new();
-        BufReader::new(stdout)
-            .read_line(&mut line)
-            .expect("the replica's first line could be read");
-        assert!(
-            !line.trim().is_empty(),
-            "the replica process produced no startup line, so it died before it listened"
-        );
-        let endpoint = field(&line, "listening on ")
-            .unwrap_or_else(|| panic!("no bound address in the startup line {line:?}"));
-        let reported_pid: u32 = field(&line, "pid=")
-            .unwrap_or_else(|| panic!("no pid in the startup line {line:?}"))
-            .parse()
-            .expect("the reported pid is a number");
-        // THE PROCESS'S OWN PID AND THE ONE CARGO HANDED US MUST AGREE. They are read from
-        // two places -- the child handle and the child's own `std::process::id()` -- and a
-        // test that killed the wrong one of those would report a survival it never tested.
-        assert_eq!(
-            reported_pid,
-            child.id(),
-            "the replica printed pid {reported_pid} and the spawned child is {}",
-            child.id()
-        );
-        ReplicaProcess {
-            pid: child.id(),
-            child,
-            endpoint,
-        }
-    }
-
-    /// The whitespace-delimited word that follows `key` in `line`.
-    fn field(line: &str, key: &str) -> Option<String> {
-        let at = line.find(key)? + key.len();
-        Some(
-            line[at..]
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .to_string(),
-        )
-    }
-
-    /// Whether `/proc/<pid>` names a live process.
-    pub fn is_live(pid: u32) -> bool {
-        std::path::Path::new(&format!("/proc/{pid}")).exists()
-    }
-
-    /// Whether this process's environment carries `token`.
-    ///
-    /// Read from `/proc/<pid>/environ`, which is NUL-separated. This is the confirmation
-    /// that stands between "kill a pid" and "kill a pid that is mine".
-    pub fn environ_carries(pid: u32, token: &str) -> bool {
-        let Ok(bytes) = std::fs::read(format!("/proc/{pid}/environ")) else {
-            return false;
-        };
-        bytes
-            .split(|byte| *byte == 0)
-            .filter_map(|entry| std::str::from_utf8(entry).ok())
-            .any(|entry| entry == format!("MATRIXOBJECT_REPLICA_TEST_TOKEN={token}"))
-    }
-}
-
-// ---------------------------------------------------------------------------------------
-// Reading the operating system's socket table, twice, two ways
-// ---------------------------------------------------------------------------------------
-
-#[cfg(target_os = "linux")]
-mod sockets {
-    use std::collections::BTreeSet;
-    use std::process::Command;
-
-    /// PIDs that `ss -tnp` reports as holding an ESTABLISHED TCP socket.
-    ///
-    /// The external tool the task of checking a regime is normally done with. It is run and
-    /// its output parsed rather than trusted to exist: a missing `ss` fails this test, which
-    /// is the right answer, because the test's whole claim rests on reading the kernel's own
-    /// socket table and there is no honest way to proceed without one.
-    pub fn established_pids_from_ss() -> BTreeSet<u32> {
-        let output = Command::new("ss")
-            .args(["-tnp"])
-            .output()
-            .expect("ss is available; the regime assertion reads the kernel socket table");
-        assert!(
-            output.status.success(),
-            "ss -tnp exited {:?}: {}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let text = String::from_utf8_lossy(&output.stdout).to_string();
-        let mut pids = BTreeSet::new();
-        for line in text.lines() {
-            if !line.starts_with("ESTAB") {
-                continue;
-            }
-            // `users:(("replica_server",pid=12345,fd=9))`
-            let mut rest = line;
-            while let Some(at) = rest.find("pid=") {
-                rest = &rest[at + 4..];
-                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                if let Ok(pid) = digits.parse::<u32>() {
-                    pids.insert(pid);
-                }
-            }
-        }
-        pids
-    }
-
-    /// The whole `ss -tnp` listing, for a failure message that shows what was actually read.
-    pub fn ss_listing() -> String {
-        Command::new("ss")
-            .args(["-tnp"])
-            .output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
-            .unwrap_or_else(|err| format!("<ss could not be run: {err}>"))
-    }
-
-    /// Socket inodes in state ESTABLISHED, from `/proc/net/tcp` and `/proc/net/tcp6`.
-    fn established_inodes() -> BTreeSet<u64> {
-        let mut inodes = BTreeSet::new();
-        for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
-            let Ok(text) = std::fs::read_to_string(path) else {
-                continue;
-            };
-            for line in text.lines().skip(1) {
-                let columns: Vec<&str> = line.split_whitespace().collect();
-                // sl local_address rem_address st ... uid timeout inode
-                if columns.len() < 10 {
-                    continue;
-                }
-                // `01` is TCP_ESTABLISHED.
-                if columns[3] != "01" {
-                    continue;
-                }
-                if let Ok(inode) = columns[9].parse::<u64>() {
-                    inodes.insert(inode);
-                }
-            }
-        }
-        inodes
-    }
-
-    /// Whether `pid` holds a file descriptor for an ESTABLISHED socket.
-    ///
-    /// Derived from `/proc/<pid>/fd` and `/proc/net/tcp` with no external tool. This is the
-    /// second, independent reading of the same fact, and the kill test requires it to agree
-    /// with `ss`. Two instruments that agree is evidence; one instrument is a report.
-    pub fn has_established_socket(pid: u32) -> bool {
-        let established = established_inodes();
-        let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
-            return false;
-        };
-        for entry in entries.flatten() {
-            let Ok(target) = std::fs::read_link(entry.path()) else {
-                continue;
-            };
-            let target = target.to_string_lossy().to_string();
-            let Some(inner) = target
-                .strip_prefix("socket:[")
-                .and_then(|rest| rest.strip_suffix(']'))
-            else {
-                continue;
-            };
-            if let Ok(inode) = inner.parse::<u64>() {
-                if established.contains(&inode) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-}
+use node_regime::{processes, sockets};
 
 // ---------------------------------------------------------------------------------------
 // The test that decides it
@@ -358,17 +127,10 @@ mod sockets {
 #[test]
 fn three_replica_processes_keep_the_data_when_one_is_killed() {
     let binary = env!("CARGO_BIN_EXE_replica_server");
-    let token = format!(
-        "kill-test-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|since| since.as_nanos())
-            .unwrap_or_default()
-    );
+    let token = node_regime::run_token("kill-test");
 
-    let mut nodes: Vec<processes::ReplicaProcess> = (0..3)
-        .map(|_| processes::start(binary, &token))
+    let mut nodes: Vec<processes::NodeProcess> = (0..3)
+        .map(|_| processes::start_replica(binary, &token))
         .collect();
 
     // ---------------------------------------------------------------- 1. THE REGIME
@@ -416,33 +178,9 @@ fn three_replica_processes_keep_the_data_when_one_is_killed() {
         "all three replicas must answer and start empty"
     );
 
-    // The sockets, from `ss -tnp`, with PID attribution.
-    let ss_pids = sockets::established_pids_from_ss();
-    for pid in &pids {
-        assert!(
-            ss_pids.contains(pid),
-            "ss -tnp reports no ESTABLISHED socket for replica PID {pid}; without a socket \
-             between these processes the rest of this test proves nothing.\n\
-             ss -tnp said:\n{}",
-            sockets::ss_listing()
-        );
-    }
-    assert!(
-        ss_pids.contains(&std::process::id()),
-        "ss -tnp reports no ESTABLISHED socket for this test's own PID {}, so the \
-         connections it thinks it holds are not in the kernel's table.\nss -tnp said:\n{}",
-        std::process::id(),
-        sockets::ss_listing()
-    );
-
-    // The same fact again, from /proc, with no external tool. The two readings must agree.
-    for pid in &pids {
-        assert!(
-            sockets::has_established_socket(*pid),
-            "/proc/{pid}/fd holds no ESTABLISHED socket, although ss -tnp said it does; the \
-             two readings of the socket table disagree and neither can be trusted"
-        );
-    }
+    // The sockets, from `ss -tnp` with PID attribution and then again from `/proc` with no
+    // external tool. Both readings, and they are required to agree.
+    sockets::assert_established_two_ways(&pids);
 
     // Each connection's four-tuple names a replica's bound address as its peer.
     let connections = set.connections().expect("connection addresses are readable");
@@ -483,27 +221,11 @@ fn three_replica_processes_keep_the_data_when_one_is_killed() {
 
     // ------------------------------------------------------------------- 3. KILL ONE, BY PID
     let doomed_pid = nodes[0].pid;
-    assert!(
-        processes::environ_carries(doomed_pid, &token),
-        "/proc/{doomed_pid}/environ does not carry this run's token, so that process was not \
-         started by this test and must not be killed"
-    );
-    assert_eq!(
-        nodes[0].child.id(),
-        doomed_pid,
-        "the child handle about to be killed is not the PID that was confirmed"
-    );
-    nodes[0].child.kill().expect("the replica could be killed");
-    assert!(
-        processes::reap_within(&mut nodes[0].child, Duration::from_secs(10)).is_some(),
-        "replica {doomed_pid} was still running ten seconds after it was killed, so the \
-         survivors below are not survivors of anything"
-    );
-
-    assert!(
-        !processes::is_live(doomed_pid),
-        "/proc/{doomed_pid} still exists after the kill, so the replica is still running and \
-         a read from 'the survivors' would include it"
+    processes::confirm_and_kill(
+        &mut nodes[0],
+        node_regime::REPLICA_TOKEN_VAR,
+        &token,
+        Duration::from_secs(10),
     );
     for pid in &pids[1..] {
         assert!(
@@ -579,7 +301,7 @@ fn three_replica_processes_keep_the_data_when_one_is_killed() {
          quorum is not being enforced: {after:?}"
     );
 
-    // The survivors are reaped by `ReplicaProcess::drop`, which also runs when one of the
+    // The survivors are reaped by `NodeProcess::drop`, which also runs when one of the
     // assertions above fires. An explicit cleanup here would only cover the passing path,
     // which is the path that does not need it.
     drop(nodes);

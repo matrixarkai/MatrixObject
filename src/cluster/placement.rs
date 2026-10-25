@@ -59,6 +59,87 @@ impl Default for ReplicaPlacement {
     }
 }
 
+/// The smallest majority of `replica_count` replicas.
+///
+/// `replica_count / 2 + 1`: 1 of 1, 2 of 2, 2 of 3, 3 of 4, 3 of 5, 4 of 7. Two majorities of
+/// the same set always share a member, which is the property every quorum rule below is
+/// built on.
+///
+/// # WHY THIS IS A FUNCTION AND NOT A NUMBER AT EACH CALL SITE
+///
+/// A majority written as a literal is a majority for one width. The write quorum of 2 that
+/// this store shipped is a majority of three and `all but one` of three at the same time, so
+/// the two readings were indistinguishable at the only width that existed. They part company
+/// at five, where a majority is 3 and all-but-one is 4 -- and the arrangement a quorum rule
+/// is for is the one where two of the five are gone. Written once, it cannot be a majority in
+/// one arm and a head count in the other.
+pub fn majority(replica_count: usize) -> usize {
+    replica_count / 2 + 1
+}
+
+/// Check a quorum pair against a replica count, REFUSING a pair that cannot read its writes.
+///
+/// Three clauses, each refused by its own name:
+///
+/// 1. a write quorum of zero, or one larger than the set;
+/// 2. a read quorum of zero, or one larger than the set;
+/// 3. `write_quorum + read_quorum <= replica_count` -- the two quorums need not share a
+///    replica, so a read quorum can be assembled entirely out of replicas that the write
+///    quorum never reached.
+///
+/// # THE THIRD CLAUSE IS THE ONE THAT WAS MISSING, AND WHY IT COULD NOT BE SEEN AT THREE
+///
+/// The first two are arithmetic about whether a quorum is reachable at all. The third is
+/// about whether meeting both of them means anything, and it is the one a wider set needs.
+/// At three replicas the shipped pair 2/2 sums to 4, which is already greater than 3, so
+/// every pair this store had ever been configured with satisfied the third clause by
+/// accident. At five replicas 2/2 still passes the first two clauses and sums to 4, which is
+/// NOT greater than 5: replicas 1 and 2 can acknowledge a write while replicas 3 and 4
+/// answer the read, and the read returns the previous value having met its quorum honestly.
+/// Nothing in the fan-out can detect that afterwards, because every count involved is
+/// correct. So it is refused here, at the one point where a set is constructed, rather than
+/// reported later by a read that has no way to know it happened.
+///
+/// # ONE FUNCTION, BOTH ARMS, ON PURPOSE
+///
+/// [`InProcessReplicaSet::new`] and [`crate::cluster::replica_set::RemoteReplicaSet::connect`]
+/// both call this. The quorum rule is already written twice -- once over method calls and
+/// once over sockets -- and that is two places it can drift; the admission rule is not going
+/// to be a third and a fourth.
+pub fn check_quorums(
+    replica_count: usize,
+    write_quorum: usize,
+    read_quorum: usize,
+) -> Result<(), ObjectError> {
+    if write_quorum == 0 || write_quorum > replica_count {
+        return Err(ObjectError::InvalidArgument(format!(
+            "a write quorum of {write_quorum} cannot be met by {replica_count} replica(s)"
+        )));
+    }
+    if read_quorum == 0 || read_quorum > replica_count {
+        return Err(ObjectError::InvalidArgument(format!(
+            "a read quorum of {read_quorum} cannot be met by {replica_count} replica(s)"
+        )));
+    }
+    // `checked_add` rather than `+`: both are caller-supplied `usize`, and a sum that wrapped
+    // would pass this clause by being small.
+    let overlap = write_quorum.checked_add(read_quorum).ok_or_else(|| {
+        ObjectError::InvalidArgument(format!(
+            "a write quorum of {write_quorum} and a read quorum of {read_quorum} overflow \
+             when added, so their overlap over {replica_count} replica(s) cannot be checked"
+        ))
+    })?;
+    if overlap <= replica_count {
+        return Err(ObjectError::InvalidArgument(format!(
+            "a write quorum of {write_quorum} and a read quorum of {read_quorum} sum to \
+             {overlap} over {replica_count} replica(s), so the two quorums need not share a \
+             replica and a read can miss an acknowledged write; a sum greater than \
+             {replica_count} is needed"
+        )));
+    }
+    Ok(())
+}
+
 impl ReplicaPlacement {
     // DELIBERATELY ABSENT: a `from_env` reading `MATRIXOBJECT_REPLICA_ENDPOINTS` and a
     // `describe` for a startup line. Both were written and then removed before this landed,
@@ -67,6 +148,65 @@ impl ReplicaPlacement {
     // coordinator binary that does not exist yet. A setting nothing reads is not
     // configuration, it is a promise about a future caller, and it rots silently because no
     // test can tell it from a working one. They belong in the change that adds that binary.
+
+    /// Replicas in other processes, with a majority for both quorums.
+    ///
+    /// The pair this produces always satisfies the overlap clause in [`check_quorums`]:
+    /// `2 * majority(n) > n` for every `n`. That is the point of the constructor -- a caller
+    /// that wants "a majority of however many nodes I was given" cannot express it as two
+    /// numbers without restating the arithmetic, and restating it is where a five-node set
+    /// acquires a three-node set's quorum.
+    pub fn remote_with_majority(endpoints: Vec<String>) -> Self {
+        let quorum = majority(endpoints.len());
+        ReplicaPlacement::Remote {
+            endpoints,
+            write_quorum: quorum,
+            read_quorum: quorum,
+        }
+    }
+
+    /// Replicas in this process, with a majority for both quorums.
+    pub fn in_process_with_majority(replica_count: usize) -> Self {
+        let quorum = majority(replica_count);
+        ReplicaPlacement::InProcess {
+            replica_count,
+            write_quorum: quorum,
+            read_quorum: quorum,
+        }
+    }
+
+    /// How many replicas this placement addresses.
+    pub fn replica_count(&self) -> usize {
+        match self {
+            ReplicaPlacement::InProcess { replica_count, .. } => *replica_count,
+            ReplicaPlacement::Remote { endpoints, .. } => endpoints.len(),
+        }
+    }
+
+    /// The write quorum and then the read quorum, whichever arm this is.
+    pub fn quorums(&self) -> (usize, usize) {
+        match self {
+            ReplicaPlacement::InProcess {
+                write_quorum,
+                read_quorum,
+                ..
+            }
+            | ReplicaPlacement::Remote {
+                write_quorum,
+                read_quorum,
+                ..
+            } => (*write_quorum, *read_quorum),
+        }
+    }
+
+    /// True when both quorums are the smallest majority of this placement's width.
+    ///
+    /// Distinguishes a majority from `all but one`, which are the same number at three
+    /// replicas and different numbers at four or more.
+    pub fn is_majority_quorum(&self) -> bool {
+        let quorum = majority(self.replica_count());
+        self.quorums() == (quorum, quorum)
+    }
 
     /// True when this placement puts replicas in other processes.
     pub fn is_remote(&self) -> bool {
@@ -121,16 +261,7 @@ impl InProcessReplicaSet {
                 "an in-process replica set needs at least one replica".to_string(),
             ));
         }
-        if write_quorum == 0 || write_quorum > replica_count {
-            return Err(ObjectError::InvalidArgument(format!(
-                "a write quorum of {write_quorum} cannot be met by {replica_count} replica(s)"
-            )));
-        }
-        if read_quorum == 0 || read_quorum > replica_count {
-            return Err(ObjectError::InvalidArgument(format!(
-                "a read quorum of {read_quorum} cannot be met by {replica_count} replica(s)"
-            )));
-        }
+        check_quorums(replica_count, write_quorum, read_quorum)?;
         Ok(Self {
             replicas: (0..replica_count)
                 .map(|_| MatrixReplicaService::new())
