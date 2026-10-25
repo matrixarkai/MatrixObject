@@ -46708,9 +46708,18 @@ fn the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_loa
     assert_eq!(reloaded_lease.expire_time_ms, renewed.expire_time_ms);
 
     // ---- AND THE PREDICATE IS NOT A BLANKET YES ----
-    // Without this the two assertions above would pass against a gate that admitted anything.
+    // Without this the assertions above would pass against a gate that admitted anything.
+    //
+    // THE CLOCK HERE IS PAST THE LEASE ABOVE, deliberately. `campaign_leader` refuses a
+    // candidate two ways -- the kind rule, and "someone else already holds an unexpired
+    // lease" -- and at an earlier clock both are live, so a refusal would not say which rule
+    // did the work. A plant that removed the kind rule was still CAUGHT, because these arms
+    // assert the message TEXT rather than merely `is_err()`; but the panic then named the
+    // other fence, which is a confound worth removing rather than explaining. `meta-a`'s
+    // renewed lease expires at 8,000, so at 9,000 the only rule left that can refuse is the
+    // one under test.
     meta.register_node(control_node("block-a", "blockserver")).unwrap();
-    let refused = meta.campaign_leader("block-a", 5_000, 4_000);
+    let refused = meta.campaign_leader("block-a", 5_000, 9_000);
     match refused {
         Err(ObjectError::PreconditionFailed(message)) => assert!(
             message.contains("must be a metaserver") && message.contains("blockserver"),
@@ -46722,7 +46731,7 @@ fn the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_loa
     let mut draining = control_node("meta-b", "metaserver");
     draining.draining = true;
     meta.register_node(draining).unwrap();
-    match meta.campaign_leader("meta-b", 5_000, 4_000) {
+    match meta.campaign_leader("meta-b", 5_000, 9_000) {
         Err(ObjectError::PreconditionFailed(message)) => assert!(
             message.contains("draining"),
             "a draining candidate should be refused for draining, and it says {message:?}"
