@@ -673,3 +673,74 @@ jobs:
             || { echo "::error::five_replica_nodes_serve_at_exactly_a_quorum_and_refuse_one_below_it did not run"; exit 1; }
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::five_replica_nodes_serve_at_exactly_a_quorum_and_refuse_one_below_it did not pass"; exit 1; }
+
+      # THE CONTROL PLANE IN ITS OWN PROCESS. A third integration target, and a target the
+      # guards job never names is a target CI compiles and runs nothing from. The last of
+      # these is the one that decides it: four processes, the regime read two independent
+      # ways, and placement stopping while reads do not.
+      - name: A metaserver verb and a replica verb are never the same byte
+        run: |
+          set -o pipefail
+          cargo test --locked --test the_metaserver_is_its_own_node \
+            a_metaserver_verb_and_a_replica_verb_are_never_the_same_byte -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log \
+            || { echo "::error::a_metaserver_verb_and_a_replica_verb_are_never_the_same_byte did not run"; exit 1; }
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_metaserver_verb_and_a_replica_verb_are_never_the_same_byte did not pass"; exit 1; }
+
+      - name: An empty endpoint list is the in-process control plane
+        run: |
+          set -o pipefail
+          cargo test --locked --test the_metaserver_is_its_own_node \
+            an_empty_endpoint_list_is_the_control_plane_this_store_has_always_had -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log \
+            || { echo "::error::an_empty_endpoint_list_is_the_control_plane_this_store_has_always_had did not run"; exit 1; }
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::an_empty_endpoint_list_is_the_control_plane_this_store_has_always_had did not pass"; exit 1; }
+
+      - name: A metaserver endpoint with nothing behind it fails to open
+        run: |
+          set -o pipefail
+          cargo test --locked --test the_metaserver_is_its_own_node \
+            an_endpoint_with_nothing_behind_it_fails_to_open -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log \
+            || { echo "::error::an_endpoint_with_nothing_behind_it_fails_to_open did not run"; exit 1; }
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::an_endpoint_with_nothing_behind_it_fails_to_open did not pass"; exit 1; }
+
+      - name: A replica frame sent to the metaserver is refused as an unknown verb
+        run: |
+          set -o pipefail
+          cargo test --locked --test the_metaserver_is_its_own_node \
+            a_replica_frame_sent_to_the_metaserver_is_refused_as_an_unknown_verb -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log \
+            || { echo "::error::a_replica_frame_sent_to_the_metaserver_is_refused_as_an_unknown_verb did not run"; exit 1; }
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_replica_frame_sent_to_the_metaserver_is_refused_as_an_unknown_verb did not pass"; exit 1; }
+
+      - name: A metaserver client probes on every call rather than remembering
+        run: |
+          set -o pipefail
+          cargo test --locked --test the_metaserver_is_its_own_node \
+            a_metaserver_client_probes_on_every_call_rather_than_remembering -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log \
+            || { echo "::error::a_metaserver_client_probes_on_every_call_rather_than_remembering did not run"; exit 1; }
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_metaserver_client_probes_on_every_call_rather_than_remembering did not pass"; exit 1; }
+
+      - name: The metaserver node stops placement and not reads
+        run: |
+          set -o pipefail
+          cargo test --locked --test the_metaserver_is_its_own_node \
+            the_metaserver_node_stops_placement_and_not_reads -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log \
+            || { echo "::error::the_metaserver_node_stops_placement_and_not_reads did not run"; exit 1; }
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_metaserver_node_stops_placement_and_not_reads did not pass"; exit 1; }
+

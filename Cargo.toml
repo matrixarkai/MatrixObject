@@ -17,7 +17,7 @@ categories = ["database-implementations", "filesystem"]
 exclude = ["pages/", "scratchpad/", "target/"]
 
 [features]
-default = ["raft-rs", "http-server", "replica-server"]
+default = ["raft-rs", "http-server", "replica-server", "meta-server"]
 raft-rs = ["dep:raft"]
 # The S3-compatible HTTP front door (`src/net`, and the `object_server` binary).
 #
@@ -47,6 +47,16 @@ s3 = ["http-server"]
 # of one replica process -- is what the replication factor this store already pays for is
 # supposed to buy. A flag standing between a user and that is a barrier in front of the point.
 replica-server = []
+# The control plane in another process (`src/cluster`'s metaserver half, and the `metaserver`
+# binary).
+#
+# ON by default, and it adds NO dependencies -- the standard library alone, and it reuses the
+# replica slice's framing rather than bringing a second one. What the feature gates is a
+# listener, a client and the directory over them, none of which costs anything until something
+# binds a port: an empty `metaserver_catalog_endpoints` is the in-process control plane this
+# store has always had, so a build with this feature on behaves exactly as it did before
+# something names an endpoint.
+meta-server = []
 matrix-raft = ["dep:matrixraft"]
 
 [dependencies]

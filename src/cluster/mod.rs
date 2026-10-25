@@ -125,18 +125,59 @@
 //! to a replica node's port can read and overwrite every page it holds, so the shipped
 //! binary binds loopback unless told otherwise.
 
-pub mod client;
+// THE FRAMING IS SHARED BY BOTH HALVES, so it is behind neither feature. `wire` holds the
+// six-byte header, the stamp, the payload bound, the status codes and the cursor that refuses
+// to read past the end of a payload; `message` holds `check_stamp`, `encode_failure` and
+// `decode_failure` beside the replica messages. A build with only the control plane needs
+// those five items and would otherwise need a second copy of them.
 pub mod message;
-pub mod placement;
-pub mod replica_set;
-pub mod server;
 pub mod wire;
 
-pub use client::{ReplicaClientOptions, RemoteReplicaClient};
+// The data plane: a replica node, a client, and the quorum over several of them.
+#[cfg(feature = "replica-server")]
+pub mod client;
+#[cfg(feature = "replica-server")]
+pub mod placement;
+#[cfg(feature = "replica-server")]
+pub mod replica_set;
+#[cfg(feature = "replica-server")]
+pub mod server;
+
+// The control plane: a metaserver node, a client, and the directory that chooses.
+#[cfg(feature = "meta-server")]
+pub mod directory;
+#[cfg(feature = "meta-server")]
+pub mod meta_client;
+#[cfg(feature = "meta-server")]
+pub mod meta_message;
+#[cfg(feature = "meta-server")]
+pub mod meta_server;
+#[cfg(feature = "meta-server")]
+pub mod meta_wire;
+
 pub use message::{ReplicaReply, ReplicaRequest};
+pub use wire::{RequestCode, StatusCode, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP};
+
+#[cfg(feature = "replica-server")]
+pub use client::{ReplicaClientOptions, RemoteReplicaClient};
+#[cfg(feature = "replica-server")]
 pub use placement::{
     check_quorums, majority, InProcessReplicaSet, ReplicaFanout, ReplicaPlacement,
 };
+#[cfg(feature = "replica-server")]
 pub use replica_set::RemoteReplicaSet;
+#[cfg(feature = "replica-server")]
 pub use server::{ReplicaNodeOptions, ReplicaNodeServer, ReplicaNodeShutdown};
-pub use wire::{RequestCode, StatusCode, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP};
+
+#[cfg(feature = "meta-server")]
+pub use directory::{ControlPlaneStatus, MetaDirectory};
+#[cfg(feature = "meta-server")]
+pub use meta_client::{MetaCallOutcome, MetaClientOptions, RemoteMetaClient};
+#[cfg(feature = "meta-server")]
+pub use meta_message::{
+    CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment, RootNodeSummary,
+};
+#[cfg(feature = "meta-server")]
+pub use meta_server::{MetaNodeOptions, MetaNodeServer, MetaNodeShutdown};
+#[cfg(feature = "meta-server")]
+pub use meta_wire::{MetaRequestCode, META_CODE_BASE};

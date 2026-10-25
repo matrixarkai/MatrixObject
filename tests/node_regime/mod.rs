@@ -34,6 +34,13 @@
 /// The environment variable a replica node carries this run's token in.
 pub const REPLICA_TOKEN_VAR: &str = "MATRIXOBJECT_REPLICA_TEST_TOKEN";
 
+/// The environment variable a metaserver node carries this run's token in.
+///
+/// A DIFFERENT VARIABLE FROM THE REPLICA'S, on purpose. A test standing both kinds up has to
+/// be able to say which process it is about to kill, and one shared variable would let a
+/// confusion between the two pass the `/proc/<pid>/environ` check that exists to catch it.
+pub const METASERVER_TOKEN_VAR: &str = "MATRIXOBJECT_METASERVER_TEST_TOKEN";
+
 /// A token unique to this run, for confirming a PID belongs to this test before killing it.
 ///
 /// Process id and a nanosecond clock. Killing by process NAME would be the easy way to end a
@@ -58,6 +65,11 @@ pub mod processes {
         pub child: Child,
         pub pid: u32,
         pub endpoint: String,
+        /// The whole startup line, so a test can assert the rest of the contract and not
+        /// only the address. These binaries print what they bound, their pid, the protocol
+        /// stamp, their bounds and what they are holding; a test that read only the port
+        /// would be trusting the other six fields it never looked at.
+        pub startup_line: String,
     }
 
     /// Reap the process when this goes out of scope, INCLUDING ON A PANIC.
@@ -116,6 +128,26 @@ pub mod processes {
         )
     }
 
+    /// Start one metaserver process on a kernel-chosen port, with `seed_data_nodes` in its
+    /// roster, and wait for it to say where.
+    ///
+    /// The seed is a bootstrap: placement needs a roster and registration is deliberately not
+    /// one of the metaserver's verbs. The seeded nodes differ from each other -- one failure
+    /// domain and one allocator shard index each -- so that a placement policy which spreads
+    /// across domains is testable rather than trivially satisfied.
+    pub fn start_metaserver(binary: &str, token: &str, seed_data_nodes: usize) -> NodeProcess {
+        let seeds = seed_data_nodes.to_string();
+        start(
+            binary,
+            &[
+                ("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_METASERVER_THREADS", "2"),
+                ("MATRIXOBJECT_METASERVER_SEED_DATA_NODES", seeds.as_str()),
+                (super::METASERVER_TOKEN_VAR, token),
+            ],
+        )
+    }
+
     /// Start a node binary with `env`, read its first line, and check the PID it printed.
     ///
     /// The startup line is a contract: these binaries print their bound address before they
@@ -159,11 +191,12 @@ pub mod processes {
             pid: child.id(),
             child,
             endpoint,
+            startup_line: line,
         }
     }
 
     /// The whitespace-delimited word that follows `key` in `line`.
-    fn field(line: &str, key: &str) -> Option<String> {
+    pub fn field(line: &str, key: &str) -> Option<String> {
         let at = line.find(key)? + key.len();
         Some(
             line[at..]

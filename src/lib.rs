@@ -310,7 +310,13 @@ pub mod net;
 /// reason [`net`] gives. What the feature gates is the listener, the client and the quorum
 /// over them; none of it costs anything until something binds a port, and the default
 /// [`cluster::ReplicaPlacement`] is the in-process arrangement this store has always had.
-#[cfg(feature = "replica-server")]
+///
+/// The module holds two halves behind two features. `replica-server` gates the data plane --
+/// a replica node, a client and the quorum fan-out over several of them -- and `meta-server`
+/// gates the control plane, a metaserver node with the roster and placement behind a socket.
+/// Either feature alone brings the module in with only its own half, which is why the gate
+/// here is `any` and the submodules carry their own.
+#[cfg(any(feature = "replica-server", feature = "meta-server"))]
 pub mod cluster;
 
 #[cfg(test)]
