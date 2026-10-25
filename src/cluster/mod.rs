@@ -39,33 +39,81 @@
 //! service that holds `replicas` and runs the historic fan-out -- is UNCHANGED by this
 //! module. It does not route through [`crate::cluster::placement::ReplicaFanout`].
 //!
-//! That is a deliberate stop, and the size of what it stops short of was measured rather than
-//! guessed. Replacing `MatrixChunkService`'s `replicas: Vec<MatrixReplicaService>` with
-//! anything that could be remote was tried, by giving the field a type with no methods and
-//! asking the compiler what broke. At the commit this module was written against, it broke
-//! in 298 places:
+//! That is a deliberate stop, and the size of what it stops short of is measured rather than
+//! guessed -- and measured by a script, `tools/replica_surface.sh`, rather than recorded by
+//! hand. The figures that used to be in this paragraph were written down once and every one
+//! of them went stale, which is what a number nothing re-derives does.
+//!
+//! The experiment: give the ELEMENT type of `MatrixChunkService.replicas` no methods and no
+//! fields, compile with every feature, and read what the compiler says is missing. As of
+//! #226:
 //!
 //! | what the compiler found | count |
 //! |---|---:|
-//! | distinct replica METHODS called through the field | 82 |
-//! | call sites for them | 198 |
-//! | distinct PRIVATE FIELDS of the replica read directly through it | 13 |
-//! | sites reading those fields | 35 |
-//! | files involved | 57 |
+//! | distinct replica METHODS the layer above calls | 127 |
+//! | sites for them | 379 |
+//! | of those, production sites | 247, in 53 files |
+//! | of those, library-suite sites | 132 |
+//! | **direct reads of a replica FIELD** | **0** |
+//! | methods with exactly one production site | 60 |
 //!
-//! The 35 direct field reads are the part that is a redesign and not a port. `replica.pages`
-//! alone is read at 12 sites: the whole chunk map, borrowed, by callers that walk it. There
-//! is no socket call behind that -- answering it over a wire means shipping the replica's
-//! entire state to its caller, which is not a remote method but a snapshot transfer with a
-//! different name. The same is true of `write_request_receipts`, `batch_write_request_receipts`
-//! and the four `physical_*` counters: each is a borrow of the replica's own bookkeeping by
-//! code that assumes it is local.
+//! The zero is the point of #226. A field read cannot cross a process boundary and a method
+//! call can, so closing the sixteen fields the layer above reached for is what turned this
+//! from a redesign into a dispatch problem.
 //!
-//! The port is therefore two pieces of work, not one: (1) turn those 35 field reads into
-//! methods, which is mechanical but has to decide for each one whether the answer is a value
-//! or a stream; (2) only then can the 82 methods go behind a dispatch. Until (1) is done,
-//! a `Vec` of something-that-might-be-remote cannot compile, so there is no half-measure
-//! available and no shim that would make one look available.
+//! # WHICH OF THE 127 HAS TO CROSS, AND HOW THAT WAS DECIDED
+//!
+//! Three rules, applied to every method:
+//!
+//! 1. it **crosses** when its answer depends on state only the node has;
+//! 2. it **folds into a batched call** when it is consulted at the same moment as others, so
+//!    that a request does not become a round trip per question;
+//! 3. it **stays local** when it hands back the node's state instead of an answer -- that is
+//!    a snapshot transfer with a different name, not a remote method.
+//!
+//! Rule 2 does most of the work, and the call it folds into already exists.
+//! `ReplicaServiceControlProof` has **76 fields**, and **25 of the 127 methods are already
+//! answered by one of them** -- `is_frozen` (18 production sites), `is_draining`,
+//! `accepting_writes`, `capacity_bytes`, the four `physical_*` counters, the `trim_flow_*`
+//! family, the read-cache counters. Those 25 methods account for **63 of the 247 production
+//! sites**, and `control_proof` already carries all of their answers in one value. So the
+//! status half of this surface is one call, not twenty-five.
+//!
+//! What that costs, said rather than hidden: `control_proof` computes its checksum from
+//! `export_snapshot()`, so it is O(state) in the pages the replica holds -- and it is the
+//! most-called method on the replica, at 29 production sites. Remotely that cost lands on the
+//! node and only a small struct crosses, which is the right side for it to land on; locally
+//! it is already paid at every one of those sites.
+//!
+//! The rest divides cleanly. **Crosses:** the data verbs and their idempotent and borrowed
+//! variants; the page-index queries (`page_count`, `page_ids`, `page_write_sequence`,
+//! `page_write_sequences`, `page_logical_length`, `holds_any_page`); the fence
+//! (`check_expected_control_checksum`, 18 sites); repair and handoff; the snapshot export and
+//! install, which are already shaped as a stream. **Crosses as a command rather than a read:**
+//! the `configure_*` and `set_*` family, which is administrative and infrequent. **Stays
+//! local:** `pages_local` and the `*_local` receipt accessors, by construction -- see
+//! `src/services/chunk/page_access.rs` for why those two whole-state traversals, the footprint
+//! audit and the batch-mutation fingerprints, need a different call rather than a wire.
+//!
+//! # TWO WAYS THIS MEASUREMENT CAN LIE, BOTH MET
+//!
+//! Recorded because both produced a confident wrong table before being caught, and the script
+//! now guards against each:
+//!
+//! * **Replacing the whole `Vec` measures the wrong thing.** It surfaces the collection's own
+//!   methods -- `iter`, `get`, `len`, `get_mut`, `clone`, `iter_mut` -- and never reaches the
+//!   element's. The first run of this experiment reported **6** distinct methods for that
+//!   reason. A collection's API is not what crosses a socket.
+//! * **A stand-in inserted above the struct steals its `#[derive]`.** Put between
+//!   `#[derive(Clone, Debug, Eq, PartialEq)]` and `pub struct MatrixChunkService`, the derive
+//!   attaches to the stand-in and `MatrixChunkService` silently loses `Clone` -- which
+//!   produced **24 cascade `clone` failures** that read exactly like a real part of the
+//!   surface. The script appends the stand-in and refuses to score if `E0119` or a
+//!   `MatrixChunkService: Clone` bound appears at all.
+//!
+//! And one way a needle lies: a method passed as a function path,
+//! `.map(MatrixReplicaService::mutation_qos_config)`, is a third spelling that "no method
+//! named" never matches. **25 sites** use it, so the script counts `E0631` as well as `E0599`.
 //!
 //! There is one more difference that no amount of mechanical work removes: a remote read
 //! takes `&mut self` because sending a request frame is a write, while the local read takes
