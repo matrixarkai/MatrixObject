@@ -143,7 +143,7 @@ impl DistributedRootReadinessSnapshot {
                 lease.expire_time_ms > now_ms
                     && root_nodes.iter().any(|node| {
                         node.node_id == lease.leader_node_id
-                            && node.service_kind == "rootserver"
+                            && is_control_plane_leader_candidate(node)
                             && node.online
                             && !node.draining
                     })

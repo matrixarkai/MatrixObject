@@ -16,10 +16,8 @@ impl MatrixMetaService {
         let node = self.nodes.get(node_id).ok_or_else(|| {
             ObjectError::NotFound("root leader candidate node missing".to_string())
         })?;
-        if node.service_kind != "rootserver" || !node.online || node.draining {
-            return Err(ObjectError::PreconditionFailed(
-                "root leader candidate is not an active rootserver".to_string(),
-            ));
+        if let Some(refusal) = control_plane_leader_refusal(node) {
+            return Err(ObjectError::PreconditionFailed(refusal));
         }
         if !is_embedded_coordinator_backend(&self.placement_coordinator_config.backend)
             && !self

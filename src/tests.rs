@@ -727,7 +727,10 @@ fn persistent_journal_replays_embedded_control_plane_bootstrap() {
             .unwrap();
         assert_eq!(bootstrap.metaserver_node.node_id, "meta-j");
         assert_eq!(bootstrap.embedded_root_node.node_id, "root-j");
-        assert_eq!(bootstrap.root_leader_lease.leader_node_id, "root-j");
+        // THE METASERVER HOLDS THE LEASE. This store has one control plane and the
+        // metaserver is it, so the lease is campaigned for the metaserver node; it used to
+        // be campaigned for the embedded root node.
+        assert_eq!(bootstrap.root_leader_lease.leader_node_id, "meta-j");
         assert!(journal_path.exists());
     }
 
@@ -742,7 +745,9 @@ fn persistent_journal_replays_embedded_control_plane_bootstrap() {
     assert_eq!(root_node.service_kind, "rootserver");
     assert!(root_node.metadata_eligible);
     let lease = reopened.root_leader_lease().unwrap();
-    assert_eq!(lease.leader_node_id, "root-j");
+    // AND IT STILL HOLDS IT AFTER A REPLAY, which is what this test is actually about: the
+    // journal record carries the bootstrap's arguments, so replay re-runs the same campaign.
+    assert_eq!(lease.leader_node_id, "meta-j");
     assert_eq!(lease.epoch, 1);
     assert_eq!(lease.expire_time_ms, 5123);
     let discovery = reopened
@@ -46628,4 +46633,129 @@ fn a_replica_behind_on_only_a_later_page_is_refused_check_in() {
         vec![0],
         "a refused check-in must leave the record in place"
     );
+}
+
+/// The control-plane leader lease belongs to the metaserver node, and still loads from a
+/// snapshot that gave it to the retired root node.
+///
+/// # WHY THIS EXISTS
+///
+/// The rule "who may hold the leader lease" was written out at five sites: the live gate
+/// `campaign_leader` and `renew_leader` share, the `leader_active` flag the raft status
+/// reports, the snapshot DECODE gate, the environment-driven catalog bootstrap, and a
+/// readiness branch. It is one function now, and this is the test of it.
+///
+/// The live gate and the decode gate disagreeing is the worst case available, because it
+/// means a store writes a snapshot it cannot read back. So this drives both: it acquires and
+/// renews a lease held by a metaserver node, and it round-trips a lease held by a `rootserver`
+/// node through the snapshot that a store written before the move would carry.
+#[test]
+fn the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_load() {
+    fn control_node(node_id: &str, service_kind: &str) -> RootNode {
+        RootNode {
+            node_id: node_id.to_string(),
+            endpoint: format!("{node_id}.local:9100"),
+            service_kind: service_kind.to_string(),
+            failure_domain: "rack-a".to_string(),
+            metadata_eligible: true,
+            data_eligible: false,
+            gateway_eligible: false,
+            metadata_value_bytes: 0,
+            capacity_bytes: 0,
+            used_bytes: 0,
+            committed_bytes: 0,
+            draining: false,
+            online: true,
+            last_heartbeat_ms: 1,
+            page_allocator_shard_index: 0,
+            page_allocator_shard_count: 1,
+            meta_health: RootMetaHealth::default(),
+            page_health: RootPageHealth::default(),
+            chunk_health: RootChunkHealth::default(),
+        }
+    }
+
+    // ---- A METASERVER NODE ACQUIRES AND RENEWS IT ----
+    let mut meta = MatrixMetaService::new();
+    meta.register_node(control_node("meta-a", "metaserver")).unwrap();
+    let acquired = meta.campaign_leader("meta-a", 5_000, 1_000).unwrap();
+    assert_eq!(acquired.leader_node_id, "meta-a");
+    assert_eq!(acquired.epoch, 1);
+    assert_eq!(acquired.expire_time_ms, 6_000);
+
+    let renewed = meta
+        .renew_leader("meta-a", acquired.epoch, 5_000, 3_000)
+        .expect("the metaserver renews the lease it holds");
+    assert_eq!(renewed.leader_node_id, "meta-a");
+    assert_eq!(renewed.epoch, acquired.epoch, "a renew does not bump the epoch");
+    assert_eq!(
+        renewed.expire_time_ms, 8_000,
+        "a renew moves the expiry out from the renewing clock"
+    );
+
+    // ---- AND THE METASERVER-HELD LEASE SURVIVES A SNAPSHOT ROUND TRIP ----
+    // THIS IS THE HALF THAT CATCHES THE WORST CASE. The live gate and the decode gate
+    // disagreeing means a store writes a snapshot it cannot read back, and a test that only
+    // round-trips the OLD holder would pass against a decode gate that still refused the new
+    // one. So the lease this store now writes is exported and installed here.
+    let written = meta.export_placement_snapshot().to_bytes().unwrap();
+    let mut reloaded = MatrixMetaService::new();
+    reloaded
+        .install_placement_snapshot_bytes(&written)
+        .expect("the lease this store writes must be one it can read back");
+    let reloaded_lease = reloaded.leader_lease().expect("the lease survived the load");
+    assert_eq!(reloaded_lease.leader_node_id, "meta-a");
+    assert_eq!(reloaded_lease.expire_time_ms, renewed.expire_time_ms);
+
+    // ---- AND THE PREDICATE IS NOT A BLANKET YES ----
+    // Without this the assertions above would pass against a gate that admitted anything.
+    //
+    // THE CLOCK HERE IS PAST THE LEASE ABOVE, deliberately. `campaign_leader` refuses a
+    // candidate two ways -- the kind rule, and "someone else already holds an unexpired
+    // lease" -- and at an earlier clock both are live, so a refusal would not say which rule
+    // did the work. A plant that removed the kind rule was still CAUGHT, because these arms
+    // assert the message TEXT rather than merely `is_err()`; but the panic then named the
+    // other fence, which is a confound worth removing rather than explaining. `meta-a`'s
+    // renewed lease expires at 8,000, so at 9,000 the only rule left that can refuse is the
+    // one under test.
+    meta.register_node(control_node("block-a", "blockserver")).unwrap();
+    let refused = meta.campaign_leader("block-a", 5_000, 9_000);
+    match refused {
+        Err(ObjectError::PreconditionFailed(message)) => assert!(
+            message.contains("must be a metaserver") && message.contains("blockserver"),
+            "the refusal should name the rule and the kind it got, and it says {message:?}"
+        ),
+        other => panic!("a blockserver must not hold the control-plane lease, got {other:?}"),
+    }
+    // A draining metaserver is refused too, and by its own clause.
+    let mut draining = control_node("meta-b", "metaserver");
+    draining.draining = true;
+    meta.register_node(draining).unwrap();
+    match meta.campaign_leader("meta-b", 5_000, 9_000) {
+        Err(ObjectError::PreconditionFailed(message)) => assert!(
+            message.contains("draining"),
+            "a draining candidate should be refused for draining, and it says {message:?}"
+        ),
+        other => panic!("a draining metaserver must not take the lease, got {other:?}"),
+    }
+
+    // ---- A SNAPSHOT THAT GAVE THE LEASE TO THE RETIRED ROOT NODE STILL LOADS ----
+    // This is the compatibility half. A store written before the lease moved carries a lease
+    // whose leader is a `rootserver` node, and the decode gate must accept it -- refusing to
+    // load an existing store is not a retirement, it is a break.
+    let mut older = MatrixMetaService::new();
+    older.register_node(control_node("root-a", "rootserver")).unwrap();
+    let old_lease = older
+        .campaign_leader("root-a", 5_000, 1_000)
+        .expect("the retired kind can still hold a lease, so an old store can be reproduced");
+    assert_eq!(old_lease.leader_node_id, "root-a");
+    let bytes = older.export_placement_snapshot().to_bytes().unwrap();
+
+    let mut restored = MatrixMetaService::new();
+    restored
+        .install_placement_snapshot_bytes(&bytes)
+        .expect("a stored lease held by the retired root node must still decode");
+    let restored_lease = restored.leader_lease().expect("the lease survived the load");
+    assert_eq!(restored_lease.leader_node_id, "root-a");
+    assert_eq!(restored_lease.epoch, old_lease.epoch);
 }

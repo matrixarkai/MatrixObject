@@ -78,10 +78,12 @@ impl RootSnapshot {
                     "root snapshot leader lease references missing node".to_string(),
                 )
             })?;
-            if node.service_kind != "rootserver" || !node.online || node.draining {
-                return Err(ObjectError::Corruption(
-                    "root snapshot leader lease references inactive rootserver".to_string(),
-                ));
+            // THE SAME PREDICATE THE LIVE GATE USES. These two disagreeing is the worst
+            // case available: it means a store writes a snapshot it cannot read back.
+            if let Some(refusal) = control_plane_leader_refusal(node) {
+                return Err(ObjectError::Corruption(format!(
+                    "a stored leader lease names a node that cannot hold one: {refusal}"
+                )));
             }
             if lease.ttl_ms > self.coordinator_config.session_ttl_ms {
                 return Err(ObjectError::Corruption(

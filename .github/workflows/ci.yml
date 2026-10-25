@@ -567,6 +567,19 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::the_folded_replica_counters_advance_every_term_they_fold did not run"; exit 1; }
 
+      # THE LEASE RULE IS ENFORCED AT FIVE SITES AND IS ONE FUNCTION NOW. The pair that
+      # matters is the live gate and the snapshot DECODE gate: those two disagreeing means a
+      # store writes a snapshot it cannot read back, so this guard round-trips both the lease
+      # this store now writes and the one an older store would carry.
+      - name: The control plane leader lease is the metaserver's and old snapshots still load
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_load -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_load did not run"; exit 1; }
+
       - name: A replica behind on only a later page is refused check-in
         run: |
           set -o pipefail

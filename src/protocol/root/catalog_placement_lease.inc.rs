@@ -67,3 +67,60 @@ impl RootLeaderLease {
     }
 }
 
+/// Whether `node` may hold this store's control-plane leader lease.
+///
+/// # WHY THIS IS ONE FUNCTION
+///
+/// The rule was written out at four sites: the live gate that `campaign_leader` and
+/// `renew_leader` share, the `leader_active` flag the raft status reports, the snapshot
+/// DECODE gate that refuses a lease whose leader is not serving, and the environment-driven
+/// catalog bootstrap. Four copies of a membership rule is three chances for the live gate and
+/// the decode gate to disagree -- and that pair disagreeing is the worst case available,
+/// because it means a store writes a snapshot it cannot read back.
+///
+/// # THE LEASE IS THE METASERVER'S NOW
+///
+/// This store has one control plane and it is the metaserver, so the metaserver node kind is
+/// where the lease belongs. It used to require the `rootserver` kind, which came from the
+/// service whose placement state was folded into the metaserver.
+///
+/// `rootserver` is still accepted, and that arm is COMPATIBILITY rather than policy: a
+/// snapshot written before this change carries a lease whose leader is a `rootserver` node,
+/// and the decode gate above would refuse to load it. Refusing to load an existing store is
+/// not a retirement, it is a break. So the old kind still passes, here, until the kind itself
+/// is gone -- and because this is one function, that removal is one line rather than four.
+pub(crate) fn is_control_plane_leader_candidate(node: &RootNode) -> bool {
+    // ORDER MATTERS FOR THE MESSAGE, NOT THE VERDICT: a caller reporting why a candidate was
+    // refused wants to know it was the kind rather than the liveness, so the two are kept
+    // separable by `control_plane_leader_refusal` below.
+    (node.service_kind == "metaserver" || node.service_kind == "rootserver")
+        && node.online
+        && !node.draining
+}
+
+/// Why `node` may not hold the leader lease, or `None` if it may.
+///
+/// Separate from the predicate so that the two callers which return an error can say which
+/// clause refused, and the two which only need a boolean do not have to format a string.
+pub(crate) fn control_plane_leader_refusal(node: &RootNode) -> Option<String> {
+    if node.service_kind != "metaserver" && node.service_kind != "rootserver" {
+        return Some(format!(
+            "a control-plane leader must be a metaserver node, and {:?} is a {:?}",
+            node.node_id, node.service_kind
+        ));
+    }
+    if !node.online {
+        return Some(format!(
+            "the control-plane leader candidate {:?} is offline",
+            node.node_id
+        ));
+    }
+    if node.draining {
+        return Some(format!(
+            "the control-plane leader candidate {:?} is draining",
+            node.node_id
+        ));
+    }
+    None
+}
+

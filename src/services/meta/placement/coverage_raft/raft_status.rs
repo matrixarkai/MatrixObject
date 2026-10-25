@@ -89,7 +89,7 @@ impl MatrixMetaService {
             .leader_lease
             .as_ref()
             .and_then(|lease| self.nodes.get(&lease.leader_node_id))
-            .is_some_and(|node| node.service_kind == "rootserver" && node.online && !node.draining);
+            .is_some_and(is_control_plane_leader_candidate);
         let gates = root_serving_gates(
             last_applied_index,
             leader_active,
