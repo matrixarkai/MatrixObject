@@ -47367,3 +47367,372 @@ fn the_root_snapshot_encoding_is_byte_for_byte_what_it_was() {
          field"
     );
 }
+
+/// A snapshot the write path refuses must be refused on the read path too, rule for rule.
+///
+/// # WHY THIS GUARD EXISTS
+///
+/// `RootSnapshot` has exactly one `to_bytes` and one `from_bytes`, and both call the same
+/// `validate`. That is the right shape -- but nothing asserted it, so deleting the call from
+/// either side left the suite green. The failure that shape prevents is the worst one
+/// available in a durable format: a store writes a snapshot it cannot read back, or accepts
+/// bytes it would never have written.
+///
+/// Each case below is refused on BOTH paths, with the SAME message. The read path is reached
+/// by encoding through `append_to_bytes`, which does not validate, so the invalid snapshot
+/// actually becomes bytes and the decoder has to be the thing that refuses it.
+///
+/// # WHY THE SITE COUNT IS PINNED AT THE BOTTOM
+///
+/// Coverage here cannot be enforced by the compiler -- a refusal is a `return Err`, not a
+/// match arm. So the number of refusal sites in `validation.rs` is read out of the source and
+/// compared with the number of cases. A new rule added without a case fails this test, which
+/// is the only way to keep this list from quietly falling behind the function it is about.
+#[test]
+fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
+    // THE BASE MUST BE VALID, or every case below would be refused for a reason that has
+    // nothing to do with what it is testing, and all fourteen would pass vacuously.
+    a_root_snapshot_that_validates()
+        .to_bytes()
+        .expect("the base fixture must validate, or the cases below prove nothing");
+
+    type Build = Box<dyn Fn() -> RootSnapshot>;
+    let cases: Vec<(&str, Build, &str)> = vec![
+        (
+            "a zero commit index",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                snapshot.next_commit_index = 0;
+                sealed(snapshot)
+            }),
+            "root snapshot next commit index is invalid",
+        ),
+        (
+            "a node whose own id disagrees with its key",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                snapshot
+                    .nodes
+                    .get_mut("block-a")
+                    .expect("base node")
+                    .node_id = "block-b".to_string();
+                sealed(snapshot)
+            }),
+            "root snapshot node is invalid",
+        ),
+        (
+            "a placement that names no node",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                let object_id = ObjectId::new("bucket", "object");
+                snapshot.placements.insert(
+                    object_id.clone(),
+                    ObjectPlacement {
+                        object_id,
+                        version: 1,
+                        length: 10,
+                        node_ids: Vec::new(),
+                        update_time_ms: 3,
+                    },
+                );
+                sealed(snapshot)
+            }),
+            "root snapshot placement is invalid",
+        ),
+        (
+            "a placement on a node that is not in the roster",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                let object_id = ObjectId::new("bucket", "object");
+                snapshot.placements.insert(
+                    object_id.clone(),
+                    ObjectPlacement {
+                        object_id,
+                        version: 1,
+                        length: 10,
+                        node_ids: vec!["ghost-node".to_string()],
+                        update_time_ms: 3,
+                    },
+                );
+                sealed(snapshot)
+            }),
+            "root snapshot placement references missing node",
+        ),
+        (
+            "placed bytes the node does not account for",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                let object_id = ObjectId::new("bucket", "object");
+                snapshot.placements.insert(
+                    object_id.clone(),
+                    ObjectPlacement {
+                        object_id,
+                        version: 1,
+                        length: 10,
+                        node_ids: vec!["block-a".to_string()],
+                        update_time_ms: 3,
+                    },
+                );
+                sealed(snapshot)
+            }),
+            "root snapshot committed bytes mismatch",
+        ),
+        (
+            "committed bytes on a node that holds nothing",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                snapshot
+                    .nodes
+                    .get_mut("block-a")
+                    .expect("base node")
+                    .committed_bytes = 10;
+                sealed(snapshot)
+            }),
+            "root snapshot node has unowned committed bytes",
+        ),
+        (
+            "a lease with no epoch",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                snapshot.leader_lease = Some(RootLeaderLease {
+                    leader_node_id: "block-a".to_string(),
+                    epoch: 0,
+                    acquire_time_ms: 1,
+                    expire_time_ms: 1_001,
+                    ttl_ms: 1_000,
+                });
+                sealed(snapshot)
+            }),
+            "root snapshot leader lease is invalid",
+        ),
+        (
+            "a lease held by a node that is not in the roster",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                snapshot.leader_lease = Some(RootLeaderLease {
+                    leader_node_id: "ghost-node".to_string(),
+                    epoch: 1,
+                    acquire_time_ms: 1,
+                    expire_time_ms: 1_001,
+                    ttl_ms: 1_000,
+                });
+                sealed(snapshot)
+            }),
+            "root snapshot leader lease references missing node",
+        ),
+        (
+            "a lease held by a node that cannot lead",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                snapshot.leader_lease = Some(RootLeaderLease {
+                    leader_node_id: "block-a".to_string(),
+                    epoch: 1,
+                    acquire_time_ms: 1,
+                    expire_time_ms: 1_001,
+                    ttl_ms: 1_000,
+                });
+                sealed(snapshot)
+            }),
+            "a stored leader lease names a node that cannot hold one",
+        ),
+        (
+            "a lease outliving the coordinator session",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                make_the_node_a_metaserver(&mut snapshot);
+                snapshot.leader_lease = Some(RootLeaderLease {
+                    leader_node_id: "block-a".to_string(),
+                    epoch: 1,
+                    acquire_time_ms: 1,
+                    expire_time_ms: 20_001,
+                    ttl_ms: 20_000,
+                });
+                sealed(snapshot)
+            }),
+            "root snapshot leader lease exceeds coordinator session ttl",
+        ),
+        (
+            "a lease on an endpoint the coordinator does not list",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                make_the_node_a_metaserver(&mut snapshot);
+                snapshot.coordinator_config.backend = "etcd".to_string();
+                snapshot.coordinator_config.endpoints = vec!["elsewhere.local:2379".to_string()];
+                snapshot.leader_lease = Some(RootLeaderLease {
+                    leader_node_id: "block-a".to_string(),
+                    epoch: 1,
+                    acquire_time_ms: 1,
+                    expire_time_ms: 1_001,
+                    ttl_ms: 1_000,
+                });
+                sealed(snapshot)
+            }),
+            "root snapshot leader lease endpoint is outside configured coordinator endpoints",
+        ),
+        (
+            "a lease receipt with no commit index",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                let mut receipt = a_lease_receipt();
+                receipt.commit_index = 0;
+                snapshot
+                    .leader_lease_receipts
+                    .insert(receipt.idempotency_key.clone(), receipt);
+                sealed(snapshot)
+            }),
+            "root snapshot leader lease receipt is invalid",
+        ),
+        (
+            "a lease receipt whose checksum is not the request it records",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                let mut receipt = a_lease_receipt();
+                receipt.request_checksum = "fnv1a64:0000000000000000".to_string();
+                snapshot
+                    .leader_lease_receipts
+                    .insert(receipt.idempotency_key.clone(), receipt);
+                sealed(snapshot)
+            }),
+            "root snapshot leader lease receipt checksum mismatch",
+        ),
+        (
+            "a checksum no accepted format produces",
+            Box::new(|| {
+                let mut snapshot = a_root_snapshot_that_validates();
+                snapshot.checksum = "fnv1a64:0000000000000000".to_string();
+                snapshot
+            }),
+            "root snapshot checksum mismatch",
+        ),
+    ];
+
+    for (label, build, expected) in &cases {
+        let snapshot = build();
+
+        let write = snapshot
+            .to_bytes()
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| panic!("the write path ACCEPTED {label}"));
+        assert!(
+            write.contains(expected),
+            "{label}: the write path refused with {write:?}, which does not name {expected:?} \
+             -- either the case stopped reaching the rule it is about, or the rule moved"
+        );
+
+        // The read path, reached by encoding WITHOUT validating, so the bytes really exist.
+        let mut bytes = Vec::new();
+        snapshot.append_to_bytes(&mut bytes);
+        let read = RootSnapshot::from_bytes(&bytes)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| {
+                panic!(
+                    "the read path ACCEPTED a snapshot the write path refuses ({label}). The \
+                     two paths no longer share a rule, which means this store can hold bytes \
+                     it would never write, and the rule only stops new writes"
+                )
+            });
+        assert_eq!(
+            write, read,
+            "{label}: the two paths refuse this for different stated reasons, so one of them \
+             is checking something the other is not"
+        );
+    }
+
+    // EVERY REFUSAL IN `validate` OWES A CASE HERE. Read out of the source, because a
+    // `return Err` is not something the compiler can make us enumerate.
+    const VALIDATION: &str = include_str!("protocol/root/root_snapshot/validation.rs");
+    let sites = VALIDATION.matches("ObjectError::Corruption").count();
+    assert_eq!(
+        cases.len(),
+        sites,
+        "validation.rs refuses a snapshot at {sites} places and this test covers {} of them; \
+         a rule that is not exercised on both paths is a rule that can be deleted from one",
+        cases.len()
+    );
+
+    // AND THE CASES ARE DISTINCT, or a duplicate would inflate the count above and let a
+    // real rule go uncovered while the total still matched.
+    let distinct: std::collections::BTreeSet<&str> =
+        cases.iter().map(|(_, _, expected)| *expected).collect();
+    assert_eq!(
+        distinct.len(),
+        cases.len(),
+        "two cases expect the same refusal, so the count above is not a coverage count"
+    );
+}
+
+fn a_root_snapshot_that_validates() -> RootSnapshot {
+    let node = RootNode {
+        node_id: "block-a".to_string(),
+        endpoint: "block-a.local:9100".to_string(),
+        service_kind: "blockserver".to_string(),
+        failure_domain: "rack-a".to_string(),
+        metadata_eligible: false,
+        data_eligible: true,
+        gateway_eligible: false,
+        metadata_value_bytes: 0,
+        capacity_bytes: 4096,
+        used_bytes: 0,
+        committed_bytes: 0,
+        draining: false,
+        online: true,
+        last_heartbeat_ms: 1,
+        page_allocator_shard_index: 0,
+        page_allocator_shard_count: 1,
+        meta_health: RootMetaHealth::default(),
+        page_health: RootPageHealth::default(),
+        chunk_health: RootChunkHealth::default(),
+    };
+    let mut nodes = BTreeMap::new();
+    nodes.insert(node.node_id.clone(), node);
+    let snapshot = RootSnapshot {
+        nodes,
+        placements: BTreeMap::new(),
+        leader_lease: None,
+        leader_lease_receipts: BTreeMap::new(),
+        coordinator_config: MetadataCoordinatorConfig::default(),
+        next_commit_index: 1,
+        checksum: String::new(),
+    };
+    sealed(snapshot)
+}
+
+/// Re-stamp the checksum after a case has changed the fields it covers, so that the rule the
+/// case is about is what fires and not the checksum rule underneath it.
+fn sealed(mut snapshot: RootSnapshot) -> RootSnapshot {
+    snapshot.checksum = snapshot.checksum_material_hash();
+    snapshot
+}
+
+/// The two lease cases that need to get PAST the can-lead fence need a node that can lead.
+fn make_the_node_a_metaserver(snapshot: &mut RootSnapshot) {
+    let node = snapshot.nodes.get_mut("block-a").expect("base node");
+    node.service_kind = "metaserver".to_string();
+    node.metadata_eligible = true;
+    node.data_eligible = false;
+}
+
+fn a_lease_receipt() -> RootLeaderLeaseReceipt {
+    let lease = RootLeaderLease {
+        leader_node_id: "block-a".to_string(),
+        epoch: 1,
+        acquire_time_ms: 1,
+        expire_time_ms: 1_001,
+        ttl_ms: 1_000,
+    };
+    RootLeaderLeaseReceipt {
+        idempotency_key: "idem-1".to_string(),
+        operation: "campaign".to_string(),
+        request_checksum: root_leader_campaign_request_checksum(
+            &lease.leader_node_id,
+            lease.ttl_ms,
+            lease.acquire_time_ms,
+        ),
+        lease,
+        commit_index: 1,
+        update_time_ms: 2,
+        receipt_proof_checksum: String::new(),
+    }
+}
