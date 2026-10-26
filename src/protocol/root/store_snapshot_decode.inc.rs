@@ -421,6 +421,31 @@ impl StoreSnapshot {
         if snapshot_version < 7 {
             snapshot.snapshot_checksum = snapshot.checksum_material_hash();
         }
+        // A STORE WRITTEN BEFORE THE METADATA SNAPSHOT CARRIED THE ROSTER. Its roster lives
+        // only in the placement snapshot, so it is folded in here, on load, rather than the
+        // store being declared unreadable. The metadata checksum is re-stamped because the
+        // bytes just read were checksummed without these fields.
+        //
+        // The condition is the metadata copy being ABSENT, not a version number: this snapshot
+        // nests two snapshots, each carrying a version of its own, and asking the nested one what it
+        // was would mean threading its version out through a decoder that does not return it.
+        if snapshot.meta_snapshot.placement_nodes.is_empty()
+            && snapshot.meta_snapshot.placements.is_empty()
+            && snapshot.meta_snapshot.placement_leader_lease.is_none()
+            && snapshot.meta_snapshot.placement_leader_lease_receipts.is_empty()
+        {
+            snapshot.meta_snapshot.placement_nodes = snapshot.root_snapshot.nodes.clone();
+            snapshot.meta_snapshot.placements = snapshot.root_snapshot.placements.clone();
+            snapshot.meta_snapshot.placement_leader_lease =
+                snapshot.root_snapshot.leader_lease.clone();
+            snapshot.meta_snapshot.placement_leader_lease_receipts =
+                snapshot.root_snapshot.leader_lease_receipts.clone();
+            snapshot.meta_snapshot.placement_coordinator_config =
+                snapshot.root_snapshot.coordinator_config.clone();
+            snapshot.meta_snapshot.placement_commit_index =
+                snapshot.root_snapshot.next_commit_index;
+            snapshot.meta_snapshot.checksum = snapshot.meta_snapshot.checksum_material_hash();
+        }
         snapshot.validate()?;
         Ok(snapshot)
     }

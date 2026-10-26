@@ -7,7 +7,7 @@ impl MetaSnapshot {
         let version = magic
             .strip_prefix("MOSRSMETA")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=17).contains(version))
+            .filter(|version| (1..=18).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("metadata snapshot byte magic mismatch".to_string())
             })?;
@@ -35,6 +35,7 @@ impl MetaSnapshot {
         // and is EQUAL to the digest a live write produces, which is what makes this
         // readable rather than a migration a deployment has to perform.
         let has_record_value_kind = version >= 17;
+        let has_placement_roster = version >= 18;
         let next_commit_index = cursor.read_u64()?;
         let next_change_sequence = cursor.read_u64()?;
         let compacted_tombstone_count = if has_tombstone_compaction_counters {
@@ -282,6 +283,30 @@ impl MetaSnapshot {
                 update_time_ms: cursor.read_u64()?,
             });
         }
+        // THE CONTROL-PLANE ROSTER, absent before version 18. An older snapshot decodes to
+        // an empty roster that still satisfies every roster rule, so it loads rather than
+        // being refused -- and because its stored checksum was computed without these bytes,
+        // the re-stamp below covers it.
+        let (placement_commit_index, placement_roster) = if has_placement_roster {
+            let commit_index = cursor.read_u64()?;
+            let roster = read_catalog_roster(
+                &mut cursor,
+                RootSnapshotDecodeFeatures::for_version(CATALOG_ROSTER_SHAPE_VERSION),
+                commit_index,
+            )?;
+            (commit_index, roster)
+        } else {
+            (
+                1,
+                CatalogRoster {
+                    nodes: BTreeMap::new(),
+                    placements: BTreeMap::new(),
+                    leader_lease: None,
+                    leader_lease_receipts: BTreeMap::new(),
+                    coordinator_config: MetadataCoordinatorConfig::default(),
+                },
+            )
+        };
         let checksum = cursor.read_string()?;
         let checksum_end = cursor.position();
         let envelope_checksum = cursor.read_string()?;
@@ -322,6 +347,12 @@ impl MetaSnapshot {
             admission_policy,
             qos_config,
             qos_state,
+            placement_nodes: placement_roster.nodes,
+            placements: placement_roster.placements,
+            placement_leader_lease: placement_roster.leader_lease,
+            placement_leader_lease_receipts: placement_roster.leader_lease_receipts,
+            placement_coordinator_config: placement_roster.coordinator_config,
+            placement_commit_index,
             checksum,
         };
         if !has_batch_request_receipts
@@ -335,6 +366,7 @@ impl MetaSnapshot {
             || !has_qos
             || !has_coordinator_config
             || !has_coordinator_config_receipts
+            || !has_placement_roster
         {
             snapshot.checksum = snapshot.checksum_material_hash();
         }
