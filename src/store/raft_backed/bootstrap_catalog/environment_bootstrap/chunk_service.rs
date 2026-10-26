@@ -6,7 +6,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
     ) -> Result<ReplicaServiceBootstrapReport, ObjectError> {
         let replica_index_u64 =
-            first_non_empty_env_u64(&MATRIX_REPLICASERVER_REPLICA_INDEX_ENV_NAMES)?.unwrap_or(0);
+            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_REPLICA_INDEX_ENV_NAMES)?.unwrap_or(0);
         let replica_index = usize::try_from(replica_index_u64).map_err(|_| {
             ObjectError::InvalidArgument(format!(
                 "chunkserver service bootstrap replica index is too large: {}",

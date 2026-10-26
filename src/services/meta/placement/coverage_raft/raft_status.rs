@@ -17,8 +17,8 @@ fn placement_serving_gates(
     leader_active: bool,
     metadata: &PlacementMetadataServiceCoverage,
     page_allocator: &PlacementPageAllocatorShardCoverage,
-    pageserver: &PlacementPageServerServiceCoverage,
-    replicaserver: &PlacementReplicaServerCoverage,
+    pageserver: &PlacementChunkServerServiceCoverage,
+    replicaserver: &PlacementChunkServerCoverage,
 ) -> PlacementServingGates {
     let metadata_read_ready = metadata.metadata_read_quorum_available
         && metadata.metadata_read_fence_quorum_available
@@ -30,8 +30,8 @@ fn placement_serving_gates(
     let metadata_write_ready = metadata_read_ready
         && metadata.metadata_write_quorum_available
         && metadata.metadata_caught_up_quorum_available;
-    let page_read_ready = pageserver.ready_pageserver_count > 0
-        && pageserver.read_ready_pageserver_count > 0
+    let page_read_ready = pageserver.ready_chunkserver_count > 0
+        && pageserver.read_ready_chunkserver_count > 0
         && pageserver.route_control_read_ready_count > 0
         && pageserver.total_read_quorum_deficit == 0;
     let page_write_ready = page_read_ready
@@ -42,8 +42,8 @@ fn placement_serving_gates(
         && replicaserver.control_read_ready_count > 0
         && replicaserver.health_unavailable_count == 0;
     let chunk_write_ready = chunk_read_ready
-        && replicaserver.writable_replicaserver_count > 0
-        && replicaserver.placement_eligible_replicaserver_count > 0
+        && replicaserver.writable_chunkserver_count > 0
+        && replicaserver.placement_eligible_chunkserver_count > 0
         && replicaserver.control_write_ready_count > 0;
     let linearizable_reads = leader_active
         && last_applied_index > 0
@@ -72,8 +72,8 @@ impl MatrixMetaService {
         let nodes: Vec<PlacementNode> = self.nodes.values().cloned().collect();
         let metadata = compute_placement_metadata_service_coverage(&nodes, metadata_replication_quorum);
         let page_allocator = self.page_allocator_shard_coverage();
-        let pageserver = self.pageserver_service_coverage();
-        let replicaserver = self.replicaserver_coverage(min_chunk_free_bytes);
+        let pageserver = self.chunkserver_service_coverage();
+        let replicaserver = self.chunkserver_coverage(min_chunk_free_bytes);
         self.raft_status_from_coverage(&metadata, &page_allocator, &pageserver, &replicaserver)
     }
 
@@ -81,8 +81,8 @@ impl MatrixMetaService {
         &self,
         metadata: &PlacementMetadataServiceCoverage,
         page_allocator: &PlacementPageAllocatorShardCoverage,
-        pageserver: &PlacementPageServerServiceCoverage,
-        replicaserver: &PlacementReplicaServerCoverage,
+        pageserver: &PlacementChunkServerServiceCoverage,
+        replicaserver: &PlacementChunkServerCoverage,
     ) -> PlacementRaftStatus {
         let last_applied_index = self.placement_commit_index.saturating_sub(1);
         let leader_active = self
@@ -178,60 +178,60 @@ impl MatrixMetaService {
             root_page_allocator_covered_shards: page_allocator.covered_shards,
             root_page_allocator_shards_complete: page_allocator.complete,
             root_page_allocator_shard_status: page_allocator.status.clone(),
-            root_ready_pageserver_count: pageserver.ready_pageserver_count,
-            root_read_ready_pageserver_count: pageserver.read_ready_pageserver_count,
-            root_pageserver_route_control_proof_count: pageserver.route_control_proof_count,
-            root_pageserver_route_control_read_ready_count: pageserver
+            root_ready_chunkserver_count: pageserver.ready_chunkserver_count,
+            root_read_ready_chunkserver_count: pageserver.read_ready_chunkserver_count,
+            root_chunkserver_route_control_proof_count: pageserver.route_control_proof_count,
+            root_chunkserver_route_control_read_ready_count: pageserver
                 .route_control_read_ready_count,
-            root_pageserver_route_control_write_ready_count: pageserver
+            root_chunkserver_route_control_write_ready_count: pageserver
                 .route_control_write_ready_count,
-            root_pageserver_route_control_proof_checksum: pageserver
+            root_chunkserver_route_control_proof_checksum: pageserver
                 .route_control_proof_checksum
                 .clone(),
-            root_pageserver_route_control_min_commit_index: pageserver
+            root_chunkserver_route_control_min_commit_index: pageserver
                 .route_control_min_commit_index,
-            root_pageserver_route_control_max_commit_index: pageserver
+            root_chunkserver_route_control_max_commit_index: pageserver
                 .route_control_max_commit_index,
-            root_pageserver_total_chunk_metadata_dirty_endpoint_count: pageserver
+            root_chunkserver_total_chunk_metadata_dirty_endpoint_count: pageserver
                 .total_chunk_metadata_dirty_endpoint_count,
-            root_pageserver_total_chunk_metadata_dirty_mutations: pageserver
+            root_chunkserver_total_chunk_metadata_dirty_mutations: pageserver
                 .total_chunk_metadata_dirty_mutations,
-            root_pageserver_max_chunk_metadata_checkpoint_interval: pageserver
+            root_chunkserver_max_chunk_metadata_checkpoint_interval: pageserver
                 .max_chunk_metadata_checkpoint_interval,
-            root_pageserver_total_deferred_metadata_checkpoint_endpoint_count: pageserver
+            root_chunkserver_total_deferred_metadata_checkpoint_endpoint_count: pageserver
                 .total_deferred_metadata_checkpoint_endpoint_count,
-            root_pageserver_total_deferred_metadata_checkpoint_requests: pageserver
+            root_chunkserver_total_deferred_metadata_checkpoint_requests: pageserver
                 .total_deferred_metadata_checkpoint_requests,
-            root_pageserver_total_deferred_metadata_checkpoint_runs: pageserver
+            root_chunkserver_total_deferred_metadata_checkpoint_runs: pageserver
                 .total_deferred_metadata_checkpoint_runs,
-            root_pageserver_total_chunk_capacity_rejected_writes: pageserver
+            root_chunkserver_total_chunk_capacity_rejected_writes: pageserver
                 .total_chunk_capacity_rejected_writes,
-            root_pageserver_total_replica_service_mode_rejected_mutations: pageserver
+            root_chunkserver_total_replica_service_mode_rejected_mutations: pageserver
                 .total_replica_service_mode_rejected_mutations,
-            root_pageserver_total_chunk_physical_write_count: pageserver
+            root_chunkserver_total_chunk_physical_write_count: pageserver
                 .total_chunk_physical_write_count,
-            root_pageserver_total_chunk_physical_write_bytes: pageserver
+            root_chunkserver_total_chunk_physical_write_bytes: pageserver
                 .total_chunk_physical_write_bytes,
-            root_pageserver_total_chunk_physical_discard_range_count: pageserver
+            root_chunkserver_total_chunk_physical_discard_range_count: pageserver
                 .total_chunk_physical_discard_range_count,
-            root_pageserver_total_chunk_physical_discard_bytes: pageserver
+            root_chunkserver_total_chunk_physical_discard_bytes: pageserver
                 .total_chunk_physical_discard_bytes,
             root_pageserver_total_reclaimable_bytes: pageserver.total_reclaimable_bytes,
             root_pageserver_total_trailing_trim_bytes: pageserver.total_trailing_trim_bytes,
             root_pageserver_total_fragmented_chunk_count: pageserver.total_fragmented_chunk_count,
             root_pageserver_total_fragmented_discarded_bytes: pageserver
                 .total_fragmented_discarded_bytes,
-            root_pageserver_total_allocation_receipt_count: pageserver
+            root_chunkserver_total_allocation_receipt_count: pageserver
                 .total_allocation_receipt_count,
-            root_pageserver_total_batch_allocation_receipt_count: pageserver
+            root_chunkserver_total_batch_allocation_receipt_count: pageserver
                 .total_batch_allocation_receipt_count,
-            root_pageserver_total_release_allocation_receipt_count: pageserver
+            root_chunkserver_total_release_allocation_receipt_count: pageserver
                 .total_release_allocation_receipt_count,
-            root_pageserver_total_write_receipt_count: pageserver.total_write_receipt_count,
-            root_pageserver_total_batch_write_receipt_count: pageserver
+            root_chunkserver_total_write_receipt_count: pageserver.total_write_receipt_count,
+            root_chunkserver_total_batch_write_receipt_count: pageserver
                 .total_batch_write_receipt_count,
-            root_pageserver_total_discard_receipt_count: pageserver.total_discard_receipt_count,
-            root_pageserver_total_batch_discard_receipt_count: pageserver
+            root_chunkserver_total_discard_receipt_count: pageserver.total_discard_receipt_count,
+            root_chunkserver_total_batch_discard_receipt_count: pageserver
                 .total_batch_discard_receipt_count,
             root_pageserver_health_ok_count: pageserver.health_ok_count,
             root_pageserver_health_degraded_count: pageserver.health_degraded_count,
@@ -239,36 +239,36 @@ impl MatrixMetaService {
             root_pageserver_health_unknown_count: pageserver.health_unknown_count,
             root_pageserver_not_fault_tolerant_count: pageserver.not_fault_tolerant_count,
             root_pageserver_total_health_reason_count: pageserver.total_health_reason_count,
-            root_pageserver_total_write_quorum: pageserver.total_write_quorum,
-            root_pageserver_total_read_quorum: pageserver.total_read_quorum,
-            root_pageserver_total_write_quorum_deficit: pageserver.total_write_quorum_deficit,
-            root_pageserver_total_read_quorum_deficit: pageserver.total_read_quorum_deficit,
-            root_pageserver_total_write_quorum_margin: pageserver.total_write_quorum_margin,
-            root_pageserver_total_read_quorum_margin: pageserver.total_read_quorum_margin,
+            root_chunkserver_total_write_quorum: pageserver.total_write_quorum,
+            root_chunkserver_total_read_quorum: pageserver.total_read_quorum,
+            root_chunkserver_total_write_quorum_deficit: pageserver.total_write_quorum_deficit,
+            root_chunkserver_total_read_quorum_deficit: pageserver.total_read_quorum_deficit,
+            root_chunkserver_total_write_quorum_margin: pageserver.total_write_quorum_margin,
+            root_chunkserver_total_read_quorum_margin: pageserver.total_read_quorum_margin,
             root_pageserver_first_health_reasons: pageserver.first_health_reasons.clone(),
-            root_pageserver_service_coverage_status: pageserver.status.clone(),
+            root_chunkserver_service_coverage_status: pageserver.status.clone(),
             root_active_replicaserver_count: replicaserver.active_replicaserver_count,
-            root_writable_replicaserver_count: replicaserver.writable_replicaserver_count,
-            root_placement_eligible_replicaserver_count: replicaserver
-                .placement_eligible_replicaserver_count,
-            root_placement_ineligible_replicaserver_count: replicaserver
-                .placement_ineligible_replicaserver_count,
-            root_replicaserver_control_proof_count: replicaserver.control_proof_count,
-            root_replicaserver_control_read_ready_count: replicaserver.control_read_ready_count,
-            root_replicaserver_control_write_ready_count: replicaserver.control_write_ready_count,
-            root_replicaserver_control_proof_checksum: replicaserver.control_proof_checksum.clone(),
-            root_replicaserver_control_min_raft_commit_index: replicaserver
+            root_writable_chunkserver_count: replicaserver.writable_chunkserver_count,
+            root_placement_eligible_chunkserver_count: replicaserver
+                .placement_eligible_chunkserver_count,
+            root_placement_ineligible_chunkserver_count: replicaserver
+                .placement_ineligible_chunkserver_count,
+            root_chunkserver_control_proof_count: replicaserver.control_proof_count,
+            root_chunkserver_control_read_ready_count: replicaserver.control_read_ready_count,
+            root_chunkserver_control_write_ready_count: replicaserver.control_write_ready_count,
+            root_chunkserver_control_proof_checksum: replicaserver.control_proof_checksum.clone(),
+            root_chunkserver_control_min_raft_commit_index: replicaserver
                 .control_min_raft_commit_index,
-            root_replicaserver_control_max_raft_commit_index: replicaserver
+            root_chunkserver_control_max_raft_commit_index: replicaserver
                 .control_max_raft_commit_index,
-            root_replicaserver_total_discarded_range_count: replicaserver.total_discarded_range_count,
+            root_chunkserver_total_discarded_range_count: replicaserver.total_discarded_range_count,
             root_replicaserver_total_reclaimable_bytes: replicaserver.total_reclaimable_bytes,
             root_replicaserver_total_trailing_trim_bytes: replicaserver.total_trailing_trim_bytes,
             root_replicaserver_total_fragmented_chunk_count: replicaserver.total_fragmented_chunk_count,
             root_replicaserver_total_fragmented_discarded_bytes: replicaserver
                 .total_fragmented_discarded_bytes,
-            root_reclaim_pressure_replicaserver_count: replicaserver.reclaim_pressure_replicaserver_count,
-            root_replicaserver_coverage_status: replicaserver.status.clone(),
+            root_reclaim_pressure_chunkserver_count: replicaserver.reclaim_pressure_chunkserver_count,
+            root_chunkserver_coverage_status: replicaserver.status.clone(),
             root_replicaserver_health_ok_count: replicaserver.health_ok_count,
             root_replicaserver_health_degraded_count: replicaserver.health_degraded_count,
             root_replicaserver_health_unavailable_count: replicaserver.health_unavailable_count,

@@ -622,10 +622,10 @@ jobs:
       - name: The pageserver coverage status leads with the route control proof
         run: |
           set -o pipefail
-          cargo test --locked --lib tests::placement_tracks_pageserver_service_coverage_for_write_routing -- --exact \
+          cargo test --locked --lib tests::placement_tracks_chunkserver_service_coverage_for_write_routing -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
-            || { echo "::error::placement_tracks_pageserver_service_coverage_for_write_routing did not run"; exit 1; }
+            || { echo "::error::placement_tracks_chunkserver_service_coverage_for_write_routing did not run"; exit 1; }
 
       - name: A health heartbeat moves the coverage status it reports
         run: |

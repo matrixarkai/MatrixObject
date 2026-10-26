@@ -2450,10 +2450,10 @@ fn render_scale_event_log(
             readiness.root_pageserver_health_unknown_count,
             readiness.root_pageserver_not_fault_tolerant_count,
             readiness.root_pageserver_total_health_reason_count,
-            readiness.root_pageserver_total_write_quorum_deficit,
-            readiness.root_pageserver_total_read_quorum_deficit,
-            readiness.root_pageserver_total_write_quorum_margin,
-            readiness.root_pageserver_total_read_quorum_margin,
+            readiness.root_chunkserver_total_write_quorum_deficit,
+            readiness.root_chunkserver_total_read_quorum_deficit,
+            readiness.root_chunkserver_total_write_quorum_margin,
+            readiness.root_chunkserver_total_read_quorum_margin,
             readiness.root_replicaserver_health_ok_count,
             readiness.root_replicaserver_health_degraded_count,
             readiness.root_replicaserver_health_unavailable_count,
@@ -2892,16 +2892,16 @@ fn benchmark_fault_tolerance(
             readiness.root_replicaserver_health_unknown_count
         ));
     }
-    if readiness.root_pageserver_total_write_quorum_deficit != 0 {
+    if readiness.root_chunkserver_total_write_quorum_deficit != 0 {
         reasons.push(format!(
             "root_blockserver_write_quorum_deficit:{}",
-            readiness.root_pageserver_total_write_quorum_deficit
+            readiness.root_chunkserver_total_write_quorum_deficit
         ));
     }
-    if readiness.root_pageserver_total_read_quorum_deficit != 0 {
+    if readiness.root_chunkserver_total_read_quorum_deficit != 0 {
         reasons.push(format!(
             "root_blockserver_read_quorum_deficit:{}",
-            readiness.root_pageserver_total_read_quorum_deficit
+            readiness.root_chunkserver_total_read_quorum_deficit
         ));
     }
     if reasons.is_empty() {
@@ -2948,9 +2948,9 @@ fn chunk_metadata_journal_metrics(
     readiness: &ObjectStoreDistributedReadiness,
 ) -> ReplicaMetadataJournalMetrics {
     let fsync_every_records = readiness
-        .root_pageserver_max_chunk_metadata_checkpoint_interval
+        .root_chunkserver_max_chunk_metadata_checkpoint_interval
         .max(1);
-    let pending_fsync_records = readiness.root_pageserver_total_chunk_metadata_dirty_mutations;
+    let pending_fsync_records = readiness.root_chunkserver_total_chunk_metadata_dirty_mutations;
     ReplicaMetadataJournalMetrics {
         fsync_every_records,
         fsync_every_bytes: 0,
@@ -2964,7 +2964,7 @@ fn chunk_metadata_journal_metrics(
     }
 }
 
-fn replicaserver_readiness_json(readiness: &ObjectStoreDistributedReadiness) -> String {
+fn chunkserver_readiness_json(readiness: &ObjectStoreDistributedReadiness) -> String {
     format!(
         concat!(
             "{{",
@@ -2982,23 +2982,23 @@ fn replicaserver_readiness_json(readiness: &ObjectStoreDistributedReadiness) -> 
             "}}"
         ),
         readiness.root_active_replicaserver_count,
-        readiness.root_writable_replicaserver_count,
-        readiness.root_placement_eligible_replicaserver_count,
-        readiness.root_placement_ineligible_replicaserver_count,
-        readiness.root_draining_replicaserver_count,
-        readiness.root_capacity_floor_blocked_replicaserver_count,
-        readiness.root_frozen_replicaserver_count,
-        readiness.root_read_only_replicaserver_count,
-        readiness.root_raft_unwritable_replicaserver_count,
-        readiness.root_replicaserver_total_reported_free_bytes,
-        readiness.root_replicaserver_min_free_bytes,
-        readiness.root_replicaserver_control_proof_count,
-        readiness.root_replicaserver_control_read_ready_count,
-        readiness.root_replicaserver_control_write_ready_count,
-        json_escape(&readiness.root_replicaserver_control_proof_checksum),
-        readiness.root_replicaserver_control_min_raft_commit_index,
-        readiness.root_replicaserver_control_max_raft_commit_index,
-        json_escape(&readiness.root_replicaserver_coverage_status),
+        readiness.root_writable_chunkserver_count,
+        readiness.root_placement_eligible_chunkserver_count,
+        readiness.root_placement_ineligible_chunkserver_count,
+        readiness.root_draining_chunkserver_count,
+        readiness.root_capacity_floor_blocked_chunkserver_count,
+        readiness.root_frozen_chunkserver_count,
+        readiness.root_read_only_chunkserver_count,
+        readiness.root_raft_unwritable_chunkserver_count,
+        readiness.root_chunkserver_total_reported_free_bytes,
+        readiness.root_chunkserver_min_free_bytes,
+        readiness.root_chunkserver_control_proof_count,
+        readiness.root_chunkserver_control_read_ready_count,
+        readiness.root_chunkserver_control_write_ready_count,
+        json_escape(&readiness.root_chunkserver_control_proof_checksum),
+        readiness.root_chunkserver_control_min_raft_commit_index,
+        readiness.root_chunkserver_control_max_raft_commit_index,
+        json_escape(&readiness.root_chunkserver_coverage_status),
         readiness.root_replicaserver_health_ok_count,
         readiness.root_replicaserver_health_degraded_count,
         readiness.root_replicaserver_health_unavailable_count,
@@ -3266,12 +3266,12 @@ fn render_scale_json_report(
         readiness.root_pageserver_health_unknown_count,
         readiness.root_pageserver_not_fault_tolerant_count,
         readiness.root_pageserver_total_health_reason_count,
-        readiness.root_pageserver_total_write_quorum,
-        readiness.root_pageserver_total_read_quorum,
-        readiness.root_pageserver_total_write_quorum_deficit,
-        readiness.root_pageserver_total_read_quorum_deficit,
-        readiness.root_pageserver_total_write_quorum_margin,
-        readiness.root_pageserver_total_read_quorum_margin,
+        readiness.root_chunkserver_total_write_quorum,
+        readiness.root_chunkserver_total_read_quorum,
+        readiness.root_chunkserver_total_write_quorum_deficit,
+        readiness.root_chunkserver_total_read_quorum_deficit,
+        readiness.root_chunkserver_total_write_quorum_margin,
+        readiness.root_chunkserver_total_read_quorum_margin,
         json_escape(&readiness.root_pageserver_first_health_reasons),
         readiness.root_replicaserver_health_ok_count,
         readiness.root_replicaserver_health_degraded_count,
@@ -3311,20 +3311,20 @@ fn render_scale_json_report(
         readiness.page.active_replicas,
         readiness.page.readable_replicas,
         readiness.page.writable_replicas,
-        readiness.root_pageserver_total_chunk_endpoint_count,
-        readiness.root_pageserver_total_writable_chunk_endpoint_count,
-        readiness.root_pageserver_total_raft_writable_chunk_endpoint_count,
-        readiness.root_pageserver_total_raft_readable_chunk_endpoint_count,
+        readiness.root_chunkserver_total_chunk_endpoint_count,
+        readiness.root_chunkserver_total_writable_chunk_endpoint_count,
+        readiness.root_chunkserver_total_raft_writable_chunk_endpoint_count,
+        readiness.root_chunkserver_total_raft_readable_chunk_endpoint_count,
         readiness.root_pageserver_health_ok_count,
         readiness.root_pageserver_health_degraded_count,
         readiness.root_pageserver_health_unavailable_count,
         readiness.root_pageserver_health_unknown_count,
         readiness.root_pageserver_not_fault_tolerant_count,
         readiness.root_pageserver_total_health_reason_count,
-        readiness.root_pageserver_total_write_quorum_deficit,
-        readiness.root_pageserver_total_read_quorum_deficit,
-        readiness.root_pageserver_total_write_quorum_margin,
-        readiness.root_pageserver_total_read_quorum_margin,
+        readiness.root_chunkserver_total_write_quorum_deficit,
+        readiness.root_chunkserver_total_read_quorum_deficit,
+        readiness.root_chunkserver_total_write_quorum_margin,
+        readiness.root_chunkserver_total_read_quorum_margin,
         readiness.root_replicaserver_health_ok_count,
         readiness.root_replicaserver_health_degraded_count,
         readiness.root_replicaserver_health_unavailable_count,
@@ -3335,7 +3335,7 @@ fn render_scale_json_report(
         readiness.metaserver_route_cache_hit_ratio_ppm,
         readiness.metaserver_route_cache_miss_ratio_ppm,
         readiness.metaserver_route_cache_remaining_capacity,
-        replicaserver_readiness_json(readiness),
+        chunkserver_readiness_json(readiness),
         readiness.chunk_count,
         readiness.page_count,
         chunk_metadata_journal.fsync_every_records,
@@ -3449,11 +3449,11 @@ fn render_scale_json_report(
         readiness.storage_partial_reclaim_bytes,
         readiness.storage_partial_reclaim_failures,
         json_escape(&readiness.storage_last_partial_reclaim_failure_status),
-        readiness.root_pageserver_total_chunk_endpoint_count,
-        readiness.root_pageserver_total_writable_chunk_endpoint_count,
-        readiness.root_pageserver_total_healthy_chunk_endpoint_count,
-        readiness.root_pageserver_total_raft_writable_chunk_endpoint_count,
-        readiness.root_pageserver_total_raft_readable_chunk_endpoint_count,
+        readiness.root_chunkserver_total_chunk_endpoint_count,
+        readiness.root_chunkserver_total_writable_chunk_endpoint_count,
+        readiness.root_chunkserver_total_healthy_chunk_endpoint_count,
+        readiness.root_chunkserver_total_raft_writable_chunk_endpoint_count,
+        readiness.root_chunkserver_total_raft_readable_chunk_endpoint_count,
         readiness.storage_page_read_parallelism,
         readiness.storage_page_write_parallelism,
         readiness.storage_page_batch_read_parallelism,
@@ -5216,27 +5216,27 @@ fn run() -> Result<(), ObjectError> {
     );
     println!(
         "root_blockserver_total_write_quorum={}",
-        readiness.root_pageserver_total_write_quorum
+        readiness.root_chunkserver_total_write_quorum
     );
     println!(
         "root_blockserver_total_read_quorum={}",
-        readiness.root_pageserver_total_read_quorum
+        readiness.root_chunkserver_total_read_quorum
     );
     println!(
         "root_blockserver_total_write_quorum_deficit={}",
-        readiness.root_pageserver_total_write_quorum_deficit
+        readiness.root_chunkserver_total_write_quorum_deficit
     );
     println!(
         "root_blockserver_total_read_quorum_deficit={}",
-        readiness.root_pageserver_total_read_quorum_deficit
+        readiness.root_chunkserver_total_read_quorum_deficit
     );
     println!(
         "root_blockserver_total_write_quorum_margin={}",
-        readiness.root_pageserver_total_write_quorum_margin
+        readiness.root_chunkserver_total_write_quorum_margin
     );
     println!(
         "root_blockserver_total_read_quorum_margin={}",
-        readiness.root_pageserver_total_read_quorum_margin
+        readiness.root_chunkserver_total_read_quorum_margin
     );
     println!(
         "root_blockserver_first_health_reasons={}",
@@ -5248,71 +5248,71 @@ fn run() -> Result<(), ObjectError> {
     );
     println!(
         "root_writable_chunkserver_count={}",
-        readiness.root_writable_replicaserver_count
+        readiness.root_writable_chunkserver_count
     );
     println!(
         "root_placement_eligible_chunkserver_count={}",
-        readiness.root_placement_eligible_replicaserver_count
+        readiness.root_placement_eligible_chunkserver_count
     );
     println!(
         "root_placement_ineligible_chunkserver_count={}",
-        readiness.root_placement_ineligible_replicaserver_count
+        readiness.root_placement_ineligible_chunkserver_count
     );
     println!(
         "root_draining_chunkserver_count={}",
-        readiness.root_draining_replicaserver_count
+        readiness.root_draining_chunkserver_count
     );
     println!(
         "root_capacity_floor_blocked_chunkserver_count={}",
-        readiness.root_capacity_floor_blocked_replicaserver_count
+        readiness.root_capacity_floor_blocked_chunkserver_count
     );
     println!(
         "root_frozen_chunkserver_count={}",
-        readiness.root_frozen_replicaserver_count
+        readiness.root_frozen_chunkserver_count
     );
     println!(
         "root_read_only_chunkserver_count={}",
-        readiness.root_read_only_replicaserver_count
+        readiness.root_read_only_chunkserver_count
     );
     println!(
         "root_raft_unwritable_chunkserver_count={}",
-        readiness.root_raft_unwritable_replicaserver_count
+        readiness.root_raft_unwritable_chunkserver_count
     );
     println!(
         "root_chunkserver_total_reported_free_bytes={}",
-        readiness.root_replicaserver_total_reported_free_bytes
+        readiness.root_chunkserver_total_reported_free_bytes
     );
     println!(
         "root_chunkserver_min_free_bytes={}",
-        readiness.root_replicaserver_min_free_bytes
+        readiness.root_chunkserver_min_free_bytes
     );
     println!(
         "root_chunkserver_control_proof_count={}",
-        readiness.root_replicaserver_control_proof_count
+        readiness.root_chunkserver_control_proof_count
     );
     println!(
         "root_chunkserver_control_read_ready_count={}",
-        readiness.root_replicaserver_control_read_ready_count
+        readiness.root_chunkserver_control_read_ready_count
     );
     println!(
         "root_chunkserver_control_write_ready_count={}",
-        readiness.root_replicaserver_control_write_ready_count
+        readiness.root_chunkserver_control_write_ready_count
     );
     println!(
         "root_chunkserver_control_proof_checksum={}",
-        readiness.root_replicaserver_control_proof_checksum
+        readiness.root_chunkserver_control_proof_checksum
     );
     println!(
         "root_chunkserver_control_min_raft_commit_index={}",
-        readiness.root_replicaserver_control_min_raft_commit_index
+        readiness.root_chunkserver_control_min_raft_commit_index
     );
     println!(
         "root_chunkserver_control_max_raft_commit_index={}",
-        readiness.root_replicaserver_control_max_raft_commit_index
+        readiness.root_chunkserver_control_max_raft_commit_index
     );
     println!(
         "root_chunkserver_coverage_status={}",
-        readiness.root_replicaserver_coverage_status
+        readiness.root_chunkserver_coverage_status
     );
     println!(
         "root_chunkserver_health_ok_count={}",
@@ -5442,23 +5442,23 @@ fn run() -> Result<(), ObjectError> {
     );
     println!(
         "root_blockserver_total_chunk_endpoint_count={}",
-        readiness.root_pageserver_total_chunk_endpoint_count
+        readiness.root_chunkserver_total_chunk_endpoint_count
     );
     println!(
         "root_blockserver_total_writable_chunk_endpoint_count={}",
-        readiness.root_pageserver_total_writable_chunk_endpoint_count
+        readiness.root_chunkserver_total_writable_chunk_endpoint_count
     );
     println!(
         "root_blockserver_total_healthy_chunk_endpoint_count={}",
-        readiness.root_pageserver_total_healthy_chunk_endpoint_count
+        readiness.root_chunkserver_total_healthy_chunk_endpoint_count
     );
     println!(
         "root_blockserver_total_raft_writable_chunk_endpoint_count={}",
-        readiness.root_pageserver_total_raft_writable_chunk_endpoint_count
+        readiness.root_chunkserver_total_raft_writable_chunk_endpoint_count
     );
     println!(
         "root_blockserver_total_raft_readable_chunk_endpoint_count={}",
-        readiness.root_pageserver_total_raft_readable_chunk_endpoint_count
+        readiness.root_chunkserver_total_raft_readable_chunk_endpoint_count
     );
     println!(
         "metaserver_route_cache_lookup_count={}",
