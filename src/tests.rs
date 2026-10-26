@@ -48649,3 +48649,155 @@ fn every_binary_the_readme_tells_a_reader_to_run_exists() {
          either a binary was renamed without the README, or the README invented one"
     );
 }
+
+/// A function named for one storage tier refuses in the name of that same tier.
+///
+/// # WHAT WAS MISSING
+///
+/// Every other guard in this tree compares a name with another NAME: a control-field key
+/// against a struct field, a workflow entry against a test, a README command against a
+/// binary. None of them asks whether a name agrees with what the code DOES, and that omission
+/// let a pure identifier rename pass the whole suite while moving sixty-seven names onto the
+/// wrong tier.
+///
+/// # IT ASSERTS THE INVARIANT, NOT EITHER VOCABULARY
+///
+/// There are two storage tiers: a chunk holds pages. Each is spelled more than one way right
+/// now -- the page tier appears as `page` and as `block`, and both appear with and without a
+/// `server` suffix -- and a rename is under way that will settle on one spelling each.
+///
+/// So this does not encode today's spellings or tomorrow's. It resolves every spelling to a
+/// TIER IDENTITY and asserts that a function's refusals carry its own identity. That holds
+/// before the rename, after it, and during it, so the guard never has to be rewritten to
+/// follow the vocabulary it protects -- and it still catches the mistake it was built for,
+/// because that rename moved names ACROSS tiers rather than within one.
+///
+/// A tier is not a process, so a tier name should not carry `server`; letting it was how a
+/// tier name drifted onto a node kind in the first place. The `server` spellings are accepted
+/// here as the tier they serve, not endorsed.
+///
+/// # WHY THE FILE LIST IS include_str! AND NOT A DIRECTORY WALK
+///
+/// Each entry pulls the file in at COMPILE time, so renaming or moving one stops this test
+/// building and forces a visit. A walk would faithfully report whatever is on disk and pass
+/// after a file moved out from under it: a guard that reads the world cannot notice the world
+/// changing, and one compiled against the world can.
+#[test]
+fn a_function_named_for_a_tier_refuses_in_the_name_of_that_tier() {
+    const SOURCES: &[(&str, &str)] = &[
+        ("store/raft_backed/bootstrap_catalog/pageserver_catalog_membership.rs", include_str!("store/raft_backed/bootstrap_catalog/pageserver_catalog_membership.rs")),
+        ("store/raft_backed/bootstrap_catalog/chunkserver_catalog_membership.rs", include_str!("store/raft_backed/bootstrap_catalog/chunkserver_catalog_membership.rs")),
+        ("store/core/raft_apply_persistence/journal_service_catalog.rs", include_str!("store/core/raft_apply_persistence/journal_service_catalog.rs")),
+        ("store/core/readiness_catalog/service_catalog_pageserver_heartbeat.rs", include_str!("store/core/readiness_catalog/service_catalog_pageserver_heartbeat.rs")),
+        ("store/core/readiness_catalog/service_catalog_chunkserver_heartbeat.rs", include_str!("store/core/readiness_catalog/service_catalog_chunkserver_heartbeat.rs")),
+        ("store/core/readiness_catalog/service_catalog_pageserver_offline.rs", include_str!("store/core/readiness_catalog/service_catalog_pageserver_offline.rs")),
+        ("store/core/readiness_catalog/service_catalog_chunkserver_offline.rs", include_str!("store/core/readiness_catalog/service_catalog_chunkserver_offline.rs")),
+        ("store/core/readiness_catalog/service_catalog_pageserver_registration.rs", include_str!("store/core/readiness_catalog/service_catalog_pageserver_registration.rs")),
+        ("store/core/readiness_catalog/service_catalog_chunkserver_registration.rs", include_str!("store/core/readiness_catalog/service_catalog_chunkserver_registration.rs")),
+        ("store/core/readiness_catalog/root_placement_discovery_control/pageserver_discovery.rs", include_str!("store/core/readiness_catalog/root_placement_discovery_control/pageserver_discovery.rs")),
+        ("store/core/readiness_catalog/root_placement_discovery_control/chunkserver_discovery.rs", include_str!("store/core/readiness_catalog/root_placement_discovery_control/chunkserver_discovery.rs")),
+    ];
+
+    /// The two store-plane tiers, by identity rather than by spelling.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+    enum Tier {
+        Chunk,
+        Page,
+    }
+
+    // ORDER MATTERS: the longer, more specific spellings are tested first, because
+    // `chunkserver` contains `chunk` and a name holding both words belongs to the one it is
+    // named FOR. `replicaserver` is the chunk tier's retired spelling; `blockserver` and
+    // `block` are the page tier's.
+    fn tier_of(text: &str) -> Option<Tier> {
+        for (needle, tier) in [
+            ("replicaserver", Tier::Chunk),
+            ("chunkserver", Tier::Chunk),
+            ("pageserver", Tier::Page),
+            ("blockserver", Tier::Page),
+            ("chunk", Tier::Chunk),
+            ("page", Tier::Page),
+            ("block", Tier::Page),
+        ] {
+            if text.contains(needle) {
+                return Some(tier);
+            }
+        }
+        None
+    }
+
+    // A refusal that opens with one of these is making a claim about a tier. `metaserver` and
+    // `rootserver` are the control plane and are deliberately absent: a control-plane refusal
+    // inside a store-plane function is a different question from this one, and folding it in
+    // would make this guard fail for a reason it cannot explain.
+    const REFUSAL_WORDS: &[&str] = &[
+        "chunkserver", "replicaserver", "pageserver", "blockserver", "chunk", "page", "block",
+    ];
+
+    let mut checked = 0usize;
+    let mut seen: std::collections::BTreeSet<Tier> = std::collections::BTreeSet::new();
+    let mut wrong: Vec<String> = Vec::new();
+
+    for (path, source) in SOURCES {
+        let mut current: Option<(String, Tier)> = None;
+        for line in source.lines() {
+            let trimmed = line.trim_start();
+            let decl = trimmed
+                .strip_prefix("pub fn ")
+                .or_else(|| trimmed.strip_prefix("pub(crate) fn "))
+                .or_else(|| trimmed.strip_prefix("fn "));
+            if let Some(rest) = decl {
+                let name = rest.split(['(', '<']).next().unwrap_or("").to_string();
+                current = tier_of(&name).map(|tier| (name, tier));
+                continue;
+            }
+            let Some((name, expected)) = current.clone() else {
+                continue;
+            };
+            for word in REFUSAL_WORDS {
+                let quoted = format!("\"{word} ");
+                if !line.contains(&quoted) {
+                    continue;
+                }
+                let Some(found) = tier_of(word) else { continue };
+                checked += 1;
+                seen.insert(expected);
+                if found != expected {
+                    wrong.push(format!(
+                        "{path}: {name} is named for the {expected:?} tier and refuses with \
+                         {quoted:?}, which is the {found:?} tier"
+                    ));
+                }
+                break; // the longest match already decided this refusal's tier
+            }
+        }
+    }
+
+    // NON-VACUITY, two ways. EIGHTEEN was counted independently of this parse before the
+    // number was written down -- twelve refusals on the page tier and six on the chunk tier,
+    // across seven of the eleven files. A parse that matched nothing, or only one tier, would
+    // pass by having nothing to disagree with, which is the failure mode this class of guard
+    // keeps hitting. Three of the eleven files contribute no refusals today and are listed
+    // anyway, because `include_str!` binds them at compile time.
+    assert!(
+        checked >= 18,
+        "only {checked} tier refusals found across {} files, so this is measuring its own \
+         parse rather than the code",
+        SOURCES.len()
+    );
+    assert_eq!(
+        seen.len(),
+        2,
+        "refusals were found for only these tiers ({seen:?}), so a mismatch between the two \
+         could not have been seen"
+    );
+
+    wrong.sort();
+    wrong.dedup();
+    assert!(
+        wrong.is_empty(),
+        "these functions are named for one tier and refuse in the name of the other, which is \
+         what a rename that moved a name without moving its meaning looks like:\n  {}",
+        wrong.join("\n  ")
+    );
+}

@@ -761,6 +761,15 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::every_binary_the_readme_tells_a_reader_to_run_exists did not run"; exit 1; }
 
+      - name: A function named for a tier refuses in the name of that tier
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_function_named_for_a_tier_refuses_in_the_name_of_that_tier -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_function_named_for_a_tier_refuses_in_the_name_of_that_tier did not run"; exit 1; }
+
       # THESE FOUR RUN A BINARY, NOT A LIBRARY. Every guard above is `--lib`, which
       # never links an integration test, so the kill test below would be COMPILED by
       # the build job and RUN by nothing -- which is the state a measurement rots in.
