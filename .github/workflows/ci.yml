@@ -576,6 +576,20 @@ jobs:
       # proximate cause and the endpoint count names the consequence. The proof leads, and
       # the reason that answer was chosen over the other is recorded at the assertions
       # themselves. Flipping the precedence fails all three -- measured, by planting it.
+      # THE RETIREMENT IS PINNED HERE. The bootstrap used to synthesise a second node of
+      # kind "rootserver"; this asserts the roster it makes is one node, the metaserver, and
+      # that journal REPLAY does not resurrect the retired one -- replay re-runs the same
+      # mutator with the recorded arguments, so a record written before the retirement must
+      # produce the post-retirement roster.
+      - name: The embedded control plane is one node and replay does not resurrect the other
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::persistent_journal_replays_embedded_control_plane_bootstrap -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::persistent_journal_replays_embedded_control_plane_bootstrap did not run"; exit 1; }
+
       - name: The coverage status leads with the control proof
         run: |
           set -o pipefail

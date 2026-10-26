@@ -726,7 +726,18 @@ fn persistent_journal_replays_embedded_control_plane_bootstrap() {
             )
             .unwrap();
         assert_eq!(bootstrap.metaserver_node.node_id, "meta-j");
-        assert_eq!(bootstrap.embedded_root_node.node_id, "root-j");
+        // NO EMBEDDED ROOT NODE. The bootstrap used to synthesise a second node of kind
+        // "rootserver" at `{metaserver}-root` and return it here. This store has one control
+        // plane and it is the metaserver, so there is one node. The id is still accepted and
+        // still journalled, so a journal written before this replays unchanged -- it names a
+        // node this build does not create.
+        assert!(
+            !bootstrap
+                .metaserver_node
+                .service_kind
+                .contains("rootserver"),
+            "the one node the bootstrap makes is the metaserver"
+        );
         // THE METASERVER HOLDS THE LEASE. This store has one control plane and the
         // metaserver is it, so the lease is campaigned for the metaserver node; it used to
         // be campaigned for the embedded root node.
@@ -741,9 +752,32 @@ fn persistent_journal_replays_embedded_control_plane_bootstrap() {
     assert!(meta_node.metadata_eligible);
     assert!(meta_node.meta_health.control_proof.read_ready);
     assert!(meta_node.meta_health.control_proof.write_ready);
-    let root_node = reopened.meta_service.nodes.get("root-j").unwrap();
-    assert_eq!(root_node.service_kind, "rootserver");
-    assert!(root_node.metadata_eligible);
+    // AND THE REPLAY DOES NOT MAKE ONE EITHER, which is the half that matters: journal
+    // replay re-runs the same mutator with the recorded arguments, so a record written before
+    // the retirement produces the post-retirement roster rather than resurrecting the node.
+    assert!(
+        reopened.meta_service.nodes.get("root-j").is_none(),
+        "replaying the bootstrap must not resurrect the retired root node"
+    );
+    assert_eq!(
+        reopened.meta_service.nodes.len(),
+        1,
+        "the embedded control plane is one node: the metaserver. Roster: {:?}",
+        reopened
+            .meta_service
+            .nodes
+            .values()
+            .map(|node| (node.node_id.as_str(), node.service_kind.as_str()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        reopened
+            .meta_service
+            .nodes
+            .values()
+            .all(|node| node.service_kind != "rootserver"),
+        "no node of the retired kind may be created by a bootstrap or its replay"
+    );
     let lease = reopened.root_leader_lease().unwrap();
     // AND IT STILL HOLDS IT AFTER A REPLAY, which is what this test is actually about: the
     // journal record carries the bootstrap's arguments, so replay re-runs the same campaign.

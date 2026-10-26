@@ -34,41 +34,29 @@ impl MatrixObjectStore {
             ));
         }
 
-        let root_node_id = embedded_root_node_id
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("{metaserver_node_id}-root"));
-        if root_node_id == metaserver_node_id {
-            return Err(ObjectError::InvalidArgument(
-                "embedded root node id must differ from metaserver node id".to_string(),
-            ));
+        // THE EMBEDDED ROOT NODE IS NOT CREATED ANY MORE. This store has one control plane
+        // and it is the metaserver; a second synthetic node of kind "rootserver" existed only
+        // because the service whose placement state was folded into the metaserver used to
+        // need one. Nothing reads it: it was never a placement candidate
+        // (`is_data_service_node` admits only chunkserver and blockserver), the metadata
+        // coverage walk skips any node that is not a metaserver, and the leader lease moved to
+        // the metaserver node in #230.
+        //
+        // The id is still validated, and still journalled, so that a journal written before
+        // this change replays unchanged -- record 34 carries this field and an old journal
+        // must still load. It names a node this build does not create.
+        if let Some(root_node_id) = embedded_root_node_id {
+            if root_node_id == metaserver_node_id {
+                return Err(ObjectError::InvalidArgument(
+                    "embedded root node id must differ from metaserver node id".to_string(),
+                ));
+            }
         }
         let rollback = if self.persistent_journal_path.is_empty() {
             None
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let embedded_root_node = RootNode {
-            node_id: root_node_id.clone(),
-            endpoint: metaserver_endpoint.to_string(),
-            service_kind: "rootserver".to_string(),
-            failure_domain: failure_domain.to_string(),
-            metadata_eligible: true,
-            data_eligible: false,
-            gateway_eligible: false,
-            metadata_value_bytes: 0,
-            capacity_bytes: 0,
-            used_bytes: 0,
-            committed_bytes: 0,
-            draining: false,
-            online: true,
-            last_heartbeat_ms: now_ms,
-            page_allocator_shard_index: 0,
-            page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
-        };
-        let embedded_root_node = self.register_root_node(embedded_root_node)?;
 
         let metadata_control_proof = self.metadata_control_proof_at(now_ms);
         let metadata_route_cache = self.metadata_route_cache_status_at(now_ms);
@@ -134,7 +122,6 @@ impl MatrixObjectStore {
 
         Ok(EmbeddedControlPlaneBootstrap {
             metaserver_node,
-            embedded_root_node,
             root_leader_lease,
             root_state_fingerprint: self.meta_service.root_state_fingerprint(),
             metadata_control_proof,

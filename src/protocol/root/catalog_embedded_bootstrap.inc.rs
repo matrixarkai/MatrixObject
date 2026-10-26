@@ -3,7 +3,6 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmbeddedControlPlaneBootstrap {
     pub metaserver_node: RootNode,
-    pub embedded_root_node: RootNode,
     pub root_leader_lease: RootLeaderLease,
     pub root_state_fingerprint: String,
     pub metadata_control_proof: MetadataControlProof,
