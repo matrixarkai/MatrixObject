@@ -698,6 +698,15 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::a_store_written_before_the_roster_had_one_home_still_loads did not run"; exit 1; }
 
+      - name: A stored lease held under the retired spelling still loads
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_stored_lease_held_under_the_retired_spelling_still_loads -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_stored_lease_held_under_the_retired_spelling_still_loads did not run"; exit 1; }
+
       # THESE FOUR RUN A BINARY, NOT A LIBRARY. Every guard above is `--lib`, which
       # never links an integration test, so the kill test below would be COMPILED by
       # the build job and RUN by nothing -- which is the state a measurement rots in.
