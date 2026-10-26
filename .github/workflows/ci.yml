@@ -581,6 +581,27 @@ jobs:
       # that journal REPLAY does not resurrect the retired one -- replay re-runs the same
       # mutator with the recorded arguments, so a record written before the retirement must
       # produce the post-retirement roster.
+      # TWO INTEGRITY GUARDS, both added because a plant showed nothing was watching. A
+      # RootSnapshot is encoded twice -- into the bytes on disk and into the material its
+      # checksum covers -- and two page-health fields were in the first and in neither of the
+      # fourteen forms of the second. Separately, dropping a format from the accepted list
+      # left the entire suite green, so the read-old-forever promise was itself unguarded.
+      - name: Every page health field the snapshot carries is covered by its checksum
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum did not run"; exit 1; }
+
+      - name: Every accepted snapshot checksum format still validates
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::every_accepted_snapshot_checksum_format_still_validates -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::every_accepted_snapshot_checksum_format_still_validates did not run"; exit 1; }
+
       - name: The embedded control plane is one node and replay does not resurrect the other
         run: |
           set -o pipefail
