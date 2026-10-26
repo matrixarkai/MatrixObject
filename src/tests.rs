@@ -33331,7 +33331,7 @@ fn metaserver_raft_snapshot_chunks_restore_followers() {
     }
     let snapshot_bytes = assembled.expect("final metadata snapshot image");
     let mut snapshot_cursor = SnapshotByteCursor::new(&snapshot_bytes);
-    assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSMETA17");
+    assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSMETA18");
     let snapshot = MetaSnapshot::from_bytes(&snapshot_bytes).unwrap();
     assert_eq!(
         snapshot.next_commit_index.saturating_sub(1),
@@ -34069,7 +34069,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSMETA-CONTROL12",
         "MOSRSMETA-FINGERPRINT1",
         "MOSRSMETA-INTEGRITY1",
-        "MOSRSMETA17",
+        "MOSRSMETA18",
         "MOSRSMODULESTATUS32",
         "MOSRSOBJECTREADY77",
         "MOSRSROOT",
@@ -35592,10 +35592,10 @@ fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_
     // narrowed it would refuse every snapshot written before this one; a build that widened it
     // too far would read a FUTURE version's field as one of its own.
     //
-    // It does NOT prove an old snapshot decodes: there is no stored snapshot fixture in this
-    // tree, for this version or for any of the sixteen before it, so a round-trip test writes
-    // and reads with the same build and both halves are wrong together. Saying so is the point
-    // -- the gap is in the fixtures, not in the reasoning.
+    // It does not itself prove an old snapshot DECODES -- it only gets as far as the magic.
+    // That used to be the end of it, because there was no stored snapshot in this tree to
+    // decode. There is one now: `a_metadata_snapshot_written_before_the_roster_still_loads`
+    // carries 453 bytes captured from the build before the roster was added.
     fn header(stamp: &str) -> Vec<u8> {
         let mut bytes = Vec::new();
         append_string(&mut bytes, stamp);
@@ -35609,33 +35609,33 @@ fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_
     }
 
     assert!(
-        !magic_rejected("MOSRSMETA17"),
+        !magic_rejected("MOSRSMETA18"),
         "the version this build writes must not be refused by its own decoder"
     );
     assert!(
-        !magic_rejected("MOSRSMETA16"),
+        !magic_rejected("MOSRSMETA17"),
         "the version before this one must still get past the magic, or this change made every \
          snapshot written before it unreadable"
     );
     assert!(
-        magic_rejected("MOSRSMETA18"),
+        magic_rejected("MOSRSMETA19"),
         "a version after this one must be refused, or a field this build does not know would be \
          read as one of its own"
     );
     assert!(magic_rejected("MOSRSMETA0"), "zero is not a version this format ever had");
     assert!(
-        magic_rejected("MOSRSMETA017"),
-        "a stamp must match the version it parses as, or `MOSRSMETA017` reads as seventeen"
+        magic_rejected("MOSRSMETA018"),
+        "a stamp must match the version it parses as, or `MOSRSMETA018` reads as eighteen"
     );
     assert!(
-        magic_rejected("MOSRSROOT17"),
+        magic_rejected("MOSRSROOT18"),
         "another format's stamp at the same version is not this format's"
     );
 
     // NOT VACUOUS. The two accepted stamps above are accepted at the MAGIC and must still fail
     // on the body, which is what says those assertions are about the version check rather than
     // about an empty snapshot being tolerated.
-    for stamp in ["MOSRSMETA17", "MOSRSMETA16"] {
+    for stamp in ["MOSRSMETA18", "MOSRSMETA17"] {
         assert!(
             MetaSnapshot::from_bytes(&header(stamp)).is_err(),
             "a header with no body is not a snapshot, whatever its version: {stamp}"
@@ -47735,4 +47735,98 @@ fn a_lease_receipt() -> RootLeaderLeaseReceipt {
         update_time_ms: 2,
         receipt_proof_checksum: String::new(),
     }
+}
+
+/// 453 bytes of a real metadata snapshot, written by the build before the roster was added.
+///
+/// # WHY A STORED FIXTURE AND NOT A ROUND TRIP
+///
+/// Every claim this project makes about reading an older store rested on a decoder that
+/// accepts an older version number. Nothing read older BYTES, because there were none in the
+/// tree -- and a round trip cannot stand in, since it writes and reads with the same build, so
+/// both halves move together and agree.
+///
+/// These bytes were captured by running the previous build's encoder on a freshly constructed
+/// service and committed as a hex literal. Nothing in the current build produced them, so if
+/// the roster read were placed at the wrong offset, or the re-stamp of an old checksum were
+/// dropped, this fails.
+#[test]
+fn a_metadata_snapshot_written_before_the_roster_still_loads() {
+    const V17: &str = "0b000000000000004d4f5352534d4554413137010000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040420f000000000040420f00000000001027000000000000000000040000000040420f000000000040420f000000000040420f000000000040420f0000000000e80300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d00000000000000656d6265646465642d7261667400000000000000001d000000000000002f6d61747269786f626a65637473746f72652f6d6574617365727665721027000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001800000000000000666e76316136343a326435653735356630383734376363611800000000000000666e76316136343a32656466613561643230626238663463";
+    let bytes: Vec<u8> = (0..V17.len() / 2)
+        .map(|i| u8::from_str_radix(&V17[i * 2..i * 2 + 2], 16).expect("hex"))
+        .collect();
+    assert_eq!(bytes.len(), 453, "the fixture is not the length it was captured at");
+
+    // THE FIXTURE IS WHAT IT CLAIMS TO BE. Without this, a fixture that had quietly become
+    // the current version would still pass everything below and prove nothing.
+    let mut cursor = SnapshotByteCursor::new(&bytes);
+    assert_eq!(
+        cursor.read_string().expect("stamp"),
+        "MOSRSMETA17",
+        "this fixture is supposed to be the version BEFORE the roster"
+    );
+
+    let snapshot = MetaSnapshot::from_bytes(&bytes)
+        .expect("a snapshot written before the roster must still load, or this change made \
+                 every existing store unreadable");
+
+    // The roster it never carried comes back empty, and valid.
+    assert!(snapshot.placement_nodes.is_empty(), "an absent roster decoded to nodes");
+    assert!(snapshot.placements.is_empty(), "an absent roster decoded to placements");
+    assert!(snapshot.placement_leader_lease.is_none(), "an absent roster decoded to a lease");
+    assert!(
+        snapshot.placement_leader_lease_receipts.is_empty(),
+        "an absent roster decoded to lease receipts"
+    );
+    assert_eq!(
+        snapshot.placement_commit_index, 1,
+        "the placement commit index has to be non-zero or the roster rules refuse the snapshot \
+         this build just read"
+    );
+    snapshot.validate().expect("the decoded snapshot must satisfy every rule, roster included");
+
+    // AND THIS BUILD DOES NOT WRITE THESE BYTES, which is what makes the fixture an older
+    // shape rather than a copy of what the current encoder happens to produce.
+    let current = MatrixMetaService::new()
+        .export_snapshot()
+        .to_bytes()
+        .expect("a fresh service exports a valid snapshot");
+    assert_ne!(
+        current, bytes,
+        "the fixture equals what this build writes, so it is no longer an older shape"
+    );
+}
+
+/// What the metadata snapshot encodes to, so that a later change to it is a decision.
+///
+/// # WHAT THIS PIN CAN AND CANNOT DO
+///
+/// Unlike the placement snapshot's pin, these numbers CANNOT be independent: this version did
+/// not exist before this change, so there is no earlier build to capture them from. They are
+/// what the encoder produces, and the job they do is narrower: a later edit that moves them
+/// has to come here and say so, rather than moving every stored snapshot silently.
+///
+/// The independent half of this is the test above, which decodes bytes this build did not
+/// write.
+///
+/// It also pins the shape the roster is written in, which is why
+/// `CATALOG_ROSTER_SHAPE_VERSION` is a constant: a later change to the placement encoder would
+/// otherwise move these bytes without touching this file.
+#[test]
+fn the_metadata_snapshot_encoding_does_not_move_without_a_decision() {
+    let bytes = MatrixMetaService::new()
+        .export_snapshot()
+        .to_bytes()
+        .expect("a fresh service exports a valid snapshot");
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in &bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    assert_eq!(bytes.len(), 575, "the metadata snapshot encoding changed length");
+    assert_eq!(
+        hash, 0x589e1821c3978baf,
+        "the metadata snapshot encoding changed content"
+    );
 }

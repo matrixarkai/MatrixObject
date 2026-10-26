@@ -28,6 +28,21 @@ pub struct MetaSnapshot {
     pub admission_policy: MetadataAdmissionPolicy,
     pub qos_config: MetadataQosConfig,
     pub qos_state: MetadataQosState,
+    // THE CONTROL-PLANE ROSTER. These six carry what the separate placement snapshot carries
+    // today, so that one control plane keeps its state in one place.
+    //
+    // `placement_coordinator_config` and `placement_commit_index` are NOT the same quantities
+    // as `coordinator_config` and `next_commit_index` above, however alike the names look.
+    // Measured: the service is constructed with two different coordinator configurations --
+    // different namespace paths -- and they are set from different call sites. Folding them
+    // into one field would be one field filled by two quantities, which this project has
+    // already paid for once.
+    pub placement_nodes: BTreeMap<String, RootNode>,
+    pub placements: BTreeMap<ObjectId, ObjectPlacement>,
+    pub placement_leader_lease: Option<RootLeaderLease>,
+    pub placement_leader_lease_receipts: BTreeMap<String, RootLeaderLeaseReceipt>,
+    pub placement_coordinator_config: MetadataCoordinatorConfig,
+    pub placement_commit_index: u64,
     pub checksum: String,
 }
 

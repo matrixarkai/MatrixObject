@@ -671,6 +671,24 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::a_rule_the_write_path_refuses_is_refused_on_the_read_path_too did not run"; exit 1; }
 
+      - name: A metadata snapshot written before the roster still loads
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_metadata_snapshot_written_before_the_roster_still_loads -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_metadata_snapshot_written_before_the_roster_still_loads did not run"; exit 1; }
+
+      - name: The metadata snapshot encoding does not move without a decision
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_metadata_snapshot_encoding_does_not_move_without_a_decision -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_metadata_snapshot_encoding_does_not_move_without_a_decision did not run"; exit 1; }
+
       # THESE FOUR RUN A BINARY, NOT A LIBRARY. Every guard above is `--lib`, which
       # never links an integration test, so the kill test below would be COMPILED by
       # the build job and RUN by nothing -- which is the state a measurement rots in.

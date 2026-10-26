@@ -4,6 +4,7 @@ include!("store_snapshot_validation/configuration.rs");
 include!("store_snapshot_validation/bucket_policies.rs");
 include!("store_snapshot_validation/raft_state.rs");
 include!("store_snapshot_validation/snapshot_checksum.rs");
+include!("store_snapshot_validation/roster_agreement.rs");
 include!("store_snapshot_validation/chunks.rs");
 include!("store_snapshot_validation/objects.rs");
 include!("store_snapshot_validation/multipart_uploads.rs");
@@ -14,6 +15,7 @@ impl StoreSnapshot {
         self.validate_configuration()?;
         self.meta_snapshot.validate()?;
         self.root_snapshot.validate()?;
+        self.validate_roster_agreement()?;
         self.validate_bucket_policies()?;
         self.validate_raft_state()?;
         self.validate_snapshot_checksum()?;

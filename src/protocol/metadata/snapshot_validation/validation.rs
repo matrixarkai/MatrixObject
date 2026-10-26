@@ -33,6 +33,15 @@ impl MetaSnapshot {
         validate_metadata_admission_policy(&self.admission_policy)?;
         validate_metadata_qos_config(&self.qos_config)?;
         validate_metadata_coordinator_config(&self.coordinator_config)?;
+        // THE SAME THIRTEEN RULES THE PLACEMENT SNAPSHOT APPLIES, called rather than restated.
+        validate_catalog_roster(
+            &self.placement_nodes,
+            &self.placements,
+            &self.placement_leader_lease,
+            &self.placement_leader_lease_receipts,
+            &self.placement_coordinator_config,
+            self.placement_commit_index,
+        )?;
         if self.checksum != self.checksum_material_hash() {
             return Err(ObjectError::Corruption(
                 "metadata snapshot checksum mismatch".to_string(),

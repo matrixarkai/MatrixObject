@@ -123,6 +123,19 @@ impl MetaSnapshot {
             append_u64(&mut material, change.deleted as u64);
             append_u64(&mut material, change.update_time_ms);
         }
+        // THE ROSTER IS CHECKSUM MATERIAL. Two durable fields that no checksum covered have
+        // already been found in this codebase once; durable state that nothing covers is
+        // state a flipped bit can change without anything noticing.
+        append_u64(&mut material, self.placement_commit_index);
+        append_catalog_roster(
+            &mut material,
+            &self.placement_nodes,
+            &self.placements,
+            &self.placement_leader_lease,
+            &self.placement_leader_lease_receipts,
+            &self.placement_coordinator_config,
+            true,
+        );
         etag(&material)
     }
 }

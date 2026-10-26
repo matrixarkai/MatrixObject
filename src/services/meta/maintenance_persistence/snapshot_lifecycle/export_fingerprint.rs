@@ -41,6 +41,16 @@ impl MatrixMetaService {
             change_checkpoints: self.change_checkpoints.clone(),
             changes: self.changes.clone(),
             next_commit_index: self.next_commit_index,
+            // THE ROSTER, FROM THE SAME SERVICE STATE THE PLACEMENT EXPORT READS. Two export
+            // functions reading one set of fields is what makes the agreement rule in
+            // `StoreSnapshot::validate` a comparison of two independently produced copies
+            // rather than a comparison of a value with itself.
+            placement_nodes: self.nodes.clone(),
+            placements: self.placements.clone(),
+            placement_leader_lease: self.leader_lease.clone(),
+            placement_leader_lease_receipts: self.leader_lease_receipts.clone(),
+            placement_coordinator_config: self.placement_coordinator_config.clone(),
+            placement_commit_index: self.placement_commit_index,
             next_change_sequence: self.next_change_sequence,
             compacted_tombstone_count: self.compacted_tombstone_count,
             last_tombstone_compaction_commit_index: self.last_tombstone_compaction_commit_index,

@@ -10,7 +10,7 @@ impl MetaSnapshot {
 
     pub(crate) fn append_to_bytes(&self, mut out: &mut Vec<u8>) {
         let snapshot_start = out.len();
-        append_string(&mut out, "MOSRSMETA17");
+        append_string(&mut out, "MOSRSMETA18");
         append_u64(&mut out, self.next_commit_index);
         append_u64(&mut out, self.next_change_sequence);
         append_u64(&mut out, self.compacted_tombstone_count);
@@ -136,6 +136,18 @@ impl MetaSnapshot {
             append_u64(&mut out, change.deleted as u64);
             append_u64(&mut out, change.update_time_ms);
         }
+        append_u64(&mut out, self.placement_commit_index);
+        append_catalog_roster(
+            &mut out,
+            &self.placement_nodes,
+            &self.placements,
+            &self.placement_leader_lease,
+            &self.placement_leader_lease_receipts,
+            &self.placement_coordinator_config,
+            // Always: this snapshot has carried the receipt proof fields from its first
+            // version, so there is no older shape of it to stay compatible with.
+            true,
+        );
         append_string(&mut out, &self.checksum);
         let envelope_checksum = etag(&out[snapshot_start..]);
         append_string(&mut out, &envelope_checksum);
