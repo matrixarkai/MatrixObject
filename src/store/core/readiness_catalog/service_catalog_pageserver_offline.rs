@@ -28,7 +28,7 @@ impl MatrixObjectStore {
             .get(node_id)
             .ok_or_else(|| ObjectError::NotFound("root node missing".to_string()))?
             .clone();
-        if existing.service_kind != "blockserver" || !existing.gateway_eligible {
+        if !existing.serves_page_tier() || !existing.data_eligible {
             return Err(ObjectError::PreconditionFailed(
                 "blockserver catalog offline heartbeat requires registered blockserver node"
                     .to_string(),

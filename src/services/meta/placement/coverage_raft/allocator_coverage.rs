@@ -11,7 +11,7 @@ impl MatrixMetaService {
         let mut duplicate_shard = false;
         let mut invalid_shard = false;
         for node in self.nodes.values() {
-            if node.service_kind != "blockserver"
+            if !node.serves_page_tier()
                 || !node.data_eligible
                 || !node.online
                 || node.draining

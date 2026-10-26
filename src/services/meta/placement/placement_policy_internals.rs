@@ -10,7 +10,7 @@ impl MatrixMetaService {
     }
 
     pub(crate) fn validate_page_allocator_shard(node: &PlacementNode) -> Result<(), ObjectError> {
-        if node.service_kind == "blockserver"
+        if node.serves_page_tier()
             && (node.page_allocator_shard_count == 0
                 || node.page_allocator_shard_index >= node.page_allocator_shard_count)
         {

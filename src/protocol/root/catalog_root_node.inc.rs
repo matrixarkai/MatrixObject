@@ -64,3 +64,25 @@ impl PlacementNode {
     }
 }
 
+
+impl PlacementNode {
+    /// WHETHER THIS NODE SERVES THE PAGE TIER.
+    ///
+    /// The body is today's kind comparison, unchanged, so introducing this changes no
+    /// behaviour. The point is that eight predicates previously spelled this question
+    /// out for themselves, which made it eight places to get wrong and eight places to
+    /// find. It is now one.
+    ///
+    /// It is deliberately NOT `gateway_eligible`, even though that flag happens to be
+    /// true for exactly the page registrations today: `gateway_eligible` means the node
+    /// can serve as an object gateway, and both of its own call sites pair it with
+    /// `service_kind == "objectstore"`. A rule gated on a label that merely correlates
+    /// is the trap this method exists to make visible rather than to repeat.
+    ///
+    /// When the store-plane kinds merge, the body of THIS function is what changes --
+    /// one line, one place -- and whether that needs a new stored field becomes a
+    /// question that can be answered by trying it.
+    pub fn serves_page_tier(&self) -> bool {
+        self.service_kind == "blockserver"
+    }
+}

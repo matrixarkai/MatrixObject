@@ -49016,3 +49016,75 @@ fn a_published_key_names_the_same_tier_as_the_field_behind_it() {
         assert!(!why.is_empty(), "{key} is listed with no reason");
     }
 }
+
+/// `serves_page_tier()` IS TRUE FOR EXACTLY THE PAGE KIND, AND FOR NOTHING ELSE.
+///
+/// This pins the body of the one function that eight predicates now delegate to. It is
+/// the behaviour they had individually, so it is also the thing a later change to the
+/// rule has to move on purpose rather than by accident.
+#[test]
+fn serves_page_tier_is_true_for_exactly_the_page_kind() {
+    let mut node = placement_node("page-1", "domain-a", 1 << 20);
+
+    node.service_kind = "blockserver".to_string();
+    assert!(
+        node.serves_page_tier(),
+        "the page kind must serve the page tier"
+    );
+
+    // NON-VACUITY: a body of `true` would satisfy the assertion above, so every other
+    // kind this store registers is checked to be excluded.
+    for other in ["chunkserver", "metaserver", "objectstore", "rootserver", ""] {
+        node.service_kind = other.to_string();
+        assert!(
+            !node.serves_page_tier(),
+            "`{other}` is not the page tier, but serves_page_tier() said it was"
+        );
+    }
+}
+
+/// THE PAGE OFFLINE PRECONDITION GATES ON THE SAME FLAG AS ITS CHUNK SIBLING.
+///
+/// The two catalog offline heartbeat handlers do the same job for their two tiers, and
+/// they disagreed: the chunk one required `data_eligible`, the page one required
+/// `gateway_eligible`. `gateway_eligible` means the node can serve as an object
+/// gateway -- both of that flag's own predicates pair it with
+/// `service_kind == "objectstore"` -- and it was true for page registrations only by
+/// coincidence of how they are registered. The page handler goes on to fence allocator
+/// shards and compute page storage readiness, which is data-plane work, so
+/// `data_eligible` is the flag its call site actually needs.
+///
+/// Asserting the agreement rather than the spelling is what stops the two drifting
+/// apart again, in either direction.
+#[test]
+fn the_page_offline_precondition_gates_on_the_same_flag_as_its_chunk_sibling() {
+    const PAGE: &str = include_str!("store/core/readiness_catalog/service_catalog_pageserver_offline.rs");
+    const CHUNK: &str = include_str!("store/core/readiness_catalog/service_catalog_chunkserver_offline.rs");
+
+    // NON-VACUITY: an empty or renamed file would make every check below pass.
+    assert!(PAGE.len() > 500, "the page offline source did not load");
+    assert!(CHUNK.len() > 500, "the chunk offline source did not load");
+    assert!(
+        PAGE.contains("offline heartbeat"),
+        "the page offline source no longer looks like an offline handler"
+    );
+    assert!(
+        CHUNK.contains("offline heartbeat"),
+        "the chunk offline source no longer looks like an offline handler"
+    );
+
+    assert!(
+        CHUNK.contains("!existing.data_eligible"),
+        "the chunk offline handler no longer gates on data_eligible, so this guard is \
+         comparing against the wrong sibling"
+    );
+    assert!(
+        PAGE.contains("!existing.data_eligible"),
+        "the page offline handler must gate on data_eligible, like its chunk sibling"
+    );
+    assert!(
+        !PAGE.contains("gateway_eligible"),
+        "the page offline handler is gating on gateway_eligible again; that flag means \
+         object-gateway capability and only correlates with the page tier by accident"
+    );
+}
