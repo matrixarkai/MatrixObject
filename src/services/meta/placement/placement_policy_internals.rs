@@ -43,7 +43,7 @@ impl MatrixMetaService {
     }
 
     fn validate_active_page_allocator_conflict(&self, node: &PlacementNode) -> Result<(), ObjectError> {
-        if node.service_kind != "blockserver"
+        if !node.serves_page_tier()
             || !node.data_eligible
             || !node.online
             || node.draining
@@ -53,7 +53,7 @@ impl MatrixMetaService {
         Self::validate_page_allocator_shard(node)?;
         for existing in self.nodes.values() {
             if existing.node_id == node.node_id
-                || existing.service_kind != "blockserver"
+                || !existing.serves_page_tier()
                 || !existing.data_eligible
                 || !existing.online
                 || existing.draining
