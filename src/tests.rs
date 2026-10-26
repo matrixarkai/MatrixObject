@@ -49210,3 +49210,71 @@ fn the_route_reader_accepts_the_old_form_and_the_binding_form() {
         "an unset expected checksum must be refused, not treated as a match"
     );
 }
+
+/// WHAT A REGISTRATION PUBLISHES IS THE BINDING FORM, AND SAYS SO.
+///
+/// The writer switch moved two published values -- the route checksum and the format
+/// naming it -- and the suite did not move, because nothing pinned either one. An
+/// unpinned published value can change under a reader without anything failing, which
+/// is how a migration ends up half-applied. This pins both.
+///
+/// It also pins the thing that makes the switch safe rather than merely different: the
+/// published value is the binding form, the legacy kind-derived form is still
+/// COMPUTABLE for verification, and the two differ.
+#[test]
+fn a_registration_publishes_the_binding_form_and_names_it() {
+    let node = placement_node("emit-node-1", "domain-c", 1 << 20);
+    let source = "embedded";
+    let endpoint = "catalog.matrix.local:9332";
+    let count = 4u64;
+
+    let fields = catalog_registration_fields(
+        "chunkserver",
+        CATALOG_CHUNK_ROUTE_DISCRIMINATOR,
+        &node,
+        source,
+        endpoint,
+        count,
+    );
+
+    // NON-VACUITY: an empty map would satisfy nothing below until this is checked.
+    assert!(
+        fields.len() >= 8,
+        "the registration published only {} fields, so the assertions below prove little",
+        fields.len()
+    );
+
+    // The published kind is still the NODE KIND -- this is the half of the split that a
+    // value swap would have broken, by reporting a discriminator as a service kind.
+    assert_eq!(
+        fields.get("service_kind").map(String::as_str),
+        Some("chunkserver"),
+        "the published service_kind must remain the node kind, not the discriminator"
+    );
+
+    assert_eq!(
+        fields.get("catalog_route_checksum_format").map(String::as_str),
+        Some(CATALOG_ROUTE_BINDING_CHECKSUM_FORMAT),
+        "a registration must name the format it actually emitted"
+    );
+
+    let emitted = fields
+        .get("catalog_route_checksum")
+        .expect("a registration must publish a route checksum");
+    let binding =
+        catalog_route_binding_checksum(CATALOG_CHUNK_ROUTE_DISCRIMINATOR, &node, source, endpoint, count);
+    let legacy = catalog_route_checksum("chunkserver", &node, source, endpoint, count);
+
+    assert!(!emitted.is_empty(), "the emitted route checksum is empty");
+    assert!(!binding.is_empty(), "the binding checksum is empty");
+    assert!(!legacy.is_empty(), "the legacy checksum is empty");
+
+    assert_eq!(
+        emitted, &binding,
+        "what the registration published is not the binding form"
+    );
+    assert_ne!(
+        emitted, &legacy,
+        "the emitted form equals the retired kind-derived form, so the switch did nothing"
+    );
+}
