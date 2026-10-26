@@ -35,12 +35,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let mut proof = PlacementReadProof {
             proof_format: "MOS-RUST-ROOT-READ-PROOF2".to_string(),
             operation: operation.to_string(),
-            requested_root_read_index: requested_index,
-            requested_root_commit_index: requested_index.max(min_commit_index),
-            root_applied_index: applied_index,
-            root_read_index_lag: requested_index.saturating_sub(applied_index),
-            root_raft_term: self.raft.term(),
-            root_state_fingerprint: self.store.meta_service.root_state_fingerprint(),
+            requested_placement_read_index: requested_index,
+            requested_placement_commit_index: requested_index.max(min_commit_index),
+            placement_applied_index: applied_index,
+            placement_read_index_lag: requested_index.saturating_sub(applied_index),
+            placement_raft_term: self.raft.term(),
+            placement_state_fingerprint: self.store.meta_service.placement_state_fingerprint(),
             proof_checksum: String::new(),
         };
         proof.proof_checksum = root_read_proof_checksum(&proof);

@@ -158,11 +158,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             Vec::with_capacity(encoded_string_len("MXOS-RUST-ROOT-SNAPSHOT-READ-PROOFS1"));
         append_string(&mut material, "MXOS-RUST-ROOT-SNAPSHOT-READ-PROOFS1");
         let mut operation = String::new();
-        let mut requested_root_read_index = 0;
-        let mut requested_root_commit_index = 0;
-        let mut root_applied_index = 0;
-        let mut root_raft_term = 0;
-        let mut root_state_fingerprint = String::new();
+        let mut requested_placement_read_index = 0;
+        let mut requested_placement_commit_index = 0;
+        let mut placement_applied_index = 0;
+        let mut placement_raft_term = 0;
+        let mut placement_state_fingerprint = String::new();
         let mut full_snapshot_checksum = String::new();
         let mut total_payload_bytes = 0u64;
         let mut first_offset = 0u64;
@@ -172,10 +172,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
             |proven| {
-                if proven.proof.root_read_index_lag != 0 {
+                if proven.proof.placement_read_index_lag != 0 {
                     return Err(ObjectError::PreconditionFailed(format!(
                         "root snapshot proof has read lag {}",
-                        proven.proof.root_read_index_lag
+                        proven.proof.placement_read_index_lag
                     )));
                 }
                 if proven.proof.proof_checksum != root_read_proof_checksum(&proven.proof) {
@@ -185,11 +185,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 }
                 if pages.is_empty() {
                     operation = proven.proof.operation.clone();
-                    requested_root_read_index = proven.proof.requested_root_read_index;
-                    requested_root_commit_index = proven.proof.requested_root_commit_index;
-                    root_applied_index = proven.proof.root_applied_index;
-                    root_raft_term = proven.proof.root_raft_term;
-                    root_state_fingerprint = proven.proof.root_state_fingerprint.clone();
+                    requested_placement_read_index = proven.proof.requested_placement_read_index;
+                    requested_placement_commit_index = proven.proof.requested_placement_commit_index;
+                    placement_applied_index = proven.proof.placement_applied_index;
+                    placement_raft_term = proven.proof.placement_raft_term;
+                    placement_state_fingerprint = proven.proof.placement_state_fingerprint.clone();
                     full_snapshot_checksum = proven.value.full_checksum.clone();
                     first_offset = proven.value.offset;
                     pages.reserve(snapshot_chunk_vec_capacity(
@@ -201,11 +201,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         max_payload_bytes,
                     ));
                 } else if operation != proven.proof.operation
-                    || requested_root_read_index != proven.proof.requested_root_read_index
-                    || requested_root_commit_index != proven.proof.requested_root_commit_index
-                    || root_applied_index != proven.proof.root_applied_index
-                    || root_raft_term != proven.proof.root_raft_term
-                    || root_state_fingerprint != proven.proof.root_state_fingerprint
+                    || requested_placement_read_index != proven.proof.requested_placement_read_index
+                    || requested_placement_commit_index != proven.proof.requested_placement_commit_index
+                    || placement_applied_index != proven.proof.placement_applied_index
+                    || placement_raft_term != proven.proof.placement_raft_term
+                    || placement_state_fingerprint != proven.proof.placement_state_fingerprint
                     || full_snapshot_checksum != proven.value.full_checksum
                 {
                     return Err(ObjectError::PreconditionFailed(
@@ -235,11 +235,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             material,
             pages.len() as u64,
             operation,
-            requested_root_read_index,
-            requested_root_commit_index,
-            root_applied_index,
-            root_raft_term,
-            root_state_fingerprint,
+            requested_placement_read_index,
+            requested_placement_commit_index,
+            placement_applied_index,
+            placement_raft_term,
+            placement_state_fingerprint,
             total_payload_bytes,
             first_offset,
             last_end_offset,
@@ -262,11 +262,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             Vec::with_capacity(encoded_string_len("MXOS-RUST-ROOT-SNAPSHOT-READ-PROOFS1"));
         append_string(&mut material, "MXOS-RUST-ROOT-SNAPSHOT-READ-PROOFS1");
         let mut operation = String::new();
-        let mut requested_root_read_index = 0;
-        let mut requested_root_commit_index = 0;
-        let mut root_applied_index = 0;
-        let mut root_raft_term = 0;
-        let mut root_state_fingerprint = String::new();
+        let mut requested_placement_read_index = 0;
+        let mut requested_placement_commit_index = 0;
+        let mut placement_applied_index = 0;
+        let mut placement_raft_term = 0;
+        let mut placement_state_fingerprint = String::new();
         let mut full_snapshot_checksum = String::new();
         let mut total_payload_bytes = 0u64;
         let mut first_offset = 0u64;
@@ -275,10 +275,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let mut assembler = PlacementSnapshotChunkAssembler::default();
         let mut assembled_snapshot = None;
         for proven in pages {
-            if proven.proof.root_read_index_lag != 0 {
+            if proven.proof.placement_read_index_lag != 0 {
                 return Err(ObjectError::PreconditionFailed(format!(
                     "root snapshot proof has read lag {}",
-                    proven.proof.root_read_index_lag
+                    proven.proof.placement_read_index_lag
                 )));
             }
             if proven.proof.proof_checksum != root_read_proof_checksum(&proven.proof) {
@@ -288,11 +288,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             }
             if proof_count == 0 {
                 operation = proven.proof.operation.clone();
-                requested_root_read_index = proven.proof.requested_root_read_index;
-                requested_root_commit_index = proven.proof.requested_root_commit_index;
-                root_applied_index = proven.proof.root_applied_index;
-                root_raft_term = proven.proof.root_raft_term;
-                root_state_fingerprint = proven.proof.root_state_fingerprint.clone();
+                requested_placement_read_index = proven.proof.requested_placement_read_index;
+                requested_placement_commit_index = proven.proof.requested_placement_commit_index;
+                placement_applied_index = proven.proof.placement_applied_index;
+                placement_raft_term = proven.proof.placement_raft_term;
+                placement_state_fingerprint = proven.proof.placement_state_fingerprint.clone();
                 full_snapshot_checksum = proven.value.full_checksum.clone();
                 first_offset = proven.value.offset;
                 material.reserve(placement_snapshot_proof_material_capacity(
@@ -300,11 +300,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     proven.value.payload.len().max(1),
                 ));
             } else if operation != proven.proof.operation
-                || requested_root_read_index != proven.proof.requested_root_read_index
-                || requested_root_commit_index != proven.proof.requested_root_commit_index
-                || root_applied_index != proven.proof.root_applied_index
-                || root_raft_term != proven.proof.root_raft_term
-                || root_state_fingerprint != proven.proof.root_state_fingerprint
+                || requested_placement_read_index != proven.proof.requested_placement_read_index
+                || requested_placement_commit_index != proven.proof.requested_placement_commit_index
+                || placement_applied_index != proven.proof.placement_applied_index
+                || placement_raft_term != proven.proof.placement_raft_term
+                || placement_state_fingerprint != proven.proof.placement_state_fingerprint
                 || full_snapshot_checksum != proven.value.full_checksum
             {
                 return Err(ObjectError::PreconditionFailed(
@@ -345,11 +345,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             material,
             proof_count,
             operation,
-            requested_root_read_index,
-            requested_root_commit_index,
-            root_applied_index,
-            root_raft_term,
-            root_state_fingerprint,
+            requested_placement_read_index,
+            requested_placement_commit_index,
+            placement_applied_index,
+            placement_raft_term,
+            placement_state_fingerprint,
             total_payload_bytes,
             first_offset,
             last_end_offset,
@@ -371,8 +371,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             snapshot_bytes,
             snapshot_bytes,
             snapshot_checksum,
-            root_applied_index,
-            root_raft_term,
+            placement_applied_index,
+            placement_raft_term,
         ))
     }
 

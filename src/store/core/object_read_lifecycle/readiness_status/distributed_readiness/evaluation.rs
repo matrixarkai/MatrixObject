@@ -5,7 +5,7 @@ struct DistributedReadinessEvaluation<'a> {
     metadata_replication_ready: bool,
     metadata_ready: bool,
     page_ready: bool,
-    root_leader_ready: bool,
+    placement_leader_ready: bool,
     root_metadata_coverage: &'a PlacementMetadataServiceCoverage,
     root_metadata_external_coordinator_required: bool,
     root_metadata_external_coordinator_endpoints_ready: bool,
@@ -20,8 +20,8 @@ struct DistributedReadinessEvaluation<'a> {
     root_replicaserver_coverage: &'a PlacementReplicaServerCoverage,
     root_replicaserver_ready: bool,
     root_replicaserver_control_ready: bool,
-    rootserver_required: bool,
-    root_ready: bool,
+    placement_required: bool,
+    placement_ready: bool,
     root_leader_node_id: &'a str,
     placement_degraded_objects: u64,
 }
@@ -36,7 +36,7 @@ impl DistributedReadinessEvaluation<'_> {
             "metadata_not_ready"
         } else if !self.page_ready {
             "block_not_ready"
-        } else if !self.root_leader_ready {
+        } else if !self.placement_leader_ready {
             "root_leader_not_ready"
         } else if self.root_metadata_coverage.active_metaserver_count > 0
             && (!self.root_metadata_coverage.metadata_read_quorum_available
@@ -149,15 +149,15 @@ impl DistributedReadinessEvaluation<'_> {
     }
 
     fn root_status(&self, reason: &str) -> String {
-        let status = if !self.rootserver_required && self.root_ready {
+        let status = if !self.placement_required && self.placement_ready {
             if self.root_leader_node_id.is_empty() {
                 "disabled"
             } else {
                 "embedded"
             }
-        } else if self.root_ready {
+        } else if self.placement_ready {
             "ready"
-        } else if !self.root_leader_ready {
+        } else if !self.placement_leader_ready {
             "leader_unavailable"
         } else if self.placement_degraded_objects != 0 {
             "placement_degraded"

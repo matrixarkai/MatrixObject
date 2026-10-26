@@ -42,7 +42,7 @@ impl MatrixMetaService {
                 "root prepared capacity rebalance request checksum mismatch".to_string(),
             ));
         }
-        if prepared.before_state_fingerprint != self.root_state_fingerprint() {
+        if prepared.before_state_fingerprint != self.placement_state_fingerprint() {
             return Err(ObjectError::PreconditionFailed(
                 "root prepared capacity rebalance state changed before apply".to_string(),
             ));

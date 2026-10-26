@@ -17,7 +17,7 @@ pub(crate) fn objectstore_module_catalog_route_checksum(
         &mut material,
         status.rootserver_catalog_endpoint_configured as u64,
     );
-    append_u64(&mut material, status.rootserver_required as u64);
+    append_u64(&mut material, status.placement_required as u64);
     etag(&material)
 }
 

@@ -6,7 +6,7 @@ fn populate_placement_module_status(
 ) {
     status.root_active_pageserver_count = readiness.root_active_pageserver_count;
     status.root_active_replicaserver_count = readiness.root_active_replicaserver_count;
-    status.root_active_metaserver_count = readiness.root_active_metaserver_count;
+    status.placement_active_metaserver_count = readiness.placement_active_metaserver_count;
     status.root_page_allocator_shard_count = readiness.root_page_allocator_shard_count;
     status.root_page_allocator_covered_shards = readiness.root_page_allocator_covered_shards;
     status.root_page_allocator_shards_complete = readiness.root_page_allocator_shards_complete;
@@ -117,83 +117,83 @@ fn populate_placement_module_status(
     status.root_replicaserver_first_health_reasons =
         readiness.root_replicaserver_first_health_reasons.clone();
     status.root_node_count = readiness.root_node_count;
-    status.root_expected_nodes = readiness.root_expected_nodes;
+    status.placement_expected_nodes = readiness.placement_expected_nodes;
     status.root_leader_node_id = readiness.root_leader_node_id.clone();
     status.root_lease_epoch = readiness.root_lease_epoch;
     status.root_lease_expire_time_ms = readiness.root_lease_expire_time_ms;
-    status.root_read_ready = readiness.root_read_ready;
-    status.root_metadata_read_ready = readiness.root_metadata_read_ready;
-    status.root_metadata_write_ready = readiness.root_metadata_write_ready;
+    status.placement_read_ready = readiness.placement_read_ready;
+    status.placement_metadata_read_ready = readiness.placement_metadata_read_ready;
+    status.placement_metadata_write_ready = readiness.placement_metadata_write_ready;
     status.root_pageserver_read_ready = readiness.root_pageserver_read_ready;
     status.root_pageserver_write_ready = readiness.root_pageserver_write_ready;
     status.root_replicaserver_read_ready = readiness.root_replicaserver_read_ready;
     status.root_replicaserver_write_ready = readiness.root_replicaserver_write_ready;
-    status.root_readiness_gate_read_ready = readiness.root_readiness_gate_read_ready;
-    status.root_readiness_gate_write_ready = readiness.root_readiness_gate_write_ready;
+    status.placement_readiness_gate_read_ready = readiness.placement_readiness_gate_read_ready;
+    status.placement_readiness_gate_write_ready = readiness.placement_readiness_gate_write_ready;
     status.root_service_health = readiness.root_service_health.clone();
-    status.root_service_health_reason_count = readiness.root_service_health_reason_count;
-    status.root_service_health_reasons = readiness.root_service_health_reasons.clone();
-    status.root_service_fault_tolerant = readiness.root_service_fault_tolerant;
-    status.root_snapshot_fault_count = readiness.root_snapshot_fault_count;
-    status.root_metadata_status_available = readiness.root_metadata_status_available;
+    status.placement_service_health_reason_count = readiness.placement_service_health_reason_count;
+    status.placement_service_health_reasons = readiness.placement_service_health_reasons.clone();
+    status.placement_service_fault_tolerant = readiness.placement_service_fault_tolerant;
+    status.placement_snapshot_fault_count = readiness.placement_snapshot_fault_count;
+    status.placement_metadata_status_available = readiness.placement_metadata_status_available;
     status.root_metadata_value_bytes = readiness.root_metadata_value_bytes;
-    status.root_metadata_readable_metaserver_count =
-        readiness.root_metadata_readable_metaserver_count;
-    status.root_metadata_writable_metaserver_count =
-        readiness.root_metadata_writable_metaserver_count;
-    status.root_metadata_caught_up_metaserver_count =
-        readiness.root_metadata_caught_up_metaserver_count;
-    status.root_metadata_apply_caught_up_metaserver_count =
-        readiness.root_metadata_apply_caught_up_metaserver_count;
-    status.root_metadata_control_apply_caught_up_metaserver_count =
-        readiness.root_metadata_control_apply_caught_up_metaserver_count;
-    status.root_metadata_read_fence_covered_metaserver_count =
-        readiness.root_metadata_read_fence_covered_metaserver_count;
-    status.root_metadata_quorum = readiness.root_metadata_quorum;
-    status.root_metadata_read_quorum_available = readiness.root_metadata_read_quorum_available;
-    status.root_metadata_write_quorum_available = readiness.root_metadata_write_quorum_available;
-    status.root_metadata_caught_up_quorum_available =
-        readiness.root_metadata_caught_up_quorum_available;
-    status.root_metadata_apply_quorum_available = readiness.root_metadata_apply_quorum_available;
-    status.root_metadata_read_fence_quorum_available =
-        readiness.root_metadata_read_fence_quorum_available;
-    status.root_metadata_control_apply_quorum_available =
-        readiness.root_metadata_control_apply_quorum_available;
-    status.root_metadata_min_last_applied_mutation_commit_index =
-        readiness.root_metadata_min_last_applied_mutation_commit_index;
-    status.root_metadata_max_apply_commit_lag = readiness.root_metadata_max_apply_commit_lag;
-    status.root_metadata_min_safe_read_fence = readiness.root_metadata_min_safe_read_fence;
-    status.root_metadata_max_read_fence_commit_lag =
-        readiness.root_metadata_max_read_fence_commit_lag;
-    status.root_metadata_max_read_fence_read_index_lag =
-        readiness.root_metadata_max_read_fence_read_index_lag;
-    status.root_metadata_max_read_fence_applied_lag =
-        readiness.root_metadata_max_read_fence_applied_lag;
-    status.root_metadata_control_min_last_applied_mutation_commit_index =
-        readiness.root_metadata_control_min_last_applied_mutation_commit_index;
-    status.root_metadata_shard_topology_mismatch = readiness.root_metadata_shard_topology_mismatch;
-    status.root_metadata_coordinator_backend_mismatch =
-        readiness.root_metadata_coordinator_backend_mismatch;
-    status.root_metadata_coordinator_config_mismatch =
-        readiness.root_metadata_coordinator_config_mismatch;
-    status.root_metadata_max_shard_topology_epoch =
-        readiness.root_metadata_max_shard_topology_epoch;
-    status.root_metadata_coverage_status = readiness.root_metadata_coverage_status.clone();
-    status.root_metadata_control_proof_count = readiness.root_metadata_control_proof_count;
-    status.root_metadata_control_read_ready_count =
-        readiness.root_metadata_control_read_ready_count;
-    status.root_metadata_control_write_ready_count =
-        readiness.root_metadata_control_write_ready_count;
-    status.root_metadata_external_coordinator_required_metaserver_count =
-        readiness.root_metadata_external_coordinator_required_metaserver_count;
-    status.root_metadata_external_coordinator_endpoints_ready_metaserver_count =
-        readiness.root_metadata_external_coordinator_endpoints_ready_metaserver_count;
-    status.root_metadata_external_coordinator_owner_sessions_ready_metaserver_count =
-        readiness.root_metadata_external_coordinator_owner_sessions_ready_metaserver_count;
-    status.root_metadata_external_coordinator_ready_metaserver_count =
-        readiness.root_metadata_external_coordinator_ready_metaserver_count;
-    status.root_metadata_control_proof_checksum =
-        readiness.root_metadata_control_proof_checksum.clone();
+    status.placement_metadata_readable_metaserver_count =
+        readiness.placement_metadata_readable_metaserver_count;
+    status.placement_metadata_writable_metaserver_count =
+        readiness.placement_metadata_writable_metaserver_count;
+    status.placement_metadata_caught_up_metaserver_count =
+        readiness.placement_metadata_caught_up_metaserver_count;
+    status.placement_metadata_apply_caught_up_metaserver_count =
+        readiness.placement_metadata_apply_caught_up_metaserver_count;
+    status.placement_metadata_control_apply_caught_up_metaserver_count =
+        readiness.placement_metadata_control_apply_caught_up_metaserver_count;
+    status.placement_metadata_read_fence_covered_metaserver_count =
+        readiness.placement_metadata_read_fence_covered_metaserver_count;
+    status.placement_metadata_quorum = readiness.placement_metadata_quorum;
+    status.placement_metadata_read_quorum_available = readiness.placement_metadata_read_quorum_available;
+    status.placement_metadata_write_quorum_available = readiness.placement_metadata_write_quorum_available;
+    status.placement_metadata_caught_up_quorum_available =
+        readiness.placement_metadata_caught_up_quorum_available;
+    status.placement_metadata_apply_quorum_available = readiness.placement_metadata_apply_quorum_available;
+    status.placement_metadata_read_fence_quorum_available =
+        readiness.placement_metadata_read_fence_quorum_available;
+    status.placement_metadata_control_apply_quorum_available =
+        readiness.placement_metadata_control_apply_quorum_available;
+    status.placement_metadata_min_last_applied_mutation_commit_index =
+        readiness.placement_metadata_min_last_applied_mutation_commit_index;
+    status.placement_metadata_max_apply_commit_lag = readiness.placement_metadata_max_apply_commit_lag;
+    status.placement_metadata_min_safe_read_fence = readiness.placement_metadata_min_safe_read_fence;
+    status.placement_metadata_max_read_fence_commit_lag =
+        readiness.placement_metadata_max_read_fence_commit_lag;
+    status.placement_metadata_max_read_fence_read_index_lag =
+        readiness.placement_metadata_max_read_fence_read_index_lag;
+    status.placement_metadata_max_read_fence_applied_lag =
+        readiness.placement_metadata_max_read_fence_applied_lag;
+    status.placement_metadata_control_min_last_applied_mutation_commit_index =
+        readiness.placement_metadata_control_min_last_applied_mutation_commit_index;
+    status.placement_metadata_shard_topology_mismatch = readiness.placement_metadata_shard_topology_mismatch;
+    status.placement_metadata_coordinator_backend_mismatch =
+        readiness.placement_metadata_coordinator_backend_mismatch;
+    status.placement_metadata_coordinator_config_mismatch =
+        readiness.placement_metadata_coordinator_config_mismatch;
+    status.placement_metadata_max_shard_topology_epoch =
+        readiness.placement_metadata_max_shard_topology_epoch;
+    status.placement_metadata_coverage_status = readiness.placement_metadata_coverage_status.clone();
+    status.placement_metadata_control_proof_count = readiness.placement_metadata_control_proof_count;
+    status.placement_metadata_control_read_ready_count =
+        readiness.placement_metadata_control_read_ready_count;
+    status.placement_metadata_control_write_ready_count =
+        readiness.placement_metadata_control_write_ready_count;
+    status.placement_metadata_external_coordinator_required_metaserver_count =
+        readiness.placement_metadata_external_coordinator_required_metaserver_count;
+    status.placement_metadata_external_coordinator_endpoints_ready_metaserver_count =
+        readiness.placement_metadata_external_coordinator_endpoints_ready_metaserver_count;
+    status.placement_metadata_external_coordinator_owner_sessions_ready_metaserver_count =
+        readiness.placement_metadata_external_coordinator_owner_sessions_ready_metaserver_count;
+    status.placement_metadata_external_coordinator_ready_metaserver_count =
+        readiness.placement_metadata_external_coordinator_ready_metaserver_count;
+    status.placement_metadata_control_proof_checksum =
+        readiness.placement_metadata_control_proof_checksum.clone();
     status.root_pageserver_route_control_proof_count =
         readiness.root_pageserver_route_control_proof_count;
     status.root_pageserver_route_control_read_ready_count =
@@ -210,7 +210,7 @@ fn populate_placement_module_status(
         readiness.root_replicaserver_control_write_ready_count;
     status.root_replicaserver_control_proof_checksum =
         readiness.root_replicaserver_control_proof_checksum.clone();
-    status.root_raft_status_checksum_format = readiness.root_raft_status_checksum_format.clone();
+    status.placement_raft_status_checksum_format = readiness.placement_raft_status_checksum_format.clone();
     status.root_raft_status_checksum = readiness.root_raft_status_checksum.clone();
     status.root_pageserver_route_control_min_commit_index =
         readiness.root_pageserver_route_control_min_commit_index;
@@ -234,8 +234,8 @@ fn populate_placement_module_status(
         readiness.root_replicaserver_control_min_raft_commit_index;
     status.root_replicaserver_control_max_raft_commit_index =
         readiness.root_replicaserver_control_max_raft_commit_index;
-    status.root_metadata_control_max_last_applied_mutation_commit_index =
-        readiness.root_metadata_control_max_last_applied_mutation_commit_index;
-    status.root_metadata_control_max_apply_commit_lag =
-        readiness.root_metadata_control_max_apply_commit_lag;
+    status.placement_metadata_control_max_last_applied_mutation_commit_index =
+        readiness.placement_metadata_control_max_last_applied_mutation_commit_index;
+    status.placement_metadata_control_max_apply_commit_lag =
+        readiness.placement_metadata_control_max_apply_commit_lag;
 }

@@ -28,7 +28,7 @@ impl MatrixObjectStore {
     /// `rootserver_endpoint_configured` beside it still reports whether one was configured,
     /// which is how an operator would see a setting being ignored -- though nothing can get
     /// one past the refusals at construction, in the environment, and on snapshot load.
-    pub fn rootserver_required(&self) -> bool {
+    pub fn placement_required(&self) -> bool {
         match self.options.control_plane_mode {
             ControlPlaneMode::Auto | ControlPlaneMode::MetaServer => false,
         }

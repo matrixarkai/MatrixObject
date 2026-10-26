@@ -207,7 +207,7 @@ impl MatrixMetaService {
         snapshot
     }
 
-    pub fn root_state_fingerprint(&self) -> String {
+    pub fn placement_state_fingerprint(&self) -> String {
         if let Some(fingerprint) = self.root_state_fingerprint_cache.borrow().as_ref() {
             return fingerprint.clone();
         }

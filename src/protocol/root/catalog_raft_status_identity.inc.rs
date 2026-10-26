@@ -9,31 +9,31 @@ fn placement_raft_status_identity_fields(
     for (name, value) in [
         ("leader_node_id", self_.leader_node_id.as_str()),
         (
-            "root_metadata_coverage_status",
-            self_.root_metadata_coverage_status.as_str(),
+            "placement_metadata_coverage_status",
+            self_.placement_metadata_coverage_status.as_str(),
         ),
         (
-            "root_metadata_control_proof_checksum",
-            self_.root_metadata_control_proof_checksum.as_str(),
+            "placement_metadata_control_proof_checksum",
+            self_.placement_metadata_control_proof_checksum.as_str(),
         ),
         (
-            "root_block_allocator_shard_status",
+            "placement_block_allocator_shard_status",
             self_.root_page_allocator_shard_status.as_str(),
         ),
         (
-            "root_blockserver_route_control_proof_checksum",
+            "placement_blockserver_route_control_proof_checksum",
             self_.root_pageserver_route_control_proof_checksum.as_str(),
         ),
         (
-            "root_blockserver_service_coverage_status",
+            "placement_blockserver_service_coverage_status",
             self_.root_pageserver_service_coverage_status.as_str(),
         ),
         (
-            "root_chunkserver_control_proof_checksum",
+            "placement_chunkserver_control_proof_checksum",
             self_.root_replicaserver_control_proof_checksum.as_str(),
         ),
         (
-            "root_chunkserver_coverage_status",
+            "placement_chunkserver_coverage_status",
             self_.root_replicaserver_coverage_status.as_str(),
         ),
         (

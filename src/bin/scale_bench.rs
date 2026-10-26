@@ -2370,33 +2370,33 @@ fn render_scale_event_log(
         &mut out,
         "readiness_checked",
         &format!(
-            "\"ready\":{},\"reason\":{},\"configured_control_plane_mode\":{},\"control_plane_mode\":{},\"rootserver_required\":{},\"control_checksum_format\":{},\"control_checksum\":{},\"distributed_readiness_checksum\":{},\"metadata_state_fingerprint\":{},\"root_state_fingerprint\":{},\"block_state_fingerprint\":{},\"chunk_state_fingerprint\":{},\"root_read_ready\":{},\"root_metadata_read_ready\":{},\"root_metadata_write_ready\":{},\"root_blockserver_read_ready\":{},\"root_blockserver_write_ready\":{},\"root_chunkserver_read_ready\":{},\"root_chunkserver_write_ready\":{},\"root_readiness_gate_read_ready\":{},\"root_readiness_gate_write_ready\":{},\"root_service_health\":{},\"root_service_health_reason_count\":{},\"root_service_health_reasons\":{},\"root_service_fault_tolerant\":{},\"root_snapshot_fault_count\":{},\"storage_active_replicas\":{},\"storage_writable_replicas\":{},\"storage_readable_replicas\":{},\"storage_physical_read_count\":{},\"storage_coalesced_read_count\":{},\"storage_physical_write_count\":{},\"storage_physical_write_bytes\":{},\"storage_physical_discard_ranges\":{},\"storage_physical_discard_bytes\":{},\"storage_completed_events\":{},\"storage_completed_bytes\":{},\"storage_completion_ratio_ppm\":{},\"storage_allocation_receipt_count\":{},\"storage_batch_allocation_receipt_count\":{},\"storage_release_allocation_receipt_count\":{},\"storage_write_receipt_count\":{},\"storage_discard_receipt_count\":{},\"storage_batch_write_receipt_count\":{},\"storage_batch_discard_receipt_count\":{},\"storage_read_cache_bytes\":{},\"storage_read_cache_entries\":{},\"storage_read_cache_max_bytes\":{},\"storage_read_cache_max_cacheable_read_bytes\":{},\"storage_read_cache_lookup_count\":{},\"storage_read_cache_hit_ratio_ppm\":{},\"storage_read_cache_evictions\":{},\"storage_read_cache_pressure\":{},\"storage_read_cache_uncacheable_read_pages\":{},\"storage_read_cache_uncacheable_read_bytes\":{},\"storage_read_cache_corrupt_pages\":{},\"storage_read_cache_corrupt_bytes\":{},\"storage_capacity_rejected_writes\":{},\"storage_last_capacity_rejection_status\":{},\"storage_service_mode_rejected_mutations\":{},\"storage_last_mutation_admission_rejection_status\":{},\"storage_quarantined_replicas\":{},\"storage_frozen_replicas\":{},\"storage_draining_replicas\":{},\"storage_capacity_pressure_replicas\":{},\"storage_trim_flow_limited_replicas\":{},\"storage_trim_flow_available_ops\":{},\"storage_trim_flow_throttled_ops\":{},\"storage_total_capacity_bytes\":{},\"storage_total_capacity_free_bytes\":{},\"storage_total_fragmented_chunk_count\":{},\"storage_total_fragmented_discarded_bytes\":{},\"storage_total_trailing_trim_bytes\":{},\"root_blockserver_health_ok_count\":{},\"root_blockserver_health_degraded_count\":{},\"root_blockserver_health_unavailable_count\":{},\"root_blockserver_health_unknown_count\":{},\"root_blockserver_not_fault_tolerant_count\":{},\"root_blockserver_total_health_reason_count\":{},\"root_blockserver_total_write_quorum_deficit\":{},\"root_blockserver_total_read_quorum_deficit\":{},\"root_blockserver_total_write_quorum_margin\":{},\"root_blockserver_total_read_quorum_margin\":{},\"root_chunkserver_health_ok_count\":{},\"root_chunkserver_health_degraded_count\":{},\"root_chunkserver_health_unavailable_count\":{},\"root_chunkserver_health_unknown_count\":{},\"root_chunkserver_not_fault_tolerant_count\":{},\"root_chunkserver_total_health_reason_count\":{},\"root_blockserver_first_health_reasons\":{},\"root_chunkserver_first_health_reasons\":{},\"batch_write_input_ranges\":{},\"batch_write_chunk_ranges\":{},\"chunk_batch_write_requests\":{},\"chunk_batch_write_ranges\":{},\"chunk_batch_write_fallbacks\":{},\"fresh_chunk_batch_write_requests\":{},\"fresh_chunk_batch_write_ranges\":{},\"fresh_chunk_batch_write_fallbacks\":{},\"batch_read_input_ranges\":{},\"batch_read_chunk_ranges\":{},\"primary_batch_read_requests\":{},\"primary_batch_read_chunk_ranges\":{},\"primary_batch_read_fallbacks\":{},\"primary_batch_read_repair_probe_limit\":{},\"batch_discard_input_ranges\":{},\"batch_discard_merged_ranges\":{},\"batch_discard_chunk_ranges\":{},\"chunk_batch_discard_requests\":{},\"chunk_batch_discard_ranges\":{},\"chunk_batch_discard_fallbacks\":{},\"batch_write_failures\":{},\"batch_read_failures\":{},\"batch_discard_failures\":{},\"chunk_reclaim_failures\":{},\"last_chunk_reclaim_failure_status\":{},\"storage_fault_count\":{},\"storage_fault_status\":{},\"storage_partial_reclaim_chunks\":{},\"storage_partial_reclaim_bytes\":{},\"storage_partial_reclaim_failures\":{},\"storage_last_partial_reclaim_failure_status\":{},\"storage_local_replica_read_repairs\":{},\"storage_local_replica_read_repair_failures\":{},\"storage_last_local_replica_read_repair_failure_status\":{},\"storage_cumulative_repair_checked_chunks\":{},\"storage_cumulative_repair_degraded_chunks\":{},\"storage_cumulative_repaired_replicas\":{},\"storage_cumulative_failed_repairs\":{},\"storage_compressed_chunk_count\":{},\"storage_compression_saved_bytes\":{},\"storage_ec_reconstructed_reads\":{},\"storage_ec_reconstruction_failures\":{},\"storage_last_ec_reconstruction_failure_status\":{}",
+            "\"ready\":{},\"reason\":{},\"configured_control_plane_mode\":{},\"control_plane_mode\":{},\"placement_required\":{},\"control_checksum_format\":{},\"control_checksum\":{},\"distributed_readiness_checksum\":{},\"metadata_state_fingerprint\":{},\"placement_state_fingerprint\":{},\"block_state_fingerprint\":{},\"chunk_state_fingerprint\":{},\"placement_read_ready\":{},\"placement_metadata_read_ready\":{},\"placement_metadata_write_ready\":{},\"root_blockserver_read_ready\":{},\"root_blockserver_write_ready\":{},\"root_chunkserver_read_ready\":{},\"root_chunkserver_write_ready\":{},\"placement_readiness_gate_read_ready\":{},\"placement_readiness_gate_write_ready\":{},\"root_service_health\":{},\"placement_service_health_reason_count\":{},\"placement_service_health_reasons\":{},\"placement_service_fault_tolerant\":{},\"placement_snapshot_fault_count\":{},\"storage_active_replicas\":{},\"storage_writable_replicas\":{},\"storage_readable_replicas\":{},\"storage_physical_read_count\":{},\"storage_coalesced_read_count\":{},\"storage_physical_write_count\":{},\"storage_physical_write_bytes\":{},\"storage_physical_discard_ranges\":{},\"storage_physical_discard_bytes\":{},\"storage_completed_events\":{},\"storage_completed_bytes\":{},\"storage_completion_ratio_ppm\":{},\"storage_allocation_receipt_count\":{},\"storage_batch_allocation_receipt_count\":{},\"storage_release_allocation_receipt_count\":{},\"storage_write_receipt_count\":{},\"storage_discard_receipt_count\":{},\"storage_batch_write_receipt_count\":{},\"storage_batch_discard_receipt_count\":{},\"storage_read_cache_bytes\":{},\"storage_read_cache_entries\":{},\"storage_read_cache_max_bytes\":{},\"storage_read_cache_max_cacheable_read_bytes\":{},\"storage_read_cache_lookup_count\":{},\"storage_read_cache_hit_ratio_ppm\":{},\"storage_read_cache_evictions\":{},\"storage_read_cache_pressure\":{},\"storage_read_cache_uncacheable_read_pages\":{},\"storage_read_cache_uncacheable_read_bytes\":{},\"storage_read_cache_corrupt_pages\":{},\"storage_read_cache_corrupt_bytes\":{},\"storage_capacity_rejected_writes\":{},\"storage_last_capacity_rejection_status\":{},\"storage_service_mode_rejected_mutations\":{},\"storage_last_mutation_admission_rejection_status\":{},\"storage_quarantined_replicas\":{},\"storage_frozen_replicas\":{},\"storage_draining_replicas\":{},\"storage_capacity_pressure_replicas\":{},\"storage_trim_flow_limited_replicas\":{},\"storage_trim_flow_available_ops\":{},\"storage_trim_flow_throttled_ops\":{},\"storage_total_capacity_bytes\":{},\"storage_total_capacity_free_bytes\":{},\"storage_total_fragmented_chunk_count\":{},\"storage_total_fragmented_discarded_bytes\":{},\"storage_total_trailing_trim_bytes\":{},\"root_blockserver_health_ok_count\":{},\"root_blockserver_health_degraded_count\":{},\"root_blockserver_health_unavailable_count\":{},\"root_blockserver_health_unknown_count\":{},\"root_blockserver_not_fault_tolerant_count\":{},\"root_blockserver_total_health_reason_count\":{},\"root_blockserver_total_write_quorum_deficit\":{},\"root_blockserver_total_read_quorum_deficit\":{},\"root_blockserver_total_write_quorum_margin\":{},\"root_blockserver_total_read_quorum_margin\":{},\"root_chunkserver_health_ok_count\":{},\"root_chunkserver_health_degraded_count\":{},\"root_chunkserver_health_unavailable_count\":{},\"root_chunkserver_health_unknown_count\":{},\"root_chunkserver_not_fault_tolerant_count\":{},\"root_chunkserver_total_health_reason_count\":{},\"root_blockserver_first_health_reasons\":{},\"root_chunkserver_first_health_reasons\":{},\"batch_write_input_ranges\":{},\"batch_write_chunk_ranges\":{},\"chunk_batch_write_requests\":{},\"chunk_batch_write_ranges\":{},\"chunk_batch_write_fallbacks\":{},\"fresh_chunk_batch_write_requests\":{},\"fresh_chunk_batch_write_ranges\":{},\"fresh_chunk_batch_write_fallbacks\":{},\"batch_read_input_ranges\":{},\"batch_read_chunk_ranges\":{},\"primary_batch_read_requests\":{},\"primary_batch_read_chunk_ranges\":{},\"primary_batch_read_fallbacks\":{},\"primary_batch_read_repair_probe_limit\":{},\"batch_discard_input_ranges\":{},\"batch_discard_merged_ranges\":{},\"batch_discard_chunk_ranges\":{},\"chunk_batch_discard_requests\":{},\"chunk_batch_discard_ranges\":{},\"chunk_batch_discard_fallbacks\":{},\"batch_write_failures\":{},\"batch_read_failures\":{},\"batch_discard_failures\":{},\"chunk_reclaim_failures\":{},\"last_chunk_reclaim_failure_status\":{},\"storage_fault_count\":{},\"storage_fault_status\":{},\"storage_partial_reclaim_chunks\":{},\"storage_partial_reclaim_bytes\":{},\"storage_partial_reclaim_failures\":{},\"storage_last_partial_reclaim_failure_status\":{},\"storage_local_replica_read_repairs\":{},\"storage_local_replica_read_repair_failures\":{},\"storage_last_local_replica_read_repair_failure_status\":{},\"storage_cumulative_repair_checked_chunks\":{},\"storage_cumulative_repair_degraded_chunks\":{},\"storage_cumulative_repaired_replicas\":{},\"storage_cumulative_failed_repairs\":{},\"storage_compressed_chunk_count\":{},\"storage_compression_saved_bytes\":{},\"storage_ec_reconstructed_reads\":{},\"storage_ec_reconstruction_failures\":{},\"storage_last_ec_reconstruction_failure_status\":{}",
             readiness.ready,
             json_escape(&readiness.reason),
             json_escape(configured_control_plane_mode),
             json_escape(&readiness.control_plane_mode),
-            readiness.rootserver_required,
+            readiness.placement_required,
             json_escape(&readiness.control_checksum_format),
             json_escape(&readiness.control_checksum),
             json_escape(&readiness.distributed_readiness_checksum),
             json_escape(&readiness.metadata_state_fingerprint),
-            json_escape(&readiness.root_state_fingerprint),
+            json_escape(&readiness.placement_state_fingerprint),
             json_escape(&readiness.page_state_fingerprint),
             json_escape(&readiness.chunk_state_fingerprint),
-            readiness.root_read_ready,
-            readiness.root_metadata_read_ready,
-            readiness.root_metadata_write_ready,
+            readiness.placement_read_ready,
+            readiness.placement_metadata_read_ready,
+            readiness.placement_metadata_write_ready,
             readiness.root_pageserver_read_ready,
             readiness.root_pageserver_write_ready,
             readiness.root_replicaserver_read_ready,
             readiness.root_replicaserver_write_ready,
-            readiness.root_readiness_gate_read_ready,
-            readiness.root_readiness_gate_write_ready,
+            readiness.placement_readiness_gate_read_ready,
+            readiness.placement_readiness_gate_write_ready,
             json_escape(&readiness.root_service_health),
-            readiness.root_service_health_reason_count,
-            json_escape(&readiness.root_service_health_reasons),
-            readiness.root_service_fault_tolerant,
-            readiness.root_snapshot_fault_count,
+            readiness.placement_service_health_reason_count,
+            json_escape(&readiness.placement_service_health_reasons),
+            readiness.placement_service_fault_tolerant,
+            readiness.placement_snapshot_fault_count,
             readiness.storage_active_replicas,
             readiness.storage_writable_replicas,
             readiness.storage_readable_replicas,
@@ -2799,28 +2799,28 @@ fn benchmark_fault_tolerance(
             readiness.storage_total_capacity_free_bytes, readiness.storage_total_capacity_bytes
         ));
     }
-    if readiness.rootserver_required && !readiness.root_read_ready {
+    if readiness.placement_required && !readiness.placement_read_ready {
         reasons.push("root_read_not_ready".to_string());
     }
-    if readiness.rootserver_required && !readiness.root_service_fault_tolerant {
+    if readiness.placement_required && !readiness.placement_service_fault_tolerant {
         reasons.push("root_not_fault_tolerant".to_string());
     }
-    if readiness.rootserver_required && readiness.root_service_health == "unavailable" {
+    if readiness.placement_required && readiness.root_service_health == "unavailable" {
         reasons.push(format!(
             "root_service_unavailable:{}",
-            readiness.root_service_health_reasons
+            readiness.placement_service_health_reasons
         ));
     }
-    if readiness.rootserver_required && readiness.root_service_health == "degraded" {
+    if readiness.placement_required && readiness.root_service_health == "degraded" {
         reasons.push(format!(
             "root_service_degraded:{}",
-            readiness.root_service_health_reasons
+            readiness.placement_service_health_reasons
         ));
     }
-    if readiness.rootserver_required && readiness.root_snapshot_fault_count != 0 {
+    if readiness.placement_required && readiness.placement_snapshot_fault_count != 0 {
         reasons.push(format!(
             "root_snapshot_faults:{}",
-            readiness.root_snapshot_fault_count
+            readiness.placement_snapshot_fault_count
         ));
     }
     if readiness.root_pageserver_not_fault_tolerant_count != 0 {
@@ -3105,9 +3105,9 @@ fn render_scale_json_report(
             "  \"phases\": {{\"put\": {}, \"range\": {}, \"overwrite\": {}, \"delete\": {}, \"mixed\": {}}},\n",
             "  \"gc\": {{\"live_bytes\": {}, \"stale_bytes\": {}, \"discarded_bytes\": {}, \"logical_write_amplification_ppm\": {}, \"space_amplification_ppm\": {}, \"discard_candidate_bytes\": {}, \"pending_discard_range_count\": {}, \"merged_discard_range_count\": {}, \"compaction_candidate_segments\": {}}},\n",
             "  \"cache\": {{\"read_cache_hit_ratio_ppm\": {}, \"read_cache_hits\": {}, \"read_cache_lookup_count\": {}, \"read_cache_misses\": {}, \"read_cache_uncacheable_read_pages\": {}, \"read_cache_uncacheable_read_bytes\": {}}},\n",
-            "  \"readiness\": {{\"ready\": {}, \"reason\": {}, \"segment_count\": {}, \"chunk_count\": {}, \"metadata_commit_index\": {}, \"metadata_state_fingerprint\": {}, \"root_state_fingerprint\": {}, \"block_state_fingerprint\": {}, \"block_state_fingerprint_format\": {}, \"block_state_fingerprint_bytes\": {}, \"chunk_state_fingerprint\": {}, \"chunk_state_fingerprint_format\": {}, \"chunk_state_fingerprint_bytes\": {}, \"distributed_readiness_checksum\": {}, \"control_checksum_format\": {}, \"control_checksum\": {}, \"configured_control_plane_mode\": {}, \"effective_control_plane_mode\": {}, \"rootserver_required\": {}, \"root_read_ready\": {}, \"root_metadata_read_ready\": {}, \"root_metadata_write_ready\": {}, \"root_blockserver_read_ready\": {}, \"root_blockserver_write_ready\": {}, \"root_chunkserver_read_ready\": {}, \"root_chunkserver_write_ready\": {}, \"root_readiness_gate_read_ready\": {}, \"root_readiness_gate_write_ready\": {}, \"root_service_health\": {}, \"root_service_health_reason_count\": {}, \"root_service_health_reasons\": {}, \"root_service_fault_tolerant\": {}, \"root_snapshot_fault_count\": {}, \"root_blockserver_health_ok_count\": {}, \"root_blockserver_health_degraded_count\": {}, \"root_blockserver_health_unavailable_count\": {}, \"root_blockserver_health_unknown_count\": {}, \"root_blockserver_not_fault_tolerant_count\": {}, \"root_blockserver_total_health_reason_count\": {}, \"root_blockserver_total_write_quorum\": {}, \"root_blockserver_total_read_quorum\": {}, \"root_blockserver_total_write_quorum_deficit\": {}, \"root_blockserver_total_read_quorum_deficit\": {}, \"root_blockserver_total_write_quorum_margin\": {}, \"root_blockserver_total_read_quorum_margin\": {}, \"root_blockserver_first_health_reasons\": {}, \"root_chunkserver_health_ok_count\": {}, \"root_chunkserver_health_degraded_count\": {}, \"root_chunkserver_health_unavailable_count\": {}, \"root_chunkserver_health_unknown_count\": {}, \"root_chunkserver_not_fault_tolerant_count\": {}, \"root_chunkserver_total_health_reason_count\": {}, \"root_chunkserver_first_health_reasons\": {}, \"metadata_coordinator_backend\": {}, \"metadata_coordinator_preferred_backend\": {}, \"metadata_coordinator_production_ready\": {}, \"metadata_coordinator_external_dependency\": {}, \"storage_replica_count\": {}, \"storage_active_replicas\": {}, \"storage_readable_replicas\": {}, \"storage_writable_replicas\": {}, \"chunk_active_replicas\": {}, \"chunk_readable_replicas\": {}, \"chunk_writable_replicas\": {}}},\n",
-            "  \"control_plane\": {{\"configured_mode\": {}, \"effective_mode\": {}, \"rootserver_required\": {}, \"rust_raft_rs_linked\": {}, \"metadata_coordinator_backend\": {}, \"metadata_coordinator_preferred_backend\": {}, \"metadata_coordinator_production_ready\": {}, \"metadata_coordinator_external_dependency\": {}}},\n",
-            "  \"state_proofs\": {{\"metadata_state_fingerprint\": {}, \"root_state_fingerprint\": {}, \"block_state_fingerprint\": {}, \"chunk_state_fingerprint\": {}, \"distributed_readiness_checksum\": {}, \"control_checksum\": {}}},\n",
+            "  \"readiness\": {{\"ready\": {}, \"reason\": {}, \"segment_count\": {}, \"chunk_count\": {}, \"metadata_commit_index\": {}, \"metadata_state_fingerprint\": {}, \"placement_state_fingerprint\": {}, \"block_state_fingerprint\": {}, \"block_state_fingerprint_format\": {}, \"block_state_fingerprint_bytes\": {}, \"chunk_state_fingerprint\": {}, \"chunk_state_fingerprint_format\": {}, \"chunk_state_fingerprint_bytes\": {}, \"distributed_readiness_checksum\": {}, \"control_checksum_format\": {}, \"control_checksum\": {}, \"configured_control_plane_mode\": {}, \"effective_control_plane_mode\": {}, \"placement_required\": {}, \"placement_read_ready\": {}, \"placement_metadata_read_ready\": {}, \"placement_metadata_write_ready\": {}, \"root_blockserver_read_ready\": {}, \"root_blockserver_write_ready\": {}, \"root_chunkserver_read_ready\": {}, \"root_chunkserver_write_ready\": {}, \"placement_readiness_gate_read_ready\": {}, \"placement_readiness_gate_write_ready\": {}, \"root_service_health\": {}, \"placement_service_health_reason_count\": {}, \"placement_service_health_reasons\": {}, \"placement_service_fault_tolerant\": {}, \"placement_snapshot_fault_count\": {}, \"root_blockserver_health_ok_count\": {}, \"root_blockserver_health_degraded_count\": {}, \"root_blockserver_health_unavailable_count\": {}, \"root_blockserver_health_unknown_count\": {}, \"root_blockserver_not_fault_tolerant_count\": {}, \"root_blockserver_total_health_reason_count\": {}, \"root_blockserver_total_write_quorum\": {}, \"root_blockserver_total_read_quorum\": {}, \"root_blockserver_total_write_quorum_deficit\": {}, \"root_blockserver_total_read_quorum_deficit\": {}, \"root_blockserver_total_write_quorum_margin\": {}, \"root_blockserver_total_read_quorum_margin\": {}, \"root_blockserver_first_health_reasons\": {}, \"root_chunkserver_health_ok_count\": {}, \"root_chunkserver_health_degraded_count\": {}, \"root_chunkserver_health_unavailable_count\": {}, \"root_chunkserver_health_unknown_count\": {}, \"root_chunkserver_not_fault_tolerant_count\": {}, \"root_chunkserver_total_health_reason_count\": {}, \"root_chunkserver_first_health_reasons\": {}, \"metadata_coordinator_backend\": {}, \"metadata_coordinator_preferred_backend\": {}, \"metadata_coordinator_production_ready\": {}, \"metadata_coordinator_external_dependency\": {}, \"storage_replica_count\": {}, \"storage_active_replicas\": {}, \"storage_readable_replicas\": {}, \"storage_writable_replicas\": {}, \"chunk_active_replicas\": {}, \"chunk_readable_replicas\": {}, \"chunk_writable_replicas\": {}}},\n",
+            "  \"control_plane\": {{\"configured_mode\": {}, \"effective_mode\": {}, \"placement_required\": {}, \"rust_raft_rs_linked\": {}, \"metadata_coordinator_backend\": {}, \"metadata_coordinator_preferred_backend\": {}, \"metadata_coordinator_production_ready\": {}, \"metadata_coordinator_external_dependency\": {}}},\n",
+            "  \"state_proofs\": {{\"metadata_state_fingerprint\": {}, \"placement_state_fingerprint\": {}, \"block_state_fingerprint\": {}, \"chunk_state_fingerprint\": {}, \"distributed_readiness_checksum\": {}, \"control_checksum\": {}}},\n",
             "  \"distribution\": {{\"storage_active_replicas\": {}, \"storage_readable_replicas\": {}, \"storage_writable_replicas\": {}, \"chunk_active_replicas\": {}, \"chunk_readable_replicas\": {}, \"chunk_writable_replicas\": {}, \"root_blockserver_total_chunk_endpoint_count\": {}, \"root_blockserver_total_writable_chunk_endpoint_count\": {}, \"root_blockserver_total_raft_writable_chunk_endpoint_count\": {}, \"root_blockserver_total_raft_readable_chunk_endpoint_count\": {}, \"root_blockserver_health_ok_count\": {}, \"root_blockserver_health_degraded_count\": {}, \"root_blockserver_health_unavailable_count\": {}, \"root_blockserver_health_unknown_count\": {}, \"root_blockserver_not_fault_tolerant_count\": {}, \"root_blockserver_total_health_reason_count\": {}, \"root_blockserver_total_write_quorum_deficit\": {}, \"root_blockserver_total_read_quorum_deficit\": {}, \"root_blockserver_total_write_quorum_margin\": {}, \"root_blockserver_total_read_quorum_margin\": {}, \"root_chunkserver_health_ok_count\": {}, \"root_chunkserver_health_degraded_count\": {}, \"root_chunkserver_health_unavailable_count\": {}, \"root_chunkserver_health_unknown_count\": {}, \"root_chunkserver_not_fault_tolerant_count\": {}, \"root_chunkserver_total_health_reason_count\": {}, \"metaserver_route_cache_lookup_count\": {}, \"metaserver_route_cache_hit_ratio_ppm\": {}, \"metaserver_route_cache_miss_ratio_ppm\": {}, \"metaserver_route_cache_remaining_capacity\": {}}},\n",
             "  \"chunkserver_readiness\": {},\n",
             "  \"storage\": {{\"segment_count\": {}, \"chunk_count\": {}, \"chunk_metadata_journal_fsync_every_records\": {}, \"chunk_metadata_journal_fsync_every_bytes\": {}, \"chunk_metadata_journal_fsync_max_unsynced_ms\": {}, \"chunk_metadata_journal_pending_fsync_records\": {}, \"chunk_metadata_journal_pending_fsync_bytes\": {}, \"chunk_metadata_journal_oldest_unsynced_ms\": {}, \"chunk_metadata_journal_record_pressure_ppm\": {}, \"chunk_metadata_journal_byte_pressure_ppm\": {}, \"chunk_metadata_journal_age_pressure_ppm\": {}, \"live_bytes\": {}, \"stale_bytes\": {}, \"discarded_bytes\": {}, \"logical_write_amplification_ppm\": {}, \"space_amplification_ppm\": {}, \"discard_candidate_bytes\": {}, \"pending_discard_range_count\": {}, \"merged_discard_range_count\": {}, \"compaction_candidate_segments\": {}, \"storage_physical_read_count\": {}, \"storage_coalesced_read_count\": {}, \"storage_physical_write_count\": {}, \"storage_physical_write_bytes\": {}, \"storage_physical_discard_ranges\": {}, \"storage_physical_discard_bytes\": {}, \"completed_events\": {}, \"completed_bytes\": {}, \"completion_ratio_ppm\": {}, \"storage_allocation_receipt_count\": {}, \"storage_batch_allocation_receipt_count\": {}, \"storage_release_allocation_receipt_count\": {}, \"storage_write_receipt_count\": {}, \"storage_discard_receipt_count\": {}, \"storage_batch_write_receipt_count\": {}, \"storage_batch_discard_receipt_count\": {}, \"batch_write_input_ranges\": {}, \"batch_write_chunk_ranges\": {}, \"batch_write_failures\": {}, \"last_batch_write_failure_status\": {}, \"chunk_batch_write_requests\": {}, \"chunk_batch_write_ranges\": {}, \"chunk_batch_write_fallbacks\": {}, \"fresh_chunk_batch_write_requests\": {}, \"fresh_chunk_batch_write_ranges\": {}, \"fresh_chunk_batch_write_fallbacks\": {}, \"batch_read_input_ranges\": {}, \"batch_read_chunk_ranges\": {}, \"batch_read_failures\": {}, \"last_batch_read_failure_status\": {}, \"primary_batch_read_requests\": {}, \"primary_batch_read_chunk_ranges\": {}, \"primary_batch_read_fallbacks\": {}, \"primary_batch_read_repair_probe_limit\": {}, \"batch_discard_input_ranges\": {}, \"batch_discard_merged_ranges\": {}, \"batch_discard_chunk_ranges\": {}, \"batch_discard_failures\": {}, \"last_batch_discard_failure_status\": {}, \"chunk_batch_discard_requests\": {}, \"chunk_batch_discard_ranges\": {}, \"chunk_batch_discard_fallbacks\": {}, \"discard_admission_requests\": {}, \"discard_admission_ranges\": {}, \"chunk_reclaim_requests\": {}, \"chunk_reclaim_rewritten_chunks\": {}, \"chunk_reclaim_failures\": {}, \"last_chunk_reclaim_failure_status\": {}, \"storage_read_cache_bytes\": {}, \"storage_read_cache_entries\": {}, \"storage_read_cache_hits\": {}, \"storage_read_cache_misses\": {}, \"storage_read_cache_lookup_count\": {}, \"storage_read_cache_hit_ratio_ppm\": {}, \"storage_read_cache_uncacheable_read_pages\": {}, \"storage_read_cache_uncacheable_read_bytes\": {}, \"storage_read_cache_evictions\": {}, \"storage_local_replica_read_repairs\": {}, \"storage_local_replica_read_repair_failures\": {}, \"last_local_replica_read_repair_failure_status\": {}, \"storage_cumulative_repair_checked_chunks\": {}, \"storage_cumulative_repair_degraded_chunks\": {}, \"storage_cumulative_repaired_replicas\": {}, \"storage_cumulative_failed_repairs\": {}, \"storage_compressed_chunk_count\": {}, \"storage_compression_saved_bytes\": {}, \"storage_ec_reconstructed_reads\": {}, \"storage_ec_reconstruction_failures\": {}, \"last_ec_reconstruction_failure_status\": {}, \"storage_read_cache_pressure\": {}, \"storage_read_cache_corrupt_pages\": {}, \"storage_read_cache_corrupt_bytes\": {}, \"storage_capacity_rejected_writes\": {}, \"last_capacity_rejection_status\": {}, \"storage_service_mode_rejected_mutations\": {}, \"last_mutation_admission_rejection_status\": {}, \"storage_quarantined_replicas\": {}, \"storage_frozen_replicas\": {}, \"storage_draining_replicas\": {}, \"storage_capacity_pressure_replicas\": {}, \"storage_trim_flow_limited_replicas\": {}, \"storage_trim_flow_available_ops\": {}, \"storage_trim_flow_throttled_ops\": {}, \"storage_total_capacity_bytes\": {}, \"storage_total_capacity_free_bytes\": {}, \"storage_total_reclaimable_bytes\": {}, \"storage_total_fragmented_chunk_count\": {}, \"storage_total_fragmented_discarded_bytes\": {}, \"storage_total_trailing_trim_bytes\": {}, \"storage_partial_reclaim_chunks\": {}, \"storage_partial_reclaim_bytes\": {}, \"storage_partial_reclaim_failures\": {}, \"storage_last_partial_reclaim_failure_status\": {}, \"root_blockserver_total_chunk_endpoint_count\": {}, \"root_blockserver_total_writable_chunk_endpoint_count\": {}, \"root_blockserver_total_healthy_chunk_endpoint_count\": {}, \"root_blockserver_total_raft_writable_chunk_endpoint_count\": {}, \"root_blockserver_total_raft_readable_chunk_endpoint_count\": {}, \"block_read_parallelism\": {}, \"block_write_parallelism\": {}, \"block_batch_read_parallelism\": {}, \"block_batch_write_parallelism\": {}, \"block_batch_discard_parallelism\": {}, \"block_repair_parallelism\": {}, \"block_chunk_fanout_parallelism\": {}, \"effective_chunk_fanout_parallelism\": {}, \"local_replica_store_parallelism\": {}, \"effective_local_replica_store_parallelism\": {}, \"physical_write_bytes\": {}, \"physical_discard_bytes\": {}}},\n",
@@ -3233,7 +3233,7 @@ fn render_scale_json_report(
         readiness.page_count,
         readiness.metadata_commit_index,
         json_escape(&readiness.metadata_state_fingerprint),
-        json_escape(&readiness.root_state_fingerprint),
+        json_escape(&readiness.placement_state_fingerprint),
         json_escape(&readiness.page_state_fingerprint),
         json_escape(&readiness.page_state_fingerprint_format),
         readiness.page_state_fingerprint_bytes,
@@ -3245,21 +3245,21 @@ fn render_scale_json_report(
         json_escape(&readiness.control_checksum),
         json_escape(configured_control_plane_mode),
         json_escape(&readiness.control_plane_mode),
-        readiness.rootserver_required,
-        readiness.root_read_ready,
-        readiness.root_metadata_read_ready,
-        readiness.root_metadata_write_ready,
+        readiness.placement_required,
+        readiness.placement_read_ready,
+        readiness.placement_metadata_read_ready,
+        readiness.placement_metadata_write_ready,
         readiness.root_pageserver_read_ready,
         readiness.root_pageserver_write_ready,
         readiness.root_replicaserver_read_ready,
         readiness.root_replicaserver_write_ready,
-        readiness.root_readiness_gate_read_ready,
-        readiness.root_readiness_gate_write_ready,
+        readiness.placement_readiness_gate_read_ready,
+        readiness.placement_readiness_gate_write_ready,
         json_escape(&readiness.root_service_health),
-        readiness.root_service_health_reason_count,
-        json_escape(&readiness.root_service_health_reasons),
-        readiness.root_service_fault_tolerant,
-        readiness.root_snapshot_fault_count,
+        readiness.placement_service_health_reason_count,
+        json_escape(&readiness.placement_service_health_reasons),
+        readiness.placement_service_fault_tolerant,
+        readiness.placement_snapshot_fault_count,
         readiness.root_pageserver_health_ok_count,
         readiness.root_pageserver_health_degraded_count,
         readiness.root_pageserver_health_unavailable_count,
@@ -3293,14 +3293,14 @@ fn render_scale_json_report(
         readiness.page.writable_replicas,
         json_escape(configured_control_plane_mode),
         json_escape(&readiness.control_plane_mode),
-        readiness.rootserver_required,
+        readiness.placement_required,
         raft_backend::raft_rs_linked(),
         json_escape(&readiness.metadata_coordinator_backend),
         json_escape(&readiness.metadata_coordinator_preferred_backend),
         readiness.metadata_coordinator_production_ready,
         json_escape(&readiness.metadata_coordinator_external_dependency),
         json_escape(&readiness.metadata_state_fingerprint),
-        json_escape(&readiness.root_state_fingerprint),
+        json_escape(&readiness.placement_state_fingerprint),
         json_escape(&readiness.page_state_fingerprint),
         json_escape(&readiness.chunk_state_fingerprint),
         json_escape(&readiness.distributed_readiness_checksum),
@@ -5096,7 +5096,7 @@ fn run() -> Result<(), ObjectError> {
     );
     println!(
         "root_state_fingerprint={}",
-        readiness.root_state_fingerprint
+        readiness.placement_state_fingerprint
     );
     println!(
         "block_state_fingerprint={}",
@@ -5139,15 +5139,15 @@ fn run() -> Result<(), ObjectError> {
         "effective_control_plane_mode={}",
         readiness.control_plane_mode
     );
-    println!("rootserver_required={}", readiness.rootserver_required);
-    println!("root_read_ready={}", readiness.root_read_ready);
+    println!("rootserver_required={}", readiness.placement_required);
+    println!("root_read_ready={}", readiness.placement_read_ready);
     println!(
         "root_metadata_read_ready={}",
-        readiness.root_metadata_read_ready
+        readiness.placement_metadata_read_ready
     );
     println!(
         "root_metadata_write_ready={}",
-        readiness.root_metadata_write_ready
+        readiness.placement_metadata_write_ready
     );
     println!(
         "root_blockserver_read_ready={}",
@@ -5167,28 +5167,28 @@ fn run() -> Result<(), ObjectError> {
     );
     println!(
         "root_readiness_gate_read_ready={}",
-        readiness.root_readiness_gate_read_ready
+        readiness.placement_readiness_gate_read_ready
     );
     println!(
         "root_readiness_gate_write_ready={}",
-        readiness.root_readiness_gate_write_ready
+        readiness.placement_readiness_gate_write_ready
     );
     println!("root_service_health={}", readiness.root_service_health);
     println!(
         "root_service_health_reason_count={}",
-        readiness.root_service_health_reason_count
+        readiness.placement_service_health_reason_count
     );
     println!(
         "root_service_health_reasons={}",
-        readiness.root_service_health_reasons
+        readiness.placement_service_health_reasons
     );
     println!(
         "root_service_fault_tolerant={}",
-        readiness.root_service_fault_tolerant
+        readiness.placement_service_fault_tolerant
     );
     println!(
         "root_snapshot_fault_count={}",
-        readiness.root_snapshot_fault_count
+        readiness.placement_snapshot_fault_count
     );
     println!(
         "root_blockserver_health_ok_count={}",

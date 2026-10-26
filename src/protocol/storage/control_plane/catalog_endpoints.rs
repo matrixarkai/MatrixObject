@@ -6,7 +6,7 @@ pub struct ControlPlaneCatalogSelection {
     pub effective_mode: String,
     pub catalog_source: String,
     pub catalog_endpoint: String,
-    pub rootserver_required: bool,
+    pub placement_required: bool,
     pub metaserver_endpoint_configured: bool,
     pub rootserver_endpoint_configured: bool,
     pub catalog_route_checksum_format: String,
@@ -38,7 +38,7 @@ impl ControlPlaneCatalogRoute {
 pub struct ControlPlaneCatalogEndpointSet {
     pub configured_mode: String,
     pub effective_mode: String,
-    pub rootserver_required: bool,
+    pub placement_required: bool,
     pub metaserver_endpoint_configured: bool,
     pub rootserver_endpoint_configured: bool,
     pub selected: Option<ControlPlaneCatalogRoute>,
@@ -83,7 +83,7 @@ impl ControlPlaneCatalogEndpointSet {
         append_string(&mut material, &self.catalog_route_checksum_format);
         append_string(&mut material, &self.configured_mode);
         append_string(&mut material, &self.effective_mode);
-        append_u64(&mut material, self.rootserver_required as u64);
+        append_u64(&mut material, self.placement_required as u64);
         append_u64(&mut material, self.metaserver_endpoint_configured as u64);
         append_u64(&mut material, self.rootserver_endpoint_configured as u64);
         append_string(&mut material, selected_source);
@@ -130,8 +130,8 @@ impl ControlPlaneCatalogEndpointSet {
             self.catalog_route_checksum.clone(),
         );
         fields.insert(
-            "rootserver_required".to_string(),
-            self.rootserver_required.to_string(),
+            "placement_required".to_string(),
+            self.placement_required.to_string(),
         );
         fields.insert(
             "metaserver_endpoint_configured".to_string(),

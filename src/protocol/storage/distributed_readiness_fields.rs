@@ -170,8 +170,8 @@ impl ObjectStoreDistributedReadiness {
             ("root_status", &self.root_status),
             ("root_service_health", &self.root_service_health),
             (
-                "root_service_health_reasons",
-                &self.root_service_health_reasons,
+                "placement_service_health_reasons",
+                &self.placement_service_health_reasons,
             ),
             (
                 "last_batch_write_failure_status",
@@ -194,10 +194,10 @@ impl ObjectStoreDistributedReadiness {
                 "metadata_state_fingerprint",
                 &self.metadata_state_fingerprint,
             ),
-            ("root_state_fingerprint", &self.root_state_fingerprint),
+            ("placement_state_fingerprint", &self.placement_state_fingerprint),
             (
-                "root_raft_status_checksum_format",
-                &self.root_raft_status_checksum_format,
+                "placement_raft_status_checksum_format",
+                &self.placement_raft_status_checksum_format,
             ),
             ("root_raft_status_checksum", &self.root_raft_status_checksum),
             ("block_state_fingerprint", &self.page_state_fingerprint),
@@ -231,15 +231,15 @@ impl ObjectStoreDistributedReadiness {
                 &self.metadata_coordinator_config_checksum,
             ),
             (
-                "root_metadata_control_proof_checksum",
-                &self.root_metadata_control_proof_checksum,
+                "placement_metadata_control_proof_checksum",
+                &self.placement_metadata_control_proof_checksum,
             ),
             (
-                "root_metadata_coverage_status",
-                &self.root_metadata_coverage_status,
+                "placement_metadata_coverage_status",
+                &self.placement_metadata_coverage_status,
             ),
             (
-                "root_blockserver_route_control_proof_checksum",
+                "placement_blockserver_route_control_proof_checksum",
                 &self.root_pageserver_route_control_proof_checksum,
             ),
             (
@@ -247,7 +247,7 @@ impl ObjectStoreDistributedReadiness {
                 &self.root_pageserver_first_health_reasons,
             ),
             (
-                "root_chunkserver_control_proof_checksum",
+                "placement_chunkserver_control_proof_checksum",
                 &self.root_replicaserver_control_proof_checksum,
             ),
             (
@@ -267,15 +267,15 @@ impl ObjectStoreDistributedReadiness {
             ("ready", self.ready),
             ("metadata_ready", self.metadata_ready),
             ("block_ready", self.page_ready),
-            ("root_ready", self.root_ready),
-            ("root_read_ready", self.root_read_ready),
+            ("placement_ready", self.placement_ready),
+            ("placement_read_ready", self.placement_read_ready),
             (
-                "root_metadata_read_ready",
-                self.root_metadata_read_ready,
+                "placement_metadata_read_ready",
+                self.placement_metadata_read_ready,
             ),
             (
-                "root_metadata_write_ready",
-                self.root_metadata_write_ready,
+                "placement_metadata_write_ready",
+                self.placement_metadata_write_ready,
             ),
             (
                 "root_blockserver_read_ready",
@@ -294,19 +294,19 @@ impl ObjectStoreDistributedReadiness {
                 self.root_replicaserver_write_ready,
             ),
             (
-                "root_readiness_gate_read_ready",
-                self.root_readiness_gate_read_ready,
+                "placement_readiness_gate_read_ready",
+                self.placement_readiness_gate_read_ready,
             ),
             (
-                "root_readiness_gate_write_ready",
-                self.root_readiness_gate_write_ready,
+                "placement_readiness_gate_write_ready",
+                self.placement_readiness_gate_write_ready,
             ),
             (
-                "root_service_fault_tolerant",
-                self.root_service_fault_tolerant,
+                "placement_service_fault_tolerant",
+                self.placement_service_fault_tolerant,
             ),
-            ("rootserver_required", self.rootserver_required),
-            ("root_leader_ready", self.root_leader_ready),
+            ("placement_required", self.placement_required),
+            ("placement_leader_ready", self.placement_leader_ready),
             (
                 "metadata_replication_enabled",
                 self.metadata_replication_enabled,
@@ -352,35 +352,35 @@ impl ObjectStoreDistributedReadiness {
                 self.metadata_external_coordinator_ready,
             ),
             (
-                "root_metadata_status_available",
-                self.root_metadata_status_available,
+                "placement_metadata_status_available",
+                self.placement_metadata_status_available,
             ),
             (
-                "root_metadata_read_quorum_available",
-                self.root_metadata_read_quorum_available,
+                "placement_metadata_read_quorum_available",
+                self.placement_metadata_read_quorum_available,
             ),
             (
-                "root_metadata_write_quorum_available",
-                self.root_metadata_write_quorum_available,
+                "placement_metadata_write_quorum_available",
+                self.placement_metadata_write_quorum_available,
             ),
             (
-                "root_metadata_apply_quorum_available",
-                self.root_metadata_apply_quorum_available,
+                "placement_metadata_apply_quorum_available",
+                self.placement_metadata_apply_quorum_available,
             ),
             (
-                "root_metadata_read_fence_quorum_available",
-                self.root_metadata_read_fence_quorum_available,
+                "placement_metadata_read_fence_quorum_available",
+                self.placement_metadata_read_fence_quorum_available,
             ),
             (
-                "root_metadata_coordinator_backend_mismatch",
-                self.root_metadata_coordinator_backend_mismatch,
+                "placement_metadata_coordinator_backend_mismatch",
+                self.placement_metadata_coordinator_backend_mismatch,
             ),
             (
-                "root_metadata_coordinator_config_mismatch",
-                self.root_metadata_coordinator_config_mismatch,
+                "placement_metadata_coordinator_config_mismatch",
+                self.placement_metadata_coordinator_config_mismatch,
             ),
             (
-                "root_block_allocator_shards_complete",
+                "placement_block_allocator_shards_complete",
                 self.root_page_allocator_shards_complete,
             ),
         ] {
@@ -435,55 +435,55 @@ impl ObjectStoreDistributedReadiness {
                 "metadata_open_transaction_count",
                 self.metadata_open_transaction_count,
             ),
-            ("root_expected_nodes", self.root_expected_nodes),
+            ("placement_expected_nodes", self.placement_expected_nodes),
             (
-                "root_service_health_reason_count",
-                self.root_service_health_reason_count,
+                "placement_service_health_reason_count",
+                self.placement_service_health_reason_count,
             ),
-            ("root_snapshot_fault_count", self.root_snapshot_fault_count),
+            ("placement_snapshot_fault_count", self.placement_snapshot_fault_count),
             (
-                "root_active_metaserver_count",
-                self.root_active_metaserver_count,
+                "placement_active_metaserver_count",
+                self.placement_active_metaserver_count,
             ),
-            ("root_metadata_quorum", self.root_metadata_quorum),
+            ("placement_metadata_quorum", self.placement_metadata_quorum),
             (
-                "root_metadata_control_proof_count",
-                self.root_metadata_control_proof_count,
-            ),
-            (
-                "root_metadata_control_read_ready_count",
-                self.root_metadata_control_read_ready_count,
+                "placement_metadata_control_proof_count",
+                self.placement_metadata_control_proof_count,
             ),
             (
-                "root_metadata_control_write_ready_count",
-                self.root_metadata_control_write_ready_count,
+                "placement_metadata_control_read_ready_count",
+                self.placement_metadata_control_read_ready_count,
             ),
             (
-                "root_metadata_external_coordinator_required_metaserver_count",
-                self.root_metadata_external_coordinator_required_metaserver_count,
+                "placement_metadata_control_write_ready_count",
+                self.placement_metadata_control_write_ready_count,
             ),
             (
-                "root_metadata_external_coordinator_endpoints_ready_metaserver_count",
-                self.root_metadata_external_coordinator_endpoints_ready_metaserver_count,
+                "placement_metadata_external_coordinator_required_metaserver_count",
+                self.placement_metadata_external_coordinator_required_metaserver_count,
             ),
             (
-                "root_metadata_external_coordinator_owner_sessions_ready_metaserver_count",
-                self.root_metadata_external_coordinator_owner_sessions_ready_metaserver_count,
+                "placement_metadata_external_coordinator_endpoints_ready_metaserver_count",
+                self.placement_metadata_external_coordinator_endpoints_ready_metaserver_count,
             ),
             (
-                "root_metadata_external_coordinator_ready_metaserver_count",
-                self.root_metadata_external_coordinator_ready_metaserver_count,
+                "placement_metadata_external_coordinator_owner_sessions_ready_metaserver_count",
+                self.placement_metadata_external_coordinator_owner_sessions_ready_metaserver_count,
             ),
             (
-                "root_blockserver_route_control_proof_count",
+                "placement_metadata_external_coordinator_ready_metaserver_count",
+                self.placement_metadata_external_coordinator_ready_metaserver_count,
+            ),
+            (
+                "placement_blockserver_route_control_proof_count",
                 self.root_pageserver_route_control_proof_count,
             ),
             (
-                "root_blockserver_route_control_read_ready_count",
+                "placement_blockserver_route_control_read_ready_count",
                 self.root_pageserver_route_control_read_ready_count,
             ),
             (
-                "root_blockserver_route_control_write_ready_count",
+                "placement_blockserver_route_control_write_ready_count",
                 self.root_pageserver_route_control_write_ready_count,
             ),
             (
@@ -535,15 +535,15 @@ impl ObjectStoreDistributedReadiness {
                 self.root_pageserver_total_read_quorum_margin,
             ),
             (
-                "root_chunkserver_control_proof_count",
+                "placement_chunkserver_control_proof_count",
                 self.root_replicaserver_control_proof_count,
             ),
             (
-                "root_chunkserver_control_read_ready_count",
+                "placement_chunkserver_control_read_ready_count",
                 self.root_replicaserver_control_read_ready_count,
             ),
             (
-                "root_chunkserver_control_write_ready_count",
+                "placement_chunkserver_control_write_ready_count",
                 self.root_replicaserver_control_write_ready_count,
             ),
             (

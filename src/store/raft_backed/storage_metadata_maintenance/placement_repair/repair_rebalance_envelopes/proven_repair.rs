@@ -7,11 +7,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
-        if self.store.last_applied_index() < proven_envelope.proof.root_applied_index {
+        if self.store.last_applied_index() < proven_envelope.proof.placement_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
                 "proven root placement repair proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
-                proven_envelope.proof.root_applied_index
+                proven_envelope.proof.placement_applied_index
             )));
         }
         let expected_envelope_checksum = expected_envelope_checksum.as_ref();

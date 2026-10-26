@@ -10,12 +10,12 @@ fn placement_raft_status_readiness_fields(
         ("writable", self_.writable),
         ("linearizable_reads", self_.linearizable_reads),
         (
-            "root_metadata_read_ready",
-            self_.root_metadata_read_ready,
+            "placement_metadata_read_ready",
+            self_.placement_metadata_read_ready,
         ),
         (
-            "root_metadata_write_ready",
-            self_.root_metadata_write_ready,
+            "placement_metadata_write_ready",
+            self_.placement_metadata_write_ready,
         ),
         (
             "root_blockserver_read_ready",
@@ -34,55 +34,55 @@ fn placement_raft_status_readiness_fields(
             self_.root_replicaserver_write_ready,
         ),
         (
-            "root_readiness_gate_read_ready",
-            self_.root_readiness_gate_read_ready,
+            "placement_readiness_gate_read_ready",
+            self_.placement_readiness_gate_read_ready,
         ),
         (
-            "root_readiness_gate_write_ready",
-            self_.root_readiness_gate_write_ready,
+            "placement_readiness_gate_write_ready",
+            self_.placement_readiness_gate_write_ready,
         ),
         (
-            "root_metadata_status_available",
-            self_.root_metadata_status_available,
+            "placement_metadata_status_available",
+            self_.placement_metadata_status_available,
         ),
         (
-            "root_metadata_read_quorum_available",
-            self_.root_metadata_read_quorum_available,
+            "placement_metadata_read_quorum_available",
+            self_.placement_metadata_read_quorum_available,
         ),
         (
-            "root_metadata_write_quorum_available",
-            self_.root_metadata_write_quorum_available,
+            "placement_metadata_write_quorum_available",
+            self_.placement_metadata_write_quorum_available,
         ),
         (
-            "root_metadata_caught_up_quorum_available",
-            self_.root_metadata_caught_up_quorum_available,
+            "placement_metadata_caught_up_quorum_available",
+            self_.placement_metadata_caught_up_quorum_available,
         ),
         (
-            "root_metadata_apply_quorum_available",
-            self_.root_metadata_apply_quorum_available,
+            "placement_metadata_apply_quorum_available",
+            self_.placement_metadata_apply_quorum_available,
         ),
         (
-            "root_metadata_read_fence_quorum_available",
-            self_.root_metadata_read_fence_quorum_available,
+            "placement_metadata_read_fence_quorum_available",
+            self_.placement_metadata_read_fence_quorum_available,
         ),
         (
-            "root_metadata_control_apply_quorum_available",
-            self_.root_metadata_control_apply_quorum_available,
+            "placement_metadata_control_apply_quorum_available",
+            self_.placement_metadata_control_apply_quorum_available,
         ),
         (
-            "root_metadata_shard_topology_mismatch",
-            self_.root_metadata_shard_topology_mismatch,
+            "placement_metadata_shard_topology_mismatch",
+            self_.placement_metadata_shard_topology_mismatch,
         ),
         (
-            "root_metadata_coordinator_backend_mismatch",
-            self_.root_metadata_coordinator_backend_mismatch,
+            "placement_metadata_coordinator_backend_mismatch",
+            self_.placement_metadata_coordinator_backend_mismatch,
         ),
         (
-            "root_metadata_coordinator_config_mismatch",
-            self_.root_metadata_coordinator_config_mismatch,
+            "placement_metadata_coordinator_config_mismatch",
+            self_.placement_metadata_coordinator_config_mismatch,
         ),
         (
-            "root_block_allocator_shards_complete",
+            "placement_block_allocator_shards_complete",
             self_.root_page_allocator_shards_complete,
         ),
     ] {

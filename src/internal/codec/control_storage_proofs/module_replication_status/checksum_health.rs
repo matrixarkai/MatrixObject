@@ -10,7 +10,7 @@ fn append_health_fingerprints(mut material: &mut Vec<u8>, status: &ObjectStoreMo
     append_u64(&mut material, status.ec_reconstructed_reads);
     append_u64(&mut material, status.ec_reconstruction_failures);
     append_string(&mut material, &status.metadata_state_fingerprint);
-    append_string(&mut material, &status.root_state_fingerprint);
+    append_string(&mut material, &status.placement_state_fingerprint);
     append_string(&mut material, &status.page_state_fingerprint);
     append_string(&mut material, &status.chunk_state_fingerprint);
     append_string(&mut material, &status.distributed_readiness_checksum);

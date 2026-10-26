@@ -32,7 +32,7 @@ impl PlacementLeaderLeaseReceipt {
     }
 
     pub fn proof_checksum(&self) -> String {
-        root_leader_lease_receipt_proof_checksum(self)
+        placement_leader_lease_receipt_proof_checksum(self)
     }
 
     pub fn with_proof_checksum(mut self) -> Self {
@@ -89,7 +89,7 @@ impl PlacementLeaderLeaseReceiptPage {
     }
 
     pub fn proof_checksum(&self) -> String {
-        root_leader_lease_receipt_page_proof_checksum(self)
+        placement_leader_lease_receipt_page_proof_checksum(self)
     }
 
     pub fn verify_expected_proof_checksum(

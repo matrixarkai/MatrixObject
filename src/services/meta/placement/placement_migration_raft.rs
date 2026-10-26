@@ -37,9 +37,9 @@ impl MatrixMetaService {
             plan,
             expected_plan_checksum,
             min_free_bytes,
-            before_state_fingerprint: self.root_state_fingerprint(),
-            root_read_index: 0,
-            root_raft_term: 0,
+            before_state_fingerprint: self.placement_state_fingerprint(),
+            placement_read_index: 0,
+            placement_raft_term: 0,
             root_read_proof_checksum: String::new(),
             request_checksum,
             expected_previous_commit_index: self.placement_commit_index.saturating_sub(1),
@@ -92,7 +92,7 @@ impl MatrixMetaService {
                 "root prepared placement migration request checksum mismatch".to_string(),
             ));
         }
-        if prepared.before_state_fingerprint != self.root_state_fingerprint() {
+        if prepared.before_state_fingerprint != self.placement_state_fingerprint() {
             return Err(ObjectError::PreconditionFailed(
                 "root prepared placement migration state changed before apply".to_string(),
             ));

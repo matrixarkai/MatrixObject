@@ -10,7 +10,7 @@ fn build_objectstore_module_status(
     catalog_endpoint: String,
     metaserver_catalog_endpoint_configured: bool,
     rootserver_catalog_endpoint_configured: bool,
-    rootserver_required: bool,
+    placement_required: bool,
 ) -> ObjectStoreModuleStatus {
     let mut status = ObjectStoreModuleStatus {
         ready: readiness.ready,
@@ -28,8 +28,8 @@ fn build_objectstore_module_status(
         replicaserver_open: readiness.storage_active_replicas != 0,
         pageserver_ready: readiness.page_ready,
         bsclient_ready: readiness.page_ready,
-        root_ready: readiness.root_ready,
-        root_leader_ready: readiness.root_leader_ready,
+        placement_ready: readiness.placement_ready,
+        placement_leader_ready: readiness.placement_leader_ready,
         configured_control_plane_mode,
         control_plane_mode: control_plane_mode.clone(),
         catalog_source,
@@ -38,7 +38,7 @@ fn build_objectstore_module_status(
         catalog_route_checksum: String::new(),
         metaserver_catalog_endpoint_configured: metaserver_catalog_endpoint_configured,
         rootserver_catalog_endpoint_configured: rootserver_catalog_endpoint_configured,
-        rootserver_required: rootserver_required,
+        placement_required: placement_required,
         metadata_ready: readiness.metadata_ready,
         metadata_read_ready: readiness.metadata_read_ready,
         metadata_write_ready: readiness.metadata_write_ready,

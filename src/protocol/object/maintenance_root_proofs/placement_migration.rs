@@ -9,8 +9,8 @@ impl PreparedPlacementMigrationEnvelope {
             ("version", self.version),
             ("length", self.length),
             ("min_free_bytes", self.min_free_bytes),
-            ("root_read_index", self.root_read_index),
-            ("root_raft_term", self.root_raft_term),
+            ("placement_read_index", self.placement_read_index),
+            ("placement_raft_term", self.placement_raft_term),
             (
                 "expected_previous_commit_index",
                 self.expected_previous_commit_index,

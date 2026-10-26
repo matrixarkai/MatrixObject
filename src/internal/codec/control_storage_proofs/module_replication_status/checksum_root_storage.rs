@@ -3,7 +3,7 @@
 fn append_placement_storage_status(mut material: &mut Vec<u8>, status: &ObjectStoreModuleStatus) {
     append_u64(&mut material, status.root_active_pageserver_count);
     append_u64(&mut material, status.root_active_replicaserver_count);
-    append_u64(&mut material, status.root_active_metaserver_count);
+    append_u64(&mut material, status.placement_active_metaserver_count);
     append_u64(&mut material, status.root_page_allocator_shard_count);
     append_u64(&mut material, status.root_page_allocator_covered_shards);
     append_u64(

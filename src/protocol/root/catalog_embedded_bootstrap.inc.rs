@@ -4,7 +4,7 @@
 pub struct EmbeddedControlPlaneBootstrap {
     pub metaserver_node: PlacementNode,
     pub root_leader_lease: PlacementLeaderLease,
-    pub root_state_fingerprint: String,
+    pub placement_state_fingerprint: String,
     pub metadata_control_proof: MetadataControlProof,
 }
 

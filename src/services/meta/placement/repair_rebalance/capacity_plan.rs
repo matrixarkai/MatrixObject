@@ -109,7 +109,7 @@ impl MatrixMetaService {
             max_objects,
             min_free_bytes,
             report,
-            before_state_fingerprint: self.root_state_fingerprint(),
+            before_state_fingerprint: self.placement_state_fingerprint(),
             request_checksum,
             expected_previous_commit_index: self.placement_commit_index.saturating_sub(1),
             prepared_commit_index: self.placement_commit_index,

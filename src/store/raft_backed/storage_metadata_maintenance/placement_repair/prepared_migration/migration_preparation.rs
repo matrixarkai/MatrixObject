@@ -48,8 +48,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_plan_checksum,
             min_free_bytes,
         )?;
-        prepared.root_read_index = proof.requested_root_read_index;
-        prepared.root_raft_term = proof.root_raft_term;
+        prepared.placement_read_index = proof.requested_placement_read_index;
+        prepared.placement_raft_term = proof.placement_raft_term;
         prepared.root_read_proof_checksum = proof.proof_checksum;
         prepared.raft_entry_checksum = prepared_placement_migration_checksum(&prepared);
         Ok(prepared)
@@ -90,8 +90,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let proof = self.ensure_placement_read_index("prepare root placement migration envelope")?;
         let mut prepared =
             self.prepare_placement_migration_raft_entry(plan, expected_plan_checksum)?;
-        prepared.root_read_index = proof.requested_root_read_index;
-        prepared.root_raft_term = proof.root_raft_term;
+        prepared.placement_read_index = proof.requested_placement_read_index;
+        prepared.placement_raft_term = proof.placement_raft_term;
         prepared.root_read_proof_checksum = proof.proof_checksum.clone();
         prepared.raft_entry_checksum = prepared_placement_migration_checksum(&prepared);
         Ok(ProvenPreparedPlacementMigrationEnvelope {

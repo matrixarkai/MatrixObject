@@ -7,8 +7,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ObjectMetadata, ObjectError> {
         if !prepared.root_read_proof_checksum.is_empty() {
             let proof = self.ensure_placement_read_index("propose prepared root placement migration")?;
-            if proof.requested_root_read_index != prepared.root_read_index
-                || proof.root_raft_term != prepared.root_raft_term
+            if proof.requested_placement_read_index != prepared.placement_read_index
+                || proof.placement_raft_term != prepared.placement_raft_term
                 || proof.proof_checksum != prepared.root_read_proof_checksum
             {
                 return Err(ObjectError::PreconditionFailed(
@@ -151,11 +151,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_raft_entry_checksum: impl AsRef<str>,
         expected_plan_checksum: impl AsRef<str>,
     ) -> Result<CommittedPlacementMigration, ObjectError> {
-        if self.store.last_applied_index() < proven_envelope.proof.root_applied_index {
+        if self.store.last_applied_index() < proven_envelope.proof.placement_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
                 "proven root placement migration proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
-                proven_envelope.proof.root_applied_index
+                proven_envelope.proof.placement_applied_index
             )));
         }
         let expected_envelope_checksum = expected_envelope_checksum.as_ref();

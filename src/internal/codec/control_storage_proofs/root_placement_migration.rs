@@ -114,14 +114,14 @@ pub(crate) fn append_placement_leader_lease_receipt(
     append_u64(out, receipt.update_time_ms);
 }
 
-pub(crate) fn root_leader_lease_receipt_proof_checksum(receipt: &PlacementLeaderLeaseReceipt) -> String {
+pub(crate) fn placement_leader_lease_receipt_proof_checksum(receipt: &PlacementLeaderLeaseReceipt) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MXOS-ROOT-LEADER-LEASE-RECEIPT-PROOF1");
     append_placement_leader_lease_receipt(&mut material, receipt);
     etag(&material)
 }
 
-pub(crate) fn root_leader_lease_receipt_page_proof_checksum(
+pub(crate) fn placement_leader_lease_receipt_page_proof_checksum(
     page: &PlacementLeaderLeaseReceiptPage,
 ) -> String {
     let mut material = Vec::new();
@@ -156,20 +156,20 @@ pub(crate) fn root_read_proof_checksum(proof: &PlacementReadProof) -> String {
     let mut material = Vec::new();
     if proof.proof_format.is_empty() || proof.proof_format == "MOS-RUST-ROOT-READ-PROOF1" {
         append_string(&mut material, "MOS-RUST-ROOT-READ-PROOF1");
-        append_u64(&mut material, proof.requested_root_read_index);
-        append_u64(&mut material, proof.root_applied_index);
-        append_u64(&mut material, proof.root_read_index_lag);
-        append_u64(&mut material, proof.root_raft_term);
-        append_string(&mut material, &proof.root_state_fingerprint);
+        append_u64(&mut material, proof.requested_placement_read_index);
+        append_u64(&mut material, proof.placement_applied_index);
+        append_u64(&mut material, proof.placement_read_index_lag);
+        append_u64(&mut material, proof.placement_raft_term);
+        append_string(&mut material, &proof.placement_state_fingerprint);
     } else {
         append_string(&mut material, &proof.proof_format);
         append_string(&mut material, &proof.operation);
-        append_u64(&mut material, proof.requested_root_read_index);
-        append_u64(&mut material, proof.requested_root_commit_index);
-        append_u64(&mut material, proof.root_applied_index);
-        append_u64(&mut material, proof.root_read_index_lag);
-        append_u64(&mut material, proof.root_raft_term);
-        append_string(&mut material, &proof.root_state_fingerprint);
+        append_u64(&mut material, proof.requested_placement_read_index);
+        append_u64(&mut material, proof.requested_placement_commit_index);
+        append_u64(&mut material, proof.placement_applied_index);
+        append_u64(&mut material, proof.placement_read_index_lag);
+        append_u64(&mut material, proof.placement_raft_term);
+        append_string(&mut material, &proof.placement_state_fingerprint);
     }
     etag(&material)
 }
@@ -191,8 +191,8 @@ pub(crate) fn prepared_placement_migration_checksum(
     append_string(&mut material, &prepared.expected_plan_checksum);
     append_u64(&mut material, prepared.min_free_bytes);
     append_string(&mut material, &prepared.before_state_fingerprint);
-    append_u64(&mut material, prepared.root_read_index);
-    append_u64(&mut material, prepared.root_raft_term);
+    append_u64(&mut material, prepared.placement_read_index);
+    append_u64(&mut material, prepared.placement_raft_term);
     append_string(&mut material, &prepared.root_read_proof_checksum);
     append_string(&mut material, &prepared.request_checksum);
     append_u64(&mut material, prepared.expected_previous_commit_index);
@@ -222,8 +222,8 @@ pub(crate) fn append_prepared_placement_migration_envelope(
     append_string(out, &envelope.expected_plan_checksum);
     append_u64(out, envelope.min_free_bytes);
     append_string(out, &envelope.before_state_fingerprint);
-    append_u64(out, envelope.root_read_index);
-    append_u64(out, envelope.root_raft_term);
+    append_u64(out, envelope.placement_read_index);
+    append_u64(out, envelope.placement_raft_term);
     append_string(out, &envelope.root_read_proof_checksum);
     append_string(out, &envelope.request_checksum);
     append_u64(out, envelope.expected_previous_commit_index);
@@ -268,8 +268,8 @@ pub(crate) fn prepared_placement_migration_envelope(
         expected_plan_checksum: prepared.expected_plan_checksum.clone(),
         min_free_bytes: prepared.min_free_bytes,
         before_state_fingerprint: prepared.before_state_fingerprint.clone(),
-        root_read_index: prepared.root_read_index,
-        root_raft_term: prepared.root_raft_term,
+        placement_read_index: prepared.placement_read_index,
+        placement_raft_term: prepared.placement_raft_term,
         root_read_proof_checksum: prepared.root_read_proof_checksum.clone(),
         request_checksum: prepared.request_checksum.clone(),
         expected_previous_commit_index: prepared.expected_previous_commit_index,

@@ -846,7 +846,7 @@ fn persistent_journal_replays_control_plane_catalog_config() {
         .unwrap();
     assert_eq!(selected.catalog_source, "metaserver");
     assert_eq!(selected.catalog_endpoint, "meta-a.local:9105");
-    assert!(!selected.rootserver_required);
+    assert!(!selected.placement_required);
     assert!(!selected.rootserver_endpoint_configured);
     let endpoint_set = reopened.select_catalog_endpoint_set(None, None).unwrap();
     assert_eq!(endpoint_set.effective_mode, "metaserver");
@@ -7868,55 +7868,55 @@ fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
     let healthy = store.distributed_readiness(0, 2, 0, 0, 1, 100, 0).unwrap();
     assert!(healthy.ready);
     assert_eq!(healthy.reason, "ready");
-    assert_eq!(healthy.root_active_metaserver_count, 2);
+    assert_eq!(healthy.placement_active_metaserver_count, 2);
     assert_eq!(healthy.root_metadata_value_bytes, 256);
-    assert_eq!(healthy.root_metadata_readable_metaserver_count, 2);
-    assert_eq!(healthy.root_metadata_writable_metaserver_count, 1);
-    assert_eq!(healthy.root_metadata_caught_up_metaserver_count, 2);
-    assert_eq!(healthy.root_metadata_apply_caught_up_metaserver_count, 2);
+    assert_eq!(healthy.placement_metadata_readable_metaserver_count, 2);
+    assert_eq!(healthy.placement_metadata_writable_metaserver_count, 1);
+    assert_eq!(healthy.placement_metadata_caught_up_metaserver_count, 2);
+    assert_eq!(healthy.placement_metadata_apply_caught_up_metaserver_count, 2);
     assert_eq!(
-        healthy.root_metadata_control_apply_caught_up_metaserver_count,
+        healthy.placement_metadata_control_apply_caught_up_metaserver_count,
         2
     );
-    assert_eq!(healthy.root_metadata_read_fence_covered_metaserver_count, 2);
-    assert_eq!(healthy.root_metadata_quorum, 1);
+    assert_eq!(healthy.placement_metadata_read_fence_covered_metaserver_count, 2);
+    assert_eq!(healthy.placement_metadata_quorum, 1);
     assert_eq!(
-        healthy.root_metadata_min_last_applied_mutation_commit_index,
+        healthy.placement_metadata_min_last_applied_mutation_commit_index,
         4
     );
-    assert_eq!(healthy.root_metadata_max_apply_commit_lag, 0);
-    assert_eq!(healthy.root_metadata_min_safe_read_fence, 4);
-    assert_eq!(healthy.root_metadata_max_read_fence_commit_lag, 0);
-    assert_eq!(healthy.root_metadata_max_read_fence_read_index_lag, 0);
-    assert_eq!(healthy.root_metadata_max_read_fence_applied_lag, 0);
+    assert_eq!(healthy.placement_metadata_max_apply_commit_lag, 0);
+    assert_eq!(healthy.placement_metadata_min_safe_read_fence, 4);
+    assert_eq!(healthy.placement_metadata_max_read_fence_commit_lag, 0);
+    assert_eq!(healthy.placement_metadata_max_read_fence_read_index_lag, 0);
+    assert_eq!(healthy.placement_metadata_max_read_fence_applied_lag, 0);
     assert_eq!(
-        healthy.root_metadata_control_min_last_applied_mutation_commit_index,
+        healthy.placement_metadata_control_min_last_applied_mutation_commit_index,
         4
     );
     assert_eq!(
-        healthy.root_metadata_control_max_last_applied_mutation_commit_index,
+        healthy.placement_metadata_control_max_last_applied_mutation_commit_index,
         5
     );
-    assert_eq!(healthy.root_metadata_control_max_apply_commit_lag, 0);
-    assert!(healthy.root_metadata_read_quorum_available);
-    assert!(healthy.root_metadata_write_quorum_available);
-    assert!(healthy.root_metadata_caught_up_quorum_available);
-    assert!(healthy.root_metadata_apply_quorum_available);
-    assert!(healthy.root_metadata_read_fence_quorum_available);
-    assert!(healthy.root_metadata_control_apply_quorum_available);
-    assert!(!healthy.root_metadata_shard_topology_mismatch);
-    assert_eq!(healthy.root_metadata_max_shard_topology_epoch, 5);
-    assert_eq!(healthy.root_metadata_control_proof_count, 2);
-    assert!(!healthy.root_metadata_control_proof_checksum.is_empty());
-    assert_eq!(healthy.root_metadata_coverage_status, "healthy");
+    assert_eq!(healthy.placement_metadata_control_max_apply_commit_lag, 0);
+    assert!(healthy.placement_metadata_read_quorum_available);
+    assert!(healthy.placement_metadata_write_quorum_available);
+    assert!(healthy.placement_metadata_caught_up_quorum_available);
+    assert!(healthy.placement_metadata_apply_quorum_available);
+    assert!(healthy.placement_metadata_read_fence_quorum_available);
+    assert!(healthy.placement_metadata_control_apply_quorum_available);
+    assert!(!healthy.placement_metadata_shard_topology_mismatch);
+    assert_eq!(healthy.placement_metadata_max_shard_topology_epoch, 5);
+    assert_eq!(healthy.placement_metadata_control_proof_count, 2);
+    assert!(!healthy.placement_metadata_control_proof_checksum.is_empty());
+    assert_eq!(healthy.placement_metadata_coverage_status, "healthy");
     let module_status = store.module_status(0, 2, 0, 0, 1, 100, 0).unwrap();
     assert_eq!(
-        module_status.root_metadata_control_proof_count,
-        healthy.root_metadata_control_proof_count
+        module_status.placement_metadata_control_proof_count,
+        healthy.placement_metadata_control_proof_count
     );
     assert_eq!(
-        module_status.root_metadata_control_proof_checksum,
-        healthy.root_metadata_control_proof_checksum
+        module_status.placement_metadata_control_proof_checksum,
+        healthy.placement_metadata_control_proof_checksum
     );
     assert_eq!(
         module_status.root_pageserver_route_control_proof_count,
@@ -7963,12 +7963,12 @@ fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
         healthy.root_replicaserver_control_max_raft_commit_index
     );
     assert_eq!(
-        module_status.root_metadata_control_max_last_applied_mutation_commit_index,
-        healthy.root_metadata_control_max_last_applied_mutation_commit_index
+        module_status.placement_metadata_control_max_last_applied_mutation_commit_index,
+        healthy.placement_metadata_control_max_last_applied_mutation_commit_index
     );
     assert_eq!(
-        module_status.root_metadata_control_max_apply_commit_lag,
-        healthy.root_metadata_control_max_apply_commit_lag
+        module_status.placement_metadata_control_max_apply_commit_lag,
+        healthy.placement_metadata_control_max_apply_commit_lag
     );
     assert!(!module_status.control_checksum.is_empty());
 
@@ -8013,37 +8013,37 @@ fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
         .distributed_readiness(0, 2, 0, 0, 1, 100, 0)
         .unwrap();
     assert!(!lagging.ready);
-    assert!(!lagging.root_ready);
-    assert!(lagging.root_leader_ready);
+    assert!(!lagging.placement_ready);
+    assert!(lagging.placement_leader_ready);
     assert_eq!(lagging.reason, "root_metaserver_apply_quorum_unavailable");
-    assert_eq!(lagging.root_metadata_caught_up_metaserver_count, 1);
-    assert_eq!(lagging.root_metadata_apply_caught_up_metaserver_count, 0);
+    assert_eq!(lagging.placement_metadata_caught_up_metaserver_count, 1);
+    assert_eq!(lagging.placement_metadata_apply_caught_up_metaserver_count, 0);
     assert_eq!(
-        lagging.root_metadata_control_apply_caught_up_metaserver_count,
+        lagging.placement_metadata_control_apply_caught_up_metaserver_count,
         0
     );
-    assert_eq!(lagging.root_metadata_read_fence_covered_metaserver_count, 1);
+    assert_eq!(lagging.placement_metadata_read_fence_covered_metaserver_count, 1);
     assert_eq!(
-        lagging.root_metadata_min_last_applied_mutation_commit_index,
+        lagging.placement_metadata_min_last_applied_mutation_commit_index,
         5
     );
     assert_eq!(
-        lagging.root_metadata_control_max_last_applied_mutation_commit_index,
+        lagging.placement_metadata_control_max_last_applied_mutation_commit_index,
         5
     );
-    assert_eq!(lagging.root_metadata_max_apply_commit_lag, 3);
-    assert_eq!(lagging.root_metadata_min_safe_read_fence, 8);
-    assert_eq!(lagging.root_metadata_max_read_fence_commit_lag, 0);
-    assert_eq!(lagging.root_metadata_max_read_fence_read_index_lag, 0);
-    assert_eq!(lagging.root_metadata_max_read_fence_applied_lag, 0);
-    assert!(lagging.root_metadata_read_quorum_available);
-    assert!(lagging.root_metadata_write_quorum_available);
-    assert!(lagging.root_metadata_caught_up_quorum_available);
-    assert!(!lagging.root_metadata_apply_quorum_available);
-    assert!(lagging.root_metadata_read_fence_quorum_available);
-    assert!(!lagging.root_metadata_control_apply_quorum_available);
+    assert_eq!(lagging.placement_metadata_max_apply_commit_lag, 3);
+    assert_eq!(lagging.placement_metadata_min_safe_read_fence, 8);
+    assert_eq!(lagging.placement_metadata_max_read_fence_commit_lag, 0);
+    assert_eq!(lagging.placement_metadata_max_read_fence_read_index_lag, 0);
+    assert_eq!(lagging.placement_metadata_max_read_fence_applied_lag, 0);
+    assert!(lagging.placement_metadata_read_quorum_available);
+    assert!(lagging.placement_metadata_write_quorum_available);
+    assert!(lagging.placement_metadata_caught_up_quorum_available);
+    assert!(!lagging.placement_metadata_apply_quorum_available);
+    assert!(lagging.placement_metadata_read_fence_quorum_available);
+    assert!(!lagging.placement_metadata_control_apply_quorum_available);
     assert_eq!(
-        lagging.root_metadata_coverage_status,
+        lagging.placement_metadata_coverage_status,
         "apply_quorum_unavailable"
     );
 
@@ -8100,23 +8100,23 @@ fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
         .distributed_readiness(0, 2, 0, 0, 1, 100, 0)
         .unwrap();
     assert!(!read_lag.ready);
-    assert!(!read_lag.root_ready);
-    assert!(read_lag.root_leader_ready);
+    assert!(!read_lag.placement_ready);
+    assert!(read_lag.placement_leader_ready);
     assert_eq!(
         read_lag.reason,
         "root_metaserver_read_fence_quorum_unavailable"
     );
     assert_eq!(
-        read_lag.root_metadata_read_fence_covered_metaserver_count,
+        read_lag.placement_metadata_read_fence_covered_metaserver_count,
         0
     );
-    assert_eq!(read_lag.root_metadata_min_safe_read_fence, 9);
-    assert_eq!(read_lag.root_metadata_max_read_fence_commit_lag, 3);
-    assert_eq!(read_lag.root_metadata_max_read_fence_read_index_lag, 2);
-    assert_eq!(read_lag.root_metadata_max_read_fence_applied_lag, 1);
-    assert!(!read_lag.root_metadata_read_fence_quorum_available);
+    assert_eq!(read_lag.placement_metadata_min_safe_read_fence, 9);
+    assert_eq!(read_lag.placement_metadata_max_read_fence_commit_lag, 3);
+    assert_eq!(read_lag.placement_metadata_max_read_fence_read_index_lag, 2);
+    assert_eq!(read_lag.placement_metadata_max_read_fence_applied_lag, 1);
+    assert!(!read_lag.placement_metadata_read_fence_quorum_available);
     assert_eq!(
-        read_lag.root_metadata_coverage_status,
+        read_lag.placement_metadata_coverage_status,
         "read_fence_quorum_unavailable"
     );
 
@@ -8132,11 +8132,11 @@ fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
         .unwrap();
     let degraded = store.distributed_readiness(0, 2, 0, 0, 1, 100, 0).unwrap();
     assert!(!degraded.ready);
-    assert!(!degraded.root_ready);
-    assert!(degraded.root_leader_ready);
+    assert!(!degraded.placement_ready);
+    assert!(degraded.placement_leader_ready);
     assert_eq!(degraded.reason, "root_metaserver_degraded");
-    assert!(degraded.root_metadata_shard_topology_mismatch);
-    assert_eq!(degraded.root_metadata_coverage_status, "topology_mismatch");
+    assert!(degraded.placement_metadata_shard_topology_mismatch);
+    assert_eq!(degraded.placement_metadata_coverage_status, "topology_mismatch");
     assert_ne!(healthy.control_checksum, degraded.control_checksum);
 }
 
@@ -8205,10 +8205,10 @@ fn placement_raft_status_exposes_service_coverage() {
     assert!(status.linearizable_reads);
     assert_eq!(status.control_checksum_format, "MOSRSROOTRAFTSTATUS7");
     assert_eq!(status.node_count, 5);
-    assert!(status.root_metadata_status_available);
-    assert_eq!(status.root_active_metaserver_count, 1);
-    assert_eq!(status.root_metadata_control_proof_count, 1);
-    assert_eq!(status.root_metadata_coverage_status, "healthy");
+    assert!(status.placement_metadata_status_available);
+    assert_eq!(status.placement_active_metaserver_count, 1);
+    assert_eq!(status.placement_metadata_control_proof_count, 1);
+    assert_eq!(status.placement_metadata_coverage_status, "healthy");
     assert_eq!(status.root_active_pageserver_count, 2);
     assert_eq!(status.root_page_allocator_shard_count, 2);
     assert_eq!(status.root_page_allocator_covered_shards, 2);
@@ -8241,7 +8241,7 @@ fn placement_raft_status_exposes_service_coverage() {
     assert_eq!(status.root_replicaserver_control_min_raft_commit_index, 44);
     assert_eq!(status.root_replicaserver_control_max_raft_commit_index, 44);
     assert_eq!(status.root_replicaserver_coverage_status, "healthy");
-    assert!(!status.root_metadata_control_proof_checksum.is_empty());
+    assert!(!status.placement_metadata_control_proof_checksum.is_empty());
     assert!(!status
         .root_pageserver_route_control_proof_checksum
         .is_empty());
@@ -8512,7 +8512,7 @@ fn placement_tracks_pageserver_service_coverage_for_write_routing() {
     let ready = store.distributed_readiness(0, 2, 0, 0, 1, 100, 0).unwrap();
     assert!(ready.ready);
     assert_eq!(
-        ready.root_raft_status_checksum_format,
+        ready.placement_raft_status_checksum_format,
         "MOSRSROOTRAFTSTATUS7"
     );
     assert_eq!(ready.root_ready_pageserver_count, 1);
@@ -9879,8 +9879,8 @@ fn distributed_put_uses_placement_and_releases_capacity() {
     let missing_leader = store.distributed_readiness(0, 10, 0, 0, 2, 100, 0).unwrap();
     assert!(missing_leader.ready);
     assert_eq!(missing_leader.reason, "ready");
-    assert!(missing_leader.root_ready);
-    assert!(missing_leader.root_leader_ready);
+    assert!(missing_leader.placement_ready);
+    assert!(missing_leader.placement_leader_ready);
     assert!(missing_leader.root_leader_node_id.is_empty());
     store
         .register_placement_node(PlacementNode {
@@ -9916,16 +9916,16 @@ fn distributed_put_uses_placement_and_releases_capacity() {
     assert!(ready.page_ready);
     assert!(ready.metadata.ready);
     assert!(ready.page.ready);
-    assert!(ready.root_ready);
-    assert!(ready.root_leader_ready);
+    assert!(ready.placement_ready);
+    assert!(ready.placement_leader_ready);
     assert_eq!(
         store.configured_control_plane_mode(),
         ControlPlaneMode::MetaServer
     );
-    assert!(!store.rootserver_required());
+    assert!(!store.placement_required());
     assert_eq!(store.effective_control_plane_mode(), "metaserver");
     assert_eq!(ready.control_plane_mode, "metaserver");
-    assert!(!ready.rootserver_required);
+    assert!(!ready.placement_required);
     assert_eq!(ready.root_leader_node_id, "root-a");
     assert_eq!(ready.root_lease_epoch, root_lease.epoch);
     assert_eq!(ready.root_lease_expire_time_ms, root_lease.expire_time_ms);
@@ -9953,8 +9953,8 @@ fn distributed_put_uses_placement_and_releases_capacity() {
     assert_eq!(ready.placement_bytes_to_repair, 0);
     assert!(!ready.placement_truncated);
     assert_eq!(ready.root_node_count, 3);
-    assert_eq!(ready.root_expected_nodes, ready.root_node_count);
-    assert!(!ready.root_metadata_status_available);
+    assert_eq!(ready.placement_expected_nodes, ready.root_node_count);
+    assert!(!ready.placement_metadata_status_available);
     assert_eq!(ready.bucket_count, 1);
     assert_eq!(ready.object_count, 2);
     assert_eq!(ready.live_object_count, 2);
@@ -10453,7 +10453,7 @@ fn distributed_put_uses_placement_and_releases_capacity() {
     );
     let module_status = store.module_status(0, 2, 0, 0, 2, 100, 0).unwrap();
     assert_eq!(module_status.root_node_count, ready.root_node_count);
-    assert_eq!(module_status.root_expected_nodes, ready.root_expected_nodes);
+    assert_eq!(module_status.placement_expected_nodes, ready.placement_expected_nodes);
     assert_eq!(module_status.root_leader_node_id, ready.root_leader_node_id);
     assert_eq!(module_status.root_lease_epoch, ready.root_lease_epoch);
     assert_eq!(
@@ -10904,9 +10904,9 @@ fn distributed_put_uses_placement_and_releases_capacity() {
     );
     assert_eq!(
         ready_fields
-            .get("readiness.root_metadata_control_proof_checksum")
+            .get("readiness.placement_metadata_control_proof_checksum")
             .map(String::as_str),
-        Some(ready.root_metadata_control_proof_checksum.as_str())
+        Some(ready.placement_metadata_control_proof_checksum.as_str())
     );
     assert_eq!(
         ready.metadata_read_ready,
@@ -11498,16 +11498,16 @@ fn default_control_plane_stays_metaserver_without_placement_nodes() {
         ControlPlaneMode::Auto
     );
     assert_eq!(store.effective_control_plane_mode(), "metaserver");
-    assert!(!store.rootserver_required());
+    assert!(!store.placement_required());
     let readiness = store.distributed_readiness(0, 10, 0, 0, 2, 100, 0).unwrap();
-    assert!(readiness.root_ready);
-    assert!(readiness.root_leader_ready);
+    assert!(readiness.placement_ready);
+    assert!(readiness.placement_leader_ready);
     assert_eq!(readiness.control_plane_mode, "metaserver");
-    assert!(!readiness.rootserver_required);
+    assert!(!readiness.placement_required);
     let status = store.module_status(0, 10, 0, 0, 2, 100, 0).unwrap();
     assert_eq!(status.root_status, "disabled");
     assert_eq!(status.control_plane_mode, "metaserver");
-    assert!(!status.rootserver_required);
+    assert!(!status.placement_required);
 }
 
 #[test]
@@ -11587,7 +11587,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
         embedded_default.catalog_endpoint,
         EMBEDDED_METASERVER_CATALOG_ENDPOINT
     );
-    assert!(!embedded_default.rootserver_required);
+    assert!(!embedded_default.placement_required);
     let embedded_default_set = store.select_catalog_endpoint_set(None, None).unwrap();
     assert_eq!(embedded_default_set.endpoint_count(), 1);
     assert_eq!(
@@ -11606,7 +11606,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
     assert_eq!(selected.effective_mode, "metaserver");
     assert_eq!(selected.catalog_source, "metaserver");
     assert_eq!(selected.catalog_endpoint, "meta.local:9105");
-    assert!(!selected.rootserver_required);
+    assert!(!selected.placement_required);
     assert_eq!(
         selected.catalog_route_checksum_format,
         CONTROL_PLANE_CATALOG_SELECTION_CHECKSUM_FORMAT
@@ -11702,7 +11702,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
         "meta-config-a.local:9105"
     );
     assert_eq!(configured_meta_set.effective_mode, "metaserver");
-    assert!(!configured_meta_set.rootserver_required);
+    assert!(!configured_meta_set.placement_required);
     let configured_meta_selected = configured_meta_store
         .select_catalog_endpoint(None, Some("root-config.local:9100"))
         .unwrap()
@@ -11747,7 +11747,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
         EMBEDDED_METASERVER_CATALOG_ENDPOINT
     );
     assert_eq!(root_only_auto.effective_mode, "metaserver");
-    assert!(!root_only_auto.rootserver_required);
+    assert!(!root_only_auto.placement_required);
     let root_only_auto_set = store
         .select_catalog_endpoint_set(None, Some("root.local:9100"))
         .unwrap();
@@ -11757,7 +11757,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
         "metaserver"
     );
     assert_eq!(root_only_auto_set.effective_mode, "metaserver");
-    assert!(!root_only_auto_set.rootserver_required);
+    assert!(!root_only_auto_set.placement_required);
 
     // A ROOT CATALOG ENDPOINT IS REFUSED, not stored and ignored, because nothing reads
     // one: the control plane is the metaserver. This is also the journal-replay path, which
@@ -11784,7 +11784,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
         EMBEDDED_METASERVER_CATALOG_ENDPOINT
     );
     assert!(!configured_root_status.rootserver_catalog_endpoint_configured);
-    assert!(!configured_root_status.rootserver_required);
+    assert!(!configured_root_status.placement_required);
     // And a store cannot be built with one either.
     let mut rejected_options = test_options();
     rejected_options.rootserver_catalog_endpoint = "root.local:9100".to_string();
@@ -11844,7 +11844,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
         embedded_meta_selection.catalog_endpoint,
         EMBEDDED_METASERVER_CATALOG_ENDPOINT
     );
-    assert!(!embedded_meta_selection.rootserver_required);
+    assert!(!embedded_meta_selection.placement_required);
     let embedded_meta_endpoint_set = meta_store
         .select_catalog_endpoint_set(None, Some("root.local:9100"))
         .unwrap();
@@ -28131,8 +28131,8 @@ fn raft_backed_store_gates_prepared_placement_actions() {
     let prepared = replicated
         .prepare_placement_migration_raft_entry_linearizable(plan.clone(), &plan.plan_checksum)
         .unwrap();
-    assert_eq!(prepared.root_read_index, replicated.raft_commit_index());
-    assert_eq!(prepared.root_raft_term, replicated.raft.term());
+    assert_eq!(prepared.placement_read_index, replicated.raft_commit_index());
+    assert_eq!(prepared.placement_raft_term, replicated.raft.term());
     assert!(!prepared.root_read_proof_checksum.is_empty());
     let migration_envelope = replicated
         .prepare_placement_migration_envelope_with_read_proof_linearizable(
@@ -28517,7 +28517,7 @@ fn raft_backed_store_replays_placement_draining_repairs() {
     );
     assert!(!envelope.envelope.envelope_checksum.is_empty());
     assert_eq!(
-        envelope.proof.root_applied_index,
+        envelope.proof.placement_applied_index,
         replicated.raft_commit_index()
     );
     let receipt = replicated
@@ -28630,7 +28630,7 @@ fn raft_backed_store_replays_prepared_placement_health_repairs() {
     );
     assert!(!envelope.envelope.envelope_checksum.is_empty());
     assert_eq!(
-        envelope.proof.root_applied_index,
+        envelope.proof.placement_applied_index,
         replicated.raft_commit_index()
     );
     let receipt = replicated
@@ -28720,14 +28720,14 @@ fn raft_backed_store_decommissions_draining_objects_after_page_repair() {
         .unwrap();
     assert_eq!(proven_plan.value.repair_objects, 1);
     assert_eq!(
-        proven_plan.proof.requested_root_read_index,
+        proven_plan.proof.requested_placement_read_index,
         before_decommission_commit
     );
     assert_eq!(
-        proven_plan.proof.root_applied_index,
+        proven_plan.proof.placement_applied_index,
         before_decommission_commit
     );
-    assert_eq!(proven_plan.proof.root_read_index_lag, 0);
+    assert_eq!(proven_plan.proof.placement_read_index_lag, 0);
 
     let report = replicated.propose_decommission_draining_object_replicas(10, 0);
     assert_eq!(report.plan.repair_objects, 1);
@@ -29031,7 +29031,7 @@ fn raft_backed_store_gates_placement_node_usage_reads() {
     assert_eq!(second_node_page.value.nodes[0].node_id, "chunk-b");
     assert!(!second_node_page.value.has_more);
     assert_eq!(
-        second_node_page.proof.requested_root_read_index,
+        second_node_page.proof.requested_placement_read_index,
         replicated.raft.commit_index()
     );
     let invalid_node_page = replicated
@@ -29442,14 +29442,14 @@ fn raft_backed_store_replays_object_capacity_rebalance_report() {
         .plan_object_capacity_rebalance_with_read_proof_linearizable(1, 40, None)
         .unwrap();
     assert_eq!(
-        proven_plan.proof.requested_root_read_index,
+        proven_plan.proof.requested_placement_read_index,
         replicated.raft_commit_index()
     );
     assert_eq!(
-        proven_plan.proof.root_applied_index,
+        proven_plan.proof.placement_applied_index,
         replicated.raft_commit_index()
     );
-    assert_eq!(proven_plan.proof.root_read_index_lag, 0);
+    assert_eq!(proven_plan.proof.placement_read_index_lag, 0);
     let plan = proven_plan.value;
     assert_eq!(plan.items[0].object.object_id, metadata.object_id);
     assert_eq!(plan.items[0].pressure_node_id, "chunk-a");
@@ -29460,7 +29460,7 @@ fn raft_backed_store_replays_object_capacity_rebalance_report() {
         .prepare_placement_capacity_rebalance_envelope_with_read_proof_linearizable(1, 40)
         .unwrap();
     assert_eq!(
-        proven_envelope.proof.requested_root_read_index,
+        proven_envelope.proof.requested_placement_read_index,
         replicated.raft_commit_index()
     );
     assert_eq!(proven_envelope.envelope.max_objects, 1);
@@ -31981,10 +31981,10 @@ fn pageserver_storage_fanout_uses_production_tunables() {
         distributed.page_state_fingerprint_bytes,
         readiness.page_state_fingerprint_bytes
     );
-    assert!(!distributed.root_state_fingerprint.is_empty());
+    assert!(!distributed.placement_state_fingerprint.is_empty());
     assert_eq!(
-        distributed.root_state_fingerprint,
-        store.meta_service.root_state_fingerprint()
+        distributed.placement_state_fingerprint,
+        store.meta_service.placement_state_fingerprint()
     );
     assert!(!distributed.root_raft_status_checksum.is_empty());
     assert!(!distributed.chunk_state_fingerprint.is_empty());
@@ -48125,6 +48125,14 @@ fn a_stored_lease_held_under_the_retired_spelling_still_loads() {
 /// and that is not the assertion being weakened to fit them: each entry is itself checked to
 /// be genuinely unmatched, so the list cannot quietly become a way to wave anything through.
 ///
+/// # WHY IT LOOKS FOR BOTH SPELLINGS
+///
+/// It matches keys carrying either the retired stem or the current one. Scoped to the retired
+/// one it would stop watching each key at the moment that key was renamed -- the moment the
+/// template copy is most likely to be left behind. The first rename to pass through here
+/// proved the point: eleven keys moved, the parse found thirty-one of forty-two, and the
+/// non-vacuity clause fired because the population had shrunk under it.
+///
 /// Twenty-nine of those thirty name NO FIELD ANYWHERE in the tree. Their values reach the
 /// report through argument position among several hundred placeholders, so the correspondence
 /// between a key and the number printed under it rests on ordering alone. Whether each one
@@ -48139,6 +48147,10 @@ fn every_placement_key_the_benchmark_report_spells_out_names_a_real_field() {
     const KNOWN_UNMATCHED: &[(&str, &str)] = &[
         ("repo_root",
          "a git path on the provenance report, not a readiness field at all"),
+        ("placement_eligible",
+         "an abbreviated key in replicaserver_readiness_json, filled from           root_placement_eligible_replicaserver_count; that report shortens every key, so           none of its keys is a field name"),
+        ("placement_ineligible",
+         "abbreviated in the same report, from root_placement_ineligible_replicaserver_count"),
         ("root_blockserver_first_health_reasons",
          "names no field anywhere in the tree; its value is supplied positionally"),
         ("root_blockserver_health_degraded_count",
@@ -48206,7 +48218,7 @@ fn every_placement_key_the_benchmark_report_spells_out_names_a_real_field() {
         if index % 2 == 0 {
             continue;
         }
-        if !piece.contains("root") {
+        if !piece.contains("root") && !piece.contains("placement") {
             continue;
         }
         if piece.is_empty()

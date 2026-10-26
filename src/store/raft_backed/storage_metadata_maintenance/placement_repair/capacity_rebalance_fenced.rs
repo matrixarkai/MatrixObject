@@ -172,11 +172,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             "proven object capacity rebalance",
             expected_page_route_control_checksum,
         )?;
-        if self.store.last_applied_index() < proven_plan.proof.root_applied_index {
+        if self.store.last_applied_index() < proven_plan.proof.placement_applied_index {
             return Err(ObjectError::PreconditionFailed(format!(
                 "proven object capacity rebalance root proof is not applied: applied={} required={}",
                 self.store.last_applied_index(),
-                proven_plan.proof.root_applied_index
+                proven_plan.proof.placement_applied_index
             )));
         }
         let expected_plan_checksum = expected_plan_checksum.as_ref();
