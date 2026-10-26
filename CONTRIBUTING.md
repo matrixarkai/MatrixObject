@@ -27,7 +27,7 @@ RUSTFLAGS="-D warnings" cargo build --all-targets --locked
 RUSTFLAGS="-D warnings" cargo build --all-targets --locked --all-features
 ```
 
-**20 tests fail on a clean checkout**, and they are recorded by
+**17 tests fail on a clean checkout**, and they are recorded by
 name in [`tools/known_failures.txt`](tools/known_failures.txt). That is why a bare
 `cargo test` looks alarming on a clean checkout. Use the gate, which compares the
 failures against that baseline in both directions — a new failure fails it, and so does a
@@ -55,9 +55,9 @@ Two jobs, both on a pinned toolchain:
 | job | what it does |
 |---|---|
 | **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
-| **format and rollback guards** | 55 individual tests, each run by name with `--exact` |
+| **format and rollback guards** | 58 individual tests, each run by name with `--exact` |
 
-**CI does not run the suite.** It compiles everything and runs those 55 guards. A green
+**CI does not run the suite.** It compiles everything and runs those 58 guards. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run
 `tools/suite_gate.sh` yourself.
 

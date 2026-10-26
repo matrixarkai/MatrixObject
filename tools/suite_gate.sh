@@ -7,7 +7,7 @@
 #
 #   tools/suite_gate.sh
 #
-# 20 tests fail on a clean checkout. They are listed in tools/known_failures.txt,
+# 17 tests fail on a clean checkout. They are listed in tools/known_failures.txt,
 # and this script is how you tell a pre-existing failure from one you just caused.
 #
 # It was 21 until one of them turned out to be a stale literal rather than a broken
