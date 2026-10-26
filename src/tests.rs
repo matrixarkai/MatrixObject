@@ -48101,3 +48101,182 @@ fn a_stored_lease_held_under_the_retired_spelling_still_loads() {
         "and the rewritten node must be one, or the assertion above passes for the wrong reason"
     );
 }
+
+/// Every placement key the benchmark report spells out by hand names a field that exists.
+///
+/// # WHY THIS GUARD EXISTS
+///
+/// The report in `src/bin/scale_bench.rs` builds JSON by hand: a `format!` template with the
+/// key names written into the string and the values supplied positionally. That makes the key
+/// names ORDINARY TEXT. Renaming a field does not change them, does not fail to compile, and
+/// does not fail a test, because that binary is run by neither the workflow nor the suite
+/// gate. A vocabulary change could therefore leave this report emitting names that nothing
+/// else in the tree uses, silently.
+///
+/// It also hid from two separate sweeps. A sweep over string literals missed these keys
+/// because they are not standalone literals -- they sit inside a larger template. A sweep
+/// over declarations missed them because they are not declarations. Both sweeps assumed the
+/// name appears alone, so two independent methods agreeing meant less than it looked.
+///
+/// # WHAT IT ASSERTS, AND WHAT IT DOES NOT EXCUSE
+///
+/// Every key found in that file carrying the placement stem must either be a field on
+/// `ObjectStoreDistributedReadiness` or be named below with a reason. Thirty are named below,
+/// and that is not the assertion being weakened to fit them: each entry is itself checked to
+/// be genuinely unmatched, so the list cannot quietly become a way to wave anything through.
+///
+/// Twenty-nine of those thirty name NO FIELD ANYWHERE in the tree. Their values reach the
+/// report through argument position among several hundred placeholders, so the correspondence
+/// between a key and the number printed under it rests on ordering alone. Whether each one
+/// reports what its name claims is a live question about that report, and it is deliberately
+/// not settled by renaming anything -- a key that may be mislabelling its value would simply
+/// carry the mislabel into a new name.
+#[test]
+fn every_placement_key_the_benchmark_report_spells_out_names_a_real_field() {
+    const BENCH: &str = include_str!("bin/scale_bench.rs");
+    const CONTRACT: &str = include_str!("protocol/storage/distributed_readiness_contract.rs");
+
+    const KNOWN_UNMATCHED: &[(&str, &str)] = &[
+        ("repo_root",
+         "a git path on the provenance report, not a readiness field at all"),
+        ("root_blockserver_first_health_reasons",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_health_degraded_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_health_ok_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_health_unavailable_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_health_unknown_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_not_fault_tolerant_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_read_ready",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_chunk_endpoint_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_health_reason_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_healthy_chunk_endpoint_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_raft_readable_chunk_endpoint_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_raft_writable_chunk_endpoint_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_read_quorum",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_read_quorum_deficit",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_read_quorum_margin",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_writable_chunk_endpoint_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_write_quorum",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_write_quorum_deficit",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_total_write_quorum_margin",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_blockserver_write_ready",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_chunkserver_first_health_reasons",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_chunkserver_health_degraded_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_chunkserver_health_ok_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_chunkserver_health_unavailable_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_chunkserver_health_unknown_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_chunkserver_not_fault_tolerant_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_chunkserver_read_ready",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_chunkserver_total_health_reason_count",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+        ("root_chunkserver_write_ready",
+         "names no field anywhere in the tree; its value is supplied positionally"),
+    ];
+
+    // The keys are inside escaped-quote templates, so the delimiter is a backslash and a
+    // quote. Splitting on it yields the contents at every odd index.
+    let mut keys: Vec<&str> = Vec::new();
+    for (index, piece) in BENCH.split("\\\"").enumerate() {
+        if index % 2 == 0 {
+            continue;
+        }
+        if !piece.contains("root") {
+            continue;
+        }
+        if piece.is_empty()
+            || !piece
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        {
+            continue;
+        }
+        if !keys.contains(&piece) {
+            keys.push(piece);
+        }
+    }
+
+    let fields: std::collections::BTreeSet<&str> = CONTRACT
+        .lines()
+        .filter_map(|line| {
+            line.trim_start()
+                .strip_prefix("pub ")
+                .and_then(|rest| rest.split(':').next())
+        })
+        .collect();
+
+    // NON-VACUITY, THREE WAYS. A parse that silently found nothing would otherwise pass: no
+    // keys means no violations, and an empty field set would make every key unmatched and
+    // every exemption look justified.
+    assert!(
+        keys.len() >= 40,
+        "only {} keys parsed out of the report, so the parse is broken rather than the report \
+         being clean",
+        keys.len()
+    );
+    assert!(
+        fields.len() >= 300,
+        "only {} fields parsed off the readiness contract, so the parse is broken",
+        fields.len()
+    );
+    let matched = keys.iter().filter(|key| fields.contains(*key)).count();
+    assert!(
+        matched >= 12,
+        "only {matched} of the report keys matched a field, so this guard is not actually \
+         holding anything in place"
+    );
+
+    // EACH LISTED ENTRY HAS TO BE REAL. The moment one of these becomes a field, it belongs
+    // in the checked set and not in the list, and leaving it here would hide the next one.
+    for (key, why) in KNOWN_UNMATCHED {
+        assert!(
+            !fields.contains(key),
+            "{key} is a readiness field now, so take it out of the known-unmatched list \
+             instead of carrying the note {why:?}"
+        );
+        assert!(!why.is_empty(), "{key} is listed as unmatched with no reason");
+    }
+
+    let mut unaccounted: Vec<&str> = Vec::new();
+    for key in &keys {
+        if fields.contains(key) {
+            continue;
+        }
+        if KNOWN_UNMATCHED.iter().any(|(name, _)| name == key) {
+            continue;
+        }
+        unaccounted.push(key);
+    }
+    unaccounted.sort_unstable();
+    assert!(
+        unaccounted.is_empty(),
+        "the benchmark report spells out {unaccounted:?}, and none of those is a readiness \
+         field or a named exemption -- either a field was renamed without the report, or the \
+         report invented a key"
+    );
+}
