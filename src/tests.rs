@@ -47032,3 +47032,118 @@ fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
         uncovered
     );
 }
+
+/// Every checksum format this build accepts really does validate a snapshot carrying it.
+///
+/// # WHY THIS EXISTS
+///
+/// `RootSnapshot::validate` accepts fifteen checksum formats, and that list is the whole of
+/// this repository's read-old-forever promise: a snapshot written by any earlier build stored
+/// one of those hashes, and dropping an entry makes that store fail to load.
+///
+/// Nothing tested it. Measured, not supposed: removing an entry from the accepted list and
+/// running the ENTIRE library suite left it green -- 420 passed, the same 17 recorded
+/// failures. The mechanism that keeps every existing store readable was itself unguarded, so
+/// a cleanup that tidied an "unused" format away would have been invisible until a real store
+/// failed to load.
+///
+/// This walks the list and stores each format's hash as the snapshot's checksum in turn. A
+/// format that no longer validates fails here, by name.
+#[test]
+fn every_accepted_snapshot_checksum_format_still_validates() {
+    let mut nodes = BTreeMap::new();
+    let node = RootNode {
+        node_id: "block-a".to_string(),
+        endpoint: "block-a.local:9100".to_string(),
+        service_kind: "blockserver".to_string(),
+        failure_domain: "rack-a".to_string(),
+        metadata_eligible: false,
+        data_eligible: true,
+        gateway_eligible: false,
+        metadata_value_bytes: 0,
+        capacity_bytes: 4096,
+        used_bytes: 0,
+        committed_bytes: 0,
+        draining: false,
+        online: true,
+        last_heartbeat_ms: 1,
+        page_allocator_shard_index: 0,
+        page_allocator_shard_count: 1,
+        meta_health: RootMetaHealth::default(),
+        page_health: RootPageHealth {
+            // NON-DEFAULT ON THE TWO FIELDS THE COVERAGE HOLE WAS ABOUT, so that the formats
+            // which do and do not cover them produce different hashes and the walk below is
+            // comparing distinct values rather than coincidences.
+            raft_writable_chunk_endpoint_count: 3,
+            raft_readable_chunk_endpoint_count: 5,
+            ..RootPageHealth::default()
+        },
+        chunk_health: RootChunkHealth::default(),
+    };
+    nodes.insert(node.node_id.clone(), node);
+    let mut snapshot = RootSnapshot {
+        nodes,
+        placements: BTreeMap::new(),
+        leader_lease: None,
+        leader_lease_receipts: BTreeMap::new(),
+        coordinator_config: MetadataCoordinatorConfig::default(),
+        next_commit_index: 1,
+        checksum: String::new(),
+    };
+
+    let accepted = snapshot.accepted_checksum_formats();
+    assert!(
+        accepted.len() >= 15,
+        "the accepted list should hold every format this build reads, and it holds {}: {:?}",
+        accepted.len(),
+        accepted.iter().map(|(name, _)| *name).collect::<Vec<_>>()
+    );
+    // THE NAMES ARE DISTINCT, or the failure message below could name the wrong format.
+    let distinct: std::collections::BTreeSet<&str> =
+        accepted.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        distinct.len(),
+        accepted.len(),
+        "two accepted formats share a name: {:?}",
+        accepted.iter().map(|(name, _)| *name).collect::<Vec<_>>()
+    );
+
+    let mut refused: Vec<(&str, String)> = Vec::new();
+    for (name, checksum) in &accepted {
+        snapshot.checksum = checksum.clone();
+        if let Err(err) = snapshot.validate() {
+            refused.push((name, err.to_string()));
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "{} accepted checksum format(s) do not actually validate, so a store written by that \
+         build would fail to load: {:?}",
+        refused.len(),
+        refused
+    );
+
+    // AND THE LIST IS NOT A BLANKET YES. A checksum that is not one of the accepted formats
+    // must still be refused, or the walk above proves nothing.
+    snapshot.checksum = "fnv1a64:0000000000000000".to_string();
+    assert!(
+        snapshot.validate().is_err(),
+        "a checksum belonging to no accepted format must be refused"
+    );
+
+    // AND THE CURRENT FORMAT DIFFERS FROM THE ONE BEFORE IT on this fixture, which is what
+    // makes the coverage fix observable rather than a no-op.
+    let current = accepted
+        .iter()
+        .find(|(name, _)| *name == "current")
+        .expect("a current format");
+    let previous = accepted
+        .iter()
+        .find(|(name, _)| *name == "v32")
+        .expect("the format that was current before the coverage fix");
+    assert_ne!(
+        current.1, previous.1,
+        "the current material should cover the page raft endpoint counts and v32 should not, \
+         so on a node where those counts are non-zero the two hashes must differ"
+    );
+}
