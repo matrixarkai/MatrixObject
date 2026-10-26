@@ -55,11 +55,11 @@ fn append_prepared_chunk_page_fingerprint_fields(
     after_page_service_fingerprint: &str,
 ) {
     fields.insert(
-        format!("{field_prefix}before_block_service_fingerprint"),
+        format!("{field_prefix}before_page_service_fingerprint"),
         before_page_service_fingerprint.to_string(),
     );
     fields.insert(
-        format!("{field_prefix}after_block_service_fingerprint"),
+        format!("{field_prefix}after_page_service_fingerprint"),
         after_page_service_fingerprint.to_string(),
     );
 }

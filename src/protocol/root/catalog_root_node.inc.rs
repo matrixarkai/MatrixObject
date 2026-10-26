@@ -50,11 +50,11 @@ impl PlacementNode {
             ("committed_bytes", self.committed_bytes),
             ("last_heartbeat_ms", self.last_heartbeat_ms),
             (
-                "block_allocator_shard_index",
+                "page_allocator_shard_index",
                 self.page_allocator_shard_index,
             ),
             (
-                "block_allocator_shard_count",
+                "page_allocator_shard_count",
                 self.page_allocator_shard_count,
             ),
         ] {

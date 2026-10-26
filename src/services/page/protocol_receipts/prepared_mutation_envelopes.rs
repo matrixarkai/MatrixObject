@@ -30,11 +30,11 @@ impl PreparedPageAllocationReservationEnvelope {
             ("idempotency_key", &self.idempotency_key),
             ("request_checksum", &self.request_checksum),
             (
-                "before_block_service_fingerprint",
+                "before_page_service_fingerprint",
                 &self.before_page_service_fingerprint,
             ),
             (
-                "after_block_service_fingerprint",
+                "after_page_service_fingerprint",
                 &self.after_page_service_fingerprint,
             ),
             (
@@ -131,11 +131,11 @@ impl PreparedPageBatchAllocationReservationEnvelope {
             ("idempotency_key", &self.idempotency_key),
             ("request_checksum", &self.request_checksum),
             (
-                "before_block_service_fingerprint",
+                "before_page_service_fingerprint",
                 &self.before_page_service_fingerprint,
             ),
             (
-                "after_block_service_fingerprint",
+                "after_page_service_fingerprint",
                 &self.after_page_service_fingerprint,
             ),
             (
@@ -195,11 +195,11 @@ impl PreparedPageAllocationReleaseEnvelope {
             ("idempotency_key", &self.idempotency_key),
             ("request_checksum", &self.request_checksum),
             (
-                "before_block_service_fingerprint",
+                "before_page_service_fingerprint",
                 &self.before_page_service_fingerprint,
             ),
             (
-                "after_block_service_fingerprint",
+                "after_page_service_fingerprint",
                 &self.after_page_service_fingerprint,
             ),
             (
@@ -286,11 +286,11 @@ impl PreparedPageAuditRepairEnvelope {
         for (name, value) in [
             ("envelope_format", &self.envelope_format),
             (
-                "before_block_service_fingerprint",
+                "before_page_service_fingerprint",
                 &self.before_page_service_fingerprint,
             ),
             (
-                "after_block_service_fingerprint",
+                "after_page_service_fingerprint",
                 &self.after_page_service_fingerprint,
             ),
             (

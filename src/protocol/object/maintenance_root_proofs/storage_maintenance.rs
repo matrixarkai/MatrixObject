@@ -166,7 +166,7 @@ impl PreparedStorageMaintenanceEnvelope {
         for (name, value) in [
             ("envelope_format", &self.envelope_format),
             ("plan_checksum", &self.plan_checksum),
-            ("block_state_fingerprint", &self.page_state_fingerprint),
+            ("page_state_fingerprint", &self.page_state_fingerprint),
             (
                 "route_control_proof_format",
                 &self.route_control_proof_format,

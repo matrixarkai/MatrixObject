@@ -169,21 +169,21 @@ impl ChunkStorageReadiness {
             ),
             ("min_capacity_free_bytes", self.min_capacity_free_bytes),
             ("min_reclaimable_bytes", self.min_reclaimable_bytes),
-            ("block_read_parallelism", self.page_read_parallelism),
-            ("block_write_parallelism", self.page_write_parallelism),
+            ("page_read_parallelism", self.page_read_parallelism),
+            ("page_write_parallelism", self.page_write_parallelism),
             (
-                "block_batch_read_parallelism",
+                "page_batch_read_parallelism",
                 self.page_batch_read_parallelism,
             ),
             (
-                "block_batch_write_parallelism",
+                "page_batch_write_parallelism",
                 self.page_batch_write_parallelism,
             ),
             (
-                "block_batch_discard_parallelism",
+                "page_batch_discard_parallelism",
                 self.page_batch_discard_parallelism,
             ),
-            ("block_repair_parallelism", self.page_repair_parallelism),
+            ("page_repair_parallelism", self.page_repair_parallelism),
             (
                 "block_chunk_fanout_parallelism",
                 self.replica_fanout_parallelism,
@@ -308,7 +308,7 @@ impl ChunkStorageReadiness {
                 self.allocator_active_chunk_sealed as u64,
             ),
             (
-                "block_state_fingerprint_bytes",
+                "page_state_fingerprint_bytes",
                 self.page_state_fingerprint_bytes,
             ),
             (
@@ -323,9 +323,9 @@ impl ChunkStorageReadiness {
             fields.insert(format!("{field_prefix}{name}"), value.to_string());
         }
         for (name, value) in [
-            ("block_state_fingerprint", &self.page_state_fingerprint),
+            ("page_state_fingerprint", &self.page_state_fingerprint),
             (
-                "block_state_fingerprint_format",
+                "page_state_fingerprint_format",
                 &self.page_state_fingerprint_format,
             ),
             (

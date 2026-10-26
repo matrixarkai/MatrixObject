@@ -48783,3 +48783,236 @@ fn a_function_named_for_a_tier_refuses_in_the_name_of_that_tier() {
         wrong.join("\n  ")
     );
 }
+
+/// A PUBLISHED KEY MUST NOT NAME A DIFFERENT TIER FROM THE FIELD THAT FILLS IT.
+///
+/// Report builders pair a key with the field supplying its value, as
+/// `("chunk_count", &self.page_count)`. The key is what a reader sees; the field is
+/// what the value actually is. When those two name DIFFERENT storage tiers, one of
+/// them is misinforming the reader, and renaming either one would only carry the
+/// mislabel into a new name -- so this guard reports rather than resolves.
+///
+/// It cannot catch `block` against `page`: those are two spellings of ONE tier, so
+/// they agree here by construction. What it catches is `chunk` against `page`, which
+/// are different tiers -- a chunk holds pages -- and so a real mislabel.
+///
+/// Scoped to the files that actually carry such a pair, derived from the pairs
+/// themselves rather than remembered, because a sweep list written from memory
+/// rewrites things it was never meant to touch.
+#[test]
+fn a_published_key_names_the_same_tier_as_the_field_behind_it() {
+    const SOURCES: &[(&str, &str)] = &[
+        ("protocol/object/maintenance_root_proofs/page_repair.rs", include_str!("protocol/object/maintenance_root_proofs/page_repair.rs")),
+        ("protocol/object/maintenance_root_proofs/storage_maintenance.rs", include_str!("protocol/object/maintenance_root_proofs/storage_maintenance.rs")),
+        ("protocol/object/reads_changefeed/range_admission.rs", include_str!("protocol/object/reads_changefeed/range_admission.rs")),
+        ("protocol/object/reads_changefeed/read_results.rs", include_str!("protocol/object/reads_changefeed/read_results.rs")),
+        ("protocol/root/catalog_root_node.inc.rs", include_str!("protocol/root/catalog_root_node.inc.rs")),
+        ("protocol/root/placement_reclaim/reclaim_controls.rs", include_str!("protocol/root/placement_reclaim/reclaim_controls.rs")),
+        ("protocol/storage/distributed_readiness_fields.rs", include_str!("protocol/storage/distributed_readiness_fields.rs")),
+        ("protocol/storage/maintenance/maintenance_plan.rs", include_str!("protocol/storage/maintenance/maintenance_plan.rs")),
+        ("protocol/storage/maintenance/reclaim_candidates/chunk_fields.rs", include_str!("protocol/storage/maintenance/reclaim_candidates/chunk_fields.rs")),
+        ("protocol/storage/maintenance/reclaim_candidates/prepared_envelope_fields.rs", include_str!("protocol/storage/maintenance/reclaim_candidates/prepared_envelope_fields.rs")),
+        ("protocol/storage/maintenance/reclaim_candidates/prepared_replica_fields.rs", include_str!("protocol/storage/maintenance/reclaim_candidates/prepared_replica_fields.rs")),
+        ("protocol/storage/maintenance/reclaim_candidates/replica_plan_fields.rs", include_str!("protocol/storage/maintenance/reclaim_candidates/replica_plan_fields.rs")),
+        ("protocol/storage/maintenance/replica_audit.rs", include_str!("protocol/storage/maintenance/replica_audit.rs")),
+        ("protocol/storage/maintenance/storage_readiness.rs", include_str!("protocol/storage/maintenance/storage_readiness.rs")),
+        ("services/chunk/protocol_receipts/admission_cache_batch/admission_qos.rs", include_str!("services/chunk/protocol_receipts/admission_cache_batch/admission_qos.rs")),
+        ("services/chunk/protocol_receipts/admission_cache_batch/batch_stats.rs", include_str!("services/chunk/protocol_receipts/admission_cache_batch/batch_stats.rs")),
+        ("services/chunk/protocol_receipts/admission_cache_batch/cache_control.rs", include_str!("services/chunk/protocol_receipts/admission_cache_batch/cache_control.rs")),
+        ("services/chunk/protocol_receipts/bootstrap_readiness/control_proof_fields.rs", include_str!("services/chunk/protocol_receipts/bootstrap_readiness/control_proof_fields.rs")),
+        ("services/chunk/protocol_receipts/bootstrap_readiness/storage_readiness.rs", include_str!("services/chunk/protocol_receipts/bootstrap_readiness/storage_readiness.rs")),
+        ("services/chunk/protocol_receipts/prepared_config/prepared_configs.rs", include_str!("services/chunk/protocol_receipts/prepared_config/prepared_configs.rs")),
+        ("services/chunk/protocol_receipts/receipt_pages/lifecycle_receipts.rs", include_str!("services/chunk/protocol_receipts/receipt_pages/lifecycle_receipts.rs")),
+        ("services/chunk/protocol_receipts/reclaim_reports.rs", include_str!("services/chunk/protocol_receipts/reclaim_reports.rs")),
+        ("services/chunk/protocol_receipts/repair_rebalance_health/bounded_repair.rs", include_str!("services/chunk/protocol_receipts/repair_rebalance_health/bounded_repair.rs")),
+        ("services/chunk/protocol_receipts/repair_rebalance_health/object_repair_controls.rs", include_str!("services/chunk/protocol_receipts/repair_rebalance_health/object_repair_controls.rs")),
+        ("services/page/protocol_receipts/audit_receipt_types.rs", include_str!("services/page/protocol_receipts/audit_receipt_types.rs")),
+        ("services/page/protocol_receipts/batch_admission.rs", include_str!("services/page/protocol_receipts/batch_admission.rs")),
+        ("services/page/protocol_receipts/mutation_report_types.rs", include_str!("services/page/protocol_receipts/mutation_report_types.rs")),
+        ("services/page/protocol_receipts/prepared_control_config.rs", include_str!("services/page/protocol_receipts/prepared_control_config.rs")),
+        ("services/page/protocol_receipts/prepared_mutation_envelopes.rs", include_str!("services/page/protocol_receipts/prepared_mutation_envelopes.rs")),
+        ("services/page/protocol_receipts/read_reports.rs", include_str!("services/page/protocol_receipts/read_reports.rs")),
+        ("services/page/protocol_receipts/route_control_proof.rs", include_str!("services/page/protocol_receipts/route_control_proof.rs")),
+    ];
+
+    // ORDER MATTERS: the longer spellings first, because `chunkserver` contains
+    // `chunk` and a name holding both words belongs to the one it is named FOR.
+    fn tier_of(text: &str) -> Option<&'static str> {
+        for (needle, tier) in [
+            ("replicaserver", "chunk"),
+            ("chunkserver", "chunk"),
+            ("pageserver", "page"),
+            ("blockserver", "page"),
+            ("chunk", "chunk"),
+            ("page", "page"),
+            ("block", "page"),
+        ] {
+            if text.contains(needle) {
+                return Some(tier);
+            }
+        }
+        None
+    }
+
+    // Each entry is a key whose value comes from a field naming the other tier. These
+    // are OPEN QUESTIONS, not blessed exceptions: the reason says what a reader would
+    // have to believe for the key to be right. An entry that stops being necessary
+    // fails below, so this list cannot quietly outlive the problem it records.
+    const MISLABELLED: &[(&str, &str, &str)] = &[
+        (
+            "chunk_count",
+            "page_count",
+            "a bootstrap readiness report; a reader totalling chunks totals pages instead",
+        ),
+        (
+            "chunk_index",
+            "page_id",
+            "a lifecycle receipt; an index and an id are not even the same kind of number",
+        ),
+        (
+            "skipped_chunk_count",
+            "skipped_page_count",
+            "a bounded-repair report; the same confusion as chunk_count, in the skip path",
+        ),
+        // The route-control proof reports its numbers under page-tier key names while
+        // every field behind them is chunk-tier. Either the proof is about chunk routes
+        // and all five keys are misnamed, or it is about page routes and the fields are
+        // -- and the five move together, which is why they are listed together.
+        (
+            "block_route_control_proof_bytes",
+            "chunk_route_control_proof_bytes",
+            "route-control proof; page-tier key over a chunk-tier field",
+        ),
+        (
+            "block_route_control_proof_format",
+            "chunk_route_control_proof_format",
+            "route-control proof; page-tier key over a chunk-tier field",
+        ),
+        (
+            "block_route_control_proof_checksum",
+            "chunk_route_control_proof_checksum",
+            "route-control proof; page-tier key over a chunk-tier field",
+        ),
+        (
+            "block_route_control_commit_index",
+            "chunk_route_control_commit_index",
+            "route-control proof; page-tier key over a chunk-tier field",
+        ),
+        (
+            "block_route_control_next_log_index",
+            "chunk_route_control_next_log_index",
+            "route-control proof; page-tier key over a chunk-tier field",
+        ),
+    ];
+
+    let mut examined = 0usize;
+    let mut tiers_seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut unexplained: Vec<String> = Vec::new();
+    let mut matched: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
+
+    for (path, text) in SOURCES {
+        // rustfmt SPLITS these pairs across lines whenever they are long, so a
+        // per-line scan sees only the short ones -- it found 104 of 229, and the
+        // non-vacuity floor below is what caught that rather than a silent pass.
+        // Comment lines are dropped BEFORE joining, because joining first would let a
+        // `//` swallow the code that follows it.
+        let joined: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let bytes = joined.as_bytes();
+        let mut at = 0usize;
+        while let Some(found) = joined[at..].find('"') {
+            let quote = at + found;
+            let open = quote + 1;
+            at = open;
+            // rustfmt puts the `(` on its own line for long tuples, so after joining
+            // the pattern is `( "key"` rather than `("key"`. Requiring them adjacent
+            // missed 126 of 229 pairs; the paren must be the preceding NON-SPACE byte.
+            let mut back = quote;
+            while back > 0 && bytes[back - 1] == b' ' {
+                back -= 1;
+            }
+            if back == 0 || bytes[back - 1] != b'(' {
+                continue;
+            }
+            let Some(close_rel) = joined[open..].find('"') else {
+                break;
+            };
+            let close = open + close_rel;
+            let key = &joined[open..close];
+            // after the closing quote: whitespace, a comma, optional `&`, then `self.`
+            let mut cursor = close + 1;
+            while cursor < bytes.len() && (bytes[cursor] == b' ' || bytes[cursor] == b',') {
+                cursor += 1;
+            }
+            if cursor < bytes.len() && bytes[cursor] == b'&' {
+                cursor += 1;
+            }
+            if !joined[cursor..].starts_with("self.") {
+                continue;
+            }
+            let field: String = joined[cursor + 5..]
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            if key.is_empty() || field.is_empty() {
+                continue;
+            }
+            let (Some(key_tier), Some(field_tier)) = (tier_of(key), tier_of(&field)) else {
+                continue;
+            };
+            examined += 1;
+            tiers_seen.insert(key_tier);
+            tiers_seen.insert(field_tier);
+            if key_tier == field_tier {
+                continue;
+            }
+            if let Some((k, f, _)) = MISLABELLED
+                .iter()
+                .find(|(k, f, _)| *k == key && *f == field.as_str())
+            {
+                matched.insert((*k, *f));
+                continue;
+            }
+            unexplained.push(format!(
+                "{path}: key `{key}` names the {key_tier} tier but is filled from `self.{field}`, which names the {field_tier} tier"
+            ));
+        }
+    }
+
+    // NON-VACUITY, three ways: an empty catalog, a broken parse, or a scope that saw
+    // only one tier would each make the assertions below pass for the wrong reason.
+    assert!(
+        SOURCES.len() >= 25,
+        "the source catalog shrank to {} files; a guard over nothing passes",
+        SOURCES.len()
+    );
+    assert!(
+        examined >= 180,
+        "only {examined} key/field pairs parsed, so the parser is broken rather than the code being clean"
+    );
+    assert_eq!(
+        tiers_seen.len(),
+        2,
+        "expected both tiers among the pairs, saw {tiers_seen:?}"
+    );
+
+    assert!(
+        unexplained.is_empty(),
+        "a published key names a different tier from the field filling it:\n{}",
+        unexplained.join("\n")
+    );
+
+    // THE EXEMPTION LIST IS ITSELF CHECKED: when one of these is fixed the entry stops
+    // matching and this fails, so the list is a to-do list that cannot be forgotten.
+    for (key, field, why) in MISLABELLED {
+        assert!(
+            matched.contains(&(*key, *field)),
+            "`{key}` no longer disagrees with `self.{field}`, so delete that entry instead of carrying the note {why:?}"
+        );
+        assert!(!why.is_empty(), "{key} is listed with no reason");
+    }
+}

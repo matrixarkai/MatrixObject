@@ -99,21 +99,21 @@ impl MatrixObjectStore {
                 "metadata_route_cache_ttl_ms must be positive".to_string(),
             ));
         }
-        validate_storage_parallelism(options.page_read_parallelism, "block_read_parallelism")?;
-        validate_storage_parallelism(options.page_write_parallelism, "block_write_parallelism")?;
+        validate_storage_parallelism(options.page_read_parallelism, "page_read_parallelism")?;
+        validate_storage_parallelism(options.page_write_parallelism, "page_write_parallelism")?;
         validate_storage_parallelism(
             options.page_batch_read_parallelism,
-            "block_batch_read_parallelism",
+            "page_batch_read_parallelism",
         )?;
         validate_storage_parallelism(
             options.page_batch_write_parallelism,
-            "block_batch_write_parallelism",
+            "page_batch_write_parallelism",
         )?;
         validate_storage_parallelism(
             options.page_batch_discard_parallelism,
-            "block_batch_discard_parallelism",
+            "page_batch_discard_parallelism",
         )?;
-        validate_storage_parallelism(options.page_repair_parallelism, "block_repair_parallelism")?;
+        validate_storage_parallelism(options.page_repair_parallelism, "page_repair_parallelism")?;
         validate_storage_parallelism(
             options.replica_fanout_parallelism,
             "block_chunk_fanout_parallelism",
