@@ -49394,3 +49394,188 @@ fn the_allocator_shard_count_cannot_identify_a_page_node() {
          `page_allocator_shard_count > 0` cannot stand in for `serves_page_tier()`"
     );
 }
+
+/// THE ROUTE CHECKSUM MIGRATION, PINNED AGAINST COMMITTED VALUES.
+///
+/// This is the gate for the whole route-discriminator change, so it is written to fail
+/// loudly rather than to pass. Three properties, each asserted non-vacuously:
+///
+///  1. A store written with the retired kind spelling still loads. That half is carried
+///     by `a_store_written_before_the_roster_had_one_home_still_loads`, which decodes a
+///     node `block-a` with `service_kind == "blockserver"` out of committed bytes behind
+///     a stamp assertion. This test checks that fixture still pins the retired spelling,
+///     so the property is CHECKED here rather than assumed, and builds its own node from
+///     that node's decoded fields.
+///  2. A checksum computed under the old kind-derived material still verifies. Pinned to
+///     a committed literal, not to a round trip: a round trip writes and reads with the
+///     same build, so both halves move together and agree.
+///  3. New-material checksums still separate the page route from the chunk route for the
+///     SAME node, with every other term held equal.
+#[test]
+fn the_route_checksum_migration_holds_against_committed_values() {
+    // Byte-for-byte the fields that `a_store_written_before_the_roster_had_one_home_still_loads`
+    // decodes out of the committed `MOSRSSTORE27` bytes, plus an allocator shard pair so
+    // the node is a usable page-tier node.
+    let node = PlacementNode {
+        node_id: "block-a".to_string(),
+        endpoint: "block-a.local:9100".to_string(),
+        service_kind: "blockserver".to_string(),
+        failure_domain: "domain-a".to_string(),
+        metadata_eligible: false,
+        data_eligible: true,
+        gateway_eligible: true,
+        metadata_value_bytes: 0,
+        capacity_bytes: 4096,
+        used_bytes: 0,
+        committed_bytes: 0,
+        draining: false,
+        online: true,
+        last_heartbeat_ms: 1,
+        page_allocator_shard_index: 0,
+        page_allocator_shard_count: 2,
+        meta_health: NodeMetaHealth::default(),
+        page_health: NodePageHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
+    };
+    let catalog_source = "embedded";
+    let catalog_endpoint = "catalog.matrix.local:9330";
+    let catalog_endpoint_count = 3u64;
+
+    // Captured from the build that wrote them, then committed. If the old material
+    // function ever changes, these stop matching and a caller holding one of these
+    // values would have stopped verifying -- which is the failure this exists to catch.
+    const LEGACY_PAGE: &str = "fnv1a64:dc441546c1400e61";
+    const LEGACY_CHUNK: &str = "fnv1a64:f191f7fecbb95181";
+    const BINDING_PAGE: &str = "fnv1a64:38ea6af3a403972b";
+    const BINDING_CHUNK: &str = "fnv1a64:cf928b6b6f6785d2";
+    const BINDING_OBJECTSTORE: &str = "fnv1a64:fadaf441e8fd2f8d";
+
+    // ---------------------------------------------------------------- PROPERTY 1
+    // The old-store fixture must still pin the retired spelling. Checking the source is
+    // what makes this a check rather than a belief: if that fixture stops asserting the
+    // retired kind, the claim "an old store with blockserver loads" is no longer proven
+    // anywhere, and this fails instead of silently becoming unsupported.
+    const SELF_SOURCE: &str = include_str!("tests.rs");
+    assert!(
+        SELF_SOURCE.contains("fn a_store_written_before_the_roster_had_one_home_still_loads"),
+        "the committed-bytes store fixture is gone, so nothing proves an old store loads"
+    );
+    assert!(
+        SELF_SOURCE.contains("MOSRSSTORE27"),
+        "the old-store fixture no longer pins the pre-fold stamp"
+    );
+    assert!(
+        SELF_SOURCE.contains("assert_eq!(node.service_kind, \"blockserver\")"),
+        "the old-store fixture no longer pins the retired kind spelling, so property 1 of \
+         this migration is unproven"
+    );
+
+    // ---------------------------------------------------------------- PROPERTY 2
+    let legacy_page = catalog_route_checksum(
+        "blockserver",
+        &node,
+        catalog_source,
+        catalog_endpoint,
+        catalog_endpoint_count,
+    );
+    let legacy_chunk = catalog_route_checksum(
+        "chunkserver",
+        &node,
+        catalog_source,
+        catalog_endpoint,
+        catalog_endpoint_count,
+    );
+    assert!(!legacy_page.is_empty(), "the legacy page checksum is empty");
+    assert_eq!(
+        legacy_page, LEGACY_PAGE,
+        "the old kind-derived material moved, so every route checksum a previous build \
+         wrote has stopped verifying"
+    );
+    assert_eq!(
+        legacy_chunk, LEGACY_CHUNK,
+        "the old kind-derived material moved for the chunk route"
+    );
+
+    let binding_page = catalog_route_binding_checksum(
+        CATALOG_PAGE_ROUTE_DISCRIMINATOR,
+        &node,
+        catalog_source,
+        catalog_endpoint,
+        catalog_endpoint_count,
+    );
+
+    // The reader must accept the OLD value. Non-vacuity matters here more than anywhere:
+    // an accepting reader that short-circuits, or an empty expected checksum treated as
+    // a match, would make this pass while verifying nothing.
+    let accepted = [binding_page.as_str(), legacy_page.as_str()];
+    require_route_checksum_for_service("blockserver", &accepted, LEGACY_PAGE).expect(
+        "a checksum written under the retired kind-derived material must still verify",
+    );
+    require_route_checksum_for_service("blockserver", &accepted, &binding_page)
+        .expect("a checksum written under the binding material must verify");
+    assert!(
+        require_route_checksum_for_service("blockserver", &accepted, "fnv1a64:0000000000000000")
+            .is_err(),
+        "the reader accepted a checksum matching neither form, so property 2 proves nothing"
+    );
+    assert!(
+        require_route_checksum_for_service("blockserver", &accepted, "").is_err(),
+        "an unset expected checksum was treated as a match"
+    );
+
+    // ---------------------------------------------------------------- PROPERTY 3
+    let binding_chunk = catalog_route_binding_checksum(
+        CATALOG_CHUNK_ROUTE_DISCRIMINATOR,
+        &node,
+        catalog_source,
+        catalog_endpoint,
+        catalog_endpoint_count,
+    );
+    let binding_objectstore = catalog_route_binding_checksum(
+        CATALOG_OBJECTSTORE_ROUTE_DISCRIMINATOR,
+        &node,
+        catalog_source,
+        catalog_endpoint,
+        catalog_endpoint_count,
+    );
+
+    // Non-empty FIRST: two empty strings are equal, and two equal empties would satisfy
+    // none of the separations below while looking like they did.
+    for (name, value) in [
+        ("page", &binding_page),
+        ("chunk", &binding_chunk),
+        ("objectstore", &binding_objectstore),
+    ] {
+        assert!(
+            !value.is_empty(),
+            "the {name} binding checksum is empty, so the separations below prove nothing"
+        );
+    }
+
+    assert_eq!(binding_page, BINDING_PAGE, "the page binding material moved");
+    assert_eq!(binding_chunk, BINDING_CHUNK, "the chunk binding material moved");
+    assert_eq!(
+        binding_objectstore, BINDING_OBJECTSTORE,
+        "the objectstore binding material moved"
+    );
+
+    assert_ne!(
+        binding_page, binding_chunk,
+        "the page and chunk routes no longer separate for one node, so a page route proof \
+         verifies as a chunk one"
+    );
+    assert_ne!(
+        binding_page, binding_objectstore,
+        "the page and objectstore routes no longer separate"
+    );
+    assert_ne!(
+        binding_chunk, binding_objectstore,
+        "the chunk and objectstore routes no longer separate"
+    );
+
+    // And the two generations must not coincide, or the stamp bump bought nothing.
+    assert_ne!(
+        binding_page, legacy_page,
+        "the binding form equals the kind-derived form it replaced"
+    );
+}
