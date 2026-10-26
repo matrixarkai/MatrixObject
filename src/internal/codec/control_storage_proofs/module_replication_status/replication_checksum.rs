@@ -30,9 +30,9 @@ pub(crate) fn metadata_replication_proof_checksum(
     append_string(&mut material, "MXOS-RUST-METADATA-REPLICATION-PROOF5");
     append_u64(&mut material, report.ready as u64);
     append_string(&mut material, &report.reason);
-    append_u64(&mut material, report.root_ready as u64);
+    append_u64(&mut material, report.placement_ready as u64);
     append_string(&mut material, &report.root_status);
-    append_string(&mut material, &report.root_raft_status_checksum_format);
+    append_string(&mut material, &report.placement_raft_status_checksum_format);
     append_string(&mut material, &report.root_raft_status_checksum);
     append_u64(&mut material, report.metadata_commit_index);
     append_u64(&mut material, report.metadata_snapshot_floor_commit_index);

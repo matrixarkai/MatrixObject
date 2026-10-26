@@ -128,7 +128,7 @@ impl ControlPlaneMode {
                 // catalog. `rootserver_endpoint_configured` below still reports whether one
                 // was configured, which is how an operator sees that a setting is being
                 // ignored.
-                rootserver_required: false,
+                placement_required: false,
                 metaserver_endpoint_configured: metaserver_endpoint.is_some(),
                 rootserver_endpoint_configured: rootserver_endpoint.is_some(),
                 catalog_route_checksum_format: CONTROL_PLANE_CATALOG_SELECTION_CHECKSUM_FORMAT
@@ -196,7 +196,7 @@ impl ControlPlaneMode {
             } else {
                 "none".to_string()
             },
-            rootserver_required: false,
+            placement_required: false,
             metaserver_endpoint_configured: !metaserver_endpoint_list.is_empty(),
             rootserver_endpoint_configured: rootserver_endpoint.is_some(),
             selected,

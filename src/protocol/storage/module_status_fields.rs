@@ -29,16 +29,16 @@ impl ObjectStoreModuleStatus {
             self.catalog_route_checksum.clone(),
         );
         fields.insert(
-            "rootserver_required".to_string(),
-            self.rootserver_required.to_string(),
+            "placement_required".to_string(),
+            self.placement_required.to_string(),
         );
         fields.insert(
-            "root_metadata_read_ready".to_string(),
-            self.root_metadata_read_ready.to_string(),
+            "placement_metadata_read_ready".to_string(),
+            self.placement_metadata_read_ready.to_string(),
         );
         fields.insert(
-            "root_metadata_write_ready".to_string(),
-            self.root_metadata_write_ready.to_string(),
+            "placement_metadata_write_ready".to_string(),
+            self.placement_metadata_write_ready.to_string(),
         );
         fields.insert(
             "root_blockserver_read_ready".to_string(),
@@ -57,12 +57,12 @@ impl ObjectStoreModuleStatus {
             self.root_replicaserver_write_ready.to_string(),
         );
         fields.insert(
-            "root_readiness_gate_read_ready".to_string(),
-            self.root_readiness_gate_read_ready.to_string(),
+            "placement_readiness_gate_read_ready".to_string(),
+            self.placement_readiness_gate_read_ready.to_string(),
         );
         fields.insert(
-            "root_readiness_gate_write_ready".to_string(),
-            self.root_readiness_gate_write_ready.to_string(),
+            "placement_readiness_gate_write_ready".to_string(),
+            self.placement_readiness_gate_write_ready.to_string(),
         );
         fields.insert(
             "metaserver_endpoint_configured".to_string(),

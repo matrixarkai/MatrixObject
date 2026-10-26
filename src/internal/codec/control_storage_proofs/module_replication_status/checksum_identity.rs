@@ -17,17 +17,17 @@ fn append_module_identity(mut material: &mut Vec<u8>, status: &ObjectStoreModule
     append_u64(&mut material, status.replicaserver_open as u64);
     append_u64(&mut material, status.pageserver_ready as u64);
     append_u64(&mut material, status.bsclient_ready as u64);
-    append_u64(&mut material, status.root_ready as u64);
-    append_u64(&mut material, status.root_leader_ready as u64);
-    append_u64(&mut material, status.root_read_ready as u64);
-    append_u64(&mut material, status.root_metadata_read_ready as u64);
-    append_u64(&mut material, status.root_metadata_write_ready as u64);
+    append_u64(&mut material, status.placement_ready as u64);
+    append_u64(&mut material, status.placement_leader_ready as u64);
+    append_u64(&mut material, status.placement_read_ready as u64);
+    append_u64(&mut material, status.placement_metadata_read_ready as u64);
+    append_u64(&mut material, status.placement_metadata_write_ready as u64);
     append_u64(&mut material, status.root_pageserver_read_ready as u64);
     append_u64(&mut material, status.root_pageserver_write_ready as u64);
     append_u64(&mut material, status.root_replicaserver_read_ready as u64);
     append_u64(&mut material, status.root_replicaserver_write_ready as u64);
-    append_u64(&mut material, status.root_readiness_gate_read_ready as u64);
-    append_u64(&mut material, status.root_readiness_gate_write_ready as u64);
+    append_u64(&mut material, status.placement_readiness_gate_read_ready as u64);
+    append_u64(&mut material, status.placement_readiness_gate_write_ready as u64);
     append_string(&mut material, &status.configured_control_plane_mode);
     append_string(&mut material, &status.control_plane_mode);
     append_string(&mut material, &status.catalog_source);
@@ -42,7 +42,7 @@ fn append_module_identity(mut material: &mut Vec<u8>, status: &ObjectStoreModule
         &mut material,
         status.rootserver_catalog_endpoint_configured as u64,
     );
-    append_u64(&mut material, status.rootserver_required as u64);
+    append_u64(&mut material, status.placement_required as u64);
     append_u64(&mut material, status.metadata_ready as u64);
     append_u64(&mut material, status.metadata_read_ready as u64);
     append_u64(&mut material, status.metadata_write_ready as u64);

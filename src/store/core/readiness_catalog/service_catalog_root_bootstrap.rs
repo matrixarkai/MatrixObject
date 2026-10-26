@@ -123,7 +123,7 @@ impl MatrixObjectStore {
         Ok(EmbeddedControlPlaneBootstrap {
             metaserver_node,
             root_leader_lease,
-            root_state_fingerprint: self.meta_service.root_state_fingerprint(),
+            placement_state_fingerprint: self.meta_service.placement_state_fingerprint(),
             metadata_control_proof,
         })
     }

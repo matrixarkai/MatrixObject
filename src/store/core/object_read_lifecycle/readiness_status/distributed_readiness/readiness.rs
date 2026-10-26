@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    fn root_snapshot_fault_count(
-        rootserver_required: bool,
+    fn placement_snapshot_fault_count(
+        placement_required: bool,
         manifest_checkpoint_lag: u64,
         manifest_checkpoint_interval: u64,
         metadata_checkpoint_lag: u64,
         metadata_checkpoint_interval: u64,
     ) -> u64 {
-        if !rootserver_required {
+        if !placement_required {
             return 0;
         }
         let manifest_overdue =
@@ -96,11 +96,11 @@ impl MatrixObjectStore {
         let root_placement_ready = root_placement_health.degraded_objects == 0;
         let DistributedPlacementReadinessSnapshot {
             root_node_count,
-            rootserver_required,
+            placement_required,
             control_plane_mode,
-            root_expected_nodes,
+            placement_expected_nodes,
             root_metadata_coverage,
-            root_metadata_status_available,
+            placement_metadata_status_available,
             root_metadata_external_coordinator_required,
             root_metadata_external_coordinator_endpoints_ready,
             root_metadata_external_coordinator_owner_sessions_ready,
@@ -118,21 +118,21 @@ impl MatrixObjectStore {
             root_leader_node_id,
             root_lease_epoch,
             root_lease_expire_time_ms,
-            root_state_fingerprint,
-            root_raft_status_checksum_format,
+            placement_state_fingerprint,
+            placement_raft_status_checksum_format,
             root_raft_status_checksum,
-            root_metadata_read_ready,
-            root_metadata_write_ready,
+            placement_metadata_read_ready,
+            placement_metadata_write_ready,
             root_pageserver_read_ready,
             root_pageserver_write_ready,
             root_replicaserver_read_ready,
             root_replicaserver_write_ready,
-            root_readiness_gate_read_ready,
-            root_readiness_gate_write_ready,
-            root_leader_ready,
-            root_read_ready,
+            placement_readiness_gate_read_ready,
+            placement_readiness_gate_write_ready,
+            placement_leader_ready,
+            placement_read_ready,
             root_write_ready,
-            root_ready,
+            placement_ready,
         } = DistributedPlacementReadinessSnapshot::capture(
             self,
             metadata_replication_quorum,
@@ -211,7 +211,7 @@ impl MatrixObjectStore {
             now_ms,
         );
         let page_ready = page.ready;
-        let ready = metadata_ready && page_ready && root_ready;
+        let ready = metadata_ready && page_ready && placement_ready;
         let consensus_read_index = metadata.min_read_index;
         let consensus_read_refreshes = self.consensus_read_refreshes.get();
         let consensus_read_cache_hits = self.consensus_read_cache_hits.get();
@@ -226,13 +226,13 @@ impl MatrixObjectStore {
         let object_checkpoint_pressure = object_deferred_manifest_checkpoints;
         let metadata_management_pressure = metadata_management_pressure
             || object_checkpoint_pressure
-            || (rootserver_required && !root_metadata_external_coordinator_ready);
+            || (placement_required && !root_metadata_external_coordinator_ready);
         let evaluation = DistributedReadinessEvaluation {
             ready,
             metadata_replication_ready,
             metadata_ready: metadata.ready,
             page_ready: page.ready,
-            root_leader_ready,
+            placement_leader_ready,
             root_metadata_coverage: &root_metadata_coverage,
             root_metadata_external_coordinator_required,
             root_metadata_external_coordinator_endpoints_ready,
@@ -247,70 +247,70 @@ impl MatrixObjectStore {
             root_replicaserver_coverage: &root_replicaserver_coverage,
             root_replicaserver_ready,
             root_replicaserver_control_ready,
-            rootserver_required,
-            root_ready,
+            placement_required,
+            placement_ready,
             root_leader_node_id: &root_leader_node_id,
             placement_degraded_objects,
         };
         let reason = evaluation.reason();
         let root_status = evaluation.root_status(&reason);
-        let root_snapshot_fault_count = Self::root_snapshot_fault_count(
-            rootserver_required,
+        let placement_snapshot_fault_count = Self::placement_snapshot_fault_count(
+            placement_required,
             object_manifest_checkpoint_lag,
             object_manifest_checkpoint_interval,
             object_metadata_checkpoint_lag,
             object_metadata_checkpoint_interval,
         );
-        let mut root_service_health_reasons = Vec::new();
-        if rootserver_required && !root_leader_ready {
-            root_service_health_reasons.push("leader_unavailable");
+        let mut placement_service_health_reasons = Vec::new();
+        if placement_required && !placement_leader_ready {
+            placement_service_health_reasons.push("leader_unavailable");
         }
-        if root_snapshot_fault_count != 0 {
-            root_service_health_reasons.push("snapshot_faults");
+        if placement_snapshot_fault_count != 0 {
+            placement_service_health_reasons.push("snapshot_faults");
         }
-        if !root_read_ready {
-            root_service_health_reasons.push("linearizable_reads_unavailable");
+        if !placement_read_ready {
+            placement_service_health_reasons.push("linearizable_reads_unavailable");
         }
         if !root_metadata_coverage_ready {
-            root_service_health_reasons.push("metadata_coverage_not_ready");
+            placement_service_health_reasons.push("metadata_coverage_not_ready");
         }
         if !root_page_allocator_ready {
-            root_service_health_reasons.push("block_allocator_not_ready");
+            placement_service_health_reasons.push("block_allocator_not_ready");
         }
         if !root_pageserver_service_ready {
-            root_service_health_reasons.push("blockserver_service_not_ready");
+            placement_service_health_reasons.push("blockserver_service_not_ready");
         }
         if !root_pageserver_route_control_ready {
-            root_service_health_reasons.push("blockserver_route_control_not_ready");
+            placement_service_health_reasons.push("blockserver_route_control_not_ready");
         }
         if root_pageserver_service_coverage.not_fault_tolerant_count != 0 {
-            root_service_health_reasons.push("blockserver_not_fault_tolerant");
+            placement_service_health_reasons.push("blockserver_not_fault_tolerant");
         }
         if root_pageserver_service_coverage.health_unavailable_count != 0 {
-            root_service_health_reasons.push("blockserver_health_unavailable");
+            placement_service_health_reasons.push("blockserver_health_unavailable");
         }
         if !root_replicaserver_ready {
-            root_service_health_reasons.push("chunkserver_coverage_not_ready");
+            placement_service_health_reasons.push("chunkserver_coverage_not_ready");
         }
         if !root_replicaserver_control_ready {
-            root_service_health_reasons.push("chunkserver_control_not_ready");
+            placement_service_health_reasons.push("chunkserver_control_not_ready");
         }
         if root_replicaserver_coverage.not_fault_tolerant_count != 0 {
-            root_service_health_reasons.push("chunkserver_not_fault_tolerant");
+            placement_service_health_reasons.push("chunkserver_not_fault_tolerant");
         }
         if root_replicaserver_coverage.health_unavailable_count != 0 {
-            root_service_health_reasons.push("chunkserver_health_unavailable");
+            placement_service_health_reasons.push("chunkserver_health_unavailable");
         }
-        let root_service_health_reason_count = root_service_health_reasons.len() as u64;
-        let root_service_health_has_reasons = !root_service_health_reasons.is_empty();
-        let root_service_health_reasons = root_service_health_reasons.join(";");
-        let root_service_observed = rootserver_required || root_node_count != 0;
+        let placement_service_health_reason_count = placement_service_health_reasons.len() as u64;
+        let root_service_health_has_reasons = !placement_service_health_reasons.is_empty();
+        let placement_service_health_reasons = placement_service_health_reasons.join(";");
+        let root_service_observed = placement_required || root_node_count != 0;
         let root_service_hard_unavailable = root_service_observed
-            && (!root_read_ready
+            && (!placement_read_ready
                 || root_metadata_coverage.active_metaserver_count == 0
                 || root_pageserver_service_coverage.active_pageserver_count == 0
                 || root_replicaserver_coverage.active_replicaserver_count == 0
-                || !root_metadata_read_ready
+                || !placement_metadata_read_ready
                 || !root_pageserver_read_ready
                 || !root_replicaserver_read_ready
                 || root_pageserver_service_coverage.health_unavailable_count != 0
@@ -323,10 +323,10 @@ impl MatrixObjectStore {
             "ok"
         }
         .to_string();
-        let root_service_fault_tolerant = root_ready
-            && root_read_ready
+        let placement_service_fault_tolerant = placement_ready
+            && placement_read_ready
             && root_write_ready
-            && root_snapshot_fault_count == 0
+            && placement_snapshot_fault_count == 0
             && root_pageserver_service_coverage.not_fault_tolerant_count == 0
             && root_pageserver_service_coverage.health_unavailable_count == 0
             && root_replicaserver_coverage.not_fault_tolerant_count == 0
@@ -339,32 +339,32 @@ impl MatrixObjectStore {
             root_placement_health,
             metadata_ready,
             page_ready,
-            root_ready,
+            placement_ready,
             control_plane_mode,
-            rootserver_required,
+            placement_required,
             root_status,
-            root_leader_ready,
-            root_read_ready,
+            placement_leader_ready,
+            placement_read_ready,
             root_service_health,
-            root_service_health_reason_count,
-            root_service_health_reasons,
-            root_service_fault_tolerant,
-            root_snapshot_fault_count,
+            placement_service_health_reason_count,
+            placement_service_health_reasons,
+            placement_service_fault_tolerant,
+            placement_snapshot_fault_count,
             root_leader_node_id,
             root_lease_epoch,
             root_lease_expire_time_ms,
             metadata_state_fingerprint,
-            root_state_fingerprint,
-            root_raft_status_checksum_format,
+            placement_state_fingerprint,
+            placement_raft_status_checksum_format,
             root_raft_status_checksum,
-            root_metadata_read_ready,
-            root_metadata_write_ready,
+            placement_metadata_read_ready,
+            placement_metadata_write_ready,
             root_pageserver_read_ready,
             root_pageserver_write_ready,
             root_replicaserver_read_ready,
             root_replicaserver_write_ready,
-            root_readiness_gate_read_ready,
-            root_readiness_gate_write_ready,
+            placement_readiness_gate_read_ready,
+            placement_readiness_gate_write_ready,
             page_state_fingerprint,
             page_state_fingerprint_format,
             page_state_fingerprint_bytes,
@@ -421,8 +421,8 @@ impl MatrixObjectStore {
             placement_bytes_to_repair,
             placement_degraded_objects,
             placement_truncated,
-            root_expected_nodes,
-            root_metadata_status_available,
+            placement_expected_nodes,
+            placement_metadata_status_available,
             metadata_route_cache,
             metaserver_endpoint,
             metaserver_commit_last_status,
@@ -605,76 +605,76 @@ impl MatrixObjectStore {
             root_replicaserver_total_health_reason_count: root_replicaserver_coverage
                 .total_health_reason_count,
             root_replicaserver_first_health_reasons: root_replicaserver_coverage.first_health_reasons,
-            root_active_metaserver_count: root_metadata_coverage.active_metaserver_count,
+            placement_active_metaserver_count: root_metadata_coverage.active_metaserver_count,
             root_metadata_value_bytes: root_metadata_coverage.metadata_value_bytes,
-            root_metadata_readable_metaserver_count: root_metadata_coverage
+            placement_metadata_readable_metaserver_count: root_metadata_coverage
                 .metadata_readable_metaserver_count,
-            root_metadata_writable_metaserver_count: root_metadata_coverage
+            placement_metadata_writable_metaserver_count: root_metadata_coverage
                 .metadata_writable_metaserver_count,
-            root_metadata_caught_up_metaserver_count: root_metadata_coverage
+            placement_metadata_caught_up_metaserver_count: root_metadata_coverage
                 .metadata_caught_up_metaserver_count,
-            root_metadata_apply_caught_up_metaserver_count: root_metadata_coverage
+            placement_metadata_apply_caught_up_metaserver_count: root_metadata_coverage
                 .metadata_apply_caught_up_metaserver_count,
-            root_metadata_control_apply_caught_up_metaserver_count: root_metadata_coverage
+            placement_metadata_control_apply_caught_up_metaserver_count: root_metadata_coverage
                 .metadata_control_apply_caught_up_metaserver_count,
-            root_metadata_read_fence_covered_metaserver_count: root_metadata_coverage
+            placement_metadata_read_fence_covered_metaserver_count: root_metadata_coverage
                 .metadata_read_fence_covered_metaserver_count,
-            root_metadata_quorum: root_metadata_coverage.metadata_quorum,
-            root_metadata_min_last_applied_mutation_commit_index: root_metadata_coverage
+            placement_metadata_quorum: root_metadata_coverage.metadata_quorum,
+            placement_metadata_min_last_applied_mutation_commit_index: root_metadata_coverage
                 .metadata_min_last_applied_mutation_commit_index,
-            root_metadata_max_apply_commit_lag: root_metadata_coverage
+            placement_metadata_max_apply_commit_lag: root_metadata_coverage
                 .metadata_max_apply_commit_lag,
-            root_metadata_min_safe_read_fence: root_metadata_coverage.metadata_min_safe_read_fence,
-            root_metadata_max_read_fence_commit_lag: root_metadata_coverage
+            placement_metadata_min_safe_read_fence: root_metadata_coverage.metadata_min_safe_read_fence,
+            placement_metadata_max_read_fence_commit_lag: root_metadata_coverage
                 .metadata_max_read_fence_commit_lag,
-            root_metadata_max_read_fence_read_index_lag: root_metadata_coverage
+            placement_metadata_max_read_fence_read_index_lag: root_metadata_coverage
                 .metadata_max_read_fence_read_index_lag,
-            root_metadata_max_read_fence_applied_lag: root_metadata_coverage
+            placement_metadata_max_read_fence_applied_lag: root_metadata_coverage
                 .metadata_max_read_fence_applied_lag,
-            root_metadata_control_min_last_applied_mutation_commit_index: root_metadata_coverage
+            placement_metadata_control_min_last_applied_mutation_commit_index: root_metadata_coverage
                 .metadata_control_min_last_applied_mutation_commit_index,
-            root_metadata_control_max_last_applied_mutation_commit_index: root_metadata_coverage
+            placement_metadata_control_max_last_applied_mutation_commit_index: root_metadata_coverage
                 .metadata_control_max_last_applied_mutation_commit_index,
-            root_metadata_control_max_apply_commit_lag: root_metadata_coverage
+            placement_metadata_control_max_apply_commit_lag: root_metadata_coverage
                 .metadata_control_max_apply_commit_lag,
-            root_metadata_read_quorum_available: root_metadata_coverage
+            placement_metadata_read_quorum_available: root_metadata_coverage
                 .metadata_read_quorum_available,
-            root_metadata_write_quorum_available: root_metadata_coverage
+            placement_metadata_write_quorum_available: root_metadata_coverage
                 .metadata_write_quorum_available,
-            root_metadata_caught_up_quorum_available: root_metadata_coverage
+            placement_metadata_caught_up_quorum_available: root_metadata_coverage
                 .metadata_caught_up_quorum_available,
-            root_metadata_apply_quorum_available: root_metadata_coverage
+            placement_metadata_apply_quorum_available: root_metadata_coverage
                 .metadata_apply_quorum_available,
-            root_metadata_read_fence_quorum_available: root_metadata_coverage
+            placement_metadata_read_fence_quorum_available: root_metadata_coverage
                 .metadata_read_fence_quorum_available,
-            root_metadata_control_apply_quorum_available: root_metadata_coverage
+            placement_metadata_control_apply_quorum_available: root_metadata_coverage
                 .metadata_control_apply_quorum_available,
-            root_metadata_shard_topology_mismatch: root_metadata_coverage
+            placement_metadata_shard_topology_mismatch: root_metadata_coverage
                 .metadata_shard_topology_mismatch,
-            root_metadata_coordinator_backend_mismatch: root_metadata_coverage
+            placement_metadata_coordinator_backend_mismatch: root_metadata_coverage
                 .metadata_coordinator_backend_mismatch,
-            root_metadata_coordinator_config_mismatch: root_metadata_coverage
+            placement_metadata_coordinator_config_mismatch: root_metadata_coverage
                 .metadata_coordinator_config_mismatch,
-            root_metadata_max_shard_topology_epoch: root_metadata_coverage
+            placement_metadata_max_shard_topology_epoch: root_metadata_coverage
                 .metadata_max_shard_topology_epoch,
-            root_metadata_control_proof_count: root_metadata_coverage.metadata_control_proof_count,
-            root_metadata_control_read_ready_count: root_metadata_coverage
+            placement_metadata_control_proof_count: root_metadata_coverage.metadata_control_proof_count,
+            placement_metadata_control_read_ready_count: root_metadata_coverage
                 .metadata_control_read_ready_count,
-            root_metadata_control_write_ready_count: root_metadata_coverage
+            placement_metadata_control_write_ready_count: root_metadata_coverage
                 .metadata_control_write_ready_count,
-            root_metadata_external_coordinator_required_metaserver_count: root_metadata_coverage
+            placement_metadata_external_coordinator_required_metaserver_count: root_metadata_coverage
                 .metadata_external_coordinator_required_metaserver_count,
-            root_metadata_external_coordinator_endpoints_ready_metaserver_count:
+            placement_metadata_external_coordinator_endpoints_ready_metaserver_count:
                 root_metadata_coverage
                     .metadata_external_coordinator_endpoints_ready_metaserver_count,
-            root_metadata_external_coordinator_owner_sessions_ready_metaserver_count:
+            placement_metadata_external_coordinator_owner_sessions_ready_metaserver_count:
                 root_metadata_coverage
                     .metadata_external_coordinator_owner_sessions_ready_metaserver_count,
-            root_metadata_external_coordinator_ready_metaserver_count: root_metadata_coverage
+            placement_metadata_external_coordinator_ready_metaserver_count: root_metadata_coverage
                 .metadata_external_coordinator_ready_metaserver_count,
-            root_metadata_control_proof_checksum: root_metadata_coverage
+            placement_metadata_control_proof_checksum: root_metadata_coverage
                 .metadata_control_proof_checksum,
-            root_metadata_coverage_status: root_metadata_coverage.status,
+            placement_metadata_coverage_status: root_metadata_coverage.status,
             bucket_count: self.buckets.len() as u64,
             object_count: object_footprint.live_object_count,
             live_object_count: object_footprint.live_object_count,

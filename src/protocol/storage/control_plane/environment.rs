@@ -79,7 +79,7 @@ pub(crate) fn require_control_plane_catalog_endpoint_set_env_checksums(
             effective_mode: endpoint_set.effective_mode.clone(),
             catalog_source: selected.catalog_source.clone(),
             catalog_endpoint: selected.catalog_endpoint.clone(),
-            rootserver_required: endpoint_set.rootserver_required,
+            placement_required: endpoint_set.placement_required,
             metaserver_endpoint_configured: endpoint_set.metaserver_endpoint_configured,
             rootserver_endpoint_configured: endpoint_set.rootserver_endpoint_configured,
             catalog_route_checksum_format: CONTROL_PLANE_CATALOG_SELECTION_CHECKSUM_FORMAT

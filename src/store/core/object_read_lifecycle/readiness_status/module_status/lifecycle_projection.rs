@@ -39,7 +39,7 @@ fn populate_lifecycle_module_status(
     status.chunk_read_cache_max_cacheable_read_bytes_per_replica =
         readiness.chunk_read_cache_max_cacheable_read_bytes_per_replica;
     status.metadata_state_fingerprint = readiness.metadata_state_fingerprint.clone();
-    status.root_state_fingerprint = readiness.root_state_fingerprint.clone();
+    status.placement_state_fingerprint = readiness.placement_state_fingerprint.clone();
     status.page_state_fingerprint = readiness.page_state_fingerprint.clone();
     status.chunk_state_fingerprint = readiness.chunk_state_fingerprint.clone();
     status.distributed_readiness_checksum = readiness.control_checksum.clone();

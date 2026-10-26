@@ -249,20 +249,20 @@ impl PlacementSnapshotProofStreamReport {
             ("format", &self.format),
             ("aggregate_checksum", &self.aggregate_checksum),
             ("operation", &self.operation),
-            ("root_state_fingerprint", &self.root_state_fingerprint),
+            ("placement_state_fingerprint", &self.placement_state_fingerprint),
             ("full_snapshot_checksum", &self.full_snapshot_checksum),
         ] {
             fields.insert(format!("{field_prefix}{name}"), value.clone());
         }
         for (name, value) in [
             ("proof_count", self.proof_count),
-            ("requested_root_read_index", self.requested_root_read_index),
+            ("requested_placement_read_index", self.requested_placement_read_index),
             (
-                "requested_root_commit_index",
-                self.requested_root_commit_index,
+                "requested_placement_commit_index",
+                self.requested_placement_commit_index,
             ),
-            ("root_applied_index", self.root_applied_index),
-            ("root_raft_term", self.root_raft_term),
+            ("placement_applied_index", self.placement_applied_index),
+            ("placement_raft_term", self.placement_raft_term),
             ("total_payload_bytes", self.total_payload_bytes),
             ("first_offset", self.first_offset),
             ("last_end_offset", self.last_end_offset),

@@ -10,12 +10,12 @@ fn append_control_plane_readiness(mut material: &mut Vec<u8>, report: &ObjectSto
         &mut material,
         report.root_placement_health.capacity_pressure_references,
     );
-    append_u64(&mut material, report.root_ready as u64);
-    append_u64(&mut material, report.root_leader_ready as u64);
+    append_u64(&mut material, report.placement_ready as u64);
+    append_u64(&mut material, report.placement_leader_ready as u64);
     append_string(&mut material, &report.root_leader_node_id);
     append_u64(&mut material, report.root_lease_epoch);
     append_u64(&mut material, report.root_lease_expire_time_ms);
-    append_string(&mut material, &report.root_state_fingerprint);
+    append_string(&mut material, &report.placement_state_fingerprint);
     append_string(&mut material, &report.root_raft_status_checksum);
     append_u64(&mut material, report.consensus_read_index);
     append_u64(&mut material, report.consensus_read_refreshes);
@@ -99,8 +99,8 @@ fn append_control_plane_readiness(mut material: &mut Vec<u8>, report: &ObjectSto
     append_u64(&mut material, report.placement_bytes_to_repair);
     append_u64(&mut material, report.placement_degraded_objects);
     append_u64(&mut material, report.placement_truncated as u64);
-    append_u64(&mut material, report.root_expected_nodes);
-    append_u64(&mut material, report.root_metadata_status_available as u64);
+    append_u64(&mut material, report.placement_expected_nodes);
+    append_u64(&mut material, report.placement_metadata_status_available as u64);
     append_u64(&mut material, report.metadata_route_cache.entries);
     append_u64(&mut material, report.metadata_route_cache.capacity);
     append_u64(&mut material, report.metadata_route_cache.ttl_ms);

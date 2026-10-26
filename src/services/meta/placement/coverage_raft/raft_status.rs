@@ -110,69 +110,69 @@ impl MatrixMetaService {
             read_index: last_applied_index,
             writable: gates.writable,
             linearizable_reads: gates.linearizable_reads,
-            root_metadata_read_ready: gates.metadata_read_ready,
-            root_metadata_write_ready: gates.metadata_write_ready,
+            placement_metadata_read_ready: gates.metadata_read_ready,
+            placement_metadata_write_ready: gates.metadata_write_ready,
             root_pageserver_read_ready: gates.page_read_ready,
             root_pageserver_write_ready: gates.page_write_ready,
             root_replicaserver_read_ready: gates.chunk_read_ready,
             root_replicaserver_write_ready: gates.chunk_write_ready,
-            root_readiness_gate_read_ready: gates.linearizable_reads,
-            root_readiness_gate_write_ready: gates.writable,
+            placement_readiness_gate_read_ready: gates.linearizable_reads,
+            placement_readiness_gate_write_ready: gates.writable,
             node_count: self.nodes.len() as u64,
             object_usage_count: self.placements.len() as u64,
-            root_metadata_status_available: metadata.active_metaserver_count > 0,
-            root_active_metaserver_count: metadata.active_metaserver_count,
-            root_metadata_readable_metaserver_count: metadata.metadata_readable_metaserver_count,
-            root_metadata_writable_metaserver_count: metadata.metadata_writable_metaserver_count,
-            root_metadata_caught_up_metaserver_count: metadata.metadata_caught_up_metaserver_count,
-            root_metadata_apply_caught_up_metaserver_count: metadata
+            placement_metadata_status_available: metadata.active_metaserver_count > 0,
+            placement_active_metaserver_count: metadata.active_metaserver_count,
+            placement_metadata_readable_metaserver_count: metadata.metadata_readable_metaserver_count,
+            placement_metadata_writable_metaserver_count: metadata.metadata_writable_metaserver_count,
+            placement_metadata_caught_up_metaserver_count: metadata.metadata_caught_up_metaserver_count,
+            placement_metadata_apply_caught_up_metaserver_count: metadata
                 .metadata_apply_caught_up_metaserver_count,
-            root_metadata_control_apply_caught_up_metaserver_count: metadata
+            placement_metadata_control_apply_caught_up_metaserver_count: metadata
                 .metadata_control_apply_caught_up_metaserver_count,
-            root_metadata_read_fence_covered_metaserver_count: metadata
+            placement_metadata_read_fence_covered_metaserver_count: metadata
                 .metadata_read_fence_covered_metaserver_count,
-            root_metadata_quorum: metadata.metadata_quorum,
-            root_metadata_read_quorum_available: metadata.metadata_read_quorum_available,
-            root_metadata_write_quorum_available: metadata.metadata_write_quorum_available,
-            root_metadata_caught_up_quorum_available: metadata.metadata_caught_up_quorum_available,
-            root_metadata_apply_quorum_available: metadata.metadata_apply_quorum_available,
-            root_metadata_read_fence_quorum_available: metadata
+            placement_metadata_quorum: metadata.metadata_quorum,
+            placement_metadata_read_quorum_available: metadata.metadata_read_quorum_available,
+            placement_metadata_write_quorum_available: metadata.metadata_write_quorum_available,
+            placement_metadata_caught_up_quorum_available: metadata.metadata_caught_up_quorum_available,
+            placement_metadata_apply_quorum_available: metadata.metadata_apply_quorum_available,
+            placement_metadata_read_fence_quorum_available: metadata
                 .metadata_read_fence_quorum_available,
-            root_metadata_control_apply_quorum_available: metadata
+            placement_metadata_control_apply_quorum_available: metadata
                 .metadata_control_apply_quorum_available,
-            root_metadata_min_last_applied_mutation_commit_index: metadata
+            placement_metadata_min_last_applied_mutation_commit_index: metadata
                 .metadata_min_last_applied_mutation_commit_index,
-            root_metadata_max_apply_commit_lag: metadata.metadata_max_apply_commit_lag,
-            root_metadata_min_safe_read_fence: metadata.metadata_min_safe_read_fence,
-            root_metadata_max_read_fence_commit_lag: metadata.metadata_max_read_fence_commit_lag,
-            root_metadata_max_read_fence_read_index_lag: metadata
+            placement_metadata_max_apply_commit_lag: metadata.metadata_max_apply_commit_lag,
+            placement_metadata_min_safe_read_fence: metadata.metadata_min_safe_read_fence,
+            placement_metadata_max_read_fence_commit_lag: metadata.metadata_max_read_fence_commit_lag,
+            placement_metadata_max_read_fence_read_index_lag: metadata
                 .metadata_max_read_fence_read_index_lag,
-            root_metadata_max_read_fence_applied_lag: metadata.metadata_max_read_fence_applied_lag,
-            root_metadata_control_min_last_applied_mutation_commit_index: metadata
+            placement_metadata_max_read_fence_applied_lag: metadata.metadata_max_read_fence_applied_lag,
+            placement_metadata_control_min_last_applied_mutation_commit_index: metadata
                 .metadata_control_min_last_applied_mutation_commit_index,
-            root_metadata_control_max_last_applied_mutation_commit_index: metadata
+            placement_metadata_control_max_last_applied_mutation_commit_index: metadata
                 .metadata_control_max_last_applied_mutation_commit_index,
-            root_metadata_control_max_apply_commit_lag: metadata
+            placement_metadata_control_max_apply_commit_lag: metadata
                 .metadata_control_max_apply_commit_lag,
-            root_metadata_shard_topology_mismatch: metadata.metadata_shard_topology_mismatch,
-            root_metadata_coordinator_backend_mismatch: metadata
+            placement_metadata_shard_topology_mismatch: metadata.metadata_shard_topology_mismatch,
+            placement_metadata_coordinator_backend_mismatch: metadata
                 .metadata_coordinator_backend_mismatch,
-            root_metadata_coordinator_config_mismatch: metadata
+            placement_metadata_coordinator_config_mismatch: metadata
                 .metadata_coordinator_config_mismatch,
-            root_metadata_max_shard_topology_epoch: metadata.metadata_max_shard_topology_epoch,
-            root_metadata_control_proof_count: metadata.metadata_control_proof_count,
-            root_metadata_control_read_ready_count: metadata.metadata_control_read_ready_count,
-            root_metadata_control_write_ready_count: metadata.metadata_control_write_ready_count,
-            root_metadata_external_coordinator_required_metaserver_count: metadata
+            placement_metadata_max_shard_topology_epoch: metadata.metadata_max_shard_topology_epoch,
+            placement_metadata_control_proof_count: metadata.metadata_control_proof_count,
+            placement_metadata_control_read_ready_count: metadata.metadata_control_read_ready_count,
+            placement_metadata_control_write_ready_count: metadata.metadata_control_write_ready_count,
+            placement_metadata_external_coordinator_required_metaserver_count: metadata
                 .metadata_external_coordinator_required_metaserver_count,
-            root_metadata_external_coordinator_endpoints_ready_metaserver_count: metadata
+            placement_metadata_external_coordinator_endpoints_ready_metaserver_count: metadata
                 .metadata_external_coordinator_endpoints_ready_metaserver_count,
-            root_metadata_external_coordinator_owner_sessions_ready_metaserver_count: metadata
+            placement_metadata_external_coordinator_owner_sessions_ready_metaserver_count: metadata
                 .metadata_external_coordinator_owner_sessions_ready_metaserver_count,
-            root_metadata_external_coordinator_ready_metaserver_count: metadata
+            placement_metadata_external_coordinator_ready_metaserver_count: metadata
                 .metadata_external_coordinator_ready_metaserver_count,
-            root_metadata_control_proof_checksum: metadata.metadata_control_proof_checksum.clone(),
-            root_metadata_coverage_status: metadata.status.clone(),
+            placement_metadata_control_proof_checksum: metadata.metadata_control_proof_checksum.clone(),
+            placement_metadata_coverage_status: metadata.status.clone(),
             root_active_pageserver_count: page_allocator.active_pageserver_count,
             root_page_allocator_shard_count: page_allocator.shard_count,
             root_page_allocator_covered_shards: page_allocator.covered_shards,

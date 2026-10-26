@@ -52,7 +52,7 @@ impl MatrixObjectStore {
             catalog_endpoint,
             catalog_endpoint_set.metaserver_endpoint_configured,
             catalog_endpoint_set.rootserver_endpoint_configured,
-            catalog_endpoint_set.rootserver_required,
+            catalog_endpoint_set.placement_required,
         ))
     }
 }

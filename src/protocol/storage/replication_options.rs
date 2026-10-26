@@ -5,9 +5,9 @@ pub struct MetadataReplicationProofReport {
     pub format: String,
     pub ready: bool,
     pub reason: String,
-    pub root_ready: bool,
+    pub placement_ready: bool,
     pub root_status: String,
-    pub root_raft_status_checksum_format: String,
+    pub placement_raft_status_checksum_format: String,
     pub root_raft_status_checksum: String,
     pub metadata_commit_index: u64,
     pub metadata_snapshot_floor_commit_index: u64,
@@ -45,8 +45,8 @@ impl MetadataReplicationProofReport {
             ("reason", &self.reason),
             ("root_status", &self.root_status),
             (
-                "root_raft_status_checksum_format",
-                &self.root_raft_status_checksum_format,
+                "placement_raft_status_checksum_format",
+                &self.placement_raft_status_checksum_format,
             ),
             ("root_raft_status_checksum", &self.root_raft_status_checksum),
             (
@@ -83,7 +83,7 @@ impl MetadataReplicationProofReport {
         }
         for (name, value) in [
             ("ready", self.ready),
-            ("root_ready", self.root_ready),
+            ("placement_ready", self.placement_ready),
             (
                 "object_deferred_manifest_checkpoints",
                 self.object_deferred_manifest_checkpoints,

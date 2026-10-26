@@ -29,19 +29,19 @@ pub fn placement_service_snapshot_install_source_proof_report(
     let envelope_checksum = service_snapshot_install_source_proof_checksum(
         &service,
         &report.aggregate_checksum,
-        &report.root_state_fingerprint,
-        report.requested_root_read_index,
-        report.requested_root_commit_index,
-        report.root_applied_index,
+        &report.placement_state_fingerprint,
+        report.requested_placement_read_index,
+        report.requested_placement_commit_index,
+        report.placement_applied_index,
     );
     ServiceSnapshotInstallSourceProofReport {
         format: "MXOS-RUST-SERVICE-SNAPSHOT-INSTALL-SOURCE-PROOF1".to_string(),
         service,
         expected_snapshot_read_proof_checksum: report.aggregate_checksum.clone(),
-        source_state_fingerprint: report.root_state_fingerprint.clone(),
-        source_read_index: report.requested_root_read_index,
-        source_commit_index: report.requested_root_commit_index,
-        source_applied_index: report.root_applied_index,
+        source_state_fingerprint: report.placement_state_fingerprint.clone(),
+        source_read_index: report.requested_placement_read_index,
+        source_commit_index: report.requested_placement_commit_index,
+        source_applied_index: report.placement_applied_index,
         envelope_checksum,
     }
 }

@@ -15,7 +15,7 @@ impl ControlPlaneCatalogSelection {
         append_string(&mut material, &self.effective_mode);
         append_string(&mut material, &self.catalog_source);
         append_string(&mut material, &self.catalog_endpoint);
-        append_u64(&mut material, self.rootserver_required as u64);
+        append_u64(&mut material, self.placement_required as u64);
         append_u64(&mut material, self.metaserver_endpoint_configured as u64);
         append_u64(&mut material, self.rootserver_endpoint_configured as u64);
         etag(&material)
@@ -56,8 +56,8 @@ impl ControlPlaneCatalogSelection {
             self.catalog_route_checksum.clone(),
         );
         fields.insert(
-            "rootserver_required".to_string(),
-            self.rootserver_required.to_string(),
+            "placement_required".to_string(),
+            self.placement_required.to_string(),
         );
         fields.insert(
             "metaserver_endpoint_configured".to_string(),
