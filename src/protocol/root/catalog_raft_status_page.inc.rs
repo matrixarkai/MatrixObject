@@ -11,7 +11,7 @@ fn placement_raft_status_page_fields(
             status.root_active_pageserver_count,
         ),
         (
-            "placement_block_allocator_shard_count",
+            "placement_page_allocator_shard_count",
             status.root_page_allocator_shard_count,
         ),
         (

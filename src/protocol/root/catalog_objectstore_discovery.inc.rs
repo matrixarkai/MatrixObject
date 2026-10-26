@@ -79,11 +79,11 @@ impl CatalogObjectStoreEndpointDiscovery {
             self.skipped_metadata_unwritable.to_string(),
         );
         fields.insert(
-            "skipped_block_unready".to_string(),
+            "skipped_page_unready".to_string(),
             self.skipped_page_unready.to_string(),
         );
         fields.insert(
-            "skipped_block_write_unready".to_string(),
+            "skipped_page_write_unready".to_string(),
             self.skipped_page_write_unready.to_string(),
         );
         fields.insert(

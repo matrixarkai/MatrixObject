@@ -50,18 +50,18 @@ impl MatrixChunkService {
         replica_fanout_parallelism: usize,
         local_replica_store_parallelism: usize,
     ) -> Result<Self, ObjectError> {
-        validate_storage_parallelism(page_read_parallelism, "block_read_parallelism")?;
-        validate_storage_parallelism(page_write_parallelism, "block_write_parallelism")?;
-        validate_storage_parallelism(page_batch_read_parallelism, "block_batch_read_parallelism")?;
+        validate_storage_parallelism(page_read_parallelism, "page_read_parallelism")?;
+        validate_storage_parallelism(page_write_parallelism, "page_write_parallelism")?;
+        validate_storage_parallelism(page_batch_read_parallelism, "page_batch_read_parallelism")?;
         validate_storage_parallelism(
             page_batch_write_parallelism,
-            "block_batch_write_parallelism",
+            "page_batch_write_parallelism",
         )?;
         validate_storage_parallelism(
             page_batch_discard_parallelism,
-            "block_batch_discard_parallelism",
+            "page_batch_discard_parallelism",
         )?;
-        validate_storage_parallelism(page_repair_parallelism, "block_repair_parallelism")?;
+        validate_storage_parallelism(page_repair_parallelism, "page_repair_parallelism")?;
         validate_storage_parallelism(
             replica_fanout_parallelism,
             "block_chunk_fanout_parallelism",

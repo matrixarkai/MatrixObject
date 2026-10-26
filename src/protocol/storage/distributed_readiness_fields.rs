@@ -200,9 +200,9 @@ impl ObjectStoreDistributedReadiness {
                 &self.placement_raft_status_checksum_format,
             ),
             ("root_raft_status_checksum", &self.root_raft_status_checksum),
-            ("block_state_fingerprint", &self.page_state_fingerprint),
+            ("page_state_fingerprint", &self.page_state_fingerprint),
             (
-                "block_state_fingerprint_format",
+                "page_state_fingerprint_format",
                 &self.page_state_fingerprint_format,
             ),
             ("chunk_state_fingerprint", &self.chunk_state_fingerprint),
@@ -266,7 +266,7 @@ impl ObjectStoreDistributedReadiness {
         for (name, value) in [
             ("ready", self.ready),
             ("metadata_ready", self.metadata_ready),
-            ("block_ready", self.page_ready),
+            ("page_ready", self.page_ready),
             ("placement_ready", self.placement_ready),
             ("placement_read_ready", self.placement_read_ready),
             (

@@ -142,11 +142,11 @@ impl CatalogLivenessReceipt {
             last_heartbeat_ms: heartbeat_ms,
             page_allocator_shard_index: require_liveness_u64(
                 fields,
-                "block_allocator_shard_index",
+                "page_allocator_shard_index",
             )?,
             page_allocator_shard_count: require_liveness_u64(
                 fields,
-                "block_allocator_shard_count",
+                "page_allocator_shard_count",
             )?,
             meta_health: NodeMetaHealth::default(),
             page_health: NodePageHealth::default(),
