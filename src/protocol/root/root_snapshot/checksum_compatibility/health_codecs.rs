@@ -295,3 +295,94 @@ pub(crate) fn read_root_meta_health(
         raft_membership_receipt_retention_coupled_to_mutation_receipts: cursor.read_u64()? != 0,
     })
 }
+
+/// The bytes one node's page health takes in a root snapshot.
+///
+/// # WHY THIS IS A HELPER NOW
+///
+/// `append_root_meta_health` and `append_root_chunk_health` have always been helpers; page
+/// health was thirty-eight `append_*` calls written out inside `RootSnapshot::append_to_bytes`.
+/// That asymmetry is why putting roster nodes anywhere else -- a `MetaSnapshot`, a wire
+/// message -- meant copying thirty-eight calls, which is thirty-eight chances to drop a field
+/// where nothing would notice.
+///
+/// The bytes are unchanged, and that is pinned rather than asserted: see
+/// `the_root_snapshot_encoding_is_byte_for_byte_what_it_was`, whose length and digest were
+/// captured from the encoder BEFORE this helper existed.
+///
+/// NOT SHARED WITH THE CHECKSUM MATERIAL, which encodes the same fields in a different order
+/// behind version flags. Reordering the material would change every stored checksum, so those
+/// two encodings stay separate and are held together by a guard instead -- see
+/// `every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum`.
+pub(crate) fn append_root_page_health(out: &mut Vec<u8>, health: &RootPageHealth) {
+    append_u64(out, health.ready as u64);
+    append_u64(out, health.read_ready as u64);
+    append_string(out, &health.route_control_checksum);
+    append_u64(out, health.route_control_commit_index);
+    append_u64(out, health.chunk_endpoint_count);
+    append_u64(out, health.write_quorum);
+    append_u64(out, health.read_quorum);
+    append_u64(out, health.writable_chunk_endpoint_count);
+    append_u64(out, health.healthy_chunk_endpoint_count);
+    append_u64(
+        out,
+        health.raft_writable_chunk_endpoint_count,
+    );
+    append_u64(
+        out,
+        health.raft_readable_chunk_endpoint_count,
+    );
+    append_u64(
+        out,
+        health
+            .capacity_ready_writable_chunk_endpoint_count,
+    );
+    append_u64(out, health.quarantined_chunk_replicas);
+    append_u64(out, health.chunk_capacity_bytes);
+    append_u64(out, health.chunk_capacity_free_bytes);
+    append_u64(
+        out,
+        health.chunk_metadata_dirty_endpoint_count,
+    );
+    append_u64(out, health.chunk_metadata_dirty_mutations);
+    append_u64(
+        out,
+        health.chunk_metadata_checkpoint_interval,
+    );
+    append_u64(
+        out,
+        health
+            .deferred_metadata_checkpoint_endpoint_count,
+    );
+    append_u64(
+        out,
+        health.deferred_metadata_checkpoint_requests,
+    );
+    append_u64(
+        out,
+        health.deferred_metadata_checkpoint_runs,
+    );
+    append_u64(out, health.chunk_capacity_rejected_writes);
+    append_u64(
+        out,
+        health.replica_service_mode_rejected_mutations,
+    );
+    append_u64(out, health.chunk_physical_write_count);
+    append_u64(out, health.chunk_physical_write_bytes);
+    append_u64(
+        out,
+        health.chunk_physical_discard_range_count,
+    );
+    append_u64(out, health.chunk_physical_discard_bytes);
+    append_u64(out, health.total_reclaimable_bytes);
+    append_u64(out, health.total_trailing_trim_bytes);
+    append_u64(out, health.total_fragmented_chunk_count);
+    append_u64(out, health.total_fragmented_discarded_bytes);
+    append_u64(out, health.allocation_receipt_count);
+    append_u64(out, health.batch_allocation_receipt_count);
+    append_u64(out, health.release_allocation_receipt_count);
+    append_u64(out, health.write_receipt_count);
+    append_u64(out, health.batch_write_receipt_count);
+    append_u64(out, health.discard_receipt_count);
+    append_u64(out, health.batch_discard_receipt_count);
+}
