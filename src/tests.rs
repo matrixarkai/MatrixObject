@@ -34072,6 +34072,10 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRS-MULTIPART-COMPLETE-REQUEST1",
         "MOSRS-ROOT-CATALOG-BOOTSTRAP1",
         "MOSRS-ROOT-CATALOG-ROUTE1",
+        // The route BINDING form, landed reader-first: this build verifies it and does
+        // not yet emit it. Named without a `ROOT` term because the rootserver kind is
+        // being retired and a stamp minted now is permanent.
+        "MOSRS-CATALOG-ROUTE-BINDING1",
         "MOSRS-ROOTSERVER-BOOTSTRAP1",
         "MOSRS-STORAGE-MAINTENANCE-APPLY-REQUEST1",
         "MOSRSBLOCK",
@@ -34251,7 +34255,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        148,
+        149,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
@@ -49086,5 +49090,123 @@ fn the_page_offline_precondition_gates_on_the_same_flag_as_its_chunk_sibling() {
         !PAGE.contains("gateway_eligible"),
         "the page offline handler is gating on gateway_eligible again; that flag means \
          object-gateway capability and only correlates with the page tier by accident"
+    );
+}
+
+/// THE THREE ROUTE DISCRIMINATORS ARE PAIRWISE DISTINCT.
+///
+/// The discriminator is the ONLY term separating one registration's route proof from
+/// another's for the same node: node id, endpoint, catalog source, catalog endpoint and
+/// endpoint count are all held equal here on purpose, so the checksums differ for
+/// exactly one reason. If any two discriminators became equal, two different route
+/// proofs would verify as each other.
+///
+/// All THREE pairs are asserted, not just page against chunk. The position carries
+/// three values, so checking one pair would leave the objectstore route unguarded --
+/// and an unguarded pair is where the collapse comes back.
+#[test]
+fn the_three_route_discriminators_are_pairwise_distinct() {
+    let node = placement_node("route-node-1", "domain-a", 1 << 20);
+    let source = "embedded";
+    let endpoint = "catalog.matrix.local:9330";
+    let count = 3u64;
+
+    let labelled = [
+        ("page", CATALOG_PAGE_ROUTE_DISCRIMINATOR),
+        ("chunk", CATALOG_CHUNK_ROUTE_DISCRIMINATOR),
+        ("objectstore", CATALOG_OBJECTSTORE_ROUTE_DISCRIMINATOR),
+    ];
+
+    let checksums: Vec<(&str, String)> = labelled
+        .iter()
+        .map(|(name, discriminator)| {
+            (
+                *name,
+                catalog_route_binding_checksum(discriminator, &node, source, endpoint, count),
+            )
+        })
+        .collect();
+
+    // NON-VACUITY FIRST: two empty strings are equal, so a checksum function that
+    // returned "" would satisfy nothing below until this is checked.
+    for (name, checksum) in &checksums {
+        assert!(
+            !checksum.is_empty(),
+            "the {name} route binding checksum is empty, so the comparisons below prove nothing"
+        );
+    }
+
+    // EVERY PAIR, and the message names which pair collapsed.
+    for i in 0..checksums.len() {
+        for j in (i + 1)..checksums.len() {
+            let (left_name, left) = &checksums[i];
+            let (right_name, right) = &checksums[j];
+            assert_ne!(
+                left, right,
+                "the {left_name} and {right_name} route binding checksums are equal for one \
+                 node with every other term held equal, so a {left_name} route proof now \
+                 verifies as a {right_name} one"
+            );
+        }
+    }
+
+    // And the new form must not coincide with the old one it replaces, or the stamp
+    // bump bought nothing.
+    let old_form = catalog_route_checksum("blockserver", &node, source, endpoint, count);
+    let new_form = catalog_route_binding_checksum(
+        CATALOG_PAGE_ROUTE_DISCRIMINATOR,
+        &node,
+        source,
+        endpoint,
+        count,
+    );
+    assert_ne!(
+        old_form, new_form,
+        "the binding form matches the kind-derived form, so the two are not distinguishable"
+    );
+}
+
+/// THE READER ACCEPTS BOTH FORMS, AND STILL REFUSES A WRONG ONE.
+///
+/// A caller holds whatever checksum the build that wrote it produced, so a reader that
+/// accepts only the form it would write itself rejects its own history. This is landed
+/// BEFORE any writer emits the binding form, which is the whole point of the ordering:
+/// when the writer switches, every checksum it emits is already verifiable by a build
+/// that shipped before it.
+#[test]
+fn the_route_reader_accepts_the_old_form_and_the_binding_form() {
+    let node = placement_node("route-node-2", "domain-b", 1 << 20);
+    let source = "embedded";
+    let endpoint = "catalog.matrix.local:9331";
+    let count = 2u64;
+
+    let old_form = catalog_route_checksum("blockserver", &node, source, endpoint, count);
+    let binding_form = catalog_route_binding_checksum(
+        CATALOG_PAGE_ROUTE_DISCRIMINATOR,
+        &node,
+        source,
+        endpoint,
+        count,
+    );
+    assert!(!old_form.is_empty() && !binding_form.is_empty());
+    assert_ne!(old_form, binding_form);
+
+    let accepted = [old_form.as_str(), binding_form.as_str()];
+
+    require_route_checksum_for_service("blockserver", &accepted, &old_form)
+        .expect("a checksum written under the old form must still verify");
+    require_route_checksum_for_service("blockserver", &accepted, &binding_form)
+        .expect("a checksum written under the binding form must verify");
+
+    // NON-VACUITY: a reader that accepted everything would pass both lines above.
+    let wrong = require_route_checksum_for_service("blockserver", &accepted, "not-a-checksum");
+    assert!(
+        wrong.is_err(),
+        "the reader accepted a checksum that matches neither form"
+    );
+    let empty = require_route_checksum_for_service("blockserver", &accepted, "");
+    assert!(
+        empty.is_err(),
+        "an unset expected checksum must be refused, not treated as a match"
     );
 }

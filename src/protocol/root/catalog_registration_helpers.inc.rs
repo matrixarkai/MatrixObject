@@ -115,9 +115,38 @@ pub(crate) fn root_catalog_liveness_receipt_checksum(
     etag(&material)
 }
 
+/// THE ROUTE BINDING CHECKSUM: the form this build can READ but does not yet write.
+///
+/// Landed ahead of any writer, so that when the writer switches, every checksum it
+/// emits is already verifiable by a build that shipped before it. The reverse order
+/// would make the two forms silently incompatible.
+pub(crate) fn catalog_route_binding_checksum(
+    route_discriminator: &str,
+    node: &PlacementNode,
+    catalog_source: &str,
+    catalog_endpoint: &str,
+    catalog_endpoint_count: u64,
+) -> String {
+    let mut material = Vec::new();
+    append_string(&mut material, CATALOG_ROUTE_BINDING_CHECKSUM_FORMAT);
+    append_string(&mut material, route_discriminator);
+    append_string(&mut material, &node.node_id);
+    append_string(&mut material, &node.endpoint);
+    append_string(&mut material, catalog_source);
+    append_string(&mut material, catalog_endpoint);
+    append_u64(&mut material, catalog_endpoint_count);
+    etag(&material)
+}
+
+/// VERIFY AN EXPECTED ROUTE CHECKSUM AGAINST EVERY FORM THIS BUILD ACCEPTS.
+///
+/// A caller holds a checksum computed by whichever build wrote it, so a reader that
+/// accepts only the form it would write itself rejects its own history. `accepted` is
+/// ordered newest-last; the message quotes the first entry, which is the form this
+/// build emits, because that is the one a reader is most likely to have expected.
 pub(crate) fn require_route_checksum_for_service(
     service_kind: &str,
-    actual_checksum: &str,
+    accepted: &[&str],
     expected_checksum: &str,
 ) -> Result<(), ObjectError> {
     if expected_checksum.is_empty() {
@@ -125,11 +154,17 @@ pub(crate) fn require_route_checksum_for_service(
             "{service_kind} catalog route checksum must be set"
         )));
     }
-    if actual_checksum != expected_checksum {
-        return Err(ObjectError::PreconditionFailed(format!(
-            "{service_kind} catalog route checksum mismatch: expected {expected_checksum}, got {actual_checksum}"
-        )));
+    debug_assert!(
+        !accepted.is_empty(),
+        "a reader that accepts nothing rejects everything"
+    );
+    if accepted.iter().any(|actual| *actual == expected_checksum) {
+        return Ok(());
     }
-    Ok(())
+    let actual_checksum = accepted.first().copied().unwrap_or_default();
+    Err(ObjectError::PreconditionFailed(format!(
+        "{service_kind} catalog route checksum mismatch: expected {expected_checksum}, got {actual_checksum}"
+    )))
 }
+
 

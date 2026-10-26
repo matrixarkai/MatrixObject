@@ -29,6 +29,17 @@ pub(crate) fn validate_catalog_route(
 }
 
 impl CatalogChunkRegistration {
+    /// The route binding checksum this build can verify but does not yet emit.
+    pub fn catalog_route_binding_checksum(&self) -> String {
+        catalog_route_binding_checksum(
+            CATALOG_CHUNK_ROUTE_DISCRIMINATOR,
+            &self.node,
+            &self.catalog_source,
+            &self.catalog_endpoint,
+            self.catalog_endpoint_count,
+        )
+    }
+
     pub fn catalog_route_checksum(&self) -> String {
         catalog_route_checksum(
             "chunkserver",
@@ -45,7 +56,10 @@ impl CatalogChunkRegistration {
     ) -> Result<(), ObjectError> {
         require_route_checksum_for_service(
             "chunkserver",
-            &self.catalog_route_checksum(),
+            &[
+                &self.catalog_route_checksum(),
+                &self.catalog_route_binding_checksum(),
+            ],
             expected_checksum,
         )
     }

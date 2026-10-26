@@ -11,6 +11,32 @@ pub struct EmbeddedControlPlaneBootstrap {
 pub(crate) const EMBEDDED_PLACEMENT_CATALOG_ENDPOINT: &str = "embedded-root-catalog";
 pub(crate) const EMBEDDED_METASERVER_CATALOG_ENDPOINT: &str = "embedded-metaserver-catalog";
 pub(crate) const CATALOG_ROUTE_CHECKSUM_FORMAT: &str = "MOSRS-ROOT-CATALOG-ROUTE1";
+
+/// THE CATALOG ROUTE BINDING CHECKSUM FORMAT.
+///
+/// This names what the checksum identifies -- the binding of a node to its catalog
+/// route -- rather than being a version of the older name. It deliberately carries no
+/// `ROOT` term: the rootserver kind is being retired, and a durable format stamp minted
+/// now is permanent, so baking a retired concept into bytes we cannot rename without
+/// another migration is the one mistake this name exists to avoid.
+pub(crate) const CATALOG_ROUTE_BINDING_CHECKSUM_FORMAT: &str =
+    "MOSRS-CATALOG-ROUTE-BINDING1";
+
+/// THE ROUTE DISCRIMINATORS -- CHECKSUM MATERIAL, DELIBERATELY NOT THE NODE KIND.
+///
+/// These are the only term separating one registration's route proof from another's for
+/// the SAME node: every other term in the material (node id, endpoint, catalog source,
+/// catalog endpoint, endpoint count) is identical across the three. If any two of these
+/// values ever become equal, two different route proofs verify as each other, which is
+/// why `the_three_route_discriminators_are_pairwise_distinct` asserts all three pairs
+/// rather than trusting that they look different.
+///
+/// They are NOT node kinds and must never be folded into one: the store-plane kinds
+/// merge, these do not. The older format derived this term from the node kind, which is
+/// exactly how a kind merge could have made two proofs bit-identical.
+pub(crate) const CATALOG_PAGE_ROUTE_DISCRIMINATOR: &str = "page-route";
+pub(crate) const CATALOG_CHUNK_ROUTE_DISCRIMINATOR: &str = "chunk-route";
+pub(crate) const CATALOG_OBJECTSTORE_ROUTE_DISCRIMINATOR: &str = "objectstore-route";
 pub(crate) const CATALOG_LIVENESS_RECEIPT_FORMAT: &str = "MXOSROOT-CATALOG-LIVENESS-RECEIPT1";
 pub(crate) const MODULE_CATALOG_ROUTE_CHECKSUM_FORMAT: &str = "MOSRS-MODULE-CATALOG-ROUTE1";
 pub(crate) const CONTROL_PLANE_CATALOG_SELECTION_CHECKSUM_FORMAT: &str =

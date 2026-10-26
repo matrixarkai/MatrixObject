@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl CatalogObjectStoreRegistration {
+    /// The route binding checksum this build can verify but does not yet emit.
+    pub fn catalog_route_binding_checksum(&self) -> String {
+        catalog_route_binding_checksum(
+            CATALOG_OBJECTSTORE_ROUTE_DISCRIMINATOR,
+            &self.node,
+            &self.catalog_source,
+            &self.catalog_endpoint,
+            self.catalog_endpoint_count,
+        )
+    }
+
     pub fn catalog_route_checksum(&self) -> String {
         catalog_route_checksum(
             "objectstore",
@@ -17,7 +28,10 @@ impl CatalogObjectStoreRegistration {
     ) -> Result<(), ObjectError> {
         require_route_checksum_for_service(
             "objectstore",
-            &self.catalog_route_checksum(),
+            &[
+                &self.catalog_route_checksum(),
+                &self.catalog_route_binding_checksum(),
+            ],
             expected_checksum,
         )
     }
