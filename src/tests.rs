@@ -47092,11 +47092,25 @@ fn every_accepted_snapshot_checksum_format_still_validates() {
     };
 
     let accepted = snapshot.accepted_checksum_formats();
-    assert!(
-        accepted.len() >= 15,
-        "the accepted list should hold every format this build reads, and it holds {}: {:?}",
-        accepted.len(),
-        accepted.iter().map(|(name, _)| *name).collect::<Vec<_>>()
+
+    // AN INDEPENDENT REFERENCE, and the first version of this test did not have one. It
+    // walked `accepted_checksum_formats()` and asserted every entry validated -- which is a
+    // comparison of the list against itself, so REMOVING an entry was invisible. Measured:
+    // deleting "v7" left this test green. That is the same shape as a health check that reads
+    // its own last-written value and can therefore never fire.
+    //
+    // So the expected formats are written out here. A format dropped from the code fails
+    // against this list, by name; a format added on purpose fails here too, which is the
+    // right amount of friction for changing what an existing store may carry.
+    let expected: Vec<&str> = vec![
+        "current", "v32", "v26", "v22", "v21", "v20", "v18", "v19", "v16", "v11", "v10", "v9",
+        "v8", "v7", "v2", "legacy",
+    ];
+    let names: Vec<&str> = accepted.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        names, expected,
+        "the accepted checksum formats are this store's read-old-forever promise; dropping \
+         one makes every snapshot written by that build fail to load"
     );
     // THE NAMES ARE DISTINCT, or the failure message below could name the wrong format.
     let distinct: std::collections::BTreeSet<&str> =
