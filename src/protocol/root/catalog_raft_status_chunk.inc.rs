@@ -8,87 +8,87 @@ fn placement_raft_status_chunk_fields(
     for (name, value) in [
         (
             "placement_active_chunkserver_count",
-            status.root_active_replicaserver_count,
+            status.root_active_chunkserver_count,
         ),
         (
             "placement_writable_chunkserver_count",
-            status.root_writable_replicaserver_count,
+            status.root_writable_chunkserver_count,
         ),
         (
             "placement_eligible_chunkserver_count",
-            status.root_placement_eligible_replicaserver_count,
+            status.root_placement_eligible_chunkserver_count,
         ),
         (
             "placement_ineligible_chunkserver_count",
-            status.root_placement_ineligible_replicaserver_count,
+            status.root_placement_ineligible_chunkserver_count,
         ),
         (
             "placement_chunkserver_control_proof_count",
-            status.root_replicaserver_control_proof_count,
+            status.root_chunkserver_control_proof_count,
         ),
         (
             "placement_chunkserver_control_read_ready_count",
-            status.root_replicaserver_control_read_ready_count,
+            status.root_chunkserver_control_read_ready_count,
         ),
         (
             "placement_chunkserver_control_write_ready_count",
-            status.root_replicaserver_control_write_ready_count,
+            status.root_chunkserver_control_write_ready_count,
         ),
         (
             "placement_chunkserver_control_min_raft_commit_index",
-            status.root_replicaserver_control_min_raft_commit_index,
+            status.root_chunkserver_control_min_raft_commit_index,
         ),
         (
             "placement_chunkserver_control_max_raft_commit_index",
-            status.root_replicaserver_control_max_raft_commit_index,
+            status.root_chunkserver_control_max_raft_commit_index,
         ),
         (
             "placement_chunkserver_total_discarded_range_count",
-            status.root_replicaserver_total_discarded_range_count,
+            status.root_chunkserver_total_discarded_range_count,
         ),
         (
             "placement_chunkserver_total_reclaimable_bytes",
-            status.root_replicaserver_total_reclaimable_bytes,
+            status.root_chunkserver_total_reclaimable_bytes,
         ),
         (
             "placement_chunkserver_total_trailing_trim_bytes",
-            status.root_replicaserver_total_trailing_trim_bytes,
+            status.root_chunkserver_total_trailing_trim_bytes,
         ),
         (
             "placement_chunkserver_total_fragmented_chunk_count",
-            status.root_replicaserver_total_fragmented_chunk_count,
+            status.root_chunkserver_total_fragmented_chunk_count,
         ),
         (
             "placement_chunkserver_total_fragmented_discarded_bytes",
-            status.root_replicaserver_total_fragmented_discarded_bytes,
+            status.root_chunkserver_total_fragmented_discarded_bytes,
         ),
         (
             "placement_reclaim_pressure_chunkserver_count",
-            status.root_reclaim_pressure_replicaserver_count,
+            status.root_reclaim_pressure_chunkserver_count,
         ),
         (
             "root_chunkserver_health_ok_count",
-            status.root_replicaserver_health_ok_count,
+            status.root_chunkserver_health_ok_count,
         ),
         (
             "root_chunkserver_health_degraded_count",
-            status.root_replicaserver_health_degraded_count,
+            status.root_chunkserver_health_degraded_count,
         ),
         (
             "root_chunkserver_health_unavailable_count",
-            status.root_replicaserver_health_unavailable_count,
+            status.root_chunkserver_health_unavailable_count,
         ),
         (
             "root_chunkserver_health_unknown_count",
-            status.root_replicaserver_health_unknown_count,
+            status.root_chunkserver_health_unknown_count,
         ),
         (
             "root_chunkserver_not_fault_tolerant_count",
-            status.root_replicaserver_not_fault_tolerant_count,
+            status.root_chunkserver_not_fault_tolerant_count,
         ),
         (
             "root_chunkserver_total_health_reason_count",
-            status.root_replicaserver_total_health_reason_count,
+            status.root_chunkserver_total_health_reason_count,
         ),
     ] {
         fields.insert(format!("{field_prefix}{name}"), value.to_string());

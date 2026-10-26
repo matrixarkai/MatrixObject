@@ -27,11 +27,11 @@ fn placement_raft_status_readiness_fields(
         ),
         (
             "root_chunkserver_read_ready",
-            self_.root_replicaserver_read_ready,
+            self_.root_chunkserver_read_ready,
         ),
         (
             "root_chunkserver_write_ready",
-            self_.root_replicaserver_write_ready,
+            self_.root_chunkserver_write_ready,
         ),
         (
             "placement_readiness_gate_read_ready",

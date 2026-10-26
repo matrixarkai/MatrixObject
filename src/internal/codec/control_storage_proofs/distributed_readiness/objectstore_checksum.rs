@@ -20,7 +20,7 @@ pub(crate) fn objectstore_distributed_readiness_checksum(
     append_page_readiness(&mut material, report);
     append_control_plane_readiness(&mut material, report);
     append_placement_pageserver_topology(&mut material, report);
-    append_placement_replicaserver_topology(&mut material, report);
+    append_placement_chunkserver_topology(&mut material, report);
     append_placement_metadata_topology(&mut material, report);
     append_storage_readiness(&mut material, report);
     etag(&material)

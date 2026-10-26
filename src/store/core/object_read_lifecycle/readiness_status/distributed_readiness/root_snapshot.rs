@@ -18,9 +18,9 @@ struct DistributedPlacementReadinessSnapshot {
     root_pageserver_service_coverage: PlacementPageServerServiceCoverage,
     root_pageserver_service_ready: bool,
     root_pageserver_route_control_ready: bool,
-    root_replicaserver_coverage: PlacementReplicaServerCoverage,
-    root_replicaserver_ready: bool,
-    root_replicaserver_control_ready: bool,
+    root_chunkserver_coverage: PlacementChunkServerCoverage,
+    root_chunkserver_ready: bool,
+    root_chunkserver_control_ready: bool,
     root_leader_node_id: String,
     root_lease_epoch: u64,
     root_lease_expire_time_ms: u64,
@@ -31,8 +31,8 @@ struct DistributedPlacementReadinessSnapshot {
     placement_metadata_write_ready: bool,
     root_pageserver_read_ready: bool,
     root_pageserver_write_ready: bool,
-    root_replicaserver_read_ready: bool,
-    root_replicaserver_write_ready: bool,
+    root_chunkserver_read_ready: bool,
+    root_chunkserver_write_ready: bool,
     placement_readiness_gate_read_ready: bool,
     placement_readiness_gate_write_ready: bool,
     placement_leader_ready: bool,
@@ -103,14 +103,14 @@ impl DistributedPlacementReadinessSnapshot {
             root_pageserver_service_coverage.route_control_proof_count == 0
                 || (root_pageserver_service_coverage.route_control_write_ready_count > 0
                     && root_pageserver_service_coverage.route_control_read_ready_count > 0);
-        let root_replicaserver_coverage = store
+        let root_chunkserver_coverage = store
             .meta_service
-            .replicaserver_coverage(min_capacity_free_bytes);
-        let root_replicaserver_ready = root_replicaserver_coverage.active_replicaserver_count == 0
-            || root_replicaserver_coverage.writable_replicaserver_count > 0;
-        let root_replicaserver_control_ready = root_replicaserver_coverage.control_proof_count == 0
-            || (root_replicaserver_coverage.control_read_ready_count > 0
-                && root_replicaserver_coverage.control_write_ready_count > 0);
+            .chunkserver_coverage(min_capacity_free_bytes);
+        let root_chunkserver_ready = root_chunkserver_coverage.active_chunkserver_count == 0
+            || root_chunkserver_coverage.writable_chunkserver_count > 0;
+        let root_chunkserver_control_ready = root_chunkserver_coverage.control_proof_count == 0
+            || (root_chunkserver_coverage.control_read_ready_count > 0
+                && root_chunkserver_coverage.control_write_ready_count > 0);
         let root_lease = store.root_leader_lease();
         let root_leader_node_id = root_lease
             .as_ref()
@@ -122,7 +122,7 @@ impl DistributedPlacementReadinessSnapshot {
             &root_metadata_coverage,
             &root_page_allocator_coverage,
             &root_pageserver_service_coverage,
-            &root_replicaserver_coverage,
+            &root_chunkserver_coverage,
         );
         let placement_raft_status_checksum_format = placement_raft_status.control_checksum_format;
         let root_raft_status_checksum = placement_raft_status.control_checksum;
@@ -130,8 +130,8 @@ impl DistributedPlacementReadinessSnapshot {
         let placement_metadata_write_ready = placement_raft_status.placement_metadata_write_ready;
         let root_pageserver_read_ready = placement_raft_status.root_pageserver_read_ready;
         let root_pageserver_write_ready = placement_raft_status.root_pageserver_write_ready;
-        let root_replicaserver_read_ready = placement_raft_status.root_replicaserver_read_ready;
-        let root_replicaserver_write_ready = placement_raft_status.root_replicaserver_write_ready;
+        let root_chunkserver_read_ready = placement_raft_status.root_chunkserver_read_ready;
+        let root_chunkserver_write_ready = placement_raft_status.root_chunkserver_write_ready;
         let placement_readiness_gate_read_ready = placement_raft_status.placement_readiness_gate_read_ready;
         let placement_readiness_gate_write_ready = placement_raft_status.placement_readiness_gate_write_ready;
         let placement_read_ready = placement_raft_status.linearizable_reads;
@@ -153,8 +153,8 @@ impl DistributedPlacementReadinessSnapshot {
             && root_page_allocator_ready
             && root_pageserver_service_ready
             && root_pageserver_route_control_ready
-            && root_replicaserver_ready
-            && root_replicaserver_control_ready;
+            && root_chunkserver_ready
+            && root_chunkserver_control_ready;
         let placement_ready = if placement_required {
             placement_leader_ready && root_placement_ready && root_observed_services_ready
         } else {
@@ -179,9 +179,9 @@ impl DistributedPlacementReadinessSnapshot {
             root_pageserver_service_coverage,
             root_pageserver_service_ready,
             root_pageserver_route_control_ready,
-            root_replicaserver_coverage,
-            root_replicaserver_ready,
-            root_replicaserver_control_ready,
+            root_chunkserver_coverage,
+            root_chunkserver_ready,
+            root_chunkserver_control_ready,
             root_leader_node_id,
             root_lease_epoch,
             root_lease_expire_time_ms,
@@ -192,8 +192,8 @@ impl DistributedPlacementReadinessSnapshot {
             placement_metadata_write_ready,
             root_pageserver_read_ready,
             root_pageserver_write_ready,
-            root_replicaserver_read_ready,
-            root_replicaserver_write_ready,
+            root_chunkserver_read_ready,
+            root_chunkserver_write_ready,
             placement_readiness_gate_read_ready,
             placement_readiness_gate_write_ready,
             placement_leader_ready,

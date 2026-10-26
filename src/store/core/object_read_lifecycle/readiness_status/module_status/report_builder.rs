@@ -25,7 +25,7 @@ fn build_objectstore_module_status(
         compression_status: health.compression,
         ec_status: health.erasure_coding,
         objectstore_open: true,
-        replicaserver_open: readiness.storage_active_replicas != 0,
+        chunkserver_open: readiness.storage_active_replicas != 0,
         pageserver_ready: readiness.page_ready,
         bsclient_ready: readiness.page_ready,
         placement_ready: readiness.placement_ready,

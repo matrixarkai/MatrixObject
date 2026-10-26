@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_register_local_replicaserver_in_catalog(
+    pub fn propose_register_local_chunkserver_in_catalog(
         &mut self,
         node_id: &str,
         endpoint: &str,
@@ -13,7 +13,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
     ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
-            .propose_register_local_replicaserver_in_catalog_with_receipts(
+            .propose_register_local_chunkserver_in_catalog_with_receipts(
                 node_id,
                 endpoint,
                 failure_domain,
@@ -26,7 +26,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .registration)
     }
 
-    pub fn propose_register_local_replicaserver_in_catalog_with_receipts(
+    pub fn propose_register_local_chunkserver_in_catalog_with_receipts(
         &mut self,
         node_id: &str,
         endpoint: &str,
@@ -38,7 +38,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
     ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
         let mut checked = self.store.clone();
-        let registration = checked.register_local_replicaserver_in_catalog(
+        let registration = checked.register_local_chunkserver_in_catalog(
             node_id,
             endpoint,
             failure_domain,
@@ -55,7 +55,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_register_local_replicaserver_at_catalog_with_receipts(
+    pub fn propose_register_local_chunkserver_at_catalog_with_receipts(
         &mut self,
         node_id: &str,
         endpoint: &str,
@@ -68,7 +68,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
     ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
-        let mut proven = self.propose_register_local_replicaserver_in_catalog_with_receipts(
+        let mut proven = self.propose_register_local_chunkserver_in_catalog_with_receipts(
             node_id,
             endpoint,
             failure_domain,
@@ -86,7 +86,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven)
     }
 
-    pub fn propose_register_local_replicaserver_at_catalog(
+    pub fn propose_register_local_chunkserver_at_catalog(
         &mut self,
         node_id: &str,
         endpoint: &str,
@@ -100,7 +100,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_endpoint_count: u64,
     ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
-            .propose_register_local_replicaserver_at_catalog_with_receipts(
+            .propose_register_local_chunkserver_at_catalog_with_receipts(
                 node_id,
                 endpoint,
                 failure_domain,
@@ -115,7 +115,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .registration)
     }
 
-    pub fn propose_heartbeat_local_replicaserver_in_catalog(
+    pub fn propose_heartbeat_local_chunkserver_in_catalog(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -126,7 +126,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         online: bool,
     ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
-            .propose_heartbeat_local_replicaserver_in_catalog_with_receipts(
+            .propose_heartbeat_local_chunkserver_in_catalog_with_receipts(
                 node_id,
                 replica_index,
                 min_capacity_free_bytes,
@@ -138,7 +138,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .registration)
     }
 
-    pub fn propose_heartbeat_local_replicaserver_in_catalog_with_receipts(
+    pub fn propose_heartbeat_local_chunkserver_in_catalog_with_receipts(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -149,7 +149,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         online: bool,
     ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
         let mut checked = self.store.clone();
-        let registration = checked.heartbeat_local_replicaserver_in_catalog(
+        let registration = checked.heartbeat_local_chunkserver_in_catalog(
             node_id,
             replica_index,
             min_capacity_free_bytes,
@@ -177,7 +177,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_heartbeat_local_replicaserver_at_catalog_with_receipts(
+    pub fn propose_heartbeat_local_chunkserver_at_catalog_with_receipts(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -189,7 +189,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
     ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
-        let mut proven = self.propose_heartbeat_local_replicaserver_in_catalog_with_receipts(
+        let mut proven = self.propose_heartbeat_local_chunkserver_in_catalog_with_receipts(
             node_id,
             replica_index,
             min_capacity_free_bytes,
@@ -206,7 +206,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven)
     }
 
-    pub fn propose_heartbeat_local_replicaserver_at_catalog(
+    pub fn propose_heartbeat_local_chunkserver_at_catalog(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -219,7 +219,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_endpoint_count: u64,
     ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
-            .propose_heartbeat_local_replicaserver_at_catalog_with_receipts(
+            .propose_heartbeat_local_chunkserver_at_catalog_with_receipts(
                 node_id,
                 replica_index,
                 min_capacity_free_bytes,
@@ -233,7 +233,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .registration)
     }
 
-    pub fn propose_offline_local_replicaserver_in_catalog(
+    pub fn propose_offline_local_chunkserver_in_catalog(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -243,7 +243,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
     ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
-            .propose_offline_local_replicaserver_in_catalog_with_receipts(
+            .propose_offline_local_chunkserver_in_catalog_with_receipts(
                 node_id,
                 replica_index,
                 min_capacity_free_bytes,
@@ -254,7 +254,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .registration)
     }
 
-    pub fn propose_offline_local_replicaserver_in_catalog_with_receipts(
+    pub fn propose_offline_local_chunkserver_in_catalog_with_receipts(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -264,7 +264,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
     ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
         let mut checked = self.store.clone();
-        let registration = checked.offline_local_replicaserver_in_catalog(
+        let registration = checked.offline_local_chunkserver_in_catalog(
             node_id,
             replica_index,
             min_capacity_free_bytes,
@@ -291,7 +291,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_offline_local_replicaserver_at_catalog_with_receipts(
+    pub fn propose_offline_local_chunkserver_at_catalog_with_receipts(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -302,7 +302,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
     ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
-        let mut proven = self.propose_offline_local_replicaserver_in_catalog_with_receipts(
+        let mut proven = self.propose_offline_local_chunkserver_in_catalog_with_receipts(
             node_id,
             replica_index,
             min_capacity_free_bytes,
@@ -318,7 +318,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven)
     }
 
-    pub fn propose_offline_local_replicaserver_at_catalog(
+    pub fn propose_offline_local_chunkserver_at_catalog(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -330,7 +330,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_endpoint_count: u64,
     ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
-            .propose_offline_local_replicaserver_at_catalog_with_receipts(
+            .propose_offline_local_chunkserver_at_catalog_with_receipts(
                 node_id,
                 replica_index,
                 min_capacity_free_bytes,

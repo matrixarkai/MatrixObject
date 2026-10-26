@@ -30,15 +30,15 @@ fn placement_raft_status_identity_fields(
         ),
         (
             "placement_chunkserver_control_proof_checksum",
-            self_.root_replicaserver_control_proof_checksum.as_str(),
+            self_.root_chunkserver_control_proof_checksum.as_str(),
         ),
         (
             "placement_chunkserver_coverage_status",
-            self_.root_replicaserver_coverage_status.as_str(),
+            self_.root_chunkserver_coverage_status.as_str(),
         ),
         (
             "root_chunkserver_first_health_reasons",
-            self_.root_replicaserver_first_health_reasons.as_str(),
+            self_.root_chunkserver_first_health_reasons.as_str(),
         ),
         (
             "control_checksum_format",
