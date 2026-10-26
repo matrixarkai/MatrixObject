@@ -20,74 +20,19 @@ impl RootSnapshot {
         };
         append_string(&mut out, snapshot_version);
         append_u64(&mut out, self.next_commit_index);
-        append_u64(&mut out, self.nodes.len() as u64);
-        for (node_id, node) in &self.nodes {
-            append_string(&mut out, node_id);
-            append_string(&mut out, &node.node_id);
-            append_string(&mut out, &node.endpoint);
-            append_string(&mut out, &node.service_kind);
-            append_string(&mut out, &node.failure_domain);
-            append_u64(&mut out, node.metadata_eligible as u64);
-            append_u64(&mut out, node.data_eligible as u64);
-            append_u64(&mut out, node.gateway_eligible as u64);
-            append_u64(&mut out, node.metadata_value_bytes);
-            append_u64(&mut out, node.capacity_bytes);
-            append_u64(&mut out, node.used_bytes);
-            append_u64(&mut out, node.committed_bytes);
-            append_u64(&mut out, node.draining as u64);
-            append_u64(&mut out, node.online as u64);
-            append_u64(&mut out, node.last_heartbeat_ms);
-            append_u64(&mut out, node.page_allocator_shard_index);
-            append_u64(&mut out, node.page_allocator_shard_count);
-            append_root_meta_health(&mut out, &node.meta_health);
-            append_root_page_health(&mut out, &node.page_health);
-            append_root_chunk_health(&mut out, &node.chunk_health, true, true, true);
-        }
-        append_u64(&mut out, self.placements.len() as u64);
-        for (object_id, placement) in &self.placements {
-            append_object_id(&mut out, object_id);
-            append_object_id(&mut out, &placement.object_id);
-            append_u64(&mut out, placement.version);
-            append_u64(&mut out, placement.length);
-            append_u64(&mut out, placement.update_time_ms);
-            append_u64(&mut out, placement.node_ids.len() as u64);
-            for node_id in &placement.node_ids {
-                append_string(&mut out, node_id);
-            }
-        }
-        if let Some(lease) = &self.leader_lease {
-            append_u64(&mut out, 1);
-            append_string(&mut out, &lease.leader_node_id);
-            append_u64(&mut out, lease.epoch);
-            append_u64(&mut out, lease.acquire_time_ms);
-            append_u64(&mut out, lease.expire_time_ms);
-            append_u64(&mut out, lease.ttl_ms);
-        } else {
-            append_u64(&mut out, 0);
-        }
-        append_u64(&mut out, self.leader_lease_receipts.len() as u64);
-        for (idempotency_key, receipt) in &self.leader_lease_receipts {
-            append_string(&mut out, idempotency_key);
-            append_string(&mut out, &receipt.idempotency_key);
-            append_string(&mut out, &receipt.operation);
-            append_string(&mut out, &receipt.request_checksum);
-            append_string(&mut out, &receipt.lease.leader_node_id);
-            append_u64(&mut out, receipt.lease.epoch);
-            append_u64(&mut out, receipt.lease.acquire_time_ms);
-            append_u64(&mut out, receipt.lease.expire_time_ms);
-            append_u64(&mut out, receipt.lease.ttl_ms);
-            if snapshot_version
+        append_catalog_roster(
+            &mut out,
+            &self.nodes,
+            &self.placements,
+            &self.leader_lease,
+            &self.leader_lease_receipts,
+            &self.coordinator_config,
+            snapshot_version
                 .strip_prefix("MOSRSROOT")
                 .and_then(|suffix| suffix.parse::<u64>().ok())
                 .unwrap_or(0)
-                >= ROOT_SNAPSHOT_RECEIPT_PROOF_PERSISTENCE_THRESHOLD
-            {
-                append_u64(&mut out, receipt.commit_index);
-                append_u64(&mut out, receipt.update_time_ms);
-                append_string(&mut out, &receipt.receipt_proof_checksum);
-            }
-        }
-        append_metadata_coordinator_config(&mut out, &self.coordinator_config);
+                >= ROOT_SNAPSHOT_RECEIPT_PROOF_PERSISTENCE_THRESHOLD,
+        );
         append_string(&mut out, &self.checksum);
         let envelope_checksum = etag(&out[snapshot_start..]);
         append_string(&mut out, &envelope_checksum);
@@ -220,4 +165,94 @@ impl RootSnapshot {
             .saturating_add(encoded_string_len(&self.checksum))
             .saturating_add(U64 + ENVELOPE_CHECKSUM_BYTES)
     }
+}
+
+/// The bytes a control-plane roster takes: its nodes, the placements they hold, the leader lease
+/// and the lease receipts, and the coordinator configuration they were agreed under.
+///
+/// # WHY THIS IS SHARED
+///
+/// The roster is moving into the metadata snapshot, so these bytes are written from two
+/// places. Writing them twice would be two encoders that have to agree forever, and the one
+/// thing this project has measured repeatedly is that a rule written out twice diverges.
+///
+/// `with_receipt_proof` is a parameter rather than a stamp lookup because the second caller
+/// has always written those three fields and should not have to name a version to say so.
+/// The first caller still decides it from the stamp it is writing.
+///
+/// The bytes are unchanged for the existing caller, and that is pinned rather than asserted:
+/// see `the_root_snapshot_encoding_is_byte_for_byte_what_it_was`, whose length and digest
+/// were captured from the encoder before any of this moved.
+pub(crate) fn append_catalog_roster(
+    out: &mut Vec<u8>,
+    nodes: &BTreeMap<String, RootNode>,
+    placements: &BTreeMap<ObjectId, ObjectPlacement>,
+    leader_lease: &Option<RootLeaderLease>,
+    leader_lease_receipts: &BTreeMap<String, RootLeaderLeaseReceipt>,
+    coordinator_config: &MetadataCoordinatorConfig,
+    with_receipt_proof: bool,
+) {
+    append_u64(out, nodes.len() as u64);
+    for (node_id, node) in nodes {
+        append_string(out, node_id);
+        append_string(out, &node.node_id);
+        append_string(out, &node.endpoint);
+        append_string(out, &node.service_kind);
+        append_string(out, &node.failure_domain);
+        append_u64(out, node.metadata_eligible as u64);
+        append_u64(out, node.data_eligible as u64);
+        append_u64(out, node.gateway_eligible as u64);
+        append_u64(out, node.metadata_value_bytes);
+        append_u64(out, node.capacity_bytes);
+        append_u64(out, node.used_bytes);
+        append_u64(out, node.committed_bytes);
+        append_u64(out, node.draining as u64);
+        append_u64(out, node.online as u64);
+        append_u64(out, node.last_heartbeat_ms);
+        append_u64(out, node.page_allocator_shard_index);
+        append_u64(out, node.page_allocator_shard_count);
+        append_root_meta_health(out, &node.meta_health);
+        append_root_page_health(out, &node.page_health);
+        append_root_chunk_health(out, &node.chunk_health, true, true, true);
+    }
+    append_u64(out, placements.len() as u64);
+    for (object_id, placement) in placements {
+        append_object_id(out, object_id);
+        append_object_id(out, &placement.object_id);
+        append_u64(out, placement.version);
+        append_u64(out, placement.length);
+        append_u64(out, placement.update_time_ms);
+        append_u64(out, placement.node_ids.len() as u64);
+        for node_id in &placement.node_ids {
+            append_string(out, node_id);
+        }
+    }
+    if let Some(lease) = leader_lease {
+        append_u64(out, 1);
+        append_string(out, &lease.leader_node_id);
+        append_u64(out, lease.epoch);
+        append_u64(out, lease.acquire_time_ms);
+        append_u64(out, lease.expire_time_ms);
+        append_u64(out, lease.ttl_ms);
+    } else {
+        append_u64(out, 0);
+    }
+    append_u64(out, leader_lease_receipts.len() as u64);
+    for (idempotency_key, receipt) in leader_lease_receipts {
+        append_string(out, idempotency_key);
+        append_string(out, &receipt.idempotency_key);
+        append_string(out, &receipt.operation);
+        append_string(out, &receipt.request_checksum);
+        append_string(out, &receipt.lease.leader_node_id);
+        append_u64(out, receipt.lease.epoch);
+        append_u64(out, receipt.lease.acquire_time_ms);
+        append_u64(out, receipt.lease.expire_time_ms);
+        append_u64(out, receipt.lease.ttl_ms);
+        if with_receipt_proof {
+            append_u64(out, receipt.commit_index);
+            append_u64(out, receipt.update_time_ms);
+            append_string(out, &receipt.receipt_proof_checksum);
+        }
+    }
+    append_metadata_coordinator_config(out, coordinator_config);
 }
