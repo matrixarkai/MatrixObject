@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootReclaimNodePlan {
-    pub usage: RootNodeUsage,
+pub struct PlacementReclaimNodePlan {
+    pub usage: PlacementNodeUsage,
     pub reclaim_score: u64,
     pub reclaim_reason: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootReclaimNodePlanPage {
-    pub plans: Vec<RootReclaimNodePlan>,
+pub struct PlacementReclaimNodePlanPage {
+    pub plans: Vec<PlacementReclaimNodePlan>,
     pub marker: Option<String>,
     pub next_marker: Option<String>,
     pub service_kind_filter: Option<String>,

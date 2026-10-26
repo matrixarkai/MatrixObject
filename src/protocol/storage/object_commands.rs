@@ -20,7 +20,7 @@ pub enum ObjectCommand {
         idempotency_key: String,
     },
     RegisterRootNode {
-        node: RootNode,
+        node: PlacementNode,
     },
     HeartbeatRootNode {
         node_id: String,
@@ -32,12 +32,12 @@ pub enum ObjectCommand {
     },
     HeartbeatRootPageHealth {
         node_id: String,
-        health: RootPageHealth,
+        health: NodePageHealth,
         now_ms: u64,
     },
     HeartbeatRootChunkHealth {
         node_id: String,
-        health: RootChunkHealth,
+        health: NodeChunkHealth,
         now_ms: u64,
     },
     ExpireRootNodeHeartbeats {
@@ -652,16 +652,16 @@ pub enum ObjectCommand {
         min_free_bytes: u64,
     },
     ApplyPreparedRootPlacementMigration {
-        prepared: PreparedRootPlacementMigration,
+        prepared: PreparedPlacementMigration,
     },
     ApplyPreparedRootPlacementRepair {
-        prepared: PreparedRootPlacementRepair,
+        prepared: PreparedPlacementRepair,
     },
     ApplyPreparedRootUnhealthyPlacementRepair {
-        prepared: PreparedRootUnhealthyPlacementRepair,
+        prepared: PreparedUnhealthyPlacementRepair,
     },
     ApplyPreparedRootCapacityRebalance {
-        prepared: PreparedRootCapacityRebalance,
+        prepared: PreparedPlacementCapacityRebalance,
     },
     ConfigureMetaCoordinator {
         config: MetadataCoordinatorConfig,

@@ -79,7 +79,7 @@ impl MatrixObjectStore {
         max_objects: usize,
         replica_count: usize,
         update_time_ms: u64,
-    ) -> Result<RootPlacementRefreshReport, ObjectError> {
+    ) -> Result<PlacementRefreshReport, ObjectError> {
         let rollback = self.capture_object_mutation_rollback();
         let limit = if max_objects == 0 {
             usize::MAX
@@ -94,10 +94,10 @@ impl MatrixObjectStore {
             .map(|(object_id, _)| object_id.clone())
             .take(limit)
             .collect::<Vec<_>>();
-        let mut report = RootPlacementRefreshReport {
+        let mut report = PlacementRefreshReport {
             marker,
             scanned_objects: object_ids.len() as u64,
-            ..RootPlacementRefreshReport::default()
+            ..PlacementRefreshReport::default()
         };
         for object_id in object_ids.iter().cloned() {
             match self.apply_refresh_object_root_placement_inner(

@@ -27,7 +27,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &mut self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
-    ) -> Result<CommittedRootPlacementMigration, ObjectError> {
+    ) -> Result<CommittedPlacementMigration, ObjectError> {
         let prepared = self.prepare_root_placement_migration_raft_entry_linearizable(
             plan,
             expected_plan_checksum,
@@ -40,7 +40,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
         now_ms: u64,
-    ) -> Result<ProvenMetadataRead<CommittedRootPlacementMigration>, ObjectError> {
+    ) -> Result<ProvenMetadataRead<CommittedPlacementMigration>, ObjectError> {
         self.propose_root_placement_migration_prepared_with_envelope_and_read_proof_linearizable_committed_at(
             plan,
             expected_plan_checksum,
@@ -57,7 +57,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenMetadataRead<CommittedRootPlacementMigration>, ObjectError> {
+    ) -> Result<ProvenMetadataRead<CommittedPlacementMigration>, ObjectError> {
         self.ensure_metadata_read_index_committed_at(
             "propose root placement migration envelope",
             now_ms,
@@ -83,7 +83,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_plan_checksum: impl AsRef<str>,
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenRouteFencedMetadataRead<CommittedRootPlacementMigration>, ObjectError> {
+    ) -> Result<ProvenRouteFencedMetadataRead<CommittedPlacementMigration>, ObjectError> {
         self.propose_root_placement_migration_prepared_with_envelope_and_route_proof_linearizable_fenced_committed_at(
             plan,
             expected_plan_checksum,
@@ -102,7 +102,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_page_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenRouteFencedMetadataRead<CommittedRootPlacementMigration>, ObjectError> {
+    ) -> Result<ProvenRouteFencedMetadataRead<CommittedPlacementMigration>, ObjectError> {
         let expected_checksum = expected_page_route_control_checksum.as_ref().to_string();
         self.ensure_page_route_control_ready(
             "root placement migration route proof",

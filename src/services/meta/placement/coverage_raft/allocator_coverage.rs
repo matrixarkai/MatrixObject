@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
-    pub fn page_allocator_shard_coverage(&self) -> RootPageAllocatorShardCoverage {
-        let mut coverage = RootPageAllocatorShardCoverage {
+    pub fn page_allocator_shard_coverage(&self) -> PlacementPageAllocatorShardCoverage {
+        let mut coverage = PlacementPageAllocatorShardCoverage {
             status: "none".to_string(),
-            ..RootPageAllocatorShardCoverage::default()
+            ..PlacementPageAllocatorShardCoverage::default()
         };
         let mut seen_shards = BTreeSet::new();
         let mut mixed_shard_count = false;

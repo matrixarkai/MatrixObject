@@ -3,7 +3,7 @@
 impl MatrixObjectStore {
     pub fn discover_metaserver_endpoints_from_catalog(
         &self,
-    ) -> Result<RootCatalogMetaServerEndpointDiscovery, ObjectError> {
+    ) -> Result<CatalogMetaServerEndpointDiscovery, ObjectError> {
         let nodes = self.meta_service.list_nodes();
         let metadata_quorum = raft_quorum(self.raft_voter_node_ids.len() as u64);
         let coverage = compute_root_metadata_service_coverage(&nodes, metadata_quorum);
@@ -24,9 +24,9 @@ impl MatrixObjectStore {
             )));
         }
 
-        let mut discovery = RootCatalogMetaServerEndpointDiscovery {
+        let mut discovery = CatalogMetaServerEndpointDiscovery {
             catalog_source: self.effective_control_plane_mode().to_string(),
-            catalog_endpoint: EMBEDDED_ROOT_CATALOG_ENDPOINT.to_string(),
+            catalog_endpoint: EMBEDDED_PLACEMENT_CATALOG_ENDPOINT.to_string(),
             active_metaserver_count: coverage.active_metaserver_count,
             readable_metaserver_count: coverage.metadata_readable_metaserver_count,
             writable_metaserver_count: coverage.metadata_writable_metaserver_count,
@@ -41,7 +41,7 @@ impl MatrixObjectStore {
             metadata_read_fence_quorum_available: coverage.metadata_read_fence_quorum_available,
             metadata_min_safe_read_fence: coverage.metadata_min_safe_read_fence,
             metadata_max_apply_commit_lag: coverage.metadata_max_apply_commit_lag,
-            ..RootCatalogMetaServerEndpointDiscovery::default()
+            ..CatalogMetaServerEndpointDiscovery::default()
         };
         let mut seen = BTreeSet::new();
         for node in nodes {

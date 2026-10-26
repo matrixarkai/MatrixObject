@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    pub fn register_root_node(&mut self, node: RootNode) -> Result<RootNode, ObjectError> {
+    pub fn register_root_node(&mut self, node: PlacementNode) -> Result<PlacementNode, ObjectError> {
         self.meta_service.register_node(node)
     }
 
@@ -60,7 +60,7 @@ impl MatrixObjectStore {
 
         let metadata_control_proof = self.metadata_control_proof_at(now_ms);
         let metadata_route_cache = self.metadata_route_cache_status_at(now_ms);
-        let metaserver_node = RootNode {
+        let metaserver_node = PlacementNode {
             node_id: metaserver_node_id.to_string(),
             endpoint: metaserver_endpoint.to_string(),
             service_kind: "metaserver".to_string(),
@@ -77,13 +77,13 @@ impl MatrixObjectStore {
             last_heartbeat_ms: now_ms,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth {
+            meta_health: NodeMetaHealth {
                 control_proof: metadata_control_proof.clone(),
                 route_cache: metadata_route_cache,
-                ..RootMetaHealth::default()
+                ..NodeMetaHealth::default()
             },
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         };
         let metaserver_node = self.register_root_node(metaserver_node)?;
         // THE LEASE IS CAMPAIGNED FOR THE METASERVER NODE, and it is campaigned here rather
@@ -136,7 +136,7 @@ impl MatrixObjectStore {
         draining: bool,
         online: bool,
         now_ms: u64,
-    ) -> Result<RootNode, ObjectError> {
+    ) -> Result<PlacementNode, ObjectError> {
         self.meta_service.heartbeat_node(
             node_id,
             used_bytes,
@@ -150,9 +150,9 @@ impl MatrixObjectStore {
     pub fn heartbeat_root_page_health(
         &mut self,
         node_id: &str,
-        health: RootPageHealth,
+        health: NodePageHealth,
         now_ms: u64,
-    ) -> Result<RootNode, ObjectError> {
+    ) -> Result<PlacementNode, ObjectError> {
         self.meta_service
             .heartbeat_page_health(node_id, health, now_ms)
     }
@@ -160,9 +160,9 @@ impl MatrixObjectStore {
     pub fn heartbeat_root_chunk_health(
         &mut self,
         node_id: &str,
-        health: RootChunkHealth,
+        health: NodeChunkHealth,
         now_ms: u64,
-    ) -> Result<RootNode, ObjectError> {
+    ) -> Result<PlacementNode, ObjectError> {
         self.meta_service
             .heartbeat_chunk_health(node_id, health, now_ms)
     }

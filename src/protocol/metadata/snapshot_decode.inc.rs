@@ -289,16 +289,16 @@ impl MetaSnapshot {
         // the re-stamp below covers it.
         let (placement_commit_index, placement_roster) = if has_placement_roster {
             let commit_index = cursor.read_u64()?;
-            let roster = read_catalog_roster(
+            let roster = read_placement_roster(
                 &mut cursor,
-                RootSnapshotDecodeFeatures::for_version(CATALOG_ROSTER_SHAPE_VERSION),
+                PlacementSnapshotDecodeFeatures::for_version(PLACEMENT_ROSTER_SHAPE_VERSION),
                 commit_index,
             )?;
             (commit_index, roster)
         } else {
             (
                 1,
-                CatalogRoster {
+                PlacementRoster {
                     nodes: BTreeMap::new(),
                     placements: BTreeMap::new(),
                     leader_lease: None,

@@ -3,8 +3,8 @@
 impl MatrixMetaService {
     pub fn apply_prepared_draining_placement_repair(
         &mut self,
-        prepared: PreparedRootPlacementRepair,
-    ) -> Result<RootPlacementRepairReport, ObjectError> {
+        prepared: PreparedPlacementRepair,
+    ) -> Result<PlacementRepairReport, ObjectError> {
         if prepared.expected_previous_commit_index != self.placement_commit_index.saturating_sub(1) {
             return Err(ObjectError::PreconditionFailed(
                 "root prepared placement repair previous commit fence mismatch".to_string(),
@@ -23,7 +23,7 @@ impl MatrixMetaService {
             ));
         }
         let expected_checksum =
-            prepared_root_placement_repair_checksum(&PreparedRootPlacementRepair {
+            prepared_root_placement_repair_checksum(&PreparedPlacementRepair {
                 raft_entry_checksum: String::new(),
                 ..prepared.clone()
             });

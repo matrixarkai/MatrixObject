@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 fn root_raft_status_metadata_fields(
-    status: &RootRaftStatus,
+    status: &PlacementRaftStatus,
     field_prefix: &str,
 ) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();

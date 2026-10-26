@@ -127,7 +127,7 @@ impl MetaSnapshot {
         // already been found in this codebase once; durable state that nothing covers is
         // state a flipped bit can change without anything noticing.
         append_u64(&mut material, self.placement_commit_index);
-        append_catalog_roster(
+        append_placement_roster(
             &mut material,
             &self.placement_nodes,
             &self.placements,

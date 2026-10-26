@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootCatalogPageRegistration {
+impl CatalogPageRegistration {
     pub fn catalog_route_checksum(&self) -> String {
         root_catalog_route_checksum(
             "blockserver",
@@ -29,7 +29,7 @@ impl RootCatalogPageRegistration {
         commit_index: u64,
         read_index: u64,
         node_count: u64,
-    ) -> RootCatalogLivenessReceipt {
+    ) -> CatalogLivenessReceipt {
         root_catalog_liveness_receipt(
             method,
             &self.node,
@@ -91,7 +91,7 @@ impl RootCatalogPageRegistration {
     }
 }
 
-impl RootCatalogControlFields for RootCatalogPageRegistration {
+impl CatalogControlFields for CatalogPageRegistration {
     fn to_root_catalog_control_fields(&self) -> BTreeMap<String, String> {
         self.to_control_fields()
     }
@@ -110,7 +110,7 @@ impl RootCatalogControlFields for RootCatalogPageRegistration {
         commit_index: u64,
         read_index: u64,
         node_count: u64,
-    ) -> RootCatalogLivenessReceipt {
+    ) -> CatalogLivenessReceipt {
         self.liveness_receipt(method, term, commit_index, read_index, node_count)
     }
 }

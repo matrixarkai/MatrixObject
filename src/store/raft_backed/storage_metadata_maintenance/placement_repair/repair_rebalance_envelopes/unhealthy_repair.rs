@@ -3,7 +3,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_prepared_unhealthy_root_placement_repair(
         &mut self,
-        prepared: PreparedRootUnhealthyPlacementRepair,
+        prepared: PreparedUnhealthyPlacementRepair,
     ) -> Result<ObjectMetadata, ObjectError> {
         if self.raft.commit_index() != self.store.last_applied_index()
             || prepared.expected_previous_commit_index
@@ -32,7 +32,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_prepared_unhealthy_root_placement_repair_linearizable(
         &mut self,
-        prepared: PreparedRootUnhealthyPlacementRepair,
+        prepared: PreparedUnhealthyPlacementRepair,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.ensure_root_read_index("propose prepared unhealthy root placement repair")?;
         self.propose_prepared_unhealthy_root_placement_repair(prepared)
@@ -40,7 +40,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_prepared_unhealthy_root_placement_repair_with_read_proof_linearizable(
         &mut self,
-        prepared: PreparedRootUnhealthyPlacementRepair,
+        prepared: PreparedUnhealthyPlacementRepair,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<ObjectMetadata>, ObjectError> {
         self.propose_prepared_unhealthy_root_placement_repair_with_read_proof_linearizable_committed_at(
@@ -53,7 +53,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_prepared_unhealthy_root_placement_repair_with_read_proof_linearizable_committed_at(
         &mut self,
-        prepared: PreparedRootUnhealthyPlacementRepair,
+        prepared: PreparedUnhealthyPlacementRepair,
         now_ms: u64,
         min_read_index: u64,
         min_commit_index: u64,

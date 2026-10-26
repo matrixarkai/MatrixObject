@@ -23,7 +23,7 @@ pub(crate) fn service_snapshot_install_source_proof_checksum(
 }
 
 pub fn root_service_snapshot_install_source_proof_report(
-    report: &RootSnapshotProofStreamReport,
+    report: &PlacementSnapshotProofStreamReport,
 ) -> ServiceSnapshotInstallSourceProofReport {
     let service = "rootserver".to_string();
     let envelope_checksum = service_snapshot_install_source_proof_checksum(

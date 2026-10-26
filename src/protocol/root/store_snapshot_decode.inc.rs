@@ -311,7 +311,7 @@ impl StoreSnapshot {
         if snapshot_version < 28 {
             let roster_len =
                 bounded_snapshot_len(cursor.read_u64()?, "store placement snapshot bytes")?;
-            let roster = RootSnapshot::from_bytes(cursor.read_bytes(roster_len)?)?;
+            let roster = PlacementSnapshot::from_bytes(cursor.read_bytes(roster_len)?)?;
             meta_snapshot.placement_nodes = roster.nodes;
             meta_snapshot.placements = roster.placements;
             meta_snapshot.placement_leader_lease = roster.leader_lease;

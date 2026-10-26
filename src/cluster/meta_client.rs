@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use crate::cluster::meta_message::{
     encode_meta_request, CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment,
-    RootNodeSummary,
+    PlacementNodeSummary,
 };
 use crate::cluster::meta_wire::MetaRequestCode;
 use crate::cluster::message::{check_stamp, decode_failure};
@@ -166,7 +166,7 @@ impl RemoteMetaClient {
         draining: bool,
         online: bool,
         now_ms: u64,
-    ) -> Result<RootNodeSummary, ObjectError> {
+    ) -> Result<PlacementNodeSummary, ObjectError> {
         match self.call(MetaRequest::HeartbeatRootNode {
             node_id: node_id.to_string(),
             used_bytes,
@@ -175,7 +175,7 @@ impl RemoteMetaClient {
             online,
             now_ms,
         })? {
-            MetaReply::RootNode(node) => Ok(node),
+            MetaReply::PlacementNode(node) => Ok(node),
             other => Err(unexpected_reply("a node heartbeat", &other)),
         }
     }
@@ -191,7 +191,7 @@ impl RemoteMetaClient {
         }
     }
 
-    pub fn list_root_nodes(&mut self) -> Result<Vec<RootNodeSummary>, ObjectError> {
+    pub fn list_root_nodes(&mut self) -> Result<Vec<PlacementNodeSummary>, ObjectError> {
         match self.call(MetaRequest::ListRootNodes)? {
             MetaReply::RootNodes(nodes) => Ok(nodes),
             other => Err(unexpected_reply("a roster listing", &other)),

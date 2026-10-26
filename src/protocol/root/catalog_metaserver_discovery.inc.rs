@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootNodePage {
-    pub nodes: Vec<RootNode>,
+pub struct PlacementNodePage {
+    pub nodes: Vec<PlacementNode>,
     pub marker: Option<String>,
     pub next_marker: Option<String>,
     pub service_kind_filter: Option<String>,
@@ -28,7 +28,7 @@ pub struct RootNodePage {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootCatalogMetaServerEndpointDiscovery {
+pub struct CatalogMetaServerEndpointDiscovery {
     pub catalog_source: String,
     pub catalog_endpoint: String,
     pub endpoints: Vec<String>,
@@ -56,7 +56,7 @@ pub struct RootCatalogMetaServerEndpointDiscovery {
     pub metadata_max_apply_commit_lag: u64,
 }
 
-impl RootCatalogMetaServerEndpointDiscovery {
+impl CatalogMetaServerEndpointDiscovery {
     pub fn endpoint_count(&self) -> u64 {
         self.endpoints.len() as u64
     }

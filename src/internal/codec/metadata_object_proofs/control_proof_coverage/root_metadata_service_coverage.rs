@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 pub(crate) fn compute_root_metadata_service_coverage(
-    nodes: &[RootNode],
+    nodes: &[PlacementNode],
     metadata_quorum: u64,
-) -> RootMetadataServiceCoverage {
-    let mut coverage = RootMetadataServiceCoverage {
+) -> PlacementMetadataServiceCoverage {
+    let mut coverage = PlacementMetadataServiceCoverage {
         active_metaserver_count: 0,
         metadata_value_bytes: 0,
         metadata_readable_metaserver_count: 0,
@@ -214,7 +214,7 @@ pub(crate) fn compute_root_metadata_service_coverage(
         }
     }
     if coverage.metadata_control_proof_count != 0 {
-        let mut proof_nodes: Vec<&RootNode> = nodes
+        let mut proof_nodes: Vec<&PlacementNode> = nodes
             .iter()
             .filter(|node| {
                 node.service_kind == "metaserver"

@@ -41,7 +41,7 @@ impl MatrixObjectStore {
             .selected
             .as_ref()
             .map(|selection| selection.catalog_endpoint.clone())
-            .unwrap_or_else(|| EMBEDDED_ROOT_CATALOG_ENDPOINT.to_string());
+            .unwrap_or_else(|| EMBEDDED_PLACEMENT_CATALOG_ENDPOINT.to_string());
         Ok(build_objectstore_module_status(
             readiness,
             health,

@@ -8,7 +8,7 @@ impl MatrixMetaService {
         expected_replica_count: usize,
         min_free_bytes: u64,
         max_payload_bytes: u64,
-    ) -> Result<RootPlacementRepairReport, ObjectError> {
+    ) -> Result<PlacementRepairReport, ObjectError> {
         let health = self.audit_placement_health(
             marker,
             max_objects,
@@ -17,20 +17,20 @@ impl MatrixMetaService {
             true,
             max_payload_bytes,
         )?;
-        let mut report = RootPlacementRepairReport {
+        let mut report = PlacementRepairReport {
             marker: marker.cloned(),
             next_marker: health.next_marker.clone(),
             has_more: health.has_more,
             scanned_objects: health.scanned_objects,
             skipped_objects: health.skipped_objects,
-            ..RootPlacementRepairReport::default()
+            ..PlacementRepairReport::default()
         };
         for item in health.items {
             match self.plan_health_repair_for_item(&item, expected_replica_count, min_free_bytes) {
                 Ok(plan) => {
                     report.repair_objects = report.repair_objects.saturating_add(1);
                     report.bytes_to_repair = report.bytes_to_repair.saturating_add(plan.length);
-                    report.items.push(RootPlacementRepairItem { plan });
+                    report.items.push(PlacementRepairItem { plan });
                 }
                 Err(err) => {
                     report.failed_repairs = report.failed_repairs.saturating_add(1);
@@ -52,7 +52,7 @@ impl MatrixMetaService {
         expected_replica_count: usize,
         min_free_bytes: u64,
         max_payload_bytes: u64,
-    ) -> Result<RootPlacementRepairReport, ObjectError> {
+    ) -> Result<PlacementRepairReport, ObjectError> {
         let mut report = self.plan_unhealthy_placement_repairs(
             marker,
             max_objects,
@@ -86,7 +86,7 @@ impl MatrixMetaService {
         expected_replica_count: usize,
         min_free_bytes: u64,
         max_payload_bytes: u64,
-    ) -> Result<PreparedRootUnhealthyPlacementRepair, ObjectError> {
+    ) -> Result<PreparedUnhealthyPlacementRepair, ObjectError> {
         let report = self.plan_unhealthy_placement_repairs(
             marker,
             max_objects,
@@ -101,7 +101,7 @@ impl MatrixMetaService {
             min_free_bytes,
             max_payload_bytes,
         );
-        let mut prepared = PreparedRootUnhealthyPlacementRepair {
+        let mut prepared = PreparedUnhealthyPlacementRepair {
             marker: marker.cloned(),
             max_objects,
             expected_replica_count,

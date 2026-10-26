@@ -10,7 +10,7 @@
 //! checksum and written to the journal by
 //! `append_metaserver_catalog_endpoints_journal_record` -- and **nothing has ever opened a
 //! socket to it**. `discover_metaserver_endpoints_from_catalog` reports a constant,
-//! `EMBEDDED_ROOT_CATALOG_ENDPOINT`, because the control plane has always been a field of the
+//! `EMBEDDED_PLACEMENT_CATALOG_ENDPOINT`, because the control plane has always been a field of the
 //! store.
 //!
 //! So this module does not add a placement enum or a mode. The setting that was recorded and
@@ -89,7 +89,7 @@
 
 use crate::cluster::meta_client::{MetaCallOutcome, MetaClientOptions, RemoteMetaClient};
 use crate::cluster::meta_message::{
-    CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment, RootNodeSummary,
+    CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment, PlacementNodeSummary,
 };
 use crate::{MatrixMetaService, ObjectError};
 
@@ -228,7 +228,7 @@ impl MetaDirectory {
         draining: bool,
         online: bool,
         now_ms: u64,
-    ) -> Result<RootNodeSummary, ObjectError> {
+    ) -> Result<PlacementNodeSummary, ObjectError> {
         match self {
             MetaDirectory::InProcess(meta) => {
                 let node = meta.heartbeat_node(
@@ -239,7 +239,7 @@ impl MetaDirectory {
                     online,
                     now_ms,
                 )?;
-                Ok(RootNodeSummary::from_root_node(&node))
+                Ok(PlacementNodeSummary::from_root_node(&node))
             }
             MetaDirectory::Remote(client) => {
                 match client.try_call(MetaRequest::HeartbeatRootNode {
@@ -250,7 +250,7 @@ impl MetaDirectory {
                     online,
                     now_ms,
                 }) {
-                    MetaCallOutcome::Answered(MetaReply::RootNode(node)) => Ok(node),
+                    MetaCallOutcome::Answered(MetaReply::PlacementNode(node)) => Ok(node),
                     outcome => Err(control_plane_error("heartbeat a node", outcome)),
                 }
             }
@@ -275,12 +275,12 @@ impl MetaDirectory {
         }
     }
 
-    pub fn list_root_nodes(&mut self) -> Result<Vec<RootNodeSummary>, ObjectError> {
+    pub fn list_root_nodes(&mut self) -> Result<Vec<PlacementNodeSummary>, ObjectError> {
         match self {
             MetaDirectory::InProcess(meta) => Ok(meta
                 .nodes
                 .values()
-                .map(RootNodeSummary::from_root_node)
+                .map(PlacementNodeSummary::from_root_node)
                 .collect()),
             MetaDirectory::Remote(client) => match client.try_call(MetaRequest::ListRootNodes) {
                 MetaCallOutcome::Answered(MetaReply::RootNodes(nodes)) => Ok(nodes),

@@ -17,7 +17,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     fn propose_decommission_draining_object_replica_plan(
         &mut self,
-        plan: RootPlacementRepairReport,
+        plan: PlacementRepairReport,
         max_repair_chunks_per_object: usize,
         expected_plan_checksum: &str,
     ) -> Result<ObjectReplicaDecommissionReport, ObjectError> {

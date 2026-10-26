@@ -3,14 +3,14 @@
 use super::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootMetaHealth {
+pub struct NodeMetaHealth {
     pub control_proof: MetadataControlProof,
     pub route_cache: MetadataRouteCacheStatus,
     pub raft_membership_receipt_retention_limit: u64,
     pub raft_membership_receipt_retention_coupled_to_mutation_receipts: bool,
 }
 
-impl Default for RootMetaHealth {
+impl Default for NodeMetaHealth {
     fn default() -> Self {
         Self {
             control_proof: MetadataControlProof::default(),
@@ -22,7 +22,7 @@ impl Default for RootMetaHealth {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootPageHealth {
+pub struct NodePageHealth {
     pub ready: bool,
     pub read_ready: bool,
     pub route_control_checksum: String,
@@ -64,7 +64,7 @@ pub struct RootPageHealth {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootChunkHealth {
+pub struct NodeChunkHealth {
     pub accepting_writes: bool,
     pub frozen: bool,
     pub raft_writable: bool,
@@ -87,7 +87,7 @@ pub struct RootChunkHealth {
     pub service_fault_tolerant: bool,
 }
 
-impl Default for RootChunkHealth {
+impl Default for NodeChunkHealth {
     fn default() -> Self {
         Self {
             accepting_writes: true,
@@ -115,7 +115,7 @@ impl Default for RootChunkHealth {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RootMetadataServiceCoverage {
+pub(crate) struct PlacementMetadataServiceCoverage {
     pub(crate) active_metaserver_count: u64,
     pub(crate) metadata_value_bytes: u64,
     pub(crate) metadata_readable_metaserver_count: u64,

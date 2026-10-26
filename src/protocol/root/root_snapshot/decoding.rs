@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootSnapshot {
+impl PlacementSnapshot {
     pub fn from_bytes(data: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = SnapshotByteCursor::new(data);
         let magic = cursor.read_string()?;
@@ -16,16 +16,16 @@ impl RootSnapshot {
                 "root snapshot byte magic mismatch".to_string(),
             ));
         }
-        let features = RootSnapshotDecodeFeatures::for_version(version);
+        let features = PlacementSnapshotDecodeFeatures::for_version(version);
         let next_commit_index = cursor.read_u64()?;
-        let CatalogRoster {
+        let PlacementRoster {
             nodes,
             placements,
             leader_lease,
             leader_lease_receipts,
             coordinator_config,
             rewrote_retired_spellings,
-        } = read_catalog_roster(&mut cursor, features, next_commit_index)?;
+        } = read_placement_roster(&mut cursor, features, next_commit_index)?;
         let checksum = cursor.read_string()?;
         let checksum_end = cursor.position();
         let envelope_checksum = cursor.read_string()?;
@@ -74,15 +74,15 @@ impl RootSnapshot {
 /// encoder silently changed a different snapshot's bytes. Pinning the number makes such a
 /// change a decision, and `the_metadata_snapshot_encoding_is_byte_for_byte_what_it_was` fails
 /// if the bytes move underneath it either way.
-pub(crate) const CATALOG_ROSTER_SHAPE_VERSION: u64 = 32;
+pub(crate) const PLACEMENT_ROSTER_SHAPE_VERSION: u64 = 32;
 
 /// A control-plane roster as it sits in a snapshot: the nodes, the placements they hold, the
 /// leader lease, the lease receipts, and the coordinator configuration they were agreed under.
-pub(crate) struct CatalogRoster {
-    pub(crate) nodes: BTreeMap<String, RootNode>,
+pub(crate) struct PlacementRoster {
+    pub(crate) nodes: BTreeMap<String, PlacementNode>,
     pub(crate) placements: BTreeMap<ObjectId, ObjectPlacement>,
-    pub(crate) leader_lease: Option<RootLeaderLease>,
-    pub(crate) leader_lease_receipts: BTreeMap<String, RootLeaderLeaseReceipt>,
+    pub(crate) leader_lease: Option<PlacementLeaderLease>,
+    pub(crate) leader_lease_receipts: BTreeMap<String, PlacementLeaderLeaseReceipt>,
     pub(crate) coordinator_config: MetadataCoordinatorConfig,
     /// Whether a retired node-kind spelling was rewritten while reading.
     ///
@@ -93,7 +93,7 @@ pub(crate) struct CatalogRoster {
     pub(crate) rewrote_retired_spellings: bool,
 }
 
-/// Read a roster back out of the bytes `append_catalog_roster` wrote.
+/// Read a roster back out of the bytes `append_placement_roster` wrote.
 ///
 /// # WHY THIS IS SHARED
 ///
@@ -105,11 +105,11 @@ pub(crate) struct CatalogRoster {
 /// `fallback_commit_index` is only consulted for snapshots old enough to predate the receipt
 /// proof fields, where a receipt's commit index was not stored and had to be inferred from
 /// the snapshot it was found in. A caller writing the current shape never reaches it.
-pub(crate) fn read_catalog_roster(
+pub(crate) fn read_placement_roster(
     cursor: &mut SnapshotByteCursor,
-    features: RootSnapshotDecodeFeatures,
+    features: PlacementSnapshotDecodeFeatures,
     fallback_commit_index: u64,
-) -> Result<CatalogRoster, ObjectError> {
+) -> Result<PlacementRoster, ObjectError> {
     let mut nodes = read_root_snapshot_nodes(cursor, features)?;
     // RETIRED SPELLINGS ARE REWRITTEN HERE, once, rather than carried in every predicate that
     // asks what kind a node is. This is the only place a roster is decoded, which is what
@@ -152,7 +152,7 @@ pub(crate) fn read_catalog_roster(
     }
     let leader_lease = match cursor.read_u64()? {
         0 => None,
-        1 => Some(RootLeaderLease {
+        1 => Some(PlacementLeaderLease {
             leader_node_id: cursor.read_string()?,
             epoch: cursor.read_u64()?,
             acquire_time_ms: cursor.read_u64()?,
@@ -169,11 +169,11 @@ pub(crate) fn read_catalog_roster(
     if features.has_leader_lease_receipts {
         for _ in 0..cursor.read_count("root snapshot leader lease receipt count")? {
             let map_key = cursor.read_string()?;
-            let mut receipt = RootLeaderLeaseReceipt {
+            let mut receipt = PlacementLeaderLeaseReceipt {
                 idempotency_key: cursor.read_string()?,
                 operation: cursor.read_string()?,
                 request_checksum: cursor.read_string()?,
-                lease: RootLeaderLease {
+                lease: PlacementLeaderLease {
                     leader_node_id: cursor.read_string()?,
                     epoch: cursor.read_u64()?,
                     acquire_time_ms: cursor.read_u64()?,
@@ -210,7 +210,7 @@ pub(crate) fn read_catalog_roster(
             ..MetadataCoordinatorConfig::default()
         }
     };
-    Ok(CatalogRoster {
+    Ok(PlacementRoster {
         nodes,
         placements,
         leader_lease,

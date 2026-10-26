@@ -94,7 +94,7 @@ impl MatrixObjectStore {
             .expired_owner_sessions
             .saturating_add(metadata.expired_namespace_leases);
         let root_placement_ready = root_placement_health.degraded_objects == 0;
-        let DistributedRootReadinessSnapshot {
+        let DistributedPlacementReadinessSnapshot {
             root_node_count,
             rootserver_required,
             control_plane_mode,
@@ -133,7 +133,7 @@ impl MatrixObjectStore {
             root_read_ready,
             root_write_ready,
             root_ready,
-        } = DistributedRootReadinessSnapshot::capture(
+        } = DistributedPlacementReadinessSnapshot::capture(
             self,
             metadata_replication_quorum,
             min_capacity_free_bytes,

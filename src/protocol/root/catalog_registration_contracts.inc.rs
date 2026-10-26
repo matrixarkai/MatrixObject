@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootCatalogChunkRegistration {
-    pub node: RootNode,
+pub struct CatalogChunkRegistration {
+    pub node: PlacementNode,
     pub readiness: ReplicaStorageReadiness,
     pub replica_index: usize,
     pub catalog_source: String,
@@ -11,8 +11,8 @@ pub struct RootCatalogChunkRegistration {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootCatalogPageRegistration {
-    pub node: RootNode,
+pub struct CatalogPageRegistration {
+    pub node: PlacementNode,
     pub readiness: ChunkStorageReadiness,
     pub allocator_shard_index: u64,
     pub allocator_shard_count: u64,
@@ -22,21 +22,21 @@ pub struct RootCatalogPageRegistration {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootCatalogObjectStoreRegistration {
-    pub node: RootNode,
+pub struct CatalogObjectStoreRegistration {
+    pub node: PlacementNode,
     pub catalog_source: String,
     pub catalog_endpoint: String,
     pub catalog_endpoint_count: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProvenRootCatalogRegistration<T> {
+pub struct ProvenCatalogRegistration<T> {
     pub registration: T,
     pub raft_receipts: Vec<ObjectMetadata>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootCatalogLivenessReceipt {
+pub struct CatalogLivenessReceipt {
     pub format: String,
     pub checksum: String,
     pub method: String,

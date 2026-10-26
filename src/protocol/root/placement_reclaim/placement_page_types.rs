@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootPlacementPage {
+pub struct PlacementPage {
     pub placements: Vec<ObjectPlacement>,
     pub marker: Option<ObjectId>,
     pub next_marker: Option<ObjectId>,
@@ -13,8 +13,8 @@ pub struct RootPlacementPage {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootNodeUsage {
-    pub node: RootNode,
+pub struct PlacementNodeUsage {
+    pub node: PlacementNode,
     pub registered: bool,
     pub object_count: u64,
     pub referenced_bytes: u64,
@@ -29,8 +29,8 @@ pub struct RootNodeUsage {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootNodeUsagePage {
-    pub nodes: Vec<RootNodeUsage>,
+pub struct PlacementNodeUsagePage {
+    pub nodes: Vec<PlacementNodeUsage>,
     pub marker: Option<String>,
     pub next_marker: Option<String>,
     pub service_kind_filter: Option<String>,

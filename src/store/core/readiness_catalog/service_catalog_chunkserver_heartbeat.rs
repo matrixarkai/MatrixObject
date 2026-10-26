@@ -10,7 +10,7 @@ impl MatrixObjectStore {
         now_ms: u64,
         catalog_source: &str,
         online: bool,
-    ) -> Result<RootCatalogChunkRegistration, ObjectError> {
+    ) -> Result<CatalogChunkRegistration, ObjectError> {
         validate_node_id(node_id)?;
         if catalog_source.is_empty() {
             return Err(ObjectError::InvalidArgument(
@@ -61,12 +61,12 @@ impl MatrixObjectStore {
             }
             return Err(err);
         }
-        Ok(RootCatalogChunkRegistration {
+        Ok(CatalogChunkRegistration {
             node,
             readiness,
             replica_index,
             catalog_source: catalog_source.to_string(),
-            catalog_endpoint: EMBEDDED_ROOT_CATALOG_ENDPOINT.to_string(),
+            catalog_endpoint: EMBEDDED_PLACEMENT_CATALOG_ENDPOINT.to_string(),
             catalog_endpoint_count: 1,
         })
     }
@@ -82,7 +82,7 @@ impl MatrixObjectStore {
         online: bool,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogChunkRegistration, ObjectError> {
+    ) -> Result<CatalogChunkRegistration, ObjectError> {
         self.heartbeat_local_replicaserver_in_catalog(
             node_id,
             replica_index,
@@ -107,7 +107,7 @@ impl MatrixObjectStore {
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
         expected_catalog_route_checksum: &str,
-    ) -> Result<RootCatalogChunkRegistration, ObjectError> {
+    ) -> Result<CatalogChunkRegistration, ObjectError> {
         let registration = self.heartbeat_local_replicaserver_at_catalog(
             node_id,
             replica_index,

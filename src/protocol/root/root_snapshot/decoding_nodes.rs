@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Copy)]
-pub(crate) struct RootSnapshotDecodeFeatures {
+pub(crate) struct PlacementSnapshotDecodeFeatures {
     pub(crate) has_leader_lease_receipts: bool,
     pub(crate) has_root_meta_health: bool,
     pub(crate) has_control2_meta_health: bool,
@@ -34,7 +34,7 @@ pub(crate) struct RootSnapshotDecodeFeatures {
     pub(crate) has_root_replica_service_health: bool,
 }
 
-impl RootSnapshotDecodeFeatures {
+impl PlacementSnapshotDecodeFeatures {
     pub(crate) fn for_version(version: u64) -> Self {
         Self {
             has_leader_lease_receipts: version >= 2,
@@ -73,9 +73,9 @@ impl RootSnapshotDecodeFeatures {
 
 fn read_root_snapshot_nodes(
     mut cursor: &mut SnapshotByteCursor<'_>,
-    features: RootSnapshotDecodeFeatures,
-) -> Result<BTreeMap<String, RootNode>, ObjectError> {
-    let RootSnapshotDecodeFeatures {
+    features: PlacementSnapshotDecodeFeatures,
+) -> Result<BTreeMap<String, PlacementNode>, ObjectError> {
+    let PlacementSnapshotDecodeFeatures {
         has_root_meta_health,
         has_control2_meta_health,
         has_control3_meta_health,
@@ -108,7 +108,7 @@ fn read_root_snapshot_nodes(
     let mut nodes = BTreeMap::new();
     for _ in 0..cursor.read_count("root snapshot node count")? {
         let map_node_id = cursor.read_string()?;
-        let node = RootNode {
+        let node = PlacementNode {
             node_id: cursor.read_string()?,
             endpoint: if has_node_endpoint {
                 cursor.read_string()?
@@ -167,10 +167,10 @@ fn read_root_snapshot_nodes(
                     has_control10_meta_health,
                 )?
             } else {
-                RootMetaHealth::default()
+                NodeMetaHealth::default()
             },
             page_health: if has_root_page_health {
-                RootPageHealth {
+                NodePageHealth {
                     ready: cursor.read_u64()? != 0,
                     read_ready: cursor.read_u64()? != 0,
                     route_control_checksum: cursor.read_string()?,
@@ -326,7 +326,7 @@ fn read_root_snapshot_nodes(
                     },
                 }
             } else {
-                RootPageHealth::default()
+                NodePageHealth::default()
             },
             chunk_health: if has_root_chunk_health {
                 read_root_chunk_health(
@@ -337,7 +337,7 @@ fn read_root_snapshot_nodes(
                     has_root_replica_service_health,
                 )?
             } else {
-                RootChunkHealth::default()
+                NodeChunkHealth::default()
             },
         };
         nodes.insert(map_node_id, node);

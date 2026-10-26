@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootLeaderLeaseReceipt {
+pub struct PlacementLeaderLeaseReceipt {
     pub idempotency_key: String,
     pub operation: String,
     pub request_checksum: String,
-    pub lease: RootLeaderLease,
+    pub lease: PlacementLeaderLease,
     pub commit_index: u64,
     pub update_time_ms: u64,
     pub receipt_proof_checksum: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootLeaderLeaseReceiptPage {
-    pub receipts: Vec<RootLeaderLeaseReceipt>,
+pub struct PlacementLeaderLeaseReceiptPage {
+    pub receipts: Vec<PlacementLeaderLeaseReceipt>,
     pub receipt_count: u64,
     pub total_receipt_count: u64,
     pub scanned_count: u64,
@@ -26,7 +26,7 @@ pub struct RootLeaderLeaseReceiptPage {
     pub limit: u64,
 }
 
-impl RootLeaderLeaseReceipt {
+impl PlacementLeaderLeaseReceipt {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-ROOT-LEADER-LEASE-RECEIPT-PROOF1"
     }
@@ -83,7 +83,7 @@ impl RootLeaderLeaseReceipt {
     }
 }
 
-impl RootLeaderLeaseReceiptPage {
+impl PlacementLeaderLeaseReceiptPage {
     pub fn proof_format(&self) -> &'static str {
         "MXOS-ROOT-LEADER-LEASE-RECEIPT-PAGE-PROOF1"
     }
@@ -150,7 +150,7 @@ impl RootLeaderLeaseReceiptPage {
     }
 }
 
-impl ProvenRootRead<RootLeaderLeaseReceiptPage> {
+impl ProvenPlacementRead<PlacementLeaderLeaseReceiptPage> {
     pub fn verify_expected_root_leader_lease_receipt_page_proof_checksum(
         &self,
         expected_root_leader_lease_receipt_page_proof_checksum: impl AsRef<str>,

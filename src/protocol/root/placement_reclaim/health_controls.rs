@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootPlacementHealthItem {
+impl PlacementHealthItem {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .placement
@@ -25,7 +25,7 @@ impl RootPlacementHealthItem {
     }
 }
 
-impl RootPlacementHealthPage {
+impl PlacementHealthPage {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(

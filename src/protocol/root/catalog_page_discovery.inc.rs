@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootCatalogPageEndpointDiscovery {
+pub struct CatalogPageEndpointDiscovery {
     pub catalog_source: String,
     pub catalog_endpoint: String,
     pub catalog_route_checksum_format: String,
@@ -19,7 +19,7 @@ pub struct RootCatalogPageEndpointDiscovery {
     pub allocator_status: String,
 }
 
-impl RootCatalogPageEndpointDiscovery {
+impl CatalogPageEndpointDiscovery {
     pub fn endpoint_count(&self) -> u64 {
         self.endpoints.len() as u64
     }

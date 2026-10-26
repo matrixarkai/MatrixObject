@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootSnapshotChunkAssembler {
+impl PlacementSnapshotChunkAssembler {
     pub fn install_progress(&self) -> SnapshotInstallProgress {
         snapshot_install_progress(
             true,
@@ -13,7 +13,7 @@ impl RootSnapshotChunkAssembler {
         )
     }
 
-    pub fn push_chunk(&mut self, chunk: RootSnapshotChunk) -> Result<Option<Vec<u8>>, ObjectError> {
+    pub fn push_chunk(&mut self, chunk: PlacementSnapshotChunk) -> Result<Option<Vec<u8>>, ObjectError> {
         if chunk.total_bytes == 0 {
             return Err(ObjectError::Corruption(
                 "root snapshot chunk has zero total bytes".to_string(),
@@ -121,7 +121,7 @@ pub(crate) fn export_root_snapshot_chunk_bytes_with_checksum(
     full_checksum: &str,
     offset: u64,
     max_payload_bytes: usize,
-) -> Result<RootSnapshotChunk, ObjectError> {
+) -> Result<PlacementSnapshotChunk, ObjectError> {
     if max_payload_bytes == 0 {
         return Err(ObjectError::InvalidArgument(
             "max_payload_bytes must be positive".to_string(),
@@ -140,7 +140,7 @@ pub(crate) fn export_root_snapshot_chunk_bytes_with_checksum(
     } else {
         etag(payload_slice)
     };
-    Ok(RootSnapshotChunk {
+    Ok(PlacementSnapshotChunk {
         offset,
         total_bytes: snapshot_bytes.len() as u64,
         page_checksum,

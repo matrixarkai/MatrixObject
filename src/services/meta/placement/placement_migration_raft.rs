@@ -5,7 +5,7 @@ impl MatrixMetaService {
         &self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: &str,
-    ) -> Result<PreparedRootPlacementMigration, ObjectError> {
+    ) -> Result<PreparedPlacementMigration, ObjectError> {
         self.prepare_placement_migration_raft_entry_with_min_free(plan, expected_plan_checksum, 0)
     }
 
@@ -14,7 +14,7 @@ impl MatrixMetaService {
         plan: PlacementMigrationPlan,
         expected_plan_checksum: &str,
         min_free_bytes: u64,
-    ) -> Result<PreparedRootPlacementMigration, ObjectError> {
+    ) -> Result<PreparedPlacementMigration, ObjectError> {
         if plan.plan_checksum != expected_plan_checksum
             || placement_migration_plan_checksum(&plan) != expected_plan_checksum
         {
@@ -33,7 +33,7 @@ impl MatrixMetaService {
             &expected_plan_checksum,
             min_free_bytes,
         );
-        let mut prepared = PreparedRootPlacementMigration {
+        let mut prepared = PreparedPlacementMigration {
             plan,
             expected_plan_checksum,
             min_free_bytes,
@@ -52,7 +52,7 @@ impl MatrixMetaService {
 
     pub fn apply_prepared_placement_migration(
         &mut self,
-        prepared: PreparedRootPlacementMigration,
+        prepared: PreparedPlacementMigration,
     ) -> Result<ObjectPlacement, ObjectError> {
         if prepared.expected_previous_commit_index != self.placement_commit_index.saturating_sub(1) {
             return Err(ObjectError::PreconditionFailed(
@@ -72,7 +72,7 @@ impl MatrixMetaService {
             ));
         }
         let expected_checksum =
-            prepared_root_placement_migration_checksum(&PreparedRootPlacementMigration {
+            prepared_root_placement_migration_checksum(&PreparedPlacementMigration {
                 raft_entry_checksum: String::new(),
                 ..prepared.clone()
             });

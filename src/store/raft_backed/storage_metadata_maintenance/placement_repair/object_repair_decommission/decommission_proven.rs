@@ -3,7 +3,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_decommission_proven_draining_object_replicas_fenced(
         &mut self,
-        proven_plan: ProvenRootRead<RootPlacementRepairReport>,
+        proven_plan: ProvenPlacementRead<PlacementRepairReport>,
         max_repair_chunks_per_object: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectReplicaDecommissionReport, ObjectError> {
@@ -17,7 +17,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_decommission_proven_draining_object_replicas_fenced_with_plan_checksum(
         &mut self,
-        proven_plan: ProvenRootRead<RootPlacementRepairReport>,
+        proven_plan: ProvenPlacementRead<PlacementRepairReport>,
         max_repair_chunks_per_object: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_plan_checksum: impl AsRef<str>,
@@ -49,7 +49,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_decommission_proven_draining_object_replicas_fenced_with_read_proof_linearizable(
         &mut self,
-        proven_plan: ProvenRootRead<RootPlacementRepairReport>,
+        proven_plan: ProvenPlacementRead<PlacementRepairReport>,
         max_repair_chunks_per_object: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
         now_ms: u64,
@@ -67,7 +67,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_decommission_proven_draining_object_replicas_fenced_with_plan_checksum_and_read_proof_linearizable(
         &mut self,
-        proven_plan: ProvenRootRead<RootPlacementRepairReport>,
+        proven_plan: ProvenPlacementRead<PlacementRepairReport>,
         max_repair_chunks_per_object: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_plan_checksum: impl AsRef<str>,
@@ -86,7 +86,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_decommission_proven_draining_object_replicas_fenced_with_read_proof_linearizable_committed_at(
         &mut self,
-        proven_plan: ProvenRootRead<RootPlacementRepairReport>,
+        proven_plan: ProvenPlacementRead<PlacementRepairReport>,
         max_repair_chunks_per_object: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
         now_ms: u64,
@@ -106,7 +106,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_decommission_proven_draining_object_replicas_fenced_with_plan_checksum_and_read_proof_linearizable_committed_at(
         &mut self,
-        proven_plan: ProvenRootRead<RootPlacementRepairReport>,
+        proven_plan: ProvenPlacementRead<PlacementRepairReport>,
         max_repair_chunks_per_object: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_plan_checksum: impl AsRef<str>,

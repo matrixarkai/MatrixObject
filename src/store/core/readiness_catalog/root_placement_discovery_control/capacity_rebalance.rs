@@ -6,7 +6,7 @@ impl MatrixObjectStore {
         &self,
         max_objects: usize,
         min_free_bytes: u64,
-    ) -> RootCapacityRebalanceReport {
+    ) -> PlacementCapacityRebalanceReport {
         self.meta_service
             .plan_capacity_rebalance(max_objects, min_free_bytes)
     }
@@ -16,7 +16,7 @@ impl MatrixObjectStore {
         &mut self,
         max_objects: usize,
         min_free_bytes: u64,
-    ) -> RootCapacityRebalanceReport {
+    ) -> PlacementCapacityRebalanceReport {
         self.meta_service
             .rebalance_capacity(max_objects, min_free_bytes)
     }
@@ -26,7 +26,7 @@ impl MatrixObjectStore {
         &self,
         max_objects: usize,
         min_free_bytes: u64,
-    ) -> PreparedRootCapacityRebalance {
+    ) -> PreparedPlacementCapacityRebalance {
         self.meta_service
             .prepare_capacity_rebalance_raft_entry(max_objects, min_free_bytes)
     }
@@ -34,8 +34,8 @@ impl MatrixObjectStore {
 
     pub fn apply_prepared_root_capacity_rebalance(
         &mut self,
-        prepared: PreparedRootCapacityRebalance,
-    ) -> Result<RootCapacityRebalanceReport, ObjectError> {
+        prepared: PreparedPlacementCapacityRebalance,
+    ) -> Result<PlacementCapacityRebalanceReport, ObjectError> {
         self.meta_service
             .apply_prepared_capacity_rebalance(prepared)
     }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct RootServingGates {
+struct PlacementServingGates {
     metadata_read_ready: bool,
     metadata_write_ready: bool,
     page_read_ready: bool,
@@ -15,11 +15,11 @@ struct RootServingGates {
 fn root_serving_gates(
     last_applied_index: u64,
     leader_active: bool,
-    metadata: &RootMetadataServiceCoverage,
-    page_allocator: &RootPageAllocatorShardCoverage,
-    pageserver: &RootPageServerServiceCoverage,
-    replicaserver: &RootReplicaServerCoverage,
-) -> RootServingGates {
+    metadata: &PlacementMetadataServiceCoverage,
+    page_allocator: &PlacementPageAllocatorShardCoverage,
+    pageserver: &PlacementPageServerServiceCoverage,
+    replicaserver: &PlacementReplicaServerCoverage,
+) -> PlacementServingGates {
     let metadata_read_ready = metadata.metadata_read_quorum_available
         && metadata.metadata_read_fence_quorum_available
         && metadata.metadata_apply_quorum_available
@@ -51,7 +51,7 @@ fn root_serving_gates(
         && page_read_ready
         && chunk_read_ready;
     let writable = linearizable_reads && metadata_write_ready && page_write_ready && chunk_write_ready;
-    RootServingGates {
+    PlacementServingGates {
         metadata_read_ready,
         metadata_write_ready,
         page_read_ready,
@@ -68,8 +68,8 @@ impl MatrixMetaService {
         &self,
         metadata_replication_quorum: u64,
         min_chunk_free_bytes: u64,
-    ) -> RootRaftStatus {
-        let nodes: Vec<RootNode> = self.nodes.values().cloned().collect();
+    ) -> PlacementRaftStatus {
+        let nodes: Vec<PlacementNode> = self.nodes.values().cloned().collect();
         let metadata = compute_root_metadata_service_coverage(&nodes, metadata_replication_quorum);
         let page_allocator = self.page_allocator_shard_coverage();
         let pageserver = self.pageserver_service_coverage();
@@ -79,11 +79,11 @@ impl MatrixMetaService {
 
     pub(crate) fn raft_status_from_coverage(
         &self,
-        metadata: &RootMetadataServiceCoverage,
-        page_allocator: &RootPageAllocatorShardCoverage,
-        pageserver: &RootPageServerServiceCoverage,
-        replicaserver: &RootReplicaServerCoverage,
-    ) -> RootRaftStatus {
+        metadata: &PlacementMetadataServiceCoverage,
+        page_allocator: &PlacementPageAllocatorShardCoverage,
+        pageserver: &PlacementPageServerServiceCoverage,
+        replicaserver: &PlacementReplicaServerCoverage,
+    ) -> PlacementRaftStatus {
         let last_applied_index = self.placement_commit_index.saturating_sub(1);
         let leader_active = self
             .leader_lease
@@ -98,7 +98,7 @@ impl MatrixMetaService {
             pageserver,
             replicaserver,
         );
-        let mut status = RootRaftStatus {
+        let mut status = PlacementRaftStatus {
             leader_node_id: self
                 .leader_lease
                 .as_ref()

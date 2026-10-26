@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootNode {
+pub struct PlacementNode {
     pub node_id: String,
     pub endpoint: String,
     pub service_kind: String,
@@ -18,12 +18,12 @@ pub struct RootNode {
     pub last_heartbeat_ms: u64,
     pub page_allocator_shard_index: u64,
     pub page_allocator_shard_count: u64,
-    pub meta_health: RootMetaHealth,
-    pub page_health: RootPageHealth,
-    pub chunk_health: RootChunkHealth,
+    pub meta_health: NodeMetaHealth,
+    pub page_health: NodePageHealth,
+    pub chunk_health: NodeChunkHealth,
 }
 
-impl RootNode {
+impl PlacementNode {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [

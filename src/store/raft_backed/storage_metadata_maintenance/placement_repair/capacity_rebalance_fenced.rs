@@ -151,7 +151,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_rebalance_proven_object_capacity_fenced(
         &mut self,
-        proven_plan: ProvenRootRead<ObjectCapacityRebalanceReport>,
+        proven_plan: ProvenPlacementRead<ObjectCapacityRebalanceReport>,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectCapacityRebalanceRunReport, ObjectError> {
         self.propose_rebalance_proven_object_capacity_fenced_with_plan_checksum(
@@ -163,7 +163,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_rebalance_proven_object_capacity_fenced_with_plan_checksum(
         &mut self,
-        proven_plan: ProvenRootRead<ObjectCapacityRebalanceReport>,
+        proven_plan: ProvenPlacementRead<ObjectCapacityRebalanceReport>,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_plan_checksum: impl AsRef<str>,
     ) -> Result<ObjectCapacityRebalanceRunReport, ObjectError> {
@@ -194,7 +194,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_rebalance_proven_object_capacity_fenced_with_read_proof_linearizable(
         &mut self,
-        proven_plan: ProvenRootRead<ObjectCapacityRebalanceReport>,
+        proven_plan: ProvenPlacementRead<ObjectCapacityRebalanceReport>,
         expected_page_route_control_checksum: impl AsRef<str>,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<ObjectCapacityRebalanceRunReport>, ObjectError> {
@@ -208,7 +208,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_rebalance_proven_object_capacity_fenced_with_plan_checksum_and_read_proof_linearizable(
         &mut self,
-        proven_plan: ProvenRootRead<ObjectCapacityRebalanceReport>,
+        proven_plan: ProvenPlacementRead<ObjectCapacityRebalanceReport>,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_plan_checksum: impl AsRef<str>,
         now_ms: u64,
@@ -225,7 +225,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_rebalance_proven_object_capacity_fenced_with_read_proof_linearizable_committed_at(
         &mut self,
-        proven_plan: ProvenRootRead<ObjectCapacityRebalanceReport>,
+        proven_plan: ProvenPlacementRead<ObjectCapacityRebalanceReport>,
         expected_page_route_control_checksum: impl AsRef<str>,
         now_ms: u64,
         min_read_index: u64,
@@ -243,7 +243,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_rebalance_proven_object_capacity_fenced_with_plan_checksum_and_read_proof_linearizable_committed_at(
         &mut self,
-        proven_plan: ProvenRootRead<ObjectCapacityRebalanceReport>,
+        proven_plan: ProvenPlacementRead<ObjectCapacityRebalanceReport>,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_plan_checksum: impl AsRef<str>,
         now_ms: u64,

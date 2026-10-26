@@ -35,8 +35,8 @@ fn test_options() -> StoreOptions {
     }
 }
 
-fn root_node(node_id: &str, domain: &str, capacity_bytes: u64) -> RootNode {
-    RootNode {
+fn root_node(node_id: &str, domain: &str, capacity_bytes: u64) -> PlacementNode {
+    PlacementNode {
         node_id: node_id.to_string(),
         endpoint: format!("{node_id}.matrix.local:9102"),
         service_kind: "chunkserver".to_string(),
@@ -53,9 +53,9 @@ fn root_node(node_id: &str, domain: &str, capacity_bytes: u64) -> RootNode {
         last_heartbeat_ms: 1,
         page_allocator_shard_index: 0,
         page_allocator_shard_count: 1,
-        meta_health: RootMetaHealth::default(),
-        page_health: RootPageHealth::default(),
-        chunk_health: RootChunkHealth::default(),
+        meta_health: NodeMetaHealth::default(),
+        page_health: NodePageHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
     }
 }
 
@@ -64,8 +64,8 @@ fn pageserver_root_node(
     domain: &str,
     shard_index: u64,
     shard_count: u64,
-) -> RootNode {
-    RootNode {
+) -> PlacementNode {
+    PlacementNode {
         node_id: node_id.to_string(),
         endpoint: format!("{node_id}.matrix.local:9101"),
         service_kind: "blockserver".to_string(),
@@ -82,8 +82,8 @@ fn pageserver_root_node(
         last_heartbeat_ms: 1,
         page_allocator_shard_index: shard_index,
         page_allocator_shard_count: shard_count,
-        meta_health: RootMetaHealth::default(),
-        page_health: RootPageHealth {
+        meta_health: NodeMetaHealth::default(),
+        page_health: NodePageHealth {
             ready: true,
             read_ready: true,
             route_control_checksum: format!("route-{node_id}-{shard_index}-{shard_count}"),
@@ -104,9 +104,9 @@ fn pageserver_root_node(
             batch_write_receipt_count: shard_index.saturating_add(13),
             discard_receipt_count: shard_index.saturating_add(17),
             batch_discard_receipt_count: shard_index.saturating_add(19),
-            ..RootPageHealth::default()
+            ..NodePageHealth::default()
         },
-        chunk_health: RootChunkHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
     }
 }
 
@@ -117,8 +117,8 @@ fn metaserver_root_node(
     writable: bool,
     topology_checksum: &str,
     topology_epoch: u64,
-) -> RootNode {
-    let mut meta_health = RootMetaHealth::default();
+) -> PlacementNode {
+    let mut meta_health = NodeMetaHealth::default();
     meta_health.control_proof.state_format = "MOSRSMETA-CONTROL5".to_string();
     meta_health.control_proof.state_bytes = 128;
     meta_health.control_proof.state_checksum = format!("{node_id}-proof");
@@ -148,7 +148,7 @@ fn metaserver_root_node(
     meta_health.route_cache.shard_topology_checksum = topology_checksum.to_string();
     meta_health.route_cache.session_checksum = "sessions-a".to_string();
     meta_health.route_cache.fresh = readable;
-    RootNode {
+    PlacementNode {
         node_id: node_id.to_string(),
         endpoint: format!("{node_id}.matrix.local:9105"),
         service_kind: "metaserver".to_string(),
@@ -166,8 +166,8 @@ fn metaserver_root_node(
         page_allocator_shard_index: 0,
         page_allocator_shard_count: 1,
         meta_health,
-        page_health: RootPageHealth::default(),
-        chunk_health: RootChunkHealth::default(),
+        page_health: NodePageHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
     }
 }
 
@@ -7420,7 +7420,7 @@ fn rootserver_plans_capacity_and_persists_placements() {
     let snapshot = store.export_snapshot().unwrap();
     // The roster lives in the metadata snapshot now. Same rules, called through the shared
     // validator instead of through a snapshot of its own -- the assertion is kept, not dropped.
-    validate_catalog_roster(
+    validate_placement_roster(
         &snapshot.meta_snapshot.placement_nodes,
         &snapshot.meta_snapshot.placements,
         &snapshot.meta_snapshot.placement_leader_lease,
@@ -7482,7 +7482,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
         &plan.plan_checksum,
     )
     .unwrap();
-    let mut meta_health = RootMetaHealth::default();
+    let mut meta_health = NodeMetaHealth::default();
     meta_health.control_proof.state_format = "MOSRSMETA-CONTROL5".to_string();
     meta_health.control_proof.state_bytes = 123;
     meta_health.control_proof.state_checksum = "meta-proof-a".to_string();
@@ -7518,7 +7518,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
     meta_health.route_cache.fresh_entries = 9;
     meta_health.route_cache.fresh = true;
     meta_health.raft_membership_receipt_retention_limit = 4096;
-    root.register_node(RootNode {
+    root.register_node(PlacementNode {
         node_id: "meta-a".to_string(),
         endpoint: "meta-a.local:9105".to_string(),
         service_kind: "metaserver".to_string(),
@@ -7536,8 +7536,8 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
         page_allocator_shard_index: 0,
         page_allocator_shard_count: 1,
         meta_health: meta_health.clone(),
-        page_health: RootPageHealth::default(),
-        chunk_health: RootChunkHealth::default(),
+        page_health: NodePageHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
     })
     .unwrap();
 
@@ -7563,10 +7563,10 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
     }
     assert!(pages.len() > 1);
     assert!(matches!(
-        RootSnapshotChunkAssembler::default().push_chunk(pages[1].clone()),
+        PlacementSnapshotChunkAssembler::default().push_chunk(pages[1].clone()),
         Err(ObjectError::Corruption(_))
     ));
-    let mut retry_assembler = RootSnapshotChunkAssembler::default();
+    let mut retry_assembler = PlacementSnapshotChunkAssembler::default();
     assert!(retry_assembler
         .push_chunk(pages[0].clone())
         .unwrap()
@@ -7613,11 +7613,11 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
     let mut corrupt = pages[0].clone();
     corrupt.payload[0] ^= 0x55;
     assert!(matches!(
-        RootSnapshotChunkAssembler::default().push_chunk(corrupt),
+        PlacementSnapshotChunkAssembler::default().push_chunk(corrupt),
         Err(ObjectError::Corruption(_))
     ));
 
-    let mut assembler = RootSnapshotChunkAssembler::default();
+    let mut assembler = PlacementSnapshotChunkAssembler::default();
     let mut assembled = None;
     for chunk in pages {
         let expected_next = chunk.offset.saturating_add(chunk.payload.len() as u64);
@@ -7642,7 +7642,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
     // MOSRSROOT32; this literal said MOSRSROOT30 and had simply been left behind by two
     // version bumps, so the test failed on a stamp nothing else in the tree still expected.
     assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSROOT32");
-    let snapshot = RootSnapshot::from_bytes(&snapshot_bytes).unwrap();
+    let snapshot = PlacementSnapshot::from_bytes(&snapshot_bytes).unwrap();
     assert_eq!(snapshot.nodes.len(), 4);
     assert_eq!(snapshot.placements.len(), 1);
     assert_eq!(
@@ -7703,7 +7703,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
 #[test]
 fn rootserver_leader_lease_is_fenced_and_snapshotted() {
     let mut root = MatrixMetaService::new();
-    root.register_node(RootNode {
+    root.register_node(PlacementNode {
         node_id: "root-a".to_string(),
         endpoint: "root-a.local:9100".to_string(),
         service_kind: "metaserver".to_string(),
@@ -7720,12 +7720,12 @@ fn rootserver_leader_lease_is_fenced_and_snapshotted() {
         last_heartbeat_ms: 1,
         page_allocator_shard_index: 0,
         page_allocator_shard_count: 1,
-        meta_health: RootMetaHealth::default(),
-        page_health: RootPageHealth::default(),
-        chunk_health: RootChunkHealth::default(),
+        meta_health: NodeMetaHealth::default(),
+        page_health: NodePageHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
     })
     .unwrap();
-    root.register_node(RootNode {
+    root.register_node(PlacementNode {
         node_id: "root-b".to_string(),
         endpoint: "root-b.local:9100".to_string(),
         service_kind: "metaserver".to_string(),
@@ -7742,9 +7742,9 @@ fn rootserver_leader_lease_is_fenced_and_snapshotted() {
         last_heartbeat_ms: 1,
         page_allocator_shard_index: 0,
         page_allocator_shard_count: 1,
-        meta_health: RootMetaHealth::default(),
-        page_health: RootPageHealth::default(),
-        chunk_health: RootChunkHealth::default(),
+        meta_health: NodeMetaHealth::default(),
+        page_health: NodePageHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
     })
     .unwrap();
     root.register_node(root_node("chunk-a", "rack-c", 100))
@@ -7818,7 +7818,7 @@ fn rootserver_leader_lease_is_fenced_and_snapshotted() {
 fn distributed_readiness_uses_root_observed_metaserver_coverage() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(RootNode {
+        .register_root_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -7835,9 +7835,9 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
             last_heartbeat_ms: 1,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         })
         .unwrap();
     store
@@ -7974,7 +7974,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
 
     let mut lagging_store = MatrixObjectStore::new(test_options()).unwrap();
     lagging_store
-        .register_root_node(RootNode {
+        .register_root_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -7991,9 +7991,9 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
             last_heartbeat_ms: 1,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         })
         .unwrap();
     lagging_store
@@ -8049,7 +8049,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
 
     let mut read_fence_lag_store = MatrixObjectStore::new(test_options()).unwrap();
     read_fence_lag_store
-        .register_root_node(RootNode {
+        .register_root_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -8066,9 +8066,9 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
             last_heartbeat_ms: 1,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         })
         .unwrap();
     read_fence_lag_store
@@ -8143,7 +8143,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
 #[test]
 fn rootserver_raft_status_exposes_service_coverage() {
     let mut root = MatrixMetaService::new();
-    root.register_node(RootNode {
+    root.register_node(PlacementNode {
         node_id: "root-a".to_string(),
         endpoint: "root-a.local:9100".to_string(),
         service_kind: "metaserver".to_string(),
@@ -8160,9 +8160,9 @@ fn rootserver_raft_status_exposes_service_coverage() {
         last_heartbeat_ms: 1,
         page_allocator_shard_index: 0,
         page_allocator_shard_count: 1,
-        meta_health: RootMetaHealth::default(),
-        page_health: RootPageHealth::default(),
-        chunk_health: RootChunkHealth::default(),
+        meta_health: NodeMetaHealth::default(),
+        page_health: NodePageHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
     })
     .unwrap();
     root.campaign_leader("root-a", 100, 1).unwrap();
@@ -8325,7 +8325,7 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(RootNode {
+        .register_root_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -8342,9 +8342,9 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
             last_heartbeat_ms: 1,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         })
         .unwrap();
     store
@@ -8452,7 +8452,7 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(RootNode {
+        .register_root_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -8469,9 +8469,9 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
             last_heartbeat_ms: 1,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         })
         .unwrap();
     store
@@ -8654,7 +8654,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(RootNode {
+        .register_root_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -8671,9 +8671,9 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
             last_heartbeat_ms: 1,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         })
         .unwrap();
     store
@@ -8851,7 +8851,7 @@ fn rootserver_health_heartbeats_update_service_coverage() {
         .register_root_node(root_node("chunk-a", "rack-b", 100))
         .unwrap();
 
-    let mut page_health = RootPageHealth::default();
+    let mut page_health = NodePageHealth::default();
     page_health.ready = false;
     page_health.read_ready = true;
     page_health.route_control_checksum = "route-a".to_string();
@@ -8897,7 +8897,7 @@ fn rootserver_health_heartbeats_update_service_coverage() {
     // count for the same recorded reason.
     assert_eq!(page_coverage.status, "route_control_write_unready");
 
-    let chunk_health = RootChunkHealth {
+    let chunk_health = NodeChunkHealth {
         accepting_writes: false,
         frozen: true,
         raft_writable: false,
@@ -8914,7 +8914,7 @@ fn rootserver_health_heartbeats_update_service_coverage() {
         raft_commit_index: 88,
         control_read_ready: true,
         control_write_ready: false,
-        ..RootChunkHealth::default()
+        ..NodeChunkHealth::default()
     };
     let chunk_node = store
         .heartbeat_root_chunk_health("chunk-a", chunk_health.clone(), 9)
@@ -8965,11 +8965,11 @@ fn rootserver_health_heartbeats_update_service_coverage() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        store.heartbeat_root_chunk_health("block-a", RootChunkHealth::default(), 10),
+        store.heartbeat_root_chunk_health("block-a", NodeChunkHealth::default(), 10),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        store.heartbeat_root_page_health("chunk-a", RootPageHealth::default(), 11),
+        store.heartbeat_root_page_health("chunk-a", NodePageHealth::default(), 11),
         Err(ObjectError::PreconditionFailed(_))
     ));
 }
@@ -9420,7 +9420,7 @@ fn raft_backed_store_replays_root_health_heartbeats() {
     assert!(generic_node.online);
     assert_eq!(generic_node.last_heartbeat_ms, 20);
 
-    let page_health = RootPageHealth {
+    let page_health = NodePageHealth {
         ready: true,
         read_ready: true,
         route_control_checksum: "route-raft".to_string(),
@@ -9441,7 +9441,7 @@ fn raft_backed_store_replays_root_health_heartbeats() {
         batch_write_receipt_count: 41,
         discard_receipt_count: 43,
         batch_discard_receipt_count: 47,
-        ..RootPageHealth::default()
+        ..NodePageHealth::default()
     };
     let chunk_receipt = replicated
         .propose_heartbeat_root_page_health("block-a", page_health.clone(), 21)
@@ -9458,7 +9458,7 @@ fn raft_backed_store_replays_root_health_heartbeats() {
         page_health
     );
 
-    let chunk_health = RootChunkHealth {
+    let chunk_health = NodeChunkHealth {
         accepting_writes: true,
         frozen: false,
         raft_writable: true,
@@ -9475,7 +9475,7 @@ fn raft_backed_store_replays_root_health_heartbeats() {
         raft_commit_index: 99,
         control_read_ready: true,
         control_write_ready: true,
-        ..RootChunkHealth::default()
+        ..NodeChunkHealth::default()
     };
     let replica_receipt = replicated
         .propose_heartbeat_root_chunk_health("chunk-a", chunk_health.clone(), 22)
@@ -9496,7 +9496,7 @@ fn raft_backed_store_replays_root_health_heartbeats() {
     assert_eq!(chunk_coverage.control_min_raft_commit_index, 99);
     assert_eq!(chunk_coverage.control_max_raft_commit_index, 99);
     assert!(matches!(
-        replicated.propose_heartbeat_root_chunk_health("chunk-a", RootChunkHealth::default(), 21),
+        replicated.propose_heartbeat_root_chunk_health("chunk-a", NodeChunkHealth::default(), 21),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert_eq!(replicated.raft_commit_index(), 5);
@@ -9883,7 +9883,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     assert!(missing_leader.root_leader_ready);
     assert!(missing_leader.root_leader_node_id.is_empty());
     store
-        .register_root_node(RootNode {
+        .register_root_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -9900,9 +9900,9 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
             last_heartbeat_ms: 10,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         })
         .unwrap();
     let root_lease = store
@@ -11323,7 +11323,7 @@ fn rootserver_migrates_placement_with_fences_and_snapshots() {
     let snapshot = store.export_snapshot().unwrap();
     // The roster lives in the metadata snapshot now. Same rules, called through the shared
     // validator instead of through a snapshot of its own -- the assertion is kept, not dropped.
-    validate_catalog_roster(
+    validate_placement_roster(
         &snapshot.meta_snapshot.placement_nodes,
         &snapshot.meta_snapshot.placements,
         &snapshot.meta_snapshot.placement_leader_lease,
@@ -27885,7 +27885,7 @@ fn raft_backed_store_replays_root_leader_lease() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
-    let root_a = RootNode {
+    let root_a = PlacementNode {
         node_id: "root-a".to_string(),
         endpoint: "root-a.local:9100".to_string(),
         service_kind: "metaserver".to_string(),
@@ -27902,9 +27902,9 @@ fn raft_backed_store_replays_root_leader_lease() {
         last_heartbeat_ms: 1,
         page_allocator_shard_index: 0,
         page_allocator_shard_count: 1,
-        meta_health: RootMetaHealth::default(),
-        page_health: RootPageHealth::default(),
-        chunk_health: RootChunkHealth::default(),
+        meta_health: NodeMetaHealth::default(),
+        page_health: NodePageHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
     };
     replicated.propose_register_root_node(root_a).unwrap();
     let campaign = replicated
@@ -28476,7 +28476,7 @@ fn raft_backed_store_replays_root_draining_repairs() {
         )
         .unwrap();
     replicated
-        .propose_register_root_node(RootNode {
+        .propose_register_root_node(PlacementNode {
             node_id: "chunk-a".to_string(),
             endpoint: "chunk-a.local:9102".to_string(),
             service_kind: "chunkserver".to_string(),
@@ -28493,9 +28493,9 @@ fn raft_backed_store_replays_root_draining_repairs() {
             last_heartbeat_ms: 20,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         })
         .unwrap();
     let prepared = replicated
@@ -28976,13 +28976,13 @@ fn raft_backed_store_gates_root_node_usage_reads() {
     replicated
         .propose_heartbeat_root_chunk_health(
             "chunk-a",
-            RootChunkHealth {
+            NodeChunkHealth {
                 accepting_writes: true,
                 frozen: false,
                 raft_writable: true,
                 capacity_free_bytes: 4,
                 service_mode: "read_write".to_string(),
-                ..RootChunkHealth::default()
+                ..NodeChunkHealth::default()
             },
             20,
         )
@@ -46737,8 +46737,8 @@ fn a_replica_behind_on_only_a_later_page_is_refused_check_in() {
 /// node through the snapshot that a store written before the move would carry.
 #[test]
 fn the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_load() {
-    fn control_node(node_id: &str, service_kind: &str) -> RootNode {
-        RootNode {
+    fn control_node(node_id: &str, service_kind: &str) -> PlacementNode {
+        PlacementNode {
             node_id: node_id.to_string(),
             endpoint: format!("{node_id}.local:9100"),
             service_kind: service_kind.to_string(),
@@ -46755,9 +46755,9 @@ fn the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_loa
             last_heartbeat_ms: 1,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         }
     }
 
@@ -46841,7 +46841,7 @@ fn the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_loa
 ///
 /// # WHY THIS EXISTS, AND WHAT IT FOUND
 ///
-/// A `RootSnapshot` is encoded twice, independently: once into the bytes that go to disk, and
+/// A `PlacementSnapshot` is encoded twice, independently: once into the bytes that go to disk, and
 /// once into the material its checksum is taken over. Both are built from the struct, so they
 /// can drift -- and a field that the bytes carry while the material omits it is a field no
 /// checksum protects. A flipped byte in it decodes to a different value and still validates.
@@ -46860,11 +46860,11 @@ fn the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_loa
 /// # COMPLETENESS IS COMPILER-ENFORCED
 ///
 /// The destructuring below names every field with no `..`, so a field added to
-/// `RootPageHealth` does not compile until someone has been here and decided whether the
+/// `NodePageHealth` does not compile until someone has been here and decided whether the
 /// checksum should cover it. A remembered list is how the two fields above went missing.
 #[test]
 fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
-    let RootPageHealth {
+    let NodePageHealth {
         ready,
         read_ready,
         route_control_checksum,
@@ -46903,7 +46903,7 @@ fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
         batch_write_receipt_count,
         discard_receipt_count,
         batch_discard_receipt_count
-    } = RootPageHealth::default();
+    } = NodePageHealth::default();
     // Bound only so that adding a field breaks this test rather than slipping past it.
     let _ = (ready,
         read_ready,
@@ -46944,8 +46944,8 @@ fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
         discard_receipt_count,
         batch_discard_receipt_count);
 
-    fn snapshot_with(health: RootPageHealth) -> RootSnapshot {
-        let mut node = RootNode {
+    fn snapshot_with(health: NodePageHealth) -> PlacementSnapshot {
+        let mut node = PlacementNode {
             node_id: "block-a".to_string(),
             endpoint: "block-a.local:9100".to_string(),
             service_kind: "blockserver".to_string(),
@@ -46962,14 +46962,14 @@ fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
             last_heartbeat_ms: 1,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         };
         node.page_health = health;
         let mut nodes = BTreeMap::new();
         nodes.insert(node.node_id.clone(), node);
-        RootSnapshot {
+        PlacementSnapshot {
             nodes,
             placements: BTreeMap::new(),
             leader_lease: None,
@@ -46980,46 +46980,46 @@ fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
         }
     }
 
-    let baseline = snapshot_with(RootPageHealth::default()).checksum_material_hash();
-    let mutators: Vec<(&str, fn(&mut RootPageHealth))> = vec![
-        ("ready", |health: &mut RootPageHealth| { health.ready = !health.ready; }),
-        ("read_ready", |health: &mut RootPageHealth| { health.read_ready = !health.read_ready; }),
-        ("route_control_checksum", |health: &mut RootPageHealth| { health.route_control_checksum.push('x'); }),
-        ("route_control_commit_index", |health: &mut RootPageHealth| { health.route_control_commit_index = health.route_control_commit_index.wrapping_add(7); }),
-        ("chunk_endpoint_count", |health: &mut RootPageHealth| { health.chunk_endpoint_count = health.chunk_endpoint_count.wrapping_add(7); }),
-        ("write_quorum", |health: &mut RootPageHealth| { health.write_quorum = health.write_quorum.wrapping_add(7); }),
-        ("read_quorum", |health: &mut RootPageHealth| { health.read_quorum = health.read_quorum.wrapping_add(7); }),
-        ("writable_chunk_endpoint_count", |health: &mut RootPageHealth| { health.writable_chunk_endpoint_count = health.writable_chunk_endpoint_count.wrapping_add(7); }),
-        ("healthy_chunk_endpoint_count", |health: &mut RootPageHealth| { health.healthy_chunk_endpoint_count = health.healthy_chunk_endpoint_count.wrapping_add(7); }),
-        ("raft_writable_chunk_endpoint_count", |health: &mut RootPageHealth| { health.raft_writable_chunk_endpoint_count = health.raft_writable_chunk_endpoint_count.wrapping_add(7); }),
-        ("raft_readable_chunk_endpoint_count", |health: &mut RootPageHealth| { health.raft_readable_chunk_endpoint_count = health.raft_readable_chunk_endpoint_count.wrapping_add(7); }),
-        ("capacity_ready_writable_chunk_endpoint_count", |health: &mut RootPageHealth| { health.capacity_ready_writable_chunk_endpoint_count = health.capacity_ready_writable_chunk_endpoint_count.wrapping_add(7); }),
-        ("quarantined_chunk_replicas", |health: &mut RootPageHealth| { health.quarantined_chunk_replicas = health.quarantined_chunk_replicas.wrapping_add(7); }),
-        ("chunk_capacity_bytes", |health: &mut RootPageHealth| { health.chunk_capacity_bytes = health.chunk_capacity_bytes.wrapping_add(7); }),
-        ("chunk_capacity_free_bytes", |health: &mut RootPageHealth| { health.chunk_capacity_free_bytes = health.chunk_capacity_free_bytes.wrapping_add(7); }),
-        ("chunk_metadata_dirty_endpoint_count", |health: &mut RootPageHealth| { health.chunk_metadata_dirty_endpoint_count = health.chunk_metadata_dirty_endpoint_count.wrapping_add(7); }),
-        ("chunk_metadata_dirty_mutations", |health: &mut RootPageHealth| { health.chunk_metadata_dirty_mutations = health.chunk_metadata_dirty_mutations.wrapping_add(7); }),
-        ("chunk_metadata_checkpoint_interval", |health: &mut RootPageHealth| { health.chunk_metadata_checkpoint_interval = health.chunk_metadata_checkpoint_interval.wrapping_add(7); }),
-        ("deferred_metadata_checkpoint_endpoint_count", |health: &mut RootPageHealth| { health.deferred_metadata_checkpoint_endpoint_count = health.deferred_metadata_checkpoint_endpoint_count.wrapping_add(7); }),
-        ("deferred_metadata_checkpoint_requests", |health: &mut RootPageHealth| { health.deferred_metadata_checkpoint_requests = health.deferred_metadata_checkpoint_requests.wrapping_add(7); }),
-        ("deferred_metadata_checkpoint_runs", |health: &mut RootPageHealth| { health.deferred_metadata_checkpoint_runs = health.deferred_metadata_checkpoint_runs.wrapping_add(7); }),
-        ("chunk_capacity_rejected_writes", |health: &mut RootPageHealth| { health.chunk_capacity_rejected_writes = health.chunk_capacity_rejected_writes.wrapping_add(7); }),
-        ("replica_service_mode_rejected_mutations", |health: &mut RootPageHealth| { health.replica_service_mode_rejected_mutations = health.replica_service_mode_rejected_mutations.wrapping_add(7); }),
-        ("chunk_physical_write_count", |health: &mut RootPageHealth| { health.chunk_physical_write_count = health.chunk_physical_write_count.wrapping_add(7); }),
-        ("chunk_physical_write_bytes", |health: &mut RootPageHealth| { health.chunk_physical_write_bytes = health.chunk_physical_write_bytes.wrapping_add(7); }),
-        ("chunk_physical_discard_range_count", |health: &mut RootPageHealth| { health.chunk_physical_discard_range_count = health.chunk_physical_discard_range_count.wrapping_add(7); }),
-        ("chunk_physical_discard_bytes", |health: &mut RootPageHealth| { health.chunk_physical_discard_bytes = health.chunk_physical_discard_bytes.wrapping_add(7); }),
-        ("total_reclaimable_bytes", |health: &mut RootPageHealth| { health.total_reclaimable_bytes = health.total_reclaimable_bytes.wrapping_add(7); }),
-        ("total_trailing_trim_bytes", |health: &mut RootPageHealth| { health.total_trailing_trim_bytes = health.total_trailing_trim_bytes.wrapping_add(7); }),
-        ("total_fragmented_chunk_count", |health: &mut RootPageHealth| { health.total_fragmented_chunk_count = health.total_fragmented_chunk_count.wrapping_add(7); }),
-        ("total_fragmented_discarded_bytes", |health: &mut RootPageHealth| { health.total_fragmented_discarded_bytes = health.total_fragmented_discarded_bytes.wrapping_add(7); }),
-        ("allocation_receipt_count", |health: &mut RootPageHealth| { health.allocation_receipt_count = health.allocation_receipt_count.wrapping_add(7); }),
-        ("batch_allocation_receipt_count", |health: &mut RootPageHealth| { health.batch_allocation_receipt_count = health.batch_allocation_receipt_count.wrapping_add(7); }),
-        ("release_allocation_receipt_count", |health: &mut RootPageHealth| { health.release_allocation_receipt_count = health.release_allocation_receipt_count.wrapping_add(7); }),
-        ("write_receipt_count", |health: &mut RootPageHealth| { health.write_receipt_count = health.write_receipt_count.wrapping_add(7); }),
-        ("batch_write_receipt_count", |health: &mut RootPageHealth| { health.batch_write_receipt_count = health.batch_write_receipt_count.wrapping_add(7); }),
-        ("discard_receipt_count", |health: &mut RootPageHealth| { health.discard_receipt_count = health.discard_receipt_count.wrapping_add(7); }),
-        ("batch_discard_receipt_count", |health: &mut RootPageHealth| { health.batch_discard_receipt_count = health.batch_discard_receipt_count.wrapping_add(7); }),
+    let baseline = snapshot_with(NodePageHealth::default()).checksum_material_hash();
+    let mutators: Vec<(&str, fn(&mut NodePageHealth))> = vec![
+        ("ready", |health: &mut NodePageHealth| { health.ready = !health.ready; }),
+        ("read_ready", |health: &mut NodePageHealth| { health.read_ready = !health.read_ready; }),
+        ("route_control_checksum", |health: &mut NodePageHealth| { health.route_control_checksum.push('x'); }),
+        ("route_control_commit_index", |health: &mut NodePageHealth| { health.route_control_commit_index = health.route_control_commit_index.wrapping_add(7); }),
+        ("chunk_endpoint_count", |health: &mut NodePageHealth| { health.chunk_endpoint_count = health.chunk_endpoint_count.wrapping_add(7); }),
+        ("write_quorum", |health: &mut NodePageHealth| { health.write_quorum = health.write_quorum.wrapping_add(7); }),
+        ("read_quorum", |health: &mut NodePageHealth| { health.read_quorum = health.read_quorum.wrapping_add(7); }),
+        ("writable_chunk_endpoint_count", |health: &mut NodePageHealth| { health.writable_chunk_endpoint_count = health.writable_chunk_endpoint_count.wrapping_add(7); }),
+        ("healthy_chunk_endpoint_count", |health: &mut NodePageHealth| { health.healthy_chunk_endpoint_count = health.healthy_chunk_endpoint_count.wrapping_add(7); }),
+        ("raft_writable_chunk_endpoint_count", |health: &mut NodePageHealth| { health.raft_writable_chunk_endpoint_count = health.raft_writable_chunk_endpoint_count.wrapping_add(7); }),
+        ("raft_readable_chunk_endpoint_count", |health: &mut NodePageHealth| { health.raft_readable_chunk_endpoint_count = health.raft_readable_chunk_endpoint_count.wrapping_add(7); }),
+        ("capacity_ready_writable_chunk_endpoint_count", |health: &mut NodePageHealth| { health.capacity_ready_writable_chunk_endpoint_count = health.capacity_ready_writable_chunk_endpoint_count.wrapping_add(7); }),
+        ("quarantined_chunk_replicas", |health: &mut NodePageHealth| { health.quarantined_chunk_replicas = health.quarantined_chunk_replicas.wrapping_add(7); }),
+        ("chunk_capacity_bytes", |health: &mut NodePageHealth| { health.chunk_capacity_bytes = health.chunk_capacity_bytes.wrapping_add(7); }),
+        ("chunk_capacity_free_bytes", |health: &mut NodePageHealth| { health.chunk_capacity_free_bytes = health.chunk_capacity_free_bytes.wrapping_add(7); }),
+        ("chunk_metadata_dirty_endpoint_count", |health: &mut NodePageHealth| { health.chunk_metadata_dirty_endpoint_count = health.chunk_metadata_dirty_endpoint_count.wrapping_add(7); }),
+        ("chunk_metadata_dirty_mutations", |health: &mut NodePageHealth| { health.chunk_metadata_dirty_mutations = health.chunk_metadata_dirty_mutations.wrapping_add(7); }),
+        ("chunk_metadata_checkpoint_interval", |health: &mut NodePageHealth| { health.chunk_metadata_checkpoint_interval = health.chunk_metadata_checkpoint_interval.wrapping_add(7); }),
+        ("deferred_metadata_checkpoint_endpoint_count", |health: &mut NodePageHealth| { health.deferred_metadata_checkpoint_endpoint_count = health.deferred_metadata_checkpoint_endpoint_count.wrapping_add(7); }),
+        ("deferred_metadata_checkpoint_requests", |health: &mut NodePageHealth| { health.deferred_metadata_checkpoint_requests = health.deferred_metadata_checkpoint_requests.wrapping_add(7); }),
+        ("deferred_metadata_checkpoint_runs", |health: &mut NodePageHealth| { health.deferred_metadata_checkpoint_runs = health.deferred_metadata_checkpoint_runs.wrapping_add(7); }),
+        ("chunk_capacity_rejected_writes", |health: &mut NodePageHealth| { health.chunk_capacity_rejected_writes = health.chunk_capacity_rejected_writes.wrapping_add(7); }),
+        ("replica_service_mode_rejected_mutations", |health: &mut NodePageHealth| { health.replica_service_mode_rejected_mutations = health.replica_service_mode_rejected_mutations.wrapping_add(7); }),
+        ("chunk_physical_write_count", |health: &mut NodePageHealth| { health.chunk_physical_write_count = health.chunk_physical_write_count.wrapping_add(7); }),
+        ("chunk_physical_write_bytes", |health: &mut NodePageHealth| { health.chunk_physical_write_bytes = health.chunk_physical_write_bytes.wrapping_add(7); }),
+        ("chunk_physical_discard_range_count", |health: &mut NodePageHealth| { health.chunk_physical_discard_range_count = health.chunk_physical_discard_range_count.wrapping_add(7); }),
+        ("chunk_physical_discard_bytes", |health: &mut NodePageHealth| { health.chunk_physical_discard_bytes = health.chunk_physical_discard_bytes.wrapping_add(7); }),
+        ("total_reclaimable_bytes", |health: &mut NodePageHealth| { health.total_reclaimable_bytes = health.total_reclaimable_bytes.wrapping_add(7); }),
+        ("total_trailing_trim_bytes", |health: &mut NodePageHealth| { health.total_trailing_trim_bytes = health.total_trailing_trim_bytes.wrapping_add(7); }),
+        ("total_fragmented_chunk_count", |health: &mut NodePageHealth| { health.total_fragmented_chunk_count = health.total_fragmented_chunk_count.wrapping_add(7); }),
+        ("total_fragmented_discarded_bytes", |health: &mut NodePageHealth| { health.total_fragmented_discarded_bytes = health.total_fragmented_discarded_bytes.wrapping_add(7); }),
+        ("allocation_receipt_count", |health: &mut NodePageHealth| { health.allocation_receipt_count = health.allocation_receipt_count.wrapping_add(7); }),
+        ("batch_allocation_receipt_count", |health: &mut NodePageHealth| { health.batch_allocation_receipt_count = health.batch_allocation_receipt_count.wrapping_add(7); }),
+        ("release_allocation_receipt_count", |health: &mut NodePageHealth| { health.release_allocation_receipt_count = health.release_allocation_receipt_count.wrapping_add(7); }),
+        ("write_receipt_count", |health: &mut NodePageHealth| { health.write_receipt_count = health.write_receipt_count.wrapping_add(7); }),
+        ("batch_write_receipt_count", |health: &mut NodePageHealth| { health.batch_write_receipt_count = health.batch_write_receipt_count.wrapping_add(7); }),
+        ("discard_receipt_count", |health: &mut NodePageHealth| { health.discard_receipt_count = health.discard_receipt_count.wrapping_add(7); }),
+        ("batch_discard_receipt_count", |health: &mut NodePageHealth| { health.batch_discard_receipt_count = health.batch_discard_receipt_count.wrapping_add(7); }),
     ];
     assert!(
         mutators.len() >= 38,
@@ -47028,7 +47028,7 @@ fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
     );
     let mut uncovered: Vec<&str> = Vec::new();
     for (name, mutate) in &mutators {
-        let mut health = RootPageHealth::default();
+        let mut health = NodePageHealth::default();
         mutate(&mut health);
         if snapshot_with(health).checksum_material_hash() == baseline {
             uncovered.push(name);
@@ -47047,7 +47047,7 @@ fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
 ///
 /// # WHY THIS EXISTS
 ///
-/// `RootSnapshot::validate` accepts fifteen checksum formats, and that list is the whole of
+/// `PlacementSnapshot::validate` accepts fifteen checksum formats, and that list is the whole of
 /// this repository's read-old-forever promise: a snapshot written by any earlier build stored
 /// one of those hashes, and dropping an entry makes that store fail to load.
 ///
@@ -47062,7 +47062,7 @@ fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
 #[test]
 fn every_accepted_snapshot_checksum_format_still_validates() {
     let mut nodes = BTreeMap::new();
-    let node = RootNode {
+    let node = PlacementNode {
         node_id: "block-a".to_string(),
         endpoint: "block-a.local:9100".to_string(),
         service_kind: "blockserver".to_string(),
@@ -47079,19 +47079,19 @@ fn every_accepted_snapshot_checksum_format_still_validates() {
         last_heartbeat_ms: 1,
         page_allocator_shard_index: 0,
         page_allocator_shard_count: 1,
-        meta_health: RootMetaHealth::default(),
-        page_health: RootPageHealth {
+        meta_health: NodeMetaHealth::default(),
+        page_health: NodePageHealth {
             // NON-DEFAULT ON THE TWO FIELDS THE COVERAGE HOLE WAS ABOUT, so that the formats
             // which do and do not cover them produce different hashes and the walk below is
             // comparing distinct values rather than coincidences.
             raft_writable_chunk_endpoint_count: 3,
             raft_readable_chunk_endpoint_count: 5,
-            ..RootPageHealth::default()
+            ..NodePageHealth::default()
         },
-        chunk_health: RootChunkHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
     };
     nodes.insert(node.node_id.clone(), node);
-    let mut snapshot = RootSnapshot {
+    let mut snapshot = PlacementSnapshot {
         nodes,
         placements: BTreeMap::new(),
         leader_lease: None,
@@ -47178,7 +47178,7 @@ fn every_accepted_snapshot_checksum_format_still_validates() {
 /// # WHY THE NUMBERS ARE LITERALS AND NOT COMPUTED
 ///
 /// This proves that lifting thirty-eight `append_*` calls out of
-/// `RootSnapshot::append_to_bytes` into `append_root_page_health` changed no byte.
+/// `PlacementSnapshot::append_to_bytes` into `append_root_page_health` changed no byte.
 ///
 /// A round trip cannot prove that: it writes and reads with the same build, so both halves
 /// move together and agree. A pin computed from the code as it now stands cannot prove it
@@ -47206,7 +47206,7 @@ fn every_accepted_snapshot_checksum_format_still_validates() {
 /// `committed_bytes` that no placement accounts for.
 #[test]
 fn the_root_snapshot_encoding_is_byte_for_byte_what_it_was() {
-    let node = RootNode {
+    let node = PlacementNode {
         node_id: "v1001".to_string(),
         endpoint: "v1002".to_string(),
         service_kind: "v1003".to_string(),
@@ -47223,8 +47223,8 @@ fn the_root_snapshot_encoding_is_byte_for_byte_what_it_was() {
         last_heartbeat_ms: 1009,
         page_allocator_shard_index: 1010,
         page_allocator_shard_count: 1011,
-        meta_health: RootMetaHealth::default(),
-        page_health: RootPageHealth {
+        meta_health: NodeMetaHealth::default(),
+        page_health: NodePageHealth {
             ready: false,
             read_ready: true,
             route_control_checksum: "v1012".to_string(),
@@ -47264,7 +47264,7 @@ fn the_root_snapshot_encoding_is_byte_for_byte_what_it_was() {
             discard_receipt_count: 1046,
             batch_discard_receipt_count: 1047,
         },
-        chunk_health: RootChunkHealth {
+        chunk_health: NodeChunkHealth {
             accepting_writes: false,
             frozen: true,
             raft_writable: false,
@@ -47288,9 +47288,9 @@ fn the_root_snapshot_encoding_is_byte_for_byte_what_it_was() {
         },
     };
 
-    // Exhaustive destructuring, no `..`: if RootPageHealth gains a field the compiler stops
+    // Exhaustive destructuring, no `..`: if NodePageHealth gains a field the compiler stops
     // here, so this list cannot quietly fall behind the struct it is about.
-    let RootPageHealth { ready, read_ready, route_control_checksum, route_control_commit_index, chunk_endpoint_count, write_quorum, read_quorum, writable_chunk_endpoint_count, healthy_chunk_endpoint_count, raft_writable_chunk_endpoint_count, raft_readable_chunk_endpoint_count, capacity_ready_writable_chunk_endpoint_count, quarantined_chunk_replicas, chunk_capacity_bytes, chunk_capacity_free_bytes, chunk_metadata_dirty_endpoint_count, chunk_metadata_dirty_mutations, chunk_metadata_checkpoint_interval, deferred_metadata_checkpoint_endpoint_count, deferred_metadata_checkpoint_requests, deferred_metadata_checkpoint_runs, chunk_capacity_rejected_writes, replica_service_mode_rejected_mutations, chunk_physical_write_count, chunk_physical_write_bytes, chunk_physical_discard_range_count, chunk_physical_discard_bytes, total_reclaimable_bytes, total_trailing_trim_bytes, total_fragmented_chunk_count, total_fragmented_discarded_bytes, allocation_receipt_count, batch_allocation_receipt_count, release_allocation_receipt_count, write_receipt_count, batch_write_receipt_count, discard_receipt_count, batch_discard_receipt_count } = &node.page_health;
+    let NodePageHealth { ready, read_ready, route_control_checksum, route_control_commit_index, chunk_endpoint_count, write_quorum, read_quorum, writable_chunk_endpoint_count, healthy_chunk_endpoint_count, raft_writable_chunk_endpoint_count, raft_readable_chunk_endpoint_count, capacity_ready_writable_chunk_endpoint_count, quarantined_chunk_replicas, chunk_capacity_bytes, chunk_capacity_free_bytes, chunk_metadata_dirty_endpoint_count, chunk_metadata_dirty_mutations, chunk_metadata_checkpoint_interval, deferred_metadata_checkpoint_endpoint_count, deferred_metadata_checkpoint_requests, deferred_metadata_checkpoint_runs, chunk_capacity_rejected_writes, replica_service_mode_rejected_mutations, chunk_physical_write_count, chunk_physical_write_bytes, chunk_physical_discard_range_count, chunk_physical_discard_bytes, total_reclaimable_bytes, total_trailing_trim_bytes, total_fragmented_chunk_count, total_fragmented_discarded_bytes, allocation_receipt_count, batch_allocation_receipt_count, release_allocation_receipt_count, write_receipt_count, batch_write_receipt_count, discard_receipt_count, batch_discard_receipt_count } = &node.page_health;
     let scalars: Vec<(&str, u64)> = vec![
         ("ready", *ready as u64),
         ("read_ready", *read_ready as u64),
@@ -47344,7 +47344,7 @@ fn the_root_snapshot_encoding_is_byte_for_byte_what_it_was() {
 
     let mut nodes = BTreeMap::new();
     nodes.insert(node.node_id.clone(), node);
-    let mut snapshot = RootSnapshot {
+    let mut snapshot = PlacementSnapshot {
         nodes,
         placements: BTreeMap::new(),
         leader_lease: None,
@@ -47382,7 +47382,7 @@ fn the_root_snapshot_encoding_is_byte_for_byte_what_it_was() {
 ///
 /// # WHY THIS GUARD EXISTS
 ///
-/// `RootSnapshot` has exactly one `to_bytes` and one `from_bytes`, and both call the same
+/// `PlacementSnapshot` has exactly one `to_bytes` and one `from_bytes`, and both call the same
 /// `validate`. That is the right shape -- but nothing asserted it, so deleting the call from
 /// either side left the suite green. The failure that shape prevents is the worst one
 /// available in a durable format: a store writes a snapshot it cannot read back, or accepts
@@ -47406,7 +47406,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         .to_bytes()
         .expect("the base fixture must validate, or the cases below prove nothing");
 
-    type Build = Box<dyn Fn() -> RootSnapshot>;
+    type Build = Box<dyn Fn() -> PlacementSnapshot>;
     let cases: Vec<(&str, Build, &str)> = vec![
         (
             "a zero commit index",
@@ -47504,7 +47504,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
             "a lease with no epoch",
             Box::new(|| {
                 let mut snapshot = a_root_snapshot_that_validates();
-                snapshot.leader_lease = Some(RootLeaderLease {
+                snapshot.leader_lease = Some(PlacementLeaderLease {
                     leader_node_id: "block-a".to_string(),
                     epoch: 0,
                     acquire_time_ms: 1,
@@ -47519,7 +47519,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
             "a lease held by a node that is not in the roster",
             Box::new(|| {
                 let mut snapshot = a_root_snapshot_that_validates();
-                snapshot.leader_lease = Some(RootLeaderLease {
+                snapshot.leader_lease = Some(PlacementLeaderLease {
                     leader_node_id: "ghost-node".to_string(),
                     epoch: 1,
                     acquire_time_ms: 1,
@@ -47534,7 +47534,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
             "a lease held by a node that cannot lead",
             Box::new(|| {
                 let mut snapshot = a_root_snapshot_that_validates();
-                snapshot.leader_lease = Some(RootLeaderLease {
+                snapshot.leader_lease = Some(PlacementLeaderLease {
                     leader_node_id: "block-a".to_string(),
                     epoch: 1,
                     acquire_time_ms: 1,
@@ -47550,7 +47550,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
             Box::new(|| {
                 let mut snapshot = a_root_snapshot_that_validates();
                 make_the_node_a_metaserver(&mut snapshot);
-                snapshot.leader_lease = Some(RootLeaderLease {
+                snapshot.leader_lease = Some(PlacementLeaderLease {
                     leader_node_id: "block-a".to_string(),
                     epoch: 1,
                     acquire_time_ms: 1,
@@ -47568,7 +47568,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
                 make_the_node_a_metaserver(&mut snapshot);
                 snapshot.coordinator_config.backend = "etcd".to_string();
                 snapshot.coordinator_config.endpoints = vec!["elsewhere.local:2379".to_string()];
-                snapshot.leader_lease = Some(RootLeaderLease {
+                snapshot.leader_lease = Some(PlacementLeaderLease {
                     leader_node_id: "block-a".to_string(),
                     epoch: 1,
                     acquire_time_ms: 1,
@@ -47633,7 +47633,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         // The read path, reached by encoding WITHOUT validating, so the bytes really exist.
         let mut bytes = Vec::new();
         snapshot.append_to_bytes(&mut bytes);
-        let read = RootSnapshot::from_bytes(&bytes)
+        let read = PlacementSnapshot::from_bytes(&bytes)
             .err()
             .map(|err| err.to_string())
             .unwrap_or_else(|| {
@@ -47673,8 +47673,8 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
     );
 }
 
-fn a_root_snapshot_that_validates() -> RootSnapshot {
-    let node = RootNode {
+fn a_root_snapshot_that_validates() -> PlacementSnapshot {
+    let node = PlacementNode {
         node_id: "block-a".to_string(),
         endpoint: "block-a.local:9100".to_string(),
         service_kind: "blockserver".to_string(),
@@ -47691,13 +47691,13 @@ fn a_root_snapshot_that_validates() -> RootSnapshot {
         last_heartbeat_ms: 1,
         page_allocator_shard_index: 0,
         page_allocator_shard_count: 1,
-        meta_health: RootMetaHealth::default(),
-        page_health: RootPageHealth::default(),
-        chunk_health: RootChunkHealth::default(),
+        meta_health: NodeMetaHealth::default(),
+        page_health: NodePageHealth::default(),
+        chunk_health: NodeChunkHealth::default(),
     };
     let mut nodes = BTreeMap::new();
     nodes.insert(node.node_id.clone(), node);
-    let snapshot = RootSnapshot {
+    let snapshot = PlacementSnapshot {
         nodes,
         placements: BTreeMap::new(),
         leader_lease: None,
@@ -47711,28 +47711,28 @@ fn a_root_snapshot_that_validates() -> RootSnapshot {
 
 /// Re-stamp the checksum after a case has changed the fields it covers, so that the rule the
 /// case is about is what fires and not the checksum rule underneath it.
-fn sealed(mut snapshot: RootSnapshot) -> RootSnapshot {
+fn sealed(mut snapshot: PlacementSnapshot) -> PlacementSnapshot {
     snapshot.checksum = snapshot.checksum_material_hash();
     snapshot
 }
 
 /// The two lease cases that need to get PAST the can-lead fence need a node that can lead.
-fn make_the_node_a_metaserver(snapshot: &mut RootSnapshot) {
+fn make_the_node_a_metaserver(snapshot: &mut PlacementSnapshot) {
     let node = snapshot.nodes.get_mut("block-a").expect("base node");
     node.service_kind = "metaserver".to_string();
     node.metadata_eligible = true;
     node.data_eligible = false;
 }
 
-fn a_lease_receipt() -> RootLeaderLeaseReceipt {
-    let lease = RootLeaderLease {
+fn a_lease_receipt() -> PlacementLeaderLeaseReceipt {
+    let lease = PlacementLeaderLease {
         leader_node_id: "block-a".to_string(),
         epoch: 1,
         acquire_time_ms: 1,
         expire_time_ms: 1_001,
         ttl_ms: 1_000,
     };
-    RootLeaderLeaseReceipt {
+    PlacementLeaderLeaseReceipt {
         idempotency_key: "idem-1".to_string(),
         operation: "campaign".to_string(),
         request_checksum: root_leader_campaign_request_checksum(
@@ -47821,7 +47821,7 @@ fn a_metadata_snapshot_written_before_the_roster_still_loads() {
 /// write.
 ///
 /// It also pins the shape the roster is written in, which is why
-/// `CATALOG_ROSTER_SHAPE_VERSION` is a constant: a later change to the placement encoder would
+/// `PLACEMENT_ROSTER_SHAPE_VERSION` is a constant: a later change to the placement encoder would
 /// otherwise move these bytes without touching this file.
 #[test]
 fn the_metadata_snapshot_encoding_does_not_move_without_a_decision() {

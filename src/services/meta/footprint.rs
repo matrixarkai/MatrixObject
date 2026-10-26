@@ -328,7 +328,7 @@ impl MetaSnapshotExportCache {
     }
 }
 
-impl RootSnapshotExportCache {
+impl PlacementSnapshotExportCache {
     fn footprint_bytes(&self) -> u64 {
         (self.bytes.len() as u64)
             .saturating_add(audit_string_heap(&self.stamp))

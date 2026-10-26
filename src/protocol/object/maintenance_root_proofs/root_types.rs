@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootReadProof {
+pub struct PlacementReadProof {
     pub proof_format: String,
     pub operation: String,
     pub requested_root_read_index: u64,
@@ -14,13 +14,13 @@ pub struct RootReadProof {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProvenRootRead<T> {
+pub struct ProvenPlacementRead<T> {
     pub value: T,
-    pub proof: RootReadProof,
+    pub proof: PlacementReadProof,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedRootPlacementMigrationEnvelope {
+pub struct PreparedPlacementMigrationEnvelope {
     pub object_id: ObjectId,
     pub version: u64,
     pub length: u64,
@@ -45,13 +45,13 @@ pub struct PreparedRootPlacementMigrationEnvelope {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProvenPreparedRootPlacementMigrationEnvelope {
-    pub envelope: PreparedRootPlacementMigrationEnvelope,
-    pub proof: RootReadProof,
+pub struct ProvenPreparedPlacementMigrationEnvelope {
+    pub envelope: PreparedPlacementMigrationEnvelope,
+    pub proof: PlacementReadProof,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommittedRootPlacementMigrationEnvelope {
+pub struct CommittedPlacementMigrationEnvelope {
     pub object_id: ObjectId,
     pub version: u64,
     pub length: u64,
@@ -77,13 +77,13 @@ pub struct CommittedRootPlacementMigrationEnvelope {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommittedRootPlacementMigration {
+pub struct CommittedPlacementMigration {
     pub metadata: ObjectMetadata,
-    pub envelope: CommittedRootPlacementMigrationEnvelope,
+    pub envelope: CommittedPlacementMigrationEnvelope,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedRootPlacementRepairEnvelope {
+pub struct PreparedPlacementRepairEnvelope {
     pub repair_kind: String,
     pub marker: Option<ObjectId>,
     pub max_objects: u64,
@@ -115,13 +115,13 @@ pub struct PreparedRootPlacementRepairEnvelope {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProvenPreparedRootPlacementRepairEnvelope {
-    pub envelope: PreparedRootPlacementRepairEnvelope,
-    pub proof: RootReadProof,
+pub struct ProvenPreparedPlacementRepairEnvelope {
+    pub envelope: PreparedPlacementRepairEnvelope,
+    pub proof: PlacementReadProof,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedRootCapacityRebalanceEnvelope {
+pub struct PreparedPlacementCapacityRebalanceEnvelope {
     pub max_objects: u64,
     pub min_free_bytes: u64,
     pub pressure_node_count: u64,
@@ -149,8 +149,8 @@ pub struct PreparedRootCapacityRebalanceEnvelope {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProvenPreparedRootCapacityRebalanceEnvelope {
-    pub envelope: PreparedRootCapacityRebalanceEnvelope,
-    pub proof: RootReadProof,
+pub struct ProvenPreparedPlacementCapacityRebalanceEnvelope {
+    pub envelope: PreparedPlacementCapacityRebalanceEnvelope,
+    pub proof: PlacementReadProof,
 }
 

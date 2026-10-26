@@ -46,7 +46,7 @@ impl MatrixObjectStore {
         &self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: &str,
-    ) -> Result<PreparedRootPlacementMigration, ObjectError> {
+    ) -> Result<PreparedPlacementMigration, ObjectError> {
         self.meta_service
             .prepare_placement_migration_raft_entry(plan, expected_plan_checksum)
     }
@@ -57,7 +57,7 @@ impl MatrixObjectStore {
         plan: PlacementMigrationPlan,
         expected_plan_checksum: &str,
         min_free_bytes: u64,
-    ) -> Result<PreparedRootPlacementMigration, ObjectError> {
+    ) -> Result<PreparedPlacementMigration, ObjectError> {
         self.meta_service
             .prepare_placement_migration_raft_entry_with_min_free(
                 plan,
@@ -69,7 +69,7 @@ impl MatrixObjectStore {
 
     pub fn apply_prepared_root_placement_migration(
         &mut self,
-        prepared: PreparedRootPlacementMigration,
+        prepared: PreparedPlacementMigration,
     ) -> Result<ObjectPlacement, ObjectError> {
         self.meta_service
             .apply_prepared_placement_migration(prepared)

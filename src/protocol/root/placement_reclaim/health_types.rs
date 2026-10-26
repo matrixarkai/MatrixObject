@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootPlacementHealthItem {
+pub struct PlacementHealthItem {
     pub placement: ObjectPlacement,
     pub missing_node_ids: Vec<String>,
     pub offline_node_ids: Vec<String>,
@@ -12,8 +12,8 @@ pub struct RootPlacementHealthItem {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootPlacementHealthPage {
-    pub items: Vec<RootPlacementHealthItem>,
+pub struct PlacementHealthPage {
+    pub items: Vec<PlacementHealthItem>,
     pub marker: Option<ObjectId>,
     pub next_marker: Option<ObjectId>,
     pub expected_replica_count: usize,

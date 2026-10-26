@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootSnapshot {
+impl PlacementSnapshot {
     fn legacy_checksum_material_hash(&self) -> String {
         let mut material = Vec::new();
         append_u64(&mut material, self.next_commit_index);

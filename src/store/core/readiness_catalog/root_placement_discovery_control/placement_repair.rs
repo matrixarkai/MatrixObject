@@ -5,7 +5,7 @@ impl MatrixObjectStore {
     pub fn plan_draining_root_placement_repairs(
         &self,
         max_objects: usize,
-    ) -> RootPlacementRepairReport {
+    ) -> PlacementRepairReport {
         self.meta_service
             .plan_draining_placement_repairs(max_objects)
     }
@@ -14,7 +14,7 @@ impl MatrixObjectStore {
     pub fn repair_draining_root_placements(
         &mut self,
         max_objects: usize,
-    ) -> RootPlacementRepairReport {
+    ) -> PlacementRepairReport {
         self.meta_service.repair_draining_placements(max_objects)
     }
 
@@ -26,7 +26,7 @@ impl MatrixObjectStore {
         expected_replica_count: usize,
         min_free_bytes: u64,
         max_payload_bytes: u64,
-    ) -> Result<RootPlacementRepairReport, ObjectError> {
+    ) -> Result<PlacementRepairReport, ObjectError> {
         self.meta_service.plan_unhealthy_placement_repairs(
             marker,
             max_objects,
@@ -44,7 +44,7 @@ impl MatrixObjectStore {
         expected_replica_count: usize,
         min_free_bytes: u64,
         max_payload_bytes: u64,
-    ) -> Result<RootPlacementRepairReport, ObjectError> {
+    ) -> Result<PlacementRepairReport, ObjectError> {
         self.meta_service.repair_unhealthy_placements(
             marker,
             max_objects,
@@ -58,7 +58,7 @@ impl MatrixObjectStore {
     pub fn prepare_draining_root_placement_repair_raft_entry(
         &self,
         max_objects: usize,
-    ) -> PreparedRootPlacementRepair {
+    ) -> PreparedPlacementRepair {
         self.meta_service
             .prepare_draining_placement_repair_raft_entry(max_objects)
     }
@@ -66,8 +66,8 @@ impl MatrixObjectStore {
 
     pub fn apply_prepared_draining_root_placement_repair(
         &mut self,
-        prepared: PreparedRootPlacementRepair,
-    ) -> Result<RootPlacementRepairReport, ObjectError> {
+        prepared: PreparedPlacementRepair,
+    ) -> Result<PlacementRepairReport, ObjectError> {
         self.meta_service
             .apply_prepared_draining_placement_repair(prepared)
     }
@@ -80,7 +80,7 @@ impl MatrixObjectStore {
         expected_replica_count: usize,
         min_free_bytes: u64,
         max_payload_bytes: u64,
-    ) -> Result<PreparedRootUnhealthyPlacementRepair, ObjectError> {
+    ) -> Result<PreparedUnhealthyPlacementRepair, ObjectError> {
         self.meta_service
             .prepare_unhealthy_placement_repair_raft_entry(
                 marker,
@@ -94,8 +94,8 @@ impl MatrixObjectStore {
 
     pub fn apply_prepared_unhealthy_root_placement_repair(
         &mut self,
-        prepared: PreparedRootUnhealthyPlacementRepair,
-    ) -> Result<RootPlacementRepairReport, ObjectError> {
+        prepared: PreparedUnhealthyPlacementRepair,
+    ) -> Result<PlacementRepairReport, ObjectError> {
         self.meta_service
             .apply_prepared_unhealthy_placement_repair(prepared)
     }

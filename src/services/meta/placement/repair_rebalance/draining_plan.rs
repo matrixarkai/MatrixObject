@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
-    fn finalize_root_placement_repair_report(report: &mut RootPlacementRepairReport) {
+    fn finalize_root_placement_repair_report(report: &mut PlacementRepairReport) {
         report.repair_needed = report.repair_objects > 0;
         report.repair_can_apply =
             report.repair_needed && !report.has_more && report.failed_repairs == 0;
@@ -16,7 +16,7 @@ impl MatrixMetaService {
         };
     }
 
-    fn finalize_root_capacity_rebalance_report(report: &mut RootCapacityRebalanceReport) {
+    fn finalize_root_capacity_rebalance_report(report: &mut PlacementCapacityRebalanceReport) {
         report.rebalance_needed = report.rebalance_objects > 0;
         report.rebalance_can_apply =
             report.rebalance_needed && !report.has_more && report.failed_rebalances == 0;
@@ -31,13 +31,13 @@ impl MatrixMetaService {
         };
     }
 
-    pub fn plan_draining_placement_repairs(&self, max_objects: usize) -> RootPlacementRepairReport {
+    pub fn plan_draining_placement_repairs(&self, max_objects: usize) -> PlacementRepairReport {
         let limit = if max_objects == 0 {
             usize::MAX
         } else {
             max_objects
         };
-        let mut report = RootPlacementRepairReport::default();
+        let mut report = PlacementRepairReport::default();
         for placement in self.placements.values() {
             report.scanned_objects = report.scanned_objects.saturating_add(1);
             let Some(source_node_id) = self.repair_source_for_placement(placement) else {
@@ -52,7 +52,7 @@ impl MatrixMetaService {
                 Ok(plan) => {
                     report.repair_objects = report.repair_objects.saturating_add(1);
                     report.bytes_to_repair = report.bytes_to_repair.saturating_add(plan.length);
-                    report.items.push(RootPlacementRepairItem { plan });
+                    report.items.push(PlacementRepairItem { plan });
                 }
                 Err(err) => {
                     report.failed_repairs = report.failed_repairs.saturating_add(1);
@@ -67,7 +67,7 @@ impl MatrixMetaService {
         report
     }
 
-    pub fn repair_draining_placements(&mut self, max_objects: usize) -> RootPlacementRepairReport {
+    pub fn repair_draining_placements(&mut self, max_objects: usize) -> PlacementRepairReport {
         let mut report = self.plan_draining_placement_repairs(max_objects);
         let planned = report.items.clone();
         for item in planned {
@@ -91,10 +91,10 @@ impl MatrixMetaService {
     pub fn prepare_draining_placement_repair_raft_entry(
         &self,
         max_objects: usize,
-    ) -> PreparedRootPlacementRepair {
+    ) -> PreparedPlacementRepair {
         let report = self.plan_draining_placement_repairs(max_objects);
         let request_checksum = root_placement_repair_request_checksum(max_objects);
-        let mut prepared = PreparedRootPlacementRepair {
+        let mut prepared = PreparedPlacementRepair {
             max_objects,
             report,
             before_state_fingerprint: self.root_state_fingerprint(),

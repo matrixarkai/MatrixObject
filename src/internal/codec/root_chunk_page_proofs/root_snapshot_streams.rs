@@ -5,7 +5,7 @@ pub(crate) fn append_root_snapshot_proof_material(
     offset: u64,
     payload_len: u64,
     page_checksum: &str,
-    proof: &RootReadProof,
+    proof: &PlacementReadProof,
 ) {
     append_u64(material, offset);
     append_u64(material, payload_len);
@@ -41,8 +41,8 @@ pub(crate) fn finish_root_snapshot_proof_stream_report(
     first_offset: u64,
     last_end_offset: u64,
     full_snapshot_checksum: String,
-) -> RootSnapshotProofStreamReport {
-    RootSnapshotProofStreamReport {
+) -> PlacementSnapshotProofStreamReport {
+    PlacementSnapshotProofStreamReport {
         format: "MXOS-RUST-ROOT-SNAPSHOT-READ-PROOFS1".to_string(),
         proof_count,
         aggregate_checksum: etag(&material),
@@ -60,8 +60,8 @@ pub(crate) fn finish_root_snapshot_proof_stream_report(
 }
 
 pub(crate) fn verify_root_snapshot_proof_stream_report(
-    expected: &RootSnapshotProofStreamReport,
-    actual: &RootSnapshotProofStreamReport,
+    expected: &PlacementSnapshotProofStreamReport,
+    actual: &PlacementSnapshotProofStreamReport,
     min_read_index: u64,
     min_commit_index: u64,
 ) -> Result<(), ObjectError> {

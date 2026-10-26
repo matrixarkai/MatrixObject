@@ -242,7 +242,7 @@ impl MetaServerSnapshotProofStreamReport {
     }
 }
 
-impl RootSnapshotProofStreamReport {
+impl PlacementSnapshotProofStreamReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -274,7 +274,7 @@ impl RootSnapshotProofStreamReport {
 
     pub fn verify_against(
         &self,
-        actual: &RootSnapshotProofStreamReport,
+        actual: &PlacementSnapshotProofStreamReport,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<(), ObjectError> {

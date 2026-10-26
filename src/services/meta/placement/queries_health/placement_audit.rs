@@ -6,7 +6,7 @@ impl MatrixMetaService {
         marker: Option<&ObjectId>,
         limit: usize,
         node_id_filter: Option<&str>,
-    ) -> Result<RootPlacementPage, ObjectError> {
+    ) -> Result<PlacementPage, ObjectError> {
         if let Some(marker) = marker {
             validate_bucket(&marker.bucket)?;
             validate_key(&marker.key)?;
@@ -15,10 +15,10 @@ impl MatrixMetaService {
             validate_node_id(node_id)?;
         }
         let take = if limit == 0 { usize::MAX } else { limit };
-        let mut page = RootPlacementPage {
+        let mut page = PlacementPage {
             marker: marker.cloned(),
             node_id_filter: node_id_filter.map(str::to_string),
-            ..RootPlacementPage::default()
+            ..PlacementPage::default()
         };
         for (object_id, placement) in &self.placements {
             if marker.map_or(false, |marker| object_id <= marker) {
@@ -59,18 +59,18 @@ impl MatrixMetaService {
         min_free_bytes: u64,
         degraded_only: bool,
         max_payload_bytes: u64,
-    ) -> Result<RootPlacementHealthPage, ObjectError> {
+    ) -> Result<PlacementHealthPage, ObjectError> {
         if let Some(marker) = marker {
             validate_bucket(&marker.bucket)?;
             validate_key(&marker.key)?;
         }
         let take = if limit == 0 { usize::MAX } else { limit };
-        let mut page = RootPlacementHealthPage {
+        let mut page = PlacementHealthPage {
             marker: marker.cloned(),
             expected_replica_count,
             min_free_bytes,
             degraded_only,
-            ..RootPlacementHealthPage::default()
+            ..PlacementHealthPage::default()
         };
         for (object_id, placement) in &self.placements {
             if marker.map_or(false, |marker| object_id <= marker) {

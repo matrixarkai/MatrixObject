@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    fn ensure_root_read_index(&self, operation: &str) -> Result<RootReadProof, ObjectError> {
+    fn ensure_root_read_index(&self, operation: &str) -> Result<PlacementReadProof, ObjectError> {
         self.ensure_root_read_index_committed_at(operation, self.raft.commit_index(), 0)
     }
 
@@ -10,7 +10,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         operation: &str,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<RootReadProof, ObjectError> {
+    ) -> Result<PlacementReadProof, ObjectError> {
         let commit_index = self.raft.commit_index();
         if commit_index < min_commit_index {
             return Err(ObjectError::PreconditionFailed(format!(
@@ -32,7 +32,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 operation, applied_index, requested_index
             )));
         }
-        let mut proof = RootReadProof {
+        let mut proof = PlacementReadProof {
             proof_format: "MOS-RUST-ROOT-READ-PROOF2".to_string(),
             operation: operation.to_string(),
             requested_root_read_index: requested_index,

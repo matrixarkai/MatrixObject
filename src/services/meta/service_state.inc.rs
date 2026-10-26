@@ -12,7 +12,7 @@ pub(crate) struct MetaSnapshotExportCache {
 // The placement snapshot cache, moved here with the state it caches:
 // its fields are private, and privacy is by module.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RootSnapshotExportCache {
+pub(crate) struct PlacementSnapshotExportCache {
     stamp: String,
     bytes: std::sync::Arc<[u8]>,
     checksum: String,
@@ -23,13 +23,13 @@ pub struct MatrixMetaService {
     // Placement state, folded in from the service that used to own it. Each
     // name differs from its metadata counterpart on purpose: they count and
     // cache different things, and sharing a name would fuse them.
-    pub(crate) nodes: BTreeMap<String, RootNode>,
+    pub(crate) nodes: BTreeMap<String, PlacementNode>,
     pub(crate) placements: BTreeMap<ObjectId, ObjectPlacement>,
-    leader_lease: Option<RootLeaderLease>,
-    leader_lease_receipts: BTreeMap<String, RootLeaderLeaseReceipt>,
+    leader_lease: Option<PlacementLeaderLease>,
+    leader_lease_receipts: BTreeMap<String, PlacementLeaderLeaseReceipt>,
     placement_coordinator_config: MetadataCoordinatorConfig,
     pub(crate) placement_commit_index: u64,
-    placement_snapshot_export_cache: RefCell<Option<RootSnapshotExportCache>>,
+    placement_snapshot_export_cache: RefCell<Option<PlacementSnapshotExportCache>>,
     root_state_fingerprint_cache: RefCell<Option<String>>,
     /// Ordered by each record's own key, which the record already holds -- see
     /// `KeyedRecord`. A map would keep that key twice.

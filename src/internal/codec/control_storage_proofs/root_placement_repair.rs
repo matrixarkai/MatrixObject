@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn append_root_placement_repair_item(out: &mut Vec<u8>, item: &RootPlacementRepairItem) {
+pub(crate) fn append_root_placement_repair_item(out: &mut Vec<u8>, item: &PlacementRepairItem) {
     append_root_placement_migration_plan(out, &item.plan);
 }
 
 pub(crate) fn append_root_placement_repair_report(
     out: &mut Vec<u8>,
-    report: &RootPlacementRepairReport,
+    report: &PlacementRepairReport,
 ) {
     append_u64(out, report.marker.is_some() as u64);
     if let Some(marker) = &report.marker {
@@ -37,7 +37,7 @@ pub(crate) fn append_root_placement_repair_report(
     append_string(out, &report.repair_reason);
 }
 
-fn root_placement_repair_report_encoded_len(report: &RootPlacementRepairReport) -> usize {
+fn root_placement_repair_report_encoded_len(report: &PlacementRepairReport) -> usize {
     let marker_len = report
         .marker
         .as_ref()
@@ -77,7 +77,7 @@ pub(crate) fn root_placement_repair_request_checksum(max_objects: usize) -> Stri
 }
 
 pub(crate) fn prepared_root_placement_repair_checksum(
-    prepared: &PreparedRootPlacementRepair,
+    prepared: &PreparedPlacementRepair,
 ) -> String {
     let mut material = Vec::with_capacity(
         encoded_string_len("MOS-RUST-PREPARED-ROOT-PLACEMENT-REPAIR1")
@@ -124,7 +124,7 @@ pub(crate) fn root_unhealthy_placement_repair_request_checksum(
 }
 
 pub(crate) fn prepared_root_unhealthy_placement_repair_checksum(
-    prepared: &PreparedRootUnhealthyPlacementRepair,
+    prepared: &PreparedUnhealthyPlacementRepair,
 ) -> String {
     let mut material = Vec::with_capacity(
         encoded_string_len("MOS-RUST-PREPARED-ROOT-UNHEALTHY-PLACEMENT-REPAIR1")
@@ -160,7 +160,7 @@ pub(crate) fn prepared_root_unhealthy_placement_repair_checksum(
 
 pub(crate) fn append_root_placement_repair_envelope(
     out: &mut Vec<u8>,
-    envelope: &PreparedRootPlacementRepairEnvelope,
+    envelope: &PreparedPlacementRepairEnvelope,
 ) {
     append_string(out, &envelope.repair_kind);
     append_u64(out, envelope.marker.is_some() as u64);
@@ -201,7 +201,7 @@ pub(crate) fn append_root_placement_repair_envelope(
 }
 
 pub(crate) fn prepared_root_placement_repair_envelope_checksum(
-    envelope: &PreparedRootPlacementRepairEnvelope,
+    envelope: &PreparedPlacementRepairEnvelope,
 ) -> String {
     let mut material = Vec::with_capacity(
         encoded_string_len("MOS-RUST-PREPARED-ROOT-PLACEMENT-REPAIR-ENVELOPE1")
@@ -216,7 +216,7 @@ pub(crate) fn prepared_root_placement_repair_envelope_checksum(
 }
 
 fn root_placement_repair_envelope_encoded_len(
-    envelope: &PreparedRootPlacementRepairEnvelope,
+    envelope: &PreparedPlacementRepairEnvelope,
 ) -> usize {
     let marker_len = envelope
         .marker
@@ -253,15 +253,15 @@ pub(crate) fn root_placement_repair_envelope_from_report(
     expected_replica_count: u64,
     min_free_bytes: u64,
     max_payload_bytes: u64,
-    report: &RootPlacementRepairReport,
+    report: &PlacementRepairReport,
     before_state_fingerprint: &str,
     request_checksum: &str,
     expected_previous_commit_index: u64,
     prepared_commit_index: u64,
     raft_entry_checksum: &str,
-) -> PreparedRootPlacementRepairEnvelope {
+) -> PreparedPlacementRepairEnvelope {
     let first_plan = report.items.first().map(|item| &item.plan);
-    let mut envelope = PreparedRootPlacementRepairEnvelope {
+    let mut envelope = PreparedPlacementRepairEnvelope {
         repair_kind: repair_kind.to_string(),
         marker,
         max_objects,
@@ -300,8 +300,8 @@ pub(crate) fn root_placement_repair_envelope_from_report(
 }
 
 pub(crate) fn prepared_draining_root_placement_repair_envelope(
-    prepared: &PreparedRootPlacementRepair,
-) -> PreparedRootPlacementRepairEnvelope {
+    prepared: &PreparedPlacementRepair,
+) -> PreparedPlacementRepairEnvelope {
     root_placement_repair_envelope_from_report(
         "draining",
         None,
@@ -319,8 +319,8 @@ pub(crate) fn prepared_draining_root_placement_repair_envelope(
 }
 
 pub(crate) fn prepared_unhealthy_root_placement_repair_envelope(
-    prepared: &PreparedRootUnhealthyPlacementRepair,
-) -> PreparedRootPlacementRepairEnvelope {
+    prepared: &PreparedUnhealthyPlacementRepair,
+) -> PreparedPlacementRepairEnvelope {
     root_placement_repair_envelope_from_report(
         "unhealthy",
         prepared.marker.clone(),

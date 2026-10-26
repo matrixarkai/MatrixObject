@@ -24,7 +24,7 @@ pub(crate) fn chunk_replica_audit_item_payload_bytes(item: &ChunkReplicaAuditIte
         .saturating_add(72) as u64
 }
 
-pub(crate) fn root_placement_health_item_payload_bytes(item: &RootPlacementHealthItem) -> u64 {
+pub(crate) fn root_placement_health_item_payload_bytes(item: &PlacementHealthItem) -> u64 {
     let mut bytes = item
         .placement
         .object_id

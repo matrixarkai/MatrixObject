@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 pub(crate) fn root_node_usage(
-    node: &RootNode,
+    node: &PlacementNode,
     min_free_bytes: u64,
     min_reclaimable_bytes: u64,
     registered: bool,
     object_count: u64,
     referenced_bytes: u64,
-) -> RootNodeUsage {
+) -> PlacementNodeUsage {
     let free_bytes = node.capacity_bytes.saturating_sub(node.committed_bytes);
     let reported_free_bytes = MatrixMetaService::node_effective_free_bytes(node);
     let committed_vs_reported_delta_bytes = node.committed_bytes.abs_diff(node.used_bytes);
@@ -26,7 +26,7 @@ pub(crate) fn root_node_usage(
     let reclaim_pressure = data_service
         && (chunk_reclaim_pressure || effective_reclaimable_bytes > 0)
         && (min_reclaimable_bytes == 0 || effective_reclaimable_bytes >= min_reclaimable_bytes);
-    RootNodeUsage {
+    PlacementNodeUsage {
         node: node.clone(),
         registered,
         object_count,
@@ -46,9 +46,9 @@ pub(crate) fn unregistered_root_node_usage(
     node_id: &str,
     object_count: u64,
     referenced_bytes: u64,
-) -> RootNodeUsage {
-    RootNodeUsage {
-        node: RootNode {
+) -> PlacementNodeUsage {
+    PlacementNodeUsage {
+        node: PlacementNode {
             node_id: node_id.to_string(),
             endpoint: String::new(),
             service_kind: "unregistered".to_string(),
@@ -65,9 +65,9 @@ pub(crate) fn unregistered_root_node_usage(
             last_heartbeat_ms: 0,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 0,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         },
         registered: false,
         object_count,

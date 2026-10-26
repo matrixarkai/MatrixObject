@@ -6,7 +6,7 @@ impl MatrixMetaService {
         node_id: &str,
         ttl_ms: u64,
         now_ms: u64,
-    ) -> Result<RootLeaderLease, ObjectError> {
+    ) -> Result<PlacementLeaderLease, ObjectError> {
         self.validate_leader_candidate(node_id, ttl_ms)?;
         if let Some(existing) = &self.leader_lease {
             if existing.expire_time_ms > now_ms && existing.leader_node_id != node_id {
@@ -19,7 +19,7 @@ impl MatrixMetaService {
             .leader_lease
             .as_ref()
             .map_or(1, |lease| lease.epoch.saturating_add(1));
-        let lease = RootLeaderLease {
+        let lease = PlacementLeaderLease {
             leader_node_id: node_id.to_string(),
             epoch,
             acquire_time_ms: now_ms,
@@ -37,7 +37,7 @@ impl MatrixMetaService {
         ttl_ms: u64,
         now_ms: u64,
         idempotency_key: &str,
-    ) -> Result<(RootLeaderLease, RootLeaderLeaseReceipt), ObjectError> {
+    ) -> Result<(PlacementLeaderLease, PlacementLeaderLeaseReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         let request_checksum = root_leader_campaign_request_checksum(node_id, ttl_ms, now_ms);
         if let Some(existing) = self.leader_lease_receipts.get(idempotency_key) {
@@ -52,7 +52,7 @@ impl MatrixMetaService {
             return Ok((existing.lease.clone(), existing.clone()));
         }
         let lease = self.campaign_leader(node_id, ttl_ms, now_ms)?;
-        let receipt = RootLeaderLeaseReceipt {
+        let receipt = PlacementLeaderLeaseReceipt {
             idempotency_key: idempotency_key.to_string(),
             operation: "campaign".to_string(),
             request_checksum,
@@ -73,7 +73,7 @@ impl MatrixMetaService {
         epoch: u64,
         ttl_ms: u64,
         now_ms: u64,
-    ) -> Result<RootLeaderLease, ObjectError> {
+    ) -> Result<PlacementLeaderLease, ObjectError> {
         self.validate_leader_candidate(node_id, ttl_ms)?;
         let lease = self
             .leader_lease
@@ -99,7 +99,7 @@ impl MatrixMetaService {
         ttl_ms: u64,
         now_ms: u64,
         idempotency_key: &str,
-    ) -> Result<(RootLeaderLease, RootLeaderLeaseReceipt), ObjectError> {
+    ) -> Result<(PlacementLeaderLease, PlacementLeaderLeaseReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
         let request_checksum = root_leader_renew_request_checksum(node_id, epoch, ttl_ms, now_ms);
         if let Some(existing) = self.leader_lease_receipts.get(idempotency_key) {
@@ -115,7 +115,7 @@ impl MatrixMetaService {
             return Ok((existing.lease.clone(), existing.clone()));
         }
         let lease = self.renew_leader(node_id, epoch, ttl_ms, now_ms)?;
-        let receipt = RootLeaderLeaseReceipt {
+        let receipt = PlacementLeaderLeaseReceipt {
             idempotency_key: idempotency_key.to_string(),
             operation: "renew".to_string(),
             request_checksum,
@@ -130,7 +130,7 @@ impl MatrixMetaService {
         Ok((lease, receipt))
     }
 
-    pub fn leader_lease(&self) -> Option<RootLeaderLease> {
+    pub fn leader_lease(&self) -> Option<PlacementLeaderLease> {
         self.leader_lease.clone()
     }
 
@@ -140,7 +140,7 @@ impl MatrixMetaService {
         limit: usize,
         operation: Option<&str>,
         leader_node_id: Option<&str>,
-    ) -> Result<RootLeaderLeaseReceiptPage, ObjectError> {
+    ) -> Result<PlacementLeaderLeaseReceiptPage, ObjectError> {
         if let Some(marker) = marker {
             validate_idempotency_key(marker)?;
         }
@@ -156,14 +156,14 @@ impl MatrixMetaService {
             validate_node_id(node_id)?;
         }
         let limit = limit.clamp(1, k_max_metadata_receipt_list_limit());
-        let mut page = RootLeaderLeaseReceiptPage {
+        let mut page = PlacementLeaderLeaseReceiptPage {
             total_receipt_count: self.leader_lease_receipts.len() as u64,
             operation: operation.map(str::to_string),
             leader_node_id: leader_node_id.map(str::to_string),
             limit: limit as u64,
-            ..RootLeaderLeaseReceiptPage::default()
+            ..PlacementLeaderLeaseReceiptPage::default()
         };
-        let iter: Box<dyn Iterator<Item = (&String, &RootLeaderLeaseReceipt)> + '_> =
+        let iter: Box<dyn Iterator<Item = (&String, &PlacementLeaderLeaseReceipt)> + '_> =
             if let Some(marker) = marker {
                 Box::new(self.leader_lease_receipts.range((
                     std::ops::Bound::Excluded(marker.to_string()),
@@ -193,8 +193,8 @@ impl MatrixMetaService {
         Ok(page)
     }
 
-    pub fn export_placement_snapshot(&self) -> RootSnapshot {
-        let mut snapshot = RootSnapshot {
+    pub fn export_placement_snapshot(&self) -> PlacementSnapshot {
+        let mut snapshot = PlacementSnapshot {
             nodes: self.nodes.clone(),
             placements: self.placements.clone(),
             leader_lease: self.leader_lease.clone(),
@@ -253,7 +253,7 @@ impl MatrixMetaService {
         )
     }
 
-    fn export_placement_snapshot_image(&self) -> Result<RootSnapshotExportCache, ObjectError> {
+    fn export_placement_snapshot_image(&self) -> Result<PlacementSnapshotExportCache, ObjectError> {
         let stamp = self.placement_snapshot_cache_stamp();
         if let Some(cache) = self.placement_snapshot_export_cache.borrow().as_ref() {
             if cache.stamp == stamp {
@@ -262,7 +262,7 @@ impl MatrixMetaService {
         }
         let snapshot = self.export_placement_snapshot();
         let bytes = snapshot.to_bytes()?;
-        let cache = RootSnapshotExportCache {
+        let cache = PlacementSnapshotExportCache {
             stamp,
             checksum: etag(&bytes),
             bytes: std::sync::Arc::from(bytes.into_boxed_slice()),
@@ -275,7 +275,7 @@ impl MatrixMetaService {
         &self,
         offset: u64,
         max_payload_bytes: usize,
-    ) -> Result<RootSnapshotChunk, ObjectError> {
+    ) -> Result<PlacementSnapshotChunk, ObjectError> {
         if max_payload_bytes == 0 {
             return Err(ObjectError::InvalidArgument(
                 "root snapshot chunk budget must be positive".to_string(),
@@ -312,7 +312,7 @@ impl MatrixMetaService {
     ///
     /// It validates with the same shared rules either way.
     pub fn install_placement_roster(&mut self, snapshot: &MetaSnapshot) -> Result<(), ObjectError> {
-        validate_catalog_roster(
+        validate_placement_roster(
             &snapshot.placement_nodes,
             &snapshot.placements,
             &snapshot.placement_leader_lease,
@@ -330,7 +330,7 @@ impl MatrixMetaService {
         Ok(())
     }
 
-    pub fn install_placement_snapshot(&mut self, snapshot: RootSnapshot) -> Result<(), ObjectError> {
+    pub fn install_placement_snapshot(&mut self, snapshot: PlacementSnapshot) -> Result<(), ObjectError> {
         snapshot.validate()?;
         self.invalidate_snapshot_export_cache();
         self.nodes = snapshot.nodes;
@@ -342,13 +342,13 @@ impl MatrixMetaService {
         Ok(())
     }
 
-    pub fn install_placement_snapshot_bytes(&mut self, bytes: &[u8]) -> Result<RootSnapshot, ObjectError> {
-        let snapshot = RootSnapshot::from_bytes(bytes)?;
+    pub fn install_placement_snapshot_bytes(&mut self, bytes: &[u8]) -> Result<PlacementSnapshot, ObjectError> {
+        let snapshot = PlacementSnapshot::from_bytes(bytes)?;
         self.install_placement_snapshot(snapshot.clone())?;
         Ok(snapshot)
     }
 
     pub fn install_placement_snapshot_bytes_in_place(&mut self, bytes: &[u8]) -> Result<(), ObjectError> {
-        self.install_placement_snapshot(RootSnapshot::from_bytes(bytes)?)
+        self.install_placement_snapshot(PlacementSnapshot::from_bytes(bytes)?)
     }
 }

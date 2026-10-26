@@ -137,7 +137,7 @@ impl MetaSnapshot {
             append_u64(&mut out, change.update_time_ms);
         }
         append_u64(&mut out, self.placement_commit_index);
-        append_catalog_roster(
+        append_placement_roster(
             &mut out,
             &self.placement_nodes,
             &self.placements,

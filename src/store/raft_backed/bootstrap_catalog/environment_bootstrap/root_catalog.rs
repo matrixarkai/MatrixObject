@@ -3,14 +3,14 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn bootstrap_root_catalog_from_env(
         &mut self,
-    ) -> Result<Option<RootCatalogBootstrapReport>, ObjectError> {
+    ) -> Result<Option<CatalogBootstrapReport>, ObjectError> {
         let require_bootstrap =
-            first_non_empty_env_bool(&MATRIX_ROOTSERVER_REQUIRE_RAFT_BOOTSTRAP_ENV_NAMES)?
+            first_non_empty_env_bool(&MATRIX_PLACEMENT_REQUIRE_RAFT_BOOTSTRAP_ENV_NAMES)?
                 .unwrap_or(false);
         let requested_commit_index =
-            first_non_empty_env_u64(&MATRIX_ROOTSERVER_RAFT_COMMIT_INDEX_ENV_NAMES)?;
+            first_non_empty_env_u64(&MATRIX_PLACEMENT_RAFT_COMMIT_INDEX_ENV_NAMES)?;
         let requested_read_index =
-            first_non_empty_env_u64(&MATRIX_ROOTSERVER_RAFT_READ_INDEX_ENV_NAMES)?;
+            first_non_empty_env_u64(&MATRIX_PLACEMENT_RAFT_READ_INDEX_ENV_NAMES)?;
         if !require_bootstrap && requested_commit_index.is_none() && requested_read_index.is_none()
         {
             return Ok(None);
@@ -27,9 +27,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             )));
         }
         let max_steps =
-            first_non_empty_env_u64(&MATRIX_ROOTSERVER_RAFT_BOOTSTRAP_MAX_STEPS_ENV_NAMES)?
+            first_non_empty_env_u64(&MATRIX_PLACEMENT_RAFT_BOOTSTRAP_MAX_STEPS_ENV_NAMES)?
                 .unwrap_or(65_536);
-        let preferred_node_id = first_non_empty_env(&MATRIX_ROOTSERVER_NODE_ID_ENV_NAMES)?;
+        let preferred_node_id = first_non_empty_env(&MATRIX_PLACEMENT_NODE_ID_ENV_NAMES)?;
         if before_status.commit_index >= target_index {
             let after_status = self.store.root_raft_status(0);
             if after_status.read_index < target_read_index {
@@ -38,7 +38,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     target_read_index, after_status.read_index
                 )));
             }
-            let report = RootCatalogBootstrapReport {
+            let report = CatalogBootstrapReport {
                 target_commit_index,
                 target_read_index,
                 max_steps,
@@ -49,14 +49,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 last_metadata: None,
             };
             if let Some(expected) =
-                first_non_empty_env(&MATRIX_ROOTSERVER_CATALOG_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES)?
+                first_non_empty_env(&MATRIX_PLACEMENT_CATALOG_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES)?
             {
                 report.verify_expected_report_checksum(expected.as_str())?;
             }
             return Ok(Some(report));
         }
-        let select_root_node = |store: &MatrixObjectStore| -> Result<RootNode, ObjectError> {
-            let mut nodes: Vec<RootNode> = store
+        let select_root_node = |store: &MatrixObjectStore| -> Result<PlacementNode, ObjectError> {
+            let mut nodes: Vec<PlacementNode> = store
                 .root_nodes()
                 .into_iter()
                 .filter(|node| {
@@ -125,7 +125,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 target_read_index, after_status.read_index
             )));
         }
-        let report = RootCatalogBootstrapReport {
+        let report = CatalogBootstrapReport {
             target_commit_index,
             target_read_index,
             max_steps,
@@ -136,7 +136,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             last_metadata,
         };
         if let Some(expected) =
-            first_non_empty_env(&MATRIX_ROOTSERVER_CATALOG_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES)?
+            first_non_empty_env(&MATRIX_PLACEMENT_CATALOG_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES)?
         {
             report.verify_expected_report_checksum(expected.as_str())?;
         }
@@ -145,17 +145,17 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn bootstrap_root_service_from_env_report(
         &mut self,
-    ) -> Result<RootServiceBootstrapReport, ObjectError> {
+    ) -> Result<PlacementServiceBootstrapReport, ObjectError> {
         let before_status = self.store.root_raft_status(0);
         let catalog_report = self.bootstrap_root_catalog_from_env()?;
         let after_status = self.store.root_raft_status(0);
-        let report = RootServiceBootstrapReport {
+        let report = PlacementServiceBootstrapReport {
             catalog_report,
             before_status,
             after_status,
         };
         if let Some(expected) =
-            first_non_empty_env(&MATRIX_ROOTSERVER_SERVICE_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES)?
+            first_non_empty_env(&MATRIX_PLACEMENT_SERVICE_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES)?
         {
             report.verify_expected_report_checksum(expected)?;
         }

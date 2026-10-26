@@ -102,7 +102,7 @@ pub(crate) fn metadata_lease_metadata(lease: &MetadataLease, content_type: &str)
 }
 
 pub(crate) fn root_leader_lease_metadata(
-    lease: &RootLeaderLease,
+    lease: &PlacementLeaderLease,
     content_type: &str,
 ) -> ObjectMetadata {
     ObjectMetadata {

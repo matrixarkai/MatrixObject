@@ -5,7 +5,7 @@ impl MatrixMetaService {
         &self,
         max_objects: usize,
         min_free_bytes: u64,
-    ) -> RootCapacityRebalanceReport {
+    ) -> PlacementCapacityRebalanceReport {
         let limit = if max_objects == 0 {
             usize::MAX
         } else {
@@ -21,9 +21,9 @@ impl MatrixMetaService {
             })
             .map(|node| node.node_id.clone())
             .collect();
-        let mut report = RootCapacityRebalanceReport {
+        let mut report = PlacementCapacityRebalanceReport {
             pressure_node_count: pressure_nodes.len() as u64,
-            ..RootCapacityRebalanceReport::default()
+            ..PlacementCapacityRebalanceReport::default()
         };
         if pressure_nodes.is_empty() {
             Self::finalize_root_capacity_rebalance_report(&mut report);
@@ -49,7 +49,7 @@ impl MatrixMetaService {
                     report.rebalance_objects = report.rebalance_objects.saturating_add(1);
                     report.bytes_to_rebalance =
                         report.bytes_to_rebalance.saturating_add(plan.length);
-                    report.items.push(RootCapacityRebalanceItem {
+                    report.items.push(PlacementCapacityRebalanceItem {
                         plan,
                         pressure_node_id: source_node_id,
                     });
@@ -71,7 +71,7 @@ impl MatrixMetaService {
         &mut self,
         max_objects: usize,
         min_free_bytes: u64,
-    ) -> RootCapacityRebalanceReport {
+    ) -> PlacementCapacityRebalanceReport {
         let mut report = self.plan_capacity_rebalance(max_objects, min_free_bytes);
         let planned = report.items.clone();
         for item in planned {
@@ -101,11 +101,11 @@ impl MatrixMetaService {
         &self,
         max_objects: usize,
         min_free_bytes: u64,
-    ) -> PreparedRootCapacityRebalance {
+    ) -> PreparedPlacementCapacityRebalance {
         let report = self.plan_capacity_rebalance(max_objects, min_free_bytes);
         let request_checksum =
             root_capacity_rebalance_request_checksum(max_objects, min_free_bytes);
-        let mut prepared = PreparedRootCapacityRebalance {
+        let mut prepared = PreparedPlacementCapacityRebalance {
             max_objects,
             min_free_bytes,
             report,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootCatalogChunkEndpointDiscovery {
+pub struct CatalogChunkEndpointDiscovery {
     pub catalog_source: String,
     pub catalog_endpoint: String,
     pub catalog_route_checksum_format: String,
@@ -19,7 +19,7 @@ pub struct RootCatalogChunkEndpointDiscovery {
     pub coverage_status: String,
 }
 
-impl RootCatalogChunkEndpointDiscovery {
+impl CatalogChunkEndpointDiscovery {
     pub fn endpoint_count(&self) -> u64 {
         self.endpoints.len() as u64
     }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootPlacementPage {
+impl PlacementPage {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -40,7 +40,7 @@ impl RootPlacementPage {
     }
 }
 
-impl RootNodeUsage {
+impl PlacementNodeUsage {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self.node.to_control_fields(&format!("{field_prefix}node."));
         for (name, value) in [
@@ -69,7 +69,7 @@ impl RootNodeUsage {
     }
 }
 
-impl RootNodeUsagePage {
+impl PlacementNodeUsagePage {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         append_optional_string_field(&mut fields, field_prefix, "marker", &self.marker);

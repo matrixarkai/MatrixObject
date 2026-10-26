@@ -13,7 +13,7 @@ impl MatrixMetaService {
         placement: &ObjectPlacement,
         expected_replica_count: usize,
         min_free_bytes: u64,
-    ) -> RootPlacementHealthItem {
+    ) -> PlacementHealthItem {
         let mut missing_node_ids = Vec::new();
         let mut offline_node_ids = Vec::new();
         let mut draining_node_ids = Vec::new();
@@ -41,7 +41,7 @@ impl MatrixMetaService {
             && offline_node_ids.is_empty()
             && draining_node_ids.is_empty()
             && capacity_pressure_node_ids.is_empty();
-        RootPlacementHealthItem {
+        PlacementHealthItem {
             placement: placement.clone(),
             missing_node_ids,
             offline_node_ids,
