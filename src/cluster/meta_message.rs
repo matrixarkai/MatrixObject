@@ -20,17 +20,17 @@
 //!
 //! # WHAT A NODE LOOKS LIKE ON THE WIRE, AND WHAT IS LEFT OFF
 //!
-//! A node in the roster is a `RootNode`: nineteen fields, three of which are health
-//! structures carrying about a hundred fields of telemetry between them -- `RootPageHealth`
-//! alone has thirty-eight, and `RootMetaHealth` nests a control proof and a route-cache
+//! A node in the roster is a `PlacementNode`: nineteen fields, three of which are health
+//! structures carrying about a hundred fields of telemetry between them -- `NodePageHealth`
+//! alone has thirty-eight, and `NodeMetaHealth` nests a control proof and a route-cache
 //! status.
 //!
-//! [`RootNodeSummary`] carries the sixteen that are not telemetry, and **registration is not
+//! [`PlacementNodeSummary`] carries the sixteen that are not telemetry, and **registration is not
 //! a verb here at all**. Both of those are deliberate:
 //!
 //! * Writing a hundred-and-ten-field wire codec by hand is a hundred and ten chances to drop
-//!   a field silently, and the only existing byte encoding for `RootNode` is inlined in
-//!   `RootSnapshot::to_bytes` -- a durable format with thirty-two readable versions and
+//!   a field silently, and the only existing byte encoding for `PlacementNode` is inlined in
+//!   `PlacementSnapshot::to_bytes` -- a durable format with thirty-two readable versions and
 //!   fourteen checksum-material functions behind it. Sharing that is the right move and it is
 //!   a change to a durable encoder, which is its own piece of work.
 //! * So a node joins this metaserver's roster in the metaserver's own process, at startup,
@@ -39,16 +39,16 @@
 //!   telemetry placement decides on.
 //!
 //! The narrowing is enforced by the compiler, not by this comment:
-//! [`RootNodeSummary::from_root_node`] destructures `RootNode` naming **every** field, so a
+//! [`PlacementNodeSummary::from_root_node`] destructures `PlacementNode` naming **every** field, so a
 //! field added to it does not compile until it is either carried or discarded by name.
 
 use crate::cluster::meta_wire::{put_bool, take_bool, MetaRequestCode};
 use crate::cluster::wire::{put_str, put_u64, Cursor, StatusCode};
-use crate::{ObjectError, ObjectId, ObjectPlacement, PlacementPlan, RootNode};
+use crate::{ObjectError, ObjectId, ObjectPlacement, PlacementPlan, PlacementNode};
 
 /// A node in the roster, as the wire reports it: everything except the telemetry.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootNodeSummary {
+pub struct PlacementNodeSummary {
     pub node_id: String,
     pub endpoint: String,
     pub service_kind: String,
@@ -68,14 +68,14 @@ pub struct RootNodeSummary {
     pub allocator_shard_count: u64,
 }
 
-impl RootNodeSummary {
+impl PlacementNodeSummary {
     /// The wire view of a roster node.
     ///
-    /// DESTRUCTURED WITHOUT `..` ON PURPOSE. A field added to `RootNode` breaks this
+    /// DESTRUCTURED WITHOUT `..` ON PURPOSE. A field added to `PlacementNode` breaks this
     /// function, which is the only form of this narrowing that cannot quietly become an
     /// accident.
-    pub fn from_root_node(node: &RootNode) -> Self {
-        let RootNode {
+    pub fn from_root_node(node: &PlacementNode) -> Self {
+        let PlacementNode {
             node_id,
             endpoint,
             service_kind,
@@ -347,8 +347,8 @@ impl MetaRequest {
 /// A successful reply's contents.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
-    RootNode(RootNodeSummary),
-    RootNodes(Vec<RootNodeSummary>),
+    PlacementNode(PlacementNodeSummary),
+    RootNodes(Vec<PlacementNodeSummary>),
     /// How many nodes this call took offline.
     Expired { offline_count: u64 },
     Plan(PlacementAssignment),
@@ -365,7 +365,7 @@ impl MetaReply {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
-            MetaReply::RootNode(node) => put_node(&mut out, node),
+            MetaReply::PlacementNode(node) => put_node(&mut out, node),
             MetaReply::RootNodes(nodes) => {
                 put_u64(&mut out, nodes.len() as u64);
                 for node in nodes {
@@ -408,7 +408,7 @@ impl MetaReply {
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = Cursor::new(payload);
         let reply = match code {
-            MetaRequestCode::HeartbeatRootNode => MetaReply::RootNode(take_node(&mut cursor)?),
+            MetaRequestCode::HeartbeatRootNode => MetaReply::PlacementNode(take_node(&mut cursor)?),
             MetaRequestCode::ListRootNodes => {
                 let count = cursor.take_u64()?;
                 // BOUNDED BEFORE ANYTHING IS RESERVED. A node is at least this many bytes on
@@ -485,7 +485,7 @@ impl MetaReply {
 /// for it: four 4-byte string headers, five 8-byte booleans and seven 8-byte numbers.
 const MIN_NODE_BYTES: usize = 4 * 4 + 5 * 8 + 7 * 8;
 
-fn put_node(out: &mut Vec<u8>, node: &RootNodeSummary) {
+fn put_node(out: &mut Vec<u8>, node: &PlacementNodeSummary) {
     put_str(out, &node.node_id);
     put_str(out, &node.endpoint);
     put_str(out, &node.service_kind);
@@ -504,8 +504,8 @@ fn put_node(out: &mut Vec<u8>, node: &RootNodeSummary) {
     put_u64(out, node.allocator_shard_count);
 }
 
-fn take_node(cursor: &mut Cursor<'_>) -> Result<RootNodeSummary, ObjectError> {
-    Ok(RootNodeSummary {
+fn take_node(cursor: &mut Cursor<'_>) -> Result<PlacementNodeSummary, ObjectError> {
+    Ok(PlacementNodeSummary {
         node_id: cursor.take_str()?,
         endpoint: cursor.take_str()?,
         service_kind: cursor.take_str()?,

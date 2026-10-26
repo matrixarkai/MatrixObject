@@ -21,7 +21,7 @@ impl MatrixMetaService {
         placement: &ObjectPlacement,
         source_node_id: &str,
     ) -> Result<PlacementMigrationPlan, ObjectError> {
-        let mut candidates: Vec<&RootNode> = self
+        let mut candidates: Vec<&PlacementNode> = self
             .nodes
             .values()
             .filter(|node| {
@@ -43,7 +43,7 @@ impl MatrixMetaService {
 
     fn plan_health_repair_for_item(
         &self,
-        item: &RootPlacementHealthItem,
+        item: &PlacementHealthItem,
         expected_replica_count: usize,
         min_free_bytes: u64,
     ) -> Result<PlacementMigrationPlan, ObjectError> {
@@ -101,7 +101,7 @@ impl MatrixMetaService {
         placement: &ObjectPlacement,
         min_free_bytes: u64,
     ) -> Result<String, ObjectError> {
-        let mut candidates: Vec<&RootNode> = self
+        let mut candidates: Vec<&PlacementNode> = self
             .nodes
             .values()
             .filter(|node| {

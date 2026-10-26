@@ -3,7 +3,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_proven_root_placement_repair_envelope_fenced(
         &mut self,
-        proven_envelope: ProvenPreparedRootPlacementRepairEnvelope,
+        proven_envelope: ProvenPreparedPlacementRepairEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -74,7 +74,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_proven_root_placement_repair_envelope_fenced_with_read_proof_linearizable(
         &mut self,
-        proven_envelope: ProvenPreparedRootPlacementRepairEnvelope,
+        proven_envelope: ProvenPreparedPlacementRepairEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
         now_ms: u64,
@@ -91,7 +91,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_proven_root_placement_repair_envelope_fenced_with_read_proof_linearizable_committed_at(
         &mut self,
-        proven_envelope: ProvenPreparedRootPlacementRepairEnvelope,
+        proven_envelope: ProvenPreparedPlacementRepairEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
         now_ms: u64,

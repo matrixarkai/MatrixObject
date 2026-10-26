@@ -6,7 +6,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         marker: Option<&ObjectId>,
         limit: usize,
         node_id_filter: Option<&str>,
-    ) -> Result<RootPlacementPage, ObjectError> {
+    ) -> Result<PlacementPage, ObjectError> {
         self.ensure_root_read_index("list root object placements")?;
         self.store
             .list_root_object_placements(marker, limit, node_id_filter)
@@ -17,12 +17,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         marker: Option<&ObjectId>,
         limit: usize,
         node_id_filter: Option<&str>,
-    ) -> Result<ProvenRootRead<RootPlacementPage>, ObjectError> {
+    ) -> Result<ProvenPlacementRead<PlacementPage>, ObjectError> {
         let proof = self.ensure_root_read_index("list root object placements")?;
         let value = self
             .store
             .list_root_object_placements(marker, limit, node_id_filter)?;
-        Ok(ProvenRootRead { value, proof })
+        Ok(ProvenPlacementRead { value, proof })
     }
 
     pub fn object_placement_linearizable(
@@ -38,10 +38,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         bucket: &str,
         key: &str,
-    ) -> Result<ProvenRootRead<ObjectPlacement>, ObjectError> {
+    ) -> Result<ProvenPlacementRead<ObjectPlacement>, ObjectError> {
         let proof = self.ensure_root_read_index("object placement")?;
         let value = self.store.object_placement(bucket, key)?;
-        Ok(ProvenRootRead { value, proof })
+        Ok(ProvenPlacementRead { value, proof })
     }
 
     pub fn audit_root_placement_health_linearizable(
@@ -52,7 +52,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_free_bytes: u64,
         degraded_only: bool,
         max_payload_bytes: u64,
-    ) -> Result<RootPlacementHealthPage, ObjectError> {
+    ) -> Result<PlacementHealthPage, ObjectError> {
         self.ensure_root_read_index("audit root placement health")?;
         self.store.audit_root_placement_health(
             marker,
@@ -72,7 +72,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_free_bytes: u64,
         degraded_only: bool,
         max_payload_bytes: u64,
-    ) -> Result<ProvenRootRead<RootPlacementHealthPage>, ObjectError> {
+    ) -> Result<ProvenPlacementRead<PlacementHealthPage>, ObjectError> {
         let proof = self.ensure_root_read_index("audit root placement health")?;
         let value = self.store.audit_root_placement_health(
             marker,
@@ -82,6 +82,6 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             degraded_only,
             max_payload_bytes,
         )?;
-        Ok(ProvenRootRead { value, proof })
+        Ok(ProvenPlacementRead { value, proof })
     }
 }

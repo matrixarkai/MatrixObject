@@ -13,7 +13,7 @@ impl MatrixMetaService {
         placement_eligible_filter: Option<bool>,
         min_free_bytes: u64,
         min_reclaimable_bytes: u64,
-    ) -> Result<RootNodeUsagePage, ObjectError> {
+    ) -> Result<PlacementNodeUsagePage, ObjectError> {
         if let Some(marker) = marker {
             validate_node_id(marker)?;
         }
@@ -21,7 +21,7 @@ impl MatrixMetaService {
             validate_service_kind(service_kind)?;
         }
         let take = if limit == 0 { usize::MAX } else { limit };
-        let mut page = RootNodeUsagePage {
+        let mut page = PlacementNodeUsagePage {
             marker: marker.map(str::to_string),
             service_kind_filter: service_kind_filter.map(str::to_string),
             draining_filter,
@@ -31,7 +31,7 @@ impl MatrixMetaService {
             placement_eligible_filter,
             min_free_bytes,
             min_reclaimable_bytes,
-            ..RootNodeUsagePage::default()
+            ..PlacementNodeUsagePage::default()
         };
         let mut referenced_by_node = BTreeMap::<String, (u64, u64)>::new();
         for placement in self.placements.values() {
@@ -142,7 +142,7 @@ impl MatrixMetaService {
         min_free_bytes: u64,
         min_page_physical_discard_bytes: u64,
         min_page_physical_discard_ranges: u64,
-    ) -> Result<RootReclaimNodePlanPage, ObjectError> {
+    ) -> Result<PlacementReclaimNodePlanPage, ObjectError> {
         if let Some(marker) = marker {
             validate_node_id(marker)?;
         }
@@ -151,7 +151,7 @@ impl MatrixMetaService {
         }
         let take = if limit == 0 { usize::MAX } else { limit };
         let mut candidates = Vec::new();
-        let mut page = RootReclaimNodePlanPage {
+        let mut page = PlacementReclaimNodePlanPage {
             marker: marker.map(str::to_string),
             service_kind_filter: service_kind_filter.map(str::to_string),
             only_online,
@@ -161,7 +161,7 @@ impl MatrixMetaService {
             min_free_bytes,
             min_page_physical_discard_bytes,
             min_page_physical_discard_ranges,
-            ..RootReclaimNodePlanPage::default()
+            ..PlacementReclaimNodePlanPage::default()
         };
         for (node_id, node) in &self.nodes {
             if marker.map_or(false, |marker| node_id.as_str() <= marker) {
@@ -278,7 +278,7 @@ impl MatrixMetaService {
             page.total_capacity_pressure_bytes = page
                 .total_capacity_pressure_bytes
                 .saturating_add(capacity_pressure_bytes);
-            candidates.push(RootReclaimNodePlan {
+            candidates.push(PlacementReclaimNodePlan {
                 usage,
                 reclaim_score: score,
                 reclaim_reason: reason,

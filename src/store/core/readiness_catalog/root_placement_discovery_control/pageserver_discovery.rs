@@ -5,7 +5,7 @@ impl MatrixObjectStore {
         &self,
         readiness_policy: &str,
         require_complete_allocator_shards: bool,
-    ) -> Result<RootCatalogPageEndpointDiscovery, ObjectError> {
+    ) -> Result<CatalogPageEndpointDiscovery, ObjectError> {
         self.discover_pageserver_endpoints_from_catalog_with_route_fence(
             readiness_policy,
             require_complete_allocator_shards,
@@ -18,7 +18,7 @@ impl MatrixObjectStore {
         readiness_policy: &str,
         require_complete_allocator_shards: bool,
         expected_catalog_route_checksum: Option<&str>,
-    ) -> Result<RootCatalogPageEndpointDiscovery, ObjectError> {
+    ) -> Result<CatalogPageEndpointDiscovery, ObjectError> {
         if !matches!(readiness_policy, "write" | "read" | "online") {
             return Err(ObjectError::InvalidArgument(
                 "blockserver discovery readiness must be write, read, or online".to_string(),
@@ -102,7 +102,7 @@ impl MatrixObjectStore {
                 "catalog has no eligible blockserver endpoints for readiness={readiness_policy}"
             )));
         }
-        Ok(RootCatalogPageEndpointDiscovery {
+        Ok(CatalogPageEndpointDiscovery {
             catalog_source: endpoint_set
                 .selected
                 .as_ref()

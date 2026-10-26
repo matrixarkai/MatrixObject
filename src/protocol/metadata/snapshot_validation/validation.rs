@@ -34,7 +34,7 @@ impl MetaSnapshot {
         validate_metadata_qos_config(&self.qos_config)?;
         validate_metadata_coordinator_config(&self.coordinator_config)?;
         // THE SAME THIRTEEN RULES THE PLACEMENT SNAPSHOT APPLIES, called rather than restated.
-        validate_catalog_roster(
+        validate_placement_roster(
             &self.placement_nodes,
             &self.placements,
             &self.placement_leader_lease,

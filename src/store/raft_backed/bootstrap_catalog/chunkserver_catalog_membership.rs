@@ -11,7 +11,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_reclaimable_bytes: u64,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<RootCatalogChunkRegistration, ObjectError> {
+    ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
             .propose_register_local_replicaserver_in_catalog_with_receipts(
                 node_id,
@@ -36,7 +36,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_reclaimable_bytes: u64,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogChunkRegistration>, ObjectError> {
+    ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
         let mut checked = self.store.clone();
         let registration = checked.register_local_replicaserver_in_catalog(
             node_id,
@@ -49,7 +49,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             catalog_source,
         )?;
         let receipt = self.propose_register_root_node(registration.node.clone())?;
-        Ok(ProvenRootCatalogRegistration {
+        Ok(ProvenCatalogRegistration {
             registration,
             raft_receipts: vec![receipt],
         })
@@ -67,7 +67,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogChunkRegistration>, ObjectError> {
+    ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
         let mut proven = self.propose_register_local_replicaserver_in_catalog_with_receipts(
             node_id,
             endpoint,
@@ -98,7 +98,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogChunkRegistration, ObjectError> {
+    ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
             .propose_register_local_replicaserver_at_catalog_with_receipts(
                 node_id,
@@ -124,7 +124,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         catalog_source: &str,
         online: bool,
-    ) -> Result<RootCatalogChunkRegistration, ObjectError> {
+    ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
             .propose_heartbeat_local_replicaserver_in_catalog_with_receipts(
                 node_id,
@@ -147,7 +147,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         catalog_source: &str,
         online: bool,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogChunkRegistration>, ObjectError> {
+    ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
         let mut checked = self.store.clone();
         let registration = checked.heartbeat_local_replicaserver_in_catalog(
             node_id,
@@ -171,7 +171,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             registration.node.chunk_health.clone(),
             now_ms,
         )?;
-        Ok(ProvenRootCatalogRegistration {
+        Ok(ProvenCatalogRegistration {
             registration,
             raft_receipts: vec![node_receipt, health_receipt],
         })
@@ -188,7 +188,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         online: bool,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogChunkRegistration>, ObjectError> {
+    ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
         let mut proven = self.propose_heartbeat_local_replicaserver_in_catalog_with_receipts(
             node_id,
             replica_index,
@@ -217,7 +217,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         online: bool,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogChunkRegistration, ObjectError> {
+    ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
             .propose_heartbeat_local_replicaserver_at_catalog_with_receipts(
                 node_id,
@@ -241,7 +241,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_reclaimable_bytes: u64,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<RootCatalogChunkRegistration, ObjectError> {
+    ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
             .propose_offline_local_replicaserver_in_catalog_with_receipts(
                 node_id,
@@ -262,7 +262,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_reclaimable_bytes: u64,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogChunkRegistration>, ObjectError> {
+    ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
         let mut checked = self.store.clone();
         let registration = checked.offline_local_replicaserver_in_catalog(
             node_id,
@@ -285,7 +285,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             registration.node.chunk_health.clone(),
             now_ms,
         )?;
-        Ok(ProvenRootCatalogRegistration {
+        Ok(ProvenCatalogRegistration {
             registration,
             raft_receipts: vec![node_receipt, health_receipt],
         })
@@ -301,7 +301,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogChunkRegistration>, ObjectError> {
+    ) -> Result<ProvenCatalogRegistration<CatalogChunkRegistration>, ObjectError> {
         let mut proven = self.propose_offline_local_replicaserver_in_catalog_with_receipts(
             node_id,
             replica_index,
@@ -328,7 +328,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogChunkRegistration, ObjectError> {
+    ) -> Result<CatalogChunkRegistration, ObjectError> {
         Ok(self
             .propose_offline_local_replicaserver_at_catalog_with_receipts(
                 node_id,

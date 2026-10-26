@@ -5,7 +5,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
-    ) -> Result<PreparedRootPlacementMigration, ObjectError> {
+    ) -> Result<PreparedPlacementMigration, ObjectError> {
         self.store
             .prepare_root_placement_migration_raft_entry(plan, expected_plan_checksum.as_ref())
     }
@@ -15,7 +15,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
         min_free_bytes: u64,
-    ) -> Result<PreparedRootPlacementMigration, ObjectError> {
+    ) -> Result<PreparedPlacementMigration, ObjectError> {
         self.store
             .prepare_root_placement_migration_raft_entry_with_min_free(
                 plan,
@@ -28,7 +28,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
-    ) -> Result<PreparedRootPlacementMigration, ObjectError> {
+    ) -> Result<PreparedPlacementMigration, ObjectError> {
         self.prepare_root_placement_migration_raft_entry_with_min_free_linearizable(
             plan,
             expected_plan_checksum,
@@ -41,7 +41,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
         min_free_bytes: u64,
-    ) -> Result<PreparedRootPlacementMigration, ObjectError> {
+    ) -> Result<PreparedPlacementMigration, ObjectError> {
         let proof = self.ensure_root_read_index("prepare root placement migration")?;
         let mut prepared = self.prepare_root_placement_migration_raft_entry_with_min_free(
             plan,
@@ -59,7 +59,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
-    ) -> Result<PreparedRootPlacementMigrationEnvelope, ObjectError> {
+    ) -> Result<PreparedPlacementMigrationEnvelope, ObjectError> {
         let prepared = self.prepare_root_placement_migration_raft_entry_linearizable(
             plan,
             expected_plan_checksum,
@@ -72,7 +72,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
         min_free_bytes: u64,
-    ) -> Result<PreparedRootPlacementMigrationEnvelope, ObjectError> {
+    ) -> Result<PreparedPlacementMigrationEnvelope, ObjectError> {
         let prepared = self
             .prepare_root_placement_migration_raft_entry_with_min_free_linearizable(
                 plan,
@@ -86,7 +86,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
-    ) -> Result<ProvenPreparedRootPlacementMigrationEnvelope, ObjectError> {
+    ) -> Result<ProvenPreparedPlacementMigrationEnvelope, ObjectError> {
         let proof = self.ensure_root_read_index("prepare root placement migration envelope")?;
         let mut prepared =
             self.prepare_root_placement_migration_raft_entry(plan, expected_plan_checksum)?;
@@ -94,7 +94,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         prepared.root_raft_term = proof.root_raft_term;
         prepared.root_read_proof_checksum = proof.proof_checksum.clone();
         prepared.raft_entry_checksum = prepared_root_placement_migration_checksum(&prepared);
-        Ok(ProvenPreparedRootPlacementMigrationEnvelope {
+        Ok(ProvenPreparedPlacementMigrationEnvelope {
             envelope: prepared_root_placement_migration_envelope(&prepared),
             proof,
         })

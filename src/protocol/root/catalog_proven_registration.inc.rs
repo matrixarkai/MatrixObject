@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub trait RootCatalogControlFields {
+pub trait CatalogControlFields {
     fn to_root_catalog_control_fields(&self) -> BTreeMap<String, String>;
     fn require_root_catalog_route_checksum(
         &self,
@@ -13,7 +13,7 @@ pub trait RootCatalogControlFields {
         commit_index: u64,
         read_index: u64,
         node_count: u64,
-    ) -> RootCatalogLivenessReceipt;
+    ) -> CatalogLivenessReceipt;
     fn require_root_catalog_liveness_receipt_checksum(
         &self,
         method: &str,
@@ -28,7 +28,7 @@ pub trait RootCatalogControlFields {
     }
 }
 
-impl<T> ProvenRootCatalogRegistration<T> {
+impl<T> ProvenCatalogRegistration<T> {
     pub fn last_receipt(&self) -> Option<&ObjectMetadata> {
         self.raft_receipts.last()
     }
@@ -96,7 +96,7 @@ impl<T> ProvenRootCatalogRegistration<T> {
     }
 }
 
-impl<T: RootCatalogControlFields> ProvenRootCatalogRegistration<T> {
+impl<T: CatalogControlFields> ProvenCatalogRegistration<T> {
     pub fn require_catalog_route_checksum(
         &self,
         expected_checksum: &str,
@@ -117,7 +117,7 @@ impl<T: RootCatalogControlFields> ProvenRootCatalogRegistration<T> {
         commit_index: u64,
         read_index: u64,
         node_count: u64,
-    ) -> RootCatalogLivenessReceipt {
+    ) -> CatalogLivenessReceipt {
         self.registration.root_catalog_liveness_receipt(
             method,
             term,
@@ -189,8 +189,8 @@ impl<T: RootCatalogControlFields> ProvenRootCatalogRegistration<T> {
         method: &str,
         expected_node_id: &str,
         expected_service_kind: &str,
-    ) -> Result<RootCatalogLivenessReceipt, ObjectError> {
-        RootCatalogLivenessReceipt::require_native_liveness_receipt_fields(
+    ) -> Result<CatalogLivenessReceipt, ObjectError> {
+        CatalogLivenessReceipt::require_native_liveness_receipt_fields(
             fields,
             method,
             expected_node_id,

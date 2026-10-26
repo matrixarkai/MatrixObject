@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootSnapshot {
+impl PlacementSnapshot {
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         self.validate()?;
         let mut out = Vec::with_capacity(self.encoded_size_hint());
@@ -10,17 +10,17 @@ impl RootSnapshot {
 
     pub(crate) fn append_to_bytes(&self, mut out: &mut Vec<u8>) {
         let snapshot_start = out.len();
-        const ROOT_SNAPSHOT_WITH_RECEIPT_PROOFS_VERSION: &str = "MOSRSROOT32";
-        const ROOT_SNAPSHOT_BASE_VERSION: &str = "MOSRSROOT32";
-        const ROOT_SNAPSHOT_RECEIPT_PROOF_PERSISTENCE_THRESHOLD: u64 = 27;
+        const PLACEMENT_SNAPSHOT_WITH_RECEIPT_PROOFS_VERSION: &str = "MOSRSROOT32";
+        const PLACEMENT_SNAPSHOT_BASE_VERSION: &str = "MOSRSROOT32";
+        const PLACEMENT_SNAPSHOT_RECEIPT_PROOF_PERSISTENCE_THRESHOLD: u64 = 27;
         let snapshot_version = if self.leader_lease_receipts.is_empty() {
-            ROOT_SNAPSHOT_BASE_VERSION
+            PLACEMENT_SNAPSHOT_BASE_VERSION
         } else {
-            ROOT_SNAPSHOT_WITH_RECEIPT_PROOFS_VERSION
+            PLACEMENT_SNAPSHOT_WITH_RECEIPT_PROOFS_VERSION
         };
         append_string(&mut out, snapshot_version);
         append_u64(&mut out, self.next_commit_index);
-        append_catalog_roster(
+        append_placement_roster(
             &mut out,
             &self.nodes,
             &self.placements,
@@ -31,7 +31,7 @@ impl RootSnapshot {
                 .strip_prefix("MOSRSROOT")
                 .and_then(|suffix| suffix.parse::<u64>().ok())
                 .unwrap_or(0)
-                >= ROOT_SNAPSHOT_RECEIPT_PROOF_PERSISTENCE_THRESHOLD,
+                >= PLACEMENT_SNAPSHOT_RECEIPT_PROOF_PERSISTENCE_THRESHOLD,
         );
         append_string(&mut out, &self.checksum);
         let envelope_checksum = etag(&out[snapshot_start..]);
@@ -44,7 +44,7 @@ impl RootSnapshot {
         fn object_id_size(object_id: &ObjectId) -> usize {
             encoded_string_len(&object_id.bucket).saturating_add(encoded_string_len(&object_id.key))
         }
-        fn root_meta_health_size(health: &RootMetaHealth) -> usize {
+        fn root_meta_health_size(health: &NodeMetaHealth) -> usize {
             let proof = &health.control_proof;
             let effective_coordinator_backend = if proof.coordinator_backend.is_empty() {
                 if proof.external_coordinator_required {
@@ -69,12 +69,12 @@ impl RootSnapshot {
                 ))
                 .saturating_add(encoded_string_len(&health.route_cache.session_checksum))
         }
-        fn root_page_health_size(health: &RootPageHealth) -> usize {
+        fn root_page_health_size(health: &NodePageHealth) -> usize {
             U64.saturating_mul(37).saturating_add(encoded_string_len(
                 &health.route_control_checksum,
             ))
         }
-        fn root_chunk_health_size(health: &RootChunkHealth) -> usize {
+        fn root_chunk_health_size(health: &NodeChunkHealth) -> usize {
             U64.saturating_mul(15)
                 .saturating_add(encoded_string_len(&health.service_mode))
                 .saturating_add(encoded_string_len(&health.control_proof_format))
@@ -82,7 +82,7 @@ impl RootSnapshot {
                 .saturating_add(encoded_string_len(&health.service_health))
                 .saturating_add(encoded_string_len(&health.service_health_reasons))
         }
-        fn node_size(node_id: &str, node: &RootNode) -> usize {
+        fn node_size(node_id: &str, node: &PlacementNode) -> usize {
             U64.saturating_mul(12)
                 .saturating_add(encoded_string_len(node_id))
                 .saturating_add(encoded_string_len(&node.node_id))
@@ -106,10 +106,10 @@ impl RootSnapshot {
                         }),
                 )
         }
-        fn leader_lease_payload_size(lease: &RootLeaderLease) -> usize {
+        fn leader_lease_payload_size(lease: &PlacementLeaderLease) -> usize {
             encoded_string_len(&lease.leader_node_id).saturating_add(U64 * 4)
         }
-        fn leader_lease_size(lease: Option<&RootLeaderLease>) -> usize {
+        fn leader_lease_size(lease: Option<&PlacementLeaderLease>) -> usize {
             U64.saturating_add(
                 lease.map(leader_lease_payload_size)
                     .unwrap_or_default(),
@@ -117,7 +117,7 @@ impl RootSnapshot {
         }
         fn leader_lease_receipt_size(
             idempotency_key: &str,
-            receipt: &RootLeaderLeaseReceipt,
+            receipt: &PlacementLeaderLeaseReceipt,
         ) -> usize {
             encoded_string_len(idempotency_key)
                 .saturating_add(encoded_string_len(&receipt.idempotency_key))
@@ -183,12 +183,12 @@ impl RootSnapshot {
 /// The bytes are unchanged for the existing caller, and that is pinned rather than asserted:
 /// see `the_root_snapshot_encoding_is_byte_for_byte_what_it_was`, whose length and digest
 /// were captured from the encoder before any of this moved.
-pub(crate) fn append_catalog_roster(
+pub(crate) fn append_placement_roster(
     out: &mut Vec<u8>,
-    nodes: &BTreeMap<String, RootNode>,
+    nodes: &BTreeMap<String, PlacementNode>,
     placements: &BTreeMap<ObjectId, ObjectPlacement>,
-    leader_lease: &Option<RootLeaderLease>,
-    leader_lease_receipts: &BTreeMap<String, RootLeaderLeaseReceipt>,
+    leader_lease: &Option<PlacementLeaderLease>,
+    leader_lease_receipts: &BTreeMap<String, PlacementLeaderLeaseReceipt>,
     coordinator_config: &MetadataCoordinatorConfig,
     with_receipt_proof: bool,
 ) {

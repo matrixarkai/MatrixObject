@@ -62,7 +62,7 @@ impl MatrixObjectStore {
         metadata_eligible_filter: Option<bool>,
         data_eligible_filter: Option<bool>,
         gateway_eligible_filter: Option<bool>,
-    ) -> Result<RootNodePage, ObjectError> {
+    ) -> Result<PlacementNodePage, ObjectError> {
         self.meta_service.list_nodes_page(
             marker,
             limit,
@@ -87,7 +87,7 @@ impl MatrixObjectStore {
         placement_eligible_filter: Option<bool>,
         min_free_bytes: u64,
         min_reclaimable_bytes: u64,
-    ) -> Result<RootNodeUsagePage, ObjectError> {
+    ) -> Result<PlacementNodeUsagePage, ObjectError> {
         self.meta_service.list_node_usage(
             marker,
             limit,
@@ -114,7 +114,7 @@ impl MatrixObjectStore {
         min_free_bytes: u64,
         min_page_physical_discard_bytes: u64,
         min_page_physical_discard_ranges: u64,
-    ) -> Result<RootReclaimNodePlanPage, ObjectError> {
+    ) -> Result<PlacementReclaimNodePlanPage, ObjectError> {
         self.meta_service.plan_reclaim_nodes(
             marker,
             limit,
@@ -134,7 +134,7 @@ impl MatrixObjectStore {
         marker: Option<&ObjectId>,
         limit: usize,
         node_id_filter: Option<&str>,
-    ) -> Result<RootPlacementPage, ObjectError> {
+    ) -> Result<PlacementPage, ObjectError> {
         self.meta_service
             .list_object_placements(marker, limit, node_id_filter)
     }
@@ -147,7 +147,7 @@ impl MatrixObjectStore {
         min_free_bytes: u64,
         degraded_only: bool,
         max_payload_bytes: u64,
-    ) -> Result<RootPlacementHealthPage, ObjectError> {
+    ) -> Result<PlacementHealthPage, ObjectError> {
         self.meta_service.audit_placement_health(
             marker,
             limit,
@@ -196,7 +196,7 @@ impl MatrixObjectStore {
         marker: Option<&ObjectId>,
         max_objects: usize,
         replica_count: usize,
-    ) -> Result<RootPlacementRefreshReport, ObjectError> {
+    ) -> Result<PlacementRefreshReport, ObjectError> {
         self.apply_refresh_object_root_placements_page(
             marker.cloned(),
             max_objects,

@@ -130,10 +130,10 @@ pub(crate) fn replica_service_bootstrap_report_checksum(
 }
 
 pub(crate) fn root_catalog_bootstrap_report_checksum(
-    report: &RootCatalogBootstrapReport,
+    report: &CatalogBootstrapReport,
 ) -> String {
     let mut material = Vec::new();
-    append_string(&mut material, ROOT_CATALOG_BOOTSTRAP_REPORT_FORMAT);
+    append_string(&mut material, CATALOG_BOOTSTRAP_REPORT_FORMAT);
     append_u64(&mut material, report.target_commit_index);
     append_u64(&mut material, report.target_read_index);
     append_u64(&mut material, report.max_steps);
@@ -148,10 +148,10 @@ pub(crate) fn root_catalog_bootstrap_report_checksum(
 }
 
 pub(crate) fn root_service_bootstrap_report_checksum(
-    report: &RootServiceBootstrapReport,
+    report: &PlacementServiceBootstrapReport,
 ) -> String {
     let mut material = Vec::new();
-    append_string(&mut material, ROOT_SERVICE_BOOTSTRAP_REPORT_FORMAT);
+    append_string(&mut material, PLACEMENT_SERVICE_BOOTSTRAP_REPORT_FORMAT);
     append_string(&mut material, &report.before_status.control_checksum_format);
     append_string(&mut material, &report.before_status.control_checksum);
     append_string(&mut material, &report.after_status.control_checksum_format);

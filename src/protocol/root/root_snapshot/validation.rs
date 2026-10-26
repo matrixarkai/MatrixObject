@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootSnapshot {
+impl PlacementSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
-        validate_catalog_roster(
+        validate_placement_roster(
             &self.nodes,
             &self.placements,
             &self.leader_lease,
@@ -85,11 +85,11 @@ impl RootSnapshot {
 /// All thirteen are exercised on both the write and the read path by
 /// `a_rule_the_write_path_refuses_is_refused_on_the_read_path_too`, which also counts the
 /// refusal sites in this file, so a rule added here owes a case there.
-pub(crate) fn validate_catalog_roster(
-    nodes: &BTreeMap<String, RootNode>,
+pub(crate) fn validate_placement_roster(
+    nodes: &BTreeMap<String, PlacementNode>,
     placements: &BTreeMap<ObjectId, ObjectPlacement>,
-    leader_lease: &Option<RootLeaderLease>,
-    leader_lease_receipts: &BTreeMap<String, RootLeaderLeaseReceipt>,
+    leader_lease: &Option<PlacementLeaderLease>,
+    leader_lease_receipts: &BTreeMap<String, PlacementLeaderLeaseReceipt>,
     coordinator_config: &MetadataCoordinatorConfig,
     next_commit_index: u64,
 ) -> Result<(), ObjectError> {

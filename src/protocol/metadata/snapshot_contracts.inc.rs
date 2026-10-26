@@ -37,10 +37,10 @@ pub struct MetaSnapshot {
     // different namespace paths -- and they are set from different call sites. Folding them
     // into one field would be one field filled by two quantities, which this project has
     // already paid for once.
-    pub placement_nodes: BTreeMap<String, RootNode>,
+    pub placement_nodes: BTreeMap<String, PlacementNode>,
     pub placements: BTreeMap<ObjectId, ObjectPlacement>,
-    pub placement_leader_lease: Option<RootLeaderLease>,
-    pub placement_leader_lease_receipts: BTreeMap<String, RootLeaderLeaseReceipt>,
+    pub placement_leader_lease: Option<PlacementLeaderLease>,
+    pub placement_leader_lease_receipts: BTreeMap<String, PlacementLeaderLeaseReceipt>,
     pub placement_coordinator_config: MetadataCoordinatorConfig,
     pub placement_commit_index: u64,
     pub checksum: String,

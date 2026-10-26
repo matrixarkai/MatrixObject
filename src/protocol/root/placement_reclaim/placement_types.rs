@@ -25,12 +25,12 @@ pub struct PlacementMigrationPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootPlacementRepairItem {
+pub struct PlacementRepairItem {
     pub plan: PlacementMigrationPlan,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootPlacementRepairReport {
+pub struct PlacementRepairReport {
     pub marker: Option<ObjectId>,
     pub next_marker: Option<ObjectId>,
     pub has_more: bool,
@@ -41,7 +41,7 @@ pub struct RootPlacementRepairReport {
     pub failed_repairs: u64,
     pub bytes_to_repair: u64,
     pub bytes_repaired: u64,
-    pub items: Vec<RootPlacementRepairItem>,
+    pub items: Vec<PlacementRepairItem>,
     pub errors: Vec<String>,
     pub repair_needed: bool,
     pub repair_can_apply: bool,
@@ -49,7 +49,7 @@ pub struct RootPlacementRepairReport {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootPlacementRefreshReport {
+pub struct PlacementRefreshReport {
     pub marker: Option<ObjectId>,
     pub next_marker: Option<ObjectId>,
     pub has_more: bool,
@@ -58,19 +58,19 @@ pub struct RootPlacementRefreshReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootPlacementRefreshRunReport {
-    pub report: RootPlacementRefreshReport,
+pub struct PlacementRefreshRunReport {
+    pub report: PlacementRefreshReport,
     pub metadata: ObjectMetadata,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootCapacityRebalanceItem {
+pub struct PlacementCapacityRebalanceItem {
     pub plan: PlacementMigrationPlan,
     pub pressure_node_id: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootCapacityRebalanceReport {
+pub struct PlacementCapacityRebalanceReport {
     pub scanned_objects: u64,
     pub pressure_node_count: u64,
     pub rebalance_objects: u64,
@@ -80,7 +80,7 @@ pub struct RootCapacityRebalanceReport {
     pub failed_rebalances: u64,
     pub bytes_to_rebalance: u64,
     pub bytes_rebalanced: u64,
-    pub items: Vec<RootCapacityRebalanceItem>,
+    pub items: Vec<PlacementCapacityRebalanceItem>,
     pub errors: Vec<String>,
     pub rebalance_needed: bool,
     pub rebalance_can_apply: bool,
@@ -88,10 +88,10 @@ pub struct RootCapacityRebalanceReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedRootCapacityRebalance {
+pub struct PreparedPlacementCapacityRebalance {
     pub max_objects: usize,
     pub min_free_bytes: u64,
-    pub report: RootCapacityRebalanceReport,
+    pub report: PlacementCapacityRebalanceReport,
     pub before_state_fingerprint: String,
     pub request_checksum: String,
     pub expected_previous_commit_index: u64,
@@ -100,9 +100,9 @@ pub struct PreparedRootCapacityRebalance {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedRootPlacementRepair {
+pub struct PreparedPlacementRepair {
     pub max_objects: usize,
-    pub report: RootPlacementRepairReport,
+    pub report: PlacementRepairReport,
     pub before_state_fingerprint: String,
     pub request_checksum: String,
     pub expected_previous_commit_index: u64,
@@ -111,13 +111,13 @@ pub struct PreparedRootPlacementRepair {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedRootUnhealthyPlacementRepair {
+pub struct PreparedUnhealthyPlacementRepair {
     pub marker: Option<ObjectId>,
     pub max_objects: usize,
     pub expected_replica_count: usize,
     pub min_free_bytes: u64,
     pub max_payload_bytes: u64,
-    pub report: RootPlacementRepairReport,
+    pub report: PlacementRepairReport,
     pub before_state_fingerprint: String,
     pub request_checksum: String,
     pub expected_previous_commit_index: u64,
@@ -126,7 +126,7 @@ pub struct PreparedRootUnhealthyPlacementRepair {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedRootPlacementMigration {
+pub struct PreparedPlacementMigration {
     pub plan: PlacementMigrationPlan,
     pub expected_plan_checksum: String,
     pub min_free_bytes: u64,
@@ -164,13 +164,13 @@ macro_rules! impl_prepared_root_raft_entry_checksum_guard {
 }
 
 impl_prepared_root_raft_entry_checksum_guard!(
-    PreparedRootPlacementMigration,
+    PreparedPlacementMigration,
     "placement migration"
 );
-impl_prepared_root_raft_entry_checksum_guard!(PreparedRootPlacementRepair, "placement repair");
+impl_prepared_root_raft_entry_checksum_guard!(PreparedPlacementRepair, "placement repair");
 impl_prepared_root_raft_entry_checksum_guard!(
-    PreparedRootUnhealthyPlacementRepair,
+    PreparedUnhealthyPlacementRepair,
     "unhealthy placement repair"
 );
-impl_prepared_root_raft_entry_checksum_guard!(PreparedRootCapacityRebalance, "capacity rebalance");
+impl_prepared_root_raft_entry_checksum_guard!(PreparedPlacementCapacityRebalance, "capacity rebalance");
 

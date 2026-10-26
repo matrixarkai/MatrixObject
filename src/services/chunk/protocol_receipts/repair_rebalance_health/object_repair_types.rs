@@ -40,7 +40,7 @@ pub struct ObjectReplicaRepairRunReport {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ObjectReplicaDecommissionReport {
-    pub plan: RootPlacementRepairReport,
+    pub plan: PlacementRepairReport,
     pub attempted_repair_objects: u64,
     pub skipped_repair_objects: u64,
     pub repaired_objects: u64,

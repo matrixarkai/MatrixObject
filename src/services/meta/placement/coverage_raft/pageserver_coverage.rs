@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
-    pub fn pageserver_service_coverage(&self) -> RootPageServerServiceCoverage {
-        let mut coverage = RootPageServerServiceCoverage {
+    pub fn pageserver_service_coverage(&self) -> PlacementPageServerServiceCoverage {
+        let mut coverage = PlacementPageServerServiceCoverage {
             status: "none".to_string(),
-            ..RootPageServerServiceCoverage::default()
+            ..PlacementPageServerServiceCoverage::default()
         };
         for node in self.nodes.values() {
             if node.service_kind != "blockserver"
@@ -196,7 +196,7 @@ impl MatrixMetaService {
             }
         }
         if coverage.route_control_proof_count != 0 {
-            let mut proof_nodes: Vec<&RootNode> = self
+            let mut proof_nodes: Vec<&PlacementNode> = self
                 .nodes
                 .values()
                 .filter(|node| {
@@ -328,7 +328,7 @@ impl MatrixMetaService {
     }
 }
 
-struct RootPageServerHealthSummary {
+struct PlacementPageServerHealthSummary {
     status: &'static str,
     fault_tolerant: bool,
     reason_count: u64,
@@ -341,7 +341,7 @@ struct RootPageServerHealthSummary {
     read_quorum_margin: u64,
 }
 
-fn root_pageserver_health_summary(health: &RootPageHealth) -> RootPageServerHealthSummary {
+fn root_pageserver_health_summary(health: &NodePageHealth) -> PlacementPageServerHealthSummary {
     let required_write = health.write_quorum.max(1);
     let required_read = health.read_quorum.max(1);
     let write_available = health
@@ -388,7 +388,7 @@ fn root_pageserver_health_summary(health: &RootPageHealth) -> RootPageServerHeal
     } else {
         "degraded"
     };
-    RootPageServerHealthSummary {
+    PlacementPageServerHealthSummary {
         status,
         fault_tolerant,
         reason_count: reasons.len() as u64,

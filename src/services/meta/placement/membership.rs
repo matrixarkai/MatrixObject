@@ -11,7 +11,7 @@ impl MatrixMetaService {
         self.placement_commit_index = self.placement_commit_index.saturating_add(1);
     }
 
-    pub fn register_node(&mut self, mut node: RootNode) -> Result<RootNode, ObjectError> {
+    pub fn register_node(&mut self, mut node: PlacementNode) -> Result<PlacementNode, ObjectError> {
         validate_node_id(&node.node_id)?;
         if !node.endpoint.is_empty()
             && (node.endpoint.len() > 512
@@ -57,7 +57,7 @@ impl MatrixMetaService {
         draining: bool,
         online: bool,
         now_ms: u64,
-    ) -> Result<RootNode, ObjectError> {
+    ) -> Result<PlacementNode, ObjectError> {
         let existing = self
             .nodes
             .get(node_id)
@@ -92,9 +92,9 @@ impl MatrixMetaService {
     pub fn heartbeat_page_health(
         &mut self,
         node_id: &str,
-        health: RootPageHealth,
+        health: NodePageHealth,
         now_ms: u64,
-    ) -> Result<RootNode, ObjectError> {
+    ) -> Result<PlacementNode, ObjectError> {
         validate_node_id(node_id)?;
         let node = self
             .nodes
@@ -116,9 +116,9 @@ impl MatrixMetaService {
     pub fn heartbeat_chunk_health(
         &mut self,
         node_id: &str,
-        health: RootChunkHealth,
+        health: NodeChunkHealth,
         now_ms: u64,
-    ) -> Result<RootNode, ObjectError> {
+    ) -> Result<PlacementNode, ObjectError> {
         validate_node_id(node_id)?;
         let node = self
             .nodes
@@ -138,7 +138,7 @@ impl MatrixMetaService {
     }
 
     fn reject_stale_node_heartbeat(
-        existing: &RootNode,
+        existing: &PlacementNode,
         now_ms: u64,
         context: &str,
     ) -> Result<(), ObjectError> {
@@ -184,16 +184,16 @@ impl MatrixMetaService {
         &mut self,
         node_id: &str,
         force: bool,
-    ) -> Result<RootNodeRemoveReport, ObjectError> {
+    ) -> Result<PlacementNodeRemoveReport, ObjectError> {
         validate_node_id(node_id)?;
         if !self.nodes.contains_key(node_id) {
             return Err(ObjectError::NotFound("root node missing".to_string()));
         }
-        let mut report = RootNodeRemoveReport {
+        let mut report = PlacementNodeRemoveReport {
             node_id: node_id.to_string(),
             force,
             node_count: self.nodes.len() as u64,
-            ..RootNodeRemoveReport::default()
+            ..PlacementNodeRemoveReport::default()
         };
         for placement in self.placements.values() {
             if placement.node_ids.iter().any(|placed| placed == node_id) {

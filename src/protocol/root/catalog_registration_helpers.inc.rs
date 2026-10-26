@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 pub(crate) fn root_catalog_registration_fields(
     service_kind: &str,
-    node: &RootNode,
+    node: &PlacementNode,
     catalog_source: &str,
     catalog_endpoint: &str,
     catalog_endpoint_count: u64,
@@ -21,7 +21,7 @@ pub(crate) fn root_catalog_registration_fields(
     );
     fields.insert(
         "catalog_route_checksum_format".to_string(),
-        ROOT_CATALOG_ROUTE_CHECKSUM_FORMAT.to_string(),
+        CATALOG_ROUTE_CHECKSUM_FORMAT.to_string(),
     );
     fields.insert(
         "catalog_route_checksum".to_string(),
@@ -38,13 +38,13 @@ pub(crate) fn root_catalog_registration_fields(
 
 pub(crate) fn root_catalog_route_checksum(
     service_kind: &str,
-    node: &RootNode,
+    node: &PlacementNode,
     catalog_source: &str,
     catalog_endpoint: &str,
     catalog_endpoint_count: u64,
 ) -> String {
     let mut material = Vec::new();
-    append_string(&mut material, ROOT_CATALOG_ROUTE_CHECKSUM_FORMAT);
+    append_string(&mut material, CATALOG_ROUTE_CHECKSUM_FORMAT);
     append_string(&mut material, service_kind);
     append_string(&mut material, &node.node_id);
     append_string(&mut material, &node.endpoint);
@@ -56,14 +56,14 @@ pub(crate) fn root_catalog_route_checksum(
 
 pub(crate) fn root_catalog_liveness_receipt(
     method: &str,
-    node: &RootNode,
+    node: &PlacementNode,
     term: u64,
     commit_index: u64,
     read_index: u64,
     node_count: u64,
-) -> RootCatalogLivenessReceipt {
-    RootCatalogLivenessReceipt {
-        format: ROOT_CATALOG_LIVENESS_RECEIPT_FORMAT.to_string(),
+) -> CatalogLivenessReceipt {
+    CatalogLivenessReceipt {
+        format: CATALOG_LIVENESS_RECEIPT_FORMAT.to_string(),
         checksum: root_catalog_liveness_receipt_checksum(
             method,
             node,
@@ -85,14 +85,14 @@ pub(crate) fn root_catalog_liveness_receipt(
 
 pub(crate) fn root_catalog_liveness_receipt_checksum(
     method: &str,
-    node: &RootNode,
+    node: &PlacementNode,
     term: u64,
     commit_index: u64,
     read_index: u64,
     node_count: u64,
 ) -> String {
     let mut material = Vec::new();
-    append_string(&mut material, ROOT_CATALOG_LIVENESS_RECEIPT_FORMAT);
+    append_string(&mut material, CATALOG_LIVENESS_RECEIPT_FORMAT);
     append_string(&mut material, method);
     append_string(&mut material, &node.node_id);
     append_string(&mut material, &node.service_kind);

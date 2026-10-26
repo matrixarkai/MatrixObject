@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootServiceBootstrapReport {
+impl PlacementServiceBootstrapReport {
     pub fn report_checksum_format(&self) -> &'static str {
-        ROOT_SERVICE_BOOTSTRAP_REPORT_FORMAT
+        PLACEMENT_SERVICE_BOOTSTRAP_REPORT_FORMAT
     }
 
     pub fn report_checksum(&self) -> String {

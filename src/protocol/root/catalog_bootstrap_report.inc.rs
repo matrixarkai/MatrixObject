@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootCatalogBootstrapReport {
+impl CatalogBootstrapReport {
     pub fn report_checksum_format(&self) -> &'static str {
-        ROOT_CATALOG_BOOTSTRAP_REPORT_FORMAT
+        CATALOG_BOOTSTRAP_REPORT_FORMAT
     }
 
     pub fn report_checksum(&self) -> String {
@@ -52,7 +52,7 @@ impl RootCatalogBootstrapReport {
         );
         fields.insert(
             format!("{field_prefix}report_checksum_format"),
-            ROOT_CATALOG_BOOTSTRAP_REPORT_FORMAT.to_string(),
+            CATALOG_BOOTSTRAP_REPORT_FORMAT.to_string(),
         );
         fields.insert(
             format!("{field_prefix}report_checksum"),

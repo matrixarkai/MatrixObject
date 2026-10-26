@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootRaftStatus {
+impl PlacementRaftStatus {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = root_raft_status_identity_fields(self, field_prefix);
         fields.extend(root_raft_status_readiness_fields(self, field_prefix));

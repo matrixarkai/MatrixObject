@@ -59,13 +59,13 @@ impl PlacementMigrationPlan {
     }
 }
 
-impl RootPlacementRepairItem {
+impl PlacementRepairItem {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         self.plan.to_control_fields(&format!("{field_prefix}plan."))
     }
 }
 
-impl RootPlacementRepairReport {
+impl PlacementRepairReport {
     pub fn plan_checksum(&self) -> String {
         let mut material = Vec::new();
         append_string(&mut material, "root_placement_repair_report.v1");
@@ -158,7 +158,7 @@ impl RootPlacementRepairReport {
     }
 }
 
-impl RootPlacementRefreshReport {
+impl PlacementRefreshReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -186,7 +186,7 @@ impl RootPlacementRefreshReport {
     }
 }
 
-impl RootPlacementRefreshRunReport {
+impl PlacementRefreshRunReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .report
@@ -199,7 +199,7 @@ impl RootPlacementRefreshRunReport {
     }
 }
 
-impl RootCapacityRebalanceItem {
+impl PlacementCapacityRebalanceItem {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self.plan.to_control_fields(&format!("{field_prefix}plan."));
         fields.insert(
@@ -210,7 +210,7 @@ impl RootCapacityRebalanceItem {
     }
 }
 
-impl RootCapacityRebalanceReport {
+impl PlacementCapacityRebalanceReport {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [

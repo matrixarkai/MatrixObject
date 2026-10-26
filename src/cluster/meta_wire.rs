@@ -32,9 +32,9 @@
 //! transactions, a leader lease, a change feed and the snapshot machinery around all of them.
 //!
 //! Registration is absent for a specific reason rather than by omission. A node in the roster
-//! is a `RootNode` of nineteen fields, three of which are health structures carrying about a
+//! is a `PlacementNode` of nineteen fields, three of which are health structures carrying about a
 //! hundred fields between them, and the only existing byte encoding for one is inlined in
-//! `RootSnapshot::to_bytes` -- a durable format with thirty-two readable versions behind it.
+//! `PlacementSnapshot::to_bytes` -- a durable format with thirty-two readable versions behind it.
 //! A second, hand-written encoding would be a hundred and ten chances to drop a field
 //! silently. So a node joins this metaserver's roster in the metaserver's own process, and
 //! these verbs are the ones that keep it current and place objects on it. See

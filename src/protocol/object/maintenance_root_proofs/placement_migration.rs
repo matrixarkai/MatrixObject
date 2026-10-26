@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl PreparedRootPlacementMigrationEnvelope {
+impl PreparedPlacementMigrationEnvelope {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .object_id
@@ -49,7 +49,7 @@ impl PreparedRootPlacementMigrationEnvelope {
     }
 }
 
-impl ProvenPreparedRootPlacementMigrationEnvelope {
+impl ProvenPreparedPlacementMigrationEnvelope {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .envelope
@@ -62,7 +62,7 @@ impl ProvenPreparedRootPlacementMigrationEnvelope {
     }
 }
 
-impl CommittedRootPlacementMigrationEnvelope {
+impl CommittedPlacementMigrationEnvelope {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .object_id
@@ -109,7 +109,7 @@ impl CommittedRootPlacementMigrationEnvelope {
     }
 }
 
-impl CommittedRootPlacementMigration {
+impl CommittedPlacementMigration {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .metadata

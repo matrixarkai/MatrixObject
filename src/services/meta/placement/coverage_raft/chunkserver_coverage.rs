@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
-    pub fn replicaserver_coverage(&self, min_free_bytes: u64) -> RootReplicaServerCoverage {
-        let mut coverage = RootReplicaServerCoverage {
+    pub fn replicaserver_coverage(&self, min_free_bytes: u64) -> PlacementReplicaServerCoverage {
+        let mut coverage = PlacementReplicaServerCoverage {
             min_free_bytes,
             status: "none".to_string(),
-            ..RootReplicaServerCoverage::default()
+            ..PlacementReplicaServerCoverage::default()
         };
         for node in self.nodes.values() {
             if node.service_kind != "chunkserver" || !node.data_eligible || !node.online {
@@ -142,7 +142,7 @@ impl MatrixMetaService {
                 .saturating_add(1);
         }
         if coverage.control_proof_count > 0 {
-            let mut proof_nodes: Vec<&RootNode> = self
+            let mut proof_nodes: Vec<&PlacementNode> = self
                 .nodes
                 .values()
                 .filter(|node| {

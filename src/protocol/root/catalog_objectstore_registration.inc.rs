@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootCatalogObjectStoreRegistration {
+impl CatalogObjectStoreRegistration {
     pub fn catalog_route_checksum(&self) -> String {
         root_catalog_route_checksum(
             "objectstore",
@@ -29,7 +29,7 @@ impl RootCatalogObjectStoreRegistration {
         commit_index: u64,
         read_index: u64,
         node_count: u64,
-    ) -> RootCatalogLivenessReceipt {
+    ) -> CatalogLivenessReceipt {
         root_catalog_liveness_receipt(
             method,
             &self.node,
@@ -82,7 +82,7 @@ impl RootCatalogObjectStoreRegistration {
     }
 }
 
-impl RootCatalogControlFields for RootCatalogObjectStoreRegistration {
+impl CatalogControlFields for CatalogObjectStoreRegistration {
     fn to_root_catalog_control_fields(&self) -> BTreeMap<String, String> {
         self.to_control_fields()
     }
@@ -101,7 +101,7 @@ impl RootCatalogControlFields for RootCatalogObjectStoreRegistration {
         commit_index: u64,
         read_index: u64,
         node_count: u64,
-    ) -> RootCatalogLivenessReceipt {
+    ) -> CatalogLivenessReceipt {
         self.liveness_receipt(method, term, commit_index, read_index, node_count)
     }
 }

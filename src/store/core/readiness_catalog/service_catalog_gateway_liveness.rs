@@ -11,7 +11,7 @@ impl MatrixObjectStore {
         draining: bool,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         validate_node_id(node_id)?;
         if endpoint.is_empty() {
             return Err(ObjectError::InvalidArgument(
@@ -43,7 +43,7 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let node = RootNode {
+        let node = PlacementNode {
             node_id: node_id.to_string(),
             endpoint: endpoint.to_string(),
             service_kind: "objectstore".to_string(),
@@ -60,9 +60,9 @@ impl MatrixObjectStore {
             last_heartbeat_ms: now_ms,
             page_allocator_shard_index: 0,
             page_allocator_shard_count: 1,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         };
         let node = self.register_root_node(node)?;
         if self.options.persistent_snapshot_flush_on_commit {
@@ -88,7 +88,7 @@ impl MatrixObjectStore {
             }
             return Err(err);
         }
-        Ok(RootCatalogObjectStoreRegistration {
+        Ok(CatalogObjectStoreRegistration {
             node,
             catalog_source: catalog_source.to_string(),
             catalog_endpoint: EMBEDDED_METASERVER_CATALOG_ENDPOINT.to_string(),
@@ -108,7 +108,7 @@ impl MatrixObjectStore {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         self.register_local_objectstore_gateway_in_catalog(
             node_id,
             endpoint,
@@ -135,7 +135,7 @@ impl MatrixObjectStore {
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
         expected_catalog_route_checksum: &str,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         let registration = self.register_local_objectstore_gateway_at_catalog(
             node_id,
             endpoint,
@@ -161,7 +161,7 @@ impl MatrixObjectStore {
         online: bool,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         validate_node_id(node_id)?;
         if catalog_source.is_empty() {
             return Err(ObjectError::InvalidArgument(
@@ -219,7 +219,7 @@ impl MatrixObjectStore {
             }
             return Err(err);
         }
-        Ok(RootCatalogObjectStoreRegistration {
+        Ok(CatalogObjectStoreRegistration {
             node,
             catalog_source: catalog_source.to_string(),
             catalog_endpoint: EMBEDDED_METASERVER_CATALOG_ENDPOINT.to_string(),
@@ -238,7 +238,7 @@ impl MatrixObjectStore {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         self.heartbeat_local_objectstore_gateway_in_catalog(
             node_id,
             capacity_bytes,
@@ -263,7 +263,7 @@ impl MatrixObjectStore {
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
         expected_catalog_route_checksum: &str,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         let registration = self.heartbeat_local_objectstore_gateway_at_catalog(
             node_id,
             capacity_bytes,
@@ -284,7 +284,7 @@ impl MatrixObjectStore {
         node_id: &str,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         validate_node_id(node_id)?;
         if catalog_source.is_empty() {
             return Err(ObjectError::InvalidArgument(
@@ -332,7 +332,7 @@ impl MatrixObjectStore {
             }
             return Err(err);
         }
-        Ok(RootCatalogObjectStoreRegistration {
+        Ok(CatalogObjectStoreRegistration {
             node,
             catalog_source: catalog_source.to_string(),
             catalog_endpoint: EMBEDDED_METASERVER_CATALOG_ENDPOINT.to_string(),
@@ -347,7 +347,7 @@ impl MatrixObjectStore {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         self.offline_local_objectstore_gateway_in_catalog(node_id, now_ms, catalog_source)?
             .with_catalog_route(catalog_source, catalog_endpoint, catalog_endpoint_count)
     }
@@ -360,7 +360,7 @@ impl MatrixObjectStore {
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
         expected_catalog_route_checksum: &str,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         let registration = self.offline_local_objectstore_gateway_at_catalog(
             node_id,
             now_ms,

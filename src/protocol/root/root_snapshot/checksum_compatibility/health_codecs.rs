@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn append_root_meta_health(out: &mut Vec<u8>, health: &RootMetaHealth) {
+pub(crate) fn append_root_meta_health(out: &mut Vec<u8>, health: &NodeMetaHealth) {
     let proof = &health.control_proof;
     append_string(out, &proof.state_format);
     append_u64(out, proof.state_bytes);
@@ -94,7 +94,7 @@ pub(crate) fn append_root_meta_health(out: &mut Vec<u8>, health: &RootMetaHealth
 
 pub(crate) fn append_root_chunk_health(
     out: &mut Vec<u8>,
-    health: &RootChunkHealth,
+    health: &NodeChunkHealth,
     include_control: bool,
     include_reclaim: bool,
     include_service_health: bool,
@@ -133,14 +133,14 @@ pub(crate) fn read_root_chunk_health(
     has_reclaim: bool,
     has_reclaim_discarded_bytes: bool,
     has_service_health: bool,
-) -> Result<RootChunkHealth, ObjectError> {
-    let mut health = RootChunkHealth {
+) -> Result<NodeChunkHealth, ObjectError> {
+    let mut health = NodeChunkHealth {
         accepting_writes: cursor.read_u64()? != 0,
         frozen: cursor.read_u64()? != 0,
         raft_writable: cursor.read_u64()? != 0,
         capacity_free_bytes: cursor.read_u64()?,
         service_mode: cursor.read_string()?,
-        ..RootChunkHealth::default()
+        ..NodeChunkHealth::default()
     };
     if has_reclaim {
         health.discarded_range_count = cursor.read_u64()?;
@@ -182,7 +182,7 @@ pub(crate) fn read_root_meta_health(
     has_control8_meta_health: bool,
     has_control9_meta_health: bool,
     has_control10_meta_health: bool,
-) -> Result<RootMetaHealth, ObjectError> {
+) -> Result<NodeMetaHealth, ObjectError> {
     let mut control_proof = MetadataControlProof {
         state_format: cursor.read_string()?,
         state_bytes: cursor.read_u64()?,
@@ -268,7 +268,7 @@ pub(crate) fn read_root_meta_health(
         control_proof.read_fence_covered =
             control_proof.read_ready && control_proof.apply_caught_up;
     }
-    Ok(RootMetaHealth {
+    Ok(NodeMetaHealth {
         control_proof,
         route_cache: MetadataRouteCacheStatus {
             entries: cursor.read_u64()?,
@@ -301,7 +301,7 @@ pub(crate) fn read_root_meta_health(
 /// # WHY THIS IS A HELPER NOW
 ///
 /// `append_root_meta_health` and `append_root_chunk_health` have always been helpers; page
-/// health was thirty-eight `append_*` calls written out inside `RootSnapshot::append_to_bytes`.
+/// health was thirty-eight `append_*` calls written out inside `PlacementSnapshot::append_to_bytes`.
 /// That asymmetry is why putting roster nodes anywhere else -- a `MetaSnapshot`, a wire
 /// message -- meant copying thirty-eight calls, which is thirty-eight chances to drop a field
 /// where nothing would notice.
@@ -314,7 +314,7 @@ pub(crate) fn read_root_meta_health(
 /// behind version flags. Reordering the material would change every stored checksum, so those
 /// two encodings stay separate and are held together by a guard instead -- see
 /// `every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum`.
-pub(crate) fn append_root_page_health(out: &mut Vec<u8>, health: &RootPageHealth) {
+pub(crate) fn append_root_page_health(out: &mut Vec<u8>, health: &NodePageHealth) {
     append_u64(out, health.ready as u64);
     append_u64(out, health.read_ready as u64);
     append_string(out, &health.route_control_checksum);

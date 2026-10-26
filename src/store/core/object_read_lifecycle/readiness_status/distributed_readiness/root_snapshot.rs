@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-struct DistributedRootReadinessSnapshot {
+struct DistributedPlacementReadinessSnapshot {
     root_node_count: u64,
     rootserver_required: bool,
     control_plane_mode: String,
     root_expected_nodes: u64,
-    root_metadata_coverage: RootMetadataServiceCoverage,
+    root_metadata_coverage: PlacementMetadataServiceCoverage,
     root_metadata_status_available: bool,
     root_metadata_external_coordinator_required: bool,
     root_metadata_external_coordinator_endpoints_ready: bool,
@@ -13,12 +13,12 @@ struct DistributedRootReadinessSnapshot {
     root_metadata_external_coordinator_ready: bool,
     root_metadata_control_ready: bool,
     root_metadata_coverage_ready: bool,
-    root_page_allocator_coverage: RootPageAllocatorShardCoverage,
+    root_page_allocator_coverage: PlacementPageAllocatorShardCoverage,
     root_page_allocator_ready: bool,
-    root_pageserver_service_coverage: RootPageServerServiceCoverage,
+    root_pageserver_service_coverage: PlacementPageServerServiceCoverage,
     root_pageserver_service_ready: bool,
     root_pageserver_route_control_ready: bool,
-    root_replicaserver_coverage: RootReplicaServerCoverage,
+    root_replicaserver_coverage: PlacementReplicaServerCoverage,
     root_replicaserver_ready: bool,
     root_replicaserver_control_ready: bool,
     root_leader_node_id: String,
@@ -41,7 +41,7 @@ struct DistributedRootReadinessSnapshot {
     root_ready: bool,
 }
 
-impl DistributedRootReadinessSnapshot {
+impl DistributedPlacementReadinessSnapshot {
     fn capture(
         store: &MatrixObjectStore,
         metadata_replication_quorum: u64,

@@ -28,7 +28,7 @@ pub(crate) fn validate_root_catalog_route(
     ))
 }
 
-impl RootCatalogChunkRegistration {
+impl CatalogChunkRegistration {
     pub fn catalog_route_checksum(&self) -> String {
         root_catalog_route_checksum(
             "chunkserver",
@@ -57,7 +57,7 @@ impl RootCatalogChunkRegistration {
         commit_index: u64,
         read_index: u64,
         node_count: u64,
-    ) -> RootCatalogLivenessReceipt {
+    ) -> CatalogLivenessReceipt {
         root_catalog_liveness_receipt(
             method,
             &self.node,
@@ -110,7 +110,7 @@ impl RootCatalogChunkRegistration {
     }
 }
 
-impl RootCatalogControlFields for RootCatalogChunkRegistration {
+impl CatalogControlFields for CatalogChunkRegistration {
     fn to_root_catalog_control_fields(&self) -> BTreeMap<String, String> {
         self.to_control_fields()
     }
@@ -129,7 +129,7 @@ impl RootCatalogControlFields for RootCatalogChunkRegistration {
         commit_index: u64,
         read_index: u64,
         node_count: u64,
-    ) -> RootCatalogLivenessReceipt {
+    ) -> CatalogLivenessReceipt {
         self.liveness_receipt(method, term, commit_index, read_index, node_count)
     }
 }

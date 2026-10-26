@@ -3,8 +3,8 @@
 impl MatrixMetaService {
     pub fn apply_prepared_capacity_rebalance(
         &mut self,
-        prepared: PreparedRootCapacityRebalance,
-    ) -> Result<RootCapacityRebalanceReport, ObjectError> {
+        prepared: PreparedPlacementCapacityRebalance,
+    ) -> Result<PlacementCapacityRebalanceReport, ObjectError> {
         if prepared.expected_previous_commit_index != self.placement_commit_index.saturating_sub(1) {
             return Err(ObjectError::PreconditionFailed(
                 "root prepared capacity rebalance previous commit fence mismatch".to_string(),
@@ -23,7 +23,7 @@ impl MatrixMetaService {
             ));
         }
         let expected_checksum =
-            prepared_root_capacity_rebalance_checksum(&PreparedRootCapacityRebalance {
+            prepared_root_capacity_rebalance_checksum(&PreparedPlacementCapacityRebalance {
                 raft_entry_checksum: String::new(),
                 ..prepared.clone()
             });

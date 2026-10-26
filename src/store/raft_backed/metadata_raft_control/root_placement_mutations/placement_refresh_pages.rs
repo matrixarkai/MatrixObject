@@ -36,7 +36,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_objects: usize,
         replica_count: usize,
         update_time_ms: u64,
-    ) -> Result<RootPlacementRefreshRunReport, ObjectError> {
+    ) -> Result<PlacementRefreshRunReport, ObjectError> {
         let mut projected = self.store.clone();
         let report = projected.apply_refresh_object_root_placements_page(
             marker.clone(),
@@ -50,7 +50,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             replica_count,
             update_time_ms,
         )?;
-        Ok(RootPlacementRefreshRunReport { report, metadata })
+        Ok(PlacementRefreshRunReport { report, metadata })
     }
 
     pub fn propose_refresh_all_object_root_placements_linearizable(
@@ -152,7 +152,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_objects: usize,
         replica_count: usize,
         update_time_ms: u64,
-    ) -> Result<RootPlacementRefreshRunReport, ObjectError> {
+    ) -> Result<PlacementRefreshRunReport, ObjectError> {
         self.ensure_root_read_index("refresh object root placements page report")?;
         self.propose_refresh_object_root_placements_page_report(
             marker,
@@ -168,7 +168,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_objects: usize,
         replica_count: usize,
         update_time_ms: u64,
-    ) -> Result<ProvenMetadataRead<RootPlacementRefreshRunReport>, ObjectError> {
+    ) -> Result<ProvenMetadataRead<PlacementRefreshRunReport>, ObjectError> {
         self.propose_refresh_object_root_placements_page_report_with_read_proof_linearizable_committed_at(
             marker,
             max_objects,
@@ -186,7 +186,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_count: usize,
         update_time_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
-    ) -> Result<ProvenRouteFencedMetadataRead<RootPlacementRefreshRunReport>, ObjectError> {
+    ) -> Result<ProvenRouteFencedMetadataRead<PlacementRefreshRunReport>, ObjectError> {
         self.propose_refresh_object_root_placements_page_report_with_route_proof_linearizable_fenced_committed_at(
             marker,
             max_objects,
@@ -207,7 +207,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_page_route_control_checksum: impl AsRef<str>,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenRouteFencedMetadataRead<RootPlacementRefreshRunReport>, ObjectError> {
+    ) -> Result<ProvenRouteFencedMetadataRead<PlacementRefreshRunReport>, ObjectError> {
         let expected_checksum = expected_page_route_control_checksum.as_ref().to_string();
         self.ensure_page_route_control_ready(
             "refresh object root placements page report route proof",
@@ -239,7 +239,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         update_time_ms: u64,
         min_read_index: u64,
         min_commit_index: u64,
-    ) -> Result<ProvenMetadataRead<RootPlacementRefreshRunReport>, ObjectError> {
+    ) -> Result<ProvenMetadataRead<PlacementRefreshRunReport>, ObjectError> {
         self.ensure_metadata_read_index_committed_at(
             "refresh object root placements page report",
             update_time_ms,

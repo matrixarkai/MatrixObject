@@ -3,7 +3,7 @@
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_proven_root_capacity_rebalance_envelope_fenced(
         &mut self,
-        proven_envelope: ProvenPreparedRootCapacityRebalanceEnvelope,
+        proven_envelope: ProvenPreparedPlacementCapacityRebalanceEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -46,7 +46,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_proven_root_capacity_rebalance_envelope_fenced_with_read_proof_linearizable(
         &mut self,
-        proven_envelope: ProvenPreparedRootCapacityRebalanceEnvelope,
+        proven_envelope: ProvenPreparedPlacementCapacityRebalanceEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
         now_ms: u64,
@@ -63,7 +63,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_proven_root_capacity_rebalance_envelope_fenced_with_read_proof_linearizable_committed_at(
         &mut self,
-        proven_envelope: ProvenPreparedRootCapacityRebalanceEnvelope,
+        proven_envelope: ProvenPreparedPlacementCapacityRebalanceEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
         now_ms: u64,
@@ -92,7 +92,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_proven_root_capacity_rebalance_envelope_fenced_with_route_proof_linearizable(
         &mut self,
-        proven_envelope: ProvenPreparedRootCapacityRebalanceEnvelope,
+        proven_envelope: ProvenPreparedPlacementCapacityRebalanceEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
         now_ms: u64,
@@ -111,7 +111,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_proven_root_capacity_rebalance_envelope_fenced_with_route_proof_linearizable_committed_at(
         &mut self,
-        proven_envelope: ProvenPreparedRootCapacityRebalanceEnvelope,
+        proven_envelope: ProvenPreparedPlacementCapacityRebalanceEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
         now_ms: u64,

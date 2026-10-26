@@ -16,10 +16,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_objects: usize,
         min_free_bytes: u64,
         marker: Option<&ObjectId>,
-    ) -> Result<ProvenRootRead<ObjectCapacityRebalanceReport>, ObjectError> {
+    ) -> Result<ProvenPlacementRead<ObjectCapacityRebalanceReport>, ObjectError> {
         let proof = self.ensure_root_read_index("plan object capacity rebalance")?;
         let value = self.plan_object_capacity_rebalance(max_objects, min_free_bytes, marker);
-        Ok(ProvenRootRead { value, proof })
+        Ok(ProvenPlacementRead { value, proof })
     }
 
     pub fn propose_rebalance_object_capacity(

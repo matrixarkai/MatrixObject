@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootNodeRemoveReport {
+pub struct PlacementNodeRemoveReport {
     pub node_id: String,
     pub removed: bool,
     pub force: bool,
@@ -11,7 +11,7 @@ pub struct RootNodeRemoveReport {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootPageAllocatorShardCoverage {
+pub struct PlacementPageAllocatorShardCoverage {
     pub active_pageserver_count: u64,
     pub shard_count: u64,
     pub covered_shards: u64,
@@ -20,7 +20,7 @@ pub struct RootPageAllocatorShardCoverage {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootPageServerServiceCoverage {
+pub struct PlacementPageServerServiceCoverage {
     pub active_pageserver_count: u64,
     pub ready_pageserver_count: u64,
     pub read_ready_pageserver_count: u64,
@@ -79,7 +79,7 @@ pub struct RootPageServerServiceCoverage {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootReplicaServerCoverage {
+pub struct PlacementReplicaServerCoverage {
     pub active_replicaserver_count: u64,
     pub writable_replicaserver_count: u64,
     pub placement_eligible_replicaserver_count: u64,
@@ -114,7 +114,7 @@ pub struct RootReplicaServerCoverage {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootRaftStatus {
+pub struct PlacementRaftStatus {
     pub leader_node_id: String,
     pub term: u64,
     pub next_log_index: u64,
@@ -249,26 +249,26 @@ pub struct RootRaftStatus {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootCatalogBootstrapReport {
+pub struct CatalogBootstrapReport {
     pub target_commit_index: u64,
     pub target_read_index: u64,
     pub max_steps: u64,
     pub applied_steps: u64,
     pub heartbeat_node_id: String,
-    pub before_status: RootRaftStatus,
-    pub after_status: RootRaftStatus,
+    pub before_status: PlacementRaftStatus,
+    pub after_status: PlacementRaftStatus,
     pub last_metadata: Option<ObjectMetadata>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootServiceBootstrapReport {
-    pub catalog_report: Option<RootCatalogBootstrapReport>,
-    pub before_status: RootRaftStatus,
-    pub after_status: RootRaftStatus,
+pub struct PlacementServiceBootstrapReport {
+    pub catalog_report: Option<CatalogBootstrapReport>,
+    pub before_status: PlacementRaftStatus,
+    pub after_status: PlacementRaftStatus,
 }
 
-pub const ROOT_CATALOG_BOOTSTRAP_REPORT_FORMAT: &str = "MOSRS-ROOT-CATALOG-BOOTSTRAP1";
-pub const ROOT_SERVICE_BOOTSTRAP_REPORT_FORMAT: &str = "MOSRS-ROOTSERVER-BOOTSTRAP1";
+pub const CATALOG_BOOTSTRAP_REPORT_FORMAT: &str = "MOSRS-ROOT-CATALOG-BOOTSTRAP1";
+pub const PLACEMENT_SERVICE_BOOTSTRAP_REPORT_FORMAT: &str = "MOSRS-ROOTSERVER-BOOTSTRAP1";
 pub const CHUNK_MUTATION_BOOTSTRAP_REPORT_FORMAT: &str = "MOSRS-CHUNK-MUTATION-BOOTSTRAP1";
 pub const REPLICA_SERVICE_BOOTSTRAP_REPORT_FORMAT: &str = "MOSRS-CHUNKSERVER-BOOTSTRAP1";
 pub const PAGE_ROUTE_BOOTSTRAP_REPORT_FORMAT: &str = "MOSRS-BLOCK-ROUTE-BOOTSTRAP1";

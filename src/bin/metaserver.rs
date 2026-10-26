@@ -28,7 +28,7 @@
 //!
 //! The two seed settings are a bootstrap, and named so. Placement needs a roster, and
 //! registration is deliberately not one of this service's verbs -- see
-//! `crate::cluster::meta_wire` for why a `RootNode` is not on this wire. They stand in for
+//! `crate::cluster::meta_wire` for why a `PlacementNode` is not on this wire. They stand in for
 //! the membership a later change will agree between metaserver nodes rather than read from
 //! one node's environment.
 //!

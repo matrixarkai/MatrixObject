@@ -34,7 +34,7 @@ impl MatrixObjectStore {
         &mut self,
         node_id: &str,
         force: bool,
-    ) -> Result<RootNodeRemoveReport, ObjectError> {
+    ) -> Result<PlacementNodeRemoveReport, ObjectError> {
         self.meta_service.remove_node(node_id, force)
     }
 }

@@ -35,7 +35,7 @@ impl ObjectPlacement {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootLeaderLease {
+pub struct PlacementLeaderLease {
     pub leader_node_id: String,
     pub epoch: u64,
     pub acquire_time_ms: u64,
@@ -43,7 +43,7 @@ pub struct RootLeaderLease {
     pub ttl_ms: u64,
 }
 
-impl RootLeaderLease {
+impl PlacementLeaderLease {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -100,7 +100,7 @@ impl RootLeaderLease {
 /// does not scale: every predicate about every kind would have to carry every spelling, and
 /// a predicate that forgot one would be wrong only for old stores.
 ///
-/// So the rewrite happens in `read_catalog_roster`, the one place a roster is read back from
+/// So the rewrite happens in `read_placement_roster`, the one place a roster is read back from
 /// bytes, and the live predicates name one spelling each.
 ///
 /// This is deliberately a rewrite on the way IN and not a live policy: an in-memory node
@@ -115,7 +115,7 @@ pub(crate) fn current_service_kind_spelling(service_kind: &str) -> &str {
     }
 }
 
-pub(crate) fn is_control_plane_leader_candidate(node: &RootNode) -> bool {
+pub(crate) fn is_control_plane_leader_candidate(node: &PlacementNode) -> bool {
     // ORDER MATTERS FOR THE MESSAGE, NOT THE VERDICT: a caller reporting why a candidate was
     // refused wants to know it was the kind rather than the liveness, so the two are kept
     // separable by `control_plane_leader_refusal` below.
@@ -126,7 +126,7 @@ pub(crate) fn is_control_plane_leader_candidate(node: &RootNode) -> bool {
 ///
 /// Separate from the predicate so that the two callers which return an error can say which
 /// clause refused, and the two which only need a boolean do not have to format a string.
-pub(crate) fn control_plane_leader_refusal(node: &RootNode) -> Option<String> {
+pub(crate) fn control_plane_leader_refusal(node: &PlacementNode) -> Option<String> {
     if node.service_kind != "metaserver" {
         return Some(format!(
             "a control-plane leader must be a metaserver node, and {:?} is a {:?}",

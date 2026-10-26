@@ -4,7 +4,7 @@ impl MatrixObjectStore {
     pub fn discover_replicaserver_endpoints_from_catalog(
         &self,
         min_free_bytes: u64,
-    ) -> Result<RootCatalogChunkEndpointDiscovery, ObjectError> {
+    ) -> Result<CatalogChunkEndpointDiscovery, ObjectError> {
         self.discover_replicaserver_endpoints_from_catalog_with_route_fence(min_free_bytes, None)
     }
 
@@ -12,7 +12,7 @@ impl MatrixObjectStore {
         &self,
         min_free_bytes: u64,
         expected_catalog_route_checksum: Option<&str>,
-    ) -> Result<RootCatalogChunkEndpointDiscovery, ObjectError> {
+    ) -> Result<CatalogChunkEndpointDiscovery, ObjectError> {
         let endpoint_set = self.select_catalog_endpoint_set(None, None)?;
         if let Some(expected) = expected_catalog_route_checksum {
             endpoint_set.require_catalog_route_checksum(expected)?;
@@ -86,7 +86,7 @@ impl MatrixObjectStore {
                 coverage.writable_replicaserver_count
             )));
         }
-        Ok(RootCatalogChunkEndpointDiscovery {
+        Ok(CatalogChunkEndpointDiscovery {
             catalog_source: endpoint_set
                 .selected
                 .as_ref()

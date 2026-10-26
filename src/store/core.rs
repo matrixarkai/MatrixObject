@@ -334,7 +334,7 @@ fn catalog_capacity_bytes(readiness: &ReplicaStorageReadiness) -> u64 {
     }
 }
 
-fn root_chunk_health_from_readiness(readiness: &ReplicaStorageReadiness) -> RootChunkHealth {
+fn root_chunk_health_from_readiness(readiness: &ReplicaStorageReadiness) -> NodeChunkHealth {
     let mut service_health_reasons = Vec::new();
     if !readiness.ready && !readiness.reason.is_empty() && readiness.reason != "ok" {
         service_health_reasons.push(readiness.reason.clone());
@@ -394,7 +394,7 @@ fn root_chunk_health_from_readiness(readiness: &ReplicaStorageReadiness) -> Root
     } else {
         "degraded"
     };
-    RootChunkHealth {
+    NodeChunkHealth {
         accepting_writes: readiness.accepting_writes,
         frozen: readiness.frozen,
         raft_writable: true,
@@ -430,8 +430,8 @@ fn catalog_page_capacity_bytes(readiness: &ChunkStorageReadiness) -> u64 {
     }
 }
 
-fn root_page_health_from_readiness(readiness: &ChunkStorageReadiness) -> RootPageHealth {
-    RootPageHealth {
+fn root_page_health_from_readiness(readiness: &ChunkStorageReadiness) -> NodePageHealth {
+    NodePageHealth {
         ready: readiness.writable,
         read_ready: readiness.readable,
         route_control_checksum: readiness.chunk_route_control_proof_checksum.clone(),

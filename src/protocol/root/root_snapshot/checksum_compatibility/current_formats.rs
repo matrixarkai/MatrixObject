@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootSnapshot {
+impl PlacementSnapshot {
     fn v26_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
             true, true, true, true, true, true, false, false, false, false, false,

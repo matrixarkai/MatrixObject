@@ -9,7 +9,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
     pub fn propose_register_root_node(
         &mut self,
-        node: RootNode,
+        node: PlacementNode,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose(ObjectCommand::RegisterRootNode { node })
     }
@@ -36,7 +36,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_heartbeat_root_page_health(
         &mut self,
         node_id: &str,
-        health: RootPageHealth,
+        health: NodePageHealth,
         now_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose(ObjectCommand::HeartbeatRootPageHealth {
@@ -49,7 +49,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn propose_heartbeat_root_chunk_health(
         &mut self,
         node_id: &str,
-        health: RootChunkHealth,
+        health: NodeChunkHealth,
         now_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose(ObjectCommand::HeartbeatRootChunkHealth {
@@ -69,7 +69,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         draining: bool,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         Ok(self
             .propose_register_local_objectstore_gateway_in_catalog_with_receipts(
                 node_id,
@@ -94,7 +94,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         draining: bool,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogObjectStoreRegistration>, ObjectError>
+    ) -> Result<ProvenCatalogRegistration<CatalogObjectStoreRegistration>, ObjectError>
     {
         let mut checked = self.store.clone();
         let registration = checked.register_local_objectstore_gateway_in_catalog(
@@ -108,7 +108,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             catalog_source,
         )?;
         let receipt = self.propose_register_root_node(registration.node.clone())?;
-        Ok(ProvenRootCatalogRegistration {
+        Ok(ProvenCatalogRegistration {
             registration,
             raft_receipts: vec![receipt],
         })
@@ -126,7 +126,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogObjectStoreRegistration>, ObjectError>
+    ) -> Result<ProvenCatalogRegistration<CatalogObjectStoreRegistration>, ObjectError>
     {
         let mut proven = self.propose_register_local_objectstore_gateway_in_catalog_with_receipts(
             node_id,
@@ -158,7 +158,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         Ok(self
             .propose_register_local_objectstore_gateway_at_catalog_with_receipts(
                 node_id,
@@ -184,7 +184,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         online: bool,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         Ok(self
             .propose_heartbeat_local_objectstore_gateway_in_catalog_with_receipts(
                 node_id,
@@ -207,7 +207,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         online: bool,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogObjectStoreRegistration>, ObjectError>
+    ) -> Result<ProvenCatalogRegistration<CatalogObjectStoreRegistration>, ObjectError>
     {
         let mut checked = self.store.clone();
         let registration = checked.heartbeat_local_objectstore_gateway_in_catalog(
@@ -227,7 +227,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             registration.node.online,
             now_ms,
         )?;
-        Ok(ProvenRootCatalogRegistration {
+        Ok(ProvenCatalogRegistration {
             registration,
             raft_receipts: vec![receipt],
         })
@@ -244,7 +244,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogObjectStoreRegistration>, ObjectError>
+    ) -> Result<ProvenCatalogRegistration<CatalogObjectStoreRegistration>, ObjectError>
     {
         let mut proven = self
             .propose_heartbeat_local_objectstore_gateway_in_catalog_with_receipts(
@@ -275,7 +275,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         Ok(self
             .propose_heartbeat_local_objectstore_gateway_at_catalog_with_receipts(
                 node_id,
@@ -296,7 +296,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         node_id: &str,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         Ok(self
             .propose_offline_local_objectstore_gateway_in_catalog_with_receipts(
                 node_id,
@@ -311,7 +311,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         node_id: &str,
         now_ms: u64,
         catalog_source: &str,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogObjectStoreRegistration>, ObjectError>
+    ) -> Result<ProvenCatalogRegistration<CatalogObjectStoreRegistration>, ObjectError>
     {
         let mut checked = self.store.clone();
         let registration = checked.offline_local_objectstore_gateway_in_catalog(
@@ -327,7 +327,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             registration.node.online,
             now_ms,
         )?;
-        Ok(ProvenRootCatalogRegistration {
+        Ok(ProvenCatalogRegistration {
             registration,
             raft_receipts: vec![receipt],
         })
@@ -340,7 +340,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<ProvenRootCatalogRegistration<RootCatalogObjectStoreRegistration>, ObjectError>
+    ) -> Result<ProvenCatalogRegistration<CatalogObjectStoreRegistration>, ObjectError>
     {
         let mut proven = self.propose_offline_local_objectstore_gateway_in_catalog_with_receipts(
             node_id,
@@ -362,7 +362,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         catalog_source: &str,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogObjectStoreRegistration, ObjectError> {
+    ) -> Result<CatalogObjectStoreRegistration, ObjectError> {
         Ok(self
             .propose_offline_local_objectstore_gateway_at_catalog_with_receipts(
                 node_id,

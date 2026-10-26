@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootCatalogLivenessReceipt {
+impl CatalogLivenessReceipt {
     pub fn require_checksum(&self, expected_checksum: &str) -> Result<(), ObjectError> {
         if expected_checksum.is_empty() {
             return Err(ObjectError::InvalidArgument(
@@ -90,10 +90,10 @@ impl RootCatalogLivenessReceipt {
         expected_service_kind: &str,
     ) -> Result<Self, ObjectError> {
         let format = require_liveness_field(fields, "root_catalog_liveness_receipt_format")?;
-        if format != ROOT_CATALOG_LIVENESS_RECEIPT_FORMAT {
+        if format != CATALOG_LIVENESS_RECEIPT_FORMAT {
             return Err(ObjectError::PreconditionFailed(format!(
                 "root catalog liveness receipt format mismatch: expected {}, got {}",
-                ROOT_CATALOG_LIVENESS_RECEIPT_FORMAT, format
+                CATALOG_LIVENESS_RECEIPT_FORMAT, format
             )));
         }
         let method = require_liveness_field(fields, "root_catalog_liveness_receipt_method")?;
@@ -124,7 +124,7 @@ impl RootCatalogLivenessReceipt {
         let read_index = require_liveness_u64(fields, "root_catalog_liveness_receipt_read_index")?;
         let node_count = optional_liveness_u64(fields, "root_catalog_liveness_receipt_node_count")?
             .unwrap_or(require_liveness_u64(fields, "node_count")?);
-        let node = RootNode {
+        let node = PlacementNode {
             node_id: node_id.to_string(),
             endpoint: require_liveness_field(fields, "endpoint")?.to_string(),
             service_kind: service_kind.to_string(),
@@ -148,9 +148,9 @@ impl RootCatalogLivenessReceipt {
                 fields,
                 "block_allocator_shard_count",
             )?,
-            meta_health: RootMetaHealth::default(),
-            page_health: RootPageHealth::default(),
-            chunk_health: RootChunkHealth::default(),
+            meta_health: NodeMetaHealth::default(),
+            page_health: NodePageHealth::default(),
+            chunk_health: NodeChunkHealth::default(),
         };
         let expected_checksum = root_catalog_liveness_receipt_checksum(
             method,

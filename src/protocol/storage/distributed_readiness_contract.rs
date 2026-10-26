@@ -7,7 +7,7 @@ pub struct ObjectStoreDistributedReadiness {
     pub metadata: MetadataRaftReadiness,
     pub metadata_control_proof: MetadataControlProof,
     pub page: ChunkStorageReadiness,
-    pub root_placement_health: RootPlacementHealthPage,
+    pub root_placement_health: PlacementHealthPage,
     pub metadata_ready: bool,
     pub page_ready: bool,
     pub root_ready: bool,

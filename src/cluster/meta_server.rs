@@ -39,14 +39,14 @@ use std::time::Duration;
 
 use crate::cluster::meta_message::{
     encode_meta_reply, CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment,
-    RootNodeSummary,
+    PlacementNodeSummary,
 };
 use crate::cluster::meta_wire::MetaRequestCode;
 use crate::cluster::message::{check_stamp, encode_failure};
 use crate::cluster::wire::{StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::{
-    MatrixMetaService, ObjectError, RootChunkHealth, RootMetaHealth, RootNode,
-    RootPageHealth,
+    MatrixMetaService, ObjectError, NodeChunkHealth, NodeMetaHealth, PlacementNode,
+    NodePageHealth,
 };
 
 /// How a metaserver node is sized and bounded.
@@ -129,7 +129,7 @@ impl MetaNodeServer {
     /// # WHY A SEED AND NOT A REGISTRATION VERB
     ///
     /// Placement needs a roster, and registration is deliberately not one of this service's
-    /// verbs: a `RootNode` is nineteen fields of which three are health structures carrying
+    /// verbs: a `PlacementNode` is nineteen fields of which three are health structures carrying
     /// about a hundred fields between them, and the only existing byte encoding for one is
     /// inlined in a durable snapshot format. See [`crate::cluster::meta_wire`].
     ///
@@ -159,7 +159,7 @@ impl MetaNodeServer {
             ObjectError::Corruption("this metaserver's state is locked".to_string())
         })?;
         for index in 0..count {
-            guard.register_node(RootNode {
+            guard.register_node(PlacementNode {
                 node_id: format!("data-{index}"),
                 endpoint: format!("127.0.0.1:{}", 17_400 + index),
                 service_kind: "blockserver".to_string(),
@@ -178,9 +178,9 @@ impl MetaNodeServer {
                 last_heartbeat_ms: 1,
                 page_allocator_shard_index: index as u64,
                 page_allocator_shard_count: count.max(1) as u64,
-                meta_health: RootMetaHealth::default(),
-                page_health: RootPageHealth::default(),
-                chunk_health: RootChunkHealth::default(),
+                meta_health: NodeMetaHealth::default(),
+                page_health: NodePageHealth::default(),
+                chunk_health: NodeChunkHealth::default(),
             })?;
         }
         Ok(guard.nodes.len())
@@ -384,7 +384,7 @@ fn apply(
                 online,
                 now_ms,
             )?;
-            Ok(MetaReply::RootNode(RootNodeSummary::from_root_node(&node)))
+            Ok(MetaReply::PlacementNode(PlacementNodeSummary::from_root_node(&node)))
         }
         MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => Ok(MetaReply::Expired {
             offline_count: guard.expire_node_heartbeats(ttl_ms, now_ms)?,
@@ -393,7 +393,7 @@ fn apply(
             guard
                 .nodes
                 .values()
-                .map(RootNodeSummary::from_root_node)
+                .map(PlacementNodeSummary::from_root_node)
                 .collect(),
         )),
         MetaRequest::PlanObjectPlacement {

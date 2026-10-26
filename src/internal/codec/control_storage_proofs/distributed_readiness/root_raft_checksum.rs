@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn root_raft_status_checksum(status: &RootRaftStatus) -> String {
+pub(crate) fn root_raft_status_checksum(status: &PlacementRaftStatus) -> String {
     let mut material = Vec::new();
     append_string(&mut material, &status.control_checksum_format);
     append_string(&mut material, &status.leader_node_id);

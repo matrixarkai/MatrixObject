@@ -7,7 +7,7 @@ impl MatrixMetaService {
         source_node_id: &str,
         min_free_bytes: u64,
     ) -> Result<PlacementMigrationPlan, ObjectError> {
-        let mut candidates: Vec<&RootNode> = self
+        let mut candidates: Vec<&PlacementNode> = self
             .nodes
             .values()
             .filter(|node| {

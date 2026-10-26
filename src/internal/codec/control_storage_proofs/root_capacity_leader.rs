@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 pub(crate) fn append_root_capacity_rebalance_envelope(
     out: &mut Vec<u8>,
-    envelope: &PreparedRootCapacityRebalanceEnvelope,
+    envelope: &PreparedPlacementCapacityRebalanceEnvelope,
 ) {
     append_u64(out, envelope.max_objects);
     append_u64(out, envelope.min_free_bytes);
@@ -33,7 +33,7 @@ pub(crate) fn append_root_capacity_rebalance_envelope(
 }
 
 pub(crate) fn prepared_root_capacity_rebalance_envelope_checksum(
-    envelope: &PreparedRootCapacityRebalanceEnvelope,
+    envelope: &PreparedPlacementCapacityRebalanceEnvelope,
 ) -> String {
     let mut material = Vec::new();
     append_string(
@@ -45,10 +45,10 @@ pub(crate) fn prepared_root_capacity_rebalance_envelope_checksum(
 }
 
 pub(crate) fn prepared_root_capacity_rebalance_envelope(
-    prepared: &PreparedRootCapacityRebalance,
-) -> PreparedRootCapacityRebalanceEnvelope {
+    prepared: &PreparedPlacementCapacityRebalance,
+) -> PreparedPlacementCapacityRebalanceEnvelope {
     let first_item = prepared.report.items.first();
-    let mut envelope = PreparedRootCapacityRebalanceEnvelope {
+    let mut envelope = PreparedPlacementCapacityRebalanceEnvelope {
         max_objects: prepared.max_objects as u64,
         min_free_bytes: prepared.min_free_bytes,
         pressure_node_count: prepared.report.pressure_node_count,
@@ -84,7 +84,7 @@ pub(crate) fn prepared_root_capacity_rebalance_envelope(
 
 pub(crate) fn append_root_capacity_rebalance_item(
     out: &mut Vec<u8>,
-    item: &RootCapacityRebalanceItem,
+    item: &PlacementCapacityRebalanceItem,
 ) {
     append_string(out, &item.pressure_node_id);
     append_root_placement_migration_plan(out, &item.plan);
@@ -92,7 +92,7 @@ pub(crate) fn append_root_capacity_rebalance_item(
 
 pub(crate) fn append_root_capacity_rebalance_report(
     out: &mut Vec<u8>,
-    report: &RootCapacityRebalanceReport,
+    report: &PlacementCapacityRebalanceReport,
 ) {
     append_u64(out, report.scanned_objects);
     append_u64(out, report.pressure_node_count);
@@ -124,7 +124,7 @@ pub(crate) fn root_capacity_rebalance_request_checksum(
 }
 
 pub(crate) fn prepared_root_capacity_rebalance_checksum(
-    prepared: &PreparedRootCapacityRebalance,
+    prepared: &PreparedPlacementCapacityRebalance,
 ) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MOS-RUST-PREPARED-ROOT-CAPACITY-REBALANCE1");

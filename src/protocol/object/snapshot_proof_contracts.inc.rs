@@ -70,7 +70,7 @@ pub struct MetaServerSnapshotProofStreamReport {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RootSnapshotProofStreamReport {
+pub struct PlacementSnapshotProofStreamReport {
     pub format: String,
     pub proof_count: u64,
     pub aggregate_checksum: String,

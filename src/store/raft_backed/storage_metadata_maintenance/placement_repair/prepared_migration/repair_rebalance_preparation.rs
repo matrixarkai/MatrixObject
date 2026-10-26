@@ -25,7 +25,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_replica_count: usize,
         min_free_bytes: u64,
         max_payload_bytes: u64,
-    ) -> Result<PreparedRootUnhealthyPlacementRepair, ObjectError> {
+    ) -> Result<PreparedUnhealthyPlacementRepair, ObjectError> {
         self.store
             .prepare_unhealthy_root_placement_repair_raft_entry(
                 marker,
@@ -43,7 +43,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_replica_count: usize,
         min_free_bytes: u64,
         max_payload_bytes: u64,
-    ) -> Result<PreparedRootUnhealthyPlacementRepair, ObjectError> {
+    ) -> Result<PreparedUnhealthyPlacementRepair, ObjectError> {
         self.ensure_root_read_index("prepare unhealthy root placement repair")?;
         self.prepare_unhealthy_root_placement_repair_raft_entry(
             marker,
@@ -57,7 +57,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_draining_root_placement_repair_envelope_linearizable(
         &self,
         max_objects: usize,
-    ) -> Result<PreparedRootPlacementRepairEnvelope, ObjectError> {
+    ) -> Result<PreparedPlacementRepairEnvelope, ObjectError> {
         let prepared =
             self.prepare_draining_root_placement_repair_raft_entry_linearizable(max_objects)?;
         Ok(prepared_draining_root_placement_repair_envelope(&prepared))
@@ -66,11 +66,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_draining_root_placement_repair_envelope_with_read_proof_linearizable(
         &self,
         max_objects: usize,
-    ) -> Result<ProvenPreparedRootPlacementRepairEnvelope, ObjectError> {
+    ) -> Result<ProvenPreparedPlacementRepairEnvelope, ObjectError> {
         let proof =
             self.ensure_root_read_index("prepare draining root placement repair envelope")?;
         let prepared = self.prepare_draining_root_placement_repair_raft_entry(max_objects);
-        Ok(ProvenPreparedRootPlacementRepairEnvelope {
+        Ok(ProvenPreparedPlacementRepairEnvelope {
             envelope: prepared_draining_root_placement_repair_envelope(&prepared),
             proof,
         })
@@ -83,7 +83,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_replica_count: usize,
         min_free_bytes: u64,
         max_payload_bytes: u64,
-    ) -> Result<PreparedRootPlacementRepairEnvelope, ObjectError> {
+    ) -> Result<PreparedPlacementRepairEnvelope, ObjectError> {
         let prepared = self.prepare_unhealthy_root_placement_repair_raft_entry_linearizable(
             marker,
             max_objects,
@@ -101,7 +101,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_replica_count: usize,
         min_free_bytes: u64,
         max_payload_bytes: u64,
-    ) -> Result<ProvenPreparedRootPlacementRepairEnvelope, ObjectError> {
+    ) -> Result<ProvenPreparedPlacementRepairEnvelope, ObjectError> {
         let proof =
             self.ensure_root_read_index("prepare unhealthy root placement repair envelope")?;
         let prepared = self.prepare_unhealthy_root_placement_repair_raft_entry(
@@ -111,7 +111,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_free_bytes,
             max_payload_bytes,
         )?;
-        Ok(ProvenPreparedRootPlacementRepairEnvelope {
+        Ok(ProvenPreparedPlacementRepairEnvelope {
             envelope: prepared_unhealthy_root_placement_repair_envelope(&prepared),
             proof,
         })
@@ -121,7 +121,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         max_objects: usize,
         min_free_bytes: u64,
-    ) -> Result<PreparedRootCapacityRebalanceEnvelope, ObjectError> {
+    ) -> Result<PreparedPlacementCapacityRebalanceEnvelope, ObjectError> {
         let prepared = self
             .prepare_root_capacity_rebalance_raft_entry_linearizable(max_objects, min_free_bytes)?;
         Ok(prepared_root_capacity_rebalance_envelope(&prepared))
@@ -131,10 +131,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         max_objects: usize,
         min_free_bytes: u64,
-    ) -> Result<ProvenPreparedRootCapacityRebalanceEnvelope, ObjectError> {
+    ) -> Result<ProvenPreparedPlacementCapacityRebalanceEnvelope, ObjectError> {
         let proof = self.ensure_root_read_index("prepare root capacity rebalance envelope")?;
         let prepared = self.prepare_root_capacity_rebalance_raft_entry(max_objects, min_free_bytes);
-        Ok(ProvenPreparedRootCapacityRebalanceEnvelope {
+        Ok(ProvenPreparedPlacementCapacityRebalanceEnvelope {
             envelope: prepared_root_capacity_rebalance_envelope(&prepared),
             proof,
         })
@@ -155,7 +155,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         max_objects: usize,
         min_free_bytes: u64,
-    ) -> PreparedRootCapacityRebalance {
+    ) -> PreparedPlacementCapacityRebalance {
         self.store
             .prepare_root_capacity_rebalance_raft_entry(max_objects, min_free_bytes)
     }
@@ -164,7 +164,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &self,
         max_objects: usize,
         min_free_bytes: u64,
-    ) -> Result<PreparedRootCapacityRebalance, ObjectError> {
+    ) -> Result<PreparedPlacementCapacityRebalance, ObjectError> {
         self.ensure_root_read_index("prepare root capacity rebalance")?;
         Ok(self.prepare_root_capacity_rebalance_raft_entry(max_objects, min_free_bytes))
     }
@@ -172,7 +172,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_draining_root_placement_repair_raft_entry(
         &self,
         max_objects: usize,
-    ) -> PreparedRootPlacementRepair {
+    ) -> PreparedPlacementRepair {
         self.store
             .prepare_draining_root_placement_repair_raft_entry(max_objects)
     }
@@ -180,7 +180,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     pub fn prepare_draining_root_placement_repair_raft_entry_linearizable(
         &self,
         max_objects: usize,
-    ) -> Result<PreparedRootPlacementRepair, ObjectError> {
+    ) -> Result<PreparedPlacementRepair, ObjectError> {
         self.ensure_root_read_index("prepare draining root placement repair")?;
         Ok(self.prepare_draining_root_placement_repair_raft_entry(max_objects))
     }

@@ -9,7 +9,7 @@ impl MatrixMetaService {
         }
     }
 
-    pub(crate) fn validate_page_allocator_shard(node: &RootNode) -> Result<(), ObjectError> {
+    pub(crate) fn validate_page_allocator_shard(node: &PlacementNode) -> Result<(), ObjectError> {
         if node.service_kind == "blockserver"
             && (node.page_allocator_shard_count == 0
                 || node.page_allocator_shard_index >= node.page_allocator_shard_count)
@@ -21,7 +21,7 @@ impl MatrixMetaService {
         Ok(())
     }
 
-    fn validate_node_metadata_coordinator_backend(node: &RootNode) -> Result<(), ObjectError> {
+    fn validate_node_metadata_coordinator_backend(node: &PlacementNode) -> Result<(), ObjectError> {
         if node.service_kind != "metaserver"
             || node
                 .meta_health
@@ -42,7 +42,7 @@ impl MatrixMetaService {
         Ok(())
     }
 
-    fn validate_active_page_allocator_conflict(&self, node: &RootNode) -> Result<(), ObjectError> {
+    fn validate_active_page_allocator_conflict(&self, node: &PlacementNode) -> Result<(), ObjectError> {
         if node.service_kind != "blockserver"
             || !node.data_eligible
             || !node.online
@@ -74,12 +74,12 @@ impl MatrixMetaService {
         Ok(())
     }
 
-    pub(crate) fn is_data_service_node(node: &RootNode) -> bool {
+    pub(crate) fn is_data_service_node(node: &PlacementNode) -> bool {
         node.data_eligible
             && (node.service_kind == "chunkserver" || node.service_kind == "blockserver")
     }
 
-    fn replica_service_pages_new_placement(node: &RootNode) -> bool {
+    fn replica_service_pages_new_placement(node: &PlacementNode) -> bool {
         node.service_kind == "chunkserver"
             && (node.chunk_health.frozen
                 || !node.chunk_health.accepting_writes
@@ -88,14 +88,14 @@ impl MatrixMetaService {
                 || node.chunk_health.service_mode == "draining")
     }
 
-    pub(crate) fn node_accepts_new_placement(node: &RootNode) -> bool {
+    pub(crate) fn node_accepts_new_placement(node: &PlacementNode) -> bool {
         Self::is_data_service_node(node)
             && node.online
             && !node.draining
             && !Self::replica_service_pages_new_placement(node)
     }
 
-    pub(crate) fn node_effective_free_bytes(node: &RootNode) -> u64 {
+    pub(crate) fn node_effective_free_bytes(node: &PlacementNode) -> u64 {
         if node.service_kind == "chunkserver" && node.chunk_health.capacity_free_bytes > 0 {
             node.chunk_health.capacity_free_bytes
         } else {
@@ -103,12 +103,12 @@ impl MatrixMetaService {
         }
     }
 
-    pub(crate) fn node_effective_capacity_bytes(node: &RootNode) -> u64 {
+    pub(crate) fn node_effective_capacity_bytes(node: &PlacementNode) -> u64 {
         node.committed_bytes
             .saturating_add(Self::node_effective_free_bytes(node))
     }
 
-    fn node_reclaim_pressure_bytes(node: &RootNode) -> u64 {
+    fn node_reclaim_pressure_bytes(node: &PlacementNode) -> u64 {
         node.chunk_health
             .reclaimable_bytes
             .saturating_add(node.chunk_health.trailing_trim_bytes)
@@ -119,7 +119,7 @@ impl MatrixMetaService {
             .saturating_add(node.page_health.chunk_physical_discard_bytes)
     }
 
-    fn node_fragmentation_pressure_units(node: &RootNode) -> u64 {
+    fn node_fragmentation_pressure_units(node: &PlacementNode) -> u64 {
         node.chunk_health
             .fragmented_chunk_count
             .saturating_add(node.chunk_health.discarded_range_count)
@@ -127,14 +127,14 @@ impl MatrixMetaService {
             .saturating_add(node.page_health.chunk_physical_discard_range_count)
     }
 
-    fn node_reclaim_pressure_score(node: &RootNode) -> u64 {
+    fn node_reclaim_pressure_score(node: &PlacementNode) -> u64 {
         let byte_pressure = Self::node_reclaim_pressure_bytes(node);
         let fragment_pressure =
             Self::node_fragmentation_pressure_units(node).saturating_mul(1024 * 1024);
         byte_pressure.saturating_add(fragment_pressure)
     }
 
-    fn compare_placement_target_nodes(left: &RootNode, right: &RootNode) -> Ordering {
+    fn compare_placement_target_nodes(left: &PlacementNode, right: &PlacementNode) -> Ordering {
         Self::node_reclaim_pressure_score(left)
             .cmp(&Self::node_reclaim_pressure_score(right))
             .then_with(|| {

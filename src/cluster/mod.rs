@@ -175,7 +175,7 @@ pub use directory::{ControlPlaneStatus, MetaDirectory};
 pub use meta_client::{MetaCallOutcome, MetaClientOptions, RemoteMetaClient};
 #[cfg(feature = "meta-server")]
 pub use meta_message::{
-    CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment, RootNodeSummary,
+    CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment, PlacementNodeSummary,
 };
 #[cfg(feature = "meta-server")]
 pub use meta_server::{MetaNodeOptions, MetaNodeServer, MetaNodeShutdown};

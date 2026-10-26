@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
-    pub fn list_nodes(&self) -> Vec<RootNode> {
+    pub fn list_nodes(&self) -> Vec<PlacementNode> {
         self.nodes.values().cloned().collect()
     }
 
@@ -34,7 +34,7 @@ impl MatrixMetaService {
         metadata_eligible_filter: Option<bool>,
         data_eligible_filter: Option<bool>,
         gateway_eligible_filter: Option<bool>,
-    ) -> Result<RootNodePage, ObjectError> {
+    ) -> Result<PlacementNodePage, ObjectError> {
         if let Some(marker) = marker {
             validate_node_id(marker)?;
         }
@@ -46,7 +46,7 @@ impl MatrixMetaService {
                 "root node page limit must be positive".to_string(),
             ));
         }
-        let mut page = RootNodePage {
+        let mut page = PlacementNodePage {
             marker: marker.map(str::to_string),
             service_kind_filter: service_kind_filter.map(str::to_string),
             draining_filter,
@@ -55,7 +55,7 @@ impl MatrixMetaService {
             data_eligible_filter,
             gateway_eligible_filter,
             total_node_count: self.nodes.len() as u64,
-            ..RootNodePage::default()
+            ..PlacementNodePage::default()
         };
         for (node_id, node) in &self.nodes {
             if marker.map_or(false, |marker| node_id.as_str() <= marker) {

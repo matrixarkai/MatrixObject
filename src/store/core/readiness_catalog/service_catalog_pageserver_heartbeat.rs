@@ -11,7 +11,7 @@ impl MatrixObjectStore {
         now_ms: u64,
         catalog_source: &str,
         online: bool,
-    ) -> Result<RootCatalogPageRegistration, ObjectError> {
+    ) -> Result<CatalogPageRegistration, ObjectError> {
         validate_node_id(node_id)?;
         if catalog_source.is_empty() {
             return Err(ObjectError::InvalidArgument(
@@ -72,13 +72,13 @@ impl MatrixObjectStore {
             }
             return Err(err);
         }
-        Ok(RootCatalogPageRegistration {
+        Ok(CatalogPageRegistration {
             node,
             readiness,
             allocator_shard_index,
             allocator_shard_count,
             catalog_source: catalog_source.to_string(),
-            catalog_endpoint: EMBEDDED_ROOT_CATALOG_ENDPOINT.to_string(),
+            catalog_endpoint: EMBEDDED_PLACEMENT_CATALOG_ENDPOINT.to_string(),
             catalog_endpoint_count: 1,
         })
     }
@@ -95,7 +95,7 @@ impl MatrixObjectStore {
         online: bool,
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
-    ) -> Result<RootCatalogPageRegistration, ObjectError> {
+    ) -> Result<CatalogPageRegistration, ObjectError> {
         self.heartbeat_local_pageserver_in_catalog(
             node_id,
             allocator_shard_index,
@@ -122,7 +122,7 @@ impl MatrixObjectStore {
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
         expected_catalog_route_checksum: &str,
-    ) -> Result<RootCatalogPageRegistration, ObjectError> {
+    ) -> Result<CatalogPageRegistration, ObjectError> {
         let registration = self.heartbeat_local_pageserver_at_catalog(
             node_id,
             allocator_shard_index,

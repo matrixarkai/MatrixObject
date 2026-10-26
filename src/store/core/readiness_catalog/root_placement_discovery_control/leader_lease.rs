@@ -7,7 +7,7 @@ impl MatrixObjectStore {
         node_id: &str,
         ttl_ms: u64,
         now_ms: u64,
-    ) -> Result<RootLeaderLease, ObjectError> {
+    ) -> Result<PlacementLeaderLease, ObjectError> {
         self.meta_service.campaign_leader(node_id, ttl_ms, now_ms)
     }
 
@@ -18,7 +18,7 @@ impl MatrixObjectStore {
         ttl_ms: u64,
         now_ms: u64,
         idempotency_key: &str,
-    ) -> Result<(RootLeaderLease, RootLeaderLeaseReceipt), ObjectError> {
+    ) -> Result<(PlacementLeaderLease, PlacementLeaderLeaseReceipt), ObjectError> {
         self.meta_service
             .campaign_leader_idempotent(node_id, ttl_ms, now_ms, idempotency_key)
     }
@@ -30,7 +30,7 @@ impl MatrixObjectStore {
         epoch: u64,
         ttl_ms: u64,
         now_ms: u64,
-    ) -> Result<RootLeaderLease, ObjectError> {
+    ) -> Result<PlacementLeaderLease, ObjectError> {
         self.meta_service
             .renew_leader(node_id, epoch, ttl_ms, now_ms)
     }
@@ -43,13 +43,13 @@ impl MatrixObjectStore {
         ttl_ms: u64,
         now_ms: u64,
         idempotency_key: &str,
-    ) -> Result<(RootLeaderLease, RootLeaderLeaseReceipt), ObjectError> {
+    ) -> Result<(PlacementLeaderLease, PlacementLeaderLeaseReceipt), ObjectError> {
         self.meta_service
             .renew_leader_idempotent(node_id, epoch, ttl_ms, now_ms, idempotency_key)
     }
 
 
-    pub fn root_leader_lease(&self) -> Option<RootLeaderLease> {
+    pub fn root_leader_lease(&self) -> Option<PlacementLeaderLease> {
         self.meta_service.leader_lease()
     }
 
@@ -60,7 +60,7 @@ impl MatrixObjectStore {
         limit: usize,
         operation: Option<&str>,
         leader_node_id: Option<&str>,
-    ) -> Result<RootLeaderLeaseReceiptPage, ObjectError> {
+    ) -> Result<PlacementLeaderLeaseReceiptPage, ObjectError> {
         self.meta_service
             .list_leader_lease_receipts(marker, limit, operation, leader_node_id)
     }

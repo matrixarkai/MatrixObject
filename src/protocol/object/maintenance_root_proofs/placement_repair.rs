@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl PreparedRootPlacementRepairEnvelope {
+impl PreparedPlacementRepairEnvelope {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         for (name, value) in [
@@ -76,7 +76,7 @@ impl PreparedRootPlacementRepairEnvelope {
     }
 }
 
-impl ProvenPreparedRootPlacementRepairEnvelope {
+impl ProvenPreparedPlacementRepairEnvelope {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .envelope

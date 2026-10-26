@@ -3,14 +3,14 @@
 impl MatrixObjectStore {
     pub fn discover_objectstore_gateway_endpoints_from_catalog(
         &self,
-    ) -> Result<RootCatalogObjectStoreEndpointDiscovery, ObjectError> {
+    ) -> Result<CatalogObjectStoreEndpointDiscovery, ObjectError> {
         self.discover_objectstore_gateway_endpoints_from_catalog_with_policy("read")
     }
 
     pub fn discover_objectstore_gateway_endpoints_from_catalog_with_policy(
         &self,
         readiness_policy: &str,
-    ) -> Result<RootCatalogObjectStoreEndpointDiscovery, ObjectError> {
+    ) -> Result<CatalogObjectStoreEndpointDiscovery, ObjectError> {
         self.discover_objectstore_gateway_endpoints_from_catalog_with_policy_and_route_fence(
             readiness_policy,
             None,
@@ -21,7 +21,7 @@ impl MatrixObjectStore {
         &self,
         readiness_policy: &str,
         expected_catalog_route_checksum: Option<&str>,
-    ) -> Result<RootCatalogObjectStoreEndpointDiscovery, ObjectError> {
+    ) -> Result<CatalogObjectStoreEndpointDiscovery, ObjectError> {
         if !matches!(readiness_policy, "read" | "write" | "online") {
             return Err(ObjectError::InvalidArgument(
                 "objectstore gateway discovery readiness must be read, write, or online"
@@ -32,7 +32,7 @@ impl MatrixObjectStore {
         if let Some(expected) = expected_catalog_route_checksum {
             endpoint_set.require_catalog_route_checksum(expected)?;
         }
-        let mut discovery = RootCatalogObjectStoreEndpointDiscovery::default();
+        let mut discovery = CatalogObjectStoreEndpointDiscovery::default();
         discovery.catalog_source = endpoint_set
             .selected
             .as_ref()

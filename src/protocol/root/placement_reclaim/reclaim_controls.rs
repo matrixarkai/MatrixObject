@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-impl RootReclaimNodePlan {
+impl PlacementReclaimNodePlan {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = self
             .usage
@@ -17,7 +17,7 @@ impl RootReclaimNodePlan {
     }
 }
 
-impl RootReclaimNodePlanPage {
+impl PlacementReclaimNodePlanPage {
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         append_optional_string_field(&mut fields, field_prefix, "marker", &self.marker);
