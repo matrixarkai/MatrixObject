@@ -49278,3 +49278,119 @@ fn a_registration_publishes_the_binding_form_and_names_it() {
         "the emitted form equals the retired kind-derived form, so the switch did nothing"
     );
 }
+
+/// THE ALLOCATOR CONFLICT SCAN FIRES FOR THE NODES IT IS FOR, AND SKIPS THE REST.
+///
+/// Two directions, because a one-directional check cannot tell "gated correctly" from
+/// "gated on something always true". The second direction is the one that matters: a
+/// shard-count gate was proposed for this scan and would have been satisfied by every
+/// node in the map, which made two chunk nodes collide on shard index 0 and broke 35
+/// tests. See `the_allocator_shard_count_cannot_identify_a_page_node`.
+#[test]
+fn the_allocator_conflict_scan_fires_for_page_nodes_and_skips_the_others() {
+    // DIRECTION 1: two page-tier nodes claiming the same allocator shard must conflict.
+    let mut service = MatrixMetaService::new();
+    service
+        .register_node(pageserver_placement_node("page-a", "domain-a", 0, 2))
+        .expect("the first page node registers");
+    let clash = service.register_node(pageserver_placement_node("page-b", "domain-b", 0, 2));
+    assert!(
+        clash.is_err(),
+        "two page nodes on allocator shard 0 must conflict, or the scan is not firing"
+    );
+    // and a DIFFERENT shard on the same count is fine, so the scan is not simply
+    // refusing every second page node.
+    service
+        .register_node(pageserver_placement_node("page-c", "domain-c", 1, 2))
+        .expect("a page node on a free allocator shard registers");
+
+    // DIRECTION 2: nodes the scan was never for must still be ignored. Chunk nodes all
+    // carry index 0 and count 1, so if the scan applied to them the SECOND one would be
+    // refused as a duplicate -- which is exactly what the shard-count gate did.
+    let mut chunks = MatrixMetaService::new();
+    for id in ["chunk-a", "chunk-b", "chunk-c"] {
+        let node = placement_node(id, "domain-a", 1 << 20);
+        assert_eq!(
+            node.service_kind, "chunkserver",
+            "the helper must produce a chunk node for this direction to mean anything"
+        );
+        assert!(
+            !node.serves_page_tier(),
+            "a chunk node must not serve the page tier, or direction 2 is vacuous"
+        );
+        assert_eq!(
+            node.page_allocator_shard_index, 0,
+            "direction 2 relies on chunk nodes sharing shard index 0"
+        );
+        chunks
+            .register_node(node)
+            .unwrap_or_else(|err| panic!("chunk node {id} must register, got {err:?}"));
+    }
+}
+
+/// WHY THE ALLOCATOR SHARD COUNT CANNOT IDENTIFY A PAGE NODE.
+///
+/// `page_allocator_shard_count > 0` looks like the property the allocator rules care
+/// about, and it is not: every registration sets it to at least 1. The chunk, gateway
+/// and root-bootstrap registrations set a literal 1, the cluster path uses
+/// `count.max(1)`, and an older snapshot that lacks the field decodes it as 1. So the
+/// predicate is TRUE FOR EVERY NODE, and gating the conflict scan on it let chunk nodes
+/// into a scan written for page nodes, where they collide on shard index 0.
+///
+/// This records the decline structurally. A comment does not fail; this does, the
+/// moment someone makes a registration set 0 and the gate starts looking viable again.
+#[test]
+fn the_allocator_shard_count_cannot_identify_a_page_node() {
+    const CHUNK_REG: &str =
+        include_str!("store/core/readiness_catalog/service_catalog_chunkserver_registration.rs");
+    const GATEWAY_REG: &str =
+        include_str!("store/core/readiness_catalog/service_catalog_gateway_liveness.rs");
+    const ROOT_REG: &str =
+        include_str!("store/core/readiness_catalog/service_catalog_root_bootstrap.rs");
+    const DECODE: &str = include_str!("protocol/root/root_snapshot/decoding_nodes.rs");
+
+    // NON-VACUITY: an unloaded or renamed source would make every check below pass.
+    for (name, text) in [
+        ("chunk registration", CHUNK_REG),
+        ("gateway registration", GATEWAY_REG),
+        ("root bootstrap", ROOT_REG),
+        ("snapshot node decode", DECODE),
+    ] {
+        assert!(text.len() > 400, "{name} source did not load");
+        assert!(
+            text.contains("page_allocator_shard_count"),
+            "{name} no longer mentions the allocator shard count, so this guard is stale"
+        );
+    }
+
+    // Each of these sets a NON-ZERO count for a node that does not serve the page tier.
+    for (name, text) in [
+        ("chunk registration", CHUNK_REG),
+        ("gateway registration", GATEWAY_REG),
+        ("root bootstrap", ROOT_REG),
+    ] {
+        assert!(
+            text.contains("page_allocator_shard_count: 1"),
+            "{name} no longer sets a non-zero allocator shard count; if it now sets 0, the \
+             count-based gate may be viable and this decline should be revisited rather \
+             than carried"
+        );
+    }
+
+    // And an old snapshot without the field decodes to 1, not 0, so even history cannot
+    // produce a zero here.
+    assert!(
+        DECODE.contains("page_allocator_shard_count: if has_page_allocator_shard"),
+        "the node decode no longer defaults the allocator shard count"
+    );
+
+    // The behavioural half: the test helper's chunk node has a non-zero count while not
+    // serving the page tier, which is precisely the combination that defeats the gate.
+    let chunk = placement_node("chunk-z", "domain-a", 1 << 20);
+    assert!(!chunk.serves_page_tier());
+    assert!(
+        chunk.page_allocator_shard_count > 0,
+        "a chunk node carries a non-zero allocator shard count, which is why \
+         `page_allocator_shard_count > 0` cannot stand in for `serves_page_tier()`"
+    );
+}
