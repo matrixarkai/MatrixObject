@@ -24,7 +24,6 @@ pub struct StoreSnapshot {
     pub chunks: BTreeMap<ChunkId, ChunkInfo>,
     pub payloads: BTreeMap<(ChunkId, u64), std::sync::Arc<Vec<u8>>>,
     pub meta_snapshot: MetaSnapshot,
-    pub root_snapshot: RootSnapshot,
     pub next_chunk_id: u64,
     pub next_upload_sequence: u64,
     pub logical_written_bytes: u64,

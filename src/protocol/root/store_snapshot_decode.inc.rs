@@ -39,7 +39,7 @@ impl StoreSnapshot {
         let snapshot_version = magic
             .strip_prefix("MOSRSSTORE")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=27).contains(version))
+            .filter(|version| (1..=28).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("store snapshot byte magic mismatch".to_string())
             })?;
@@ -125,7 +125,11 @@ impl StoreSnapshot {
         if snapshot_version >= 18 {
             options.metaserver_catalog_endpoints = cursor.read_string()?;
         }
-        if snapshot_version >= 17 {
+        // THE BYTE SLOT GOES HERE, not at the field. Versions seventeen to twenty-seven
+        // wrote it; twenty-eight does not. It is still read, and still refused below if it
+        // holds anything, because a store that carries a setting nothing honours should say
+        // so rather than load quietly.
+        if (17..28).contains(&snapshot_version) {
             options.rootserver_catalog_endpoint = cursor.read_string()?;
         }
         // WHATEVER THE MODE SAID. The endpoint was settable independently of the mode, so a
@@ -294,9 +298,28 @@ impl StoreSnapshot {
             payloads.insert((chunk_id, offset), std::sync::Arc::new(payload));
         }
         let meta_len = bounded_snapshot_len(cursor.read_u64()?, "store metadata snapshot bytes")?;
-        let meta_snapshot = MetaSnapshot::from_bytes(cursor.read_bytes(meta_len)?)?;
-        let root_len = bounded_snapshot_len(cursor.read_u64()?, "store root snapshot bytes")?;
-        let root_snapshot = RootSnapshot::from_bytes(cursor.read_bytes(root_len)?)?;
+        let mut meta_snapshot = MetaSnapshot::from_bytes(cursor.read_bytes(meta_len)?)?;
+        // A STORE WRITTEN BEFORE THE ROSTER HAD ONE HOME keeps it in a snapshot of its own,
+        // nested here. It is decoded -- which verifies its own checksum against every format
+        // this build still accepts -- folded into the metadata snapshot, and let go.
+        //
+        // The fold is UNCONDITIONAL, not conditional on the metadata copy being absent. For a
+        // store written before version twenty-eight the nested snapshot was the authoritative
+        // copy, so it is the one that should win; and for the brief window where both were
+        // written, a rule required them to agree, so there is no case where this discards
+        // something it should have kept.
+        if snapshot_version < 28 {
+            let roster_len =
+                bounded_snapshot_len(cursor.read_u64()?, "store placement snapshot bytes")?;
+            let roster = RootSnapshot::from_bytes(cursor.read_bytes(roster_len)?)?;
+            meta_snapshot.placement_nodes = roster.nodes;
+            meta_snapshot.placements = roster.placements;
+            meta_snapshot.placement_leader_lease = roster.leader_lease;
+            meta_snapshot.placement_leader_lease_receipts = roster.leader_lease_receipts;
+            meta_snapshot.placement_coordinator_config = roster.coordinator_config;
+            meta_snapshot.placement_commit_index = roster.next_commit_index;
+            meta_snapshot.checksum = meta_snapshot.checksum_material_hash();
+        }
         let mut applied_raft_receipts = BTreeMap::new();
         for _ in 0..cursor.read_count("store snapshot raft receipt count")? {
             applied_raft_receipts.insert(
@@ -398,7 +421,6 @@ impl StoreSnapshot {
             chunks,
             payloads,
             meta_snapshot,
-            root_snapshot,
             next_chunk_id,
             next_upload_sequence,
             logical_written_bytes,
@@ -418,33 +440,13 @@ impl StoreSnapshot {
             page_disabled_chunk_endpoints,
             snapshot_checksum,
         };
-        if snapshot_version < 7 {
+        // RE-STAMPED FOR EVERY OLDER VERSION, where it used to be only the first six.
+        // The store-level material used to include the nested placement snapshot's checksum
+        // string, and no longer can, so an older store's stored value cannot match what this
+        // build computes. What still checks those bytes: the byte envelope checksum over the
+        // whole payload, and each nested snapshot's own checksum, verified when it decoded.
+        if snapshot_version < 28 {
             snapshot.snapshot_checksum = snapshot.checksum_material_hash();
-        }
-        // A STORE WRITTEN BEFORE THE METADATA SNAPSHOT CARRIED THE ROSTER. Its roster lives
-        // only in the placement snapshot, so it is folded in here, on load, rather than the
-        // store being declared unreadable. The metadata checksum is re-stamped because the
-        // bytes just read were checksummed without these fields.
-        //
-        // The condition is the metadata copy being ABSENT, not a version number: this snapshot
-        // nests two snapshots, each carrying a version of its own, and asking the nested one what it
-        // was would mean threading its version out through a decoder that does not return it.
-        if snapshot.meta_snapshot.placement_nodes.is_empty()
-            && snapshot.meta_snapshot.placements.is_empty()
-            && snapshot.meta_snapshot.placement_leader_lease.is_none()
-            && snapshot.meta_snapshot.placement_leader_lease_receipts.is_empty()
-        {
-            snapshot.meta_snapshot.placement_nodes = snapshot.root_snapshot.nodes.clone();
-            snapshot.meta_snapshot.placements = snapshot.root_snapshot.placements.clone();
-            snapshot.meta_snapshot.placement_leader_lease =
-                snapshot.root_snapshot.leader_lease.clone();
-            snapshot.meta_snapshot.placement_leader_lease_receipts =
-                snapshot.root_snapshot.leader_lease_receipts.clone();
-            snapshot.meta_snapshot.placement_coordinator_config =
-                snapshot.root_snapshot.coordinator_config.clone();
-            snapshot.meta_snapshot.placement_commit_index =
-                snapshot.root_snapshot.next_commit_index;
-            snapshot.meta_snapshot.checksum = snapshot.meta_snapshot.checksum_material_hash();
         }
         snapshot.validate()?;
         Ok(snapshot)
