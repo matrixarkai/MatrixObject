@@ -48292,3 +48292,281 @@ fn every_placement_key_the_benchmark_report_spells_out_names_a_real_field() {
          report invented a key"
     );
 }
+
+/// The bytes one object command travels as, written out by hand rather than taken from the
+/// encoder.
+///
+/// # WHY THE EXPECTED BYTES ARE SPELLED OUT
+///
+/// This format is new, so there is no earlier build to capture a pin from -- the trick that
+/// made the snapshot pins independent is not available. A pin computed by calling the encoder
+/// would agree with whatever the encoder does, including being wrong.
+///
+/// So the expected payload is assembled here field by field from the format's description:
+/// four magic bytes, one version byte, a two-byte big-endian tag, then each field in
+/// declaration order with a string as a four-byte big-endian length and its bytes, a u64 as
+/// eight big-endian bytes, and a bool as one byte. If the encoder disagrees with that
+/// sentence, this fails.
+#[test]
+fn an_object_command_payload_is_the_bytes_the_format_describes() {
+    let command = ObjectCommand::AcquireMetaLease {
+        namespace: "ns".to_string(),
+        owner: "ow".to_string(),
+        ttl_ms: 1_000,
+        now_ms: 5,
+    };
+
+    let mut expected: Vec<u8> = Vec::new();
+    expected.extend_from_slice(b"MOCM"); // the marker
+    expected.push(1); // version
+    expected.extend_from_slice(&[0x00, 0x01]); // tag 1, big-endian
+    expected.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // namespace length
+    expected.extend_from_slice(b"ns");
+    expected.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // owner length
+    expected.extend_from_slice(b"ow");
+    expected.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0x03, 0xE8]); // ttl_ms = 1000
+    expected.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x05]); // now_ms = 5
+
+    let actual = command.to_payload().expect("a carried verb encodes");
+    assert_eq!(
+        actual, expected,
+        "the encoding does not match the format as described; byte {} is the first to differ",
+        actual
+            .iter()
+            .zip(&expected)
+            .position(|(a, b)| a != b)
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "beyond the shorter of the two".to_string())
+    );
+    assert_eq!(actual.len(), 35, "the header and four fields are 35 bytes");
+
+    // AND IT READS BACK AS THE SAME COMMAND. This is the weaker half and is here only to
+    // catch a decoder that disagrees with an encoder the assertion above has already pinned.
+    assert_eq!(
+        ObjectCommand::from_payload(&expected).expect("decodes"),
+        command
+    );
+}
+
+/// Every verb the codec does not carry is refused by name.
+///
+/// # WHY REFUSED RATHER THAN ENCODED
+///
+/// A half-built codec that encoded an unknown verb into something shaped like a payload would
+/// put an entry in the log that no replica can replay, and the failure would surface on every
+/// replica at once at apply time rather than here at propose time.
+#[test]
+fn a_verb_the_codec_does_not_carry_is_refused_by_name() {
+    let uncarried = ObjectCommand::RemoveRootNode {
+        node_id: "n".to_string(),
+        force: false,
+        now_ms: 1,
+    };
+    let err = uncarried
+        .to_payload()
+        .expect_err("an uncarried verb must not encode");
+    let message = err.to_string();
+    assert!(
+        message.contains("RemoveRootNode"),
+        "the refusal has to name the verb, and it says {message:?}"
+    );
+    assert!(
+        message.contains("not carried"),
+        "and say that is why, rather than failing on something incidental: {message:?}"
+    );
+
+    // NOT VACUOUS: a carried verb in the same shape does encode, so the refusal above is
+    // about this verb and not about encoding being broken.
+    assert!(ObjectCommand::ReleaseMetaLease {
+        namespace: "ns".to_string(),
+        owner: "ow".to_string(),
+        epoch: 1,
+    }
+    .to_payload()
+    .is_ok());
+}
+
+/// The decoder refuses every way a payload can be wrong, and says which.
+#[test]
+fn the_object_command_decoder_refuses_each_way_a_payload_is_wrong() {
+    let good = ObjectCommand::ReleaseMetaLease {
+        namespace: "ns".to_string(),
+        owner: "ow".to_string(),
+        epoch: 7,
+    }
+    .to_payload()
+    .expect("encodes");
+    assert!(ObjectCommand::from_payload(&good).is_ok(), "the control case decodes");
+
+    let cases: Vec<(&str, Vec<u8>, &str)> = vec![
+        ("empty", Vec::new(), "shorter than its"),
+        ("header only", good[..6].to_vec(), "shorter than its"),
+        (
+            "another producer's marker",
+            {
+                let mut bytes = good.clone();
+                bytes[0] = b'X';
+                bytes
+            },
+            "command marker",
+        ),
+        (
+            "a version this build does not know",
+            {
+                let mut bytes = good.clone();
+                bytes[4] = 9;
+                bytes
+            },
+            "version 9",
+        ),
+        (
+            "a tag the codec does not carry",
+            {
+                let mut bytes = good.clone();
+                bytes[5] = 0xFF;
+                bytes[6] = 0xFF;
+                bytes
+            },
+            "tag 65535",
+        ),
+        (
+            "truncated inside a field",
+            good[..good.len() - 3].to_vec(),
+            "truncated",
+        ),
+        (
+            "trailing bytes",
+            {
+                let mut bytes = good.clone();
+                bytes.push(0);
+                bytes
+            },
+            "trailing",
+        ),
+    ];
+    for (label, bytes, fragment) in cases {
+        let err = ObjectCommand::from_payload(&bytes)
+            .err()
+            .unwrap_or_else(|| panic!("{label} was accepted"));
+        let message = err.to_string();
+        assert!(
+            message.contains(fragment),
+            "{label} was refused with {message:?}, which does not name {fragment:?}"
+        );
+    }
+}
+
+/// What the codec carries, and that its two exhaustive matches agree with each other.
+#[test]
+fn the_object_command_codec_carries_what_it_says_and_names_everything() {
+    const COMMANDS: &str = include_str!("protocol/storage/object_commands.rs");
+    let declared = COMMANDS
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_end();
+            trimmed.len() > 4
+                && trimmed.starts_with("    ")
+                && !trimmed.starts_with("     ")
+                && trimmed
+                    .trim_start()
+                    .starts_with(|c: char| c.is_ascii_uppercase())
+                && trimmed.ends_with('{')
+        })
+        .count();
+    assert!(
+        declared >= 200,
+        "only {declared} variants parsed out of the command enum, so this guard is measuring \
+         its own parse rather than the enum"
+    );
+
+    // The carried set is exactly the six lease verbs, and every tag is distinct. A duplicate
+    // tag would make two verbs decode as whichever arm came first.
+    let carried = [
+        ObjectCommand::AcquireMetaLease {
+            namespace: String::new(),
+            owner: String::new(),
+            ttl_ms: 0,
+            now_ms: 0,
+        },
+        ObjectCommand::AcquireMetaLeaseIdempotent {
+            namespace: String::new(),
+            owner: String::new(),
+            ttl_ms: 0,
+            now_ms: 0,
+            idempotency_key: String::new(),
+        },
+        ObjectCommand::RenewMetaLease {
+            namespace: String::new(),
+            owner: String::new(),
+            epoch: 0,
+            ttl_ms: 0,
+            now_ms: 0,
+        },
+        ObjectCommand::RenewMetaLeaseIdempotent {
+            namespace: String::new(),
+            owner: String::new(),
+            epoch: 0,
+            ttl_ms: 0,
+            now_ms: 0,
+            idempotency_key: String::new(),
+        },
+        ObjectCommand::ReleaseMetaLease {
+            namespace: String::new(),
+            owner: String::new(),
+            epoch: 0,
+        },
+        ObjectCommand::ReleaseMetaLeaseIdempotent {
+            namespace: String::new(),
+            owner: String::new(),
+            epoch: 0,
+            idempotency_key: String::new(),
+        },
+        // THE TWO SHARD VERBS CARRY A BOOL, which is the only thing giving the bool reader a
+        // caller. A reader with no caller is a promise about a future one, so the codec
+        // carries the verb that needs it rather than keeping the promise.
+        ObjectCommand::MigrateMetaShard {
+            shard_id: String::new(),
+            new_owner_node_id: String::new(),
+            expected_epoch: 0,
+            new_epoch: 0,
+            draining: false,
+            now_ms: 0,
+        },
+        ObjectCommand::MigrateMetaShardIdempotent {
+            shard_id: String::new(),
+            new_owner_node_id: String::new(),
+            expected_epoch: 0,
+            new_epoch: 0,
+            draining: false,
+            now_ms: 0,
+            idempotency_key: String::new(),
+        },
+    ];
+    let mut tags: Vec<u16> = Vec::new();
+    for command in &carried {
+        let tag = command
+            .wire_tag()
+            .unwrap_or_else(|| panic!("{} is meant to be carried", command.verb_name()));
+        assert!(
+            !tags.contains(&tag),
+            "{} reuses tag {tag}, and two verbs on one tag decode as whichever arm is first",
+            command.verb_name()
+        );
+        tags.push(tag);
+        // A TAG AND AN ENCODING HAVE TO AGREE. `to_payload` refuses a verb with no tag, so a
+        // verb with a tag and no encoding arm would be the opposite mistake.
+        command
+            .to_payload()
+            .unwrap_or_else(|err| panic!("{} has a tag but will not encode: {err}",
+                                        command.verb_name()));
+    }
+    assert_eq!(tags.len(), 8, "the carried set is six lease verbs and two shard verbs");
+
+    // And a verb outside that set has no tag, so "carried" means something.
+    assert!(ObjectCommand::ExpireRootNodeHeartbeats {
+        ttl_ms: 0,
+        now_ms: 0,
+    }
+    .wire_tag()
+    .is_none());
+}

@@ -716,6 +716,42 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::every_placement_key_the_benchmark_report_spells_out_names_a_real_field did not run"; exit 1; }
 
+      - name: An object command payload is the bytes the format describes
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::an_object_command_payload_is_the_bytes_the_format_describes -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::an_object_command_payload_is_the_bytes_the_format_describes did not run"; exit 1; }
+
+      - name: A verb the codec does not carry is refused by name
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_verb_the_codec_does_not_carry_is_refused_by_name -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_verb_the_codec_does_not_carry_is_refused_by_name did not run"; exit 1; }
+
+      - name: The object command decoder refuses each way a payload is wrong
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_object_command_decoder_refuses_each_way_a_payload_is_wrong -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_object_command_decoder_refuses_each_way_a_payload_is_wrong did not run"; exit 1; }
+
+      - name: The object command codec carries what it says and names everything
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_object_command_codec_carries_what_it_says_and_names_everything -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_object_command_codec_carries_what_it_says_and_names_everything did not run"; exit 1; }
+
       # THESE FOUR RUN A BINARY, NOT A LIBRARY. Every guard above is `--lib`, which
       # never links an integration test, so the kill test below would be COMPILED by
       # the build job and RUN by nothing -- which is the state a measurement rots in.
