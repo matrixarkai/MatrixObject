@@ -127,7 +127,7 @@ impl MatrixObjectStore {
         Ok(metadata)
     }
 
-    fn apply_transition_object_with_root_placement(
+    fn apply_transition_object_with_placement(
         &mut self,
         bucket: String,
         key: String,
@@ -247,7 +247,7 @@ impl MatrixObjectStore {
                 return Err(err);
             }
         };
-        self.release_root_placement_if_present(&metadata.object_id, Some(&committed));
+        self.release_placement_if_present(&metadata.object_id, Some(&committed));
         Ok(metadata)
     }
 

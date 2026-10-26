@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
 
-    pub fn plan_root_capacity_rebalance(
+    pub fn plan_placement_capacity_rebalance(
         &self,
         max_objects: usize,
         min_free_bytes: u64,
@@ -12,7 +12,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn rebalance_root_capacity(
+    pub fn rebalance_placement_capacity(
         &mut self,
         max_objects: usize,
         min_free_bytes: u64,
@@ -22,7 +22,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn prepare_root_capacity_rebalance_raft_entry(
+    pub fn prepare_placement_capacity_rebalance_raft_entry(
         &self,
         max_objects: usize,
         min_free_bytes: u64,
@@ -32,7 +32,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn apply_prepared_root_capacity_rebalance(
+    pub fn apply_prepared_placement_capacity_rebalance(
         &mut self,
         prepared: PreparedPlacementCapacityRebalance,
     ) -> Result<PlacementCapacityRebalanceReport, ObjectError> {

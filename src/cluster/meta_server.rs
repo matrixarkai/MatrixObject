@@ -384,7 +384,7 @@ fn apply(
                 online,
                 now_ms,
             )?;
-            Ok(MetaReply::PlacementNode(PlacementNodeSummary::from_root_node(&node)))
+            Ok(MetaReply::PlacementNode(PlacementNodeSummary::from_placement_node(&node)))
         }
         MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => Ok(MetaReply::Expired {
             offline_count: guard.expire_node_heartbeats(ttl_ms, now_ms)?,
@@ -393,7 +393,7 @@ fn apply(
             guard
                 .nodes
                 .values()
-                .map(PlacementNodeSummary::from_root_node)
+                .map(PlacementNodeSummary::from_placement_node)
                 .collect(),
         )),
         MetaRequest::PlanObjectPlacement {

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 pub trait CatalogControlFields {
-    fn to_root_catalog_control_fields(&self) -> BTreeMap<String, String>;
+    fn to_catalog_control_fields(&self) -> BTreeMap<String, String>;
     fn require_root_catalog_route_checksum(
         &self,
         expected_checksum: &str,
     ) -> Result<(), ObjectError>;
-    fn root_catalog_liveness_receipt(
+    fn catalog_liveness_receipt(
         &self,
         method: &str,
         term: u64,
@@ -14,7 +14,7 @@ pub trait CatalogControlFields {
         read_index: u64,
         node_count: u64,
     ) -> CatalogLivenessReceipt;
-    fn require_root_catalog_liveness_receipt_checksum(
+    fn require_catalog_liveness_receipt_checksum(
         &self,
         method: &str,
         term: u64,
@@ -23,7 +23,7 @@ pub trait CatalogControlFields {
         node_count: u64,
         expected_checksum: &str,
     ) -> Result<(), ObjectError> {
-        self.root_catalog_liveness_receipt(method, term, commit_index, read_index, node_count)
+        self.catalog_liveness_receipt(method, term, commit_index, read_index, node_count)
             .require_checksum(expected_checksum)
     }
 }
@@ -110,7 +110,7 @@ impl<T: CatalogControlFields> ProvenCatalogRegistration<T> {
         Ok(self)
     }
 
-    pub fn root_catalog_liveness_receipt(
+    pub fn catalog_liveness_receipt(
         &self,
         method: &str,
         term: u64,
@@ -118,7 +118,7 @@ impl<T: CatalogControlFields> ProvenCatalogRegistration<T> {
         read_index: u64,
         node_count: u64,
     ) -> CatalogLivenessReceipt {
-        self.registration.root_catalog_liveness_receipt(
+        self.registration.catalog_liveness_receipt(
             method,
             term,
             commit_index,
@@ -127,7 +127,7 @@ impl<T: CatalogControlFields> ProvenCatalogRegistration<T> {
         )
     }
 
-    pub fn require_root_catalog_liveness_receipt_checksum(
+    pub fn require_catalog_liveness_receipt_checksum(
         &self,
         method: &str,
         term: u64,
@@ -137,7 +137,7 @@ impl<T: CatalogControlFields> ProvenCatalogRegistration<T> {
         expected_checksum: &str,
     ) -> Result<(), ObjectError> {
         self.registration
-            .require_root_catalog_liveness_receipt_checksum(
+            .require_catalog_liveness_receipt_checksum(
                 method,
                 term,
                 commit_index,
@@ -156,7 +156,7 @@ impl<T: CatalogControlFields> ProvenCatalogRegistration<T> {
         node_count: u64,
         expected_checksum: &str,
     ) -> Result<Self, ObjectError> {
-        self.require_root_catalog_liveness_receipt_checksum(
+        self.require_catalog_liveness_receipt_checksum(
             method,
             term,
             commit_index,
@@ -177,7 +177,7 @@ impl<T: CatalogControlFields> ProvenCatalogRegistration<T> {
     ) -> BTreeMap<String, String> {
         let mut fields = self.to_control_fields();
         fields.extend(
-            self.root_catalog_liveness_receipt(method, term, commit_index, read_index, node_count)
+            self.catalog_liveness_receipt(method, term, commit_index, read_index, node_count)
                 .to_native_liveness_receipt_fields(),
         );
         fields
@@ -199,7 +199,7 @@ impl<T: CatalogControlFields> ProvenCatalogRegistration<T> {
     }
 
     pub fn to_control_fields(&self) -> BTreeMap<String, String> {
-        let mut fields = self.registration.to_root_catalog_control_fields();
+        let mut fields = self.registration.to_catalog_control_fields();
         fields.insert(
             "raft_receipt_count".to_string(),
             self.raft_receipts.len().to_string(),

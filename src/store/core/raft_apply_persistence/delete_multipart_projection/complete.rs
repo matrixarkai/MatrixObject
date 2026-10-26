@@ -113,7 +113,7 @@ impl MatrixObjectStore {
         Ok(metadata)
     }
 
-    fn apply_complete_multipart_upload_with_root_placement(
+    fn apply_complete_multipart_upload_with_placement(
         &mut self,
         upload_id: String,
         expected_size: Option<u64>,
@@ -174,7 +174,7 @@ impl MatrixObjectStore {
         if previous.as_ref().map_or(false, |old| {
             !self.bucket_versioning.contains(old.object_id.bucket.as_str())
         }) {
-            self.release_root_placement_if_present(&metadata.object_id, Some(&committed));
+            self.release_placement_if_present(&metadata.object_id, Some(&committed));
         }
         Ok(metadata)
     }

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_prepared_root_placement_migration(
+    pub fn propose_prepared_placement_migration(
         &mut self,
         prepared: PreparedPlacementMigration,
     ) -> Result<ObjectMetadata, ObjectError> {
         if !prepared.root_read_proof_checksum.is_empty() {
-            let proof = self.ensure_root_read_index("propose prepared root placement migration")?;
+            let proof = self.ensure_placement_read_index("propose prepared root placement migration")?;
             if proof.requested_root_read_index != prepared.root_read_index
                 || proof.root_raft_term != prepared.root_raft_term
                 || proof.proof_checksum != prepared.root_read_proof_checksum
@@ -40,22 +40,22 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store.apply_raft_entry(&entry)
     }
 
-    pub fn propose_prepared_root_placement_migration_linearizable(
+    pub fn propose_prepared_placement_migration_linearizable(
         &mut self,
         prepared: PreparedPlacementMigration,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.ensure_root_read_index("propose prepared root placement migration")?;
-        self.propose_prepared_root_placement_migration(prepared)
+        self.ensure_placement_read_index("propose prepared root placement migration")?;
+        self.propose_prepared_placement_migration(prepared)
     }
 
-    pub fn propose_prepared_root_placement_migration_with_envelope_linearizable(
+    pub fn propose_prepared_placement_migration_with_envelope_linearizable(
         &mut self,
         prepared: PreparedPlacementMigration,
     ) -> Result<CommittedPlacementMigration, ObjectError> {
-        self.ensure_root_read_index("propose prepared root placement migration envelope")?;
+        self.ensure_placement_read_index("propose prepared root placement migration envelope")?;
         let envelope_source = prepared.clone();
-        let metadata = self.propose_prepared_root_placement_migration(prepared)?;
-        let envelope = committed_root_placement_migration_envelope(
+        let metadata = self.propose_prepared_placement_migration(prepared)?;
+        let envelope = committed_placement_migration_envelope(
             &envelope_source,
             &metadata,
             self.raft.commit_index(),
@@ -63,12 +63,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(CommittedPlacementMigration { metadata, envelope })
     }
 
-    pub fn propose_prepared_root_placement_migration_with_envelope_and_read_proof_linearizable(
+    pub fn propose_prepared_placement_migration_with_envelope_and_read_proof_linearizable(
         &mut self,
         prepared: PreparedPlacementMigration,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<CommittedPlacementMigration>, ObjectError> {
-        self.propose_prepared_root_placement_migration_with_envelope_and_read_proof_linearizable_committed_at(
+        self.propose_prepared_placement_migration_with_envelope_and_read_proof_linearizable_committed_at(
             prepared,
             now_ms,
             self.raft.commit_index(),
@@ -76,7 +76,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_prepared_root_placement_migration_with_envelope_and_read_proof_linearizable_committed_at(
+    pub fn propose_prepared_placement_migration_with_envelope_and_read_proof_linearizable_committed_at(
         &mut self,
         prepared: PreparedPlacementMigration,
         now_ms: u64,
@@ -90,7 +90,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let committed =
-            self.propose_prepared_root_placement_migration_with_envelope_linearizable(prepared)?;
+            self.propose_prepared_placement_migration_with_envelope_linearizable(prepared)?;
         let readiness = self.ensure_metadata_read_index_committed_at(
             "propose prepared root placement migration envelope post-commit",
             now_ms,
@@ -100,13 +100,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven_metadata_read(committed, &readiness))
     }
 
-    pub fn propose_prepared_root_placement_migration_with_envelope_and_route_proof_linearizable_fenced(
+    pub fn propose_prepared_placement_migration_with_envelope_and_route_proof_linearizable_fenced(
         &mut self,
         prepared: PreparedPlacementMigration,
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenRouteFencedMetadataRead<CommittedPlacementMigration>, ObjectError> {
-        self.propose_prepared_root_placement_migration_with_envelope_and_route_proof_linearizable_fenced_committed_at(
+        self.propose_prepared_placement_migration_with_envelope_and_route_proof_linearizable_fenced_committed_at(
             prepared,
             now_ms,
             expected_page_route_control_checksum,
@@ -115,7 +115,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_prepared_root_placement_migration_with_envelope_and_route_proof_linearizable_fenced_committed_at(
+    pub fn propose_prepared_placement_migration_with_envelope_and_route_proof_linearizable_fenced_committed_at(
         &mut self,
         prepared: PreparedPlacementMigration,
         now_ms: u64,
@@ -130,7 +130,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
-            .propose_prepared_root_placement_migration_with_envelope_and_read_proof_linearizable_committed_at(
+            .propose_prepared_placement_migration_with_envelope_and_read_proof_linearizable_committed_at(
                 prepared,
                 now_ms,
                 min_read_index,
@@ -144,7 +144,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_proven_root_placement_migration_envelope_fenced(
+    pub fn propose_proven_placement_migration_envelope_fenced(
         &mut self,
         proven_envelope: ProvenPreparedPlacementMigrationEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
@@ -193,21 +193,21 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             reason: proven_envelope.envelope.reason.clone(),
             plan_checksum: expected_plan_checksum.to_string(),
         };
-        let prepared = self.prepare_root_placement_migration_raft_entry_linearizable(
+        let prepared = self.prepare_placement_migration_raft_entry_linearizable(
             plan,
             expected_plan_checksum,
         )?;
-        let actual_envelope = prepared_root_placement_migration_envelope(&prepared);
+        let actual_envelope = prepared_placement_migration_envelope(&prepared);
         if actual_envelope.envelope_checksum != proven_envelope.envelope.envelope_checksum {
             return Err(ObjectError::PreconditionFailed(
                 "proven root placement migration envelope changed before proposal".to_string(),
             ));
         }
         prepared.verify_expected_raft_entry_checksum(expected_raft_entry_checksum)?;
-        self.propose_prepared_root_placement_migration_with_envelope_linearizable(prepared)
+        self.propose_prepared_placement_migration_with_envelope_linearizable(prepared)
     }
 
-    pub fn propose_proven_root_placement_migration_envelope_fenced_with_read_proof_linearizable(
+    pub fn propose_proven_placement_migration_envelope_fenced_with_read_proof_linearizable(
         &mut self,
         proven_envelope: ProvenPreparedPlacementMigrationEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
@@ -215,7 +215,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         expected_plan_checksum: impl AsRef<str>,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<CommittedPlacementMigration>, ObjectError> {
-        self.propose_proven_root_placement_migration_envelope_fenced_with_read_proof_linearizable_committed_at(
+        self.propose_proven_placement_migration_envelope_fenced_with_read_proof_linearizable_committed_at(
             proven_envelope,
             expected_envelope_checksum,
             expected_raft_entry_checksum,
@@ -226,7 +226,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_proven_root_placement_migration_envelope_fenced_with_read_proof_linearizable_committed_at(
+    pub fn propose_proven_placement_migration_envelope_fenced_with_read_proof_linearizable_committed_at(
         &mut self,
         proven_envelope: ProvenPreparedPlacementMigrationEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
@@ -242,7 +242,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let committed = self.propose_proven_root_placement_migration_envelope_fenced(
+        let committed = self.propose_proven_placement_migration_envelope_fenced(
             proven_envelope,
             expected_envelope_checksum,
             expected_raft_entry_checksum,
@@ -257,7 +257,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven_metadata_read(committed, &readiness))
     }
 
-    pub fn propose_proven_root_placement_migration_envelope_fenced_with_route_proof_linearizable(
+    pub fn propose_proven_placement_migration_envelope_fenced_with_route_proof_linearizable(
         &mut self,
         proven_envelope: ProvenPreparedPlacementMigrationEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
@@ -266,7 +266,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenRouteFencedMetadataRead<CommittedPlacementMigration>, ObjectError> {
-        self.propose_proven_root_placement_migration_envelope_fenced_with_route_proof_linearizable_committed_at(
+        self.propose_proven_placement_migration_envelope_fenced_with_route_proof_linearizable_committed_at(
             proven_envelope,
             expected_envelope_checksum,
             expected_raft_entry_checksum,
@@ -278,7 +278,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_proven_root_placement_migration_envelope_fenced_with_route_proof_linearizable_committed_at(
+    pub fn propose_proven_placement_migration_envelope_fenced_with_route_proof_linearizable_committed_at(
         &mut self,
         proven_envelope: ProvenPreparedPlacementMigrationEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
@@ -296,7 +296,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
-            .propose_proven_root_placement_migration_envelope_fenced_with_read_proof_linearizable_committed_at(
+            .propose_proven_placement_migration_envelope_fenced_with_read_proof_linearizable_committed_at(
                 proven_envelope,
                 expected_envelope_checksum,
                 expected_raft_entry_checksum,

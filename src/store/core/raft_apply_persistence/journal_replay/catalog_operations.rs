@@ -205,7 +205,7 @@ impl MatrixObjectStore {
             }
             37 => {
                 let endpoint = cursor.read_string()?;
-                self.configure_rootserver_fallback_endpoint(&endpoint)?;
+                self.configure_placement_fallback_endpoint(&endpoint)?;
             }
             38 => {
                 let config = read_metadata_coordinator_config(&mut cursor)?;
@@ -213,7 +213,7 @@ impl MatrixObjectStore {
             }
             39 => {
                 let config = read_metadata_coordinator_config(&mut cursor)?;
-                self.configure_root_coordinator_config(config)?;
+                self.configure_placement_coordinator_config(config)?;
             }
             _ => return Ok(false),
         }

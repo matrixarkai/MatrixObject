@@ -33,7 +33,7 @@ impl MatrixObjectStore {
                     None
                 };
                 if let Some(replica_count) = root_replica_count {
-                    self.apply_append_with_root_placement(
+                    self.apply_append_with_placement(
                         bucket,
                         key,
                         data,
@@ -72,7 +72,7 @@ impl MatrixObjectStore {
                     None
                 };
                 if let Some(replica_count) = root_replica_count {
-                    self.apply_put_with_root_placement(
+                    self.apply_put_with_placement(
                         bucket,
                         key,
                         data,
@@ -109,7 +109,7 @@ impl MatrixObjectStore {
                 };
                 let release_root_placement = cursor.read_bool()?;
                 if release_root_placement {
-                    self.apply_delete_with_root_release(
+                    self.apply_delete_with_placement_release(
                         bucket,
                         key,
                         update_time_ms,
@@ -255,7 +255,7 @@ impl MatrixObjectStore {
                     }
                 };
                 if let Some(replica_count) = replica_count {
-                    self.apply_transition_object_with_root_placement(
+                    self.apply_transition_object_with_placement(
                         bucket,
                         key,
                         storage_class,
@@ -296,7 +296,7 @@ impl MatrixObjectStore {
                     }
                 };
                 if let Some(replica_count) = replica_count {
-                    self.apply_restore_object_version_with_root_placement(
+                    self.apply_restore_object_version_with_placement(
                         bucket,
                         key,
                         version,

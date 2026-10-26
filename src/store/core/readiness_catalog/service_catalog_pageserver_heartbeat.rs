@@ -31,7 +31,7 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        self.heartbeat_root_node(
+        self.heartbeat_placement_node(
             node_id,
             readiness.total_physical_bytes,
             capacity_bytes,
@@ -39,8 +39,8 @@ impl MatrixObjectStore {
             online,
             now_ms,
         )?;
-        let health = root_page_health_from_readiness(&readiness);
-        let node = self.heartbeat_root_page_health(node_id, health, now_ms)?;
+        let health = placement_page_health_from_readiness(&readiness);
+        let node = self.heartbeat_placement_page_health(node_id, health, now_ms)?;
         if node.page_allocator_shard_index != allocator_shard_index
             || node.page_allocator_shard_count != allocator_shard_count
         {

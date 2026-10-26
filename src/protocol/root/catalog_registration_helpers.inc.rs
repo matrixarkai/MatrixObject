@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn root_catalog_registration_fields(
+pub(crate) fn catalog_registration_fields(
     service_kind: &str,
     node: &PlacementNode,
     catalog_source: &str,
@@ -25,7 +25,7 @@ pub(crate) fn root_catalog_registration_fields(
     );
     fields.insert(
         "catalog_route_checksum".to_string(),
-        root_catalog_route_checksum(
+        catalog_route_checksum(
             service_kind,
             node,
             catalog_source,
@@ -36,7 +36,7 @@ pub(crate) fn root_catalog_registration_fields(
     fields
 }
 
-pub(crate) fn root_catalog_route_checksum(
+pub(crate) fn catalog_route_checksum(
     service_kind: &str,
     node: &PlacementNode,
     catalog_source: &str,
@@ -54,7 +54,7 @@ pub(crate) fn root_catalog_route_checksum(
     etag(&material)
 }
 
-pub(crate) fn root_catalog_liveness_receipt(
+pub(crate) fn catalog_liveness_receipt(
     method: &str,
     node: &PlacementNode,
     term: u64,

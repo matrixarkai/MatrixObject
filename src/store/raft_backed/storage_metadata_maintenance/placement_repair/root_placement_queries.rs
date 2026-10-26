@@ -1,27 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn list_root_object_placements_linearizable(
+    pub fn list_object_placements_linearizable(
         &self,
         marker: Option<&ObjectId>,
         limit: usize,
         node_id_filter: Option<&str>,
     ) -> Result<PlacementPage, ObjectError> {
-        self.ensure_root_read_index("list root object placements")?;
+        self.ensure_placement_read_index("list root object placements")?;
         self.store
-            .list_root_object_placements(marker, limit, node_id_filter)
+            .list_object_placements(marker, limit, node_id_filter)
     }
 
-    pub fn list_root_object_placements_with_read_proof_linearizable(
+    pub fn list_object_placements_with_read_proof_linearizable(
         &self,
         marker: Option<&ObjectId>,
         limit: usize,
         node_id_filter: Option<&str>,
     ) -> Result<ProvenPlacementRead<PlacementPage>, ObjectError> {
-        let proof = self.ensure_root_read_index("list root object placements")?;
+        let proof = self.ensure_placement_read_index("list root object placements")?;
         let value = self
             .store
-            .list_root_object_placements(marker, limit, node_id_filter)?;
+            .list_object_placements(marker, limit, node_id_filter)?;
         Ok(ProvenPlacementRead { value, proof })
     }
 
@@ -30,7 +30,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         bucket: &str,
         key: &str,
     ) -> Result<ObjectPlacement, ObjectError> {
-        self.ensure_root_read_index("object placement")?;
+        self.ensure_placement_read_index("object placement")?;
         self.store.object_placement(bucket, key)
     }
 
@@ -39,12 +39,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         bucket: &str,
         key: &str,
     ) -> Result<ProvenPlacementRead<ObjectPlacement>, ObjectError> {
-        let proof = self.ensure_root_read_index("object placement")?;
+        let proof = self.ensure_placement_read_index("object placement")?;
         let value = self.store.object_placement(bucket, key)?;
         Ok(ProvenPlacementRead { value, proof })
     }
 
-    pub fn audit_root_placement_health_linearizable(
+    pub fn audit_placement_health_linearizable(
         &self,
         marker: Option<&ObjectId>,
         limit: usize,
@@ -53,8 +53,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         degraded_only: bool,
         max_payload_bytes: u64,
     ) -> Result<PlacementHealthPage, ObjectError> {
-        self.ensure_root_read_index("audit root placement health")?;
-        self.store.audit_root_placement_health(
+        self.ensure_placement_read_index("audit root placement health")?;
+        self.store.audit_placement_health(
             marker,
             limit,
             expected_replica_count,
@@ -64,7 +64,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn audit_root_placement_health_with_read_proof_linearizable(
+    pub fn audit_placement_health_with_read_proof_linearizable(
         &self,
         marker: Option<&ObjectId>,
         limit: usize,
@@ -73,8 +73,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         degraded_only: bool,
         max_payload_bytes: u64,
     ) -> Result<ProvenPlacementRead<PlacementHealthPage>, ObjectError> {
-        let proof = self.ensure_root_read_index("audit root placement health")?;
-        let value = self.store.audit_root_placement_health(
+        let proof = self.ensure_placement_read_index("audit root placement health")?;
+        let value = self.store.audit_placement_health(
             marker,
             limit,
             expected_replica_count,

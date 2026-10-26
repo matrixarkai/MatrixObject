@@ -23,7 +23,7 @@ impl MatrixMetaService {
             ));
         }
         let expected_checksum =
-            prepared_root_capacity_rebalance_checksum(&PreparedPlacementCapacityRebalance {
+            prepared_placement_capacity_rebalance_checksum(&PreparedPlacementCapacityRebalance {
                 raft_entry_checksum: String::new(),
                 ..prepared.clone()
             });
@@ -33,7 +33,7 @@ impl MatrixMetaService {
             ));
         }
         if prepared.request_checksum
-            != root_capacity_rebalance_request_checksum(
+            != placement_capacity_rebalance_request_checksum(
                 prepared.max_objects,
                 prepared.min_free_bytes,
             )

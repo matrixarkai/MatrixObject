@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    pub fn batch_copy_objects_with_root_placement(
+    pub fn batch_copy_objects_with_placement(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -9,7 +9,7 @@ impl MatrixObjectStore {
         replica_count: usize,
         update_time_ms: u64,
     ) -> Result<ObjectBatchCopyReport, ObjectError> {
-        self.batch_copy_objects_with_root_placement_fenced(
+        self.batch_copy_objects_with_placement_fenced(
             requests,
             max_items,
             max_copied_bytes,
@@ -19,7 +19,7 @@ impl MatrixObjectStore {
         )
     }
 
-    pub fn batch_copy_objects_with_root_placement_fenced(
+    pub fn batch_copy_objects_with_placement_fenced(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -28,7 +28,7 @@ impl MatrixObjectStore {
         update_time_ms: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectBatchCopyReport, ObjectError> {
-        self.batch_copy_objects_with_root_placement_fenced_internal(
+        self.batch_copy_objects_with_placement_fenced_internal(
             requests,
             max_items,
             max_copied_bytes,
@@ -40,7 +40,7 @@ impl MatrixObjectStore {
         )
     }
 
-    pub fn batch_copy_objects_with_root_placement_fenced_with_copy_proof(
+    pub fn batch_copy_objects_with_placement_fenced_with_copy_proof(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -50,7 +50,7 @@ impl MatrixObjectStore {
         expected_route_control_checksum: Option<&str>,
         expected_copy_batch_proof_checksum: Option<&str>,
     ) -> Result<ObjectBatchCopyReport, ObjectError> {
-        self.batch_copy_objects_with_root_placement_fenced_internal(
+        self.batch_copy_objects_with_placement_fenced_internal(
             requests,
             max_items,
             max_copied_bytes,
@@ -62,7 +62,7 @@ impl MatrixObjectStore {
         )
     }
 
-    pub fn batch_copy_objects_with_root_placement_metadata_read(
+    pub fn batch_copy_objects_with_placement_metadata_read(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -87,7 +87,7 @@ impl MatrixObjectStore {
                 ObjectId::new(&request.destination_bucket, &request.destination_key);
             self.prepare_metadata_read(&meta_object_key(&destination_id), &read_options)?;
         }
-        let mut report = self.batch_copy_objects_with_root_placement_fenced_internal(
+        let mut report = self.batch_copy_objects_with_placement_fenced_internal(
             requests,
             max_items,
             max_copied_bytes,
@@ -102,7 +102,7 @@ impl MatrixObjectStore {
         Ok(report)
     }
 
-    fn batch_copy_objects_with_root_placement_fenced_internal(
+    fn batch_copy_objects_with_placement_fenced_internal(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -151,7 +151,7 @@ impl MatrixObjectStore {
                 });
                 continue;
             }
-            let copy = self.apply_copy_with_root_placement(
+            let copy = self.apply_copy_with_placement(
                 request.source_bucket.clone(),
                 request.source_key.clone(),
                 request.source_version,

@@ -25,7 +25,7 @@ impl MatrixMetaService {
                     .to_string(),
             ));
         }
-        let expected_checksum = prepared_root_unhealthy_placement_repair_checksum(
+        let expected_checksum = prepared_unhealthy_placement_repair_checksum(
             &PreparedUnhealthyPlacementRepair {
                 raft_entry_checksum: String::new(),
                 ..prepared.clone()
@@ -37,7 +37,7 @@ impl MatrixMetaService {
             ));
         }
         if prepared.request_checksum
-            != root_unhealthy_placement_repair_request_checksum(
+            != unhealthy_placement_repair_request_checksum(
                 prepared.marker.as_ref(),
                 prepared.max_objects,
                 prepared.expected_replica_count,

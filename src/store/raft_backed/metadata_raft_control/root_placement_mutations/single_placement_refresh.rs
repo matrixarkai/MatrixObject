@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_refresh_object_root_placement(
+    pub fn propose_refresh_object_placement(
         &mut self,
         bucket: &str,
         key: &str,
@@ -16,25 +16,25 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_refresh_object_root_placement_linearizable(
+    pub fn propose_refresh_object_placement_linearizable(
         &mut self,
         bucket: &str,
         key: &str,
         replica_count: usize,
         update_time_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.ensure_root_read_index("refresh object root placement")?;
-        self.propose_refresh_object_root_placement(bucket, key, replica_count, update_time_ms)
+        self.ensure_placement_read_index("refresh object root placement")?;
+        self.propose_refresh_object_placement(bucket, key, replica_count, update_time_ms)
     }
 
-    pub fn propose_refresh_object_root_placement_with_read_proof_linearizable(
+    pub fn propose_refresh_object_placement_with_read_proof_linearizable(
         &mut self,
         bucket: &str,
         key: &str,
         replica_count: usize,
         update_time_ms: u64,
     ) -> Result<ProvenMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_refresh_object_root_placement_with_read_proof_linearizable_committed_at(
+        self.propose_refresh_object_placement_with_read_proof_linearizable_committed_at(
             bucket,
             key,
             replica_count,
@@ -44,7 +44,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_refresh_object_root_placement_with_route_proof_linearizable_fenced(
+    pub fn propose_refresh_object_placement_with_route_proof_linearizable_fenced(
         &mut self,
         bucket: &str,
         key: &str,
@@ -52,7 +52,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         update_time_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenRouteFencedMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_refresh_object_root_placement_with_route_proof_linearizable_fenced_committed_at(
+        self.propose_refresh_object_placement_with_route_proof_linearizable_fenced_committed_at(
             bucket,
             key,
             replica_count,
@@ -63,7 +63,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_refresh_object_root_placement_with_route_proof_linearizable_fenced_committed_at(
+    pub fn propose_refresh_object_placement_with_route_proof_linearizable_fenced_committed_at(
         &mut self,
         bucket: &str,
         key: &str,
@@ -80,7 +80,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
-            .propose_refresh_object_root_placement_with_read_proof_linearizable_committed_at(
+            .propose_refresh_object_placement_with_read_proof_linearizable_committed_at(
                 bucket,
                 key,
                 replica_count,
@@ -96,7 +96,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_refresh_object_root_placement_with_read_proof_linearizable_committed_at(
+    pub fn propose_refresh_object_placement_with_read_proof_linearizable_committed_at(
         &mut self,
         bucket: &str,
         key: &str,
@@ -111,7 +111,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let metadata = self.propose_refresh_object_root_placement_linearizable(
+        let metadata = self.propose_refresh_object_placement_linearizable(
             bucket,
             key,
             replica_count,

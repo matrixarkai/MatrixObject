@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn append_root_placement_repair_item(out: &mut Vec<u8>, item: &PlacementRepairItem) {
-    append_root_placement_migration_plan(out, &item.plan);
+pub(crate) fn append_placement_repair_item(out: &mut Vec<u8>, item: &PlacementRepairItem) {
+    append_placement_migration_plan(out, &item.plan);
 }
 
-pub(crate) fn append_root_placement_repair_report(
+pub(crate) fn append_placement_repair_report(
     out: &mut Vec<u8>,
     report: &PlacementRepairReport,
 ) {
@@ -26,7 +26,7 @@ pub(crate) fn append_root_placement_repair_report(
     append_u64(out, report.bytes_repaired);
     append_u64(out, report.items.len() as u64);
     for item in &report.items {
-        append_root_placement_repair_item(out, item);
+        append_placement_repair_item(out, item);
     }
     append_u64(out, report.errors.len() as u64);
     for error in &report.errors {
@@ -37,7 +37,7 @@ pub(crate) fn append_root_placement_repair_report(
     append_string(out, &report.repair_reason);
 }
 
-fn root_placement_repair_report_encoded_len(report: &PlacementRepairReport) -> usize {
+fn placement_repair_report_encoded_len(report: &PlacementRepairReport) -> usize {
     let marker_len = report
         .marker
         .as_ref()
@@ -66,7 +66,7 @@ fn root_placement_repair_report_encoded_len(report: &PlacementRepairReport) -> u
         + encoded_string_len(&report.repair_reason)
 }
 
-pub(crate) fn root_placement_repair_request_checksum(max_objects: usize) -> String {
+pub(crate) fn placement_repair_request_checksum(max_objects: usize) -> String {
     let mut material = Vec::with_capacity(
         encoded_string_len("MOS-RUST-ROOT-PLACEMENT-REPAIR-REQUEST1")
             + std::mem::size_of::<u64>(),
@@ -76,14 +76,14 @@ pub(crate) fn root_placement_repair_request_checksum(max_objects: usize) -> Stri
     etag(&material)
 }
 
-pub(crate) fn prepared_root_placement_repair_checksum(
+pub(crate) fn prepared_placement_repair_checksum(
     prepared: &PreparedPlacementRepair,
 ) -> String {
     let mut material = Vec::with_capacity(
         encoded_string_len("MOS-RUST-PREPARED-ROOT-PLACEMENT-REPAIR1")
             + encoded_string_len(&prepared.before_state_fingerprint)
             + encoded_string_len(&prepared.request_checksum)
-            + root_placement_repair_report_encoded_len(&prepared.report)
+            + placement_repair_report_encoded_len(&prepared.report)
             + std::mem::size_of::<u64>() * 3,
     );
     append_string(&mut material, "MOS-RUST-PREPARED-ROOT-PLACEMENT-REPAIR1");
@@ -92,11 +92,11 @@ pub(crate) fn prepared_root_placement_repair_checksum(
     append_string(&mut material, &prepared.request_checksum);
     append_u64(&mut material, prepared.expected_previous_commit_index);
     append_u64(&mut material, prepared.prepared_commit_index);
-    append_root_placement_repair_report(&mut material, &prepared.report);
+    append_placement_repair_report(&mut material, &prepared.report);
     etag(&material)
 }
 
-pub(crate) fn root_unhealthy_placement_repair_request_checksum(
+pub(crate) fn unhealthy_placement_repair_request_checksum(
     marker: Option<&ObjectId>,
     max_objects: usize,
     expected_replica_count: usize,
@@ -123,7 +123,7 @@ pub(crate) fn root_unhealthy_placement_repair_request_checksum(
     etag(&material)
 }
 
-pub(crate) fn prepared_root_unhealthy_placement_repair_checksum(
+pub(crate) fn prepared_unhealthy_placement_repair_checksum(
     prepared: &PreparedUnhealthyPlacementRepair,
 ) -> String {
     let mut material = Vec::with_capacity(
@@ -135,7 +135,7 @@ pub(crate) fn prepared_root_unhealthy_placement_repair_checksum(
                 .unwrap_or_default()
             + encoded_string_len(&prepared.before_state_fingerprint)
             + encoded_string_len(&prepared.request_checksum)
-            + root_placement_repair_report_encoded_len(&prepared.report)
+            + placement_repair_report_encoded_len(&prepared.report)
             + std::mem::size_of::<u64>() * 9,
     );
     append_string(
@@ -154,11 +154,11 @@ pub(crate) fn prepared_root_unhealthy_placement_repair_checksum(
     append_string(&mut material, &prepared.request_checksum);
     append_u64(&mut material, prepared.expected_previous_commit_index);
     append_u64(&mut material, prepared.prepared_commit_index);
-    append_root_placement_repair_report(&mut material, &prepared.report);
+    append_placement_repair_report(&mut material, &prepared.report);
     etag(&material)
 }
 
-pub(crate) fn append_root_placement_repair_envelope(
+pub(crate) fn append_placement_repair_envelope(
     out: &mut Vec<u8>,
     envelope: &PreparedPlacementRepairEnvelope,
 ) {
@@ -200,22 +200,22 @@ pub(crate) fn append_root_placement_repair_envelope(
     append_string(out, &envelope.raft_entry_checksum);
 }
 
-pub(crate) fn prepared_root_placement_repair_envelope_checksum(
+pub(crate) fn prepared_placement_repair_envelope_checksum(
     envelope: &PreparedPlacementRepairEnvelope,
 ) -> String {
     let mut material = Vec::with_capacity(
         encoded_string_len("MOS-RUST-PREPARED-ROOT-PLACEMENT-REPAIR-ENVELOPE1")
-            + root_placement_repair_envelope_encoded_len(envelope),
+            + placement_repair_envelope_encoded_len(envelope),
     );
     append_string(
         &mut material,
         "MOS-RUST-PREPARED-ROOT-PLACEMENT-REPAIR-ENVELOPE1",
     );
-    append_root_placement_repair_envelope(&mut material, envelope);
+    append_placement_repair_envelope(&mut material, envelope);
     etag(&material)
 }
 
-fn root_placement_repair_envelope_encoded_len(
+fn placement_repair_envelope_encoded_len(
     envelope: &PreparedPlacementRepairEnvelope,
 ) -> usize {
     let marker_len = envelope
@@ -246,7 +246,7 @@ fn root_placement_repair_envelope_encoded_len(
         + encoded_string_len(&envelope.raft_entry_checksum)
 }
 
-pub(crate) fn root_placement_repair_envelope_from_report(
+pub(crate) fn placement_repair_envelope_from_report(
     repair_kind: &str,
     marker: Option<ObjectId>,
     max_objects: u64,
@@ -295,14 +295,14 @@ pub(crate) fn root_placement_repair_envelope_from_report(
         raft_entry_checksum: raft_entry_checksum.to_string(),
         envelope_checksum: String::new(),
     };
-    envelope.envelope_checksum = prepared_root_placement_repair_envelope_checksum(&envelope);
+    envelope.envelope_checksum = prepared_placement_repair_envelope_checksum(&envelope);
     envelope
 }
 
-pub(crate) fn prepared_draining_root_placement_repair_envelope(
+pub(crate) fn prepared_draining_placement_repair_envelope(
     prepared: &PreparedPlacementRepair,
 ) -> PreparedPlacementRepairEnvelope {
-    root_placement_repair_envelope_from_report(
+    placement_repair_envelope_from_report(
         "draining",
         None,
         prepared.max_objects as u64,
@@ -318,10 +318,10 @@ pub(crate) fn prepared_draining_root_placement_repair_envelope(
     )
 }
 
-pub(crate) fn prepared_unhealthy_root_placement_repair_envelope(
+pub(crate) fn prepared_unhealthy_placement_repair_envelope(
     prepared: &PreparedUnhealthyPlacementRepair,
 ) -> PreparedPlacementRepairEnvelope {
-    root_placement_repair_envelope_from_report(
+    placement_repair_envelope_from_report(
         "unhealthy",
         prepared.marker.clone(),
         prepared.max_objects as u64,

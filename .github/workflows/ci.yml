@@ -614,26 +614,26 @@ jobs:
       - name: The coverage status leads with the control proof
         run: |
           set -o pipefail
-          cargo test --locked --lib tests::rootserver_raft_status_exposes_service_coverage -- --exact \
+          cargo test --locked --lib tests::placement_raft_status_exposes_service_coverage -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
-            || { echo "::error::rootserver_raft_status_exposes_service_coverage did not run"; exit 1; }
+            || { echo "::error::placement_raft_status_exposes_service_coverage did not run"; exit 1; }
 
       - name: The pageserver coverage status leads with the route control proof
         run: |
           set -o pipefail
-          cargo test --locked --lib tests::rootserver_tracks_pageserver_service_coverage_for_write_routing -- --exact \
+          cargo test --locked --lib tests::placement_tracks_pageserver_service_coverage_for_write_routing -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
-            || { echo "::error::rootserver_tracks_pageserver_service_coverage_for_write_routing did not run"; exit 1; }
+            || { echo "::error::placement_tracks_pageserver_service_coverage_for_write_routing did not run"; exit 1; }
 
       - name: A health heartbeat moves the coverage status it reports
         run: |
           set -o pipefail
-          cargo test --locked --lib tests::rootserver_health_heartbeats_update_service_coverage -- --exact \
+          cargo test --locked --lib tests::placement_health_heartbeats_update_service_coverage -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
-            || { echo "::error::rootserver_health_heartbeats_update_service_coverage did not run"; exit 1; }
+            || { echo "::error::placement_health_heartbeats_update_service_coverage did not run"; exit 1; }
 
       - name: The control plane leader lease is the metaserver's and old snapshots still load
         run: |
@@ -657,10 +657,10 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --lib \
-            tests::the_root_snapshot_encoding_is_byte_for_byte_what_it_was -- --exact \
+            tests::the_placement_snapshot_encoding_is_byte_for_byte_what_it_was -- --exact \
             | tee /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
-            || { echo "::error::the_root_snapshot_encoding_is_byte_for_byte_what_it_was did not run"; exit 1; }
+            || { echo "::error::the_placement_snapshot_encoding_is_byte_for_byte_what_it_was did not run"; exit 1; }
 
       - name: A rule the write path refuses is refused on the read path too
         run: |

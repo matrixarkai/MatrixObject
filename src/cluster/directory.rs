@@ -220,7 +220,7 @@ impl MetaDirectory {
         }
     }
 
-    pub fn heartbeat_root_node(
+    pub fn heartbeat_placement_node(
         &mut self,
         node_id: &str,
         used_bytes: u64,
@@ -239,7 +239,7 @@ impl MetaDirectory {
                     online,
                     now_ms,
                 )?;
-                Ok(PlacementNodeSummary::from_root_node(&node))
+                Ok(PlacementNodeSummary::from_placement_node(&node))
             }
             MetaDirectory::Remote(client) => {
                 match client.try_call(MetaRequest::HeartbeatRootNode {
@@ -257,7 +257,7 @@ impl MetaDirectory {
         }
     }
 
-    pub fn expire_root_node_heartbeats(
+    pub fn expire_placement_node_heartbeats(
         &mut self,
         ttl_ms: u64,
         now_ms: u64,
@@ -275,12 +275,12 @@ impl MetaDirectory {
         }
     }
 
-    pub fn list_root_nodes(&mut self) -> Result<Vec<PlacementNodeSummary>, ObjectError> {
+    pub fn list_placement_nodes(&mut self) -> Result<Vec<PlacementNodeSummary>, ObjectError> {
         match self {
             MetaDirectory::InProcess(meta) => Ok(meta
                 .nodes
                 .values()
-                .map(PlacementNodeSummary::from_root_node)
+                .map(PlacementNodeSummary::from_placement_node)
                 .collect()),
             MetaDirectory::Remote(client) => match client.try_call(MetaRequest::ListRootNodes) {
                 MetaCallOutcome::Answered(MetaReply::RootNodes(nodes)) => Ok(nodes),
@@ -355,7 +355,7 @@ impl MetaDirectory {
         }
     }
 
-    pub fn object_root_placement(
+    pub fn object_placement(
         &mut self,
         bucket: &str,
         key: &str,

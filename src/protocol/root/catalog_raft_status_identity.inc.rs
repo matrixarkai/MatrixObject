@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-fn root_raft_status_identity_fields(
+fn placement_raft_status_identity_fields(
     status: &PlacementRaftStatus,
     field_prefix: &str,
 ) -> BTreeMap<String, String> {

@@ -1,53 +1,53 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn root_nodes_linearizable(&self) -> Result<Vec<PlacementNode>, ObjectError> {
-        self.ensure_root_read_index("list root nodes")?;
-        Ok(self.store.root_nodes())
+    pub fn placement_nodes_linearizable(&self) -> Result<Vec<PlacementNode>, ObjectError> {
+        self.ensure_placement_read_index("list root nodes")?;
+        Ok(self.store.placement_nodes())
     }
 
-    pub fn root_leader_lease_linearizable(&self) -> Result<Option<PlacementLeaderLease>, ObjectError> {
-        self.ensure_root_read_index("root leader lease")?;
+    pub fn placement_leader_lease_linearizable(&self) -> Result<Option<PlacementLeaderLease>, ObjectError> {
+        self.ensure_placement_read_index("root leader lease")?;
         Ok(self.store.root_leader_lease())
     }
 
-    pub fn root_leader_lease_with_read_proof_linearizable(
+    pub fn placement_leader_lease_with_read_proof_linearizable(
         &self,
     ) -> Result<ProvenPlacementRead<Option<PlacementLeaderLease>>, ObjectError> {
-        let proof = self.ensure_root_read_index("root leader lease")?;
+        let proof = self.ensure_placement_read_index("root leader lease")?;
         Ok(ProvenPlacementRead {
             value: self.store.root_leader_lease(),
             proof,
         })
     }
 
-    pub fn list_root_leader_lease_receipts_linearizable(
+    pub fn list_placement_leader_lease_receipts_linearizable(
         &self,
         marker: Option<&str>,
         limit: usize,
         operation: Option<&str>,
         leader_node_id: Option<&str>,
     ) -> Result<PlacementLeaderLeaseReceiptPage, ObjectError> {
-        self.ensure_root_read_index("list root leader lease receipts")?;
+        self.ensure_placement_read_index("list root leader lease receipts")?;
         self.store
-            .list_root_leader_lease_receipts(marker, limit, operation, leader_node_id)
+            .list_placement_leader_lease_receipts(marker, limit, operation, leader_node_id)
     }
 
-    pub fn list_root_leader_lease_receipts_with_read_proof_linearizable(
+    pub fn list_placement_leader_lease_receipts_with_read_proof_linearizable(
         &self,
         marker: Option<&str>,
         limit: usize,
         operation: Option<&str>,
         leader_node_id: Option<&str>,
     ) -> Result<ProvenPlacementRead<PlacementLeaderLeaseReceiptPage>, ObjectError> {
-        let proof = self.ensure_root_read_index("list root leader lease receipts")?;
+        let proof = self.ensure_placement_read_index("list root leader lease receipts")?;
         let value =
             self.store
-                .list_root_leader_lease_receipts(marker, limit, operation, leader_node_id)?;
+                .list_placement_leader_lease_receipts(marker, limit, operation, leader_node_id)?;
         Ok(ProvenPlacementRead { value, proof })
     }
 
-    pub fn list_root_leader_lease_receipts_with_read_proof_linearizable_fenced(
+    pub fn list_placement_leader_lease_receipts_with_read_proof_linearizable_fenced(
         &self,
         marker: Option<&str>,
         limit: usize,
@@ -55,28 +55,28 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         leader_node_id: Option<&str>,
         expected_root_leader_lease_receipt_page_proof_checksum: impl AsRef<str>,
     ) -> Result<ProvenPlacementRead<PlacementLeaderLeaseReceiptPage>, ObjectError> {
-        let proven = self.list_root_leader_lease_receipts_with_read_proof_linearizable(
+        let proven = self.list_placement_leader_lease_receipts_with_read_proof_linearizable(
             marker,
             limit,
             operation,
             leader_node_id,
         )?;
-        proven.require_root_leader_lease_receipt_page_proof_checksum(
+        proven.require_placement_leader_lease_receipt_page_proof_checksum(
             expected_root_leader_lease_receipt_page_proof_checksum,
         )
     }
 
-    pub fn root_nodes_with_read_proof_linearizable(
+    pub fn placement_nodes_with_read_proof_linearizable(
         &self,
     ) -> Result<ProvenPlacementRead<Vec<PlacementNode>>, ObjectError> {
-        let proof = self.ensure_root_read_index("list root nodes")?;
+        let proof = self.ensure_placement_read_index("list root nodes")?;
         Ok(ProvenPlacementRead {
-            value: self.store.root_nodes(),
+            value: self.store.placement_nodes(),
             proof,
         })
     }
 
-    pub fn list_root_nodes_linearizable(
+    pub fn list_placement_nodes_linearizable(
         &self,
         marker: Option<&str>,
         limit: usize,
@@ -87,8 +87,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         data_eligible_filter: Option<bool>,
         gateway_eligible_filter: Option<bool>,
     ) -> Result<PlacementNodePage, ObjectError> {
-        self.ensure_root_read_index("list root nodes page")?;
-        self.store.list_root_nodes(
+        self.ensure_placement_read_index("list root nodes page")?;
+        self.store.list_placement_nodes(
             marker,
             limit,
             service_kind_filter,
@@ -100,7 +100,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn list_root_nodes_with_read_proof_linearizable(
+    pub fn list_placement_nodes_with_read_proof_linearizable(
         &self,
         marker: Option<&str>,
         limit: usize,
@@ -111,8 +111,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         data_eligible_filter: Option<bool>,
         gateway_eligible_filter: Option<bool>,
     ) -> Result<ProvenPlacementRead<PlacementNodePage>, ObjectError> {
-        let proof = self.ensure_root_read_index("list root nodes page")?;
-        let value = self.store.list_root_nodes(
+        let proof = self.ensure_placement_read_index("list root nodes page")?;
+        let value = self.store.list_placement_nodes(
             marker,
             limit,
             service_kind_filter,
@@ -125,7 +125,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(ProvenPlacementRead { value, proof })
     }
 
-    pub fn list_root_node_usage_linearizable(
+    pub fn list_placement_node_usage_linearizable(
         &self,
         marker: Option<&str>,
         limit: usize,
@@ -138,8 +138,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_free_bytes: u64,
         min_reclaimable_bytes: u64,
     ) -> Result<PlacementNodeUsagePage, ObjectError> {
-        self.ensure_root_read_index("list root node usage")?;
-        self.store.list_root_node_usage(
+        self.ensure_placement_read_index("list root node usage")?;
+        self.store.list_placement_node_usage(
             marker,
             limit,
             service_kind_filter,
@@ -153,7 +153,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn list_root_node_usage_with_read_proof_linearizable(
+    pub fn list_placement_node_usage_with_read_proof_linearizable(
         &self,
         marker: Option<&str>,
         limit: usize,
@@ -166,8 +166,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_free_bytes: u64,
         min_reclaimable_bytes: u64,
     ) -> Result<ProvenPlacementRead<PlacementNodeUsagePage>, ObjectError> {
-        let proof = self.ensure_root_read_index("list root node usage")?;
-        let value = self.store.list_root_node_usage(
+        let proof = self.ensure_placement_read_index("list root node usage")?;
+        let value = self.store.list_placement_node_usage(
             marker,
             limit,
             service_kind_filter,
@@ -182,7 +182,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(ProvenPlacementRead { value, proof })
     }
 
-    pub fn plan_root_reclaim_nodes_linearizable(
+    pub fn plan_placement_reclaim_nodes_linearizable(
         &self,
         marker: Option<&str>,
         limit: usize,
@@ -195,8 +195,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_page_physical_discard_bytes: u64,
         min_page_physical_discard_ranges: u64,
     ) -> Result<PlacementReclaimNodePlanPage, ObjectError> {
-        self.ensure_root_read_index("plan root reclaim nodes")?;
-        self.store.plan_root_reclaim_nodes(
+        self.ensure_placement_read_index("plan root reclaim nodes")?;
+        self.store.plan_placement_reclaim_nodes(
             marker,
             limit,
             service_kind_filter,
@@ -210,7 +210,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn plan_root_reclaim_nodes_with_read_proof_linearizable(
+    pub fn plan_placement_reclaim_nodes_with_read_proof_linearizable(
         &self,
         marker: Option<&str>,
         limit: usize,
@@ -223,8 +223,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_page_physical_discard_bytes: u64,
         min_page_physical_discard_ranges: u64,
     ) -> Result<ProvenPlacementRead<PlacementReclaimNodePlanPage>, ObjectError> {
-        let proof = self.ensure_root_read_index("plan root reclaim nodes")?;
-        let value = self.store.plan_root_reclaim_nodes(
+        let proof = self.ensure_placement_read_index("plan root reclaim nodes")?;
+        let value = self.store.plan_placement_reclaim_nodes(
             marker,
             limit,
             service_kind_filter,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_prepared_draining_root_placement_repair(
+    pub fn propose_prepared_draining_placement_repair(
         &mut self,
         prepared: PreparedPlacementRepair,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -29,20 +29,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store.apply_raft_entry(&entry)
     }
 
-    pub fn propose_prepared_draining_root_placement_repair_linearizable(
+    pub fn propose_prepared_draining_placement_repair_linearizable(
         &mut self,
         prepared: PreparedPlacementRepair,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.ensure_root_read_index("propose prepared draining root placement repair")?;
-        self.propose_prepared_draining_root_placement_repair(prepared)
+        self.ensure_placement_read_index("propose prepared draining root placement repair")?;
+        self.propose_prepared_draining_placement_repair(prepared)
     }
 
-    pub fn propose_prepared_draining_root_placement_repair_with_read_proof_linearizable(
+    pub fn propose_prepared_draining_placement_repair_with_read_proof_linearizable(
         &mut self,
         prepared: PreparedPlacementRepair,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_prepared_draining_root_placement_repair_with_read_proof_linearizable_committed_at(
+        self.propose_prepared_draining_placement_repair_with_read_proof_linearizable_committed_at(
             prepared,
             now_ms,
             self.raft.commit_index(),
@@ -50,7 +50,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_prepared_draining_root_placement_repair_with_read_proof_linearizable_committed_at(
+    pub fn propose_prepared_draining_placement_repair_with_read_proof_linearizable_committed_at(
         &mut self,
         prepared: PreparedPlacementRepair,
         now_ms: u64,
@@ -64,7 +64,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let metadata =
-            self.propose_prepared_draining_root_placement_repair_linearizable(prepared)?;
+            self.propose_prepared_draining_placement_repair_linearizable(prepared)?;
         let readiness = self.ensure_metadata_read_index_committed_at(
             "propose prepared draining root placement repair post-commit",
             now_ms,
@@ -74,29 +74,29 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven_metadata_read(metadata, &readiness))
     }
 
-    pub fn propose_draining_root_placement_repair_prepared(
+    pub fn propose_draining_placement_repair_prepared(
         &mut self,
         max_objects: usize,
     ) -> Result<ObjectMetadata, ObjectError> {
-        let prepared = self.prepare_draining_root_placement_repair_raft_entry(max_objects);
-        self.propose_prepared_draining_root_placement_repair(prepared)
+        let prepared = self.prepare_draining_placement_repair_raft_entry(max_objects);
+        self.propose_prepared_draining_placement_repair(prepared)
     }
 
-    pub fn propose_draining_root_placement_repair_prepared_linearizable(
+    pub fn propose_draining_placement_repair_prepared_linearizable(
         &mut self,
         max_objects: usize,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared =
-            self.prepare_draining_root_placement_repair_raft_entry_linearizable(max_objects)?;
-        self.propose_prepared_draining_root_placement_repair_linearizable(prepared)
+            self.prepare_draining_placement_repair_raft_entry_linearizable(max_objects)?;
+        self.propose_prepared_draining_placement_repair_linearizable(prepared)
     }
 
-    pub fn propose_draining_root_placement_repair_prepared_with_read_proof_linearizable(
+    pub fn propose_draining_placement_repair_prepared_with_read_proof_linearizable(
         &mut self,
         max_objects: usize,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_draining_root_placement_repair_prepared_with_read_proof_linearizable_committed_at(
+        self.propose_draining_placement_repair_prepared_with_read_proof_linearizable_committed_at(
             max_objects,
             now_ms,
             self.raft.commit_index(),
@@ -104,7 +104,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_draining_root_placement_repair_prepared_with_read_proof_linearizable_committed_at(
+    pub fn propose_draining_placement_repair_prepared_with_read_proof_linearizable_committed_at(
         &mut self,
         max_objects: usize,
         now_ms: u64,
@@ -118,7 +118,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let metadata =
-            self.propose_draining_root_placement_repair_prepared_linearizable(max_objects)?;
+            self.propose_draining_placement_repair_prepared_linearizable(max_objects)?;
         let readiness = self.ensure_metadata_read_index_committed_at(
             "propose draining root placement repair post-commit",
             now_ms,

@@ -6,7 +6,7 @@ impl PlacementServiceBootstrapReport {
     }
 
     pub fn report_checksum(&self) -> String {
-        root_service_bootstrap_report_checksum(self)
+        placement_service_bootstrap_report_checksum(self)
     }
 
     pub fn verify_expected_report_checksum(

@@ -32,7 +32,7 @@ impl MatrixObjectStore {
         self.record_consensus_read_observation(&metadata);
         let page =
             self.page_storage_readiness(min_capacity_free_bytes, min_reclaimable_bytes, now_ms);
-        let root_placement_health = self.audit_root_placement_health(
+        let root_placement_health = self.audit_placement_health(
             None,
             max_root_health_items,
             expected_replica_count,
@@ -40,7 +40,7 @@ impl MatrixObjectStore {
             true,
             max_root_health_payload_bytes,
         )?;
-        let root_placement_repair = self.plan_unhealthy_root_placement_repairs(
+        let root_placement_repair = self.plan_unhealthy_placement_repairs(
             None,
             max_root_health_items,
             expected_replica_count,

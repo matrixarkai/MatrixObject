@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
 
-    pub fn campaign_root_leader(
+    pub fn campaign_placement_leader(
         &mut self,
         node_id: &str,
         ttl_ms: u64,
@@ -12,7 +12,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn campaign_root_leader_idempotent(
+    pub fn campaign_placement_leader_idempotent(
         &mut self,
         node_id: &str,
         ttl_ms: u64,
@@ -24,7 +24,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn renew_root_leader(
+    pub fn renew_placement_leader(
         &mut self,
         node_id: &str,
         epoch: u64,
@@ -36,7 +36,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn renew_root_leader_idempotent(
+    pub fn renew_placement_leader_idempotent(
         &mut self,
         node_id: &str,
         epoch: u64,
@@ -54,7 +54,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn list_root_leader_lease_receipts(
+    pub fn list_placement_leader_lease_receipts(
         &self,
         marker: Option<&str>,
         limit: usize,

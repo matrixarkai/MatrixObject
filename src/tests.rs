@@ -35,7 +35,7 @@ fn test_options() -> StoreOptions {
     }
 }
 
-fn root_node(node_id: &str, domain: &str, capacity_bytes: u64) -> PlacementNode {
+fn placement_node(node_id: &str, domain: &str, capacity_bytes: u64) -> PlacementNode {
     PlacementNode {
         node_id: node_id.to_string(),
         endpoint: format!("{node_id}.matrix.local:9102"),
@@ -59,7 +59,7 @@ fn root_node(node_id: &str, domain: &str, capacity_bytes: u64) -> PlacementNode 
     }
 }
 
-fn pageserver_root_node(
+fn pageserver_placement_node(
     node_id: &str,
     domain: &str,
     shard_index: u64,
@@ -110,7 +110,7 @@ fn pageserver_root_node(
     }
 }
 
-fn metaserver_root_node(
+fn metaserver_placement_node(
     node_id: &str,
     domain: &str,
     readable: bool,
@@ -816,7 +816,7 @@ fn persistent_journal_replays_control_plane_catalog_config() {
         // NOTHING CAN WRITE A ROOT CATALOG ENDPOINT, so the journal cannot come to carry
         // one: the configure call is the only writer of record 37 and it refuses.
         assert!(matches!(
-            store.configure_rootserver_fallback_endpoint(" root-a.local:9100 "),
+            store.configure_placement_fallback_endpoint(" root-a.local:9100 "),
             Err(ObjectError::InvalidArgument(_))
         ));
         // And the retired mode is refused by name, so record 35 cannot carry one either.
@@ -835,7 +835,7 @@ fn persistent_journal_replays_control_plane_catalog_config() {
         reopened.configured_metaserver_catalog_endpoints(),
         Some("meta-a.local:9105,meta-b.local:9105")
     );
-    assert_eq!(reopened.configured_rootserver_fallback_endpoint(), None);
+    assert_eq!(reopened.configured_placement_fallback_endpoint(), None);
     assert_eq!(
         reopened.configured_control_plane_mode().as_str(),
         "metaserver"
@@ -911,19 +911,19 @@ fn persistent_journal_replays_coordinator_configs() {
             .configure_metadata_coordinator_config(meta_config.clone())
             .unwrap();
         store
-            .configure_root_coordinator_config(root_config.clone())
+            .configure_placement_coordinator_config(root_config.clone())
             .unwrap();
         assert!(journal_path.exists());
     }
 
     let reopened = MatrixObjectStore::new(options).unwrap();
     assert_eq!(reopened.metadata_coordinator_config(), meta_config);
-    assert_eq!(reopened.root_coordinator_config(), root_config);
+    assert_eq!(reopened.placement_coordinator_config(), root_config);
     assert!(reopened
         .metadata_coordinator_config()
         .requires_external_coordinator());
     assert!(reopened
-        .root_coordinator_config()
+        .placement_coordinator_config()
         .external_compatibility_mode());
     let _ = std::fs::remove_dir_all(root);
 }
@@ -2526,7 +2526,7 @@ fn object_inventory_pages_metadata_and_placement() {
         ("chunk-c", "rack-c"),
     ] {
         store
-            .register_root_node(root_node(node_id, domain, 256))
+            .register_placement_node(placement_node(node_id, domain, 256))
             .unwrap();
     }
     store
@@ -7301,13 +7301,13 @@ fn object_store_plans_and_runs_bounded_replica_repairs() {
 fn object_store_decommissions_draining_replicas_after_repair() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(root_node("chunk-a", "rack-a", 64))
+        .register_placement_node(placement_node("chunk-a", "rack-a", 64))
         .unwrap();
     store
-        .register_root_node(root_node("chunk-b", "rack-b", 64))
+        .register_placement_node(placement_node("chunk-b", "rack-b", 64))
         .unwrap();
     store
-        .register_root_node(root_node("chunk-c", "rack-c", 64))
+        .register_placement_node(placement_node("chunk-c", "rack-c", 64))
         .unwrap();
     let (metadata, placement) = store
         .put_object_with_root_placement(
@@ -7322,7 +7322,7 @@ fn object_store_decommissions_draining_replicas_after_repair() {
     assert_eq!(placement.node_ids.len(), 2);
     let draining_node = placement.node_ids[0].clone();
     store
-        .heartbeat_root_node(&draining_node, 0, 64, true, true, 10)
+        .heartbeat_placement_node(&draining_node, 0, 64, true, true, 10)
         .unwrap();
     let degraded_chunk = store
         .chunk_service
@@ -7368,19 +7368,19 @@ fn object_store_decommissions_draining_replicas_after_repair() {
 }
 
 #[test]
-fn rootserver_plans_capacity_and_persists_placements() {
+fn plans_capacity_and_persists_placements() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(root_node("chunk-a", "rack-a", 100))
+        .register_placement_node(placement_node("chunk-a", "rack-a", 100))
         .unwrap();
     store
-        .register_root_node(root_node("chunk-b", "rack-b", 100))
+        .register_placement_node(placement_node("chunk-b", "rack-b", 100))
         .unwrap();
     store
-        .register_root_node(root_node("chunk-c", "rack-c", 4))
+        .register_placement_node(placement_node("chunk-c", "rack-c", 4))
         .unwrap();
     store
-        .heartbeat_root_node("chunk-c", 0, 4, true, true, 2)
+        .heartbeat_placement_node("chunk-c", 0, 4, true, true, 2)
         .unwrap();
 
     let plan = store
@@ -7401,7 +7401,7 @@ fn rootserver_plans_capacity_and_persists_placements() {
     store
         .commit_object_placement(placement, &plan.plan_checksum)
         .unwrap();
-    let nodes = store.root_nodes();
+    let nodes = store.placement_nodes();
     assert_eq!(
         nodes
             .iter()
@@ -7411,7 +7411,7 @@ fn rootserver_plans_capacity_and_persists_placements() {
         32
     );
     assert!(matches!(
-        store.heartbeat_root_node("chunk-a", 0, 16, false, true, 4),
+        store.heartbeat_placement_node("chunk-a", 0, 16, false, true, 4),
         Err(ObjectError::PreconditionFailed(_))
     ));
 
@@ -7443,7 +7443,7 @@ fn rootserver_plans_capacity_and_persists_placements() {
         .unwrap();
     assert_eq!(
         restored
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == "chunk-a")
             .unwrap()
@@ -7453,13 +7453,13 @@ fn rootserver_plans_capacity_and_persists_placements() {
 }
 
 #[test]
-fn rootserver_snapshot_chunks_restore_replacement_nodes() {
+fn snapshot_chunks_restore_replacement_nodes() {
     let mut root = MatrixMetaService::new();
-    root.register_node(root_node("chunk-a", "rack-a", 100))
+    root.register_node(placement_node("chunk-a", "rack-a", 100))
         .unwrap();
-    root.register_node(root_node("chunk-b", "rack-b", 100))
+    root.register_node(placement_node("chunk-b", "rack-b", 100))
         .unwrap();
-    root.register_node(root_node("chunk-c", "rack-c", 100))
+    root.register_node(placement_node("chunk-c", "rack-c", 100))
         .unwrap();
     root.heartbeat_node("chunk-c", 0, 100, true, true, 5)
         .unwrap();
@@ -7701,7 +7701,7 @@ fn rootserver_snapshot_chunks_restore_replacement_nodes() {
 }
 
 #[test]
-fn rootserver_leader_lease_is_fenced_and_snapshotted() {
+fn placement_leader_lease_is_fenced_and_snapshotted() {
     let mut root = MatrixMetaService::new();
     root.register_node(PlacementNode {
         node_id: "root-a".to_string(),
@@ -7747,7 +7747,7 @@ fn rootserver_leader_lease_is_fenced_and_snapshotted() {
         chunk_health: NodeChunkHealth::default(),
     })
     .unwrap();
-    root.register_node(root_node("chunk-a", "rack-c", 100))
+    root.register_node(placement_node("chunk-a", "rack-c", 100))
         .unwrap();
     assert!(matches!(
         root.campaign_leader("chunk-a", 100, 10),
@@ -7815,10 +7815,10 @@ fn rootserver_leader_lease_is_fenced_and_snapshotted() {
 }
 
 #[test]
-fn distributed_readiness_uses_root_observed_metaserver_coverage() {
+fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(PlacementNode {
+        .register_placement_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -7845,7 +7845,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         .campaign_leader("root-a", 100, 1)
         .unwrap();
     store
-        .register_root_node(metaserver_root_node(
+        .register_placement_node(metaserver_placement_node(
             "meta-a",
             "rack-a",
             true,
@@ -7855,7 +7855,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         ))
         .unwrap();
     store
-        .register_root_node(metaserver_root_node(
+        .register_placement_node(metaserver_placement_node(
             "meta-b",
             "rack-b",
             true,
@@ -7974,7 +7974,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
 
     let mut lagging_store = MatrixObjectStore::new(test_options()).unwrap();
     lagging_store
-        .register_root_node(PlacementNode {
+        .register_placement_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -8001,14 +8001,14 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         .campaign_leader("root-a", 100, 1)
         .unwrap();
     let mut lagging_meta =
-        metaserver_root_node("meta-lag", "rack-lag", true, true, "topology-lag", 8);
+        metaserver_placement_node("meta-lag", "rack-lag", true, true, "topology-lag", 8);
     lagging_meta.meta_health.control_proof.apply_caught_up = false;
     lagging_meta.meta_health.control_proof.apply_commit_lag = 3;
     lagging_meta
         .meta_health
         .control_proof
         .last_applied_mutation_commit_index = 5;
-    lagging_store.register_root_node(lagging_meta).unwrap();
+    lagging_store.register_placement_node(lagging_meta).unwrap();
     let lagging = lagging_store
         .distributed_readiness(0, 2, 0, 0, 1, 100, 0)
         .unwrap();
@@ -8049,7 +8049,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
 
     let mut read_fence_lag_store = MatrixObjectStore::new(test_options()).unwrap();
     read_fence_lag_store
-        .register_root_node(PlacementNode {
+        .register_placement_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -8076,7 +8076,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         .campaign_leader("root-a", 100, 1)
         .unwrap();
     let mut read_fence_lag_meta =
-        metaserver_root_node("meta-read-lag", "rack-lag", true, true, "topology-lag", 9);
+        metaserver_placement_node("meta-read-lag", "rack-lag", true, true, "topology-lag", 9);
     read_fence_lag_meta
         .meta_health
         .control_proof
@@ -8094,7 +8094,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         .control_proof
         .read_fence_applied_lag = 1;
     read_fence_lag_store
-        .register_root_node(read_fence_lag_meta)
+        .register_placement_node(read_fence_lag_meta)
         .unwrap();
     let read_lag = read_fence_lag_store
         .distributed_readiness(0, 2, 0, 0, 1, 100, 0)
@@ -8121,7 +8121,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
     );
 
     store
-        .register_root_node(metaserver_root_node(
+        .register_placement_node(metaserver_placement_node(
             "meta-b",
             "rack-b",
             true,
@@ -8141,7 +8141,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
 }
 
 #[test]
-fn rootserver_raft_status_exposes_service_coverage() {
+fn placement_raft_status_exposes_service_coverage() {
     let mut root = MatrixMetaService::new();
     root.register_node(PlacementNode {
         node_id: "root-a".to_string(),
@@ -8166,7 +8166,7 @@ fn rootserver_raft_status_exposes_service_coverage() {
     })
     .unwrap();
     root.campaign_leader("root-a", 100, 1).unwrap();
-    root.register_node(metaserver_root_node(
+    root.register_node(metaserver_placement_node(
         "meta-a",
         "rack-meta",
         true,
@@ -8175,11 +8175,11 @@ fn rootserver_raft_status_exposes_service_coverage() {
         7,
     ))
     .unwrap();
-    root.register_node(pageserver_root_node("block-a", "rack-a", 0, 2))
+    root.register_node(pageserver_placement_node("block-a", "rack-a", 0, 2))
         .unwrap();
-    root.register_node(pageserver_root_node("block-b", "rack-b", 1, 2))
+    root.register_node(pageserver_placement_node("block-b", "rack-b", 1, 2))
         .unwrap();
-    let mut chunk = root_node("chunk-a", "rack-c", 128);
+    let mut chunk = placement_node("chunk-a", "rack-c", 128);
     chunk.chunk_health.control_proof_format = "MOSRSCHUNKCONTROL8".to_string();
     chunk.chunk_health.control_proof_checksum = "chunk-proof-a".to_string();
     chunk.chunk_health.control_proof_bytes = 512;
@@ -8248,7 +8248,7 @@ fn rootserver_raft_status_exposes_service_coverage() {
     assert!(!status.root_replicaserver_control_proof_checksum.is_empty());
     assert!(!status.control_checksum.is_empty());
 
-    let mut blocked = root_node("chunk-a", "rack-c", 128);
+    let mut blocked = placement_node("chunk-a", "rack-c", 128);
     blocked.chunk_health.raft_writable = false;
     blocked.chunk_health.control_proof_format = "MOSRSCHUNKCONTROL8".to_string();
     blocked.chunk_health.control_proof_checksum = "chunk-proof-b".to_string();
@@ -8284,9 +8284,9 @@ fn rootserver_raft_status_exposes_service_coverage() {
 }
 
 #[test]
-fn rootserver_tracks_page_allocator_shard_coverage() {
+fn placement_tracks_page_allocator_shard_coverage() {
     let mut root = MatrixMetaService::new();
-    root.register_node(pageserver_root_node("block-a", "rack-a", 0, 2))
+    root.register_node(pageserver_placement_node("block-a", "rack-a", 0, 2))
         .unwrap();
     let incomplete = root.page_allocator_shard_coverage();
     assert_eq!(incomplete.active_pageserver_count, 1);
@@ -8296,19 +8296,19 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
     assert_eq!(incomplete.status, "incomplete");
 
     assert!(matches!(
-        root.register_node(pageserver_root_node("block-dup", "rack-b", 0, 2)),
+        root.register_node(pageserver_placement_node("block-dup", "rack-b", 0, 2)),
         Err(ObjectError::InvalidArgument(_))
     ));
     assert!(matches!(
-        root.register_node(pageserver_root_node("block-mixed", "rack-b", 1, 3)),
+        root.register_node(pageserver_placement_node("block-mixed", "rack-b", 1, 3)),
         Err(ObjectError::InvalidArgument(_))
     ));
     assert!(matches!(
-        root.register_node(pageserver_root_node("block-invalid", "rack-b", 2, 2)),
+        root.register_node(pageserver_placement_node("block-invalid", "rack-b", 2, 2)),
         Err(ObjectError::InvalidArgument(_))
     ));
 
-    root.register_node(pageserver_root_node("block-b", "rack-b", 1, 2))
+    root.register_node(pageserver_placement_node("block-b", "rack-b", 1, 2))
         .unwrap();
     let complete = root.page_allocator_shard_coverage();
     assert_eq!(complete.active_pageserver_count, 2);
@@ -8325,7 +8325,7 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(PlacementNode {
+        .register_placement_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -8352,7 +8352,7 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
         .campaign_leader("root-a", 100, 1)
         .unwrap();
     store
-        .register_root_node(pageserver_root_node("block-a", "rack-a", 0, 2))
+        .register_placement_node(pageserver_placement_node("block-a", "rack-a", 0, 2))
         .unwrap();
     let not_ready = store.distributed_readiness(0, 2, 0, 0, 1, 100, 0).unwrap();
     assert!(!not_ready.ready);
@@ -8364,7 +8364,7 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
     assert_eq!(not_ready.root_page_allocator_shard_status, "incomplete");
 
     store
-        .register_root_node(pageserver_root_node("block-b", "rack-b", 1, 2))
+        .register_placement_node(pageserver_placement_node("block-b", "rack-b", 1, 2))
         .unwrap();
     let ready = store.distributed_readiness(0, 2, 0, 0, 1, 100, 0).unwrap();
     assert!(ready.ready);
@@ -8377,11 +8377,11 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
 }
 
 #[test]
-fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
+fn placement_tracks_pageserver_service_coverage_for_write_routing() {
     let mut root = MatrixMetaService::new();
     assert_eq!(root.pageserver_service_coverage().status, "none");
 
-    let mut page_a = pageserver_root_node("block-a", "rack-a", 0, 2);
+    let mut page_a = pageserver_placement_node("block-a", "rack-a", 0, 2);
     page_a.page_health.ready = false;
     page_a.page_health.read_ready = false;
     page_a.page_health.writable_chunk_endpoint_count = 0;
@@ -8405,11 +8405,11 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
     );
     // THE ROUTE CONTROL PROOF LEADS, for the reason recorded against
     // `root_replicaserver_coverage_status` in
-    // `rootserver_raft_status_exposes_service_coverage`: two labels are true and the
+    // `placement_raft_status_exposes_service_coverage`: two labels are true and the
     // proximate cause is the one reported.
     assert_eq!(unready.status, "route_control_unready");
 
-    let page_b = pageserver_root_node("block-b", "rack-b", 1, 2);
+    let page_b = pageserver_placement_node("block-b", "rack-b", 1, 2);
     root.register_node(page_b).unwrap();
     let degraded = root.pageserver_service_coverage();
     assert_eq!(degraded.active_pageserver_count, 2);
@@ -8433,7 +8433,7 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
     // which takes an active count, a read-ready count and a write-ready count -- no frozen
     // count -- so `degraded` is the most specific answer it can give. `frozen_degraded` comes
     // from the REPLICASERVER label, which does take one, and
-    // `rootserver_tracks_replicaserver_coverage_for_write_routing` asserts it there and
+    // `placement_tracks_replicaserver_coverage_for_write_routing` asserts it there and
     // passes.
     //
     // THE OTHER ANSWER WAS CONSIDERED: give the pageserver path the frozen, read-only and
@@ -8452,7 +8452,7 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(PlacementNode {
+        .register_placement_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -8478,22 +8478,22 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
         .meta_service
         .campaign_leader("root-a", 100, 1)
         .unwrap();
-    let mut unready_a = pageserver_root_node("block-a", "rack-a", 0, 2);
+    let mut unready_a = pageserver_placement_node("block-a", "rack-a", 0, 2);
     unready_a.page_health.ready = false;
     unready_a.page_health.read_ready = false;
     unready_a.page_health.writable_chunk_endpoint_count = 0;
     unready_a
         .page_health
         .capacity_ready_writable_chunk_endpoint_count = 0;
-    let mut unready_b = pageserver_root_node("block-b", "rack-b", 1, 2);
+    let mut unready_b = pageserver_placement_node("block-b", "rack-b", 1, 2);
     unready_b.page_health.ready = false;
     unready_b.page_health.read_ready = false;
     unready_b.page_health.writable_chunk_endpoint_count = 0;
     unready_b
         .page_health
         .capacity_ready_writable_chunk_endpoint_count = 0;
-    store.register_root_node(unready_a).unwrap();
-    store.register_root_node(unready_b).unwrap();
+    store.register_placement_node(unready_a).unwrap();
+    store.register_placement_node(unready_b).unwrap();
     let not_ready = store.distributed_readiness(0, 2, 0, 0, 1, 100, 0).unwrap();
     assert!(!not_ready.ready);
     assert_eq!(not_ready.reason, "root_blockservers_unready");
@@ -8507,7 +8507,7 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
     );
 
     store
-        .register_root_node(pageserver_root_node("block-b", "rack-b", 1, 2))
+        .register_placement_node(pageserver_placement_node("block-b", "rack-b", 1, 2))
         .unwrap();
     let ready = store.distributed_readiness(0, 2, 0, 0, 1, 100, 0).unwrap();
     assert!(ready.ready);
@@ -8550,11 +8550,11 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
 }
 
 #[test]
-fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
+fn placement_tracks_replicaserver_coverage_for_write_routing() {
     let mut root = MatrixMetaService::new();
     assert_eq!(root.replicaserver_coverage(8).status, "none");
 
-    let mut non_data = root_node("chunk-non-data", "rack-z", 64);
+    let mut non_data = placement_node("chunk-non-data", "rack-z", 64);
     non_data.data_eligible = false;
     root.register_node(non_data.clone()).unwrap();
     assert_eq!(root.replicaserver_coverage(8).status, "none");
@@ -8587,7 +8587,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
         false
     );
 
-    let mut draining = root_node("chunk-draining", "rack-a", 64);
+    let mut draining = placement_node("chunk-draining", "rack-a", 64);
     draining.draining = true;
     root.register_node(draining).unwrap();
     let draining_only = root.replicaserver_coverage(8);
@@ -8598,7 +8598,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
     assert_eq!(draining_only.draining_replicaserver_count, 1);
     assert_eq!(draining_only.status, "draining_unwritable");
 
-    let mut frozen = root_node("chunk-frozen", "rack-f", 64);
+    let mut frozen = placement_node("chunk-frozen", "rack-f", 64);
     frozen.chunk_health.frozen = true;
     frozen.chunk_health.capacity_free_bytes = 64;
     root.register_node(frozen).unwrap();
@@ -8610,7 +8610,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
     assert_eq!(frozen_coverage.total_reported_free_bytes, 128);
     assert_eq!(frozen_coverage.status, "frozen_unwritable");
 
-    let mut read_only = root_node("chunk-read-only", "rack-r", 64);
+    let mut read_only = placement_node("chunk-read-only", "rack-r", 64);
     read_only.chunk_health.accepting_writes = false;
     read_only.chunk_health.service_mode = "read_only".to_string();
     read_only.chunk_health.capacity_free_bytes = 64;
@@ -8620,7 +8620,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
     assert_eq!(read_only_coverage.read_only_replicaserver_count, 1);
     assert_eq!(read_only_coverage.draining_replicaserver_count, 3);
 
-    let mut raft_blocked = root_node("chunk-raft-blocked", "rack-rf", 64);
+    let mut raft_blocked = placement_node("chunk-raft-blocked", "rack-rf", 64);
     raft_blocked.chunk_health.raft_writable = false;
     raft_blocked.chunk_health.capacity_free_bytes = 64;
     root.register_node(raft_blocked).unwrap();
@@ -8629,7 +8629,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
     assert_eq!(raft_blocked_coverage.raft_unwritable_replicaserver_count, 1);
     assert_eq!(raft_blocked_coverage.draining_replicaserver_count, 4);
 
-    let mut full = root_node("chunk-full", "rack-b", 64);
+    let mut full = placement_node("chunk-full", "rack-b", 64);
     full.used_bytes = 60;
     full.committed_bytes = 60;
     root.register_node(full).unwrap();
@@ -8641,7 +8641,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
     assert_eq!(no_writable.min_free_bytes, 8);
     assert_eq!(no_writable.status, "frozen_unwritable");
 
-    root.register_node(root_node("chunk-open", "rack-c", 64))
+    root.register_node(placement_node("chunk-open", "rack-c", 64))
         .unwrap();
     let degraded = root.replicaserver_coverage(8);
     assert_eq!(degraded.active_replicaserver_count, 6);
@@ -8654,7 +8654,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(PlacementNode {
+        .register_placement_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -8680,7 +8680,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
         .meta_service
         .campaign_leader("root-a", 100, 1)
         .unwrap();
-    let mut blocked = root_node("chunk-blocked", "rack-a", 64);
+    let mut blocked = placement_node("chunk-blocked", "rack-a", 64);
     blocked.chunk_health.frozen = true;
     blocked.chunk_health.capacity_free_bytes = 64;
     blocked.chunk_health.control_proof_format = "MXOSCHUNKCONTROL10".to_string();
@@ -8688,7 +8688,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
     blocked.chunk_health.control_proof_bytes = 512;
     blocked.chunk_health.raft_commit_index = 44;
     blocked.chunk_health.control_read_ready = true;
-    store.register_root_node(blocked).unwrap();
+    store.register_placement_node(blocked).unwrap();
     let not_ready = store.distributed_readiness(0, 2, 8, 0, 1, 100, 0).unwrap();
     assert!(!not_ready.ready);
     assert_eq!(not_ready.reason, "root_chunkservers_frozen_unwritable");
@@ -8709,14 +8709,14 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
         "control_write_unready"
     );
 
-    let mut open = root_node("chunk-open", "rack-b", 64);
+    let mut open = placement_node("chunk-open", "rack-b", 64);
     open.chunk_health.control_proof_format = "MXOSCHUNKCONTROL10".to_string();
     open.chunk_health.control_proof_checksum = "fnv1a64:open-control".to_string();
     open.chunk_health.control_proof_bytes = 768;
     open.chunk_health.raft_commit_index = 66;
     open.chunk_health.control_read_ready = true;
     open.chunk_health.control_write_ready = true;
-    store.register_root_node(open).unwrap();
+    store.register_placement_node(open).unwrap();
     let ready = store.distributed_readiness(0, 2, 8, 0, 1, 100, 0).unwrap();
     assert!(ready.ready);
     assert_eq!(ready.root_active_replicaserver_count, 2);
@@ -8739,19 +8739,19 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
 }
 
 #[test]
-fn rootserver_placement_honors_replicaserver_service_health() {
+fn placement_honors_replicaserver_service_health() {
     let mut root = MatrixMetaService::new();
-    let mut frozen = root_node("chunk-frozen", "rack-a", 100);
+    let mut frozen = placement_node("chunk-frozen", "rack-a", 100);
     frozen.chunk_health.frozen = true;
     frozen.chunk_health.capacity_free_bytes = 100;
-    let mut read_only = root_node("chunk-read-only", "rack-b", 100);
+    let mut read_only = placement_node("chunk-read-only", "rack-b", 100);
     read_only.chunk_health.accepting_writes = false;
     read_only.chunk_health.service_mode = "read_only".to_string();
     read_only.chunk_health.capacity_free_bytes = 100;
-    let mut raft_blocked = root_node("chunk-raft-blocked", "rack-c", 100);
+    let mut raft_blocked = placement_node("chunk-raft-blocked", "rack-c", 100);
     raft_blocked.chunk_health.raft_writable = false;
     raft_blocked.chunk_health.capacity_free_bytes = 100;
-    let mut healthy = root_node("chunk-healthy", "rack-d", 100);
+    let mut healthy = placement_node("chunk-healthy", "rack-d", 100);
     healthy.chunk_health.capacity_free_bytes = 100;
     root.register_node(frozen).unwrap();
     root.register_node(read_only).unwrap();
@@ -8842,13 +8842,13 @@ fn rootserver_placement_honors_replicaserver_service_health() {
 }
 
 #[test]
-fn rootserver_health_heartbeats_update_service_coverage() {
+fn placement_health_heartbeats_update_service_coverage() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(pageserver_root_node("block-a", "rack-a", 0, 1))
+        .register_placement_node(pageserver_placement_node("block-a", "rack-a", 0, 1))
         .unwrap();
     store
-        .register_root_node(root_node("chunk-a", "rack-b", 100))
+        .register_placement_node(placement_node("chunk-a", "rack-b", 100))
         .unwrap();
 
     let mut page_health = NodePageHealth::default();
@@ -8866,19 +8866,19 @@ fn rootserver_health_heartbeats_update_service_coverage() {
     page_health.batch_allocation_receipt_count = 17;
     page_health.release_allocation_receipt_count = 19;
     let page_node = store
-        .heartbeat_root_page_health("block-a", page_health.clone(), 7)
+        .heartbeat_placement_page_health("block-a", page_health.clone(), 7)
         .unwrap();
     assert_eq!(page_node.last_heartbeat_ms, 7);
     assert_eq!(page_node.page_health, page_health);
     let mut stale_page_health = page_health.clone();
     stale_page_health.ready = true;
     assert!(matches!(
-        store.heartbeat_root_page_health("block-a", stale_page_health, 6),
+        store.heartbeat_placement_page_health("block-a", stale_page_health, 6),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert_eq!(
         store
-            .root_nodes()
+            .placement_nodes()
             .into_iter()
             .find(|node| node.node_id == "block-a")
             .unwrap()
@@ -8917,30 +8917,30 @@ fn rootserver_health_heartbeats_update_service_coverage() {
         ..NodeChunkHealth::default()
     };
     let chunk_node = store
-        .heartbeat_root_chunk_health("chunk-a", chunk_health.clone(), 9)
+        .heartbeat_placement_chunk_health("chunk-a", chunk_health.clone(), 9)
         .unwrap();
     assert_eq!(chunk_node.last_heartbeat_ms, 9);
     assert_eq!(chunk_node.chunk_health, chunk_health);
     assert!(matches!(
-        store.heartbeat_root_node("chunk-a", 0, 100, false, true, 8),
+        store.heartbeat_placement_node("chunk-a", 0, 100, false, true, 8),
         Err(ObjectError::PreconditionFailed(_))
     ));
     let mut stale_chunk_health = chunk_health.clone();
     stale_chunk_health.accepting_writes = true;
     stale_chunk_health.frozen = false;
     assert!(matches!(
-        store.heartbeat_root_chunk_health("chunk-a", stale_chunk_health, 8),
+        store.heartbeat_placement_chunk_health("chunk-a", stale_chunk_health, 8),
         Err(ObjectError::PreconditionFailed(_))
     ));
-    let mut stale_registration = root_node("chunk-a", "rack-b", 100);
+    let mut stale_registration = placement_node("chunk-a", "rack-b", 100);
     stale_registration.last_heartbeat_ms = 8;
     assert!(matches!(
-        store.register_root_node(stale_registration),
+        store.register_placement_node(stale_registration),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert_eq!(
         store
-            .root_nodes()
+            .placement_nodes()
             .into_iter()
             .find(|node| node.node_id == "chunk-a")
             .unwrap()
@@ -8965,11 +8965,11 @@ fn rootserver_health_heartbeats_update_service_coverage() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        store.heartbeat_root_chunk_health("block-a", NodeChunkHealth::default(), 10),
+        store.heartbeat_placement_chunk_health("block-a", NodeChunkHealth::default(), 10),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        store.heartbeat_root_page_health("chunk-a", NodePageHealth::default(), 11),
+        store.heartbeat_placement_page_health("chunk-a", NodePageHealth::default(), 11),
         Err(ObjectError::PreconditionFailed(_))
     ));
 }
@@ -9238,7 +9238,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
     assert_eq!(chunk_offline.node.chunk_health.service_mode, "offline");
     assert!(!chunk_offline.node.chunk_health.control_write_ready);
 
-    let nodes = replicated.store.root_nodes();
+    let nodes = replicated.store.placement_nodes();
     let objectstore_node = nodes
         .iter()
         .find(|node| node.node_id == "objectstore-r")
@@ -9255,22 +9255,22 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
 }
 
 #[test]
-fn rootserver_expires_stale_node_heartbeats() {
+fn placement_expires_stale_node_heartbeats() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(root_node("chunk-a", "rack-a", 100))
+        .register_placement_node(placement_node("chunk-a", "rack-a", 100))
         .unwrap();
     store
-        .register_root_node(root_node("chunk-b", "rack-b", 100))
+        .register_placement_node(placement_node("chunk-b", "rack-b", 100))
         .unwrap();
     store
-        .heartbeat_root_node("chunk-a", 8, 100, false, true, 10)
+        .heartbeat_placement_node("chunk-a", 8, 100, false, true, 10)
         .unwrap();
     store
-        .heartbeat_root_node("chunk-b", 8, 100, false, true, 11)
+        .heartbeat_placement_node("chunk-b", 8, 100, false, true, 11)
         .unwrap();
 
-    assert_eq!(store.expire_root_node_heartbeats(10, 20).unwrap(), 0);
+    assert_eq!(store.expire_placement_node_heartbeats(10, 20).unwrap(), 0);
     assert_eq!(
         store
             .meta_service
@@ -9278,14 +9278,14 @@ fn rootserver_expires_stale_node_heartbeats() {
             .active_replicaserver_count,
         2
     );
-    assert_eq!(store.expire_root_node_heartbeats(10, 21).unwrap(), 1);
+    assert_eq!(store.expire_placement_node_heartbeats(10, 21).unwrap(), 1);
     let node_a = store
-        .root_nodes()
+        .placement_nodes()
         .into_iter()
         .find(|node| node.node_id == "chunk-a")
         .unwrap();
     let node_b = store
-        .root_nodes()
+        .placement_nodes()
         .into_iter()
         .find(|node| node.node_id == "chunk-b")
         .unwrap();
@@ -9302,24 +9302,24 @@ fn rootserver_expires_stale_node_heartbeats() {
         .plan_object_placement("bucket", "ttl-placement", 1, 1)
         .unwrap();
     assert_eq!(plan.node_ids, vec!["chunk-b".to_string()]);
-    assert_eq!(store.expire_root_node_heartbeats(10, 21).unwrap(), 0);
+    assert_eq!(store.expire_placement_node_heartbeats(10, 21).unwrap(), 0);
     assert!(matches!(
-        store.expire_root_node_heartbeats(0, 21),
+        store.expire_placement_node_heartbeats(0, 21),
         Err(ObjectError::InvalidArgument(_))
     ));
 }
 
 #[test]
-fn rootserver_safely_removes_nodes() {
+fn placement_safely_removes_nodes() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(root_node("chunk-a", "rack-a", 100))
+        .register_placement_node(placement_node("chunk-a", "rack-a", 100))
         .unwrap();
     store
-        .register_root_node(root_node("chunk-b", "rack-b", 100))
+        .register_placement_node(placement_node("chunk-b", "rack-b", 100))
         .unwrap();
     store
-        .register_root_node(root_node("chunk-c", "rack-c", 100))
+        .register_placement_node(placement_node("chunk-c", "rack-c", 100))
         .unwrap();
     let plan = store
         .plan_object_placement("bucket", "remove-guard", 10, 2)
@@ -9339,26 +9339,26 @@ fn rootserver_safely_removes_nodes() {
         .unwrap();
 
     assert!(matches!(
-        store.remove_root_node("chunk-a", false),
+        store.remove_placement_node("chunk-a", false),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(store
-        .root_nodes()
+        .placement_nodes()
         .iter()
         .any(|node| node.node_id == "chunk-a"));
-    let removed_idle = store.remove_root_node("chunk-c", false).unwrap();
+    let removed_idle = store.remove_placement_node("chunk-c", false).unwrap();
     assert!(removed_idle.removed);
     assert!(!removed_idle.force);
     assert_eq!(removed_idle.referencing_object_count, 0);
     assert_eq!(removed_idle.node_count, 2);
-    let forced = store.remove_root_node("chunk-a", true).unwrap();
+    let forced = store.remove_placement_node("chunk-a", true).unwrap();
     assert!(forced.removed);
     assert!(forced.force);
     assert_eq!(forced.referencing_object_count, 1);
     assert_eq!(forced.referencing_bytes, 10);
     assert_eq!(forced.node_count, 1);
     let usage = store
-        .list_root_node_usage(None, 10, None, None, None, None, None, None, 0, 0)
+        .list_placement_node_usage(None, 10, None, None, None, None, None, None, 0, 0)
         .unwrap();
     assert_eq!(usage.registered_node_count, 1);
     assert_eq!(usage.referenced_node_count, 2);
@@ -9386,31 +9386,31 @@ fn rootserver_safely_removes_nodes() {
     assert_eq!(registered.object_count, 1);
     assert_eq!(registered.referenced_bytes, 10);
     assert!(matches!(
-        store.remove_root_node("chunk-missing", true),
+        store.remove_placement_node("chunk-missing", true),
         Err(ObjectError::NotFound(_))
     ));
 }
 
 #[test]
-fn raft_backed_store_replays_root_health_heartbeats() {
+fn raft_backed_store_replays_placement_health_heartbeats() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(InMemoryRustRaft::new(1).unwrap(), store);
     replicated
-        .propose_register_root_node(pageserver_root_node("block-a", "rack-a", 0, 1))
+        .propose_register_placement_node(pageserver_placement_node("block-a", "rack-a", 0, 1))
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-a", "rack-b", 100))
+        .propose_register_placement_node(placement_node("chunk-a", "rack-b", 100))
         .unwrap();
 
     let generic_receipt = replicated
-        .propose_heartbeat_root_node("chunk-a", 12, 100, false, true, 20)
+        .propose_heartbeat_placement_node("chunk-a", 12, 100, false, true, 20)
         .unwrap();
     assert_eq!(generic_receipt.content_type, "root/node-heartbeat");
     assert_eq!(generic_receipt.version, 20);
     assert_eq!(generic_receipt.length, 100);
     let generic_node = replicated
         .store()
-        .root_nodes()
+        .placement_nodes()
         .into_iter()
         .find(|node| node.node_id == "chunk-a")
         .unwrap();
@@ -9444,13 +9444,13 @@ fn raft_backed_store_replays_root_health_heartbeats() {
         ..NodePageHealth::default()
     };
     let chunk_receipt = replicated
-        .propose_heartbeat_root_page_health("block-a", page_health.clone(), 21)
+        .propose_heartbeat_placement_page_health("block-a", page_health.clone(), 21)
         .unwrap();
     assert_eq!(chunk_receipt.content_type, "root/block-health-heartbeat");
     assert_eq!(
         replicated
             .store()
-            .root_nodes()
+            .placement_nodes()
             .into_iter()
             .find(|node| node.node_id == "block-a")
             .unwrap()
@@ -9478,7 +9478,7 @@ fn raft_backed_store_replays_root_health_heartbeats() {
         ..NodeChunkHealth::default()
     };
     let replica_receipt = replicated
-        .propose_heartbeat_root_chunk_health("chunk-a", chunk_health.clone(), 22)
+        .propose_heartbeat_placement_chunk_health("chunk-a", chunk_health.clone(), 22)
         .unwrap();
     assert_eq!(replica_receipt.content_type, "root/chunk-health-heartbeat");
     let page_coverage = replicated
@@ -9496,18 +9496,18 @@ fn raft_backed_store_replays_root_health_heartbeats() {
     assert_eq!(chunk_coverage.control_min_raft_commit_index, 99);
     assert_eq!(chunk_coverage.control_max_raft_commit_index, 99);
     assert!(matches!(
-        replicated.propose_heartbeat_root_chunk_health("chunk-a", NodeChunkHealth::default(), 21),
+        replicated.propose_heartbeat_placement_chunk_health("chunk-a", NodeChunkHealth::default(), 21),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert_eq!(replicated.raft_commit_index(), 5);
 
     let offline_receipt = replicated
-        .propose_heartbeat_root_node("chunk-a", 12, 100, true, false, 23)
+        .propose_heartbeat_placement_node("chunk-a", 12, 100, true, false, 23)
         .unwrap();
     assert!(offline_receipt.deleted);
     let offline_node = replicated
         .store()
-        .root_nodes()
+        .placement_nodes()
         .into_iter()
         .find(|node| node.node_id == "chunk-a")
         .unwrap();
@@ -9516,24 +9516,24 @@ fn raft_backed_store_replays_root_health_heartbeats() {
 }
 
 #[test]
-fn raft_backed_store_replays_root_heartbeat_expiry() {
+fn raft_backed_store_replays_placement_heartbeat_expiry() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(InMemoryRustRaft::new(1).unwrap(), store);
     replicated
-        .propose_register_root_node(root_node("chunk-a", "rack-a", 100))
+        .propose_register_placement_node(placement_node("chunk-a", "rack-a", 100))
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-b", "rack-b", 100))
+        .propose_register_placement_node(placement_node("chunk-b", "rack-b", 100))
         .unwrap();
     replicated
-        .propose_heartbeat_root_node("chunk-a", 4, 100, false, true, 10)
+        .propose_heartbeat_placement_node("chunk-a", 4, 100, false, true, 10)
         .unwrap();
     replicated
-        .propose_heartbeat_root_node("chunk-b", 4, 100, false, true, 12)
+        .propose_heartbeat_placement_node("chunk-b", 4, 100, false, true, 12)
         .unwrap();
 
     let no_expiry = replicated
-        .propose_expire_root_node_heartbeats(10, 20)
+        .propose_expire_placement_node_heartbeats(10, 20)
         .unwrap();
     assert_eq!(no_expiry.content_type, "root/node-heartbeat-expiry");
     assert_eq!(no_expiry.length, 0);
@@ -9541,7 +9541,7 @@ fn raft_backed_store_replays_root_heartbeat_expiry() {
     assert_eq!(replicated.raft_commit_index(), 5);
 
     let expiry = replicated
-        .propose_expire_root_node_heartbeats(10, 21)
+        .propose_expire_placement_node_heartbeats(10, 21)
         .unwrap();
     assert_eq!(expiry.length, 1);
     assert!(!expiry.deleted);
@@ -9549,12 +9549,12 @@ fn raft_backed_store_replays_root_heartbeat_expiry() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     let node_a = follower
-        .root_nodes()
+        .placement_nodes()
         .into_iter()
         .find(|node| node.node_id == "chunk-a")
         .unwrap();
     let node_b = follower
-        .root_nodes()
+        .placement_nodes()
         .into_iter()
         .find(|node| node.node_id == "chunk-b")
         .unwrap();
@@ -9567,20 +9567,20 @@ fn raft_backed_store_replays_root_heartbeat_expiry() {
 }
 
 #[test]
-fn raft_backed_store_replays_root_node_removal() {
+fn raft_backed_store_replays_placement_node_removal() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(InMemoryRustRaft::new(1).unwrap(), store);
     replicated
-        .propose_register_root_node(root_node("chunk-a", "rack-a", 64))
+        .propose_register_placement_node(placement_node("chunk-a", "rack-a", 64))
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-b", "rack-b", 64))
+        .propose_register_placement_node(placement_node("chunk-b", "rack-b", 64))
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-c", "rack-c", 64))
+        .propose_register_placement_node(placement_node("chunk-c", "rack-c", 64))
         .unwrap();
     let placed = replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "remove-node",
             b"root-remove".to_vec(),
@@ -9593,12 +9593,12 @@ fn raft_backed_store_replays_root_node_removal() {
     assert_eq!(placed.length, 11);
     assert_eq!(replicated.raft_commit_index(), 4);
     assert!(matches!(
-        replicated.propose_remove_root_node("chunk-a", false, 11),
+        replicated.propose_remove_placement_node("chunk-a", false, 11),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert_eq!(replicated.raft_commit_index(), 4);
     let forced = replicated
-        .propose_remove_root_node("chunk-a", true, 12)
+        .propose_remove_placement_node("chunk-a", true, 12)
         .unwrap();
     assert_eq!(forced.content_type, "root/node-remove");
     assert_eq!(forced.length, 11);
@@ -9608,18 +9608,18 @@ fn raft_backed_store_replays_root_node_removal() {
     let mut follower = MatrixObjectStore::new(test_options()).unwrap();
     replicated.replay_into(&mut follower).unwrap();
     assert!(!follower
-        .root_nodes()
+        .placement_nodes()
         .iter()
         .any(|node| node.node_id == "chunk-a"));
     assert!(follower
-        .root_nodes()
+        .placement_nodes()
         .iter()
         .any(|node| node.node_id == "chunk-b"));
     assert_eq!(follower.last_applied_index(), 5);
 }
 
 #[test]
-fn rootserver_pages_placement_health_for_repair_controllers() {
+fn pages_placement_health_for_repair_controllers() {
     let mut root = MatrixMetaService::new();
     for (node_id, domain) in [
         ("chunk-a", "rack-a"),
@@ -9628,7 +9628,7 @@ fn rootserver_pages_placement_health_for_repair_controllers() {
         ("chunk-d", "rack-d"),
         ("chunk-e", "rack-e"),
     ] {
-        root.register_node(root_node(node_id, domain, 100)).unwrap();
+        root.register_node(placement_node(node_id, domain, 100)).unwrap();
     }
     root.nodes.get_mut("chunk-a").unwrap().committed_bytes = 95;
     root.nodes.get_mut("chunk-c").unwrap().online = false;
@@ -9713,13 +9713,13 @@ fn rootserver_pages_placement_health_for_repair_controllers() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store.meta_service = root;
     let via_store = store
-        .audit_root_placement_health(None, 10, 2, 10, true, 0)
+        .audit_placement_health(None, 10, 2, 10, true, 0)
         .unwrap();
     assert_eq!(via_store.degraded_objects, 5);
 }
 
 #[test]
-fn rootserver_repairs_unhealthy_placements_from_health_audit() {
+fn repairs_unhealthy_placements_from_health_audit() {
     let mut root = MatrixMetaService::new();
     for (node_id, domain) in [
         ("chunk-a", "rack-a"),
@@ -9729,7 +9729,7 @@ fn rootserver_repairs_unhealthy_placements_from_health_audit() {
         ("chunk-e", "rack-e"),
         ("chunk-f", "rack-f"),
     ] {
-        root.register_node(root_node(node_id, domain, 100)).unwrap();
+        root.register_node(placement_node(node_id, domain, 100)).unwrap();
     }
     root.nodes.get_mut("chunk-a").unwrap().committed_bytes = 95;
     root.nodes.get_mut("chunk-c").unwrap().online = false;
@@ -9799,21 +9799,21 @@ fn rootserver_repairs_unhealthy_placements_from_health_audit() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store.meta_service = root;
     let final_health = store
-        .audit_root_placement_health(None, 10, 2, 10, true, 0)
+        .audit_placement_health(None, 10, 2, 10, true, 0)
         .unwrap();
     assert_eq!(final_health.degraded_objects, 0);
 }
 
 #[test]
-fn distributed_put_uses_root_placement_and_releases_capacity() {
+fn distributed_put_uses_placement_and_releases_capacity() {
     let mut options = test_options();
     options.control_plane_mode = ControlPlaneMode::MetaServer;
     let mut store = MatrixObjectStore::new(options).unwrap();
     store
-        .register_root_node(root_node("chunk-a", "rack-a", 40))
+        .register_placement_node(placement_node("chunk-a", "rack-a", 40))
         .unwrap();
     store
-        .register_root_node(root_node("chunk-b", "rack-b", 40))
+        .register_placement_node(placement_node("chunk-b", "rack-b", 40))
         .unwrap();
     let (metadata, placement) = store
         .put_object_with_root_placement(
@@ -9857,7 +9857,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         .unwrap();
     assert_eq!(smaller.version, metadata.version + 1);
     assert_eq!(replacement.length, 16);
-    for node in store.root_nodes() {
+    for node in store.placement_nodes() {
         if replacement
             .node_ids
             .iter()
@@ -9883,7 +9883,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     assert!(missing_leader.root_leader_ready);
     assert!(missing_leader.root_leader_node_id.is_empty());
     store
-        .register_root_node(PlacementNode {
+        .register_placement_node(PlacementNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
             service_kind: "metaserver".to_string(),
@@ -11003,16 +11003,16 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         ready.raft_membership_receipt_count
     );
     assert!(!ready.control_checksum.is_empty());
-    let first_page = store.list_root_object_placements(None, 1, None).unwrap();
+    let first_page = store.list_object_placements(None, 1, None).unwrap();
     assert_eq!(first_page.placements.len(), 1);
     assert!(first_page.has_more);
     let second_page = store
-        .list_root_object_placements(first_page.next_marker.as_ref(), 10, None)
+        .list_object_placements(first_page.next_marker.as_ref(), 10, None)
         .unwrap();
     assert_eq!(second_page.placements.len(), 1);
     assert!(!second_page.has_more);
     let filtered = store
-        .list_root_object_placements(None, 10, Some(&replacement.node_ids[0]))
+        .list_object_placements(None, 10, Some(&replacement.node_ids[0]))
         .unwrap();
     assert!(filtered
         .placements
@@ -11020,7 +11020,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         .all(|placement| placement.node_ids.contains(&replacement.node_ids[0])));
     assert!(filtered.scanned_objects >= filtered.placements.len() as u64);
     let usage_first = store
-        .list_root_node_usage(
+        .list_placement_node_usage(
             None,
             1,
             Some("chunkserver"),
@@ -11037,7 +11037,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     assert!(usage_first.has_more);
     assert!(usage_first.nodes[0].placement_eligible);
     let usage_second = store
-        .list_root_node_usage(
+        .list_placement_node_usage(
             usage_first.next_marker.as_deref(),
             10,
             Some("chunkserver"),
@@ -11053,7 +11053,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     assert_eq!(usage_second.nodes.len(), 1);
     assert!(!usage_second.has_more);
     let pressure = store
-        .list_root_node_usage(
+        .list_placement_node_usage(
             None,
             10,
             Some("chunkserver"),
@@ -11072,16 +11072,16 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     assert_eq!(
         pressure.total_committed_bytes,
         store
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .map(|node| node.committed_bytes)
             .sum::<u64>()
     );
     store
-        .register_root_node(root_node("chunk-c", "rack-c", 40))
+        .register_placement_node(placement_node("chunk-c", "rack-c", 40))
         .unwrap();
     store
-        .heartbeat_root_node(&replacement.node_ids[0], 8, 40, true, true, 4)
+        .heartbeat_placement_node(&replacement.node_ids[0], 8, 40, true, true, 4)
         .unwrap();
     let degraded = store.distributed_readiness(0, 10, 0, 0, 2, 100, 0).unwrap();
     assert!(degraded.ready);
@@ -11091,7 +11091,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     assert!(!degraded.placement_truncated);
     assert_ne!(degraded.control_checksum, ready.control_checksum);
     let draining = store
-        .list_root_node_usage(
+        .list_placement_node_usage(
             None,
             10,
             Some("chunkserver"),
@@ -11107,12 +11107,12 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     assert_eq!(draining.nodes.len(), 1);
     assert!(draining.nodes[0].node.draining);
     assert!(!draining.nodes[0].placement_eligible);
-    let mut reclaim_node = root_node("chunk-reclaim", "rack-r", 100);
+    let mut reclaim_node = placement_node("chunk-reclaim", "rack-r", 100);
     reclaim_node.used_bytes = 50;
     reclaim_node.last_heartbeat_ms = 5;
-    store.register_root_node(reclaim_node).unwrap();
+    store.register_placement_node(reclaim_node).unwrap();
     let reclaim_pressure = store
-        .list_root_node_usage(
+        .list_placement_node_usage(
             None,
             10,
             Some("chunkserver"),
@@ -11133,7 +11133,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         reclaim_pressure.nodes[0].reclaimable_bytes
     );
     let reclaim_plan = store
-        .plan_root_reclaim_nodes(None, 10, Some("chunkserver"), true, false, 1, 0, 0, 0, 0)
+        .plan_placement_reclaim_nodes(None, 10, Some("chunkserver"), true, false, 1, 0, 0, 0, 0)
         .unwrap();
     assert_eq!(reclaim_plan.plans.len(), 1);
     assert_eq!(reclaim_plan.candidate_nodes, 1);
@@ -11149,15 +11149,15 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         reclaim_plan.total_reclaimable_bytes,
         reclaim_pressure.nodes[0].reclaimable_bytes
     );
-    let mut fragmented_node = root_node("chunk-fragmented", "rack-f", 100);
+    let mut fragmented_node = placement_node("chunk-fragmented", "rack-f", 100);
     fragmented_node.used_bytes = 10;
     fragmented_node.committed_bytes = 10;
     fragmented_node.last_heartbeat_ms = 6;
     fragmented_node.chunk_health.fragmented_chunk_count = 2;
     fragmented_node.chunk_health.fragmented_discarded_bytes = 65;
-    store.register_root_node(fragmented_node).unwrap();
+    store.register_placement_node(fragmented_node).unwrap();
     let fragmented_plan = store
-        .plan_root_reclaim_nodes(None, 10, Some("chunkserver"), true, false, 0, 0, 0, 0, 0)
+        .plan_placement_reclaim_nodes(None, 10, Some("chunkserver"), true, false, 0, 0, 0, 0, 0)
         .unwrap();
     let fragmented_item = fragmented_plan
         .plans
@@ -11166,7 +11166,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         .unwrap();
     assert_eq!(fragmented_item.reclaim_reason, "compaction_pressure");
     assert!(fragmented_item.reclaim_score >= 65);
-    let mut page_discard_node = root_node("chunk-block-discard", "rack-bd", 100);
+    let mut page_discard_node = placement_node("chunk-block-discard", "rack-bd", 100);
     page_discard_node.used_bytes = 10;
     page_discard_node.committed_bytes = 10;
     page_discard_node.last_heartbeat_ms = 7;
@@ -11174,9 +11174,9 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     page_discard_node
         .page_health
         .chunk_physical_discard_range_count = 2;
-    store.register_root_node(page_discard_node).unwrap();
+    store.register_placement_node(page_discard_node).unwrap();
     let page_discard_plan = store
-        .plan_root_reclaim_nodes(None, 10, Some("chunkserver"), true, false, 0, 0, 0, 4096, 2)
+        .plan_placement_reclaim_nodes(None, 10, Some("chunkserver"), true, false, 0, 0, 0, 4096, 2)
         .unwrap();
     assert_eq!(page_discard_plan.min_page_physical_discard_bytes, 4096);
     assert_eq!(page_discard_plan.min_page_physical_discard_ranges, 2);
@@ -11204,7 +11204,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
     );
     assert!(!page_discard_plan.plan_checksum().is_empty());
     let empty_reclaim_plan = store
-        .plan_root_reclaim_nodes(None, 10, Some("chunkserver"), true, false, 60, 0, 0, 0, 0)
+        .plan_placement_reclaim_nodes(None, 10, Some("chunkserver"), true, false, 60, 0, 0, 0, 0)
         .unwrap();
     assert!(empty_reclaim_plan.plans.is_empty());
     assert_eq!(empty_reclaim_plan.candidate_nodes, 0);
@@ -11215,7 +11215,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         "no_root_reclaim_nodes_needed"
     );
     let capacity_reclaim_plan = store
-        .plan_root_reclaim_nodes(None, 1, Some("chunkserver"), true, true, 0, 0, 30, 0, 0)
+        .plan_placement_reclaim_nodes(None, 1, Some("chunkserver"), true, true, 0, 0, 30, 0, 0)
         .unwrap();
     assert_eq!(capacity_reclaim_plan.plans.len(), 1);
     assert!(capacity_reclaim_plan.has_more);
@@ -11236,7 +11236,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         .unwrap();
     assert!(store.object_placement("bucket", "object").is_err());
     assert!(store.object_placement("bucket", "second").is_err());
-    for node in store.root_nodes() {
+    for node in store.placement_nodes() {
         if replacement
             .node_ids
             .iter()
@@ -11249,7 +11249,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
 }
 
 #[test]
-fn rootserver_migrates_placement_with_fences_and_snapshots() {
+fn migrates_placement_with_fences_and_snapshots() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     for (node_id, domain) in [
         ("chunk-a", "rack-a"),
@@ -11257,7 +11257,7 @@ fn rootserver_migrates_placement_with_fences_and_snapshots() {
         ("chunk-c", "rack-c"),
     ] {
         store
-            .register_root_node(root_node(node_id, domain, 100))
+            .register_placement_node(placement_node(node_id, domain, 100))
             .unwrap();
     }
     let (metadata, placement) = store
@@ -11276,7 +11276,7 @@ fn rootserver_migrates_placement_with_fences_and_snapshots() {
     assert_ne!(source, target);
 
     store
-        .heartbeat_root_node(&source, 32, 100, true, true, 20)
+        .heartbeat_placement_node(&source, 32, 100, true, true, 20)
         .unwrap();
     let plan = store
         .plan_object_placement_migration("bucket", "object", &source, target)
@@ -11299,7 +11299,7 @@ fn rootserver_migrates_placement_with_fences_and_snapshots() {
     assert_eq!(migrated.node_ids, plan.after_node_ids);
     assert_eq!(
         store
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == source)
             .unwrap()
@@ -11308,7 +11308,7 @@ fn rootserver_migrates_placement_with_fences_and_snapshots() {
     );
     assert_eq!(
         store
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == target)
             .unwrap()
@@ -11344,7 +11344,7 @@ fn rootserver_migrates_placement_with_fences_and_snapshots() {
 }
 
 #[test]
-fn rootserver_repairs_draining_placements_in_bulk() {
+fn repairs_draining_placements_in_bulk() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     for (node_id, domain) in [
         ("chunk-a", "rack-a"),
@@ -11352,7 +11352,7 @@ fn rootserver_repairs_draining_placements_in_bulk() {
         ("chunk-c", "rack-c"),
     ] {
         store
-            .register_root_node(root_node(node_id, domain, 100))
+            .register_placement_node(placement_node(node_id, domain, 100))
             .unwrap();
     }
     let metadata = store
@@ -11369,10 +11369,10 @@ fn rootserver_repairs_draining_placements_in_bulk() {
     let original = store.object_placement("bucket", "object").unwrap();
     assert!(original.node_ids.iter().any(|node| node == "chunk-a"));
     store
-        .heartbeat_root_node("chunk-a", 32, 100, true, true, 20)
+        .heartbeat_placement_node("chunk-a", 32, 100, true, true, 20)
         .unwrap();
 
-    let plan = store.plan_draining_root_placement_repairs(10);
+    let plan = store.plan_draining_placement_repairs(10);
     assert_eq!(plan.scanned_objects, 1);
     assert_eq!(plan.repair_objects, 1);
     assert_eq!(plan.bytes_to_repair, 32);
@@ -11383,7 +11383,7 @@ fn rootserver_repairs_draining_placements_in_bulk() {
     assert!(plan.repair_can_apply);
     assert_eq!(plan.repair_reason, "root_placement_repair_ready");
 
-    let repaired = store.repair_draining_root_placements(10);
+    let repaired = store.repair_draining_placements(10);
     assert_eq!(repaired.repaired_objects, 1);
     assert_eq!(repaired.bytes_repaired, 32);
     assert_eq!(repaired.failed_repairs, 0);
@@ -11391,13 +11391,13 @@ fn rootserver_repairs_draining_placements_in_bulk() {
     assert_eq!(placement.object_id, metadata.object_id);
     assert!(!placement.node_ids.iter().any(|node| node == "chunk-a"));
     assert!(placement.node_ids.iter().any(|node| node == "chunk-c"));
-    let empty_plan = store.plan_draining_root_placement_repairs(10);
+    let empty_plan = store.plan_draining_placement_repairs(10);
     assert!(!empty_plan.repair_needed);
     assert!(!empty_plan.repair_can_apply);
     assert_eq!(empty_plan.repair_reason, "no_root_placement_repair_needed");
     assert_eq!(
         store
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == "chunk-a")
             .unwrap()
@@ -11406,7 +11406,7 @@ fn rootserver_repairs_draining_placements_in_bulk() {
     );
     assert_eq!(
         store
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == "chunk-c")
             .unwrap()
@@ -11416,11 +11416,11 @@ fn rootserver_repairs_draining_placements_in_bulk() {
 }
 
 #[test]
-fn rootserver_rebalances_capacity_pressure_in_bulk() {
+fn placement_rebalances_capacity_pressure_in_bulk() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     for (node_id, domain, capacity) in [("chunk-a", "rack-a", 64), ("chunk-b", "rack-b", 64)] {
         store
-            .register_root_node(root_node(node_id, domain, capacity))
+            .register_placement_node(placement_node(node_id, domain, capacity))
             .unwrap();
     }
     store
@@ -11440,11 +11440,11 @@ fn rootserver_rebalances_capacity_pressure_in_bulk() {
     );
     for (node_id, domain, capacity) in [("chunk-c", "rack-c", 128), ("chunk-d", "rack-d", 128)] {
         store
-            .register_root_node(root_node(node_id, domain, capacity))
+            .register_placement_node(placement_node(node_id, domain, capacity))
             .unwrap();
     }
 
-    let plan = store.plan_root_capacity_rebalance(1, 40);
+    let plan = store.plan_placement_capacity_rebalance(1, 40);
     assert_eq!(plan.pressure_node_count, 2);
     assert_eq!(plan.rebalance_objects, 1);
     assert_eq!(plan.bytes_to_rebalance, 32);
@@ -11455,7 +11455,7 @@ fn rootserver_rebalances_capacity_pressure_in_bulk() {
     assert!(plan.rebalance_can_apply);
     assert_eq!(plan.rebalance_reason, "root_capacity_rebalance_ready");
 
-    let rebalanced = store.rebalance_root_capacity(1, 40);
+    let rebalanced = store.rebalance_placement_capacity(1, 40);
     assert_eq!(rebalanced.rebalanced_objects, 1);
     assert_eq!(rebalanced.bytes_rebalanced, 32);
     assert_eq!(rebalanced.failed_rebalances, 0);
@@ -11466,7 +11466,7 @@ fn rootserver_rebalances_capacity_pressure_in_bulk() {
     );
     assert_eq!(
         store
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == "chunk-a")
             .unwrap()
@@ -11475,7 +11475,7 @@ fn rootserver_rebalances_capacity_pressure_in_bulk() {
     );
     assert_eq!(
         store
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == "chunk-c")
             .unwrap()
@@ -11485,13 +11485,13 @@ fn rootserver_rebalances_capacity_pressure_in_bulk() {
 }
 
 #[test]
-fn default_control_plane_stays_metaserver_without_rootserver_nodes() {
+fn default_control_plane_stays_metaserver_without_placement_nodes() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store
-        .register_root_node(root_node("chunk-a", "rack-a", 40))
+        .register_placement_node(placement_node("chunk-a", "rack-a", 40))
         .unwrap();
     store
-        .register_root_node(root_node("chunk-b", "rack-b", 40))
+        .register_placement_node(placement_node("chunk-b", "rack-b", 40))
         .unwrap();
     assert_eq!(
         store.configured_control_plane_mode(),
@@ -11764,13 +11764,13 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
     // reaches the same function.
     let mut configured_store = MatrixObjectStore::new(test_options()).unwrap();
     for endpoint in [" root-config.local:9100 ", "root.local:9100", "   ", ""] {
-        match configured_store.configure_rootserver_fallback_endpoint(endpoint) {
+        match configured_store.configure_placement_fallback_endpoint(endpoint) {
             Err(ObjectError::InvalidArgument(_)) => {}
             other => panic!("{endpoint:?} should be refused, and it gave {other:?}"),
         }
     }
     assert_eq!(
-        configured_store.configured_rootserver_fallback_endpoint(),
+        configured_store.configured_placement_fallback_endpoint(),
         None,
         "a refused endpoint must not have been stored"
     );
@@ -11976,7 +11976,7 @@ fn object_store_rebalances_capacity_pressure_with_object_report() {
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     for (node_id, domain, capacity) in [("chunk-a", "rack-a", 64), ("chunk-b", "rack-b", 64)] {
         store
-            .register_root_node(root_node(node_id, domain, capacity))
+            .register_placement_node(placement_node(node_id, domain, capacity))
             .unwrap();
     }
     let (metadata, before) = store
@@ -11995,7 +11995,7 @@ fn object_store_rebalances_capacity_pressure_with_object_report() {
     );
     for (node_id, domain, capacity) in [("chunk-c", "rack-c", 128), ("chunk-d", "rack-d", 128)] {
         store
-            .register_root_node(root_node(node_id, domain, capacity))
+            .register_placement_node(placement_node(node_id, domain, capacity))
             .unwrap();
     }
 
@@ -13592,7 +13592,7 @@ fn raft_backed_store_replays_object_changefeed_cursors() {
         })
         .unwrap();
     replicated
-        .propose_delete_with_root_release("bucket", "object", None, 2)
+        .propose_delete_with_placement_release("bucket", "object", None, 2)
         .unwrap();
     let changes = replicated.store().list_object_changes_after(0, 10).unwrap();
     assert_eq!(changes.len(), 2);
@@ -27881,7 +27881,7 @@ fn raft_backed_store_replays_metaserver_coordinator_sessions() {
 }
 
 #[test]
-fn raft_backed_store_replays_root_leader_lease() {
+fn raft_backed_store_replays_placement_leader_lease() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
@@ -27906,35 +27906,35 @@ fn raft_backed_store_replays_root_leader_lease() {
         page_health: NodePageHealth::default(),
         chunk_health: NodeChunkHealth::default(),
     };
-    replicated.propose_register_root_node(root_a).unwrap();
+    replicated.propose_register_placement_node(root_a).unwrap();
     let campaign = replicated
-        .propose_campaign_root_leader("root-a", 100, 10)
+        .propose_campaign_placement_leader("root-a", 100, 10)
         .unwrap();
     assert_eq!(campaign.content_type, "rootserver/leader-campaign");
     assert_eq!(campaign.version, 1);
     replicated
-        .propose_renew_root_leader("root-a", 1, 120, 50)
+        .propose_renew_placement_leader("root-a", 1, 120, 50)
         .unwrap();
     let campaign_retry = replicated
-        .propose_campaign_root_leader_idempotent("root-a", 120, 171, "raft-root-campaign-a")
+        .propose_campaign_placement_leader_idempotent("root-a", 120, 171, "raft-root-campaign-a")
         .unwrap();
     assert_eq!(
         campaign_retry.content_type,
         "rootserver/leader-campaign-idempotent"
     );
     let campaign_retry_again = replicated
-        .propose_campaign_root_leader_idempotent("root-a", 120, 171, "raft-root-campaign-a")
+        .propose_campaign_placement_leader_idempotent("root-a", 120, 171, "raft-root-campaign-a")
         .unwrap();
     assert_eq!(campaign_retry_again.version, campaign_retry.version);
     let renew_retry = replicated
-        .propose_renew_root_leader_idempotent("root-a", 2, 140, 180, "raft-root-renew-a")
+        .propose_renew_placement_leader_idempotent("root-a", 2, 140, 180, "raft-root-renew-a")
         .unwrap();
     assert_eq!(
         renew_retry.content_type,
         "rootserver/leader-renew-idempotent"
     );
     replicated
-        .propose_renew_root_leader_idempotent("root-a", 2, 140, 180, "raft-root-renew-a")
+        .propose_renew_placement_leader_idempotent("root-a", 2, 140, 180, "raft-root-renew-a")
         .unwrap();
     assert_eq!(replicated.raft_commit_index(), 7);
 
@@ -27948,21 +27948,21 @@ fn raft_backed_store_replays_root_leader_lease() {
 }
 
 #[test]
-fn raft_backed_store_replays_root_placement_commands() {
+fn raft_backed_store_replays_placement_commands() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     replicated
-        .propose_register_root_node(root_node("chunk-a", "rack-a", 64))
+        .propose_register_placement_node(placement_node("chunk-a", "rack-a", 64))
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-b", "rack-b", 64))
+        .propose_register_placement_node(placement_node("chunk-b", "rack-b", 64))
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-c", "rack-c", 64))
+        .propose_register_placement_node(placement_node("chunk-c", "rack-c", 64))
         .unwrap();
     let metadata = replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "object",
             b"raft-root".to_vec(),
@@ -27997,7 +27997,7 @@ fn raft_backed_store_replays_root_placement_commands() {
             .length,
         9
     );
-    assert!(follower.root_nodes().iter().all(|node| {
+    assert!(follower.placement_nodes().iter().all(|node| {
         if node.node_id == "chunk-a" || node.node_id == "chunk-b" {
             node.committed_bytes == 9
         } else {
@@ -28010,7 +28010,7 @@ fn raft_backed_store_replays_root_placement_commands() {
         .plan_object_placement_migration("bucket", "object", "chunk-a", "chunk-c")
         .unwrap();
     let committed_migration = replicated
-        .propose_root_placement_migration_prepared_with_envelope_linearizable(
+        .propose_placement_migration_prepared_with_envelope_linearizable(
             plan.clone(),
             plan.plan_checksum.clone(),
         )
@@ -28039,7 +28039,7 @@ fn raft_backed_store_replays_root_placement_commands() {
     );
     assert_eq!(
         follower
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == "chunk-a")
             .unwrap()
@@ -28048,7 +28048,7 @@ fn raft_backed_store_replays_root_placement_commands() {
     );
     assert_eq!(
         follower
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == "chunk-c")
             .unwrap()
@@ -28057,28 +28057,28 @@ fn raft_backed_store_replays_root_placement_commands() {
     );
 
     replicated
-        .propose_delete_with_root_release("bucket", "object", None, 11)
+        .propose_delete_with_placement_release("bucket", "object", None, 11)
         .unwrap();
     replicated.replay_into(&mut follower).unwrap();
     assert!(follower.object_placement("bucket", "object").is_err());
     assert!(follower
-        .root_nodes()
+        .placement_nodes()
         .iter()
         .all(|node| node.committed_bytes == 0));
 }
 
 #[test]
-fn raft_backed_store_gates_prepared_root_actions() {
+fn raft_backed_store_gates_prepared_placement_actions() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     for (node_id, domain, capacity) in [("chunk-a", "rack-a", 64), ("chunk-b", "rack-b", 64)] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, capacity))
+            .propose_register_placement_node(placement_node(node_id, domain, capacity))
             .unwrap();
     }
     replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "prepared-root",
             vec![b'p'; 32],
@@ -28089,7 +28089,7 @@ fn raft_backed_store_gates_prepared_root_actions() {
         )
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-c", "rack-c", 128))
+        .propose_register_placement_node(placement_node("chunk-c", "rack-c", 128))
         .unwrap();
 
     let stale = RaftBackedObjectStore::new(
@@ -28097,16 +28097,16 @@ fn raft_backed_store_gates_prepared_root_actions() {
         MatrixObjectStore::new(test_options()).unwrap(),
     );
     assert!(matches!(
-        stale.prepare_root_capacity_rebalance_raft_entry_linearizable(1, 40),
+        stale.prepare_placement_capacity_rebalance_raft_entry_linearizable(1, 40),
         Err(ObjectError::PreconditionFailed(_))
     ));
 
     let capacity_prepared = replicated
-        .prepare_root_capacity_rebalance_raft_entry_linearizable(1, 40)
+        .prepare_placement_capacity_rebalance_raft_entry_linearizable(1, 40)
         .unwrap();
     assert_eq!(capacity_prepared.report.rebalance_objects, 1);
     let capacity_receipt = replicated
-        .propose_prepared_root_capacity_rebalance_linearizable(capacity_prepared)
+        .propose_prepared_placement_capacity_rebalance_linearizable(capacity_prepared)
         .unwrap();
     assert_eq!(
         capacity_receipt.content_type,
@@ -28129,13 +28129,13 @@ fn raft_backed_store_gates_prepared_root_actions() {
         .plan_object_placement_migration("bucket", "prepared-root", &source_node, target_node)
         .unwrap();
     let prepared = replicated
-        .prepare_root_placement_migration_raft_entry_linearizable(plan.clone(), &plan.plan_checksum)
+        .prepare_placement_migration_raft_entry_linearizable(plan.clone(), &plan.plan_checksum)
         .unwrap();
     assert_eq!(prepared.root_read_index, replicated.raft_commit_index());
     assert_eq!(prepared.root_raft_term, replicated.raft.term());
     assert!(!prepared.root_read_proof_checksum.is_empty());
     let migration_envelope = replicated
-        .prepare_root_placement_migration_envelope_with_read_proof_linearizable(
+        .prepare_placement_migration_envelope_with_read_proof_linearizable(
             plan.clone(),
             &plan.plan_checksum,
         )
@@ -28158,11 +28158,11 @@ fn raft_backed_store_gates_prepared_root_actions() {
     let mut corrupted_proof = prepared.clone();
     corrupted_proof.root_read_proof_checksum = "bad-root-read-proof".to_string();
     assert!(matches!(
-        replicated.propose_prepared_root_placement_migration_linearizable(corrupted_proof),
+        replicated.propose_prepared_placement_migration_linearizable(corrupted_proof),
         Err(ObjectError::PreconditionFailed(_))
     ));
     let migration = replicated
-        .propose_prepared_root_placement_migration_with_envelope_linearizable(prepared)
+        .propose_prepared_placement_migration_with_envelope_linearizable(prepared)
         .unwrap();
     assert_eq!(
         migration.metadata.content_type,
@@ -28203,7 +28203,7 @@ fn raft_backed_store_gates_prepared_root_actions() {
 }
 
 #[test]
-fn raft_backed_store_replays_batch_delete_with_root_release() {
+fn raft_backed_store_replays_batch_delete_with_placement_release() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
@@ -28213,11 +28213,11 @@ fn raft_backed_store_replays_batch_delete_with_root_release() {
         ("chunk-c", "rack-c"),
     ] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, 128))
+            .propose_register_placement_node(placement_node(node_id, domain, 128))
             .unwrap();
     }
     let first = replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "delete-a",
             b"first".to_vec(),
@@ -28228,7 +28228,7 @@ fn raft_backed_store_replays_batch_delete_with_root_release() {
         )
         .unwrap();
     replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "delete-b",
             b"second".to_vec(),
@@ -28284,7 +28284,7 @@ fn raft_backed_store_replays_batch_delete_with_root_release() {
     assert!(follower.object_placement("bucket", "delete-a").is_err());
     assert_eq!(
         follower
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .map(|node| node.committed_bytes)
             .sum::<u64>(),
@@ -28389,7 +28389,7 @@ fn raft_backed_store_replays_batch_put() {
 }
 
 #[test]
-fn raft_backed_store_replays_prefix_delete_with_root_release() {
+fn raft_backed_store_replays_prefix_delete_with_placement_release() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
@@ -28399,7 +28399,7 @@ fn raft_backed_store_replays_prefix_delete_with_root_release() {
         ("chunk-c", "rack-c"),
     ] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, 128))
+            .propose_register_placement_node(placement_node(node_id, domain, 128))
             .unwrap();
     }
     for (key, payload) in [
@@ -28408,7 +28408,7 @@ fn raft_backed_store_replays_prefix_delete_with_root_release() {
         ("keep/c", b"charlie".to_vec()),
     ] {
         replicated
-            .propose_put_with_root_placement(
+            .propose_put_with_placement(
                 "bucket",
                 key,
                 payload,
@@ -28441,7 +28441,7 @@ fn raft_backed_store_replays_prefix_delete_with_root_release() {
     assert!(follower.object_placement("bucket", "logs/b").is_err());
     assert_eq!(
         follower
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .map(|node| node.committed_bytes)
             .sum::<u64>(),
@@ -28451,7 +28451,7 @@ fn raft_backed_store_replays_prefix_delete_with_root_release() {
 }
 
 #[test]
-fn raft_backed_store_replays_root_draining_repairs() {
+fn raft_backed_store_replays_placement_draining_repairs() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
@@ -28461,11 +28461,11 @@ fn raft_backed_store_replays_root_draining_repairs() {
         ("chunk-c", "rack-c"),
     ] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, 64))
+            .propose_register_placement_node(placement_node(node_id, domain, 64))
             .unwrap();
     }
     replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "object",
             b"repair-root".to_vec(),
@@ -28476,7 +28476,7 @@ fn raft_backed_store_replays_root_draining_repairs() {
         )
         .unwrap();
     replicated
-        .propose_register_root_node(PlacementNode {
+        .propose_register_placement_node(PlacementNode {
             node_id: "chunk-a".to_string(),
             endpoint: "chunk-a.local:9102".to_string(),
             service_kind: "chunkserver".to_string(),
@@ -28499,7 +28499,7 @@ fn raft_backed_store_replays_root_draining_repairs() {
         })
         .unwrap();
     let prepared = replicated
-        .prepare_draining_root_placement_repair_raft_entry_linearizable(10)
+        .prepare_draining_placement_repair_raft_entry_linearizable(10)
         .unwrap();
     assert_eq!(prepared.report.repair_objects, 1);
     assert_eq!(prepared.report.bytes_to_repair, 11);
@@ -28507,7 +28507,7 @@ fn raft_backed_store_replays_root_draining_repairs() {
     assert_eq!(prepared.prepared_commit_index, 6);
     assert!(!prepared.raft_entry_checksum.is_empty());
     let envelope = replicated
-        .prepare_draining_root_placement_repair_envelope_with_read_proof_linearizable(10)
+        .prepare_draining_placement_repair_envelope_with_read_proof_linearizable(10)
         .unwrap();
     assert_eq!(envelope.envelope.repair_kind, "draining");
     assert_eq!(envelope.envelope.repair_objects, 1);
@@ -28521,7 +28521,7 @@ fn raft_backed_store_replays_root_draining_repairs() {
         replicated.raft_commit_index()
     );
     let receipt = replicated
-        .propose_prepared_draining_root_placement_repair_linearizable(prepared)
+        .propose_prepared_draining_placement_repair_linearizable(prepared)
         .unwrap();
     assert_eq!(
         receipt.content_type,
@@ -28539,7 +28539,7 @@ fn raft_backed_store_replays_root_draining_repairs() {
     assert!(placement.node_ids.iter().any(|node| node == "chunk-c"));
     assert_eq!(
         follower
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == "chunk-a")
             .unwrap()
@@ -28550,7 +28550,7 @@ fn raft_backed_store_replays_root_draining_repairs() {
 }
 
 #[test]
-fn raft_backed_store_replays_prepared_root_health_repairs() {
+fn raft_backed_store_replays_prepared_placement_health_repairs() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
@@ -28561,11 +28561,11 @@ fn raft_backed_store_replays_prepared_root_health_repairs() {
         ("chunk-d", "rack-d"),
     ] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, 128))
+            .propose_register_placement_node(placement_node(node_id, domain, 128))
             .unwrap();
     }
     replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "health-object",
             b"repair-root-health".to_vec(),
@@ -28582,17 +28582,17 @@ fn raft_backed_store_replays_prepared_root_health_repairs() {
     let source_node = original.node_ids[0].clone();
     let mut offline = replicated
         .store()
-        .root_nodes()
+        .placement_nodes()
         .into_iter()
         .find(|node| node.node_id == source_node)
         .unwrap();
     offline.online = false;
     offline.used_bytes = original.length;
     offline.last_heartbeat_ms = 20;
-    replicated.propose_register_root_node(offline).unwrap();
+    replicated.propose_register_placement_node(offline).unwrap();
 
     let prepared = replicated
-        .prepare_unhealthy_root_placement_repair_raft_entry_linearizable(
+        .prepare_unhealthy_placement_repair_raft_entry_linearizable(
             None,
             10,
             original.node_ids.len(),
@@ -28610,7 +28610,7 @@ fn raft_backed_store_replays_prepared_root_health_repairs() {
     assert_eq!(prepared.prepared_commit_index, 7);
     assert!(!prepared.raft_entry_checksum.is_empty());
     let envelope = replicated
-        .prepare_unhealthy_root_placement_repair_envelope_with_read_proof_linearizable(
+        .prepare_unhealthy_placement_repair_envelope_with_read_proof_linearizable(
             None,
             10,
             original.node_ids.len(),
@@ -28634,7 +28634,7 @@ fn raft_backed_store_replays_prepared_root_health_repairs() {
         replicated.raft_commit_index()
     );
     let receipt = replicated
-        .propose_prepared_unhealthy_root_placement_repair_linearizable(prepared)
+        .propose_prepared_unhealthy_placement_repair_linearizable(prepared)
         .unwrap();
     assert_eq!(
         receipt.content_type,
@@ -28681,11 +28681,11 @@ fn raft_backed_store_decommissions_draining_objects_after_page_repair() {
         ("chunk-c", "rack-c"),
     ] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, 64))
+            .propose_register_placement_node(placement_node(node_id, domain, 64))
             .unwrap();
     }
     let metadata = replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "decommission-raft",
             b"repair-before-migrate".to_vec(),
@@ -28712,7 +28712,7 @@ fn raft_backed_store_decommissions_draining_objects_after_page_repair() {
         .remove_replica_chunk_for_repair(0, &degraded_chunk)
         .unwrap();
     replicated
-        .propose_heartbeat_root_node("chunk-a", 0, 64, true, true, 20)
+        .propose_heartbeat_placement_node("chunk-a", 0, 64, true, true, 20)
         .unwrap();
     let before_decommission_commit = replicated.raft_commit_index();
     let proven_plan = replicated
@@ -28793,11 +28793,11 @@ fn raft_backed_store_repairs_planned_object_replicas() {
         ("chunk-c", "rack-c"),
     ] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, 64))
+            .propose_register_placement_node(placement_node(node_id, domain, 64))
             .unwrap();
     }
     let metadata = replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "planned-repair-raft",
             b"repair-this-object".to_vec(),
@@ -28903,7 +28903,7 @@ fn raft_backed_store_repairs_planned_object_replicas() {
 }
 
 #[test]
-fn raft_backed_store_gates_root_placement_health_reads() {
+fn raft_backed_store_gates_placement_health_reads() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
@@ -28913,11 +28913,11 @@ fn raft_backed_store_gates_root_placement_health_reads() {
         ("chunk-c", "rack-c"),
     ] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, 64))
+            .propose_register_placement_node(placement_node(node_id, domain, 64))
             .unwrap();
     }
     let metadata = replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "placement-health-raft",
             b"placement-health".to_vec(),
@@ -28934,16 +28934,16 @@ fn raft_backed_store_gates_root_placement_health_reads() {
     assert_eq!(placement.object_id, metadata.object_id);
     assert_eq!(placement.node_ids.len(), 2);
     let placement_page = replicated
-        .list_root_object_placements_linearizable(None, 10, Some(&placement.node_ids[0]))
+        .list_object_placements_linearizable(None, 10, Some(&placement.node_ids[0]))
         .unwrap();
     assert_eq!(placement_page.placements.len(), 1);
     assert_eq!(placement_page.placements[0].object_id, metadata.object_id);
 
     replicated
-        .propose_heartbeat_root_node(&placement.node_ids[0], 0, 64, false, false, 20)
+        .propose_heartbeat_placement_node(&placement.node_ids[0], 0, 64, false, false, 20)
         .unwrap();
     let health = replicated
-        .audit_root_placement_health_linearizable(None, 10, 2, 1, true, 0)
+        .audit_placement_health_linearizable(None, 10, 2, 1, true, 0)
         .unwrap();
     assert_eq!(health.degraded_objects, 1);
     assert_eq!(health.offline_node_references, 1);
@@ -28954,27 +28954,27 @@ fn raft_backed_store_gates_root_placement_health_reads() {
         MatrixObjectStore::new(test_options()).unwrap(),
     );
     let err = stale
-        .audit_root_placement_health_linearizable(None, 10, 2, 1, true, 0)
+        .audit_placement_health_linearizable(None, 10, 2, 1, true, 0)
         .unwrap_err();
     assert!(matches!(err, ObjectError::PreconditionFailed(_)));
     assert!(err.to_string().contains("root read index is not satisfied"));
 }
 
 #[test]
-fn raft_backed_store_gates_root_node_usage_reads() {
+fn raft_backed_store_gates_placement_node_usage_reads() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(InMemoryRustRaft::new(1).unwrap(), store);
     replicated
-        .propose_register_root_node(root_node("chunk-a", "rack-a", 100))
+        .propose_register_placement_node(placement_node("chunk-a", "rack-a", 100))
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-b", "rack-b", 100))
+        .propose_register_placement_node(placement_node("chunk-b", "rack-b", 100))
         .unwrap();
     replicated
-        .propose_heartbeat_root_node("chunk-a", 96, 100, false, true, 20)
+        .propose_heartbeat_placement_node("chunk-a", 96, 100, false, true, 20)
         .unwrap();
     replicated
-        .propose_heartbeat_root_chunk_health(
+        .propose_heartbeat_placement_chunk_health(
             "chunk-a",
             NodeChunkHealth {
                 accepting_writes: true,
@@ -28988,10 +28988,10 @@ fn raft_backed_store_gates_root_node_usage_reads() {
         )
         .unwrap();
     replicated
-        .propose_heartbeat_root_node("chunk-b", 12, 100, true, true, 21)
+        .propose_heartbeat_placement_node("chunk-b", 12, 100, true, true, 21)
         .unwrap();
 
-    let nodes = replicated.root_nodes_linearizable().unwrap();
+    let nodes = replicated.placement_nodes_linearizable().unwrap();
     assert_eq!(nodes.len(), 2);
     assert!(nodes.iter().any(|node| node.node_id == "chunk-a"));
     assert!(nodes
@@ -28999,7 +28999,7 @@ fn raft_backed_store_gates_root_node_usage_reads() {
         .any(|node| node.node_id == "chunk-b" && node.draining));
 
     let first_node_page = replicated
-        .list_root_nodes_linearizable(
+        .list_placement_nodes_linearizable(
             None,
             1,
             Some("chunkserver"),
@@ -29016,7 +29016,7 @@ fn raft_backed_store_gates_root_node_usage_reads() {
     assert_eq!(first_node_page.total_capacity_bytes, 100);
     assert_eq!(first_node_page.total_used_bytes, 96);
     let second_node_page = replicated
-        .list_root_nodes_with_read_proof_linearizable(
+        .list_placement_nodes_with_read_proof_linearizable(
             first_node_page.next_marker.as_deref(),
             10,
             Some("chunkserver"),
@@ -29035,12 +29035,12 @@ fn raft_backed_store_gates_root_node_usage_reads() {
         replicated.raft.commit_index()
     );
     let invalid_node_page = replicated
-        .list_root_nodes_linearizable(None, 0, None, None, None, None, None, None)
+        .list_placement_nodes_linearizable(None, 0, None, None, None, None, None, None)
         .unwrap_err();
     assert!(matches!(invalid_node_page, ObjectError::InvalidArgument(_)));
 
     let usage = replicated
-        .list_root_node_usage_linearizable(
+        .list_placement_node_usage_linearizable(
             None,
             10,
             Some("chunkserver"),
@@ -29063,13 +29063,13 @@ fn raft_backed_store_gates_root_node_usage_reads() {
     assert_eq!(usage.total_node_count, 2);
 
     replicated
-        .propose_register_root_node(root_node("chunk-c", "rack-c", 100))
+        .propose_register_placement_node(placement_node("chunk-c", "rack-c", 100))
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-d", "rack-d", 100))
+        .propose_register_placement_node(placement_node("chunk-d", "rack-d", 100))
         .unwrap();
     replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "dangling-usage-raft",
             b"dangling".to_vec(),
@@ -29080,10 +29080,10 @@ fn raft_backed_store_gates_root_node_usage_reads() {
         )
         .unwrap();
     replicated
-        .propose_remove_root_node("chunk-c", true, 31)
+        .propose_remove_placement_node("chunk-c", true, 31)
         .unwrap();
     let dangling_usage = replicated
-        .list_root_node_usage_linearizable(None, 10, None, None, None, None, None, None, 0, 0)
+        .list_placement_node_usage_linearizable(None, 10, None, None, None, None, None, None, 0, 0)
         .unwrap();
     assert_eq!(dangling_usage.registered_node_count, 3);
     assert_eq!(dangling_usage.referenced_node_count, 2);
@@ -29101,7 +29101,7 @@ fn raft_backed_store_gates_root_node_usage_reads() {
     assert_eq!(dangling.referenced_bytes, 8);
 
     let reclaim = replicated
-        .plan_root_reclaim_nodes_linearizable(
+        .plan_placement_reclaim_nodes_linearizable(
             None,
             10,
             Some("chunkserver"),
@@ -29124,12 +29124,12 @@ fn raft_backed_store_gates_root_node_usage_reads() {
         MatrixObjectStore::new(test_options()).unwrap(),
     );
     let err = stale
-        .list_root_node_usage_linearizable(None, 10, None, None, None, None, None, None, 0, 0)
+        .list_placement_node_usage_linearizable(None, 10, None, None, None, None, None, None, 0, 0)
         .unwrap_err();
     assert!(matches!(err, ObjectError::PreconditionFailed(_)));
     assert!(err.to_string().contains("root read index is not satisfied"));
     let err = stale
-        .list_root_nodes_linearizable(None, 10, None, None, None, None, None, None)
+        .list_placement_nodes_linearizable(None, 10, None, None, None, None, None, None)
         .unwrap_err();
     assert!(matches!(err, ObjectError::PreconditionFailed(_)));
     assert!(err.to_string().contains("root read index is not satisfied"));
@@ -29146,11 +29146,11 @@ fn raft_backed_store_replays_object_range_read_repair() {
         ("chunk-c", "rack-c"),
     ] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, 64))
+            .propose_register_placement_node(placement_node(node_id, domain, 64))
             .unwrap();
     }
     let metadata = replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "read-repair-raft",
             b"0123456789abcdef".to_vec(),
@@ -29236,11 +29236,11 @@ fn raft_backed_store_replays_batch_object_read_repair() {
         ("chunk-c", "rack-c"),
     ] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, 64))
+            .propose_register_placement_node(placement_node(node_id, domain, 64))
             .unwrap();
     }
     let first = replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "batch-repair-a",
             b"abcdefgh".to_vec(),
@@ -29251,7 +29251,7 @@ fn raft_backed_store_replays_batch_object_read_repair() {
         )
         .unwrap();
     replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "batch-repair-b",
             b"ijklmnop".to_vec(),
@@ -29350,17 +29350,17 @@ fn raft_backed_store_replays_batch_object_read_repair() {
 }
 
 #[test]
-fn raft_backed_store_replays_root_capacity_rebalance() {
+fn raft_backed_store_replays_placement_capacity_rebalance() {
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     for (node_id, domain, capacity) in [("chunk-a", "rack-a", 64), ("chunk-b", "rack-b", 64)] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, capacity))
+            .propose_register_placement_node(placement_node(node_id, domain, capacity))
             .unwrap();
     }
     replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "hot",
             vec![b'h'; 32],
@@ -29371,9 +29371,9 @@ fn raft_backed_store_replays_root_capacity_rebalance() {
         )
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-c", "rack-c", 128))
+        .propose_register_placement_node(placement_node("chunk-c", "rack-c", 128))
         .unwrap();
-    let receipt = replicated.propose_rebalance_root_capacity(1, 40).unwrap();
+    let receipt = replicated.propose_rebalance_placement_capacity(1, 40).unwrap();
     assert_eq!(receipt.content_type, "root/placement-capacity-rebalance");
     assert_eq!(receipt.version, 1);
     assert_eq!(receipt.length, 32);
@@ -29388,7 +29388,7 @@ fn raft_backed_store_replays_root_capacity_rebalance() {
     );
     assert_eq!(
         follower
-            .root_nodes()
+            .placement_nodes()
             .iter()
             .find(|node| node.node_id == "chunk-a")
             .unwrap()
@@ -29420,11 +29420,11 @@ fn raft_backed_store_replays_object_capacity_rebalance_report() {
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     for (node_id, domain, capacity) in [("chunk-a", "rack-a", 64), ("chunk-b", "rack-b", 64)] {
         replicated
-            .propose_register_root_node(root_node(node_id, domain, capacity))
+            .propose_register_placement_node(placement_node(node_id, domain, capacity))
             .unwrap();
     }
     let metadata = replicated
-        .propose_put_with_root_placement(
+        .propose_put_with_placement(
             "bucket",
             "object-rebalance",
             vec![b'o'; 32],
@@ -29435,7 +29435,7 @@ fn raft_backed_store_replays_object_capacity_rebalance_report() {
         )
         .unwrap();
     replicated
-        .propose_register_root_node(root_node("chunk-c", "rack-c", 128))
+        .propose_register_placement_node(placement_node("chunk-c", "rack-c", 128))
         .unwrap();
 
     let proven_plan = replicated
@@ -29457,7 +29457,7 @@ fn raft_backed_store_replays_object_capacity_rebalance_report() {
     assert!(plan.rebalance_can_apply);
 
     let proven_envelope = replicated
-        .prepare_root_capacity_rebalance_envelope_with_read_proof_linearizable(1, 40)
+        .prepare_placement_capacity_rebalance_envelope_with_read_proof_linearizable(1, 40)
         .unwrap();
     assert_eq!(
         proven_envelope.proof.requested_root_read_index,
@@ -47178,7 +47178,7 @@ fn every_accepted_snapshot_checksum_format_still_validates() {
 /// # WHY THE NUMBERS ARE LITERALS AND NOT COMPUTED
 ///
 /// This proves that lifting thirty-eight `append_*` calls out of
-/// `PlacementSnapshot::append_to_bytes` into `append_root_page_health` changed no byte.
+/// `PlacementSnapshot::append_to_bytes` into `append_placement_page_health` changed no byte.
 ///
 /// A round trip cannot prove that: it writes and reads with the same build, so both halves
 /// move together and agree. A pin computed from the code as it now stands cannot prove it
@@ -47197,7 +47197,7 @@ fn every_accepted_snapshot_checksum_format_still_validates() {
 ///
 /// `meta_health` is left at its default, so its bytes are all zero and a reorder inside it is
 /// invisible here. That is deliberate and narrow: it is nested structs of its own, and it has
-/// had `append_root_meta_health` all along, so the copy-the-calls hazard this pin exists for
+/// had `append_placement_meta_health` all along, so the copy-the-calls hazard this pin exists for
 /// does not apply to it. Two boolean fields holding the same value are also indistinguishable
 /// once encoded, which no fixture can fix.
 ///
@@ -47205,7 +47205,7 @@ fn every_accepted_snapshot_checksum_format_still_validates() {
 /// a validation rule changes. The fixture is in fact refused by `validate` -- the node carries
 /// `committed_bytes` that no placement accounts for.
 #[test]
-fn the_root_snapshot_encoding_is_byte_for_byte_what_it_was() {
+fn the_placement_snapshot_encoding_is_byte_for_byte_what_it_was() {
     let node = PlacementNode {
         node_id: "v1001".to_string(),
         endpoint: "v1002".to_string(),
@@ -47402,7 +47402,7 @@ fn the_root_snapshot_encoding_is_byte_for_byte_what_it_was() {
 fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
     // THE BASE MUST BE VALID, or every case below would be refused for a reason that has
     // nothing to do with what it is testing, and all fourteen would pass vacuously.
-    a_root_snapshot_that_validates()
+    a_placement_snapshot_that_validates()
         .to_bytes()
         .expect("the base fixture must validate, or the cases below prove nothing");
 
@@ -47411,7 +47411,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a zero commit index",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 snapshot.next_commit_index = 0;
                 sealed(snapshot)
             }),
@@ -47420,7 +47420,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a node whose own id disagrees with its key",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 snapshot
                     .nodes
                     .get_mut("block-a")
@@ -47433,7 +47433,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a placement that names no node",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 let object_id = ObjectId::new("bucket", "object");
                 snapshot.placements.insert(
                     object_id.clone(),
@@ -47452,7 +47452,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a placement on a node that is not in the roster",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 let object_id = ObjectId::new("bucket", "object");
                 snapshot.placements.insert(
                     object_id.clone(),
@@ -47471,7 +47471,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "placed bytes the node does not account for",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 let object_id = ObjectId::new("bucket", "object");
                 snapshot.placements.insert(
                     object_id.clone(),
@@ -47490,7 +47490,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "committed bytes on a node that holds nothing",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 snapshot
                     .nodes
                     .get_mut("block-a")
@@ -47503,7 +47503,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a lease with no epoch",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 snapshot.leader_lease = Some(PlacementLeaderLease {
                     leader_node_id: "block-a".to_string(),
                     epoch: 0,
@@ -47518,7 +47518,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a lease held by a node that is not in the roster",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 snapshot.leader_lease = Some(PlacementLeaderLease {
                     leader_node_id: "ghost-node".to_string(),
                     epoch: 1,
@@ -47533,7 +47533,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a lease held by a node that cannot lead",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 snapshot.leader_lease = Some(PlacementLeaderLease {
                     leader_node_id: "block-a".to_string(),
                     epoch: 1,
@@ -47548,7 +47548,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a lease outliving the coordinator session",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 make_the_node_a_metaserver(&mut snapshot);
                 snapshot.leader_lease = Some(PlacementLeaderLease {
                     leader_node_id: "block-a".to_string(),
@@ -47564,7 +47564,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a lease on an endpoint the coordinator does not list",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 make_the_node_a_metaserver(&mut snapshot);
                 snapshot.coordinator_config.backend = "etcd".to_string();
                 snapshot.coordinator_config.endpoints = vec!["elsewhere.local:2379".to_string()];
@@ -47582,7 +47582,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a lease receipt with no commit index",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 let mut receipt = a_lease_receipt();
                 receipt.commit_index = 0;
                 snapshot
@@ -47595,7 +47595,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a lease receipt whose checksum is not the request it records",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 let mut receipt = a_lease_receipt();
                 receipt.request_checksum = "fnv1a64:0000000000000000".to_string();
                 snapshot
@@ -47608,7 +47608,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
         (
             "a checksum no accepted format produces",
             Box::new(|| {
-                let mut snapshot = a_root_snapshot_that_validates();
+                let mut snapshot = a_placement_snapshot_that_validates();
                 snapshot.checksum = "fnv1a64:0000000000000000".to_string();
                 snapshot
             }),
@@ -47673,7 +47673,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
     );
 }
 
-fn a_root_snapshot_that_validates() -> PlacementSnapshot {
+fn a_placement_snapshot_that_validates() -> PlacementSnapshot {
     let node = PlacementNode {
         node_id: "block-a".to_string(),
         endpoint: "block-a.local:9100".to_string(),
@@ -47735,7 +47735,7 @@ fn a_lease_receipt() -> PlacementLeaderLeaseReceipt {
     PlacementLeaderLeaseReceipt {
         idempotency_key: "idem-1".to_string(),
         operation: "campaign".to_string(),
-        request_checksum: root_leader_campaign_request_checksum(
+        request_checksum: placement_leader_campaign_request_checksum(
             &lease.leader_node_id,
             lease.ttl_ms,
             lease.acquire_time_ms,

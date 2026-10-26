@@ -52,7 +52,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             now_ms,
             catalog_source,
         )?;
-        let receipt = self.propose_register_root_node(registration.node.clone())?;
+        let receipt = self.propose_register_placement_node(registration.node.clone())?;
         Ok(ProvenCatalogRegistration {
             registration,
             raft_receipts: vec![receipt],
@@ -170,7 +170,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             catalog_source,
             online,
         )?;
-        let node_receipt = self.propose_heartbeat_root_node(
+        let node_receipt = self.propose_heartbeat_placement_node(
             node_id,
             registration.node.used_bytes,
             registration.node.capacity_bytes,
@@ -178,7 +178,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             registration.node.online,
             now_ms,
         )?;
-        let health_receipt = self.propose_heartbeat_root_page_health(
+        let health_receipt = self.propose_heartbeat_placement_page_health(
             node_id,
             registration.node.page_health.clone(),
             now_ms,
@@ -292,7 +292,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             now_ms,
             catalog_source,
         )?;
-        let node_receipt = self.propose_heartbeat_root_node(
+        let node_receipt = self.propose_heartbeat_placement_node(
             node_id,
             registration.node.used_bytes,
             registration.node.capacity_bytes,
@@ -300,7 +300,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             registration.node.online,
             now_ms,
         )?;
-        let health_receipt = self.propose_heartbeat_root_page_health(
+        let health_receipt = self.propose_heartbeat_placement_page_health(
             node_id,
             registration.node.page_health.clone(),
             now_ms,

@@ -830,7 +830,7 @@ struct GitProvenance {
 
 impl GitProvenance {
     fn detect() -> Self {
-        let repo_root = detect_repo_root();
+        let repo_root = detect_repo_placement();
         let Some(repo_root) = repo_root else {
             return Self {
                 repo_root: None,
@@ -892,7 +892,7 @@ impl GitProvenance {
     }
 }
 
-fn detect_repo_root() -> Option<PathBuf> {
+fn detect_repo_placement() -> Option<PathBuf> {
     if let Ok(root) = env::var("MATRIX_OBJECTSTORE_REPO_ROOT") {
         let candidate = PathBuf::from(root);
         if candidate.join(".git").exists() {

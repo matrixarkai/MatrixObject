@@ -13,8 +13,8 @@ include!("module_replication_status/checksum_health.rs");
 pub(crate) fn objectstore_module_status_checksum(status: &ObjectStoreModuleStatus) -> String {
     let mut material = Vec::new();
     append_module_identity(&mut material, status);
-    append_root_storage_status(&mut material, status);
-    append_root_metadata_status(&mut material, status);
+    append_placement_storage_status(&mut material, status);
+    append_placement_metadata_status(&mut material, status);
     append_metaserver_status(&mut material, status);
     append_storage_status(&mut material, status);
     append_health_fingerprints(&mut material, status);

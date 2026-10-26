@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn root_node_usage(
+pub(crate) fn placement_node_usage(
     node: &PlacementNode,
     min_free_bytes: u64,
     min_reclaimable_bytes: u64,
@@ -42,7 +42,7 @@ pub(crate) fn root_node_usage(
     }
 }
 
-pub(crate) fn unregistered_root_node_usage(
+pub(crate) fn unregistered_placement_node_usage(
     node_id: &str,
     object_count: u64,
     referenced_bytes: u64,

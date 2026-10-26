@@ -12,7 +12,7 @@
 //! # THE VERBS ARE THE ONES THE CONTROL PLANE ALREADY HAS
 //!
 //! Every request here names a method that already exists on this store's control plane:
-//! `heartbeat_root_node`, `expire_root_node_heartbeats`, `plan_object_placement`,
+//! `heartbeat_placement_node`, `expire_placement_node_heartbeats`, `plan_object_placement`,
 //! `commit_object_placement`. The facade in `src/store/core/readiness_catalog/` has been
 //! request-shaped since before there was a socket -- register, heartbeat, plan, commit,
 //! resolve, discover -- and inventing a parallel vocabulary beside it would leave two names
@@ -39,7 +39,7 @@
 //!   telemetry placement decides on.
 //!
 //! The narrowing is enforced by the compiler, not by this comment:
-//! [`PlacementNodeSummary::from_root_node`] destructures `PlacementNode` naming **every** field, so a
+//! [`PlacementNodeSummary::from_placement_node`] destructures `PlacementNode` naming **every** field, so a
 //! field added to it does not compile until it is either carried or discarded by name.
 
 use crate::cluster::meta_wire::{put_bool, take_bool, MetaRequestCode};
@@ -74,7 +74,7 @@ impl PlacementNodeSummary {
     /// DESTRUCTURED WITHOUT `..` ON PURPOSE. A field added to `PlacementNode` breaks this
     /// function, which is the only form of this narrowing that cannot quietly become an
     /// accident.
-    pub fn from_root_node(node: &PlacementNode) -> Self {
+    pub fn from_placement_node(node: &PlacementNode) -> Self {
         let PlacementNode {
             node_id,
             endpoint,

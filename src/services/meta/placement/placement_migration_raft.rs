@@ -28,7 +28,7 @@ impl MatrixMetaService {
             min_free_bytes,
         )?;
         let expected_plan_checksum = expected_plan_checksum.to_string();
-        let request_checksum = root_placement_migration_request_checksum(
+        let request_checksum = placement_migration_request_checksum(
             &plan,
             &expected_plan_checksum,
             min_free_bytes,
@@ -46,7 +46,7 @@ impl MatrixMetaService {
             prepared_commit_index: self.placement_commit_index,
             raft_entry_checksum: String::new(),
         };
-        prepared.raft_entry_checksum = prepared_root_placement_migration_checksum(&prepared);
+        prepared.raft_entry_checksum = prepared_placement_migration_checksum(&prepared);
         Ok(prepared)
     }
 
@@ -72,7 +72,7 @@ impl MatrixMetaService {
             ));
         }
         let expected_checksum =
-            prepared_root_placement_migration_checksum(&PreparedPlacementMigration {
+            prepared_placement_migration_checksum(&PreparedPlacementMigration {
                 raft_entry_checksum: String::new(),
                 ..prepared.clone()
             });
@@ -82,7 +82,7 @@ impl MatrixMetaService {
             ));
         }
         if prepared.request_checksum
-            != root_placement_migration_request_checksum(
+            != placement_migration_request_checksum(
                 &prepared.plan,
                 &prepared.expected_plan_checksum,
                 prepared.min_free_bytes,

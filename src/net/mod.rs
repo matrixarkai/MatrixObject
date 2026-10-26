@@ -741,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn the_service_root_lists_the_buckets() {
+    fn the_service_placement_lists_the_buckets() {
         let (handle, addr) = serve();
         let listed = roundtrip(&addr, &request("GET", "/", "", b""));
         assert_eq!(status_of(&listed), 200, "{listed}");

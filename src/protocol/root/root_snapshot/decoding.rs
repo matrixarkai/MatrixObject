@@ -110,7 +110,7 @@ pub(crate) fn read_placement_roster(
     features: PlacementSnapshotDecodeFeatures,
     fallback_commit_index: u64,
 ) -> Result<PlacementRoster, ObjectError> {
-    let mut nodes = read_root_snapshot_nodes(cursor, features)?;
+    let mut nodes = read_placement_snapshot_nodes(cursor, features)?;
     // RETIRED SPELLINGS ARE REWRITTEN HERE, once, rather than carried in every predicate that
     // asks what kind a node is. This is the only place a roster is decoded, which is what
     // makes one rewrite enough.

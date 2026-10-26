@@ -23,7 +23,7 @@ impl MatrixMetaService {
             ));
         }
         let expected_checksum =
-            prepared_root_placement_repair_checksum(&PreparedPlacementRepair {
+            prepared_placement_repair_checksum(&PreparedPlacementRepair {
                 raft_entry_checksum: String::new(),
                 ..prepared.clone()
             });
@@ -32,7 +32,7 @@ impl MatrixMetaService {
                 "root prepared placement repair raft entry checksum mismatch".to_string(),
             ));
         }
-        if prepared.request_checksum != root_placement_repair_request_checksum(prepared.max_objects)
+        if prepared.request_checksum != placement_repair_request_checksum(prepared.max_objects)
         {
             return Err(ObjectError::Corruption(
                 "root prepared placement repair request checksum mismatch".to_string(),

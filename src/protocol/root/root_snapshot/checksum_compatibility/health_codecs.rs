@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn append_root_meta_health(out: &mut Vec<u8>, health: &NodeMetaHealth) {
+pub(crate) fn append_placement_meta_health(out: &mut Vec<u8>, health: &NodeMetaHealth) {
     let proof = &health.control_proof;
     append_string(out, &proof.state_format);
     append_u64(out, proof.state_bytes);
@@ -92,7 +92,7 @@ pub(crate) fn append_root_meta_health(out: &mut Vec<u8>, health: &NodeMetaHealth
     );
 }
 
-pub(crate) fn append_root_chunk_health(
+pub(crate) fn append_placement_chunk_health(
     out: &mut Vec<u8>,
     health: &NodeChunkHealth,
     include_control: bool,
@@ -127,7 +127,7 @@ pub(crate) fn append_root_chunk_health(
     }
 }
 
-pub(crate) fn read_root_chunk_health(
+pub(crate) fn read_placement_chunk_health(
     cursor: &mut SnapshotByteCursor<'_>,
     has_control: bool,
     has_reclaim: bool,
@@ -171,7 +171,7 @@ pub(crate) fn read_root_chunk_health(
     Ok(health)
 }
 
-pub(crate) fn read_root_meta_health(
+pub(crate) fn read_placement_meta_health(
     cursor: &mut SnapshotByteCursor<'_>,
     has_control2_meta_health: bool,
     has_control3_meta_health: bool,
@@ -300,21 +300,21 @@ pub(crate) fn read_root_meta_health(
 ///
 /// # WHY THIS IS A HELPER NOW
 ///
-/// `append_root_meta_health` and `append_root_chunk_health` have always been helpers; page
+/// `append_placement_meta_health` and `append_placement_chunk_health` have always been helpers; page
 /// health was thirty-eight `append_*` calls written out inside `PlacementSnapshot::append_to_bytes`.
 /// That asymmetry is why putting roster nodes anywhere else -- a `MetaSnapshot`, a wire
 /// message -- meant copying thirty-eight calls, which is thirty-eight chances to drop a field
 /// where nothing would notice.
 ///
 /// The bytes are unchanged, and that is pinned rather than asserted: see
-/// `the_root_snapshot_encoding_is_byte_for_byte_what_it_was`, whose length and digest were
+/// `the_placement_snapshot_encoding_is_byte_for_byte_what_it_was`, whose length and digest were
 /// captured from the encoder BEFORE this helper existed.
 ///
 /// NOT SHARED WITH THE CHECKSUM MATERIAL, which encodes the same fields in a different order
 /// behind version flags. Reordering the material would change every stored checksum, so those
 /// two encodings stay separate and are held together by a guard instead -- see
 /// `every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum`.
-pub(crate) fn append_root_page_health(out: &mut Vec<u8>, health: &NodePageHealth) {
+pub(crate) fn append_placement_page_health(out: &mut Vec<u8>, health: &NodePageHealth) {
     append_u64(out, health.ready as u64);
     append_u64(out, health.read_ready as u64);
     append_string(out, &health.route_control_checksum);

@@ -129,7 +129,7 @@ pub(crate) fn replica_service_bootstrap_report_checksum(
     etag(&material)
 }
 
-pub(crate) fn root_catalog_bootstrap_report_checksum(
+pub(crate) fn catalog_bootstrap_report_checksum(
     report: &CatalogBootstrapReport,
 ) -> String {
     let mut material = Vec::new();
@@ -147,7 +147,7 @@ pub(crate) fn root_catalog_bootstrap_report_checksum(
     etag(&material)
 }
 
-pub(crate) fn root_service_bootstrap_report_checksum(
+pub(crate) fn placement_service_bootstrap_report_checksum(
     report: &PlacementServiceBootstrapReport,
 ) -> String {
     let mut material = Vec::new();

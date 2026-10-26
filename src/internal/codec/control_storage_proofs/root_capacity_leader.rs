@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn append_root_capacity_rebalance_envelope(
+pub(crate) fn append_placement_capacity_rebalance_envelope(
     out: &mut Vec<u8>,
     envelope: &PreparedPlacementCapacityRebalanceEnvelope,
 ) {
@@ -32,7 +32,7 @@ pub(crate) fn append_root_capacity_rebalance_envelope(
     append_string(out, &envelope.raft_entry_checksum);
 }
 
-pub(crate) fn prepared_root_capacity_rebalance_envelope_checksum(
+pub(crate) fn prepared_placement_capacity_rebalance_envelope_checksum(
     envelope: &PreparedPlacementCapacityRebalanceEnvelope,
 ) -> String {
     let mut material = Vec::new();
@@ -40,11 +40,11 @@ pub(crate) fn prepared_root_capacity_rebalance_envelope_checksum(
         &mut material,
         "MOS-RUST-PREPARED-ROOT-CAPACITY-REBALANCE-ENVELOPE1",
     );
-    append_root_capacity_rebalance_envelope(&mut material, envelope);
+    append_placement_capacity_rebalance_envelope(&mut material, envelope);
     etag(&material)
 }
 
-pub(crate) fn prepared_root_capacity_rebalance_envelope(
+pub(crate) fn prepared_placement_capacity_rebalance_envelope(
     prepared: &PreparedPlacementCapacityRebalance,
 ) -> PreparedPlacementCapacityRebalanceEnvelope {
     let first_item = prepared.report.items.first();
@@ -78,19 +78,19 @@ pub(crate) fn prepared_root_capacity_rebalance_envelope(
         raft_entry_checksum: prepared.raft_entry_checksum.clone(),
         envelope_checksum: String::new(),
     };
-    envelope.envelope_checksum = prepared_root_capacity_rebalance_envelope_checksum(&envelope);
+    envelope.envelope_checksum = prepared_placement_capacity_rebalance_envelope_checksum(&envelope);
     envelope
 }
 
-pub(crate) fn append_root_capacity_rebalance_item(
+pub(crate) fn append_placement_capacity_rebalance_item(
     out: &mut Vec<u8>,
     item: &PlacementCapacityRebalanceItem,
 ) {
     append_string(out, &item.pressure_node_id);
-    append_root_placement_migration_plan(out, &item.plan);
+    append_placement_migration_plan(out, &item.plan);
 }
 
-pub(crate) fn append_root_capacity_rebalance_report(
+pub(crate) fn append_placement_capacity_rebalance_report(
     out: &mut Vec<u8>,
     report: &PlacementCapacityRebalanceReport,
 ) {
@@ -104,7 +104,7 @@ pub(crate) fn append_root_capacity_rebalance_report(
     append_u64(out, report.bytes_rebalanced);
     append_u64(out, report.items.len() as u64);
     for item in &report.items {
-        append_root_capacity_rebalance_item(out, item);
+        append_placement_capacity_rebalance_item(out, item);
     }
     append_u64(out, report.errors.len() as u64);
     for error in &report.errors {
@@ -112,7 +112,7 @@ pub(crate) fn append_root_capacity_rebalance_report(
     }
 }
 
-pub(crate) fn root_capacity_rebalance_request_checksum(
+pub(crate) fn placement_capacity_rebalance_request_checksum(
     max_objects: usize,
     min_free_bytes: u64,
 ) -> String {
@@ -123,7 +123,7 @@ pub(crate) fn root_capacity_rebalance_request_checksum(
     etag(&material)
 }
 
-pub(crate) fn prepared_root_capacity_rebalance_checksum(
+pub(crate) fn prepared_placement_capacity_rebalance_checksum(
     prepared: &PreparedPlacementCapacityRebalance,
 ) -> String {
     let mut material = Vec::new();
@@ -134,11 +134,11 @@ pub(crate) fn prepared_root_capacity_rebalance_checksum(
     append_string(&mut material, &prepared.request_checksum);
     append_u64(&mut material, prepared.expected_previous_commit_index);
     append_u64(&mut material, prepared.prepared_commit_index);
-    append_root_capacity_rebalance_report(&mut material, &prepared.report);
+    append_placement_capacity_rebalance_report(&mut material, &prepared.report);
     etag(&material)
 }
 
-pub(crate) fn root_leader_campaign_request_checksum(
+pub(crate) fn placement_leader_campaign_request_checksum(
     node_id: &str,
     ttl_ms: u64,
     now_ms: u64,
@@ -155,7 +155,7 @@ pub(crate) fn root_leader_campaign_request_checksum(
     etag(&material)
 }
 
-pub(crate) fn root_leader_renew_request_checksum(
+pub(crate) fn placement_leader_renew_request_checksum(
     node_id: &str,
     epoch: u64,
     ttl_ms: u64,

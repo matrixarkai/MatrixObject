@@ -89,7 +89,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
 
             report.attempted_migration_objects =
                 report.attempted_migration_objects.saturating_add(1);
-            let prepared = match self.prepare_root_placement_migration_raft_entry(
+            let prepared = match self.prepare_placement_migration_raft_entry(
                 item.plan.clone(),
                 &item.plan.plan_checksum,
             ) {
@@ -103,7 +103,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     continue;
                 }
             };
-            match self.propose_prepared_root_placement_migration(prepared) {
+            match self.propose_prepared_placement_migration(prepared) {
                 Ok(_) => {
                     if item.plan.after_node_ids == item.plan.before_node_ids {
                         report.skipped_migration_objects =

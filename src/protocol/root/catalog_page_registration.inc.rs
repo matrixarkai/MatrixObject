@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 impl CatalogPageRegistration {
     pub fn catalog_route_checksum(&self) -> String {
-        root_catalog_route_checksum(
+        catalog_route_checksum(
             "blockserver",
             &self.node,
             &self.catalog_source,
@@ -30,7 +30,7 @@ impl CatalogPageRegistration {
         read_index: u64,
         node_count: u64,
     ) -> CatalogLivenessReceipt {
-        root_catalog_liveness_receipt(
+        catalog_liveness_receipt(
             method,
             &self.node,
             term,
@@ -59,7 +59,7 @@ impl CatalogPageRegistration {
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
     ) -> Result<Self, ObjectError> {
-        let (source, endpoint, count) = validate_root_catalog_route(
+        let (source, endpoint, count) = validate_catalog_route(
             "blockserver",
             catalog_source,
             catalog_endpoint,
@@ -72,7 +72,7 @@ impl CatalogPageRegistration {
     }
 
     pub fn to_control_fields(&self) -> BTreeMap<String, String> {
-        let mut fields = root_catalog_registration_fields(
+        let mut fields = catalog_registration_fields(
             "blockserver",
             &self.node,
             &self.catalog_source,
@@ -92,7 +92,7 @@ impl CatalogPageRegistration {
 }
 
 impl CatalogControlFields for CatalogPageRegistration {
-    fn to_root_catalog_control_fields(&self) -> BTreeMap<String, String> {
+    fn to_catalog_control_fields(&self) -> BTreeMap<String, String> {
         self.to_control_fields()
     }
 
@@ -103,7 +103,7 @@ impl CatalogControlFields for CatalogPageRegistration {
         self.require_catalog_route_checksum(expected_checksum)
     }
 
-    fn root_catalog_liveness_receipt(
+    fn catalog_liveness_receipt(
         &self,
         method: &str,
         term: u64,

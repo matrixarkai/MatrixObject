@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_prepared_root_capacity_rebalance(
+    pub fn propose_prepared_placement_capacity_rebalance(
         &mut self,
         prepared: PreparedPlacementCapacityRebalance,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -29,20 +29,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store.apply_raft_entry(&entry)
     }
 
-    pub fn propose_prepared_root_capacity_rebalance_linearizable(
+    pub fn propose_prepared_placement_capacity_rebalance_linearizable(
         &mut self,
         prepared: PreparedPlacementCapacityRebalance,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.ensure_root_read_index("propose prepared root capacity rebalance")?;
-        self.propose_prepared_root_capacity_rebalance(prepared)
+        self.ensure_placement_read_index("propose prepared root capacity rebalance")?;
+        self.propose_prepared_placement_capacity_rebalance(prepared)
     }
 
-    pub fn propose_prepared_root_capacity_rebalance_with_read_proof_linearizable(
+    pub fn propose_prepared_placement_capacity_rebalance_with_read_proof_linearizable(
         &mut self,
         prepared: PreparedPlacementCapacityRebalance,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_prepared_root_capacity_rebalance_with_read_proof_linearizable_committed_at(
+        self.propose_prepared_placement_capacity_rebalance_with_read_proof_linearizable_committed_at(
             prepared,
             now_ms,
             self.raft.commit_index(),
@@ -50,7 +50,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_prepared_root_capacity_rebalance_with_read_proof_linearizable_committed_at(
+    pub fn propose_prepared_placement_capacity_rebalance_with_read_proof_linearizable_committed_at(
         &mut self,
         prepared: PreparedPlacementCapacityRebalance,
         now_ms: u64,
@@ -63,7 +63,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let metadata = self.propose_prepared_root_capacity_rebalance_linearizable(prepared)?;
+        let metadata = self.propose_prepared_placement_capacity_rebalance_linearizable(prepared)?;
         let readiness = self.ensure_metadata_read_index_committed_at(
             "propose prepared root capacity rebalance post-commit",
             now_ms,
@@ -73,13 +73,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven_metadata_read(metadata, &readiness))
     }
 
-    pub fn propose_prepared_root_capacity_rebalance_with_route_proof_linearizable_fenced(
+    pub fn propose_prepared_placement_capacity_rebalance_with_route_proof_linearizable_fenced(
         &mut self,
         prepared: PreparedPlacementCapacityRebalance,
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenRouteFencedMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_prepared_root_capacity_rebalance_with_route_proof_linearizable_fenced_committed_at(
+        self.propose_prepared_placement_capacity_rebalance_with_route_proof_linearizable_fenced_committed_at(
             prepared,
             now_ms,
             expected_page_route_control_checksum,
@@ -88,7 +88,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_prepared_root_capacity_rebalance_with_route_proof_linearizable_fenced_committed_at(
+    pub fn propose_prepared_placement_capacity_rebalance_with_route_proof_linearizable_fenced_committed_at(
         &mut self,
         prepared: PreparedPlacementCapacityRebalance,
         now_ms: u64,
@@ -103,7 +103,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
-            .propose_prepared_root_capacity_rebalance_with_read_proof_linearizable_committed_at(
+            .propose_prepared_placement_capacity_rebalance_with_read_proof_linearizable_committed_at(
                 prepared,
                 now_ms,
                 min_read_index,

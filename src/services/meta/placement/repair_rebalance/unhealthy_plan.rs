@@ -41,7 +41,7 @@ impl MatrixMetaService {
                 }
             }
         }
-        Self::finalize_root_placement_repair_report(&mut report);
+        Self::finalize_placement_repair_report(&mut report);
         Ok(report)
     }
 
@@ -94,7 +94,7 @@ impl MatrixMetaService {
             min_free_bytes,
             max_payload_bytes,
         )?;
-        let request_checksum = root_unhealthy_placement_repair_request_checksum(
+        let request_checksum = unhealthy_placement_repair_request_checksum(
             marker,
             max_objects,
             expected_replica_count,
@@ -114,7 +114,7 @@ impl MatrixMetaService {
             prepared_commit_index: self.placement_commit_index,
             raft_entry_checksum: String::new(),
         };
-        prepared.raft_entry_checksum = prepared_root_unhealthy_placement_repair_checksum(&prepared);
+        prepared.raft_entry_checksum = prepared_unhealthy_placement_repair_checksum(&prepared);
         Ok(prepared)
     }
 

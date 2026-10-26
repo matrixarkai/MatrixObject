@@ -12,7 +12,7 @@ impl MatrixObjectStore {
             });
         let rootserver_endpoint =
             first_non_empty_env(&MATRIX_OBJECTSTORE_GLOBAL_CATALOG_ENV_NAMES)?.or_else(|| {
-                self.configured_rootserver_fallback_endpoint()
+                self.configured_placement_fallback_endpoint()
                     .map(str::to_string)
             });
         let endpoint_set = mode.select_catalog_endpoint_set(
@@ -52,7 +52,7 @@ impl MatrixObjectStore {
             .effective_mode)
     }
 
-    pub fn list_root_nodes(
+    pub fn list_placement_nodes(
         &self,
         marker: Option<&str>,
         limit: usize,
@@ -75,7 +75,7 @@ impl MatrixObjectStore {
         )
     }
 
-    pub fn list_root_node_usage(
+    pub fn list_placement_node_usage(
         &self,
         marker: Option<&str>,
         limit: usize,
@@ -102,7 +102,7 @@ impl MatrixObjectStore {
         )
     }
 
-    pub fn plan_root_reclaim_nodes(
+    pub fn plan_placement_reclaim_nodes(
         &self,
         marker: Option<&str>,
         limit: usize,
@@ -129,7 +129,7 @@ impl MatrixObjectStore {
         )
     }
 
-    pub fn list_root_object_placements(
+    pub fn list_object_placements(
         &self,
         marker: Option<&ObjectId>,
         limit: usize,
@@ -139,7 +139,7 @@ impl MatrixObjectStore {
             .list_object_placements(marker, limit, node_id_filter)
     }
 
-    pub fn audit_root_placement_health(
+    pub fn audit_placement_health(
         &self,
         marker: Option<&ObjectId>,
         limit: usize,
@@ -181,23 +181,23 @@ impl MatrixObjectStore {
         })
     }
 
-    pub fn refresh_all_object_root_placements(
+    pub fn refresh_all_object_placements(
         &mut self,
         max_objects: usize,
         replica_count: usize,
     ) -> Result<u64, ObjectError> {
         Ok(self
-            .refresh_object_root_placements_page(None, max_objects, replica_count)?
+            .refresh_object_placements_page(None, max_objects, replica_count)?
             .refreshed_objects)
     }
 
-    pub fn refresh_object_root_placements_page(
+    pub fn refresh_object_placements_page(
         &mut self,
         marker: Option<&ObjectId>,
         max_objects: usize,
         replica_count: usize,
     ) -> Result<PlacementRefreshReport, ObjectError> {
-        self.apply_refresh_object_root_placements_page(
+        self.apply_refresh_object_placements_page(
             marker.cloned(),
             max_objects,
             replica_count,

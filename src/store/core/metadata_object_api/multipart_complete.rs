@@ -52,7 +52,7 @@ impl MatrixObjectStore {
         Ok(metadata)
     }
 
-    pub fn complete_multipart_upload_with_root_placement(
+    pub fn complete_multipart_upload_with_placement(
         &mut self,
         upload_id: &str,
         expected_size: Option<u64>,

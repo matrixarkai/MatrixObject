@@ -36,7 +36,7 @@ impl MatrixObjectStore {
         }
         let readiness =
             self.page_storage_readiness(min_capacity_free_bytes, min_reclaimable_bytes, now_ms);
-        let page_health = root_page_health_from_readiness(&readiness);
+        let page_health = placement_page_health_from_readiness(&readiness);
         let capacity_bytes = catalog_page_capacity_bytes(&readiness);
         let rollback = if self.persistent_journal_path.is_empty() {
             None
@@ -64,7 +64,7 @@ impl MatrixObjectStore {
             page_health,
             chunk_health: NodeChunkHealth::default(),
         };
-        let node = self.register_root_node(node)?;
+        let node = self.register_placement_node(node)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
                 if let Some(rollback) = rollback {

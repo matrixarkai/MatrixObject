@@ -12,7 +12,7 @@ struct PlacementServingGates {
     writable: bool,
 }
 
-fn root_serving_gates(
+fn placement_serving_gates(
     last_applied_index: u64,
     leader_active: bool,
     metadata: &PlacementMetadataServiceCoverage,
@@ -70,7 +70,7 @@ impl MatrixMetaService {
         min_chunk_free_bytes: u64,
     ) -> PlacementRaftStatus {
         let nodes: Vec<PlacementNode> = self.nodes.values().cloned().collect();
-        let metadata = compute_root_metadata_service_coverage(&nodes, metadata_replication_quorum);
+        let metadata = compute_placement_metadata_service_coverage(&nodes, metadata_replication_quorum);
         let page_allocator = self.page_allocator_shard_coverage();
         let pageserver = self.pageserver_service_coverage();
         let replicaserver = self.replicaserver_coverage(min_chunk_free_bytes);
@@ -90,7 +90,7 @@ impl MatrixMetaService {
             .as_ref()
             .and_then(|lease| self.nodes.get(&lease.leader_node_id))
             .is_some_and(is_control_plane_leader_candidate);
-        let gates = root_serving_gates(
+        let gates = placement_serving_gates(
             last_applied_index,
             leader_active,
             metadata,

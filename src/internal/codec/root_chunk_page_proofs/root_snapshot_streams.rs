@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn append_root_snapshot_proof_material(
+pub(crate) fn append_placement_snapshot_proof_material(
     material: &mut Vec<u8>,
     offset: u64,
     payload_len: u64,
@@ -21,14 +21,14 @@ pub(crate) fn append_root_snapshot_proof_material(
     append_string(material, &proof.proof_checksum);
 }
 
-pub(crate) fn root_snapshot_proof_material_capacity(
+pub(crate) fn placement_snapshot_proof_material_capacity(
     total_bytes: u64,
     max_payload_bytes: usize,
 ) -> usize {
     snapshot_proof_material_capacity(total_bytes, max_payload_bytes, 224)
 }
 
-pub(crate) fn finish_root_snapshot_proof_stream_report(
+pub(crate) fn finish_placement_snapshot_proof_stream_report(
     material: Vec<u8>,
     proof_count: u64,
     operation: String,
@@ -59,7 +59,7 @@ pub(crate) fn finish_root_snapshot_proof_stream_report(
     }
 }
 
-pub(crate) fn verify_root_snapshot_proof_stream_report(
+pub(crate) fn verify_placement_snapshot_proof_stream_report(
     expected: &PlacementSnapshotProofStreamReport,
     actual: &PlacementSnapshotProofStreamReport,
     min_read_index: u64,

@@ -278,7 +278,7 @@ impl PlacementSnapshotProofStreamReport {
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<(), ObjectError> {
-        verify_root_snapshot_proof_stream_report(self, actual, min_read_index, min_commit_index)
+        verify_placement_snapshot_proof_stream_report(self, actual, min_read_index, min_commit_index)
     }
 
     pub fn require_min_fence(

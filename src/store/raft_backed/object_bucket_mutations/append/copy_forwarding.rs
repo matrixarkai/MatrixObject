@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_copy_object_with_root_placement_with_route_proof_from_meta_shard_fenced(
+    pub fn propose_copy_object_with_placement_with_route_proof_from_meta_shard_fenced(
         &mut self,
         source_bucket: &str,
         source_key: &str,
@@ -30,7 +30,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_shard_epoch,
             update_time_ms,
         )?;
-        self.propose_copy_object_with_root_placement_with_route_proof_linearizable_fenced_committed_at(
+        self.propose_copy_object_with_placement_with_route_proof_linearizable_fenced_committed_at(
             source_bucket,
             source_key,
             source_version,

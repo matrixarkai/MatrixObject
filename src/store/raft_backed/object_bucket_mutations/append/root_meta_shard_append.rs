@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_append_with_root_placement_from_meta_shard(
+    pub fn propose_append_with_placement_from_meta_shard(
         &mut self,
         bucket: &str,
         key: &str,
@@ -27,7 +27,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index.max(options.min_read_index),
             options.min_commit_index,
         )?;
-        self.propose_append_with_root_placement_fenced(
+        self.propose_append_with_placement_fenced(
             bucket,
             key,
             data,
@@ -39,7 +39,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_append_with_root_placement_with_read_proof_from_meta_shard(
+    pub fn propose_append_with_placement_with_read_proof_from_meta_shard(
         &mut self,
         bucket: &str,
         key: &str,
@@ -61,7 +61,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_shard_epoch,
             update_time_ms,
         )?;
-        self.propose_append_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+        self.propose_append_with_placement_fenced_with_read_proof_linearizable_committed_at(
             bucket,
             key,
             data,
@@ -75,7 +75,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_append_with_root_placement_with_route_proof_from_meta_shard_fenced(
+    pub fn propose_append_with_placement_with_route_proof_from_meta_shard_fenced(
         &mut self,
         bucket: &str,
         key: &str,
@@ -97,7 +97,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_shard_epoch,
             update_time_ms,
         )?;
-        self.propose_append_with_root_placement_with_route_proof_linearizable_fenced_committed_at(
+        self.propose_append_with_placement_with_route_proof_linearizable_fenced_committed_at(
             bucket,
             key,
             data,

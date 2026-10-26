@@ -260,7 +260,7 @@ impl MatrixObjectStore {
     ) -> Result<ObjectMetadata, ObjectError> {
         match command.apply_family() {
             CommandApplyFamily::RootBucket => {
-                self.apply_root_bucket_command(command, raft_entry_index)
+                self.apply_placement_bucket_command(command, raft_entry_index)
             }
             CommandApplyFamily::Multipart => {
                 self.apply_multipart_command(command, raft_entry_index)
@@ -278,7 +278,7 @@ impl MatrixObjectStore {
                 self.apply_page_control_command(command, raft_entry_index)
             }
             CommandApplyFamily::StorageRootMaintenance => {
-                self.apply_storage_root_maintenance_command(command, raft_entry_index)
+                self.apply_storage_placement_maintenance_command(command, raft_entry_index)
             }
             CommandApplyFamily::MetadataCoordinator => {
                 self.apply_metadata_coordinator_command(command, raft_entry_index)

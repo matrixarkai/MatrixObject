@@ -215,7 +215,7 @@ impl MatrixObjectStore {
         Ok(metadata)
     }
 
-    fn apply_append_with_root_placement(
+    fn apply_append_with_placement(
         &mut self,
         bucket: String,
         key: String,

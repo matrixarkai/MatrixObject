@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn compute_root_metadata_service_coverage(
+pub(crate) fn compute_placement_metadata_service_coverage(
     nodes: &[PlacementNode],
     metadata_quorum: u64,
 ) -> PlacementMetadataServiceCoverage {

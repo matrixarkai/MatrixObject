@@ -91,7 +91,7 @@ impl MatrixMetaService {
                     .map(|last| last.placement.object_id.clone());
                 break;
             }
-            let item_payload = root_placement_health_item_payload_bytes(&item);
+            let item_payload = placement_health_item_payload_bytes(&item);
             if max_payload_bytes > 0
                 && page.payload_bytes.saturating_add(item_payload) > max_payload_bytes
             {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_prepared_unhealthy_root_placement_repair(
+    pub fn propose_prepared_unhealthy_placement_repair(
         &mut self,
         prepared: PreparedUnhealthyPlacementRepair,
     ) -> Result<ObjectMetadata, ObjectError> {
@@ -30,20 +30,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store.apply_raft_entry(&entry)
     }
 
-    pub fn propose_prepared_unhealthy_root_placement_repair_linearizable(
+    pub fn propose_prepared_unhealthy_placement_repair_linearizable(
         &mut self,
         prepared: PreparedUnhealthyPlacementRepair,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.ensure_root_read_index("propose prepared unhealthy root placement repair")?;
-        self.propose_prepared_unhealthy_root_placement_repair(prepared)
+        self.ensure_placement_read_index("propose prepared unhealthy root placement repair")?;
+        self.propose_prepared_unhealthy_placement_repair(prepared)
     }
 
-    pub fn propose_prepared_unhealthy_root_placement_repair_with_read_proof_linearizable(
+    pub fn propose_prepared_unhealthy_placement_repair_with_read_proof_linearizable(
         &mut self,
         prepared: PreparedUnhealthyPlacementRepair,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_prepared_unhealthy_root_placement_repair_with_read_proof_linearizable_committed_at(
+        self.propose_prepared_unhealthy_placement_repair_with_read_proof_linearizable_committed_at(
             prepared,
             now_ms,
             self.raft.commit_index(),
@@ -51,7 +51,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_prepared_unhealthy_root_placement_repair_with_read_proof_linearizable_committed_at(
+    pub fn propose_prepared_unhealthy_placement_repair_with_read_proof_linearizable_committed_at(
         &mut self,
         prepared: PreparedUnhealthyPlacementRepair,
         now_ms: u64,
@@ -65,7 +65,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_commit_index,
         )?;
         let metadata =
-            self.propose_prepared_unhealthy_root_placement_repair_linearizable(prepared)?;
+            self.propose_prepared_unhealthy_placement_repair_linearizable(prepared)?;
         let readiness = self.ensure_metadata_read_index_committed_at(
             "propose prepared unhealthy root placement repair post-commit",
             now_ms,
@@ -75,7 +75,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven_metadata_read(metadata, &readiness))
     }
 
-    pub fn propose_unhealthy_root_placement_repair_prepared(
+    pub fn propose_unhealthy_placement_repair_prepared(
         &mut self,
         marker: Option<ObjectId>,
         max_objects: usize,
@@ -83,17 +83,17 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_free_bytes: u64,
         max_payload_bytes: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
-        let prepared = self.prepare_unhealthy_root_placement_repair_raft_entry(
+        let prepared = self.prepare_unhealthy_placement_repair_raft_entry(
             marker.as_ref(),
             max_objects,
             expected_replica_count,
             min_free_bytes,
             max_payload_bytes,
         )?;
-        self.propose_prepared_unhealthy_root_placement_repair(prepared)
+        self.propose_prepared_unhealthy_placement_repair(prepared)
     }
 
-    pub fn propose_unhealthy_root_placement_repair_prepared_linearizable(
+    pub fn propose_unhealthy_placement_repair_prepared_linearizable(
         &mut self,
         marker: Option<ObjectId>,
         max_objects: usize,
@@ -101,17 +101,17 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_free_bytes: u64,
         max_payload_bytes: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
-        let prepared = self.prepare_unhealthy_root_placement_repair_raft_entry_linearizable(
+        let prepared = self.prepare_unhealthy_placement_repair_raft_entry_linearizable(
             marker.as_ref(),
             max_objects,
             expected_replica_count,
             min_free_bytes,
             max_payload_bytes,
         )?;
-        self.propose_prepared_unhealthy_root_placement_repair_linearizable(prepared)
+        self.propose_prepared_unhealthy_placement_repair_linearizable(prepared)
     }
 
-    pub fn propose_unhealthy_root_placement_repair_prepared_with_read_proof_linearizable(
+    pub fn propose_unhealthy_placement_repair_prepared_with_read_proof_linearizable(
         &mut self,
         marker: Option<ObjectId>,
         max_objects: usize,
@@ -120,7 +120,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_unhealthy_root_placement_repair_prepared_with_read_proof_linearizable_committed_at(
+        self.propose_unhealthy_placement_repair_prepared_with_read_proof_linearizable_committed_at(
             marker,
             max_objects,
             expected_replica_count,
@@ -132,7 +132,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_unhealthy_root_placement_repair_prepared_with_read_proof_linearizable_committed_at(
+    pub fn propose_unhealthy_placement_repair_prepared_with_read_proof_linearizable_committed_at(
         &mut self,
         marker: Option<ObjectId>,
         max_objects: usize,
@@ -149,7 +149,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let metadata = self.propose_unhealthy_root_placement_repair_prepared_linearizable(
+        let metadata = self.propose_unhealthy_placement_repair_prepared_linearizable(
             marker,
             max_objects,
             expected_replica_count,

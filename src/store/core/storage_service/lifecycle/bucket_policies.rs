@@ -98,7 +98,7 @@ impl MatrixObjectStore {
                 {
                     let target = policy.transition_storage_class.clone().unwrap();
                     if current.storage_class != target {
-                        match self.apply_transition_object_with_root_placement(
+                        match self.apply_transition_object_with_placement(
                             object_id.bucket.to_string(),
                             object_id.key.to_string(),
                             target,

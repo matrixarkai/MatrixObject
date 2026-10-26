@@ -53,7 +53,7 @@ impl MatrixMetaService {
                 referenced_by_node.get(node_id).copied().unwrap_or_default();
             usage_by_node.insert(
                 node_id.clone(),
-                root_node_usage(
+                placement_node_usage(
                     node,
                     min_free_bytes,
                     min_reclaimable_bytes,
@@ -71,7 +71,7 @@ impl MatrixMetaService {
                 page.unregistered_referenced_nodes.saturating_add(1);
             usage_by_node.insert(
                 node_id.clone(),
-                unregistered_root_node_usage(node_id, *object_count, *referenced_bytes),
+                unregistered_placement_node_usage(node_id, *object_count, *referenced_bytes),
             );
         }
         page.registered_node_count = self.nodes.len() as u64;
@@ -175,7 +175,7 @@ impl MatrixMetaService {
                 page.skipped_nodes = page.skipped_nodes.saturating_add(1);
                 continue;
             }
-            let usage = root_node_usage(node, min_free_bytes, min_reclaimable_bytes, true, 0, 0);
+            let usage = placement_node_usage(node, min_free_bytes, min_reclaimable_bytes, true, 0, 0);
             let capacity_pressure_bytes = min_free_bytes.saturating_sub(usage.free_bytes);
             let has_reclaim_signal = min_reclaimable_bytes > 0
                 && usage.reclaimable_bytes >= min_reclaimable_bytes

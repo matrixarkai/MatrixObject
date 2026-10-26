@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    fn ensure_root_read_index(&self, operation: &str) -> Result<PlacementReadProof, ObjectError> {
-        self.ensure_root_read_index_committed_at(operation, self.raft.commit_index(), 0)
+    fn ensure_placement_read_index(&self, operation: &str) -> Result<PlacementReadProof, ObjectError> {
+        self.ensure_placement_read_index_committed_at(operation, self.raft.commit_index(), 0)
     }
 
-    fn ensure_root_read_index_committed_at(
+    fn ensure_placement_read_index_committed_at(
         &self,
         operation: &str,
         min_read_index: u64,

@@ -26,7 +26,7 @@ impl MatrixMetaService {
             ..PlacementCapacityRebalanceReport::default()
         };
         if pressure_nodes.is_empty() {
-            Self::finalize_root_capacity_rebalance_report(&mut report);
+            Self::finalize_placement_capacity_rebalance_report(&mut report);
             return report;
         }
         for placement in self.placements.values() {
@@ -63,7 +63,7 @@ impl MatrixMetaService {
                 }
             }
         }
-        Self::finalize_root_capacity_rebalance_report(&mut report);
+        Self::finalize_placement_capacity_rebalance_report(&mut report);
         report
     }
 
@@ -104,7 +104,7 @@ impl MatrixMetaService {
     ) -> PreparedPlacementCapacityRebalance {
         let report = self.plan_capacity_rebalance(max_objects, min_free_bytes);
         let request_checksum =
-            root_capacity_rebalance_request_checksum(max_objects, min_free_bytes);
+            placement_capacity_rebalance_request_checksum(max_objects, min_free_bytes);
         let mut prepared = PreparedPlacementCapacityRebalance {
             max_objects,
             min_free_bytes,
@@ -115,7 +115,7 @@ impl MatrixMetaService {
             prepared_commit_index: self.placement_commit_index,
             raft_entry_checksum: String::new(),
         };
-        prepared.raft_entry_checksum = prepared_root_capacity_rebalance_checksum(&prepared);
+        prepared.raft_entry_checksum = prepared_placement_capacity_rebalance_checksum(&prepared);
         prepared
     }
 

@@ -52,7 +52,7 @@ impl DistributedReadinessEvaluation<'_> {
                     .root_metadata_coverage
                     .metadata_control_apply_quorum_available)
         {
-            self.root_metadata_quorum_reason()
+            self.placement_metadata_quorum_reason()
         } else if self.root_metadata_external_coordinator_required
             && !self.root_metadata_external_coordinator_endpoints_ready
         {
@@ -88,7 +88,7 @@ impl DistributedReadinessEvaluation<'_> {
             )
             .unwrap_or("root_metaserver_control_unready")
         } else if !self.root_metadata_coverage_ready {
-            self.root_metadata_quorum_reason()
+            self.placement_metadata_quorum_reason()
         } else if !self.root_page_allocator_ready {
             "root_block_allocator_shards_incomplete"
         } else if !self.root_pageserver_service_ready {
@@ -162,12 +162,12 @@ impl DistributedReadinessEvaluation<'_> {
         } else if self.placement_degraded_objects != 0 {
             "placement_degraded"
         } else {
-            root_reason_status(reason)
+            placement_reason_status(reason)
         };
         status.to_string()
     }
 
-    fn root_metadata_quorum_reason(&self) -> &'static str {
+    fn placement_metadata_quorum_reason(&self) -> &'static str {
         metadata_quorum_readiness_label(
             self.root_metadata_coverage.metadata_read_quorum_available,
             self.root_metadata_coverage.metadata_write_quorum_available,
@@ -189,7 +189,7 @@ impl DistributedReadinessEvaluation<'_> {
     }
 }
 
-fn root_reason_status(reason: &str) -> &'static str {
+fn placement_reason_status(reason: &str) -> &'static str {
     match reason {
         "root_metaserver_external_coordinator_endpoints_unready" => {
             "metaserver_external_coordinator_endpoints_unready"
