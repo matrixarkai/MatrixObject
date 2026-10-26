@@ -40,76 +40,7 @@ impl RootSnapshot {
             append_u64(&mut out, node.page_allocator_shard_index);
             append_u64(&mut out, node.page_allocator_shard_count);
             append_root_meta_health(&mut out, &node.meta_health);
-            append_u64(&mut out, node.page_health.ready as u64);
-            append_u64(&mut out, node.page_health.read_ready as u64);
-            append_string(&mut out, &node.page_health.route_control_checksum);
-            append_u64(&mut out, node.page_health.route_control_commit_index);
-            append_u64(&mut out, node.page_health.chunk_endpoint_count);
-            append_u64(&mut out, node.page_health.write_quorum);
-            append_u64(&mut out, node.page_health.read_quorum);
-            append_u64(&mut out, node.page_health.writable_chunk_endpoint_count);
-            append_u64(&mut out, node.page_health.healthy_chunk_endpoint_count);
-            append_u64(
-                &mut out,
-                node.page_health.raft_writable_chunk_endpoint_count,
-            );
-            append_u64(
-                &mut out,
-                node.page_health.raft_readable_chunk_endpoint_count,
-            );
-            append_u64(
-                &mut out,
-                node.page_health
-                    .capacity_ready_writable_chunk_endpoint_count,
-            );
-            append_u64(&mut out, node.page_health.quarantined_chunk_replicas);
-            append_u64(&mut out, node.page_health.chunk_capacity_bytes);
-            append_u64(&mut out, node.page_health.chunk_capacity_free_bytes);
-            append_u64(
-                &mut out,
-                node.page_health.chunk_metadata_dirty_endpoint_count,
-            );
-            append_u64(&mut out, node.page_health.chunk_metadata_dirty_mutations);
-            append_u64(
-                &mut out,
-                node.page_health.chunk_metadata_checkpoint_interval,
-            );
-            append_u64(
-                &mut out,
-                node.page_health
-                    .deferred_metadata_checkpoint_endpoint_count,
-            );
-            append_u64(
-                &mut out,
-                node.page_health.deferred_metadata_checkpoint_requests,
-            );
-            append_u64(
-                &mut out,
-                node.page_health.deferred_metadata_checkpoint_runs,
-            );
-            append_u64(&mut out, node.page_health.chunk_capacity_rejected_writes);
-            append_u64(
-                &mut out,
-                node.page_health.replica_service_mode_rejected_mutations,
-            );
-            append_u64(&mut out, node.page_health.chunk_physical_write_count);
-            append_u64(&mut out, node.page_health.chunk_physical_write_bytes);
-            append_u64(
-                &mut out,
-                node.page_health.chunk_physical_discard_range_count,
-            );
-            append_u64(&mut out, node.page_health.chunk_physical_discard_bytes);
-            append_u64(&mut out, node.page_health.total_reclaimable_bytes);
-            append_u64(&mut out, node.page_health.total_trailing_trim_bytes);
-            append_u64(&mut out, node.page_health.total_fragmented_chunk_count);
-            append_u64(&mut out, node.page_health.total_fragmented_discarded_bytes);
-            append_u64(&mut out, node.page_health.allocation_receipt_count);
-            append_u64(&mut out, node.page_health.batch_allocation_receipt_count);
-            append_u64(&mut out, node.page_health.release_allocation_receipt_count);
-            append_u64(&mut out, node.page_health.write_receipt_count);
-            append_u64(&mut out, node.page_health.batch_write_receipt_count);
-            append_u64(&mut out, node.page_health.discard_receipt_count);
-            append_u64(&mut out, node.page_health.batch_discard_receipt_count);
+            append_root_page_health(&mut out, &node.page_health);
             append_root_chunk_health(&mut out, &node.chunk_health, true, true, true);
         }
         append_u64(&mut out, self.placements.len() as u64);

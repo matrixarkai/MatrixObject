@@ -47161,3 +47161,209 @@ fn every_accepted_snapshot_checksum_format_still_validates() {
          so on a node where those counts are non-zero the two hashes must differ"
     );
 }
+
+/// The bytes a root snapshot encodes to, pinned against a capture taken BEFORE a roster
+/// page health block became a helper.
+///
+/// # WHY THE NUMBERS ARE LITERALS AND NOT COMPUTED
+///
+/// This proves that lifting thirty-eight `append_*` calls out of
+/// `RootSnapshot::append_to_bytes` into `append_root_page_health` changed no byte.
+///
+/// A round trip cannot prove that: it writes and reads with the same build, so both halves
+/// move together and agree. A pin computed from the code as it now stands cannot prove it
+/// either -- it would agree with whatever the lift did. So the length and an inline digest
+/// were captured by running the encoder on this fixture before the helper existed, and
+/// committed as literals. Nothing in the lifted code produced them.
+///
+/// # WHY EVERY VALUE IN THE FIXTURE IS DIFFERENT
+///
+/// The first version of this fixture reused values -- three fields were `3` and three more
+/// were `2`. A pin cannot see two fields swapped when both hold the same value, so that
+/// fixture scored a deliberately reordered pair as unchanged. Every scalar here now holds a
+/// value no other scalar holds, and that is asserted below rather than claimed in a comment.
+///
+/// # WHAT THIS PIN STILL CANNOT SEE
+///
+/// `meta_health` is left at its default, so its bytes are all zero and a reorder inside it is
+/// invisible here. That is deliberate and narrow: it is nested structs of its own, and it has
+/// had `append_root_meta_health` all along, so the copy-the-calls hazard this pin exists for
+/// does not apply to it. Two boolean fields holding the same value are also indistinguishable
+/// once encoded, which no fixture can fix.
+///
+/// It calls `append_to_bytes`, not `to_bytes`: this pins the ENCODER and should not move when
+/// a validation rule changes. The fixture is in fact refused by `validate` -- the node carries
+/// `committed_bytes` that no placement accounts for.
+#[test]
+fn the_root_snapshot_encoding_is_byte_for_byte_what_it_was() {
+    let node = RootNode {
+        node_id: "v1001".to_string(),
+        endpoint: "v1002".to_string(),
+        service_kind: "v1003".to_string(),
+        failure_domain: "v1004".to_string(),
+        metadata_eligible: true,
+        data_eligible: false,
+        gateway_eligible: true,
+        metadata_value_bytes: 1005,
+        capacity_bytes: 1006,
+        used_bytes: 1007,
+        committed_bytes: 1008,
+        draining: false,
+        online: true,
+        last_heartbeat_ms: 1009,
+        page_allocator_shard_index: 1010,
+        page_allocator_shard_count: 1011,
+        meta_health: RootMetaHealth::default(),
+        page_health: RootPageHealth {
+            ready: false,
+            read_ready: true,
+            route_control_checksum: "v1012".to_string(),
+            route_control_commit_index: 1013,
+            chunk_endpoint_count: 1014,
+            write_quorum: 1015,
+            read_quorum: 1016,
+            writable_chunk_endpoint_count: 1017,
+            healthy_chunk_endpoint_count: 1018,
+            raft_writable_chunk_endpoint_count: 1019,
+            raft_readable_chunk_endpoint_count: 1020,
+            capacity_ready_writable_chunk_endpoint_count: 1021,
+            quarantined_chunk_replicas: 1022,
+            chunk_capacity_bytes: 1023,
+            chunk_capacity_free_bytes: 1024,
+            chunk_metadata_dirty_endpoint_count: 1025,
+            chunk_metadata_dirty_mutations: 1026,
+            chunk_metadata_checkpoint_interval: 1027,
+            deferred_metadata_checkpoint_endpoint_count: 1028,
+            deferred_metadata_checkpoint_requests: 1029,
+            deferred_metadata_checkpoint_runs: 1030,
+            chunk_capacity_rejected_writes: 1031,
+            replica_service_mode_rejected_mutations: 1032,
+            chunk_physical_write_count: 1033,
+            chunk_physical_write_bytes: 1034,
+            chunk_physical_discard_range_count: 1035,
+            chunk_physical_discard_bytes: 1036,
+            total_reclaimable_bytes: 1037,
+            total_trailing_trim_bytes: 1038,
+            total_fragmented_chunk_count: 1039,
+            total_fragmented_discarded_bytes: 1040,
+            allocation_receipt_count: 1041,
+            batch_allocation_receipt_count: 1042,
+            release_allocation_receipt_count: 1043,
+            write_receipt_count: 1044,
+            batch_write_receipt_count: 1045,
+            discard_receipt_count: 1046,
+            batch_discard_receipt_count: 1047,
+        },
+        chunk_health: RootChunkHealth {
+            accepting_writes: false,
+            frozen: true,
+            raft_writable: false,
+            capacity_free_bytes: 1048,
+            discarded_range_count: 1049,
+            reclaimable_bytes: 1050,
+            trailing_trim_bytes: 1051,
+            fragmented_chunk_count: 1052,
+            fragmented_discarded_bytes: 1053,
+            service_mode: "v1054".to_string(),
+            control_proof_format: "v1055".to_string(),
+            control_proof_checksum: "v1056".to_string(),
+            control_proof_bytes: 1057,
+            raft_commit_index: 1058,
+            control_read_ready: true,
+            control_write_ready: false,
+            service_health: "v1059".to_string(),
+            service_health_reason_count: 1060,
+            service_health_reasons: "v1061".to_string(),
+            service_fault_tolerant: true,
+        },
+    };
+
+    // Exhaustive destructuring, no `..`: if RootPageHealth gains a field the compiler stops
+    // here, so this list cannot quietly fall behind the struct it is about.
+    let RootPageHealth { ready, read_ready, route_control_checksum, route_control_commit_index, chunk_endpoint_count, write_quorum, read_quorum, writable_chunk_endpoint_count, healthy_chunk_endpoint_count, raft_writable_chunk_endpoint_count, raft_readable_chunk_endpoint_count, capacity_ready_writable_chunk_endpoint_count, quarantined_chunk_replicas, chunk_capacity_bytes, chunk_capacity_free_bytes, chunk_metadata_dirty_endpoint_count, chunk_metadata_dirty_mutations, chunk_metadata_checkpoint_interval, deferred_metadata_checkpoint_endpoint_count, deferred_metadata_checkpoint_requests, deferred_metadata_checkpoint_runs, chunk_capacity_rejected_writes, replica_service_mode_rejected_mutations, chunk_physical_write_count, chunk_physical_write_bytes, chunk_physical_discard_range_count, chunk_physical_discard_bytes, total_reclaimable_bytes, total_trailing_trim_bytes, total_fragmented_chunk_count, total_fragmented_discarded_bytes, allocation_receipt_count, batch_allocation_receipt_count, release_allocation_receipt_count, write_receipt_count, batch_write_receipt_count, discard_receipt_count, batch_discard_receipt_count } = &node.page_health;
+    let scalars: Vec<(&str, u64)> = vec![
+        ("ready", *ready as u64),
+        ("read_ready", *read_ready as u64),
+        ("route_control_checksum", route_control_checksum.len() as u64 + 900_000),
+        ("route_control_commit_index", *route_control_commit_index as u64),
+        ("chunk_endpoint_count", *chunk_endpoint_count as u64),
+        ("write_quorum", *write_quorum as u64),
+        ("read_quorum", *read_quorum as u64),
+        ("writable_chunk_endpoint_count", *writable_chunk_endpoint_count as u64),
+        ("healthy_chunk_endpoint_count", *healthy_chunk_endpoint_count as u64),
+        ("raft_writable_chunk_endpoint_count", *raft_writable_chunk_endpoint_count as u64),
+        ("raft_readable_chunk_endpoint_count", *raft_readable_chunk_endpoint_count as u64),
+        ("capacity_ready_writable_chunk_endpoint_count", *capacity_ready_writable_chunk_endpoint_count as u64),
+        ("quarantined_chunk_replicas", *quarantined_chunk_replicas as u64),
+        ("chunk_capacity_bytes", *chunk_capacity_bytes as u64),
+        ("chunk_capacity_free_bytes", *chunk_capacity_free_bytes as u64),
+        ("chunk_metadata_dirty_endpoint_count", *chunk_metadata_dirty_endpoint_count as u64),
+        ("chunk_metadata_dirty_mutations", *chunk_metadata_dirty_mutations as u64),
+        ("chunk_metadata_checkpoint_interval", *chunk_metadata_checkpoint_interval as u64),
+        ("deferred_metadata_checkpoint_endpoint_count", *deferred_metadata_checkpoint_endpoint_count as u64),
+        ("deferred_metadata_checkpoint_requests", *deferred_metadata_checkpoint_requests as u64),
+        ("deferred_metadata_checkpoint_runs", *deferred_metadata_checkpoint_runs as u64),
+        ("chunk_capacity_rejected_writes", *chunk_capacity_rejected_writes as u64),
+        ("replica_service_mode_rejected_mutations", *replica_service_mode_rejected_mutations as u64),
+        ("chunk_physical_write_count", *chunk_physical_write_count as u64),
+        ("chunk_physical_write_bytes", *chunk_physical_write_bytes as u64),
+        ("chunk_physical_discard_range_count", *chunk_physical_discard_range_count as u64),
+        ("chunk_physical_discard_bytes", *chunk_physical_discard_bytes as u64),
+        ("total_reclaimable_bytes", *total_reclaimable_bytes as u64),
+        ("total_trailing_trim_bytes", *total_trailing_trim_bytes as u64),
+        ("total_fragmented_chunk_count", *total_fragmented_chunk_count as u64),
+        ("total_fragmented_discarded_bytes", *total_fragmented_discarded_bytes as u64),
+        ("allocation_receipt_count", *allocation_receipt_count as u64),
+        ("batch_allocation_receipt_count", *batch_allocation_receipt_count as u64),
+        ("release_allocation_receipt_count", *release_allocation_receipt_count as u64),
+        ("write_receipt_count", *write_receipt_count as u64),
+        ("batch_write_receipt_count", *batch_write_receipt_count as u64),
+        ("discard_receipt_count", *discard_receipt_count as u64),
+        ("batch_discard_receipt_count", *batch_discard_receipt_count as u64),
+    ];
+    assert_eq!(scalars.len(), 38, "the destructured list is not the whole struct");
+    for (i, (left_name, left)) in scalars.iter().enumerate() {
+        for (right_name, right) in scalars.iter().skip(i + 1) {
+            assert_ne!(
+                left, right,
+                "{left_name} and {right_name} both encode as {left}, so this fixture cannot \
+                 tell a swap of the two from no change at all"
+            );
+        }
+    }
+
+    let mut nodes = BTreeMap::new();
+    nodes.insert(node.node_id.clone(), node);
+    let mut snapshot = RootSnapshot {
+        nodes,
+        placements: BTreeMap::new(),
+        leader_lease: None,
+        leader_lease_receipts: BTreeMap::new(),
+        coordinator_config: MetadataCoordinatorConfig::default(),
+        next_commit_index: 1,
+        checksum: String::new(),
+    };
+    snapshot.checksum = snapshot.checksum_material_hash();
+    let mut bytes = Vec::new();
+    snapshot.append_to_bytes(&mut bytes);
+
+    // FNV-1a-64, written out here so the pin depends on nothing in this crate that could
+    // move underneath it.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in &bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+
+    // CAPTURED BEFORE THE LIFT, on this exact fixture.
+    assert_eq!(
+        bytes.len(),
+        1457,
+        "the encoded length moved, so a field was added, dropped or rewidened"
+    );
+    assert_eq!(
+        hash, 0x0ba2de2366a92537,
+        "the encoded bytes moved while the length held, which is a reordered or substituted \
+         field"
+    );
+}
