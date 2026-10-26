@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    pub fn heartbeat_local_replicaserver_in_catalog(
+    pub fn heartbeat_local_chunkserver_in_catalog(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -47,7 +47,7 @@ impl MatrixObjectStore {
                 return Err(err);
             }
         }
-        if let Err(err) = self.append_replicaserver_catalog_heartbeat_journal_record(
+        if let Err(err) = self.append_chunkserver_catalog_heartbeat_journal_record(
             node_id,
             replica_index,
             min_capacity_free_bytes,
@@ -71,7 +71,7 @@ impl MatrixObjectStore {
         })
     }
 
-    pub fn heartbeat_local_replicaserver_at_catalog(
+    pub fn heartbeat_local_chunkserver_at_catalog(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -83,7 +83,7 @@ impl MatrixObjectStore {
         catalog_endpoint: &str,
         catalog_endpoint_count: u64,
     ) -> Result<CatalogChunkRegistration, ObjectError> {
-        self.heartbeat_local_replicaserver_in_catalog(
+        self.heartbeat_local_chunkserver_in_catalog(
             node_id,
             replica_index,
             min_capacity_free_bytes,
@@ -95,7 +95,7 @@ impl MatrixObjectStore {
         .with_catalog_route(catalog_source, catalog_endpoint, catalog_endpoint_count)
     }
 
-    pub fn heartbeat_local_replicaserver_at_catalog_fenced(
+    pub fn heartbeat_local_chunkserver_at_catalog_fenced(
         &mut self,
         node_id: &str,
         replica_index: usize,
@@ -108,7 +108,7 @@ impl MatrixObjectStore {
         catalog_endpoint_count: u64,
         expected_catalog_route_checksum: &str,
     ) -> Result<CatalogChunkRegistration, ObjectError> {
-        let registration = self.heartbeat_local_replicaserver_at_catalog(
+        let registration = self.heartbeat_local_chunkserver_at_catalog(
             node_id,
             replica_index,
             min_capacity_free_bytes,

@@ -626,7 +626,7 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
             )
             .unwrap();
         store
-            .register_local_replicaserver_in_catalog(
+            .register_local_chunkserver_in_catalog(
                 "chunk-j",
                 "chunk-j.local:9400",
                 "rack-a",
@@ -638,13 +638,13 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
             )
             .unwrap();
         store
-            .heartbeat_local_replicaserver_in_catalog("chunk-j", 0, 0, 0, 70, "metaserver", true)
+            .heartbeat_local_chunkserver_in_catalog("chunk-j", 0, 0, 0, 70, "metaserver", true)
             .unwrap();
         store
-            .offline_local_replicaserver_in_catalog("chunk-j", 0, 0, 0, 80, "metaserver")
+            .offline_local_chunkserver_in_catalog("chunk-j", 0, 0, 0, 80, "metaserver")
             .unwrap();
         store
-            .register_local_replicaserver_in_catalog(
+            .register_local_chunkserver_in_catalog(
                 "chunk-live",
                 "chunk-live.local:9400",
                 "rack-b",
@@ -656,7 +656,7 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
             )
             .unwrap();
         store
-            .heartbeat_local_replicaserver_in_catalog("chunk-live", 1, 0, 0, 100, "metaserver", true)
+            .heartbeat_local_chunkserver_in_catalog("chunk-live", 1, 0, 0, 100, "metaserver", true)
             .unwrap();
         assert!(journal_path.exists());
     }
@@ -695,7 +695,7 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
     assert_eq!(page_discovery.catalog_source, "metaserver");
     assert_eq!(page_discovery.endpoints, vec!["block-live.local:9300"]);
     let chunk_discovery = reopened
-        .discover_replicaserver_endpoints_from_catalog(0)
+        .discover_chunkserver_endpoints_from_catalog(0)
         .unwrap();
     assert_eq!(chunk_discovery.catalog_source, "metaserver");
     assert_eq!(chunk_discovery.endpoints, vec!["chunk-live.local:9400"]);
@@ -2582,7 +2582,7 @@ fn object_inventory_pages_metadata_and_placement() {
 }
 
 #[test]
-fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
+fn chunkserver_recovers_corrupt_payload_from_ec_sidecars() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
         chunk_id: ChunkId::new(0, 710).unwrap(),
@@ -2646,7 +2646,7 @@ fn replicaserver_recovers_corrupt_payload_from_ec_sidecars() {
 }
 
 #[test]
-fn replicaserver_batch_admission_reports_continuation_cursors() {
+fn chunkserver_batch_admission_reports_continuation_cursors() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
         chunk_id: ChunkId::new(0, 711).unwrap(),
@@ -4295,15 +4295,15 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     assert!(chunk_ready.control_proof.state_bytes > 0);
     assert!(!chunk_ready.control_proof.state_checksum.is_empty());
     assert_eq!(
-        chunk_ready.replicaserver_control_proof_format,
+        chunk_ready.chunkserver_control_proof_format,
         chunk_ready.control_proof.state_format
     );
     assert_eq!(
-        chunk_ready.replicaserver_control_proof_bytes,
+        chunk_ready.chunkserver_control_proof_bytes,
         chunk_ready.control_proof.state_bytes
     );
     assert_eq!(
-        chunk_ready.replicaserver_control_proof_checksum,
+        chunk_ready.chunkserver_control_proof_checksum,
         chunk_ready.control_proof.state_checksum
     );
     assert!(chunk_ready.control_proof.accepting_writes);
@@ -5115,7 +5115,7 @@ fn chunk_service_partially_reclaims_chunk_discard_ranges() {
 }
 
 #[test]
-fn replicaserver_plans_reclaim_with_fragmentation_and_trim_budgets() {
+fn chunkserver_plans_reclaim_with_fragmentation_and_trim_budgets() {
     let mut chunk = MatrixReplicaService::new();
     let chunk_id = ChunkId::new(0, 72).unwrap();
     let tail_chunk = PageId {
@@ -5216,7 +5216,7 @@ fn replicaserver_plans_reclaim_with_fragmentation_and_trim_budgets() {
 }
 
 #[test]
-fn replicaserver_persists_trim_flow_and_throttles_reclaim() {
+fn chunkserver_persists_trim_flow_and_throttles_reclaim() {
     let mut chunk = MatrixReplicaService::new();
     let chunk_id = ChunkId::new(0, 721).unwrap();
     let page_id = PageId {
@@ -7927,12 +7927,12 @@ fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
         healthy.root_pageserver_route_control_proof_checksum
     );
     assert_eq!(
-        module_status.root_replicaserver_control_proof_count,
-        healthy.root_replicaserver_control_proof_count
+        module_status.root_chunkserver_control_proof_count,
+        healthy.root_chunkserver_control_proof_count
     );
     assert_eq!(
-        module_status.root_replicaserver_control_proof_checksum,
-        healthy.root_replicaserver_control_proof_checksum
+        module_status.root_chunkserver_control_proof_checksum,
+        healthy.root_chunkserver_control_proof_checksum
     );
     assert_eq!(
         module_status.root_pageserver_route_control_min_commit_index,
@@ -7955,12 +7955,12 @@ fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
         healthy.root_pageserver_total_release_allocation_receipt_count
     );
     assert_eq!(
-        module_status.root_replicaserver_control_min_raft_commit_index,
-        healthy.root_replicaserver_control_min_raft_commit_index
+        module_status.root_chunkserver_control_min_raft_commit_index,
+        healthy.root_chunkserver_control_min_raft_commit_index
     );
     assert_eq!(
-        module_status.root_replicaserver_control_max_raft_commit_index,
-        healthy.root_replicaserver_control_max_raft_commit_index
+        module_status.root_chunkserver_control_max_raft_commit_index,
+        healthy.root_chunkserver_control_max_raft_commit_index
     );
     assert_eq!(
         module_status.placement_metadata_control_max_last_applied_mutation_commit_index,
@@ -8233,19 +8233,19 @@ fn placement_raft_status_exposes_service_coverage() {
         39
     );
     assert_eq!(status.root_pageserver_service_coverage_status, "healthy");
-    assert_eq!(status.root_active_replicaserver_count, 1);
-    assert_eq!(status.root_writable_replicaserver_count, 1);
-    assert_eq!(status.root_placement_eligible_replicaserver_count, 1);
-    assert_eq!(status.root_placement_ineligible_replicaserver_count, 0);
-    assert_eq!(status.root_replicaserver_control_proof_count, 1);
-    assert_eq!(status.root_replicaserver_control_min_raft_commit_index, 44);
-    assert_eq!(status.root_replicaserver_control_max_raft_commit_index, 44);
-    assert_eq!(status.root_replicaserver_coverage_status, "healthy");
+    assert_eq!(status.root_active_chunkserver_count, 1);
+    assert_eq!(status.root_writable_chunkserver_count, 1);
+    assert_eq!(status.root_placement_eligible_chunkserver_count, 1);
+    assert_eq!(status.root_placement_ineligible_chunkserver_count, 0);
+    assert_eq!(status.root_chunkserver_control_proof_count, 1);
+    assert_eq!(status.root_chunkserver_control_min_raft_commit_index, 44);
+    assert_eq!(status.root_chunkserver_control_max_raft_commit_index, 44);
+    assert_eq!(status.root_chunkserver_coverage_status, "healthy");
     assert!(!status.placement_metadata_control_proof_checksum.is_empty());
     assert!(!status
         .root_pageserver_route_control_proof_checksum
         .is_empty());
-    assert!(!status.root_replicaserver_control_proof_checksum.is_empty());
+    assert!(!status.root_chunkserver_control_proof_checksum.is_empty());
     assert!(!status.control_checksum.is_empty());
 
     let mut blocked = placement_node("chunk-a", "rack-c", 128);
@@ -8256,14 +8256,14 @@ fn placement_raft_status_exposes_service_coverage() {
     blocked.chunk_health.raft_commit_index = 45;
     root.register_node(blocked).unwrap();
     let blocked_status = root.raft_status(1, 8);
-    assert_eq!(blocked_status.root_writable_replicaserver_count, 0);
-    assert_eq!(blocked_status.root_placement_eligible_replicaserver_count, 0);
+    assert_eq!(blocked_status.root_writable_chunkserver_count, 0);
+    assert_eq!(blocked_status.root_placement_eligible_chunkserver_count, 0);
     assert_eq!(
-        blocked_status.root_placement_ineligible_replicaserver_count,
+        blocked_status.root_placement_ineligible_chunkserver_count,
         1
     );
     assert_eq!(
-        blocked_status.root_replicaserver_coverage_status,
+        blocked_status.root_chunkserver_coverage_status,
         // THE CONTROL PROOF LEADS, DELIBERATELY. This replica has a control proof that is
         // not ready AND no writable endpoint, so two labels are true at once:
         // `control_unready` names the proximate cause, `no_writable` names the operational
@@ -8277,7 +8277,7 @@ fn placement_raft_status_exposes_service_coverage() {
         "control_unready"
     );
     assert_eq!(
-        blocked_status.root_replicaserver_control_max_raft_commit_index,
+        blocked_status.root_chunkserver_control_max_raft_commit_index,
         45
     );
     assert_ne!(status.control_checksum, blocked_status.control_checksum);
@@ -8404,7 +8404,7 @@ fn placement_tracks_pageserver_service_coverage_for_write_routing() {
         0
     );
     // THE ROUTE CONTROL PROOF LEADS, for the reason recorded against
-    // `root_replicaserver_coverage_status` in
+    // `root_chunkserver_coverage_status` in
     // `placement_raft_status_exposes_service_coverage`: two labels are true and the
     // proximate cause is the one reported.
     assert_eq!(unready.status, "route_control_unready");
@@ -8433,11 +8433,11 @@ fn placement_tracks_pageserver_service_coverage_for_write_routing() {
     // which takes an active count, a read-ready count and a write-ready count -- no frozen
     // count -- so `degraded` is the most specific answer it can give. `frozen_degraded` comes
     // from the REPLICASERVER label, which does take one, and
-    // `placement_tracks_replicaserver_coverage_for_write_routing` asserts it there and
+    // `placement_tracks_chunkserver_coverage_for_write_routing` asserts it there and
     // passes.
     //
     // THE OTHER ANSWER WAS CONSIDERED: give the pageserver path the frozen, read-only and
-    // raft-unwritable breakdown the replicaserver label already has. It was not taken here.
+    // raft-unwritable breakdown the chunkserver label already has. It was not taken here.
     // Nothing measured says that breakdown is needed, and adding inputs to a coverage path is
     // a feature with its own correctness proof -- doing it as a side effect of retiring a
     // vocabulary is how scope stops being traceable. If it is worth doing it is worth its own
@@ -8550,14 +8550,14 @@ fn placement_tracks_pageserver_service_coverage_for_write_routing() {
 }
 
 #[test]
-fn placement_tracks_replicaserver_coverage_for_write_routing() {
+fn placement_tracks_chunkserver_coverage_for_write_routing() {
     let mut root = MatrixMetaService::new();
-    assert_eq!(root.replicaserver_coverage(8).status, "none");
+    assert_eq!(root.chunkserver_coverage(8).status, "none");
 
     let mut non_data = placement_node("chunk-non-data", "rack-z", 64);
     non_data.data_eligible = false;
     root.register_node(non_data.clone()).unwrap();
-    assert_eq!(root.replicaserver_coverage(8).status, "none");
+    assert_eq!(root.chunkserver_coverage(8).status, "none");
     assert!(matches!(
         root.plan_object_placement(ObjectId::new("bucket", "non-data"), 1, 1),
         Err(ObjectError::PreconditionFailed(_))
@@ -8590,23 +8590,23 @@ fn placement_tracks_replicaserver_coverage_for_write_routing() {
     let mut draining = placement_node("chunk-draining", "rack-a", 64);
     draining.draining = true;
     root.register_node(draining).unwrap();
-    let draining_only = root.replicaserver_coverage(8);
-    assert_eq!(draining_only.active_replicaserver_count, 1);
-    assert_eq!(draining_only.writable_replicaserver_count, 0);
-    assert_eq!(draining_only.placement_eligible_replicaserver_count, 0);
-    assert_eq!(draining_only.placement_ineligible_replicaserver_count, 1);
-    assert_eq!(draining_only.draining_replicaserver_count, 1);
+    let draining_only = root.chunkserver_coverage(8);
+    assert_eq!(draining_only.active_chunkserver_count, 1);
+    assert_eq!(draining_only.writable_chunkserver_count, 0);
+    assert_eq!(draining_only.placement_eligible_chunkserver_count, 0);
+    assert_eq!(draining_only.placement_ineligible_chunkserver_count, 1);
+    assert_eq!(draining_only.draining_chunkserver_count, 1);
     assert_eq!(draining_only.status, "draining_unwritable");
 
     let mut frozen = placement_node("chunk-frozen", "rack-f", 64);
     frozen.chunk_health.frozen = true;
     frozen.chunk_health.capacity_free_bytes = 64;
     root.register_node(frozen).unwrap();
-    let frozen_coverage = root.replicaserver_coverage(8);
-    assert_eq!(frozen_coverage.active_replicaserver_count, 2);
-    assert_eq!(frozen_coverage.writable_replicaserver_count, 0);
-    assert_eq!(frozen_coverage.frozen_replicaserver_count, 1);
-    assert_eq!(frozen_coverage.draining_replicaserver_count, 2);
+    let frozen_coverage = root.chunkserver_coverage(8);
+    assert_eq!(frozen_coverage.active_chunkserver_count, 2);
+    assert_eq!(frozen_coverage.writable_chunkserver_count, 0);
+    assert_eq!(frozen_coverage.frozen_chunkserver_count, 1);
+    assert_eq!(frozen_coverage.draining_chunkserver_count, 2);
     assert_eq!(frozen_coverage.total_reported_free_bytes, 128);
     assert_eq!(frozen_coverage.status, "frozen_unwritable");
 
@@ -8615,41 +8615,41 @@ fn placement_tracks_replicaserver_coverage_for_write_routing() {
     read_only.chunk_health.service_mode = "read_only".to_string();
     read_only.chunk_health.capacity_free_bytes = 64;
     root.register_node(read_only).unwrap();
-    let read_only_coverage = root.replicaserver_coverage(8);
-    assert_eq!(read_only_coverage.active_replicaserver_count, 3);
-    assert_eq!(read_only_coverage.read_only_replicaserver_count, 1);
-    assert_eq!(read_only_coverage.draining_replicaserver_count, 3);
+    let read_only_coverage = root.chunkserver_coverage(8);
+    assert_eq!(read_only_coverage.active_chunkserver_count, 3);
+    assert_eq!(read_only_coverage.read_only_chunkserver_count, 1);
+    assert_eq!(read_only_coverage.draining_chunkserver_count, 3);
 
     let mut raft_blocked = placement_node("chunk-raft-blocked", "rack-rf", 64);
     raft_blocked.chunk_health.raft_writable = false;
     raft_blocked.chunk_health.capacity_free_bytes = 64;
     root.register_node(raft_blocked).unwrap();
-    let raft_blocked_coverage = root.replicaserver_coverage(8);
-    assert_eq!(raft_blocked_coverage.active_replicaserver_count, 4);
-    assert_eq!(raft_blocked_coverage.raft_unwritable_replicaserver_count, 1);
-    assert_eq!(raft_blocked_coverage.draining_replicaserver_count, 4);
+    let raft_blocked_coverage = root.chunkserver_coverage(8);
+    assert_eq!(raft_blocked_coverage.active_chunkserver_count, 4);
+    assert_eq!(raft_blocked_coverage.raft_unwritable_chunkserver_count, 1);
+    assert_eq!(raft_blocked_coverage.draining_chunkserver_count, 4);
 
     let mut full = placement_node("chunk-full", "rack-b", 64);
     full.used_bytes = 60;
     full.committed_bytes = 60;
     root.register_node(full).unwrap();
-    let no_writable = root.replicaserver_coverage(8);
-    assert_eq!(no_writable.active_replicaserver_count, 5);
-    assert_eq!(no_writable.writable_replicaserver_count, 0);
-    assert_eq!(no_writable.draining_replicaserver_count, 4);
-    assert_eq!(no_writable.capacity_floor_blocked_replicaserver_count, 1);
+    let no_writable = root.chunkserver_coverage(8);
+    assert_eq!(no_writable.active_chunkserver_count, 5);
+    assert_eq!(no_writable.writable_chunkserver_count, 0);
+    assert_eq!(no_writable.draining_chunkserver_count, 4);
+    assert_eq!(no_writable.capacity_floor_blocked_chunkserver_count, 1);
     assert_eq!(no_writable.min_free_bytes, 8);
     assert_eq!(no_writable.status, "frozen_unwritable");
 
     root.register_node(placement_node("chunk-open", "rack-c", 64))
         .unwrap();
-    let degraded = root.replicaserver_coverage(8);
-    assert_eq!(degraded.active_replicaserver_count, 6);
-    assert_eq!(degraded.writable_replicaserver_count, 1);
-    assert_eq!(degraded.placement_eligible_replicaserver_count, 1);
-    assert_eq!(degraded.placement_ineligible_replicaserver_count, 5);
-    assert_eq!(degraded.draining_replicaserver_count, 4);
-    assert_eq!(degraded.capacity_floor_blocked_replicaserver_count, 1);
+    let degraded = root.chunkserver_coverage(8);
+    assert_eq!(degraded.active_chunkserver_count, 6);
+    assert_eq!(degraded.writable_chunkserver_count, 1);
+    assert_eq!(degraded.placement_eligible_chunkserver_count, 1);
+    assert_eq!(degraded.placement_ineligible_chunkserver_count, 5);
+    assert_eq!(degraded.draining_chunkserver_count, 4);
+    assert_eq!(degraded.capacity_floor_blocked_chunkserver_count, 1);
     assert_eq!(degraded.status, "frozen_degraded");
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
@@ -8692,20 +8692,20 @@ fn placement_tracks_replicaserver_coverage_for_write_routing() {
     let not_ready = store.distributed_readiness(0, 2, 8, 0, 1, 100, 0).unwrap();
     assert!(!not_ready.ready);
     assert_eq!(not_ready.reason, "root_chunkservers_frozen_unwritable");
-    assert_eq!(not_ready.root_active_replicaserver_count, 1);
-    assert_eq!(not_ready.root_writable_replicaserver_count, 0);
-    assert_eq!(not_ready.root_placement_eligible_replicaserver_count, 0);
-    assert_eq!(not_ready.root_placement_ineligible_replicaserver_count, 1);
-    assert_eq!(not_ready.root_capacity_floor_blocked_replicaserver_count, 0);
-    assert_eq!(not_ready.root_frozen_replicaserver_count, 1);
-    assert_eq!(not_ready.root_replicaserver_total_reported_free_bytes, 64);
-    assert_eq!(not_ready.root_replicaserver_min_free_bytes, 8);
-    assert_eq!(not_ready.root_replicaserver_control_proof_count, 1);
-    assert!(!not_ready.root_replicaserver_control_proof_checksum.is_empty());
-    assert_eq!(not_ready.root_replicaserver_control_min_raft_commit_index, 44);
-    assert_eq!(not_ready.root_replicaserver_control_max_raft_commit_index, 44);
+    assert_eq!(not_ready.root_active_chunkserver_count, 1);
+    assert_eq!(not_ready.root_writable_chunkserver_count, 0);
+    assert_eq!(not_ready.root_placement_eligible_chunkserver_count, 0);
+    assert_eq!(not_ready.root_placement_ineligible_chunkserver_count, 1);
+    assert_eq!(not_ready.root_capacity_floor_blocked_chunkserver_count, 0);
+    assert_eq!(not_ready.root_frozen_chunkserver_count, 1);
+    assert_eq!(not_ready.root_chunkserver_total_reported_free_bytes, 64);
+    assert_eq!(not_ready.root_chunkserver_min_free_bytes, 8);
+    assert_eq!(not_ready.root_chunkserver_control_proof_count, 1);
+    assert!(!not_ready.root_chunkserver_control_proof_checksum.is_empty());
+    assert_eq!(not_ready.root_chunkserver_control_min_raft_commit_index, 44);
+    assert_eq!(not_ready.root_chunkserver_control_max_raft_commit_index, 44);
     assert_eq!(
-        not_ready.root_replicaserver_coverage_status,
+        not_ready.root_chunkserver_coverage_status,
         "control_write_unready"
     );
 
@@ -8719,27 +8719,27 @@ fn placement_tracks_replicaserver_coverage_for_write_routing() {
     store.register_placement_node(open).unwrap();
     let ready = store.distributed_readiness(0, 2, 8, 0, 1, 100, 0).unwrap();
     assert!(ready.ready);
-    assert_eq!(ready.root_active_replicaserver_count, 2);
-    assert_eq!(ready.root_writable_replicaserver_count, 1);
-    assert_eq!(ready.root_placement_eligible_replicaserver_count, 1);
-    assert_eq!(ready.root_placement_ineligible_replicaserver_count, 1);
-    assert_eq!(ready.root_capacity_floor_blocked_replicaserver_count, 0);
-    assert_eq!(ready.root_frozen_replicaserver_count, 1);
-    assert_eq!(ready.root_replicaserver_total_reported_free_bytes, 128);
-    assert_eq!(ready.root_replicaserver_control_proof_count, 2);
-    assert!(!ready.root_replicaserver_control_proof_checksum.is_empty());
+    assert_eq!(ready.root_active_chunkserver_count, 2);
+    assert_eq!(ready.root_writable_chunkserver_count, 1);
+    assert_eq!(ready.root_placement_eligible_chunkserver_count, 1);
+    assert_eq!(ready.root_placement_ineligible_chunkserver_count, 1);
+    assert_eq!(ready.root_capacity_floor_blocked_chunkserver_count, 0);
+    assert_eq!(ready.root_frozen_chunkserver_count, 1);
+    assert_eq!(ready.root_chunkserver_total_reported_free_bytes, 128);
+    assert_eq!(ready.root_chunkserver_control_proof_count, 2);
+    assert!(!ready.root_chunkserver_control_proof_checksum.is_empty());
     assert_ne!(
-        ready.root_replicaserver_control_proof_checksum,
-        not_ready.root_replicaserver_control_proof_checksum
+        ready.root_chunkserver_control_proof_checksum,
+        not_ready.root_chunkserver_control_proof_checksum
     );
-    assert_eq!(ready.root_replicaserver_control_min_raft_commit_index, 44);
-    assert_eq!(ready.root_replicaserver_control_max_raft_commit_index, 66);
-    assert_eq!(ready.root_replicaserver_coverage_status, "frozen_degraded");
+    assert_eq!(ready.root_chunkserver_control_min_raft_commit_index, 44);
+    assert_eq!(ready.root_chunkserver_control_max_raft_commit_index, 66);
+    assert_eq!(ready.root_chunkserver_coverage_status, "frozen_degraded");
     assert_ne!(not_ready.control_checksum, ready.control_checksum);
 }
 
 #[test]
-fn placement_honors_replicaserver_service_health() {
+fn placement_honors_chunkserver_service_health() {
     let mut root = MatrixMetaService::new();
     let mut frozen = placement_node("chunk-frozen", "rack-a", 100);
     frozen.chunk_health.frozen = true;
@@ -8947,12 +8947,12 @@ fn placement_health_heartbeats_update_service_coverage() {
             .chunk_health,
         chunk_health
     );
-    let chunk_coverage = store.meta_service.replicaserver_coverage(8);
-    assert_eq!(chunk_coverage.active_replicaserver_count, 1);
-    assert_eq!(chunk_coverage.writable_replicaserver_count, 0);
-    assert_eq!(chunk_coverage.frozen_replicaserver_count, 1);
-    assert_eq!(chunk_coverage.read_only_replicaserver_count, 1);
-    assert_eq!(chunk_coverage.raft_unwritable_replicaserver_count, 1);
+    let chunk_coverage = store.meta_service.chunkserver_coverage(8);
+    assert_eq!(chunk_coverage.active_chunkserver_count, 1);
+    assert_eq!(chunk_coverage.writable_chunkserver_count, 0);
+    assert_eq!(chunk_coverage.frozen_chunkserver_count, 1);
+    assert_eq!(chunk_coverage.read_only_chunkserver_count, 1);
+    assert_eq!(chunk_coverage.raft_unwritable_chunkserver_count, 1);
     assert_eq!(chunk_coverage.total_reported_free_bytes, 80);
     assert_eq!(chunk_coverage.control_proof_count, 1);
     assert!(!chunk_coverage.control_proof_checksum.is_empty());
@@ -9150,7 +9150,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
     assert_eq!(page_heartbeat.node.node_id, "block-r");
 
     let chunk_registration = replicated
-        .propose_register_local_replicaserver_in_catalog(
+        .propose_register_local_chunkserver_in_catalog(
             "chunk-r",
             "chunk-r.local:9400",
             "rack-a",
@@ -9163,7 +9163,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
         .unwrap();
     assert_eq!(chunk_registration.replica_index, 0);
     let chunk_heartbeat = replicated
-        .propose_heartbeat_local_replicaserver_in_catalog("chunk-r", 0, 0, 0, 60, "metaserver", true)
+        .propose_heartbeat_local_chunkserver_in_catalog("chunk-r", 0, 0, 0, 60, "metaserver", true)
         .unwrap();
     assert_eq!(chunk_heartbeat.node.node_id, "chunk-r");
 
@@ -9206,7 +9206,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
     assert!(!page_offline.node.page_health.ready);
     assert!(!page_offline.node.page_health.read_ready);
     let chunk_offline_proven = replicated
-        .propose_offline_local_replicaserver_in_catalog_with_receipts(
+        .propose_offline_local_chunkserver_in_catalog_with_receipts(
             "chunk-r",
             0,
             0,
@@ -9274,8 +9274,8 @@ fn placement_expires_stale_node_heartbeats() {
     assert_eq!(
         store
             .meta_service
-            .replicaserver_coverage(1)
-            .active_replicaserver_count,
+            .chunkserver_coverage(1)
+            .active_chunkserver_count,
         2
     );
     assert_eq!(store.expire_placement_node_heartbeats(10, 21).unwrap(), 1);
@@ -9294,8 +9294,8 @@ fn placement_expires_stale_node_heartbeats() {
     assert_eq!(
         store
             .meta_service
-            .replicaserver_coverage(1)
-            .active_replicaserver_count,
+            .chunkserver_coverage(1)
+            .active_chunkserver_count,
         1
     );
     let plan = store
@@ -9488,8 +9488,8 @@ fn raft_backed_store_replays_placement_health_heartbeats() {
     assert_eq!(page_coverage.ready_pageserver_count, 1);
     assert_eq!(page_coverage.read_ready_pageserver_count, 1);
     assert_eq!(page_coverage.total_chunk_capacity_free_bytes, 300);
-    let chunk_coverage = replicated.store().meta_service.replicaserver_coverage(8);
-    assert_eq!(chunk_coverage.writable_replicaserver_count, 1);
+    let chunk_coverage = replicated.store().meta_service.chunkserver_coverage(8);
+    assert_eq!(chunk_coverage.writable_chunkserver_count, 1);
     assert_eq!(chunk_coverage.total_reported_free_bytes, 88);
     assert_eq!(chunk_coverage.control_proof_count, 1);
     assert!(!chunk_coverage.control_proof_checksum.is_empty());
@@ -11912,7 +11912,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
     );
 
     let chunk_registration = registration_store
-        .register_local_replicaserver_in_catalog(
+        .register_local_chunkserver_in_catalog(
             "chunk-reg-a",
             "chunk-reg-a.local:9400",
             "rack-a",
@@ -11959,7 +11959,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
     );
 
     let chunk_offline = registration_store
-        .offline_local_replicaserver_in_catalog("chunk-reg-a", 0, 0, 0, 40, "metaserver")
+        .offline_local_chunkserver_in_catalog("chunk-reg-a", 0, 0, 0, 40, "metaserver")
         .unwrap();
     assert!(!chunk_offline.node.online);
     assert!(chunk_offline.node.draining);
@@ -48148,9 +48148,9 @@ fn every_placement_key_the_benchmark_report_spells_out_names_a_real_field() {
         ("repo_root",
          "a git path on the provenance report, not a readiness field at all"),
         ("placement_eligible",
-         "an abbreviated key in replicaserver_readiness_json, filled from           root_placement_eligible_replicaserver_count; that report shortens every key, so           none of its keys is a field name"),
+         "an abbreviated key in chunkserver_readiness_json, filled from           root_placement_eligible_chunkserver_count; that report shortens every key, so           none of its keys is a field name"),
         ("placement_ineligible",
-         "abbreviated in the same report, from root_placement_ineligible_replicaserver_count"),
+         "abbreviated in the same report, from root_placement_ineligible_chunkserver_count"),
         ("root_blockserver_first_health_reasons",
          "names no field anywhere in the tree; its value is supplied positionally"),
         ("root_blockserver_health_degraded_count",
@@ -48190,24 +48190,6 @@ fn every_placement_key_the_benchmark_report_spells_out_names_a_real_field() {
         ("root_blockserver_total_write_quorum_margin",
          "names no field anywhere in the tree; its value is supplied positionally"),
         ("root_blockserver_write_ready",
-         "names no field anywhere in the tree; its value is supplied positionally"),
-        ("root_chunkserver_first_health_reasons",
-         "names no field anywhere in the tree; its value is supplied positionally"),
-        ("root_chunkserver_health_degraded_count",
-         "names no field anywhere in the tree; its value is supplied positionally"),
-        ("root_chunkserver_health_ok_count",
-         "names no field anywhere in the tree; its value is supplied positionally"),
-        ("root_chunkserver_health_unavailable_count",
-         "names no field anywhere in the tree; its value is supplied positionally"),
-        ("root_chunkserver_health_unknown_count",
-         "names no field anywhere in the tree; its value is supplied positionally"),
-        ("root_chunkserver_not_fault_tolerant_count",
-         "names no field anywhere in the tree; its value is supplied positionally"),
-        ("root_chunkserver_read_ready",
-         "names no field anywhere in the tree; its value is supplied positionally"),
-        ("root_chunkserver_total_health_reason_count",
-         "names no field anywhere in the tree; its value is supplied positionally"),
-        ("root_chunkserver_write_ready",
          "names no field anywhere in the tree; its value is supplied positionally"),
     ];
 

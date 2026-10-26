@@ -248,11 +248,11 @@ impl ObjectStoreDistributedReadiness {
             ),
             (
                 "placement_chunkserver_control_proof_checksum",
-                &self.root_replicaserver_control_proof_checksum,
+                &self.root_chunkserver_control_proof_checksum,
             ),
             (
                 "root_chunkserver_first_health_reasons",
-                &self.root_replicaserver_first_health_reasons,
+                &self.root_chunkserver_first_health_reasons,
             ),
             (
                 "distributed_readiness_checksum",
@@ -287,11 +287,11 @@ impl ObjectStoreDistributedReadiness {
             ),
             (
                 "root_chunkserver_read_ready",
-                self.root_replicaserver_read_ready,
+                self.root_chunkserver_read_ready,
             ),
             (
                 "root_chunkserver_write_ready",
-                self.root_replicaserver_write_ready,
+                self.root_chunkserver_write_ready,
             ),
             (
                 "placement_readiness_gate_read_ready",
@@ -536,39 +536,39 @@ impl ObjectStoreDistributedReadiness {
             ),
             (
                 "placement_chunkserver_control_proof_count",
-                self.root_replicaserver_control_proof_count,
+                self.root_chunkserver_control_proof_count,
             ),
             (
                 "placement_chunkserver_control_read_ready_count",
-                self.root_replicaserver_control_read_ready_count,
+                self.root_chunkserver_control_read_ready_count,
             ),
             (
                 "placement_chunkserver_control_write_ready_count",
-                self.root_replicaserver_control_write_ready_count,
+                self.root_chunkserver_control_write_ready_count,
             ),
             (
                 "root_chunkserver_health_ok_count",
-                self.root_replicaserver_health_ok_count,
+                self.root_chunkserver_health_ok_count,
             ),
             (
                 "root_chunkserver_health_degraded_count",
-                self.root_replicaserver_health_degraded_count,
+                self.root_chunkserver_health_degraded_count,
             ),
             (
                 "root_chunkserver_health_unavailable_count",
-                self.root_replicaserver_health_unavailable_count,
+                self.root_chunkserver_health_unavailable_count,
             ),
             (
                 "root_chunkserver_health_unknown_count",
-                self.root_replicaserver_health_unknown_count,
+                self.root_chunkserver_health_unknown_count,
             ),
             (
                 "root_chunkserver_not_fault_tolerant_count",
-                self.root_replicaserver_not_fault_tolerant_count,
+                self.root_chunkserver_not_fault_tolerant_count,
             ),
             (
                 "root_chunkserver_total_health_reason_count",
-                self.root_replicaserver_total_health_reason_count,
+                self.root_chunkserver_total_health_reason_count,
             ),
             ("batch_write_input_ranges", self.batch_write_input_ranges),
             ("batch_write_chunk_ranges", self.batch_write_chunk_ranges),

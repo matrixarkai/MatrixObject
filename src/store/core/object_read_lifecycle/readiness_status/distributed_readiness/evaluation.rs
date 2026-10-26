@@ -17,9 +17,9 @@ struct DistributedReadinessEvaluation<'a> {
     root_pageserver_service_coverage: &'a PlacementPageServerServiceCoverage,
     root_pageserver_service_ready: bool,
     root_pageserver_route_control_ready: bool,
-    root_replicaserver_coverage: &'a PlacementReplicaServerCoverage,
-    root_replicaserver_ready: bool,
-    root_replicaserver_control_ready: bool,
+    root_chunkserver_coverage: &'a PlacementChunkServerCoverage,
+    root_chunkserver_ready: bool,
+    root_chunkserver_control_ready: bool,
     placement_required: bool,
     placement_ready: bool,
     root_leader_node_id: &'a str,
@@ -114,17 +114,17 @@ impl DistributedReadinessEvaluation<'_> {
                 "root_blockserver_route_control_write_unready",
             )
             .unwrap_or("root_blockserver_route_control_unready")
-        } else if !self.root_replicaserver_ready {
-            replicaserver_readiness_label(
-                self.root_replicaserver_coverage
-                    .placement_eligible_replicaserver_count,
-                self.root_replicaserver_coverage.draining_replicaserver_count,
-                self.root_replicaserver_coverage
-                    .capacity_floor_blocked_replicaserver_count,
-                self.root_replicaserver_coverage.frozen_replicaserver_count,
-                self.root_replicaserver_coverage.read_only_replicaserver_count,
-                self.root_replicaserver_coverage
-                    .raft_unwritable_replicaserver_count,
+        } else if !self.root_chunkserver_ready {
+            chunkserver_readiness_label(
+                self.root_chunkserver_coverage
+                    .placement_eligible_chunkserver_count,
+                self.root_chunkserver_coverage.draining_chunkserver_count,
+                self.root_chunkserver_coverage
+                    .capacity_floor_blocked_chunkserver_count,
+                self.root_chunkserver_coverage.frozen_chunkserver_count,
+                self.root_chunkserver_coverage.read_only_chunkserver_count,
+                self.root_chunkserver_coverage
+                    .raft_unwritable_chunkserver_count,
                 "root_chunkservers_unwritable",
                 "root_chunkservers_frozen_unwritable",
                 "root_chunkservers_read_only_unwritable",
@@ -132,11 +132,11 @@ impl DistributedReadinessEvaluation<'_> {
                 "root_chunkservers_capacity_floor_unavailable",
                 "root_chunkservers_draining_unwritable",
             )
-        } else if !self.root_replicaserver_control_ready {
+        } else if !self.root_chunkserver_control_ready {
             control_proof_readiness_label(
-                self.root_replicaserver_coverage.control_proof_count,
-                self.root_replicaserver_coverage.control_read_ready_count,
-                self.root_replicaserver_coverage.control_write_ready_count,
+                self.root_chunkserver_coverage.control_proof_count,
+                self.root_chunkserver_coverage.control_read_ready_count,
+                self.root_chunkserver_coverage.control_write_ready_count,
                 "root_chunkserver_control_unready",
                 "root_chunkserver_control_read_unready",
                 "root_chunkserver_control_write_unready",

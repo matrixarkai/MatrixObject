@@ -18,7 +18,7 @@ fn placement_serving_gates(
     metadata: &PlacementMetadataServiceCoverage,
     page_allocator: &PlacementPageAllocatorShardCoverage,
     pageserver: &PlacementPageServerServiceCoverage,
-    replicaserver: &PlacementReplicaServerCoverage,
+    chunkserver: &PlacementChunkServerCoverage,
 ) -> PlacementServingGates {
     let metadata_read_ready = metadata.metadata_read_quorum_available
         && metadata.metadata_read_fence_quorum_available
@@ -38,13 +38,13 @@ fn placement_serving_gates(
         && page_allocator.complete
         && pageserver.route_control_write_ready_count > 0
         && pageserver.total_write_quorum_deficit == 0;
-    let chunk_read_ready = replicaserver.active_replicaserver_count > 0
-        && replicaserver.control_read_ready_count > 0
-        && replicaserver.health_unavailable_count == 0;
+    let chunk_read_ready = chunkserver.active_chunkserver_count > 0
+        && chunkserver.control_read_ready_count > 0
+        && chunkserver.health_unavailable_count == 0;
     let chunk_write_ready = chunk_read_ready
-        && replicaserver.writable_replicaserver_count > 0
-        && replicaserver.placement_eligible_replicaserver_count > 0
-        && replicaserver.control_write_ready_count > 0;
+        && chunkserver.writable_chunkserver_count > 0
+        && chunkserver.placement_eligible_chunkserver_count > 0
+        && chunkserver.control_write_ready_count > 0;
     let linearizable_reads = leader_active
         && last_applied_index > 0
         && metadata_read_ready
@@ -73,8 +73,8 @@ impl MatrixMetaService {
         let metadata = compute_placement_metadata_service_coverage(&nodes, metadata_replication_quorum);
         let page_allocator = self.page_allocator_shard_coverage();
         let pageserver = self.pageserver_service_coverage();
-        let replicaserver = self.replicaserver_coverage(min_chunk_free_bytes);
-        self.raft_status_from_coverage(&metadata, &page_allocator, &pageserver, &replicaserver)
+        let chunkserver = self.chunkserver_coverage(min_chunk_free_bytes);
+        self.raft_status_from_coverage(&metadata, &page_allocator, &pageserver, &chunkserver)
     }
 
     pub(crate) fn raft_status_from_coverage(
@@ -82,7 +82,7 @@ impl MatrixMetaService {
         metadata: &PlacementMetadataServiceCoverage,
         page_allocator: &PlacementPageAllocatorShardCoverage,
         pageserver: &PlacementPageServerServiceCoverage,
-        replicaserver: &PlacementReplicaServerCoverage,
+        chunkserver: &PlacementChunkServerCoverage,
     ) -> PlacementRaftStatus {
         let last_applied_index = self.placement_commit_index.saturating_sub(1);
         let leader_active = self
@@ -96,7 +96,7 @@ impl MatrixMetaService {
             metadata,
             page_allocator,
             pageserver,
-            replicaserver,
+            chunkserver,
         );
         let mut status = PlacementRaftStatus {
             leader_node_id: self
@@ -114,8 +114,8 @@ impl MatrixMetaService {
             placement_metadata_write_ready: gates.metadata_write_ready,
             root_pageserver_read_ready: gates.page_read_ready,
             root_pageserver_write_ready: gates.page_write_ready,
-            root_replicaserver_read_ready: gates.chunk_read_ready,
-            root_replicaserver_write_ready: gates.chunk_write_ready,
+            root_chunkserver_read_ready: gates.chunk_read_ready,
+            root_chunkserver_write_ready: gates.chunk_write_ready,
             placement_readiness_gate_read_ready: gates.linearizable_reads,
             placement_readiness_gate_write_ready: gates.writable,
             node_count: self.nodes.len() as u64,
@@ -247,35 +247,35 @@ impl MatrixMetaService {
             root_pageserver_total_read_quorum_margin: pageserver.total_read_quorum_margin,
             root_pageserver_first_health_reasons: pageserver.first_health_reasons.clone(),
             root_pageserver_service_coverage_status: pageserver.status.clone(),
-            root_active_replicaserver_count: replicaserver.active_replicaserver_count,
-            root_writable_replicaserver_count: replicaserver.writable_replicaserver_count,
-            root_placement_eligible_replicaserver_count: replicaserver
-                .placement_eligible_replicaserver_count,
-            root_placement_ineligible_replicaserver_count: replicaserver
-                .placement_ineligible_replicaserver_count,
-            root_replicaserver_control_proof_count: replicaserver.control_proof_count,
-            root_replicaserver_control_read_ready_count: replicaserver.control_read_ready_count,
-            root_replicaserver_control_write_ready_count: replicaserver.control_write_ready_count,
-            root_replicaserver_control_proof_checksum: replicaserver.control_proof_checksum.clone(),
-            root_replicaserver_control_min_raft_commit_index: replicaserver
+            root_active_chunkserver_count: chunkserver.active_chunkserver_count,
+            root_writable_chunkserver_count: chunkserver.writable_chunkserver_count,
+            root_placement_eligible_chunkserver_count: chunkserver
+                .placement_eligible_chunkserver_count,
+            root_placement_ineligible_chunkserver_count: chunkserver
+                .placement_ineligible_chunkserver_count,
+            root_chunkserver_control_proof_count: chunkserver.control_proof_count,
+            root_chunkserver_control_read_ready_count: chunkserver.control_read_ready_count,
+            root_chunkserver_control_write_ready_count: chunkserver.control_write_ready_count,
+            root_chunkserver_control_proof_checksum: chunkserver.control_proof_checksum.clone(),
+            root_chunkserver_control_min_raft_commit_index: chunkserver
                 .control_min_raft_commit_index,
-            root_replicaserver_control_max_raft_commit_index: replicaserver
+            root_chunkserver_control_max_raft_commit_index: chunkserver
                 .control_max_raft_commit_index,
-            root_replicaserver_total_discarded_range_count: replicaserver.total_discarded_range_count,
-            root_replicaserver_total_reclaimable_bytes: replicaserver.total_reclaimable_bytes,
-            root_replicaserver_total_trailing_trim_bytes: replicaserver.total_trailing_trim_bytes,
-            root_replicaserver_total_fragmented_chunk_count: replicaserver.total_fragmented_chunk_count,
-            root_replicaserver_total_fragmented_discarded_bytes: replicaserver
+            root_chunkserver_total_discarded_range_count: chunkserver.total_discarded_range_count,
+            root_chunkserver_total_reclaimable_bytes: chunkserver.total_reclaimable_bytes,
+            root_chunkserver_total_trailing_trim_bytes: chunkserver.total_trailing_trim_bytes,
+            root_chunkserver_total_fragmented_chunk_count: chunkserver.total_fragmented_chunk_count,
+            root_chunkserver_total_fragmented_discarded_bytes: chunkserver
                 .total_fragmented_discarded_bytes,
-            root_reclaim_pressure_replicaserver_count: replicaserver.reclaim_pressure_replicaserver_count,
-            root_replicaserver_coverage_status: replicaserver.status.clone(),
-            root_replicaserver_health_ok_count: replicaserver.health_ok_count,
-            root_replicaserver_health_degraded_count: replicaserver.health_degraded_count,
-            root_replicaserver_health_unavailable_count: replicaserver.health_unavailable_count,
-            root_replicaserver_health_unknown_count: replicaserver.health_unknown_count,
-            root_replicaserver_not_fault_tolerant_count: replicaserver.not_fault_tolerant_count,
-            root_replicaserver_total_health_reason_count: replicaserver.total_health_reason_count,
-            root_replicaserver_first_health_reasons: replicaserver.first_health_reasons.clone(),
+            root_reclaim_pressure_chunkserver_count: chunkserver.reclaim_pressure_chunkserver_count,
+            root_chunkserver_coverage_status: chunkserver.status.clone(),
+            root_chunkserver_health_ok_count: chunkserver.health_ok_count,
+            root_chunkserver_health_degraded_count: chunkserver.health_degraded_count,
+            root_chunkserver_health_unavailable_count: chunkserver.health_unavailable_count,
+            root_chunkserver_health_unknown_count: chunkserver.health_unknown_count,
+            root_chunkserver_not_fault_tolerant_count: chunkserver.not_fault_tolerant_count,
+            root_chunkserver_total_health_reason_count: chunkserver.total_health_reason_count,
+            root_chunkserver_first_health_reasons: chunkserver.first_health_reasons.clone(),
             control_checksum_format: "MOSRSROOTRAFTSTATUS7".to_string(),
             control_checksum: String::new(),
         };

@@ -5,7 +5,7 @@ fn populate_placement_module_status(
     readiness: &ObjectStoreDistributedReadiness,
 ) {
     status.root_active_pageserver_count = readiness.root_active_pageserver_count;
-    status.root_active_replicaserver_count = readiness.root_active_replicaserver_count;
+    status.root_active_chunkserver_count = readiness.root_active_chunkserver_count;
     status.placement_active_metaserver_count = readiness.placement_active_metaserver_count;
     status.root_page_allocator_shard_count = readiness.root_page_allocator_shard_count;
     status.root_page_allocator_covered_shards = readiness.root_page_allocator_covered_shards;
@@ -88,34 +88,34 @@ fn populate_placement_module_status(
         readiness.root_pageserver_first_health_reasons.clone();
     status.root_pageserver_service_coverage_status =
         readiness.root_pageserver_service_coverage_status.clone();
-    status.root_writable_replicaserver_count = readiness.root_writable_replicaserver_count;
-    status.root_placement_eligible_replicaserver_count =
-        readiness.root_placement_eligible_replicaserver_count;
-    status.root_placement_ineligible_replicaserver_count =
-        readiness.root_placement_ineligible_replicaserver_count;
-    status.root_draining_replicaserver_count = readiness.root_draining_replicaserver_count;
-    status.root_capacity_floor_blocked_replicaserver_count =
-        readiness.root_capacity_floor_blocked_replicaserver_count;
-    status.root_frozen_replicaserver_count = readiness.root_frozen_replicaserver_count;
-    status.root_read_only_replicaserver_count = readiness.root_read_only_replicaserver_count;
-    status.root_raft_unwritable_replicaserver_count =
-        readiness.root_raft_unwritable_replicaserver_count;
-    status.root_replicaserver_total_reported_free_bytes =
-        readiness.root_replicaserver_total_reported_free_bytes;
-    status.root_replicaserver_min_free_bytes = readiness.root_replicaserver_min_free_bytes;
-    status.root_replicaserver_coverage_status = readiness.root_replicaserver_coverage_status.clone();
-    status.root_replicaserver_health_ok_count = readiness.root_replicaserver_health_ok_count;
-    status.root_replicaserver_health_degraded_count =
-        readiness.root_replicaserver_health_degraded_count;
-    status.root_replicaserver_health_unavailable_count =
-        readiness.root_replicaserver_health_unavailable_count;
-    status.root_replicaserver_health_unknown_count = readiness.root_replicaserver_health_unknown_count;
-    status.root_replicaserver_not_fault_tolerant_count =
-        readiness.root_replicaserver_not_fault_tolerant_count;
-    status.root_replicaserver_total_health_reason_count =
-        readiness.root_replicaserver_total_health_reason_count;
-    status.root_replicaserver_first_health_reasons =
-        readiness.root_replicaserver_first_health_reasons.clone();
+    status.root_writable_chunkserver_count = readiness.root_writable_chunkserver_count;
+    status.root_placement_eligible_chunkserver_count =
+        readiness.root_placement_eligible_chunkserver_count;
+    status.root_placement_ineligible_chunkserver_count =
+        readiness.root_placement_ineligible_chunkserver_count;
+    status.root_draining_chunkserver_count = readiness.root_draining_chunkserver_count;
+    status.root_capacity_floor_blocked_chunkserver_count =
+        readiness.root_capacity_floor_blocked_chunkserver_count;
+    status.root_frozen_chunkserver_count = readiness.root_frozen_chunkserver_count;
+    status.root_read_only_chunkserver_count = readiness.root_read_only_chunkserver_count;
+    status.root_raft_unwritable_chunkserver_count =
+        readiness.root_raft_unwritable_chunkserver_count;
+    status.root_chunkserver_total_reported_free_bytes =
+        readiness.root_chunkserver_total_reported_free_bytes;
+    status.root_chunkserver_min_free_bytes = readiness.root_chunkserver_min_free_bytes;
+    status.root_chunkserver_coverage_status = readiness.root_chunkserver_coverage_status.clone();
+    status.root_chunkserver_health_ok_count = readiness.root_chunkserver_health_ok_count;
+    status.root_chunkserver_health_degraded_count =
+        readiness.root_chunkserver_health_degraded_count;
+    status.root_chunkserver_health_unavailable_count =
+        readiness.root_chunkserver_health_unavailable_count;
+    status.root_chunkserver_health_unknown_count = readiness.root_chunkserver_health_unknown_count;
+    status.root_chunkserver_not_fault_tolerant_count =
+        readiness.root_chunkserver_not_fault_tolerant_count;
+    status.root_chunkserver_total_health_reason_count =
+        readiness.root_chunkserver_total_health_reason_count;
+    status.root_chunkserver_first_health_reasons =
+        readiness.root_chunkserver_first_health_reasons.clone();
     status.root_node_count = readiness.root_node_count;
     status.placement_expected_nodes = readiness.placement_expected_nodes;
     status.root_leader_node_id = readiness.root_leader_node_id.clone();
@@ -126,8 +126,8 @@ fn populate_placement_module_status(
     status.placement_metadata_write_ready = readiness.placement_metadata_write_ready;
     status.root_pageserver_read_ready = readiness.root_pageserver_read_ready;
     status.root_pageserver_write_ready = readiness.root_pageserver_write_ready;
-    status.root_replicaserver_read_ready = readiness.root_replicaserver_read_ready;
-    status.root_replicaserver_write_ready = readiness.root_replicaserver_write_ready;
+    status.root_chunkserver_read_ready = readiness.root_chunkserver_read_ready;
+    status.root_chunkserver_write_ready = readiness.root_chunkserver_write_ready;
     status.placement_readiness_gate_read_ready = readiness.placement_readiness_gate_read_ready;
     status.placement_readiness_gate_write_ready = readiness.placement_readiness_gate_write_ready;
     status.root_service_health = readiness.root_service_health.clone();
@@ -203,13 +203,13 @@ fn populate_placement_module_status(
     status.root_pageserver_route_control_proof_checksum = readiness
         .root_pageserver_route_control_proof_checksum
         .clone();
-    status.root_replicaserver_control_proof_count = readiness.root_replicaserver_control_proof_count;
-    status.root_replicaserver_control_read_ready_count =
-        readiness.root_replicaserver_control_read_ready_count;
-    status.root_replicaserver_control_write_ready_count =
-        readiness.root_replicaserver_control_write_ready_count;
-    status.root_replicaserver_control_proof_checksum =
-        readiness.root_replicaserver_control_proof_checksum.clone();
+    status.root_chunkserver_control_proof_count = readiness.root_chunkserver_control_proof_count;
+    status.root_chunkserver_control_read_ready_count =
+        readiness.root_chunkserver_control_read_ready_count;
+    status.root_chunkserver_control_write_ready_count =
+        readiness.root_chunkserver_control_write_ready_count;
+    status.root_chunkserver_control_proof_checksum =
+        readiness.root_chunkserver_control_proof_checksum.clone();
     status.placement_raft_status_checksum_format = readiness.placement_raft_status_checksum_format.clone();
     status.root_raft_status_checksum = readiness.root_raft_status_checksum.clone();
     status.root_pageserver_route_control_min_commit_index =
@@ -230,10 +230,10 @@ fn populate_placement_module_status(
         readiness.root_pageserver_total_discard_receipt_count;
     status.root_pageserver_total_batch_discard_receipt_count =
         readiness.root_pageserver_total_batch_discard_receipt_count;
-    status.root_replicaserver_control_min_raft_commit_index =
-        readiness.root_replicaserver_control_min_raft_commit_index;
-    status.root_replicaserver_control_max_raft_commit_index =
-        readiness.root_replicaserver_control_max_raft_commit_index;
+    status.root_chunkserver_control_min_raft_commit_index =
+        readiness.root_chunkserver_control_min_raft_commit_index;
+    status.root_chunkserver_control_max_raft_commit_index =
+        readiness.root_chunkserver_control_max_raft_commit_index;
     status.placement_metadata_control_max_last_applied_mutation_commit_index =
         readiness.placement_metadata_control_max_last_applied_mutation_commit_index;
     status.placement_metadata_control_max_apply_commit_lag =

@@ -14,7 +14,7 @@ fn append_module_identity(mut material: &mut Vec<u8>, status: &ObjectStoreModule
     append_string(&mut material, &status.compression_status);
     append_string(&mut material, &status.ec_status);
     append_u64(&mut material, status.objectstore_open as u64);
-    append_u64(&mut material, status.replicaserver_open as u64);
+    append_u64(&mut material, status.chunkserver_open as u64);
     append_u64(&mut material, status.pageserver_ready as u64);
     append_u64(&mut material, status.bsclient_ready as u64);
     append_u64(&mut material, status.placement_ready as u64);
@@ -24,8 +24,8 @@ fn append_module_identity(mut material: &mut Vec<u8>, status: &ObjectStoreModule
     append_u64(&mut material, status.placement_metadata_write_ready as u64);
     append_u64(&mut material, status.root_pageserver_read_ready as u64);
     append_u64(&mut material, status.root_pageserver_write_ready as u64);
-    append_u64(&mut material, status.root_replicaserver_read_ready as u64);
-    append_u64(&mut material, status.root_replicaserver_write_ready as u64);
+    append_u64(&mut material, status.root_chunkserver_read_ready as u64);
+    append_u64(&mut material, status.root_chunkserver_write_ready as u64);
     append_u64(&mut material, status.placement_readiness_gate_read_ready as u64);
     append_u64(&mut material, status.placement_readiness_gate_write_ready as u64);
     append_string(&mut material, &status.configured_control_plane_mode);
