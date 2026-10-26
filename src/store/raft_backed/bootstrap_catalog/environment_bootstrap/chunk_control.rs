@@ -5,7 +5,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &mut self,
     ) -> Result<Option<ReplicaMutationControlBootstrapReport>, ObjectError> {
         let Some(target_commit_index) =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_RAFT_COMMIT_INDEX_ENV_NAMES)?
+            first_non_empty_env_u64(&MATRIX_REPLICASERVER_RAFT_COMMIT_INDEX_ENV_NAMES)?
         else {
             return Ok(None);
         };
@@ -15,7 +15,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             ));
         }
         let replica_index_u64 =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_REPLICA_INDEX_ENV_NAMES)?.unwrap_or(0);
+            first_non_empty_env_u64(&MATRIX_REPLICASERVER_REPLICA_INDEX_ENV_NAMES)?.unwrap_or(0);
         let replica_index = usize::try_from(replica_index_u64).map_err(|_| {
             ObjectError::InvalidArgument(format!(
                 "chunk mutation-control bootstrap replica index is too large: {}",
@@ -23,7 +23,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             ))
         })?;
         let max_steps =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_RAFT_BOOTSTRAP_MAX_STEPS_ENV_NAMES)?
+            first_non_empty_env_u64(&MATRIX_REPLICASERVER_RAFT_BOOTSTRAP_MAX_STEPS_ENV_NAMES)?
                 .unwrap_or(65_536);
         let before_proof = self
             .store
@@ -128,7 +128,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             last_metadata,
         };
         if let Some(expected) =
-            first_non_empty_env(&MATRIX_CHUNKSERVER_MUTATION_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES)?
+            first_non_empty_env(&MATRIX_REPLICASERVER_MUTATION_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES)?
         {
             report.verify_expected_report_checksum(expected.as_str())?;
         }
@@ -142,13 +142,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
     ) -> Result<bool, ObjectError> {
         let requested_rate =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_TRIM_FLOW_RATE_BYTES_PER_SEC_ENV_NAMES)?;
+            first_non_empty_env_u64(&MATRIX_REPLICASERVER_TRIM_FLOW_RATE_BYTES_PER_SEC_ENV_NAMES)?;
         let requested_burst =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_TRIM_FLOW_BURST_BYTES_ENV_NAMES)?;
+            first_non_empty_env_u64(&MATRIX_REPLICASERVER_TRIM_FLOW_BURST_BYTES_ENV_NAMES)?;
         let requested_ops_rate =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_TRIM_FLOW_RATE_OPS_PER_SEC_ENV_NAMES)?;
+            first_non_empty_env_u64(&MATRIX_REPLICASERVER_TRIM_FLOW_RATE_OPS_PER_SEC_ENV_NAMES)?;
         let requested_ops_burst =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_TRIM_FLOW_BURST_OPS_ENV_NAMES)?;
+            first_non_empty_env_u64(&MATRIX_REPLICASERVER_TRIM_FLOW_BURST_OPS_ENV_NAMES)?;
         if requested_rate.is_none()
             && requested_burst.is_none()
             && requested_ops_rate.is_none()

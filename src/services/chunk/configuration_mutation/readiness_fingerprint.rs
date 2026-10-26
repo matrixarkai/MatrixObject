@@ -256,9 +256,9 @@ impl MatrixReplicaService {
             discard_receipt_count: self.discard_request_receipts.len() as u64,
             batch_write_receipt_count: self.batch_write_request_receipts.len() as u64,
             batch_discard_receipt_count: self.batch_discard_request_receipts.len() as u64,
-            chunkserver_control_proof_format: control_proof.state_format.clone(),
-            chunkserver_control_proof_checksum: control_proof.state_checksum.clone(),
-            chunkserver_control_proof_bytes: control_proof.state_bytes,
+            replicaserver_control_proof_format: control_proof.state_format.clone(),
+            replicaserver_control_proof_checksum: control_proof.state_checksum.clone(),
+            replicaserver_control_proof_bytes: control_proof.state_bytes,
             control_proof,
         }
     }

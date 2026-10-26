@@ -15,12 +15,12 @@ struct DistributedPlacementReadinessSnapshot {
     root_metadata_coverage_ready: bool,
     root_page_allocator_coverage: PlacementPageAllocatorShardCoverage,
     root_page_allocator_ready: bool,
-    root_chunkserver_service_coverage: PlacementChunkServerServiceCoverage,
-    root_chunkserver_service_ready: bool,
-    root_chunkserver_route_control_ready: bool,
-    root_chunkserver_coverage: PlacementChunkServerCoverage,
-    root_chunkserver_ready: bool,
-    root_chunkserver_control_ready: bool,
+    root_pageserver_service_coverage: PlacementPageServerServiceCoverage,
+    root_pageserver_service_ready: bool,
+    root_pageserver_route_control_ready: bool,
+    root_replicaserver_coverage: PlacementReplicaServerCoverage,
+    root_replicaserver_ready: bool,
+    root_replicaserver_control_ready: bool,
     root_leader_node_id: String,
     root_lease_epoch: u64,
     root_lease_expire_time_ms: u64,
@@ -94,23 +94,23 @@ impl DistributedPlacementReadinessSnapshot {
         let root_page_allocator_ready = root_page_allocator_coverage.active_pageserver_count
             == 0
             || root_page_allocator_coverage.complete;
-        let root_chunkserver_service_coverage = store.meta_service.chunkserver_service_coverage();
-        let root_chunkserver_service_ready =
-            root_chunkserver_service_coverage.active_pageserver_count == 0
-                || (root_chunkserver_service_coverage.ready_chunkserver_count > 0
-                    && root_chunkserver_service_coverage.read_ready_chunkserver_count > 0);
-        let root_chunkserver_route_control_ready =
-            root_chunkserver_service_coverage.route_control_proof_count == 0
-                || (root_chunkserver_service_coverage.route_control_write_ready_count > 0
-                    && root_chunkserver_service_coverage.route_control_read_ready_count > 0);
-        let root_chunkserver_coverage = store
+        let root_pageserver_service_coverage = store.meta_service.pageserver_service_coverage();
+        let root_pageserver_service_ready =
+            root_pageserver_service_coverage.active_pageserver_count == 0
+                || (root_pageserver_service_coverage.ready_pageserver_count > 0
+                    && root_pageserver_service_coverage.read_ready_pageserver_count > 0);
+        let root_pageserver_route_control_ready =
+            root_pageserver_service_coverage.route_control_proof_count == 0
+                || (root_pageserver_service_coverage.route_control_write_ready_count > 0
+                    && root_pageserver_service_coverage.route_control_read_ready_count > 0);
+        let root_replicaserver_coverage = store
             .meta_service
-            .chunkserver_coverage(min_capacity_free_bytes);
-        let root_chunkserver_ready = root_chunkserver_coverage.active_replicaserver_count == 0
-            || root_chunkserver_coverage.writable_chunkserver_count > 0;
-        let root_chunkserver_control_ready = root_chunkserver_coverage.control_proof_count == 0
-            || (root_chunkserver_coverage.control_read_ready_count > 0
-                && root_chunkserver_coverage.control_write_ready_count > 0);
+            .replicaserver_coverage(min_capacity_free_bytes);
+        let root_replicaserver_ready = root_replicaserver_coverage.active_replicaserver_count == 0
+            || root_replicaserver_coverage.writable_replicaserver_count > 0;
+        let root_replicaserver_control_ready = root_replicaserver_coverage.control_proof_count == 0
+            || (root_replicaserver_coverage.control_read_ready_count > 0
+                && root_replicaserver_coverage.control_write_ready_count > 0);
         let root_lease = store.root_leader_lease();
         let root_leader_node_id = root_lease
             .as_ref()
@@ -121,8 +121,8 @@ impl DistributedPlacementReadinessSnapshot {
         let placement_raft_status = store.meta_service.raft_status_from_coverage(
             &root_metadata_coverage,
             &root_page_allocator_coverage,
-            &root_chunkserver_service_coverage,
-            &root_chunkserver_coverage,
+            &root_pageserver_service_coverage,
+            &root_replicaserver_coverage,
         );
         let placement_raft_status_checksum_format = placement_raft_status.control_checksum_format;
         let root_raft_status_checksum = placement_raft_status.control_checksum;
@@ -151,10 +151,10 @@ impl DistributedPlacementReadinessSnapshot {
         };
         let root_observed_services_ready = root_metadata_coverage_ready
             && root_page_allocator_ready
-            && root_chunkserver_service_ready
-            && root_chunkserver_route_control_ready
-            && root_chunkserver_ready
-            && root_chunkserver_control_ready;
+            && root_pageserver_service_ready
+            && root_pageserver_route_control_ready
+            && root_replicaserver_ready
+            && root_replicaserver_control_ready;
         let placement_ready = if placement_required {
             placement_leader_ready && root_placement_ready && root_observed_services_ready
         } else {
@@ -176,12 +176,12 @@ impl DistributedPlacementReadinessSnapshot {
             root_metadata_coverage_ready,
             root_page_allocator_coverage,
             root_page_allocator_ready,
-            root_chunkserver_service_coverage,
-            root_chunkserver_service_ready,
-            root_chunkserver_route_control_ready,
-            root_chunkserver_coverage,
-            root_chunkserver_ready,
-            root_chunkserver_control_ready,
+            root_pageserver_service_coverage,
+            root_pageserver_service_ready,
+            root_pageserver_route_control_ready,
+            root_replicaserver_coverage,
+            root_replicaserver_ready,
+            root_replicaserver_control_ready,
             root_leader_node_id,
             root_lease_epoch,
             root_lease_expire_time_ms,

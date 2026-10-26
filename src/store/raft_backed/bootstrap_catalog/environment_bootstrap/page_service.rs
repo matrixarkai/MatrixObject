@@ -5,7 +5,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &mut self,
     ) -> Result<Option<ChunkRouteControlBootstrapReport>, ObjectError> {
         let Some(target_commit_index) =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_ROUTE_CONTROL_COMMIT_INDEX_ENV_NAMES)?
+            first_non_empty_env_u64(&MATRIX_PAGESERVER_ROUTE_CONTROL_COMMIT_INDEX_ENV_NAMES)?
         else {
             return Ok(None);
         };
@@ -15,7 +15,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             ));
         }
         let max_steps = first_non_empty_env_u64(
-            &MATRIX_CHUNKSERVER_ROUTE_CONTROL_BOOTSTRAP_MAX_STEPS_ENV_NAMES,
+            &MATRIX_PAGESERVER_ROUTE_CONTROL_BOOTSTRAP_MAX_STEPS_ENV_NAMES,
         )?
         .unwrap_or(65_536);
         let before_proof = self.store.chunk_service.route_control_proof();
@@ -76,7 +76,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             last_metadata,
         };
         if let Some(expected) = first_non_empty_env(
-            &MATRIX_CHUNKSERVER_ROUTE_CONTROL_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES,
+            &MATRIX_PAGESERVER_ROUTE_CONTROL_BOOTSTRAP_REPORT_CHECKSUM_ENV_NAMES,
         )? {
             report.verify_expected_report_checksum(expected.as_str())?;
         }
@@ -109,15 +109,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
     ) -> Result<bool, ObjectError> {
         let requested_rate = first_non_empty_env_u64(
-            &MATRIX_CHUNKSERVER_CHUNK_TRIM_FLOW_RATE_BYTES_PER_SEC_ENV_NAMES,
+            &MATRIX_PAGESERVER_CHUNK_TRIM_FLOW_RATE_BYTES_PER_SEC_ENV_NAMES,
         )?;
         let requested_burst =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_CHUNK_TRIM_FLOW_BURST_BYTES_ENV_NAMES)?;
+            first_non_empty_env_u64(&MATRIX_PAGESERVER_CHUNK_TRIM_FLOW_BURST_BYTES_ENV_NAMES)?;
         let requested_ops_rate = first_non_empty_env_u64(
-            &MATRIX_CHUNKSERVER_CHUNK_TRIM_FLOW_RATE_OPS_PER_SEC_ENV_NAMES,
+            &MATRIX_PAGESERVER_CHUNK_TRIM_FLOW_RATE_OPS_PER_SEC_ENV_NAMES,
         )?;
         let requested_ops_burst =
-            first_non_empty_env_u64(&MATRIX_CHUNKSERVER_CHUNK_TRIM_FLOW_BURST_OPS_ENV_NAMES)?;
+            first_non_empty_env_u64(&MATRIX_PAGESERVER_CHUNK_TRIM_FLOW_BURST_OPS_ENV_NAMES)?;
         if requested_rate.is_none()
             && requested_burst.is_none()
             && requested_ops_rate.is_none()
@@ -126,7 +126,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             return Ok(false);
         }
         let include_disabled = first_non_empty_env_bool(
-            &MATRIX_CHUNKSERVER_CHUNK_TRIM_FLOW_INCLUDE_DISABLED_ENV_NAMES,
+            &MATRIX_PAGESERVER_CHUNK_TRIM_FLOW_INCLUDE_DISABLED_ENV_NAMES,
         )?
         .unwrap_or(false);
         let mut rate = requested_rate.unwrap_or(0);

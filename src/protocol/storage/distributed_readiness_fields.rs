@@ -240,7 +240,7 @@ impl ObjectStoreDistributedReadiness {
             ),
             (
                 "placement_blockserver_route_control_proof_checksum",
-                &self.root_chunkserver_route_control_proof_checksum,
+                &self.root_pageserver_route_control_proof_checksum,
             ),
             (
                 "root_blockserver_first_health_reasons",
@@ -248,7 +248,7 @@ impl ObjectStoreDistributedReadiness {
             ),
             (
                 "placement_chunkserver_control_proof_checksum",
-                &self.root_chunkserver_control_proof_checksum,
+                &self.root_replicaserver_control_proof_checksum,
             ),
             (
                 "root_chunkserver_first_health_reasons",
@@ -476,15 +476,15 @@ impl ObjectStoreDistributedReadiness {
             ),
             (
                 "placement_blockserver_route_control_proof_count",
-                self.root_chunkserver_route_control_proof_count,
+                self.root_pageserver_route_control_proof_count,
             ),
             (
                 "placement_blockserver_route_control_read_ready_count",
-                self.root_chunkserver_route_control_read_ready_count,
+                self.root_pageserver_route_control_read_ready_count,
             ),
             (
                 "placement_blockserver_route_control_write_ready_count",
-                self.root_chunkserver_route_control_write_ready_count,
+                self.root_pageserver_route_control_write_ready_count,
             ),
             (
                 "root_blockserver_health_ok_count",
@@ -512,39 +512,39 @@ impl ObjectStoreDistributedReadiness {
             ),
             (
                 "root_blockserver_total_write_quorum",
-                self.root_chunkserver_total_write_quorum,
+                self.root_pageserver_total_write_quorum,
             ),
             (
                 "root_blockserver_total_read_quorum",
-                self.root_chunkserver_total_read_quorum,
+                self.root_pageserver_total_read_quorum,
             ),
             (
                 "root_blockserver_total_write_quorum_deficit",
-                self.root_chunkserver_total_write_quorum_deficit,
+                self.root_pageserver_total_write_quorum_deficit,
             ),
             (
                 "root_blockserver_total_read_quorum_deficit",
-                self.root_chunkserver_total_read_quorum_deficit,
+                self.root_pageserver_total_read_quorum_deficit,
             ),
             (
                 "root_blockserver_total_write_quorum_margin",
-                self.root_chunkserver_total_write_quorum_margin,
+                self.root_pageserver_total_write_quorum_margin,
             ),
             (
                 "root_blockserver_total_read_quorum_margin",
-                self.root_chunkserver_total_read_quorum_margin,
+                self.root_pageserver_total_read_quorum_margin,
             ),
             (
                 "placement_chunkserver_control_proof_count",
-                self.root_chunkserver_control_proof_count,
+                self.root_replicaserver_control_proof_count,
             ),
             (
                 "placement_chunkserver_control_read_ready_count",
-                self.root_chunkserver_control_read_ready_count,
+                self.root_replicaserver_control_read_ready_count,
             ),
             (
                 "placement_chunkserver_control_write_ready_count",
-                self.root_chunkserver_control_write_ready_count,
+                self.root_replicaserver_control_write_ready_count,
             ),
             (
                 "root_chunkserver_health_ok_count",

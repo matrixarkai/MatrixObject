@@ -12,8 +12,8 @@ pub struct CatalogPageEndpointDiscovery {
     pub skipped_write_not_ready: u64,
     pub skipped_read_not_ready: u64,
     pub active_pageserver_count: u64,
-    pub ready_chunkserver_count: u64,
-    pub read_ready_chunkserver_count: u64,
+    pub ready_pageserver_count: u64,
+    pub read_ready_pageserver_count: u64,
     pub allocator_shard_count: u64,
     pub allocator_covered_shards: u64,
     pub allocator_status: String,
@@ -68,11 +68,11 @@ impl CatalogPageEndpointDiscovery {
         );
         fields.insert(
             "ready_blockserver_count".to_string(),
-            self.ready_chunkserver_count.to_string(),
+            self.ready_pageserver_count.to_string(),
         );
         fields.insert(
             "read_ready_blockserver_count".to_string(),
-            self.read_ready_chunkserver_count.to_string(),
+            self.read_ready_pageserver_count.to_string(),
         );
         fields.insert(
             "allocator_shard_count".to_string(),

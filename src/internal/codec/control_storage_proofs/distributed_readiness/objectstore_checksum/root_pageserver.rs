@@ -10,91 +10,91 @@ fn append_placement_pageserver_topology(mut material: &mut Vec<u8>, report: &Obj
         report.root_page_allocator_shards_complete as u64,
     );
     append_string(&mut material, &report.root_page_allocator_shard_status);
-    append_u64(&mut material, report.root_ready_chunkserver_count);
-    append_u64(&mut material, report.root_read_ready_chunkserver_count);
+    append_u64(&mut material, report.root_ready_pageserver_count);
+    append_u64(&mut material, report.root_read_ready_pageserver_count);
     append_u64(
         &mut material,
-        report.root_chunkserver_total_chunk_endpoint_count,
+        report.root_pageserver_total_chunk_endpoint_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_writable_chunk_endpoint_count,
+        report.root_pageserver_total_writable_chunk_endpoint_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_healthy_chunk_endpoint_count,
+        report.root_pageserver_total_healthy_chunk_endpoint_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_raft_writable_chunk_endpoint_count,
+        report.root_pageserver_total_raft_writable_chunk_endpoint_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_raft_readable_chunk_endpoint_count,
+        report.root_pageserver_total_raft_readable_chunk_endpoint_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_capacity_ready_writable_chunk_endpoint_count,
+        report.root_pageserver_total_capacity_ready_writable_chunk_endpoint_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_quarantined_chunk_replicas,
+        report.root_pageserver_total_quarantined_chunk_replicas,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_chunk_capacity_bytes,
+        report.root_pageserver_total_chunk_capacity_bytes,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_chunk_capacity_free_bytes,
+        report.root_pageserver_total_chunk_capacity_free_bytes,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_chunk_metadata_dirty_endpoint_count,
+        report.root_pageserver_total_chunk_metadata_dirty_endpoint_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_chunk_metadata_dirty_mutations,
+        report.root_pageserver_total_chunk_metadata_dirty_mutations,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_max_chunk_metadata_checkpoint_interval,
+        report.root_pageserver_max_chunk_metadata_checkpoint_interval,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_deferred_metadata_checkpoint_endpoint_count,
+        report.root_pageserver_total_deferred_metadata_checkpoint_endpoint_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_deferred_metadata_checkpoint_requests,
+        report.root_pageserver_total_deferred_metadata_checkpoint_requests,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_deferred_metadata_checkpoint_runs,
+        report.root_pageserver_total_deferred_metadata_checkpoint_runs,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_chunk_capacity_rejected_writes,
+        report.root_pageserver_total_chunk_capacity_rejected_writes,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_replica_service_mode_rejected_mutations,
+        report.root_pageserver_total_replica_service_mode_rejected_mutations,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_chunk_physical_write_count,
+        report.root_pageserver_total_chunk_physical_write_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_chunk_physical_write_bytes,
+        report.root_pageserver_total_chunk_physical_write_bytes,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_chunk_physical_discard_range_count,
+        report.root_pageserver_total_chunk_physical_discard_range_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_chunk_physical_discard_bytes,
+        report.root_pageserver_total_chunk_physical_discard_bytes,
     );
     append_u64(
         &mut material,
@@ -114,31 +114,31 @@ fn append_placement_pageserver_topology(mut material: &mut Vec<u8>, report: &Obj
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_allocation_receipt_count,
+        report.root_pageserver_total_allocation_receipt_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_batch_allocation_receipt_count,
+        report.root_pageserver_total_batch_allocation_receipt_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_release_allocation_receipt_count,
+        report.root_pageserver_total_release_allocation_receipt_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_write_receipt_count,
+        report.root_pageserver_total_write_receipt_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_batch_write_receipt_count,
+        report.root_pageserver_total_batch_write_receipt_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_discard_receipt_count,
+        report.root_pageserver_total_discard_receipt_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_batch_discard_receipt_count,
+        report.root_pageserver_total_batch_discard_receipt_count,
     );
     append_u64(&mut material, report.root_pageserver_health_ok_count);
     append_u64(&mut material, report.root_pageserver_health_degraded_count);
@@ -157,24 +157,24 @@ fn append_placement_pageserver_topology(mut material: &mut Vec<u8>, report: &Obj
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_write_quorum,
+        report.root_pageserver_total_write_quorum,
     );
-    append_u64(&mut material, report.root_chunkserver_total_read_quorum);
+    append_u64(&mut material, report.root_pageserver_total_read_quorum);
     append_u64(
         &mut material,
-        report.root_chunkserver_total_write_quorum_deficit,
-    );
-    append_u64(
-        &mut material,
-        report.root_chunkserver_total_read_quorum_deficit,
+        report.root_pageserver_total_write_quorum_deficit,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_write_quorum_margin,
+        report.root_pageserver_total_read_quorum_deficit,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_total_read_quorum_margin,
+        report.root_pageserver_total_write_quorum_margin,
+    );
+    append_u64(
+        &mut material,
+        report.root_pageserver_total_read_quorum_margin,
     );
     append_string(
         &mut material,
@@ -182,30 +182,30 @@ fn append_placement_pageserver_topology(mut material: &mut Vec<u8>, report: &Obj
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_route_control_proof_count,
+        report.root_pageserver_route_control_proof_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_route_control_read_ready_count,
+        report.root_pageserver_route_control_read_ready_count,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_route_control_write_ready_count,
+        report.root_pageserver_route_control_write_ready_count,
     );
     append_string(
         &mut material,
-        &report.root_chunkserver_route_control_proof_checksum,
+        &report.root_pageserver_route_control_proof_checksum,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_route_control_min_commit_index,
+        report.root_pageserver_route_control_min_commit_index,
     );
     append_u64(
         &mut material,
-        report.root_chunkserver_route_control_max_commit_index,
+        report.root_pageserver_route_control_max_commit_index,
     );
     append_string(
         &mut material,
-        &report.root_chunkserver_service_coverage_status,
+        &report.root_pageserver_service_coverage_status,
     );
 }

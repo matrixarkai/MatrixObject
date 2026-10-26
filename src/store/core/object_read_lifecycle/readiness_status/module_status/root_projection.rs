@@ -11,50 +11,50 @@ fn populate_placement_module_status(
     status.root_page_allocator_covered_shards = readiness.root_page_allocator_covered_shards;
     status.root_page_allocator_shards_complete = readiness.root_page_allocator_shards_complete;
     status.root_page_allocator_shard_status = readiness.root_page_allocator_shard_status.clone();
-    status.root_ready_chunkserver_count = readiness.root_ready_chunkserver_count;
-    status.root_read_ready_chunkserver_count = readiness.root_read_ready_chunkserver_count;
-    status.root_chunkserver_total_chunk_endpoint_count =
-        readiness.root_chunkserver_total_chunk_endpoint_count;
-    status.root_chunkserver_total_writable_chunk_endpoint_count =
-        readiness.root_chunkserver_total_writable_chunk_endpoint_count;
-    status.root_chunkserver_total_healthy_chunk_endpoint_count =
-        readiness.root_chunkserver_total_healthy_chunk_endpoint_count;
-    status.root_chunkserver_total_raft_writable_chunk_endpoint_count =
-        readiness.root_chunkserver_total_raft_writable_chunk_endpoint_count;
-    status.root_chunkserver_total_raft_readable_chunk_endpoint_count =
-        readiness.root_chunkserver_total_raft_readable_chunk_endpoint_count;
-    status.root_chunkserver_total_capacity_ready_writable_chunk_endpoint_count =
-        readiness.root_chunkserver_total_capacity_ready_writable_chunk_endpoint_count;
-    status.root_chunkserver_total_quarantined_chunk_replicas =
-        readiness.root_chunkserver_total_quarantined_chunk_replicas;
-    status.root_chunkserver_total_chunk_capacity_bytes =
-        readiness.root_chunkserver_total_chunk_capacity_bytes;
-    status.root_chunkserver_total_chunk_capacity_free_bytes =
-        readiness.root_chunkserver_total_chunk_capacity_free_bytes;
-    status.root_chunkserver_total_chunk_metadata_dirty_endpoint_count =
-        readiness.root_chunkserver_total_chunk_metadata_dirty_endpoint_count;
-    status.root_chunkserver_total_chunk_metadata_dirty_mutations =
-        readiness.root_chunkserver_total_chunk_metadata_dirty_mutations;
-    status.root_chunkserver_max_chunk_metadata_checkpoint_interval =
-        readiness.root_chunkserver_max_chunk_metadata_checkpoint_interval;
-    status.root_chunkserver_total_deferred_metadata_checkpoint_endpoint_count =
-        readiness.root_chunkserver_total_deferred_metadata_checkpoint_endpoint_count;
-    status.root_chunkserver_total_deferred_metadata_checkpoint_requests =
-        readiness.root_chunkserver_total_deferred_metadata_checkpoint_requests;
-    status.root_chunkserver_total_deferred_metadata_checkpoint_runs =
-        readiness.root_chunkserver_total_deferred_metadata_checkpoint_runs;
-    status.root_chunkserver_total_chunk_capacity_rejected_writes =
-        readiness.root_chunkserver_total_chunk_capacity_rejected_writes;
-    status.root_chunkserver_total_replica_service_mode_rejected_mutations =
-        readiness.root_chunkserver_total_replica_service_mode_rejected_mutations;
-    status.root_chunkserver_total_chunk_physical_write_count =
-        readiness.root_chunkserver_total_chunk_physical_write_count;
-    status.root_chunkserver_total_chunk_physical_write_bytes =
-        readiness.root_chunkserver_total_chunk_physical_write_bytes;
-    status.root_chunkserver_total_chunk_physical_discard_range_count =
-        readiness.root_chunkserver_total_chunk_physical_discard_range_count;
-    status.root_chunkserver_total_chunk_physical_discard_bytes =
-        readiness.root_chunkserver_total_chunk_physical_discard_bytes;
+    status.root_ready_pageserver_count = readiness.root_ready_pageserver_count;
+    status.root_read_ready_pageserver_count = readiness.root_read_ready_pageserver_count;
+    status.root_pageserver_total_chunk_endpoint_count =
+        readiness.root_pageserver_total_chunk_endpoint_count;
+    status.root_pageserver_total_writable_chunk_endpoint_count =
+        readiness.root_pageserver_total_writable_chunk_endpoint_count;
+    status.root_pageserver_total_healthy_chunk_endpoint_count =
+        readiness.root_pageserver_total_healthy_chunk_endpoint_count;
+    status.root_pageserver_total_raft_writable_chunk_endpoint_count =
+        readiness.root_pageserver_total_raft_writable_chunk_endpoint_count;
+    status.root_pageserver_total_raft_readable_chunk_endpoint_count =
+        readiness.root_pageserver_total_raft_readable_chunk_endpoint_count;
+    status.root_pageserver_total_capacity_ready_writable_chunk_endpoint_count =
+        readiness.root_pageserver_total_capacity_ready_writable_chunk_endpoint_count;
+    status.root_pageserver_total_quarantined_chunk_replicas =
+        readiness.root_pageserver_total_quarantined_chunk_replicas;
+    status.root_pageserver_total_chunk_capacity_bytes =
+        readiness.root_pageserver_total_chunk_capacity_bytes;
+    status.root_pageserver_total_chunk_capacity_free_bytes =
+        readiness.root_pageserver_total_chunk_capacity_free_bytes;
+    status.root_pageserver_total_chunk_metadata_dirty_endpoint_count =
+        readiness.root_pageserver_total_chunk_metadata_dirty_endpoint_count;
+    status.root_pageserver_total_chunk_metadata_dirty_mutations =
+        readiness.root_pageserver_total_chunk_metadata_dirty_mutations;
+    status.root_pageserver_max_chunk_metadata_checkpoint_interval =
+        readiness.root_pageserver_max_chunk_metadata_checkpoint_interval;
+    status.root_pageserver_total_deferred_metadata_checkpoint_endpoint_count =
+        readiness.root_pageserver_total_deferred_metadata_checkpoint_endpoint_count;
+    status.root_pageserver_total_deferred_metadata_checkpoint_requests =
+        readiness.root_pageserver_total_deferred_metadata_checkpoint_requests;
+    status.root_pageserver_total_deferred_metadata_checkpoint_runs =
+        readiness.root_pageserver_total_deferred_metadata_checkpoint_runs;
+    status.root_pageserver_total_chunk_capacity_rejected_writes =
+        readiness.root_pageserver_total_chunk_capacity_rejected_writes;
+    status.root_pageserver_total_replica_service_mode_rejected_mutations =
+        readiness.root_pageserver_total_replica_service_mode_rejected_mutations;
+    status.root_pageserver_total_chunk_physical_write_count =
+        readiness.root_pageserver_total_chunk_physical_write_count;
+    status.root_pageserver_total_chunk_physical_write_bytes =
+        readiness.root_pageserver_total_chunk_physical_write_bytes;
+    status.root_pageserver_total_chunk_physical_discard_range_count =
+        readiness.root_pageserver_total_chunk_physical_discard_range_count;
+    status.root_pageserver_total_chunk_physical_discard_bytes =
+        readiness.root_pageserver_total_chunk_physical_discard_bytes;
     status.root_pageserver_total_reclaimable_bytes =
         readiness.root_pageserver_total_reclaimable_bytes;
     status.root_pageserver_total_trailing_trim_bytes =
@@ -73,37 +73,37 @@ fn populate_placement_module_status(
         readiness.root_pageserver_not_fault_tolerant_count;
     status.root_pageserver_total_health_reason_count =
         readiness.root_pageserver_total_health_reason_count;
-    status.root_chunkserver_total_write_quorum =
-        readiness.root_chunkserver_total_write_quorum;
-    status.root_chunkserver_total_read_quorum = readiness.root_chunkserver_total_read_quorum;
-    status.root_chunkserver_total_write_quorum_deficit =
-        readiness.root_chunkserver_total_write_quorum_deficit;
-    status.root_chunkserver_total_read_quorum_deficit =
-        readiness.root_chunkserver_total_read_quorum_deficit;
-    status.root_chunkserver_total_write_quorum_margin =
-        readiness.root_chunkserver_total_write_quorum_margin;
-    status.root_chunkserver_total_read_quorum_margin =
-        readiness.root_chunkserver_total_read_quorum_margin;
+    status.root_pageserver_total_write_quorum =
+        readiness.root_pageserver_total_write_quorum;
+    status.root_pageserver_total_read_quorum = readiness.root_pageserver_total_read_quorum;
+    status.root_pageserver_total_write_quorum_deficit =
+        readiness.root_pageserver_total_write_quorum_deficit;
+    status.root_pageserver_total_read_quorum_deficit =
+        readiness.root_pageserver_total_read_quorum_deficit;
+    status.root_pageserver_total_write_quorum_margin =
+        readiness.root_pageserver_total_write_quorum_margin;
+    status.root_pageserver_total_read_quorum_margin =
+        readiness.root_pageserver_total_read_quorum_margin;
     status.root_pageserver_first_health_reasons =
         readiness.root_pageserver_first_health_reasons.clone();
-    status.root_chunkserver_service_coverage_status =
-        readiness.root_chunkserver_service_coverage_status.clone();
-    status.root_writable_chunkserver_count = readiness.root_writable_chunkserver_count;
-    status.root_placement_eligible_chunkserver_count =
-        readiness.root_placement_eligible_chunkserver_count;
-    status.root_placement_ineligible_chunkserver_count =
-        readiness.root_placement_ineligible_chunkserver_count;
-    status.root_draining_chunkserver_count = readiness.root_draining_chunkserver_count;
-    status.root_capacity_floor_blocked_chunkserver_count =
-        readiness.root_capacity_floor_blocked_chunkserver_count;
-    status.root_frozen_chunkserver_count = readiness.root_frozen_chunkserver_count;
-    status.root_read_only_chunkserver_count = readiness.root_read_only_chunkserver_count;
-    status.root_raft_unwritable_chunkserver_count =
-        readiness.root_raft_unwritable_chunkserver_count;
-    status.root_chunkserver_total_reported_free_bytes =
-        readiness.root_chunkserver_total_reported_free_bytes;
-    status.root_chunkserver_min_free_bytes = readiness.root_chunkserver_min_free_bytes;
-    status.root_chunkserver_coverage_status = readiness.root_chunkserver_coverage_status.clone();
+    status.root_pageserver_service_coverage_status =
+        readiness.root_pageserver_service_coverage_status.clone();
+    status.root_writable_replicaserver_count = readiness.root_writable_replicaserver_count;
+    status.root_placement_eligible_replicaserver_count =
+        readiness.root_placement_eligible_replicaserver_count;
+    status.root_placement_ineligible_replicaserver_count =
+        readiness.root_placement_ineligible_replicaserver_count;
+    status.root_draining_replicaserver_count = readiness.root_draining_replicaserver_count;
+    status.root_capacity_floor_blocked_replicaserver_count =
+        readiness.root_capacity_floor_blocked_replicaserver_count;
+    status.root_frozen_replicaserver_count = readiness.root_frozen_replicaserver_count;
+    status.root_read_only_replicaserver_count = readiness.root_read_only_replicaserver_count;
+    status.root_raft_unwritable_replicaserver_count =
+        readiness.root_raft_unwritable_replicaserver_count;
+    status.root_replicaserver_total_reported_free_bytes =
+        readiness.root_replicaserver_total_reported_free_bytes;
+    status.root_replicaserver_min_free_bytes = readiness.root_replicaserver_min_free_bytes;
+    status.root_replicaserver_coverage_status = readiness.root_replicaserver_coverage_status.clone();
     status.root_replicaserver_health_ok_count = readiness.root_replicaserver_health_ok_count;
     status.root_replicaserver_health_degraded_count =
         readiness.root_replicaserver_health_degraded_count;
@@ -194,46 +194,46 @@ fn populate_placement_module_status(
         readiness.placement_metadata_external_coordinator_ready_metaserver_count;
     status.placement_metadata_control_proof_checksum =
         readiness.placement_metadata_control_proof_checksum.clone();
-    status.root_chunkserver_route_control_proof_count =
-        readiness.root_chunkserver_route_control_proof_count;
-    status.root_chunkserver_route_control_read_ready_count =
-        readiness.root_chunkserver_route_control_read_ready_count;
-    status.root_chunkserver_route_control_write_ready_count =
-        readiness.root_chunkserver_route_control_write_ready_count;
-    status.root_chunkserver_route_control_proof_checksum = readiness
-        .root_chunkserver_route_control_proof_checksum
+    status.root_pageserver_route_control_proof_count =
+        readiness.root_pageserver_route_control_proof_count;
+    status.root_pageserver_route_control_read_ready_count =
+        readiness.root_pageserver_route_control_read_ready_count;
+    status.root_pageserver_route_control_write_ready_count =
+        readiness.root_pageserver_route_control_write_ready_count;
+    status.root_pageserver_route_control_proof_checksum = readiness
+        .root_pageserver_route_control_proof_checksum
         .clone();
-    status.root_chunkserver_control_proof_count = readiness.root_chunkserver_control_proof_count;
-    status.root_chunkserver_control_read_ready_count =
-        readiness.root_chunkserver_control_read_ready_count;
-    status.root_chunkserver_control_write_ready_count =
-        readiness.root_chunkserver_control_write_ready_count;
-    status.root_chunkserver_control_proof_checksum =
-        readiness.root_chunkserver_control_proof_checksum.clone();
+    status.root_replicaserver_control_proof_count = readiness.root_replicaserver_control_proof_count;
+    status.root_replicaserver_control_read_ready_count =
+        readiness.root_replicaserver_control_read_ready_count;
+    status.root_replicaserver_control_write_ready_count =
+        readiness.root_replicaserver_control_write_ready_count;
+    status.root_replicaserver_control_proof_checksum =
+        readiness.root_replicaserver_control_proof_checksum.clone();
     status.placement_raft_status_checksum_format = readiness.placement_raft_status_checksum_format.clone();
     status.root_raft_status_checksum = readiness.root_raft_status_checksum.clone();
-    status.root_chunkserver_route_control_min_commit_index =
-        readiness.root_chunkserver_route_control_min_commit_index;
-    status.root_chunkserver_route_control_max_commit_index =
-        readiness.root_chunkserver_route_control_max_commit_index;
-    status.root_chunkserver_total_allocation_receipt_count =
-        readiness.root_chunkserver_total_allocation_receipt_count;
-    status.root_chunkserver_total_batch_allocation_receipt_count =
-        readiness.root_chunkserver_total_batch_allocation_receipt_count;
-    status.root_chunkserver_total_release_allocation_receipt_count =
-        readiness.root_chunkserver_total_release_allocation_receipt_count;
-    status.root_chunkserver_total_write_receipt_count =
-        readiness.root_chunkserver_total_write_receipt_count;
-    status.root_chunkserver_total_batch_write_receipt_count =
-        readiness.root_chunkserver_total_batch_write_receipt_count;
-    status.root_chunkserver_total_discard_receipt_count =
-        readiness.root_chunkserver_total_discard_receipt_count;
-    status.root_chunkserver_total_batch_discard_receipt_count =
-        readiness.root_chunkserver_total_batch_discard_receipt_count;
-    status.root_chunkserver_control_min_raft_commit_index =
-        readiness.root_chunkserver_control_min_raft_commit_index;
-    status.root_chunkserver_control_max_raft_commit_index =
-        readiness.root_chunkserver_control_max_raft_commit_index;
+    status.root_pageserver_route_control_min_commit_index =
+        readiness.root_pageserver_route_control_min_commit_index;
+    status.root_pageserver_route_control_max_commit_index =
+        readiness.root_pageserver_route_control_max_commit_index;
+    status.root_pageserver_total_allocation_receipt_count =
+        readiness.root_pageserver_total_allocation_receipt_count;
+    status.root_pageserver_total_batch_allocation_receipt_count =
+        readiness.root_pageserver_total_batch_allocation_receipt_count;
+    status.root_pageserver_total_release_allocation_receipt_count =
+        readiness.root_pageserver_total_release_allocation_receipt_count;
+    status.root_pageserver_total_write_receipt_count =
+        readiness.root_pageserver_total_write_receipt_count;
+    status.root_pageserver_total_batch_write_receipt_count =
+        readiness.root_pageserver_total_batch_write_receipt_count;
+    status.root_pageserver_total_discard_receipt_count =
+        readiness.root_pageserver_total_discard_receipt_count;
+    status.root_pageserver_total_batch_discard_receipt_count =
+        readiness.root_pageserver_total_batch_discard_receipt_count;
+    status.root_replicaserver_control_min_raft_commit_index =
+        readiness.root_replicaserver_control_min_raft_commit_index;
+    status.root_replicaserver_control_max_raft_commit_index =
+        readiness.root_replicaserver_control_max_raft_commit_index;
     status.placement_metadata_control_max_last_applied_mutation_commit_index =
         readiness.placement_metadata_control_max_last_applied_mutation_commit_index;
     status.placement_metadata_control_max_apply_commit_lag =

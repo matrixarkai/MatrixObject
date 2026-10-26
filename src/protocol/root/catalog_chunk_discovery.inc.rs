@@ -10,12 +10,12 @@ pub struct CatalogChunkEndpointDiscovery {
     pub disabled_endpoint_indexes: BTreeSet<usize>,
     pub min_free_bytes: u64,
     pub active_replicaserver_count: u64,
-    pub writable_chunkserver_count: u64,
-    pub draining_chunkserver_count: u64,
-    pub capacity_floor_blocked_chunkserver_count: u64,
-    pub frozen_chunkserver_count: u64,
-    pub read_only_chunkserver_count: u64,
-    pub raft_unwritable_chunkserver_count: u64,
+    pub writable_replicaserver_count: u64,
+    pub draining_replicaserver_count: u64,
+    pub capacity_floor_blocked_replicaserver_count: u64,
+    pub frozen_replicaserver_count: u64,
+    pub read_only_replicaserver_count: u64,
+    pub raft_unwritable_replicaserver_count: u64,
     pub coverage_status: String,
 }
 
@@ -70,27 +70,27 @@ impl CatalogChunkEndpointDiscovery {
         );
         fields.insert(
             "writable_chunkserver_count".to_string(),
-            self.writable_chunkserver_count.to_string(),
+            self.writable_replicaserver_count.to_string(),
         );
         fields.insert(
             "draining_chunkserver_count".to_string(),
-            self.draining_chunkserver_count.to_string(),
+            self.draining_replicaserver_count.to_string(),
         );
         fields.insert(
             "capacity_floor_blocked_chunkserver_count".to_string(),
-            self.capacity_floor_blocked_chunkserver_count.to_string(),
+            self.capacity_floor_blocked_replicaserver_count.to_string(),
         );
         fields.insert(
             "frozen_chunkserver_count".to_string(),
-            self.frozen_chunkserver_count.to_string(),
+            self.frozen_replicaserver_count.to_string(),
         );
         fields.insert(
             "read_only_chunkserver_count".to_string(),
-            self.read_only_chunkserver_count.to_string(),
+            self.read_only_replicaserver_count.to_string(),
         );
         fields.insert(
             "raft_unwritable_chunkserver_count".to_string(),
-            self.raft_unwritable_chunkserver_count.to_string(),
+            self.raft_unwritable_replicaserver_count.to_string(),
         );
         fields.insert("coverage_status".to_string(), self.coverage_status.clone());
         fields
