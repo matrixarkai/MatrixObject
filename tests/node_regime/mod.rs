@@ -289,7 +289,7 @@ pub mod sockets {
             if !line.starts_with("ESTAB") {
                 continue;
             }
-            // `users:(("replica_server",pid=12345,fd=9))`
+            // `users:(("chunkserver",pid=12345,fd=9))`
             let mut rest = line;
             while let Some(at) = rest.find("pid=") {
                 rest = &rest[at + 4..];

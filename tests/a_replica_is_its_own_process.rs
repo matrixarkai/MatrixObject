@@ -6,7 +6,7 @@
 //! # WHY THIS IS AN INTEGRATION TEST AND NOT A UNIT TEST
 //!
 //! The claim under test is about processes, so it cannot be made from inside one. These tests
-//! run the `replica_server` binary -- the same one an operator starts -- and the only way a
+//! run the `chunkserver` binary -- the same one an operator starts -- and the only way a
 //! test gets the path to a built binary is `env!("CARGO_BIN_EXE_...")`, which cargo defines
 //! for integration tests and not for unit tests.
 //!
@@ -126,7 +126,7 @@ use node_regime::{processes, sockets};
 #[cfg(target_os = "linux")]
 #[test]
 fn three_replica_processes_keep_the_data_when_one_is_killed() {
-    let binary = env!("CARGO_BIN_EXE_replica_server");
+    let binary = env!("CARGO_BIN_EXE_chunkserver");
     let token = node_regime::run_token("kill-test");
 
     let mut nodes: Vec<processes::NodeProcess> = (0..3)

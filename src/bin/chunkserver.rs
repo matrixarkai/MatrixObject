@@ -28,7 +28,7 @@
 //! The bound address is printed on stdout, flushed, before the accept loop starts:
 //!
 //! ```text
-//! replica_server listening on 127.0.0.1:41923 pid=81124 protocol_stamp=1 \
+//! chunkserver listening on 127.0.0.1:41923 pid=81124 protocol_stamp=1 \
 //!   threads=4 max_payload_bytes=8388608 auth=none storage=memory
 //! ```
 //!
@@ -119,7 +119,7 @@ fn main() {
     };
 
     println!(
-        "replica_server listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
+        "chunkserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \
          storage=memory",
         std::process::id()

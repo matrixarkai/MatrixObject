@@ -48570,3 +48570,82 @@ fn the_object_command_codec_carries_what_it_says_and_names_everything() {
     .wire_tag()
     .is_none());
 }
+
+/// Every binary the README tells a reader to run is a binary this crate has.
+///
+/// # WHY THIS EXISTS
+///
+/// The README says `cargo run --release --bin replica_server`. That name is prose: renaming the
+/// binary does not change it, does not fail to compile, and does not fail a test. The reader
+/// finds out instead, by running a command that no longer resolves.
+///
+/// The same shape has already cost this project once in this work. Four CI guards named tests
+/// that a rename had moved, and because `cargo test` exits 0 when a filter matches nothing,
+/// those guards RAN NOTHING WHILE PASSING. A name in a file that nothing checks is the same
+/// hazard whether the file is a workflow or a README.
+///
+/// # WHY THE BINARY LIST IS include_str! AND NOT A DIRECTORY LISTING
+///
+/// Each entry below pulls in that binary's source at COMPILE time. Renaming or removing one
+/// stops this test building, which forces a visit. A runtime directory listing would quietly
+/// report whatever happened to be on disk, and would pass after a rename while the README
+/// stayed wrong -- which is the failure this is for.
+#[test]
+fn every_binary_the_readme_tells_a_reader_to_run_exists() {
+    const README: &str = include_str!("../README.md");
+
+    // Compile-time proof that each of these sources is where this list says it is.
+    const BINARIES: &[(&str, &str)] = &[
+        ("metaserver", include_str!("bin/metaserver.rs")),
+        ("object_server", include_str!("bin/object_server.rs")),
+        ("chunkserver", include_str!("bin/chunkserver.rs")),
+        ("scale_bench", include_str!("bin/scale_bench.rs")),
+    ];
+    for (name, source) in BINARIES {
+        assert!(
+            !source.is_empty(),
+            "{name} is listed as a binary and its source is empty"
+        );
+    }
+
+    // Every `--bin NAME` the README spells out.
+    let mut named: Vec<&str> = Vec::new();
+    for (index, piece) in README.split("--bin ").enumerate() {
+        if index == 0 {
+            continue;
+        }
+        let name: &str = piece
+            .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+            .next()
+            .unwrap_or("");
+        if !name.is_empty() && !named.contains(&name) {
+            named.push(name);
+        }
+    }
+
+    // NON-VACUITY. A parse that found nothing would pass by having nothing to complain about,
+    // and that is the failure mode this whole class of guard keeps hitting.
+    assert!(
+        named.len() >= 2,
+        "only {} binaries parsed out of the README, so this is measuring its own parse",
+        named.len()
+    );
+    assert_eq!(
+        BINARIES.len(),
+        4,
+        "the binary list is meant to be every binary in src/bin"
+    );
+
+    let mut missing: Vec<&str> = Vec::new();
+    for name in &named {
+        if !BINARIES.iter().any(|(binary, _)| binary == name) {
+            missing.push(name);
+        }
+    }
+    missing.sort_unstable();
+    assert!(
+        missing.is_empty(),
+        "the README tells a reader to run {missing:?}, and this crate has no such binary -- \
+         either a binary was renamed without the README, or the README invented one"
+    );
+}

@@ -35,7 +35,7 @@ http-server = []
 # anything other than S3 -- so this is an alias and is documented as one rather than implying a
 # choice that does not exist.
 s3 = ["http-server"]
-# Replicas in other processes (`src/cluster`, and the `replica_server` binary).
+# Replicas in other processes (`src/cluster`, and the `chunkserver` binary).
 #
 # ON by default, and it adds NO dependencies -- the standard library alone, for the same
 # reason `http-server` gives. What the feature gates is a listener, a client and the quorum
