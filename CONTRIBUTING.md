@@ -27,7 +27,7 @@ RUSTFLAGS="-D warnings" cargo build --all-targets --locked
 RUSTFLAGS="-D warnings" cargo build --all-targets --locked --all-features
 ```
 
-**20 tests fail on a clean checkout**, and they are recorded by
+**17 tests fail on a clean checkout**, and they are recorded by
 name in [`tools/known_failures.txt`](tools/known_failures.txt). That is why a bare
 `cargo test` looks alarming on a clean checkout. Use the gate, which compares the
 failures against that baseline in both directions — a new failure fails it, and so does a

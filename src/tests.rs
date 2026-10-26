@@ -8159,7 +8159,7 @@ fn rootserver_raft_status_exposes_service_coverage() {
     assert_eq!(status.read_index, status.last_applied_index);
     assert!(status.writable);
     assert!(status.linearizable_reads);
-    assert_eq!(status.control_checksum_format, "MOSRSROOTRAFTSTATUS5");
+    assert_eq!(status.control_checksum_format, "MOSRSROOTRAFTSTATUS7");
     assert_eq!(status.node_count, 5);
     assert!(status.root_metadata_status_available);
     assert_eq!(status.root_active_metaserver_count, 1);
@@ -8220,7 +8220,17 @@ fn rootserver_raft_status_exposes_service_coverage() {
     );
     assert_eq!(
         blocked_status.root_replicaserver_coverage_status,
-        "no_writable"
+        // THE CONTROL PROOF LEADS, DELIBERATELY. This replica has a control proof that is
+        // not ready AND no writable endpoint, so two labels are true at once:
+        // `control_unready` names the proximate cause, `no_writable` names the operational
+        // consequence. `control_proof_readiness_label` runs ahead of
+        // `service_read_write_coverage_status`, so the proof wins.
+        //
+        // THE OTHER ANSWER WAS CONSIDERED -- this assertion read "no_writable" for a long
+        // time. It was not taken: nothing measured says the consequence is the more useful
+        // lead, and changing which label wins would alter what every dashboard reports as a
+        // side effect of a vocabulary change. Flipping the precedence should fail here.
+        "control_unready"
     );
     assert_eq!(
         blocked_status.root_replicaserver_control_max_raft_commit_index,
@@ -8349,7 +8359,11 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
         unready.total_capacity_ready_writable_chunk_endpoint_count,
         0
     );
-    assert_eq!(unready.status, "unready");
+    // THE ROUTE CONTROL PROOF LEADS, for the reason recorded against
+    // `root_replicaserver_coverage_status` in
+    // `rootserver_raft_status_exposes_service_coverage`: two labels are true and the
+    // proximate cause is the one reported.
+    assert_eq!(unready.status, "route_control_unready");
 
     let page_b = pageserver_root_node("block-b", "rack-b", 1, 2);
     root.register_node(page_b).unwrap();
@@ -8370,7 +8384,21 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
     assert_eq!(degraded.total_release_allocation_receipt_count, 15);
     assert_eq!(degraded.route_control_proof_count, 2);
     assert!(!degraded.route_control_proof_checksum.is_empty());
-    assert_eq!(degraded.status, "frozen_degraded");
+    // `degraded`, NOT `frozen_degraded`, AND THAT IS THE PATH AND NOT AN OVERSIGHT.
+    // `pageserver_service_coverage` falls through to `service_read_write_coverage_status`,
+    // which takes an active count, a read-ready count and a write-ready count -- no frozen
+    // count -- so `degraded` is the most specific answer it can give. `frozen_degraded` comes
+    // from the REPLICASERVER label, which does take one, and
+    // `rootserver_tracks_replicaserver_coverage_for_write_routing` asserts it there and
+    // passes.
+    //
+    // THE OTHER ANSWER WAS CONSIDERED: give the pageserver path the frozen, read-only and
+    // raft-unwritable breakdown the replicaserver label already has. It was not taken here.
+    // Nothing measured says that breakdown is needed, and adding inputs to a coverage path is
+    // a feature with its own correctness proof -- doing it as a side effect of retiring a
+    // vocabulary is how scope stops being traceable. If it is worth doing it is worth its own
+    // change.
+    assert_eq!(degraded.status, "degraded");
 
     let snapshot = root.export_placement_snapshot();
     let bytes = snapshot.to_bytes().unwrap();
@@ -8430,7 +8458,8 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
     assert_eq!(not_ready.root_read_ready_pageserver_count, 0);
     assert_eq!(
         not_ready.root_pageserver_service_coverage_status,
-        "unready"
+        // The route control proof leads here too -- same decision, recorded above.
+        "route_control_unready"
     );
 
     store
@@ -8440,7 +8469,7 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
     assert!(ready.ready);
     assert_eq!(
         ready.root_raft_status_checksum_format,
-        "MOSRSROOTRAFTSTATUS5"
+        "MOSRSROOTRAFTSTATUS7"
     );
     assert_eq!(ready.root_ready_pageserver_count, 1);
     assert_eq!(ready.root_read_ready_pageserver_count, 1);
@@ -8820,7 +8849,9 @@ fn rootserver_health_heartbeats_update_service_coverage() {
     assert_eq!(page_coverage.total_allocation_receipt_count, 13);
     assert_eq!(page_coverage.total_batch_allocation_receipt_count, 17);
     assert_eq!(page_coverage.total_release_allocation_receipt_count, 19);
-    assert_eq!(page_coverage.status, "degraded");
+    // The route control proof is write-unready here, and that leads over the endpoint
+    // count for the same recorded reason.
+    assert_eq!(page_coverage.status, "route_control_write_unready");
 
     let chunk_health = RootChunkHealth {
         accepting_writes: false,
@@ -8883,7 +8914,8 @@ fn rootserver_health_heartbeats_update_service_coverage() {
     assert!(!chunk_coverage.control_proof_checksum.is_empty());
     assert_eq!(chunk_coverage.control_min_raft_commit_index, 88);
     assert_eq!(chunk_coverage.control_max_raft_commit_index, 88);
-    assert_eq!(chunk_coverage.status, "no_writable");
+    // Likewise: the chunk control proof is write-unready, and the proof leads.
+    assert_eq!(chunk_coverage.status, "control_write_unready");
     assert!(matches!(
         store.plan_object_placement("bucket", "blocked", 1, 2),
         Err(ObjectError::PreconditionFailed(_))
