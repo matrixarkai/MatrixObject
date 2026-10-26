@@ -29,8 +29,9 @@ pub(crate) fn validate_catalog_route(
 }
 
 impl CatalogChunkRegistration {
-    /// The route binding checksum this build can verify but does not yet emit.
-    pub fn catalog_route_binding_checksum(&self) -> String {
+    /// The route checksum this build emits: the binding form, whose discriminating
+    /// term is a dedicated constant rather than the node kind.
+    pub fn catalog_route_checksum(&self) -> String {
         catalog_route_binding_checksum(
             CATALOG_CHUNK_ROUTE_DISCRIMINATOR,
             &self.node,
@@ -40,7 +41,9 @@ impl CatalogChunkRegistration {
         )
     }
 
-    pub fn catalog_route_checksum(&self) -> String {
+    /// The retired kind-derived form. Kept ONLY so a checksum written by a build that
+    /// shipped before the binding form still verifies; nothing emits it.
+    pub fn legacy_kind_route_checksum(&self) -> String {
         catalog_route_checksum(
             "chunkserver",
             &self.node,
@@ -58,7 +61,7 @@ impl CatalogChunkRegistration {
             "chunkserver",
             &[
                 &self.catalog_route_checksum(),
-                &self.catalog_route_binding_checksum(),
+                &self.legacy_kind_route_checksum(),
             ],
             expected_checksum,
         )
@@ -116,6 +119,7 @@ impl CatalogChunkRegistration {
     pub fn to_control_fields(&self) -> BTreeMap<String, String> {
         catalog_registration_fields(
             "chunkserver",
+            CATALOG_CHUNK_ROUTE_DISCRIMINATOR,
             &self.node,
             &self.catalog_source,
             &self.catalog_endpoint,

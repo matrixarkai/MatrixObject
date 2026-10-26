@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 pub(crate) fn catalog_registration_fields(
     service_kind: &str,
+    route_discriminator: &str,
     node: &PlacementNode,
     catalog_source: &str,
     catalog_endpoint: &str,
@@ -21,12 +22,12 @@ pub(crate) fn catalog_registration_fields(
     );
     fields.insert(
         "catalog_route_checksum_format".to_string(),
-        CATALOG_ROUTE_CHECKSUM_FORMAT.to_string(),
+        CATALOG_ROUTE_BINDING_CHECKSUM_FORMAT.to_string(),
     );
     fields.insert(
         "catalog_route_checksum".to_string(),
-        catalog_route_checksum(
-            service_kind,
+        catalog_route_binding_checksum(
+            route_discriminator,
             node,
             catalog_source,
             catalog_endpoint,
