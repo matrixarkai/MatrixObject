@@ -7,7 +7,7 @@ impl MatrixMetaService {
             ..PlacementPageServerServiceCoverage::default()
         };
         for node in self.nodes.values() {
-            if node.service_kind != "blockserver"
+            if !node.serves_page_tier()
                 || !node.data_eligible
                 || !node.online
                 || node.draining
@@ -200,7 +200,7 @@ impl MatrixMetaService {
                 .nodes
                 .values()
                 .filter(|node| {
-                    node.service_kind == "blockserver"
+                    node.serves_page_tier()
                         && node.data_eligible
                         && node.online
                         && !node.draining

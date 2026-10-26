@@ -55,7 +55,7 @@ impl MatrixObjectStore {
         let mut skipped_write_not_ready = 0u64;
         let mut skipped_read_not_ready = 0u64;
         for node in self.meta_service.list_nodes() {
-            if node.service_kind != "blockserver"
+            if !node.serves_page_tier()
                 || !node.data_eligible
                 || !node.online
                 || node.draining
