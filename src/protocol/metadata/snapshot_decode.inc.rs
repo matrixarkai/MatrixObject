@@ -304,6 +304,7 @@ impl MetaSnapshot {
                     leader_lease: None,
                     leader_lease_receipts: BTreeMap::new(),
                     coordinator_config: MetadataCoordinatorConfig::default(),
+                    rewrote_retired_spellings: false,
                 },
             )
         };
@@ -367,6 +368,10 @@ impl MetaSnapshot {
             || !has_coordinator_config
             || !has_coordinator_config_receipts
             || !has_placement_roster
+            // A RETIRED NODE-KIND SPELLING REWRITTEN ON THE WAY IN changes the material the
+            // checksum is taken over, whatever the version. This is the one clause here that
+            // is not about a version at all.
+            || placement_roster.rewrote_retired_spellings
         {
             snapshot.checksum = snapshot.checksum_material_hash();
         }

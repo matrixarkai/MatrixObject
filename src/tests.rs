@@ -7706,7 +7706,7 @@ fn rootserver_leader_lease_is_fenced_and_snapshotted() {
     root.register_node(RootNode {
         node_id: "root-a".to_string(),
         endpoint: "root-a.local:9100".to_string(),
-        service_kind: "rootserver".to_string(),
+        service_kind: "metaserver".to_string(),
         failure_domain: "rack-a".to_string(),
         metadata_eligible: false,
         data_eligible: false,
@@ -7728,7 +7728,7 @@ fn rootserver_leader_lease_is_fenced_and_snapshotted() {
     root.register_node(RootNode {
         node_id: "root-b".to_string(),
         endpoint: "root-b.local:9100".to_string(),
-        service_kind: "rootserver".to_string(),
+        service_kind: "metaserver".to_string(),
         failure_domain: "rack-b".to_string(),
         metadata_eligible: false,
         data_eligible: false,
@@ -7821,7 +7821,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         .register_root_node(RootNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
-            service_kind: "rootserver".to_string(),
+            service_kind: "metaserver".to_string(),
             failure_domain: "rack-root".to_string(),
             metadata_eligible: false,
             data_eligible: false,
@@ -7977,7 +7977,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         .register_root_node(RootNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
-            service_kind: "rootserver".to_string(),
+            service_kind: "metaserver".to_string(),
             failure_domain: "rack-root".to_string(),
             metadata_eligible: false,
             data_eligible: false,
@@ -8052,7 +8052,7 @@ fn distributed_readiness_uses_root_observed_metaserver_coverage() {
         .register_root_node(RootNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
-            service_kind: "rootserver".to_string(),
+            service_kind: "metaserver".to_string(),
             failure_domain: "rack-root".to_string(),
             metadata_eligible: false,
             data_eligible: false,
@@ -8146,7 +8146,7 @@ fn rootserver_raft_status_exposes_service_coverage() {
     root.register_node(RootNode {
         node_id: "root-a".to_string(),
         endpoint: "root-a.local:9100".to_string(),
-        service_kind: "rootserver".to_string(),
+        service_kind: "metaserver".to_string(),
         failure_domain: "rack-root".to_string(),
         metadata_eligible: false,
         data_eligible: false,
@@ -8328,7 +8328,7 @@ fn rootserver_tracks_page_allocator_shard_coverage() {
         .register_root_node(RootNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
-            service_kind: "rootserver".to_string(),
+            service_kind: "metaserver".to_string(),
             failure_domain: "rack-root".to_string(),
             metadata_eligible: false,
             data_eligible: false,
@@ -8455,7 +8455,7 @@ fn rootserver_tracks_pageserver_service_coverage_for_write_routing() {
         .register_root_node(RootNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
-            service_kind: "rootserver".to_string(),
+            service_kind: "metaserver".to_string(),
             failure_domain: "rack-root".to_string(),
             metadata_eligible: false,
             data_eligible: false,
@@ -8657,7 +8657,7 @@ fn rootserver_tracks_replicaserver_coverage_for_write_routing() {
         .register_root_node(RootNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
-            service_kind: "rootserver".to_string(),
+            service_kind: "metaserver".to_string(),
             failure_domain: "rack-root".to_string(),
             metadata_eligible: false,
             data_eligible: false,
@@ -9886,7 +9886,7 @@ fn distributed_put_uses_root_placement_and_releases_capacity() {
         .register_root_node(RootNode {
             node_id: "root-a".to_string(),
             endpoint: "root-a.local:9100".to_string(),
-            service_kind: "rootserver".to_string(),
+            service_kind: "metaserver".to_string(),
             failure_domain: "rack-root".to_string(),
             metadata_eligible: false,
             data_eligible: false,
@@ -27888,7 +27888,7 @@ fn raft_backed_store_replays_root_leader_lease() {
     let root_a = RootNode {
         node_id: "root-a".to_string(),
         endpoint: "root-a.local:9100".to_string(),
-        service_kind: "rootserver".to_string(),
+        service_kind: "metaserver".to_string(),
         failure_domain: "rack-a".to_string(),
         metadata_eligible: false,
         data_eligible: false,
@@ -46825,25 +46825,15 @@ fn the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_loa
         other => panic!("a draining metaserver must not take the lease, got {other:?}"),
     }
 
-    // ---- A SNAPSHOT THAT GAVE THE LEASE TO THE RETIRED ROOT NODE STILL LOADS ----
-    // This is the compatibility half. A store written before the lease moved carries a lease
-    // whose leader is a `rootserver` node, and the decode gate must accept it -- refusing to
-    // load an existing store is not a retirement, it is a break.
-    let mut older = MatrixMetaService::new();
-    older.register_node(control_node("root-a", "rootserver")).unwrap();
-    let old_lease = older
-        .campaign_leader("root-a", 5_000, 1_000)
-        .expect("the retired kind can still hold a lease, so an old store can be reproduced");
-    assert_eq!(old_lease.leader_node_id, "root-a");
-    let bytes = older.export_placement_snapshot().to_bytes().unwrap();
-
-    let mut restored = MatrixMetaService::new();
-    restored
-        .install_placement_snapshot_bytes(&bytes)
-        .expect("a stored lease held by the retired root node must still decode");
-    let restored_lease = restored.leader_lease().expect("the lease survived the load");
-    assert_eq!(restored_lease.leader_node_id, "root-a");
-    assert_eq!(restored_lease.epoch, old_lease.epoch);
+    // ---- THE COMPATIBILITY HALF MOVED, AND HAD TO ----
+    // It used to live here: register a node of the retired kind, campaign a lease with it,
+    // round trip, assert the lease survived. That can no longer be written, because this
+    // build refuses to campaign a lease for the retired kind at all -- which is the point of
+    // the change that moved it.
+    //
+    // So it is now `a_stored_lease_held_under_the_retired_spelling_still_loads`, against bytes
+    // captured from the build that could still produce one. That is strictly stronger: it
+    // reads an artefact this build cannot write, rather than reproducing one in process.
 }
 
 /// Every field of a roster node's page health that the snapshot BYTES carry is also covered
@@ -47997,5 +47987,117 @@ fn a_store_written_before_the_roster_had_one_home_still_loads() {
             .is_empty(),
         "a fresh store was expected to have an empty roster, so the comparison above is \
          between a populated roster and an empty one"
+    );
+}
+
+/// A stored lease held by a node recorded under the retired control-plane spelling.
+///
+/// # WHY THIS IS A STORED FIXTURE AND NOT A ROUND TRIP
+///
+/// The leader-lease predicate used to name two spellings so that a store written before the
+/// control plane folded would still load. Carrying a retired spelling in every predicate does
+/// not scale -- every predicate about every kind would have to carry every spelling, and one
+/// that forgot would be wrong only for old stores -- so the spelling is rewritten once, where
+/// the bytes are read, and the predicate names one kind.
+///
+/// That means this case can no longer be reproduced in process: this build will not campaign a
+/// lease for the retired kind. These 1,882 bytes were captured from the build that still
+/// would, and committed. Nothing here produced them.
+#[test]
+fn a_stored_lease_held_under_the_retired_spelling_still_loads() {
+    const STORED: &[&str] = &[
+        "0b000000000000004d4f5352534d4554413138010000000000000001000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000000000000000000000040420f000000000040420f000000000010",
+        "27000000000000000000040000000040420f000000000040420f000000000040420f000000000040420f00000000",
+        "00e80300000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000d00000000000000656d6265646465642d72616674000000000000",
+        "00001d000000000000002f6d61747269786f626a65637473746f72652f6d65746173657276657210270000000000",
+        "00010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000001000000000000000100000000000000090000000000000063",
+        "6f6e74726f6c2d610900000000000000636f6e74726f6c2d611400000000000000636f6e74726f6c2d612e6c6f63",
+        "616c3a393030300a00000000000000726f6f7473657276657206000000000000007261636b2d6101000000000000",
+        "00000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000",
+        "00000000000000000000000100000000000000010000000000000000000000000000000100000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000000000000000000000000000d00000000000000656d6265646465",
+        "642d7261667400000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000000000000000040420f0000000000010000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000001000000000000000000000000000000010000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000700000000000000756e6b6e6f776e0000000000000000000000000000000000",
+        "00000000000000000000000000000001000000000000000900000000000000636f6e74726f6c2d61010000000000",
+        "00000100000000000000e903000000000000e80300000000000000000000000000000d00000000000000656d6265",
+        "646465642d7261667400000000000000001d000000000000002f6d61747269786f626a65637473746f72652f6d65",
+        "7461736572766572102700000000000001000000000000001800000000000000666e76316136343a333037666433",
+        "333331663136386330321800000000000000666e76316136343a65383236363532356238373666643566",
+    ];
+    let hex: String = STORED.concat();
+    let bytes: Vec<u8> = (0..hex.len() / 2)
+        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("hex"))
+        .collect();
+    assert_eq!(bytes.len(), 1882, "the fixture is not the length it was captured at");
+
+    // THE FIXTURE REALLY CARRIES THE RETIRED SPELLING. Without this it could have been
+    // regenerated by a build that no longer writes it, and would then prove nothing.
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("rootserver"),
+        "this fixture is supposed to be a store recorded under the retired spelling"
+    );
+
+    let snapshot = MetaSnapshot::from_bytes(&bytes).expect(
+        "a store whose control-plane node carries the retired spelling must still load, or \
+         retiring a name broke every store that used it",
+    );
+
+    // IT READS AS THE SURVIVING KIND NOW, and still holds the lease.
+    let node = snapshot
+        .placement_nodes
+        .get("control-a")
+        .expect("the node the fixture was captured with");
+    assert_eq!(
+        node.service_kind, "metaserver",
+        "the retired spelling should have been rewritten on the way in"
+    );
+    let lease = snapshot
+        .placement_leader_lease
+        .as_ref()
+        .expect("the lease the fixture was captured with");
+    assert_eq!(lease.leader_node_id, "control-a", "the lease lost its holder");
+    assert_eq!(lease.epoch, 1);
+    snapshot
+        .validate()
+        .expect("and the rewritten roster has to satisfy the rules, lease rules included");
+
+    // AND THE LIVE PREDICATE IS NOT SIMPLY PERMISSIVE: the retired spelling is refused in
+    // memory, which is what says the rewrite above did the work rather than the predicate
+    // having stayed as it was.
+    let mut still_retired = node.clone();
+    still_retired.service_kind = "rootserver".to_string();
+    assert!(
+        !is_control_plane_leader_candidate(&still_retired),
+        "an in-memory node of the retired kind must not be a leader candidate, or the rewrite \
+         on read is unnecessary and this test proves nothing"
+    );
+    assert!(
+        is_control_plane_leader_candidate(node),
+        "and the rewritten node must be one, or the assertion above passes for the wrong reason"
     );
 }

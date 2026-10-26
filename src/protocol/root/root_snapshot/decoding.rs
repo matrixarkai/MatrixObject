@@ -24,6 +24,7 @@ impl RootSnapshot {
             leader_lease,
             leader_lease_receipts,
             coordinator_config,
+            rewrote_retired_spellings,
         } = read_catalog_roster(&mut cursor, features, next_commit_index)?;
         let checksum = cursor.read_string()?;
         let checksum_end = cursor.position();
@@ -38,7 +39,7 @@ impl RootSnapshot {
                 "root snapshot byte envelope checksum mismatch".to_string(),
             ));
         }
-        let snapshot = Self {
+        let mut snapshot = Self {
             nodes,
             placements,
             leader_lease,
@@ -47,6 +48,13 @@ impl RootSnapshot {
             next_commit_index,
             checksum,
         };
+        // A REWRITTEN SPELLING MEANS A DIFFERENT CHECKSUM MATERIAL, and the stored value
+        // was taken over the spelling as written, which this build can no longer produce. So
+        // it is re-derived. What still covers those bytes is the byte envelope checksum,
+        // verified above before any of this was decoded.
+        if rewrote_retired_spellings {
+            snapshot.checksum = snapshot.checksum_material_hash();
+        }
         snapshot.validate()?;
         Ok(snapshot)
     }
@@ -76,6 +84,13 @@ pub(crate) struct CatalogRoster {
     pub(crate) leader_lease: Option<RootLeaderLease>,
     pub(crate) leader_lease_receipts: BTreeMap<String, RootLeaderLeaseReceipt>,
     pub(crate) coordinator_config: MetadataCoordinatorConfig,
+    /// Whether a retired node-kind spelling was rewritten while reading.
+    ///
+    /// NOT DURABLE, and not part of the roster: it is an outcome of this particular decode.
+    /// A caller that stamps a checksum over the roster has to re-stamp when this is set,
+    /// because the stored checksum was taken over the spelling as written and this build can
+    /// no longer reconstruct that material.
+    pub(crate) rewrote_retired_spellings: bool,
 }
 
 /// Read a roster back out of the bytes `append_catalog_roster` wrote.
@@ -95,7 +110,18 @@ pub(crate) fn read_catalog_roster(
     features: RootSnapshotDecodeFeatures,
     fallback_commit_index: u64,
 ) -> Result<CatalogRoster, ObjectError> {
-    let nodes = read_root_snapshot_nodes(cursor, features)?;
+    let mut nodes = read_root_snapshot_nodes(cursor, features)?;
+    // RETIRED SPELLINGS ARE REWRITTEN HERE, once, rather than carried in every predicate that
+    // asks what kind a node is. This is the only place a roster is decoded, which is what
+    // makes one rewrite enough.
+    let mut rewrote_retired_spellings = false;
+    for node in nodes.values_mut() {
+        let current = current_service_kind_spelling(&node.service_kind);
+        if current != node.service_kind {
+            node.service_kind = current.to_string();
+            rewrote_retired_spellings = true;
+        }
+    }
     let mut placements = BTreeMap::new();
     for _ in 0..cursor.read_count("root snapshot placement count")? {
         let map_object_id = ObjectId {
@@ -190,5 +216,6 @@ pub(crate) fn read_catalog_roster(
         leader_lease,
         leader_lease_receipts,
         coordinator_config,
+        rewrote_retired_spellings,
     })
 }
