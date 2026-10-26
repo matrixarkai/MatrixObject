@@ -46825,3 +46825,210 @@ fn the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_loa
     assert_eq!(restored_lease.leader_node_id, "root-a");
     assert_eq!(restored_lease.epoch, old_lease.epoch);
 }
+
+/// Every field of a roster node's page health that the snapshot BYTES carry is also covered
+/// by the snapshot's CHECKSUM.
+///
+/// # WHY THIS EXISTS, AND WHAT IT FOUND
+///
+/// A `RootSnapshot` is encoded twice, independently: once into the bytes that go to disk, and
+/// once into the material its checksum is taken over. Both are built from the struct, so they
+/// can drift -- and a field that the bytes carry while the material omits it is a field no
+/// checksum protects. A flipped byte in it decodes to a different value and still validates.
+///
+/// Two fields were in exactly that state: `raft_writable_chunk_endpoint_count` and
+/// `raft_readable_chunk_endpoint_count`. They had been written to the bytes and read back
+/// since `has_root_page_raft_endpoint_counts` arrived, and they appeared in NONE of the
+/// fourteen checksum materials.
+///
+/// # WHY THE TWO ENCODINGS ARE NOT COLLAPSED INTO ONE
+///
+/// That would be the better fix and it is not available: the material's field order differs
+/// from the byte encoder's, and reordering the material would change every stored checksum --
+/// which is a break, not a fix. So the pair stays, and this is the guard on it.
+///
+/// # COMPLETENESS IS COMPILER-ENFORCED
+///
+/// The destructuring below names every field with no `..`, so a field added to
+/// `RootPageHealth` does not compile until someone has been here and decided whether the
+/// checksum should cover it. A remembered list is how the two fields above went missing.
+#[test]
+fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
+    let RootPageHealth {
+        ready,
+        read_ready,
+        route_control_checksum,
+        route_control_commit_index,
+        chunk_endpoint_count,
+        write_quorum,
+        read_quorum,
+        writable_chunk_endpoint_count,
+        healthy_chunk_endpoint_count,
+        raft_writable_chunk_endpoint_count,
+        raft_readable_chunk_endpoint_count,
+        capacity_ready_writable_chunk_endpoint_count,
+        quarantined_chunk_replicas,
+        chunk_capacity_bytes,
+        chunk_capacity_free_bytes,
+        chunk_metadata_dirty_endpoint_count,
+        chunk_metadata_dirty_mutations,
+        chunk_metadata_checkpoint_interval,
+        deferred_metadata_checkpoint_endpoint_count,
+        deferred_metadata_checkpoint_requests,
+        deferred_metadata_checkpoint_runs,
+        chunk_capacity_rejected_writes,
+        replica_service_mode_rejected_mutations,
+        chunk_physical_write_count,
+        chunk_physical_write_bytes,
+        chunk_physical_discard_range_count,
+        chunk_physical_discard_bytes,
+        total_reclaimable_bytes,
+        total_trailing_trim_bytes,
+        total_fragmented_chunk_count,
+        total_fragmented_discarded_bytes,
+        allocation_receipt_count,
+        batch_allocation_receipt_count,
+        release_allocation_receipt_count,
+        write_receipt_count,
+        batch_write_receipt_count,
+        discard_receipt_count,
+        batch_discard_receipt_count
+    } = RootPageHealth::default();
+    // Bound only so that adding a field breaks this test rather than slipping past it.
+    let _ = (ready,
+        read_ready,
+        route_control_checksum,
+        route_control_commit_index,
+        chunk_endpoint_count,
+        write_quorum,
+        read_quorum,
+        writable_chunk_endpoint_count,
+        healthy_chunk_endpoint_count,
+        raft_writable_chunk_endpoint_count,
+        raft_readable_chunk_endpoint_count,
+        capacity_ready_writable_chunk_endpoint_count,
+        quarantined_chunk_replicas,
+        chunk_capacity_bytes,
+        chunk_capacity_free_bytes,
+        chunk_metadata_dirty_endpoint_count,
+        chunk_metadata_dirty_mutations,
+        chunk_metadata_checkpoint_interval,
+        deferred_metadata_checkpoint_endpoint_count,
+        deferred_metadata_checkpoint_requests,
+        deferred_metadata_checkpoint_runs,
+        chunk_capacity_rejected_writes,
+        replica_service_mode_rejected_mutations,
+        chunk_physical_write_count,
+        chunk_physical_write_bytes,
+        chunk_physical_discard_range_count,
+        chunk_physical_discard_bytes,
+        total_reclaimable_bytes,
+        total_trailing_trim_bytes,
+        total_fragmented_chunk_count,
+        total_fragmented_discarded_bytes,
+        allocation_receipt_count,
+        batch_allocation_receipt_count,
+        release_allocation_receipt_count,
+        write_receipt_count,
+        batch_write_receipt_count,
+        discard_receipt_count,
+        batch_discard_receipt_count);
+
+    fn snapshot_with(health: RootPageHealth) -> RootSnapshot {
+        let mut node = RootNode {
+            node_id: "block-a".to_string(),
+            endpoint: "block-a.local:9100".to_string(),
+            service_kind: "blockserver".to_string(),
+            failure_domain: "rack-a".to_string(),
+            metadata_eligible: false,
+            data_eligible: true,
+            gateway_eligible: false,
+            metadata_value_bytes: 0,
+            capacity_bytes: 1024,
+            used_bytes: 0,
+            committed_bytes: 0,
+            draining: false,
+            online: true,
+            last_heartbeat_ms: 1,
+            page_allocator_shard_index: 0,
+            page_allocator_shard_count: 1,
+            meta_health: RootMetaHealth::default(),
+            page_health: RootPageHealth::default(),
+            chunk_health: RootChunkHealth::default(),
+        };
+        node.page_health = health;
+        let mut nodes = BTreeMap::new();
+        nodes.insert(node.node_id.clone(), node);
+        RootSnapshot {
+            nodes,
+            placements: BTreeMap::new(),
+            leader_lease: None,
+            leader_lease_receipts: BTreeMap::new(),
+            coordinator_config: MetadataCoordinatorConfig::default(),
+            next_commit_index: 1,
+            checksum: String::new(),
+        }
+    }
+
+    let baseline = snapshot_with(RootPageHealth::default()).checksum_material_hash();
+    let mutators: Vec<(&str, fn(&mut RootPageHealth))> = vec![
+        ("ready", |health: &mut RootPageHealth| { health.ready = !health.ready; }),
+        ("read_ready", |health: &mut RootPageHealth| { health.read_ready = !health.read_ready; }),
+        ("route_control_checksum", |health: &mut RootPageHealth| { health.route_control_checksum.push('x'); }),
+        ("route_control_commit_index", |health: &mut RootPageHealth| { health.route_control_commit_index = health.route_control_commit_index.wrapping_add(7); }),
+        ("chunk_endpoint_count", |health: &mut RootPageHealth| { health.chunk_endpoint_count = health.chunk_endpoint_count.wrapping_add(7); }),
+        ("write_quorum", |health: &mut RootPageHealth| { health.write_quorum = health.write_quorum.wrapping_add(7); }),
+        ("read_quorum", |health: &mut RootPageHealth| { health.read_quorum = health.read_quorum.wrapping_add(7); }),
+        ("writable_chunk_endpoint_count", |health: &mut RootPageHealth| { health.writable_chunk_endpoint_count = health.writable_chunk_endpoint_count.wrapping_add(7); }),
+        ("healthy_chunk_endpoint_count", |health: &mut RootPageHealth| { health.healthy_chunk_endpoint_count = health.healthy_chunk_endpoint_count.wrapping_add(7); }),
+        ("raft_writable_chunk_endpoint_count", |health: &mut RootPageHealth| { health.raft_writable_chunk_endpoint_count = health.raft_writable_chunk_endpoint_count.wrapping_add(7); }),
+        ("raft_readable_chunk_endpoint_count", |health: &mut RootPageHealth| { health.raft_readable_chunk_endpoint_count = health.raft_readable_chunk_endpoint_count.wrapping_add(7); }),
+        ("capacity_ready_writable_chunk_endpoint_count", |health: &mut RootPageHealth| { health.capacity_ready_writable_chunk_endpoint_count = health.capacity_ready_writable_chunk_endpoint_count.wrapping_add(7); }),
+        ("quarantined_chunk_replicas", |health: &mut RootPageHealth| { health.quarantined_chunk_replicas = health.quarantined_chunk_replicas.wrapping_add(7); }),
+        ("chunk_capacity_bytes", |health: &mut RootPageHealth| { health.chunk_capacity_bytes = health.chunk_capacity_bytes.wrapping_add(7); }),
+        ("chunk_capacity_free_bytes", |health: &mut RootPageHealth| { health.chunk_capacity_free_bytes = health.chunk_capacity_free_bytes.wrapping_add(7); }),
+        ("chunk_metadata_dirty_endpoint_count", |health: &mut RootPageHealth| { health.chunk_metadata_dirty_endpoint_count = health.chunk_metadata_dirty_endpoint_count.wrapping_add(7); }),
+        ("chunk_metadata_dirty_mutations", |health: &mut RootPageHealth| { health.chunk_metadata_dirty_mutations = health.chunk_metadata_dirty_mutations.wrapping_add(7); }),
+        ("chunk_metadata_checkpoint_interval", |health: &mut RootPageHealth| { health.chunk_metadata_checkpoint_interval = health.chunk_metadata_checkpoint_interval.wrapping_add(7); }),
+        ("deferred_metadata_checkpoint_endpoint_count", |health: &mut RootPageHealth| { health.deferred_metadata_checkpoint_endpoint_count = health.deferred_metadata_checkpoint_endpoint_count.wrapping_add(7); }),
+        ("deferred_metadata_checkpoint_requests", |health: &mut RootPageHealth| { health.deferred_metadata_checkpoint_requests = health.deferred_metadata_checkpoint_requests.wrapping_add(7); }),
+        ("deferred_metadata_checkpoint_runs", |health: &mut RootPageHealth| { health.deferred_metadata_checkpoint_runs = health.deferred_metadata_checkpoint_runs.wrapping_add(7); }),
+        ("chunk_capacity_rejected_writes", |health: &mut RootPageHealth| { health.chunk_capacity_rejected_writes = health.chunk_capacity_rejected_writes.wrapping_add(7); }),
+        ("replica_service_mode_rejected_mutations", |health: &mut RootPageHealth| { health.replica_service_mode_rejected_mutations = health.replica_service_mode_rejected_mutations.wrapping_add(7); }),
+        ("chunk_physical_write_count", |health: &mut RootPageHealth| { health.chunk_physical_write_count = health.chunk_physical_write_count.wrapping_add(7); }),
+        ("chunk_physical_write_bytes", |health: &mut RootPageHealth| { health.chunk_physical_write_bytes = health.chunk_physical_write_bytes.wrapping_add(7); }),
+        ("chunk_physical_discard_range_count", |health: &mut RootPageHealth| { health.chunk_physical_discard_range_count = health.chunk_physical_discard_range_count.wrapping_add(7); }),
+        ("chunk_physical_discard_bytes", |health: &mut RootPageHealth| { health.chunk_physical_discard_bytes = health.chunk_physical_discard_bytes.wrapping_add(7); }),
+        ("total_reclaimable_bytes", |health: &mut RootPageHealth| { health.total_reclaimable_bytes = health.total_reclaimable_bytes.wrapping_add(7); }),
+        ("total_trailing_trim_bytes", |health: &mut RootPageHealth| { health.total_trailing_trim_bytes = health.total_trailing_trim_bytes.wrapping_add(7); }),
+        ("total_fragmented_chunk_count", |health: &mut RootPageHealth| { health.total_fragmented_chunk_count = health.total_fragmented_chunk_count.wrapping_add(7); }),
+        ("total_fragmented_discarded_bytes", |health: &mut RootPageHealth| { health.total_fragmented_discarded_bytes = health.total_fragmented_discarded_bytes.wrapping_add(7); }),
+        ("allocation_receipt_count", |health: &mut RootPageHealth| { health.allocation_receipt_count = health.allocation_receipt_count.wrapping_add(7); }),
+        ("batch_allocation_receipt_count", |health: &mut RootPageHealth| { health.batch_allocation_receipt_count = health.batch_allocation_receipt_count.wrapping_add(7); }),
+        ("release_allocation_receipt_count", |health: &mut RootPageHealth| { health.release_allocation_receipt_count = health.release_allocation_receipt_count.wrapping_add(7); }),
+        ("write_receipt_count", |health: &mut RootPageHealth| { health.write_receipt_count = health.write_receipt_count.wrapping_add(7); }),
+        ("batch_write_receipt_count", |health: &mut RootPageHealth| { health.batch_write_receipt_count = health.batch_write_receipt_count.wrapping_add(7); }),
+        ("discard_receipt_count", |health: &mut RootPageHealth| { health.discard_receipt_count = health.discard_receipt_count.wrapping_add(7); }),
+        ("batch_discard_receipt_count", |health: &mut RootPageHealth| { health.batch_discard_receipt_count = health.batch_discard_receipt_count.wrapping_add(7); }),
+    ];
+    assert!(
+        mutators.len() >= 38,
+        "the guard should cover every page health field, and it lists {}",
+        mutators.len()
+    );
+    let mut uncovered: Vec<&str> = Vec::new();
+    for (name, mutate) in &mutators {
+        let mut health = RootPageHealth::default();
+        mutate(&mut health);
+        if snapshot_with(health).checksum_material_hash() == baseline {
+            uncovered.push(name);
+        }
+    }
+    assert!(
+        uncovered.is_empty(),
+        "{} page health field(s) are carried by the snapshot bytes and covered by no \
+         checksum, so a flipped byte in them would validate: {:?}",
+        uncovered.len(),
+        uncovered
+    );
+}

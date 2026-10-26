@@ -141,11 +141,14 @@ impl RootSnapshot {
             receipt.verify_proof_checksum()?;
         }
         let mut checksum_compatibility_names = vec![
-            "current", "v26", "v22", "v21", "v20", "v18", "v19", "v16", "v11", "v10", "v9", "v8",
-            "v7", "v2",
+            "current", "v32", "v26", "v22", "v21", "v20", "v18", "v19", "v16", "v11", "v10",
+            "v9", "v8", "v7", "v2",
         ];
         let mut accepted_checksums = vec![
             self.checksum_material_hash(),
+            // THE FORMAT THAT WAS CURRENT BEFORE THE PAGE RAFT COUNTS JOINED THE MATERIAL.
+            // Every snapshot written by an earlier build stored this one.
+            self.v32_checksum_material_hash(),
             self.v26_checksum_material_hash(),
             self.v22_checksum_material_hash(),
             self.v21_checksum_material_hash(),

@@ -135,7 +135,7 @@ impl RootSnapshot {
 
     pub(crate) fn checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, true,
         )
     }
 }

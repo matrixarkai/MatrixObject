@@ -3,43 +3,54 @@
 impl RootSnapshot {
     fn v26_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, true, true, true, false, false, false, false,
+            true, true, true, true, true, true, false, false, false, false, false,
         )
     }
 
     fn v22_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, true, true, false, false, false, false, false,
+            true, true, true, true, true, false, false, false, false, false, false,
         )
     }
 
     fn v21_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, true, false, false, false, false, false, false,
+            true, true, true, true, false, false, false, false, false, false, false,
         )
     }
 
     fn v20_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, false, false, false, false, false, false, false,
+            true, true, true, false, false, false, false, false, false, false, false,
         )
     }
 
     fn v19_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, false, false, false, false, false, false, false, false,
+            true, true, false, false, false, false, false, false, false, false, false,
         )
     }
 
     fn v18_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, false, false, false, false, false, false, false, false, false,
+            true, false, false, false, false, false, false, false, false, false, false,
+        )
+    }
+
+    /// The format that was CURRENT until the page raft endpoint counts joined the material.
+    ///
+    /// A snapshot written by any build before that change stored this hash, so it has to stay
+    /// in the accepted list -- otherwise closing the coverage hole would make every existing
+    /// store fail to load, which is a break and not a fix.
+    fn v32_checksum_material_hash(&self) -> String {
+        self.checksum_material_hash_with_chunk_control(
+            true, true, true, true, true, true, true, true, true, true, false,
         )
     }
 
     fn v16_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            false, false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
@@ -55,6 +66,13 @@ impl RootSnapshot {
         include_page_extended_service_health: bool,
         include_page_reclaim_health: bool,
         include_replica_service_health: bool,
+        // THE ELEVENTH, AND IT CLOSES A HOLE RATHER THAN ADDING A FIELD. The two page-health
+        // raft endpoint counts have been written into the snapshot BYTES since
+        // `has_root_page_raft_endpoint_counts` arrived, and they appeared in NONE of the
+        // fourteen checksum materials -- so a flipped byte in either decoded to a different
+        // number and still validated. Guarded by its own flag so every older format keeps
+        // producing exactly the bytes it always did.
+        include_page_raft_endpoint_counts: bool,
     ) -> String {
         let mut material = Vec::with_capacity(self.encoded_size_hint());
         append_u64(&mut material, self.next_commit_index);
@@ -93,6 +111,20 @@ impl RootSnapshot {
                 &mut material,
                 node.page_health.healthy_chunk_endpoint_count,
             );
+            if include_page_raft_endpoint_counts {
+                // THE SAME ORDER THE BYTES USE, so that the two encodings at least agree
+                // about this pair. They cannot be collapsed into one codec: the material's
+                // field order differs from the byte encoder's elsewhere, and reordering it
+                // would change every stored checksum.
+                append_u64(
+                    &mut material,
+                    node.page_health.raft_writable_chunk_endpoint_count,
+                );
+                append_u64(
+                    &mut material,
+                    node.page_health.raft_readable_chunk_endpoint_count,
+                );
+            }
             append_u64(
                 &mut material,
                 node.page_health
