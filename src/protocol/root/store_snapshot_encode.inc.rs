@@ -3,11 +3,9 @@
 impl StoreSnapshot {
     pub fn to_bytes(&self) -> Result<Vec<u8>, ObjectError> {
         self.validate()?;
-        let mut out = Vec::with_capacity(self.encoded_size_hint(
-            self.meta_snapshot.encoded_size_hint(),
-            self.root_snapshot.encoded_size_hint(),
-        ));
-        append_string(&mut out, "MOSRSSTORE27");
+        let mut out =
+            Vec::with_capacity(self.encoded_size_hint(self.meta_snapshot.encoded_size_hint()));
+        append_string(&mut out, "MOSRSSTORE28");
         append_u64(&mut out, self.options.chunk_size);
         append_u64(&mut out, self.options.max_extent_bytes);
         append_u64(&mut out, self.options.page_size);
@@ -35,7 +33,6 @@ impl StoreSnapshot {
         append_u64(&mut out, self.options.object_manifest_checkpoint_interval);
         append_u64(&mut out, self.options.object_metadata_checkpoint_interval);
         append_string(&mut out, &self.options.metaserver_catalog_endpoints);
-        append_string(&mut out, &self.options.rootserver_catalog_endpoint);
         append_u64(&mut out, self.next_chunk_id);
         append_u64(&mut out, self.next_upload_sequence);
         append_u64(&mut out, self.next_object_change_sequence);
@@ -143,13 +140,6 @@ impl StoreSnapshot {
         out[meta_length_offset..meta_length_offset + std::mem::size_of::<u64>()]
             .copy_from_slice(&meta_len.to_le_bytes());
 
-        let root_length_offset = out.len();
-        append_u64(&mut out, 0);
-        let root_start = out.len();
-        self.root_snapshot.append_to_bytes(&mut out);
-        let root_len = (out.len() - root_start) as u64;
-        out[root_length_offset..root_length_offset + std::mem::size_of::<u64>()]
-            .copy_from_slice(&root_len.to_le_bytes());
         append_u64(&mut out, self.applied_raft_receipts.len() as u64);
         for (index, receipt) in &self.applied_raft_receipts {
             append_u64(&mut out, *index);
@@ -188,7 +178,7 @@ impl StoreSnapshot {
         Ok(out)
     }
 
-    fn encoded_size_hint(&self, meta_snapshot_bytes: usize, root_snapshot_bytes: usize) -> usize {
+    fn encoded_size_hint(&self, meta_snapshot_bytes: usize) -> usize {
         const FIXED_HEADER_BYTES: usize = 512;
         const U64: usize = std::mem::size_of::<u64>();
         fn strings_size<'a, I, S>(values: I) -> usize
@@ -424,7 +414,6 @@ impl StoreSnapshot {
             .saturating_add(strings_size(self.replica_endpoints.iter()));
         FIXED_HEADER_BYTES
             .saturating_add(meta_snapshot_bytes)
-            .saturating_add(root_snapshot_bytes)
             .saturating_add(payload_bytes)
             .saturating_add(metadata_bytes)
             .saturating_add(self.bucket_retention.len().saturating_mul(16))

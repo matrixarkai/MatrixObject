@@ -136,7 +136,6 @@ impl MatrixObjectStore {
             chunks: self.chunks.clone(),
             payloads,
             meta_snapshot: self.meta_service.export_snapshot(),
-            root_snapshot: self.meta_service.export_placement_snapshot(),
             next_chunk_id: self.next_chunk_id,
             next_upload_sequence: self.next_upload_sequence,
             logical_written_bytes: self.logical_written_bytes,
@@ -696,8 +695,9 @@ impl MatrixObjectStore {
         self.object_changes = snapshot.object_changes;
         self.object_change_cursors = snapshot.object_change_cursors;
         self.next_object_change_sequence = snapshot.next_object_change_sequence;
+        self.meta_service
+            .install_placement_roster(&snapshot.meta_snapshot)?;
         self.meta_service.install_snapshot(snapshot.meta_snapshot)?;
-        self.meta_service.install_placement_snapshot(snapshot.root_snapshot)?;
         self.chunks = snapshot.chunks;
         self.payloads = payload_index;
         self.chunk_service = chunk_service;

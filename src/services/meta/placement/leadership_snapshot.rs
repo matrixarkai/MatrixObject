@@ -301,6 +301,35 @@ impl MatrixMetaService {
         Ok(chunk)
     }
 
+    /// Take the roster out of the metadata snapshot that now carries it.
+    ///
+    /// # WHY THIS IS NOT `install_placement_snapshot`
+    ///
+    /// That one takes a snapshot of its own, which is still how a roster arrives over the
+    /// wire. This one reads the fields the metadata snapshot carries, so loading a store does
+    /// not have to build a placement snapshot it would immediately take apart -- and would
+    /// have to stamp a checksum for, purely to satisfy a validator.
+    ///
+    /// It validates with the same shared rules either way.
+    pub fn install_placement_roster(&mut self, snapshot: &MetaSnapshot) -> Result<(), ObjectError> {
+        validate_catalog_roster(
+            &snapshot.placement_nodes,
+            &snapshot.placements,
+            &snapshot.placement_leader_lease,
+            &snapshot.placement_leader_lease_receipts,
+            &snapshot.placement_coordinator_config,
+            snapshot.placement_commit_index,
+        )?;
+        self.invalidate_snapshot_export_cache();
+        self.nodes = snapshot.placement_nodes.clone();
+        self.placements = snapshot.placements.clone();
+        self.leader_lease = snapshot.placement_leader_lease.clone();
+        self.leader_lease_receipts = snapshot.placement_leader_lease_receipts.clone();
+        self.placement_coordinator_config = snapshot.placement_coordinator_config.clone();
+        self.placement_commit_index = snapshot.placement_commit_index;
+        Ok(())
+    }
+
     pub fn install_placement_snapshot(&mut self, snapshot: RootSnapshot) -> Result<(), ObjectError> {
         snapshot.validate()?;
         self.invalidate_snapshot_export_cache();

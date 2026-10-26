@@ -7418,7 +7418,17 @@ fn rootserver_plans_capacity_and_persists_placements() {
     let too_large = store.plan_object_placement("bucket", "huge", 80, 2);
     assert!(matches!(too_large, Err(ObjectError::PreconditionFailed(_))));
     let snapshot = store.export_snapshot().unwrap();
-    snapshot.root_snapshot.validate().unwrap();
+    // The roster lives in the metadata snapshot now. Same rules, called through the shared
+    // validator instead of through a snapshot of its own -- the assertion is kept, not dropped.
+    validate_catalog_roster(
+        &snapshot.meta_snapshot.placement_nodes,
+        &snapshot.meta_snapshot.placements,
+        &snapshot.meta_snapshot.placement_leader_lease,
+        &snapshot.meta_snapshot.placement_leader_lease_receipts,
+        &snapshot.meta_snapshot.placement_coordinator_config,
+        snapshot.meta_snapshot.placement_commit_index,
+    )
+    .unwrap();
     let mut restored = MatrixObjectStore::new(test_options()).unwrap();
     restored.install_snapshot(snapshot).unwrap();
     assert_eq!(
@@ -11311,7 +11321,17 @@ fn rootserver_migrates_placement_with_fences_and_snapshots() {
     ));
 
     let snapshot = store.export_snapshot().unwrap();
-    snapshot.root_snapshot.validate().unwrap();
+    // The roster lives in the metadata snapshot now. Same rules, called through the shared
+    // validator instead of through a snapshot of its own -- the assertion is kept, not dropped.
+    validate_catalog_roster(
+        &snapshot.meta_snapshot.placement_nodes,
+        &snapshot.meta_snapshot.placements,
+        &snapshot.meta_snapshot.placement_leader_lease,
+        &snapshot.meta_snapshot.placement_leader_lease_receipts,
+        &snapshot.meta_snapshot.placement_coordinator_config,
+        snapshot.meta_snapshot.placement_commit_index,
+    )
+    .unwrap();
     let mut restored = MatrixObjectStore::new(test_options()).unwrap();
     restored.install_snapshot(snapshot).unwrap();
     assert_eq!(
@@ -29872,7 +29892,7 @@ fn snapshot_round_trips_validated_versioned_state() {
     }
     let snapshot_bytes = assembled.expect("final store snapshot");
     let mut snapshot_cursor = SnapshotByteCursor::new(&snapshot_bytes);
-    assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSSTORE27");
+    assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSSTORE28");
     let mut chunk_restored = MatrixObjectStore::new(test_options()).unwrap();
     chunk_restored
         .install_snapshot_bytes(&snapshot_bytes)
@@ -34079,7 +34099,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSROOT32",
         "MOSRSROOTRAFTSTATUS7",
         "MOSRSSTORE",
-        "MOSRSSTORE27",
+        "MOSRSSTORE28",
         "MXOS-BLOCK-ALLOCATION-BATCH-RECEIPT-PAGE-PROOF1",
         "MXOS-BLOCK-ALLOCATION-BATCH-RECEIPT-PROOF1",
         "MXOS-BLOCK-ALLOCATION-RECEIPT-PAGE-PROOF1",
@@ -47828,5 +47848,154 @@ fn the_metadata_snapshot_encoding_does_not_move_without_a_decision() {
     assert_eq!(
         hash, 0x589e1821c3978baf,
         "the metadata snapshot encoding changed content"
+    );
+}
+
+/// 2,559 bytes of a real store, written by the build before the roster had one home.
+///
+/// # WHY THIS FIXTURE IS THE WHOLE ARGUMENT
+///
+/// Dropping the nested placement snapshot changes what a stored store means: the roster it
+/// used to carry separately now has to arrive through the metadata snapshot instead. The one
+/// thing that may not happen is an existing store becoming unreadable, and the only way to
+/// know is to read one.
+///
+/// These bytes were captured by running the previous build end to end -- a store created, a
+/// roster installed into it, the whole thing exported and encoded -- and committed. Nothing
+/// in this build produced them. They are version twenty-seven, and the metadata snapshot
+/// nested inside them is version SEVENTEEN, which is the shape that predates the fold
+/// entirely. So this exercises both conversions at once: the metadata snapshot decoding to an
+/// empty roster, and the store decoder folding the nested one in over the top.
+#[test]
+fn a_store_written_before_the_roster_had_one_home_still_loads() {
+    const V27: &[&str] = &[
+        "0c000000000000004d4f53525353544f524532371000000000000000040000000000000004000000000000000200",
+        "000000000000030000000000000002000000000000000200000000000000a086010000000000e803000000000000",
+        "40000000000000004000000000000000400000000000000040000000000000004000000000000000400000000000",
+        "00004000000000000000080000000000000000000000000000000100000000000000010000000000000000000000",
+        "00000000000000000000000001000000000000000100000000000000010000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000000000000000000000000000000000000000c5010000000000000b00",
+        "0000000000004d4f5352534d45544131370100000000000000010000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000040420f000000000040420f0000000000102700",
+        "0000000000000000040000000040420f000000000040420f000000000040420f000000000040420f0000000000e8",
+        "03000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000d00000000000000656d6265646465642d726166740000000000000000",
+        "1d000000000000002f6d61747269786f626a65637473746f72652f6d657461736572766572102700000000000001",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "000000000000000000000000000000000000001800000000000000666e76316136343a3264356537353566303837",
+        "34376363611800000000000000666e76316136343a32656466613561643230626238663463b2050000000000000b",
+        "000000000000004d4f535253524f4f543332010000000000000001000000000000000700000000000000626c6f63",
+        "6b2d610700000000000000626c6f636b2d611200000000000000626c6f636b2d612e6c6f63616c3a393130300b00",
+        "000000000000626c6f636b73657276657206000000000000007261636b2d61000000000000000001000000000000",
+        "00000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000",
+        "00000001000000000000000100000000000000000000000000000001000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000d00000000000000656d6265646465642d726166740000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000040420f00000000000100000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000010000000000000000000000000000000100000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "0000000000000700000000000000756e6b6e6f776e00000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000d00000000000000656d6265646465642d726166740000",
+        "0000000000001d000000000000002f6d61747269786f626a65637473746f72652f6d657461736572766572102700",
+        "000000000001000000000000001800000000000000666e76316136343a3762363438373739383130616362626418",
+        "00000000000000666e76316136343a38363930643935383632663931653439000000000000000001000000000000",
+        "0005000000000000006c6f63616c0100000000000000010000000000000000000000000000000000000400000000",
+        "00004000000000000200000000000000020000000000000003000000000000000d000000000000006c6f63616c2d",
+        "6368756e6b2d300d000000000000006c6f63616c2d6368756e6b2d310d000000000000006c6f63616c2d6368756e",
+        "6b2d3200000000000000001800000000000000666e76316136343a32336339333336623466653737616363180000",
+        "0000000000666e76316136343a62346237383233386631356437663563",
+    ];
+    let hex: String = V27.concat();
+    let bytes: Vec<u8> = (0..hex.len() / 2)
+        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("hex"))
+        .collect();
+    assert_eq!(bytes.len(), 2559, "the fixture is not the length it was captured at");
+
+    // THE FIXTURE IS WHAT IT CLAIMS. Without this, a fixture quietly regenerated by the
+    // current build would pass everything below and prove nothing at all.
+    let mut cursor = SnapshotByteCursor::new(&bytes);
+    assert_eq!(
+        cursor.read_string().expect("stamp"),
+        "MOSRSSTORE27",
+        "this fixture is supposed to be the version BEFORE the roster had one home"
+    );
+
+    let snapshot = StoreSnapshot::from_bytes(&bytes).expect(
+        "a store written before the fold must still load, or this change made every existing \
+         store unreadable",
+    );
+
+    // THE ROSTER ARRIVED, through the metadata snapshot rather than beside it.
+    assert_eq!(
+        snapshot.meta_snapshot.placement_nodes.len(),
+        1,
+        "the roster nested in those bytes did not reach the metadata snapshot"
+    );
+    let node = snapshot
+        .meta_snapshot
+        .placement_nodes
+        .get("block-a")
+        .expect("the node the fixture was captured with");
+    assert_eq!(node.endpoint, "block-a.local:9100", "the node arrived but not intact");
+    assert_eq!(node.service_kind, "blockserver");
+    assert_eq!(node.capacity_bytes, 4096);
+    assert_eq!(
+        snapshot.meta_snapshot.placement_commit_index, 1,
+        "the roster commit index did not survive the fold"
+    );
+    snapshot
+        .validate()
+        .expect("the converted store must satisfy every rule, roster rules included");
+
+    // AND THIS BUILD DOES NOT WRITE THESE BYTES.
+    let store = MatrixObjectStore::new(test_options()).unwrap();
+    let current = store
+        .export_snapshot()
+        .expect("a fresh store exports")
+        .to_bytes()
+        .expect("and encodes");
+    assert_ne!(
+        current, bytes,
+        "the fixture equals what this build writes, so it is no longer an older shape"
+    );
+    let mut current_cursor = SnapshotByteCursor::new(&current);
+    assert_eq!(
+        current_cursor.read_string().expect("stamp"),
+        "MOSRSSTORE28",
+        "this build is supposed to write the version after the fixture"
+    );
+    // NON-VACUOUS the other way too: the loaded fixture carries a roster and the fresh store
+    // does not, so the assertion above is not passing merely because two empty rosters differ
+    // in some unrelated byte.
+    assert!(
+        store
+            .export_snapshot()
+            .expect("a fresh store exports")
+            .meta_snapshot
+            .placement_nodes
+            .is_empty(),
+        "a fresh store was expected to have an empty roster, so the comparison above is \
+         between a populated roster and an empty one"
     );
 }

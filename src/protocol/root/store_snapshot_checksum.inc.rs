@@ -138,7 +138,6 @@ impl StoreSnapshot {
             append_bucket_cors_receipt(&mut material, receipt);
         }
         append_string(&mut material, &self.meta_snapshot.checksum);
-        append_string(&mut material, &self.root_snapshot.checksum);
         append_u64(&mut material, self.next_upload_sequence);
         append_u64(&mut material, self.next_object_change_sequence);
         for (object_id, metadata) in &self.objects {
@@ -189,6 +188,6 @@ impl StoreSnapshot {
     }
 
     fn checksum_material_size_hint(&self) -> usize {
-        self.encoded_size_hint(64, 64)
+        self.encoded_size_hint(64)
     }
 }
