@@ -115,7 +115,7 @@ pub(crate) fn root_catalog_liveness_receipt_checksum(
     etag(&material)
 }
 
-pub(crate) fn require_root_catalog_route_checksum(
+pub(crate) fn require_route_checksum_for_service(
     service_kind: &str,
     actual_checksum: &str,
     expected_checksum: &str,

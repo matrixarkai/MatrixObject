@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 pub trait CatalogControlFields {
     fn to_catalog_control_fields(&self) -> BTreeMap<String, String>;
-    fn require_root_catalog_route_checksum(
+    fn require_route_checksum(
         &self,
         expected_checksum: &str,
     ) -> Result<(), ObjectError>;
@@ -102,7 +102,7 @@ impl<T: CatalogControlFields> ProvenCatalogRegistration<T> {
         expected_checksum: &str,
     ) -> Result<(), ObjectError> {
         self.registration
-            .require_root_catalog_route_checksum(expected_checksum)
+            .require_route_checksum(expected_checksum)
     }
 
     pub fn into_route_fenced(self, expected_checksum: &str) -> Result<Self, ObjectError> {

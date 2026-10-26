@@ -15,7 +15,7 @@ impl CatalogObjectStoreRegistration {
         &self,
         expected_checksum: &str,
     ) -> Result<(), ObjectError> {
-        require_root_catalog_route_checksum(
+        require_route_checksum_for_service(
             "objectstore",
             &self.catalog_route_checksum(),
             expected_checksum,
@@ -87,7 +87,7 @@ impl CatalogControlFields for CatalogObjectStoreRegistration {
         self.to_control_fields()
     }
 
-    fn require_root_catalog_route_checksum(
+    fn require_route_checksum(
         &self,
         expected_checksum: &str,
     ) -> Result<(), ObjectError> {
