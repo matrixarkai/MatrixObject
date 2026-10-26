@@ -70,6 +70,41 @@ pub fn metaserver_snapshot_install_source_proof_report(
     }
 }
 
+/// Check an install source proof against the one this build computes.
+///
+/// # THE TWO COMPARISON CLAUSES CANNOT DIFFER AS THIS IS CURRENTLY WIRED
+///
+/// A KNOWN STATE, not an oversight. Measured on 2026-10-26:
+///
+///  1. This report is CONSTRUCTED in exactly two places, both of them the builder functions
+///     above it in this file.
+///  2. There is NO DECODER for it anywhere -- it has `to_control_fields` and no counterpart,
+///     so it is output-only and is never received from a peer, a frame or a stored byte.
+///  3. The two entry points that would accept an externally supplied `expected` --
+///     `install_root_snapshot_chunks_with_read_proof_source_report` and
+///     `install_raft_metadata_snapshot_chunks_with_read_proof_source_report` -- have ZERO
+///     callers. Each computes `actual` locally from the same report the caller passed.
+///
+/// RE-MEASURING (3) WILL FIND ONE EXTRA OCCURRENCE OF EACH NAME: this comment. It names both
+/// functions, so a grep for either now returns its definition and this line. That is the only
+/// difference between the counts above and what a fresh grep reports.
+///
+/// So `expected.format` and `expected.service` are, today, always the values this build just
+/// produced, and the two clauses comparing them cannot fail. The remaining clauses are NOT
+/// in that position: they check the CONTENT of the expected report -- an empty read-proof
+/// checksum, an empty fingerprint, a read index behind the commit index -- and those can fail
+/// on a report this build built.
+///
+/// # WHY IT IS LEFT THIS WAY
+///
+/// The fix is a real remote sender, not a caller invented to make the check reachable. When
+/// the consensus install path gains one, `expected` will arrive from somewhere else, the two
+/// comparisons will start meaning something, and the service label becomes a wire contract
+/// at that point -- which is also when renaming it stops being free. Whoever adds that sender
+/// inherits the question; until then there is nothing here to repair.
+///
+/// Retiring the control-plane vocabulary therefore does NOT touch the label this file passes:
+/// a name hashed into a checksum is a format change, and this one has no reader to break yet.
 pub(crate) fn verify_service_snapshot_install_source_proof_report(
     expected: &ServiceSnapshotInstallSourceProofReport,
     actual: &ServiceSnapshotInstallSourceProofReport,
