@@ -653,6 +653,15 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::a_replica_behind_on_only_a_later_page_is_refused_check_in did not run"; exit 1; }
 
+      - name: The root snapshot encoding is byte for byte what it was
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::the_root_snapshot_encoding_is_byte_for_byte_what_it_was -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::the_root_snapshot_encoding_is_byte_for_byte_what_it_was did not run"; exit 1; }
+
       # THESE FOUR RUN A BINARY, NOT A LIBRARY. Every guard above is `--lib`, which
       # never links an integration test, so the kill test below would be COMPILED by
       # the build job and RUN by nothing -- which is the state a measurement rots in.
