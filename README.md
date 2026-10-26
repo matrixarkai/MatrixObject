@@ -549,10 +549,10 @@ Until `src/cluster`, every replica in this store was an element of
 `Ok`. Three replicas were three `BTreeMap`s in one address space, which pays the full cost of
 three copies and buys none of what three copies are for: one process ending takes all three.
 
-`replica_server` is one replica in its own process, reachable over a socket:
+`chunkserver` is one replica in its own process, reachable over a socket:
 
 ```
-MATRIXOBJECT_REPLICA_ADDR=127.0.0.1:17301 cargo run --release --bin replica_server
+MATRIXOBJECT_REPLICA_ADDR=127.0.0.1:17301 cargo run --release --bin chunkserver
 ```
 
 | variable | default | meaning |

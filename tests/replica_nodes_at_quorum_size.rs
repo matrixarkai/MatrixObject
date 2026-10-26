@@ -279,7 +279,7 @@ fn the_majority_constructors_carry_a_majority_at_every_width() {
 fn five_replica_nodes_serve_at_exactly_a_quorum_and_refuse_one_below_it() {
     use node_regime::{processes, sockets};
 
-    let binary = env!("CARGO_BIN_EXE_replica_server");
+    let binary = env!("CARGO_BIN_EXE_chunkserver");
     let token = node_regime::run_token("quorum-size");
 
     let mut nodes: Vec<processes::NodeProcess> = (0..NODE_COUNT)

@@ -244,7 +244,7 @@ fn the_metaserver_node_stops_placement_and_not_reads() {
     use store::cluster::{majority, ReplicaClientOptions, ReplicaFanout, ReplicaPlacement};
 
     let meta_binary = env!("CARGO_BIN_EXE_metaserver");
-    let replica_binary = env!("CARGO_BIN_EXE_replica_server");
+    let replica_binary = env!("CARGO_BIN_EXE_chunkserver");
     let token = node_regime::run_token("metaserver-node");
 
     let mut meta_node = processes::start_metaserver(meta_binary, &token, ROSTER_NODES);
