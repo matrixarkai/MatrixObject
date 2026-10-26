@@ -84,7 +84,7 @@ impl MatrixObjectStore {
         Ok(metadata)
     }
 
-    pub fn copy_object_with_root_placement(
+    pub fn copy_object_with_placement(
         &mut self,
         source_bucket: &str,
         source_key: &str,

@@ -20,7 +20,7 @@ impl PlacementSnapshot {
             append_u64(&mut material, node.last_heartbeat_ms);
             append_u64(&mut material, node.page_allocator_shard_index);
             append_u64(&mut material, node.page_allocator_shard_count);
-            append_root_meta_health(&mut material, &node.meta_health);
+            append_placement_meta_health(&mut material, &node.meta_health);
             append_u64(&mut material, node.page_health.ready as u64);
             append_u64(&mut material, node.page_health.read_ready as u64);
             append_string(&mut material, &node.page_health.route_control_checksum);

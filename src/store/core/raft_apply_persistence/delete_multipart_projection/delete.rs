@@ -99,7 +99,7 @@ impl MatrixObjectStore {
         Ok(delete_marker)
     }
 
-    fn apply_delete_with_root_release(
+    fn apply_delete_with_placement_release(
         &mut self,
         bucket: String,
         key: String,
@@ -115,7 +115,7 @@ impl MatrixObjectStore {
             return Err(err);
         }
         let result =
-            self.apply_delete_with_root_release_inner(bucket, key, update_time_ms, if_match_etag);
+            self.apply_delete_with_placement_release_inner(bucket, key, update_time_ms, if_match_etag);
         match result {
             Ok(metadata) => match self.chunk_service.end_mutation_batch(&batch_id) {
                 Ok(_) => Ok(metadata),
@@ -133,7 +133,7 @@ impl MatrixObjectStore {
         }
     }
 
-    fn apply_delete_with_root_release_inner(
+    fn apply_delete_with_placement_release_inner(
         &mut self,
         bucket: String,
         key: String,
@@ -143,7 +143,7 @@ impl MatrixObjectStore {
         let previous = self.head_object(&bucket, &key)?;
         let metadata = self.apply_delete_inner(bucket, key, update_time_ms, if_match_etag)?;
         if !self.bucket_versioning.contains(previous.object_id.bucket.as_str()) {
-            self.release_root_placement_if_present(&previous.object_id, None);
+            self.release_placement_if_present(&previous.object_id, None);
         }
         Ok(metadata)
     }

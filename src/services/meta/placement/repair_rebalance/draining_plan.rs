@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
-    fn finalize_root_placement_repair_report(report: &mut PlacementRepairReport) {
+    fn finalize_placement_repair_report(report: &mut PlacementRepairReport) {
         report.repair_needed = report.repair_objects > 0;
         report.repair_can_apply =
             report.repair_needed && !report.has_more && report.failed_repairs == 0;
@@ -16,7 +16,7 @@ impl MatrixMetaService {
         };
     }
 
-    fn finalize_root_capacity_rebalance_report(report: &mut PlacementCapacityRebalanceReport) {
+    fn finalize_placement_capacity_rebalance_report(report: &mut PlacementCapacityRebalanceReport) {
         report.rebalance_needed = report.rebalance_objects > 0;
         report.rebalance_can_apply =
             report.rebalance_needed && !report.has_more && report.failed_rebalances == 0;
@@ -63,7 +63,7 @@ impl MatrixMetaService {
                 }
             }
         }
-        Self::finalize_root_placement_repair_report(&mut report);
+        Self::finalize_placement_repair_report(&mut report);
         report
     }
 
@@ -93,7 +93,7 @@ impl MatrixMetaService {
         max_objects: usize,
     ) -> PreparedPlacementRepair {
         let report = self.plan_draining_placement_repairs(max_objects);
-        let request_checksum = root_placement_repair_request_checksum(max_objects);
+        let request_checksum = placement_repair_request_checksum(max_objects);
         let mut prepared = PreparedPlacementRepair {
             max_objects,
             report,
@@ -103,7 +103,7 @@ impl MatrixMetaService {
             prepared_commit_index: self.placement_commit_index,
             raft_entry_checksum: String::new(),
         };
-        prepared.raft_entry_checksum = prepared_root_placement_repair_checksum(&prepared);
+        prepared.raft_entry_checksum = prepared_placement_repair_checksum(&prepared);
         prepared
     }
 

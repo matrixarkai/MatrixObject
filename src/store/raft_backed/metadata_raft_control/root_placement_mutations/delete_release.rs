@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_delete_with_root_release(
+    pub fn propose_delete_with_placement_release(
         &mut self,
         bucket: &str,
         key: &str,
@@ -16,7 +16,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_delete_with_root_release_fenced(
+    pub fn propose_delete_with_placement_release_fenced(
         &mut self,
         bucket: &str,
         key: &str,
@@ -53,7 +53,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_delete_with_root_release_fenced_with_read_proof_linearizable(
+    pub fn propose_delete_with_placement_release_fenced_with_read_proof_linearizable(
         &mut self,
         bucket: &str,
         key: &str,
@@ -61,7 +61,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         update_time_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenMetadataRead<ObjectDeleteReport>, ObjectError> {
-        self.propose_delete_with_root_release_fenced_with_read_proof_linearizable_committed_at(
+        self.propose_delete_with_placement_release_fenced_with_read_proof_linearizable_committed_at(
             bucket,
             key,
             if_match_etag,
@@ -72,7 +72,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_delete_with_root_release_with_route_proof_linearizable_fenced(
+    pub fn propose_delete_with_placement_release_with_route_proof_linearizable_fenced(
         &mut self,
         bucket: &str,
         key: &str,
@@ -80,7 +80,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         update_time_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenRouteFencedMetadataRead<ObjectDeleteReport>, ObjectError> {
-        self.propose_delete_with_root_release_with_route_proof_linearizable_fenced_committed_at(
+        self.propose_delete_with_placement_release_with_route_proof_linearizable_fenced_committed_at(
             bucket,
             key,
             if_match_etag,
@@ -91,7 +91,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_delete_with_root_release_with_route_proof_linearizable_fenced_committed_at(
+    pub fn propose_delete_with_placement_release_with_route_proof_linearizable_fenced_committed_at(
         &mut self,
         bucket: &str,
         key: &str,
@@ -103,7 +103,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     ) -> Result<ProvenRouteFencedMetadataRead<ObjectDeleteReport>, ObjectError> {
         let expected_checksum = expected_page_route_control_checksum.as_ref().to_string();
         let proven = self
-            .propose_delete_with_root_release_fenced_with_read_proof_linearizable_committed_at(
+            .propose_delete_with_placement_release_fenced_with_read_proof_linearizable_committed_at(
                 bucket,
                 key,
                 if_match_etag,
@@ -120,7 +120,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_delete_with_root_release_with_route_proof_from_meta_shard_fenced(
+    pub fn propose_delete_with_placement_release_with_route_proof_from_meta_shard_fenced(
         &mut self,
         bucket: &str,
         key: &str,
@@ -139,7 +139,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_shard_epoch,
             update_time_ms,
         )?;
-        self.propose_delete_with_root_release_with_route_proof_linearizable_fenced_committed_at(
+        self.propose_delete_with_placement_release_with_route_proof_linearizable_fenced_committed_at(
             bucket,
             key,
             if_match_etag,
@@ -150,7 +150,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_delete_with_root_release_fenced_with_read_proof_linearizable_committed_at(
+    pub fn propose_delete_with_placement_release_fenced_with_read_proof_linearizable_committed_at(
         &mut self,
         bucket: &str,
         key: &str,
@@ -166,7 +166,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let mut report = self.propose_delete_with_root_release_fenced(
+        let mut report = self.propose_delete_with_placement_release_fenced(
             bucket,
             key,
             if_match_etag,

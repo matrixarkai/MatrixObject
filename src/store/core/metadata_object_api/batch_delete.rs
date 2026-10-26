@@ -85,7 +85,7 @@ impl MatrixObjectStore {
                     Ok(admission) if !admission.can_accept => {
                         Err(ObjectError::PreconditionFailed(admission.partial_status))
                     }
-                    Ok(_) if release_root_placements => self.apply_delete_with_root_release(
+                    Ok(_) if release_root_placements => self.apply_delete_with_placement_release(
                         request.bucket.clone(),
                         request.key.clone(),
                         update_time_ms,

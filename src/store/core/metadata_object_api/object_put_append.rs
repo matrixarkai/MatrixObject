@@ -120,7 +120,7 @@ impl MatrixObjectStore {
         Ok(metadata)
     }
 
-    pub fn append_object_with_root_placement(
+    pub fn append_object_with_placement(
         &mut self,
         bucket: &str,
         key: &str,
@@ -132,7 +132,7 @@ impl MatrixObjectStore {
         let content_type = content_type.into();
         let update_time_ms = now_millis();
         if self.persistent_journal_path.is_empty() {
-            return self.apply_append_with_root_placement(
+            return self.apply_append_with_placement(
                 bucket.to_string(),
                 key.to_string(),
                 data,
@@ -153,7 +153,7 @@ impl MatrixObjectStore {
             true,
             Some(replica_count),
         );
-        let metadata = self.apply_append_with_root_placement(
+        let metadata = self.apply_append_with_placement(
             bucket.to_string(),
             key.to_string(),
             data,

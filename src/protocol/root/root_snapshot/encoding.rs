@@ -44,7 +44,7 @@ impl PlacementSnapshot {
         fn object_id_size(object_id: &ObjectId) -> usize {
             encoded_string_len(&object_id.bucket).saturating_add(encoded_string_len(&object_id.key))
         }
-        fn root_meta_health_size(health: &NodeMetaHealth) -> usize {
+        fn placement_meta_health_size(health: &NodeMetaHealth) -> usize {
             let proof = &health.control_proof;
             let effective_coordinator_backend = if proof.coordinator_backend.is_empty() {
                 if proof.external_coordinator_required {
@@ -69,12 +69,12 @@ impl PlacementSnapshot {
                 ))
                 .saturating_add(encoded_string_len(&health.route_cache.session_checksum))
         }
-        fn root_page_health_size(health: &NodePageHealth) -> usize {
+        fn placement_page_health_size(health: &NodePageHealth) -> usize {
             U64.saturating_mul(37).saturating_add(encoded_string_len(
                 &health.route_control_checksum,
             ))
         }
-        fn root_chunk_health_size(health: &NodeChunkHealth) -> usize {
+        fn placement_chunk_health_size(health: &NodeChunkHealth) -> usize {
             U64.saturating_mul(15)
                 .saturating_add(encoded_string_len(&health.service_mode))
                 .saturating_add(encoded_string_len(&health.control_proof_format))
@@ -89,9 +89,9 @@ impl PlacementSnapshot {
                 .saturating_add(encoded_string_len(&node.endpoint))
                 .saturating_add(encoded_string_len(&node.service_kind))
                 .saturating_add(encoded_string_len(&node.failure_domain))
-                .saturating_add(root_meta_health_size(&node.meta_health))
-                .saturating_add(root_page_health_size(&node.page_health))
-                .saturating_add(root_chunk_health_size(&node.chunk_health))
+                .saturating_add(placement_meta_health_size(&node.meta_health))
+                .saturating_add(placement_page_health_size(&node.page_health))
+                .saturating_add(placement_chunk_health_size(&node.chunk_health))
         }
         fn placement_size(object_id: &ObjectId, placement: &ObjectPlacement) -> usize {
             object_id_size(object_id)
@@ -181,7 +181,7 @@ impl PlacementSnapshot {
 /// The first caller still decides it from the stamp it is writing.
 ///
 /// The bytes are unchanged for the existing caller, and that is pinned rather than asserted:
-/// see `the_root_snapshot_encoding_is_byte_for_byte_what_it_was`, whose length and digest
+/// see `the_placement_snapshot_encoding_is_byte_for_byte_what_it_was`, whose length and digest
 /// were captured from the encoder before any of this moved.
 pub(crate) fn append_placement_roster(
     out: &mut Vec<u8>,
@@ -211,9 +211,9 @@ pub(crate) fn append_placement_roster(
         append_u64(out, node.last_heartbeat_ms);
         append_u64(out, node.page_allocator_shard_index);
         append_u64(out, node.page_allocator_shard_count);
-        append_root_meta_health(out, &node.meta_health);
-        append_root_page_health(out, &node.page_health);
-        append_root_chunk_health(out, &node.chunk_health, true, true, true);
+        append_placement_meta_health(out, &node.meta_health);
+        append_placement_page_health(out, &node.page_health);
+        append_placement_chunk_health(out, &node.chunk_health, true, true, true);
     }
     append_u64(out, placements.len() as u64);
     for (object_id, placement) in placements {

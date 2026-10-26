@@ -35,7 +35,7 @@ impl MatrixObjectStore {
                 update_time_ms,
                 options,
                 replica_count,
-            } => self.apply_append_with_root_placement(
+            } => self.apply_append_with_placement(
                 bucket,
                 key,
                 data,
@@ -73,7 +73,7 @@ impl MatrixObjectStore {
                 update_time_ms,
                 replica_count,
             } => {
-                let report = self.batch_put_objects_with_root_placement_at(
+                let report = self.batch_put_objects_with_placement_at(
                     requests,
                     max_items,
                     max_payload_bytes,
@@ -119,7 +119,7 @@ impl MatrixObjectStore {
                 update_time_ms,
                 options,
                 replica_count,
-            } => self.apply_copy_with_root_placement(
+            } => self.apply_copy_with_placement(
                 source_bucket,
                 source_key,
                 source_version,
@@ -154,7 +154,7 @@ impl MatrixObjectStore {
                 update_time_ms,
                 replica_count,
             } => {
-                let report = self.batch_copy_objects_with_root_placement(
+                let report = self.batch_copy_objects_with_placement(
                     requests,
                     max_items,
                     max_copied_bytes,
@@ -200,7 +200,7 @@ impl MatrixObjectStore {
                 storage_class,
                 update_time_ms,
                 replica_count,
-            } => self.apply_transition_object_with_root_placement(
+            } => self.apply_transition_object_with_placement(
                 bucket,
                 key,
                 storage_class,
@@ -226,7 +226,7 @@ impl MatrixObjectStore {
                 version,
                 update_time_ms,
                 replica_count,
-            } => self.apply_restore_object_version_with_root_placement(
+            } => self.apply_restore_object_version_with_placement(
                 bucket,
                 key,
                 version,
@@ -241,7 +241,7 @@ impl MatrixObjectStore {
                 update_time_ms,
                 options,
                 replica_count,
-            } => self.apply_put_with_root_placement(
+            } => self.apply_put_with_placement(
                 bucket,
                 key,
                 data,

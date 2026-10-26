@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_campaign_root_leader_idempotent(
+    pub fn propose_campaign_placement_leader_idempotent(
         &mut self,
         node_id: &str,
         ttl_ms: u64,
@@ -16,7 +16,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_renew_root_leader(
+    pub fn propose_renew_placement_leader(
         &mut self,
         node_id: &str,
         epoch: u64,
@@ -31,7 +31,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_renew_root_leader_idempotent(
+    pub fn propose_renew_placement_leader_idempotent(
         &mut self,
         node_id: &str,
         epoch: u64,

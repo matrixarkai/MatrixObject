@@ -7,14 +7,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.store.apply_raft_entry_owned(entry)
     }
 
-    pub fn propose_register_root_node(
+    pub fn propose_register_placement_node(
         &mut self,
         node: PlacementNode,
     ) -> Result<ObjectMetadata, ObjectError> {
         self.propose(ObjectCommand::RegisterRootNode { node })
     }
 
-    pub fn propose_heartbeat_root_node(
+    pub fn propose_heartbeat_placement_node(
         &mut self,
         node_id: &str,
         used_bytes: u64,
@@ -33,7 +33,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_heartbeat_root_page_health(
+    pub fn propose_heartbeat_placement_page_health(
         &mut self,
         node_id: &str,
         health: NodePageHealth,
@@ -46,7 +46,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_heartbeat_root_chunk_health(
+    pub fn propose_heartbeat_placement_chunk_health(
         &mut self,
         node_id: &str,
         health: NodeChunkHealth,
@@ -107,7 +107,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             now_ms,
             catalog_source,
         )?;
-        let receipt = self.propose_register_root_node(registration.node.clone())?;
+        let receipt = self.propose_register_placement_node(registration.node.clone())?;
         Ok(ProvenCatalogRegistration {
             registration,
             raft_receipts: vec![receipt],
@@ -219,7 +219,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             now_ms,
             catalog_source,
         )?;
-        let receipt = self.propose_heartbeat_root_node(
+        let receipt = self.propose_heartbeat_placement_node(
             node_id,
             registration.node.used_bytes,
             registration.node.capacity_bytes,
@@ -319,7 +319,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             now_ms,
             catalog_source,
         )?;
-        let receipt = self.propose_heartbeat_root_node(
+        let receipt = self.propose_heartbeat_placement_node(
             node_id,
             registration.node.used_bytes,
             registration.node.capacity_bytes,

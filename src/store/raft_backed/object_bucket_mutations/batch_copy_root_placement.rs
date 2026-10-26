@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_batch_copy_objects_with_root_placement(
+    pub fn propose_batch_copy_objects_with_placement(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -9,7 +9,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_count: usize,
         update_time_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.propose_batch_copy_objects_with_root_placement_fenced(
+        self.propose_batch_copy_objects_with_placement_fenced(
             requests,
             max_items,
             max_copied_bytes,
@@ -19,7 +19,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_batch_copy_objects_with_root_placement_fenced(
+    pub fn propose_batch_copy_objects_with_placement_fenced(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -41,7 +41,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_batch_copy_objects_with_root_placement_fenced_with_read_proof_linearizable(
+    pub fn propose_batch_copy_objects_with_placement_fenced_with_read_proof_linearizable(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -50,7 +50,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         update_time_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_batch_copy_objects_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+        self.propose_batch_copy_objects_with_placement_fenced_with_read_proof_linearizable_committed_at(
             requests,
             max_items,
             max_copied_bytes,
@@ -62,7 +62,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_batch_copy_objects_with_root_placement_with_route_proof_linearizable_fenced(
+    pub fn propose_batch_copy_objects_with_placement_with_route_proof_linearizable_fenced(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -71,7 +71,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         update_time_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenRouteFencedMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_batch_copy_objects_with_root_placement_with_route_proof_linearizable_fenced_committed_at(
+        self.propose_batch_copy_objects_with_placement_with_route_proof_linearizable_fenced_committed_at(
             requests,
             max_items,
             max_copied_bytes,
@@ -83,7 +83,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_batch_copy_objects_with_root_placement_with_route_proof_linearizable_fenced_committed_at(
+    pub fn propose_batch_copy_objects_with_placement_with_route_proof_linearizable_fenced_committed_at(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -101,7 +101,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
-            .propose_batch_copy_objects_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+            .propose_batch_copy_objects_with_placement_fenced_with_read_proof_linearizable_committed_at(
                 requests,
                 max_items,
                 max_copied_bytes,
@@ -119,7 +119,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_batch_copy_objects_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+    pub fn propose_batch_copy_objects_with_placement_fenced_with_read_proof_linearizable_committed_at(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -136,7 +136,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let metadata = self.propose_batch_copy_objects_with_root_placement_fenced(
+        let metadata = self.propose_batch_copy_objects_with_placement_fenced(
             requests,
             max_items,
             max_copied_bytes,
@@ -153,7 +153,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven_metadata_read(metadata, &readiness))
     }
 
-    pub fn propose_batch_copy_objects_with_root_placement_from_meta_shard(
+    pub fn propose_batch_copy_objects_with_placement_from_meta_shard(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -198,7 +198,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_required_read_index,
             min_commit_index,
         )?;
-        self.propose_batch_copy_objects_with_root_placement_fenced(
+        self.propose_batch_copy_objects_with_placement_fenced(
             requests,
             max_items,
             max_copied_bytes,
@@ -208,7 +208,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_batch_copy_objects_with_root_placement_with_read_proof_from_meta_shard(
+    pub fn propose_batch_copy_objects_with_placement_with_read_proof_from_meta_shard(
         &mut self,
         requests: Vec<ObjectCopyRequest>,
         max_items: usize,
@@ -238,7 +238,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 update_time_ms,
             )?;
         }
-        self.propose_batch_copy_objects_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+        self.propose_batch_copy_objects_with_placement_fenced_with_read_proof_linearizable_committed_at(
             requests,
             max_items,
             max_copied_bytes,

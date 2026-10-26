@@ -21,7 +21,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn expire_root_node_heartbeats(
+    pub fn expire_placement_node_heartbeats(
         &mut self,
         ttl_ms: u64,
         now_ms: u64,
@@ -30,7 +30,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn remove_root_node(
+    pub fn remove_placement_node(
         &mut self,
         node_id: &str,
         force: bool,

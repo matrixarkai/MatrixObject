@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    fn apply_root_placement_metadata_command(&mut self, command: ObjectCommand) -> Result<ObjectMetadata, ObjectError> {
+    fn apply_placement_metadata_command(&mut self, command: ObjectCommand) -> Result<ObjectMetadata, ObjectError> {
         match command {
             ObjectCommand::RepairDrainingRootPlacements { max_objects } => {
-                let report = self.repair_draining_root_placements(max_objects);
+                let report = self.repair_draining_placements(max_objects);
                 Ok(metadata_control_metadata(
                     "_rootrepair",
                     "draining",
@@ -21,7 +21,7 @@ impl MatrixObjectStore {
                 min_free_bytes,
                 max_payload_bytes,
             } => {
-                let report = self.repair_unhealthy_root_placements(
+                let report = self.repair_unhealthy_placements(
                     marker.as_ref(),
                     max_objects,
                     expected_replica_count,
@@ -45,7 +45,7 @@ impl MatrixObjectStore {
                 max_objects,
                 min_free_bytes,
             } => {
-                let report = self.rebalance_root_capacity(max_objects, min_free_bytes);
+                let report = self.rebalance_placement_capacity(max_objects, min_free_bytes);
                 Ok(metadata_control_metadata(
                     "_rootrebalance",
                     "capacity",
@@ -56,7 +56,7 @@ impl MatrixObjectStore {
                 ))
             }
             ObjectCommand::ApplyPreparedRootPlacementMigration { prepared } => {
-                let placement = self.apply_prepared_root_placement_migration(prepared)?;
+                let placement = self.apply_prepared_placement_migration(prepared)?;
                 Ok(metadata_control_metadata(
                     "_rootmigration",
                     &placement.object_id.bucket,
@@ -67,7 +67,7 @@ impl MatrixObjectStore {
                 ))
             }
             ObjectCommand::ApplyPreparedRootPlacementRepair { prepared } => {
-                let report = self.apply_prepared_draining_root_placement_repair(prepared)?;
+                let report = self.apply_prepared_draining_placement_repair(prepared)?;
                 Ok(metadata_control_metadata(
                     "_rootrepair",
                     "prepared-draining",
@@ -82,7 +82,7 @@ impl MatrixObjectStore {
                 ))
             }
             ObjectCommand::ApplyPreparedRootUnhealthyPlacementRepair { prepared } => {
-                let report = self.apply_prepared_unhealthy_root_placement_repair(prepared)?;
+                let report = self.apply_prepared_unhealthy_placement_repair(prepared)?;
                 Ok(metadata_control_metadata(
                     "_rootrepair",
                     "prepared-health",
@@ -97,7 +97,7 @@ impl MatrixObjectStore {
                 ))
             }
             ObjectCommand::ApplyPreparedRootCapacityRebalance { prepared } => {
-                let report = self.apply_prepared_root_capacity_rebalance(prepared)?;
+                let report = self.apply_prepared_placement_capacity_rebalance(prepared)?;
                 Ok(metadata_control_metadata(
                     "_rootrebalance",
                     "prepared",

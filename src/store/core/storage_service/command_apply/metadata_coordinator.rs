@@ -37,7 +37,7 @@ impl MatrixObjectStore {
                 | ObjectCommand::ApplyPreparedRootUnhealthyPlacementRepair { .. }
                 | ObjectCommand::ApplyPreparedRootCapacityRebalance { .. }
         ) {
-            return self.apply_root_placement_metadata_command(command);
+            return self.apply_placement_metadata_command(command);
         }
         if matches!(
             &command,

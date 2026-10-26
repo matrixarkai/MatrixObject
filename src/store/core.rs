@@ -334,7 +334,7 @@ fn catalog_capacity_bytes(readiness: &ReplicaStorageReadiness) -> u64 {
     }
 }
 
-fn root_chunk_health_from_readiness(readiness: &ReplicaStorageReadiness) -> NodeChunkHealth {
+fn placement_chunk_health_from_readiness(readiness: &ReplicaStorageReadiness) -> NodeChunkHealth {
     let mut service_health_reasons = Vec::new();
     if !readiness.ready && !readiness.reason.is_empty() && readiness.reason != "ok" {
         service_health_reasons.push(readiness.reason.clone());
@@ -430,7 +430,7 @@ fn catalog_page_capacity_bytes(readiness: &ChunkStorageReadiness) -> u64 {
     }
 }
 
-fn root_page_health_from_readiness(readiness: &ChunkStorageReadiness) -> NodePageHealth {
+fn placement_page_health_from_readiness(readiness: &ChunkStorageReadiness) -> NodePageHealth {
     NodePageHealth {
         ready: readiness.writable,
         read_ready: readiness.readable,

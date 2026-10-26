@@ -116,7 +116,7 @@ impl PlacementSnapshotChunkAssembler {
     }
 }
 
-pub(crate) fn export_root_snapshot_chunk_bytes_with_checksum(
+pub(crate) fn export_placement_snapshot_chunk_bytes_with_checksum(
     snapshot_bytes: &[u8],
     full_checksum: &str,
     offset: u64,

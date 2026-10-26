@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    fn apply_put_with_root_placement(
+    fn apply_put_with_placement(
         &mut self,
         bucket: String,
         key: String,
@@ -59,7 +59,7 @@ impl MatrixObjectStore {
         if previous.as_ref().map_or(false, |old| {
             !self.bucket_versioning.contains(old.object_id.bucket.as_str())
         }) {
-            self.release_root_placement_if_present(&metadata.object_id, Some(&committed));
+            self.release_placement_if_present(&metadata.object_id, Some(&committed));
         }
         Ok(metadata)
     }

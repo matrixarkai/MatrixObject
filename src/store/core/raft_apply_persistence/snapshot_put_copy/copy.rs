@@ -55,7 +55,7 @@ impl MatrixObjectStore {
         }
     }
 
-    fn apply_copy_with_root_placement(
+    fn apply_copy_with_placement(
         &mut self,
         source_bucket: String,
         source_key: String,
@@ -133,7 +133,7 @@ impl MatrixObjectStore {
         if previous.as_ref().map_or(false, |old| {
             !self.bucket_versioning.contains(old.object_id.bucket.as_str())
         }) {
-            self.release_root_placement_if_present(&metadata.object_id, Some(&committed));
+            self.release_placement_if_present(&metadata.object_id, Some(&committed));
         }
         Ok(metadata)
     }

@@ -29,7 +29,7 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        self.heartbeat_root_node(
+        self.heartbeat_placement_node(
             node_id,
             readiness.physical_bytes,
             capacity_bytes,
@@ -37,8 +37,8 @@ impl MatrixObjectStore {
             online,
             now_ms,
         )?;
-        let health = root_chunk_health_from_readiness(&readiness);
-        let node = self.heartbeat_root_chunk_health(node_id, health, now_ms)?;
+        let health = placement_chunk_health_from_readiness(&readiness);
+        let node = self.heartbeat_placement_chunk_health(node_id, health, now_ms)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
                 if let Some(rollback) = rollback {

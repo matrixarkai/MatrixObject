@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_proven_root_placement_repair_envelope_fenced(
+    pub fn propose_proven_placement_repair_envelope_fenced(
         &mut self,
         proven_envelope: ProvenPreparedPlacementRepairEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
@@ -33,10 +33,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         match proven_envelope.envelope.repair_kind.as_str() {
             "draining" => {
                 let prepared = self
-                    .prepare_draining_root_placement_repair_raft_entry_linearizable(
+                    .prepare_draining_placement_repair_raft_entry_linearizable(
                         proven_envelope.envelope.max_objects as usize,
                     )?;
-                let actual_envelope = prepared_draining_root_placement_repair_envelope(&prepared);
+                let actual_envelope = prepared_draining_placement_repair_envelope(&prepared);
                 if actual_envelope.envelope_checksum != proven_envelope.envelope.envelope_checksum {
                     return Err(ObjectError::PreconditionFailed(
                         "proven draining root placement repair envelope changed before proposal"
@@ -44,18 +44,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     ));
                 }
                 prepared.verify_expected_raft_entry_checksum(expected_raft_entry_checksum)?;
-                self.propose_prepared_draining_root_placement_repair_linearizable(prepared)
+                self.propose_prepared_draining_placement_repair_linearizable(prepared)
             }
             "unhealthy" => {
                 let prepared = self
-                    .prepare_unhealthy_root_placement_repair_raft_entry_linearizable(
+                    .prepare_unhealthy_placement_repair_raft_entry_linearizable(
                         proven_envelope.envelope.marker.as_ref(),
                         proven_envelope.envelope.max_objects as usize,
                         proven_envelope.envelope.expected_replica_count as usize,
                         proven_envelope.envelope.min_free_bytes,
                         proven_envelope.envelope.max_payload_bytes,
                     )?;
-                let actual_envelope = prepared_unhealthy_root_placement_repair_envelope(&prepared);
+                let actual_envelope = prepared_unhealthy_placement_repair_envelope(&prepared);
                 if actual_envelope.envelope_checksum != proven_envelope.envelope.envelope_checksum {
                     return Err(ObjectError::PreconditionFailed(
                         "proven unhealthy root placement repair envelope changed before proposal"
@@ -63,7 +63,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     ));
                 }
                 prepared.verify_expected_raft_entry_checksum(expected_raft_entry_checksum)?;
-                self.propose_prepared_unhealthy_root_placement_repair_linearizable(prepared)
+                self.propose_prepared_unhealthy_placement_repair_linearizable(prepared)
             }
             other => Err(ObjectError::InvalidArgument(format!(
                 "unsupported root placement repair envelope kind {}",
@@ -72,14 +72,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
     }
 
-    pub fn propose_proven_root_placement_repair_envelope_fenced_with_read_proof_linearizable(
+    pub fn propose_proven_placement_repair_envelope_fenced_with_read_proof_linearizable(
         &mut self,
         proven_envelope: ProvenPreparedPlacementRepairEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
         expected_raft_entry_checksum: impl AsRef<str>,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_proven_root_placement_repair_envelope_fenced_with_read_proof_linearizable_committed_at(
+        self.propose_proven_placement_repair_envelope_fenced_with_read_proof_linearizable_committed_at(
             proven_envelope,
             expected_envelope_checksum,
             expected_raft_entry_checksum,
@@ -89,7 +89,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_proven_root_placement_repair_envelope_fenced_with_read_proof_linearizable_committed_at(
+    pub fn propose_proven_placement_repair_envelope_fenced_with_read_proof_linearizable_committed_at(
         &mut self,
         proven_envelope: ProvenPreparedPlacementRepairEnvelope,
         expected_envelope_checksum: impl AsRef<str>,
@@ -104,7 +104,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let metadata = self.propose_proven_root_placement_repair_envelope_fenced(
+        let metadata = self.propose_proven_placement_repair_envelope_fenced(
             proven_envelope,
             expected_envelope_checksum,
             expected_raft_entry_checksum,

@@ -151,7 +151,7 @@ impl PlacementLeaderLeaseReceiptPage {
 }
 
 impl ProvenPlacementRead<PlacementLeaderLeaseReceiptPage> {
-    pub fn verify_expected_root_leader_lease_receipt_page_proof_checksum(
+    pub fn verify_expected_placement_leader_lease_receipt_page_proof_checksum(
         &self,
         expected_root_leader_lease_receipt_page_proof_checksum: impl AsRef<str>,
     ) -> Result<(), ObjectError> {
@@ -159,11 +159,11 @@ impl ProvenPlacementRead<PlacementLeaderLeaseReceiptPage> {
             .verify_expected_proof_checksum(expected_root_leader_lease_receipt_page_proof_checksum)
     }
 
-    pub fn require_root_leader_lease_receipt_page_proof_checksum(
+    pub fn require_placement_leader_lease_receipt_page_proof_checksum(
         self,
         expected_root_leader_lease_receipt_page_proof_checksum: impl AsRef<str>,
     ) -> Result<Self, ObjectError> {
-        self.verify_expected_root_leader_lease_receipt_page_proof_checksum(
+        self.verify_expected_placement_leader_lease_receipt_page_proof_checksum(
             expected_root_leader_lease_receipt_page_proof_checksum,
         )?;
         Ok(self)

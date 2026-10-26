@@ -81,14 +81,14 @@ impl MatrixObjectStore {
         Ok(report)
     }
 
-    pub fn batch_put_objects_with_root_placement(
+    pub fn batch_put_objects_with_placement(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
         max_payload_bytes: u64,
         replica_count: usize,
     ) -> Result<ObjectBatchPutReport, ObjectError> {
-        self.batch_put_objects_with_root_placement_fenced(
+        self.batch_put_objects_with_placement_fenced(
             requests,
             max_items,
             max_payload_bytes,
@@ -98,7 +98,7 @@ impl MatrixObjectStore {
         )
     }
 
-    pub fn batch_put_objects_with_root_placement_fenced(
+    pub fn batch_put_objects_with_placement_fenced(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -111,7 +111,7 @@ impl MatrixObjectStore {
         self.chunk_service
             .check_expected_route_control_checksum(expected_route_control_checksum)?;
         if self.persistent_journal_path.is_empty() {
-            return self.batch_put_objects_with_root_placement_at(
+            return self.batch_put_objects_with_placement_at(
                 requests,
                 max_items,
                 max_payload_bytes,
@@ -121,7 +121,7 @@ impl MatrixObjectStore {
             );
         }
         let rollback = self.capture_object_mutation_rollback();
-        let (report, committed) = self.batch_put_objects_with_root_placement_at_with_committed(
+        let (report, committed) = self.batch_put_objects_with_placement_at_with_committed(
             requests,
             max_items,
             max_payload_bytes,
@@ -145,7 +145,7 @@ impl MatrixObjectStore {
         Ok(report)
     }
 
-    pub fn batch_put_objects_with_root_placement_fenced_with_put_proof(
+    pub fn batch_put_objects_with_placement_fenced_with_put_proof(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -155,7 +155,7 @@ impl MatrixObjectStore {
         expected_route_control_checksum: Option<&str>,
         expected_put_batch_proof_checksum: Option<&str>,
     ) -> Result<ObjectBatchPutReport, ObjectError> {
-        let mut report = self.batch_put_objects_with_root_placement_fenced(
+        let mut report = self.batch_put_objects_with_placement_fenced(
             requests,
             max_items,
             max_payload_bytes,
@@ -297,7 +297,7 @@ impl MatrixObjectStore {
         Ok((report, committed_requests))
     }
 
-    fn batch_put_objects_with_root_placement_at(
+    fn batch_put_objects_with_placement_at(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -306,7 +306,7 @@ impl MatrixObjectStore {
         replica_count: usize,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectBatchPutReport, ObjectError> {
-        self.batch_put_objects_with_root_placement_at_with_committed(
+        self.batch_put_objects_with_placement_at_with_committed(
             requests,
             max_items,
             max_payload_bytes,
@@ -318,7 +318,7 @@ impl MatrixObjectStore {
         .map(|(report, _)| report)
     }
 
-    fn batch_put_objects_with_root_placement_at_with_committed(
+    fn batch_put_objects_with_placement_at_with_committed(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -380,7 +380,7 @@ impl MatrixObjectStore {
                 options,
             } = request;
             let payload_bytes = data.len() as u64;
-            let metadata = self.apply_put_with_root_placement(
+            let metadata = self.apply_put_with_placement(
                 bucket.clone(),
                 key.clone(),
                 data,

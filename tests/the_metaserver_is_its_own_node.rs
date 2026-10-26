@@ -357,7 +357,7 @@ fn the_metaserver_node_stops_placement_and_not_reads() {
     // A fixture uniform in the dimension under test cannot test that dimension. The policy
     // prefers one node per failure domain, so this is checked before the plan is.
     let roster = control
-        .list_root_nodes()
+        .list_placement_nodes()
         .expect("the roster crosses the socket");
     assert_eq!(roster.len(), ROSTER_NODES);
     let domains: std::collections::BTreeSet<&str> = roster
@@ -437,7 +437,7 @@ fn the_metaserver_node_stops_placement_and_not_reads() {
     assert_eq!(committed.node_ids, plan.node_ids);
 
     let read_back = control
-        .object_root_placement(PLACED_BUCKET, PLACED_KEY)
+        .object_placement(PLACED_BUCKET, PLACED_KEY)
         .expect("the committed placement reads back over the socket");
     assert_eq!(read_back.node_ids, plan.node_ids);
     assert_eq!(read_back.length, placed_length);
@@ -445,7 +445,7 @@ fn the_metaserver_node_stops_placement_and_not_reads() {
     // THE CONTROL-PLANE NEGATIVE CONTROL, while the metaserver is up: an object nothing has
     // placed must read as absent. Without this, the hit above is consistent with a read path
     // that answers for every key it is given.
-    match control.object_root_placement(PLACED_BUCKET, UNPLACED_KEY) {
+    match control.object_placement(PLACED_BUCKET, UNPLACED_KEY) {
         Err(ObjectError::NotFound(_)) => {}
         other => panic!(
             "an object with no placement must read absent while the metaserver is up, and it \
@@ -455,7 +455,7 @@ fn the_metaserver_node_stops_placement_and_not_reads() {
 
     // The commit charged the chosen nodes, which is state only the metaserver holds.
     let charged: u64 = control
-        .list_root_nodes()
+        .list_placement_nodes()
         .expect("the roster still reads")
         .iter()
         .map(|node| node.committed_bytes)
@@ -553,7 +553,7 @@ fn the_metaserver_node_stops_placement_and_not_reads() {
     // ABSENT while the metaserver was up. With the metaserver gone, "absent" is a sentence
     // this store is not entitled to say: it cannot ask. Reporting absence here would be a
     // confident wrong answer, and a caller cannot retry one of those.
-    match control.object_root_placement(PLACED_BUCKET, UNPLACED_KEY) {
+    match control.object_placement(PLACED_BUCKET, UNPLACED_KEY) {
         Err(ObjectError::NotFound(_)) => panic!(
             "with the metaserver dead, a placement read reported the object ABSENT. That \
              answer happens to be true and was not established -- the roster and the \
@@ -567,7 +567,7 @@ fn the_metaserver_node_stops_placement_and_not_reads() {
     // And a placement that DOES exist is equally unreadable, for the same reason.
     assert!(
         control
-            .object_root_placement(PLACED_BUCKET, PLACED_KEY)
+            .object_placement(PLACED_BUCKET, PLACED_KEY)
             .is_err(),
         "a committed placement cannot be read either; the metaserver held it"
     );

@@ -39,7 +39,7 @@ impl MatrixMetaService {
         idempotency_key: &str,
     ) -> Result<(PlacementLeaderLease, PlacementLeaderLeaseReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
-        let request_checksum = root_leader_campaign_request_checksum(node_id, ttl_ms, now_ms);
+        let request_checksum = placement_leader_campaign_request_checksum(node_id, ttl_ms, now_ms);
         if let Some(existing) = self.leader_lease_receipts.get(idempotency_key) {
             if existing.operation != "campaign"
                 || existing.request_checksum != request_checksum
@@ -101,7 +101,7 @@ impl MatrixMetaService {
         idempotency_key: &str,
     ) -> Result<(PlacementLeaderLease, PlacementLeaderLeaseReceipt), ObjectError> {
         validate_idempotency_key(idempotency_key)?;
-        let request_checksum = root_leader_renew_request_checksum(node_id, epoch, ttl_ms, now_ms);
+        let request_checksum = placement_leader_renew_request_checksum(node_id, epoch, ttl_ms, now_ms);
         if let Some(existing) = self.leader_lease_receipts.get(idempotency_key) {
             if existing.operation != "renew"
                 || existing.request_checksum != request_checksum
@@ -282,7 +282,7 @@ impl MatrixMetaService {
             ));
         }
         let image = self.export_placement_snapshot_image()?;
-        let chunk = export_root_snapshot_chunk_bytes_with_checksum(
+        let chunk = export_placement_snapshot_chunk_bytes_with_checksum(
             image.bytes.as_ref(),
             &image.checksum,
             offset,

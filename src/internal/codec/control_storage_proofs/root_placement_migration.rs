@@ -55,7 +55,7 @@ pub(crate) fn placement_migration_plan_checksum(plan: &PlacementMigrationPlan) -
     etag(&material)
 }
 
-pub(crate) fn append_root_placement_migration_plan(
+pub(crate) fn append_placement_migration_plan(
     out: &mut Vec<u8>,
     plan: &PlacementMigrationPlan,
 ) {
@@ -76,7 +76,7 @@ pub(crate) fn append_root_placement_migration_plan(
     append_string(out, &plan.plan_checksum);
 }
 
-pub(crate) fn root_placement_migration_request_checksum(
+pub(crate) fn placement_migration_request_checksum(
     plan: &PlacementMigrationPlan,
     expected_plan_checksum: &str,
     min_free_bytes: u64,
@@ -88,13 +88,13 @@ pub(crate) fn root_placement_migration_request_checksum(
             .saturating_add(std::mem::size_of::<u64>()),
     );
     append_string(&mut material, "MOS-RUST-ROOT-PLACEMENT-MIGRATION-REQUEST2");
-    append_root_placement_migration_plan(&mut material, plan);
+    append_placement_migration_plan(&mut material, plan);
     append_string(&mut material, expected_plan_checksum);
     append_u64(&mut material, min_free_bytes);
     etag(&material)
 }
 
-pub(crate) fn append_root_leader_lease(out: &mut Vec<u8>, lease: &PlacementLeaderLease) {
+pub(crate) fn append_placement_leader_lease(out: &mut Vec<u8>, lease: &PlacementLeaderLease) {
     append_string(out, &lease.leader_node_id);
     append_u64(out, lease.epoch);
     append_u64(out, lease.acquire_time_ms);
@@ -102,14 +102,14 @@ pub(crate) fn append_root_leader_lease(out: &mut Vec<u8>, lease: &PlacementLeade
     append_u64(out, lease.ttl_ms);
 }
 
-pub(crate) fn append_root_leader_lease_receipt(
+pub(crate) fn append_placement_leader_lease_receipt(
     out: &mut Vec<u8>,
     receipt: &PlacementLeaderLeaseReceipt,
 ) {
     append_string(out, &receipt.idempotency_key);
     append_string(out, &receipt.operation);
     append_string(out, &receipt.request_checksum);
-    append_root_leader_lease(out, &receipt.lease);
+    append_placement_leader_lease(out, &receipt.lease);
     append_u64(out, receipt.commit_index);
     append_u64(out, receipt.update_time_ms);
 }
@@ -117,7 +117,7 @@ pub(crate) fn append_root_leader_lease_receipt(
 pub(crate) fn root_leader_lease_receipt_proof_checksum(receipt: &PlacementLeaderLeaseReceipt) -> String {
     let mut material = Vec::new();
     append_string(&mut material, "MXOS-ROOT-LEADER-LEASE-RECEIPT-PROOF1");
-    append_root_leader_lease_receipt(&mut material, receipt);
+    append_placement_leader_lease_receipt(&mut material, receipt);
     etag(&material)
 }
 
@@ -174,7 +174,7 @@ pub(crate) fn root_read_proof_checksum(proof: &PlacementReadProof) -> String {
     etag(&material)
 }
 
-pub(crate) fn prepared_root_placement_migration_checksum(
+pub(crate) fn prepared_placement_migration_checksum(
     prepared: &PreparedPlacementMigration,
 ) -> String {
     let mut material = Vec::with_capacity(
@@ -187,7 +187,7 @@ pub(crate) fn prepared_root_placement_migration_checksum(
             .saturating_add(std::mem::size_of::<u64>() * 5),
     );
     append_string(&mut material, "MOS-RUST-PREPARED-ROOT-PLACEMENT-MIGRATION2");
-    append_root_placement_migration_plan(&mut material, &prepared.plan);
+    append_placement_migration_plan(&mut material, &prepared.plan);
     append_string(&mut material, &prepared.expected_plan_checksum);
     append_u64(&mut material, prepared.min_free_bytes);
     append_string(&mut material, &prepared.before_state_fingerprint);
@@ -200,7 +200,7 @@ pub(crate) fn prepared_root_placement_migration_checksum(
     etag(&material)
 }
 
-pub(crate) fn append_prepared_root_placement_migration_envelope(
+pub(crate) fn append_prepared_placement_migration_envelope(
     out: &mut Vec<u8>,
     envelope: &PreparedPlacementMigrationEnvelope,
 ) {
@@ -231,7 +231,7 @@ pub(crate) fn append_prepared_root_placement_migration_envelope(
     append_string(out, &envelope.raft_entry_checksum);
 }
 
-pub(crate) fn prepared_root_placement_migration_envelope_checksum(
+pub(crate) fn prepared_placement_migration_envelope_checksum(
     envelope: &PreparedPlacementMigrationEnvelope,
 ) -> (String, u64) {
     let mut material = Vec::with_capacity(
@@ -249,11 +249,11 @@ pub(crate) fn prepared_root_placement_migration_envelope_checksum(
             .saturating_add(encoded_string_len(&envelope.raft_entry_checksum))
             .saturating_add(std::mem::size_of::<u64>() * 9),
     );
-    append_prepared_root_placement_migration_envelope(&mut material, envelope);
+    append_prepared_placement_migration_envelope(&mut material, envelope);
     (etag(&material), material.len() as u64)
 }
 
-pub(crate) fn prepared_root_placement_migration_envelope(
+pub(crate) fn prepared_placement_migration_envelope(
     prepared: &PreparedPlacementMigration,
 ) -> PreparedPlacementMigrationEnvelope {
     let mut envelope = PreparedPlacementMigrationEnvelope {
@@ -279,13 +279,13 @@ pub(crate) fn prepared_root_placement_migration_envelope(
         envelope_bytes: 0,
         envelope_checksum: String::new(),
     };
-    let (checksum, bytes) = prepared_root_placement_migration_envelope_checksum(&envelope);
+    let (checksum, bytes) = prepared_placement_migration_envelope_checksum(&envelope);
     envelope.envelope_bytes = bytes;
     envelope.envelope_checksum = checksum;
     envelope
 }
 
-pub(crate) fn append_committed_root_placement_migration_envelope(
+pub(crate) fn append_committed_placement_migration_envelope(
     out: &mut Vec<u8>,
     envelope: &CommittedPlacementMigrationEnvelope,
 ) {
@@ -317,7 +317,7 @@ pub(crate) fn append_committed_root_placement_migration_envelope(
     append_u64(out, envelope.metadata_update_time_ms);
 }
 
-pub(crate) fn committed_root_placement_migration_envelope_checksum(
+pub(crate) fn committed_placement_migration_envelope_checksum(
     envelope: &CommittedPlacementMigrationEnvelope,
 ) -> (String, u64) {
     let mut material = Vec::with_capacity(
@@ -335,11 +335,11 @@ pub(crate) fn committed_root_placement_migration_envelope_checksum(
             .saturating_add(encoded_string_len(&envelope.metadata_content_type))
             .saturating_add(std::mem::size_of::<u64>() * 13),
     );
-    append_committed_root_placement_migration_envelope(&mut material, envelope);
+    append_committed_placement_migration_envelope(&mut material, envelope);
     (etag(&material), material.len() as u64)
 }
 
-pub(crate) fn committed_root_placement_migration_envelope(
+pub(crate) fn committed_placement_migration_envelope(
     prepared: &PreparedPlacementMigration,
     metadata: &ObjectMetadata,
     committed_raft_index: u64,
@@ -368,7 +368,7 @@ pub(crate) fn committed_root_placement_migration_envelope(
         envelope_bytes: 0,
         envelope_checksum: String::new(),
     };
-    let (checksum, bytes) = committed_root_placement_migration_envelope_checksum(&envelope);
+    let (checksum, bytes) = committed_placement_migration_envelope_checksum(&envelope);
     envelope.envelope_bytes = bytes;
     envelope.envelope_checksum = checksum;
     envelope

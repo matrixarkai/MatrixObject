@@ -14,7 +14,7 @@ impl PlacementSnapshot {
             append_u64(&mut material, node.draining as u64);
             append_u64(&mut material, node.online as u64);
             append_u64(&mut material, node.last_heartbeat_ms);
-            append_root_meta_health(&mut material, &node.meta_health);
+            append_placement_meta_health(&mut material, &node.meta_health);
         }
         for (object_id, placement) in &self.placements {
             append_object_id(&mut material, object_id);

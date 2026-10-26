@@ -17,7 +17,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_free_bytes: u64,
         marker: Option<&ObjectId>,
     ) -> Result<ProvenPlacementRead<ObjectCapacityRebalanceReport>, ObjectError> {
-        let proof = self.ensure_root_read_index("plan object capacity rebalance")?;
+        let proof = self.ensure_placement_read_index("plan object capacity rebalance")?;
         let value = self.plan_object_capacity_rebalance(max_objects, min_free_bytes, marker);
         Ok(ProvenPlacementRead { value, proof })
     }
@@ -37,7 +37,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             ..ObjectCapacityRebalanceRunReport::default()
         };
         if marker.is_none() {
-            let prepared = self.prepare_root_capacity_rebalance_raft_entry_linearizable(
+            let prepared = self.prepare_placement_capacity_rebalance_raft_entry_linearizable(
                 max_objects,
                 min_free_bytes,
             )?;
@@ -50,7 +50,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     .zip(report.plan.items.iter())
                     .all(|(prepared_item, planned_item)| prepared_item.plan == planned_item.plan);
             if prepared_matches_object_window {
-                match self.propose_prepared_root_capacity_rebalance_linearizable(prepared.clone()) {
+                match self.propose_prepared_placement_capacity_rebalance_linearizable(prepared.clone()) {
                     Ok(_) => {
                         for item in prepared.report.items {
                             let update_time_ms = report
@@ -115,7 +115,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         for item in items {
             report.attempted_migration_objects =
                 report.attempted_migration_objects.saturating_add(1);
-            let prepared = match self.prepare_root_placement_migration_raft_entry(
+            let prepared = match self.prepare_placement_migration_raft_entry(
                 item.plan.clone(),
                 &item.plan.plan_checksum,
             ) {
@@ -129,7 +129,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     continue;
                 }
             };
-            match self.propose_prepared_root_placement_migration(prepared) {
+            match self.propose_prepared_placement_migration(prepared) {
                 Ok(_) => {
                     if item.plan.after_node_ids == item.plan.before_node_ids {
                         report.skipped_migration_objects =

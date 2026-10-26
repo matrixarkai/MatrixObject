@@ -49,13 +49,13 @@ impl DistributedPlacementReadinessSnapshot {
         now_ms: u64,
         root_placement_ready: bool,
     ) -> Self {
-        let root_nodes = store.root_nodes();
-        let root_node_count = root_nodes.len() as u64;
+        let placement_nodes = store.placement_nodes();
+        let root_node_count = placement_nodes.len() as u64;
         let rootserver_required = store.rootserver_required();
         let control_plane_mode = store.effective_control_plane_mode().to_string();
         let root_expected_nodes = root_node_count;
         let root_metadata_coverage =
-            compute_root_metadata_service_coverage(&root_nodes, metadata_replication_quorum);
+            compute_placement_metadata_service_coverage(&placement_nodes, metadata_replication_quorum);
         let root_metadata_status_available = root_metadata_coverage.active_metaserver_count > 0;
         let root_observed_metadata = root_metadata_coverage.active_metaserver_count > 0;
         let root_metadata_external_coordinator_required =
@@ -118,30 +118,30 @@ impl DistributedPlacementReadinessSnapshot {
         let root_lease_epoch = root_lease.as_ref().map_or(0, |lease| lease.epoch);
         let root_lease_expire_time_ms = root_lease.as_ref().map_or(0, |lease| lease.expire_time_ms);
         let root_state_fingerprint = store.meta_service.root_state_fingerprint();
-        let root_raft_status = store.meta_service.raft_status_from_coverage(
+        let placement_raft_status = store.meta_service.raft_status_from_coverage(
             &root_metadata_coverage,
             &root_page_allocator_coverage,
             &root_pageserver_service_coverage,
             &root_replicaserver_coverage,
         );
-        let root_raft_status_checksum_format = root_raft_status.control_checksum_format;
-        let root_raft_status_checksum = root_raft_status.control_checksum;
-        let root_metadata_read_ready = root_raft_status.root_metadata_read_ready;
-        let root_metadata_write_ready = root_raft_status.root_metadata_write_ready;
-        let root_pageserver_read_ready = root_raft_status.root_pageserver_read_ready;
-        let root_pageserver_write_ready = root_raft_status.root_pageserver_write_ready;
-        let root_replicaserver_read_ready = root_raft_status.root_replicaserver_read_ready;
-        let root_replicaserver_write_ready = root_raft_status.root_replicaserver_write_ready;
-        let root_readiness_gate_read_ready = root_raft_status.root_readiness_gate_read_ready;
-        let root_readiness_gate_write_ready = root_raft_status.root_readiness_gate_write_ready;
-        let root_read_ready = root_raft_status.linearizable_reads;
-        let root_write_ready = root_raft_status.writable;
+        let root_raft_status_checksum_format = placement_raft_status.control_checksum_format;
+        let root_raft_status_checksum = placement_raft_status.control_checksum;
+        let root_metadata_read_ready = placement_raft_status.root_metadata_read_ready;
+        let root_metadata_write_ready = placement_raft_status.root_metadata_write_ready;
+        let root_pageserver_read_ready = placement_raft_status.root_pageserver_read_ready;
+        let root_pageserver_write_ready = placement_raft_status.root_pageserver_write_ready;
+        let root_replicaserver_read_ready = placement_raft_status.root_replicaserver_read_ready;
+        let root_replicaserver_write_ready = placement_raft_status.root_replicaserver_write_ready;
+        let root_readiness_gate_read_ready = placement_raft_status.root_readiness_gate_read_ready;
+        let root_readiness_gate_write_ready = placement_raft_status.root_readiness_gate_write_ready;
+        let root_read_ready = placement_raft_status.linearizable_reads;
+        let root_write_ready = placement_raft_status.writable;
         let root_leader_ready = if !rootserver_required {
             true
         } else {
             root_lease.as_ref().is_some_and(|lease| {
                 lease.expire_time_ms > now_ms
-                    && root_nodes.iter().any(|node| {
+                    && placement_nodes.iter().any(|node| {
                         node.node_id == lease.leader_node_id
                             && is_control_plane_leader_candidate(node)
                             && node.online

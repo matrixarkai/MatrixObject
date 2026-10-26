@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    pub fn register_root_node(&mut self, node: PlacementNode) -> Result<PlacementNode, ObjectError> {
+    pub fn register_placement_node(&mut self, node: PlacementNode) -> Result<PlacementNode, ObjectError> {
         self.meta_service.register_node(node)
     }
 
@@ -85,9 +85,9 @@ impl MatrixObjectStore {
             page_health: NodePageHealth::default(),
             chunk_health: NodeChunkHealth::default(),
         };
-        let metaserver_node = self.register_root_node(metaserver_node)?;
+        let metaserver_node = self.register_placement_node(metaserver_node)?;
         // THE LEASE IS CAMPAIGNED FOR THE METASERVER NODE, and it is campaigned here rather
-        // than earlier because `campaign_root_leader` refuses a candidate that is not in the
+        // than earlier because `campaign_placement_leader` refuses a candidate that is not in the
         // roster yet -- so the node has to be registered first. It used to be campaigned for
         // the embedded root node, two statements above its own registration.
         //
@@ -97,7 +97,7 @@ impl MatrixObjectStore {
         // `is_control_plane_leader_candidate`, which accepts the old kind for exactly that
         // reason.
         let root_leader_lease =
-            self.campaign_root_leader(metaserver_node_id, root_lease_ttl_ms, now_ms)?;
+            self.campaign_placement_leader(metaserver_node_id, root_lease_ttl_ms, now_ms)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
                 if let Some(rollback) = rollback {
@@ -128,7 +128,7 @@ impl MatrixObjectStore {
         })
     }
 
-    pub fn heartbeat_root_node(
+    pub fn heartbeat_placement_node(
         &mut self,
         node_id: &str,
         used_bytes: u64,
@@ -147,7 +147,7 @@ impl MatrixObjectStore {
         )
     }
 
-    pub fn heartbeat_root_page_health(
+    pub fn heartbeat_placement_page_health(
         &mut self,
         node_id: &str,
         health: NodePageHealth,
@@ -157,7 +157,7 @@ impl MatrixObjectStore {
             .heartbeat_page_health(node_id, health, now_ms)
     }
 
-    pub fn heartbeat_root_chunk_health(
+    pub fn heartbeat_placement_chunk_health(
         &mut self,
         node_id: &str,
         health: NodeChunkHealth,

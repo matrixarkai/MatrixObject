@@ -22,7 +22,7 @@ impl MatrixObjectStore {
                     requests.push(read_object_put_request(&mut cursor)?);
                 }
                 if let Some(replica_count) = replica_count {
-                    self.batch_put_objects_with_root_placement_at(
+                    self.batch_put_objects_with_placement_at(
                         requests,
                         max_items,
                         max_payload_bytes,
@@ -72,7 +72,7 @@ impl MatrixObjectStore {
                     "persistent journal copy root replica count",
                 )?;
                 if let Some(replica_count) = replica_count {
-                    self.apply_copy_with_root_placement(
+                    self.apply_copy_with_placement(
                         source_bucket,
                         source_key,
                         source_version,
@@ -111,7 +111,7 @@ impl MatrixObjectStore {
                     requests.push(read_object_copy_request(&mut cursor)?);
                 }
                 if let Some(replica_count) = replica_count {
-                    self.batch_copy_objects_with_root_placement_fenced_internal(
+                    self.batch_copy_objects_with_placement_fenced_internal(
                         requests,
                         max_items,
                         max_copied_bytes,

@@ -158,7 +158,7 @@ impl RemoteMetaClient {
         self.try_call(MetaRequest::Ping)
     }
 
-    pub fn heartbeat_root_node(
+    pub fn heartbeat_placement_node(
         &mut self,
         node_id: &str,
         used_bytes: u64,
@@ -180,7 +180,7 @@ impl RemoteMetaClient {
         }
     }
 
-    pub fn expire_root_node_heartbeats(
+    pub fn expire_placement_node_heartbeats(
         &mut self,
         ttl_ms: u64,
         now_ms: u64,
@@ -191,7 +191,7 @@ impl RemoteMetaClient {
         }
     }
 
-    pub fn list_root_nodes(&mut self) -> Result<Vec<PlacementNodeSummary>, ObjectError> {
+    pub fn list_placement_nodes(&mut self) -> Result<Vec<PlacementNodeSummary>, ObjectError> {
         match self.call(MetaRequest::ListRootNodes)? {
             MetaReply::RootNodes(nodes) => Ok(nodes),
             other => Err(unexpected_reply("a roster listing", &other)),
@@ -230,7 +230,7 @@ impl RemoteMetaClient {
         }
     }
 
-    pub fn object_root_placement(
+    pub fn object_placement(
         &mut self,
         bucket: &str,
         key: &str,

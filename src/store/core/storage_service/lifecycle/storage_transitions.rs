@@ -52,7 +52,7 @@ impl MatrixObjectStore {
                 {
                     continue;
                 }
-                match self.apply_transition_object_with_root_placement(
+                match self.apply_transition_object_with_placement(
                     object_id.bucket.to_string(),
                     object_id.key.to_string(),
                     target.clone(),

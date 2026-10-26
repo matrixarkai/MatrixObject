@@ -80,7 +80,7 @@ impl MatrixObjectStore {
                     }
                 };
                 if let Some(replica_count) = replica_count {
-                    self.apply_complete_multipart_upload_with_root_placement(
+                    self.apply_complete_multipart_upload_with_placement(
                         upload_id,
                         expected_size,
                         expected_etag,

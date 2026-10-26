@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    fn release_root_placement_if_present(
+    fn release_placement_if_present(
         &mut self,
         object_id: &ObjectId,
         keep: Option<&ObjectPlacement>,

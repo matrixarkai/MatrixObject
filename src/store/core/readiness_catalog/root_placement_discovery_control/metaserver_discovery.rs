@@ -6,7 +6,7 @@ impl MatrixObjectStore {
     ) -> Result<CatalogMetaServerEndpointDiscovery, ObjectError> {
         let nodes = self.meta_service.list_nodes();
         let metadata_quorum = raft_quorum(self.raft_voter_node_ids.len() as u64);
-        let coverage = compute_root_metadata_service_coverage(&nodes, metadata_quorum);
+        let coverage = compute_placement_metadata_service_coverage(&nodes, metadata_quorum);
         if coverage.active_metaserver_count == 0 {
             return Err(ObjectError::PreconditionFailed(
                 "catalog has no active metaserver endpoints".to_string(),

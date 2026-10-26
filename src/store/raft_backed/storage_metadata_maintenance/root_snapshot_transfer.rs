@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn export_root_snapshot_chunk_with_read_proof_linearizable(
+    pub fn export_placement_snapshot_chunk_with_read_proof_linearizable(
         &self,
         offset: u64,
         max_payload_bytes: usize,
     ) -> Result<ProvenPlacementRead<PlacementSnapshotChunk>, ObjectError> {
-        self.export_root_snapshot_chunk_with_read_proof_linearizable_committed_at(
+        self.export_placement_snapshot_chunk_with_read_proof_linearizable_committed_at(
             offset,
             max_payload_bytes,
             self.raft.commit_index(),
@@ -14,14 +14,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn export_root_snapshot_chunk_with_read_proof_linearizable_committed_at(
+    pub fn export_placement_snapshot_chunk_with_read_proof_linearizable_committed_at(
         &self,
         offset: u64,
         max_payload_bytes: usize,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<ProvenPlacementRead<PlacementSnapshotChunk>, ObjectError> {
-        let proof = self.ensure_root_read_index_committed_at(
+        let proof = self.ensure_placement_read_index_committed_at(
             "root snapshot export",
             min_read_index,
             min_commit_index,
@@ -33,7 +33,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(ProvenPlacementRead { value, proof })
     }
 
-    pub fn export_root_snapshot_chunk_stream_with_read_proof_linearizable<F>(
+    pub fn export_placement_snapshot_chunk_stream_with_read_proof_linearizable<F>(
         &self,
         max_payload_bytes: usize,
         emit: F,
@@ -41,7 +41,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     where
         F: FnMut(ProvenPlacementRead<PlacementSnapshotChunk>) -> Result<(), ObjectError>,
     {
-        self.export_root_snapshot_chunk_stream_with_read_proof_linearizable_committed_at(
+        self.export_placement_snapshot_chunk_stream_with_read_proof_linearizable_committed_at(
             max_payload_bytes,
             self.raft.commit_index(),
             0,
@@ -49,7 +49,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn export_root_snapshot_chunk_stream_with_read_proof_linearizable_committed_at<F>(
+    pub fn export_placement_snapshot_chunk_stream_with_read_proof_linearizable_committed_at<F>(
         &self,
         max_payload_bytes: usize,
         min_read_index: u64,
@@ -59,7 +59,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     where
         F: FnMut(ProvenPlacementRead<PlacementSnapshotChunk>) -> Result<(), ObjectError>,
     {
-        let proof = self.ensure_root_read_index_committed_at(
+        let proof = self.ensure_placement_read_index_committed_at(
             "root snapshot export",
             min_read_index,
             min_commit_index,
@@ -88,25 +88,25 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
     }
 
-    pub fn export_root_snapshot_chunks_with_read_proof_linearizable(
+    pub fn export_placement_snapshot_chunks_with_read_proof_linearizable(
         &self,
         max_payload_bytes: usize,
     ) -> Result<Vec<ProvenPlacementRead<PlacementSnapshotChunk>>, ObjectError> {
-        self.export_root_snapshot_chunks_with_read_proof_linearizable_committed_at(
+        self.export_placement_snapshot_chunks_with_read_proof_linearizable_committed_at(
             max_payload_bytes,
             self.raft.commit_index(),
             0,
         )
     }
 
-    pub fn export_root_snapshot_chunks_with_read_proof_linearizable_committed_at(
+    pub fn export_placement_snapshot_chunks_with_read_proof_linearizable_committed_at(
         &self,
         max_payload_bytes: usize,
         min_read_index: u64,
         min_commit_index: u64,
     ) -> Result<Vec<ProvenPlacementRead<PlacementSnapshotChunk>>, ObjectError> {
         let mut pages = Vec::new();
-        self.export_root_snapshot_chunk_stream_with_read_proof_linearizable_committed_at(
+        self.export_placement_snapshot_chunk_stream_with_read_proof_linearizable_committed_at(
             max_payload_bytes,
             min_read_index,
             min_commit_index,
@@ -124,7 +124,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(pages)
     }
 
-    pub fn export_root_snapshot_chunks_with_read_proof_report_linearizable(
+    pub fn export_placement_snapshot_chunks_with_read_proof_report_linearizable(
         &self,
         max_payload_bytes: usize,
     ) -> Result<
@@ -134,14 +134,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ),
         ObjectError,
     > {
-        self.export_root_snapshot_chunks_with_read_proof_report_linearizable_committed_at(
+        self.export_placement_snapshot_chunks_with_read_proof_report_linearizable_committed_at(
             max_payload_bytes,
             self.raft.commit_index(),
             0,
         )
     }
 
-    pub fn export_root_snapshot_chunks_with_read_proof_report_linearizable_committed_at(
+    pub fn export_placement_snapshot_chunks_with_read_proof_report_linearizable_committed_at(
         &self,
         max_payload_bytes: usize,
         min_read_index: u64,
@@ -167,7 +167,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let mut total_payload_bytes = 0u64;
         let mut first_offset = 0u64;
         let mut last_end_offset = 0u64;
-        self.export_root_snapshot_chunk_stream_with_read_proof_linearizable_committed_at(
+        self.export_placement_snapshot_chunk_stream_with_read_proof_linearizable_committed_at(
             max_payload_bytes,
             min_read_index,
             min_commit_index,
@@ -196,7 +196,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                         proven.value.total_bytes,
                         max_payload_bytes,
                     ));
-                    material.reserve(root_snapshot_proof_material_capacity(
+                    material.reserve(placement_snapshot_proof_material_capacity(
                         proven.value.total_bytes,
                         max_payload_bytes,
                     ));
@@ -215,7 +215,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 let payload_len = proven.value.payload.len() as u64;
                 total_payload_bytes = total_payload_bytes.saturating_add(payload_len);
                 last_end_offset = proven.value.offset.saturating_add(payload_len);
-                append_root_snapshot_proof_material(
+                append_placement_snapshot_proof_material(
                     &mut material,
                     proven.value.offset,
                     payload_len,
@@ -231,7 +231,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 "root snapshot proof stream is empty".to_string(),
             ));
         }
-        let report = finish_root_snapshot_proof_stream_report(
+        let report = finish_placement_snapshot_proof_stream_report(
             material,
             pages.len() as u64,
             operation,
@@ -248,7 +248,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok((pages, report))
     }
 
-    pub fn install_root_snapshot_chunks_with_read_proof_report<I>(
+    pub fn install_placement_snapshot_chunks_with_read_proof_report<I>(
         &mut self,
         pages: I,
         expected_report: &PlacementSnapshotProofStreamReport,
@@ -295,7 +295,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 root_state_fingerprint = proven.proof.root_state_fingerprint.clone();
                 full_snapshot_checksum = proven.value.full_checksum.clone();
                 first_offset = proven.value.offset;
-                material.reserve(root_snapshot_proof_material_capacity(
+                material.reserve(placement_snapshot_proof_material_capacity(
                     proven.value.total_bytes,
                     proven.value.payload.len().max(1),
                 ));
@@ -314,7 +314,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             let payload_len = proven.value.payload.len() as u64;
             total_payload_bytes = total_payload_bytes.saturating_add(payload_len);
             last_end_offset = proven.value.offset.saturating_add(payload_len);
-            append_root_snapshot_proof_material(
+            append_placement_snapshot_proof_material(
                 &mut material,
                 proven.value.offset,
                 payload_len,
@@ -341,7 +341,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })?;
         let snapshot_bytes = assembled_snapshot.len() as u64;
         let snapshot_checksum = full_snapshot_checksum.clone();
-        let actual_report = finish_root_snapshot_proof_stream_report(
+        let actual_report = finish_placement_snapshot_proof_stream_report(
             material,
             proof_count,
             operation,
@@ -355,7 +355,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             last_end_offset,
             full_snapshot_checksum,
         );
-        verify_root_snapshot_proof_stream_report(
+        verify_placement_snapshot_proof_stream_report(
             expected_report,
             &actual_report,
             min_read_index,
@@ -376,7 +376,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         ))
     }
 
-    pub fn install_root_snapshot_chunks_with_read_proof_source_report<I>(
+    pub fn install_placement_snapshot_chunks_with_read_proof_source_report<I>(
         &mut self,
         pages: I,
         expected_report: &PlacementSnapshotProofStreamReport,
@@ -388,12 +388,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         I: IntoIterator<Item = ProvenPlacementRead<PlacementSnapshotChunk>>,
     {
         let actual_source_proof =
-            root_service_snapshot_install_source_proof_report(expected_report);
+            placement_service_snapshot_install_source_proof_report(expected_report);
         verify_service_snapshot_install_source_proof_report(
             expected_source_proof,
             &actual_source_proof,
         )?;
-        self.install_root_snapshot_chunks_with_read_proof_report(
+        self.install_placement_snapshot_chunks_with_read_proof_report(
             pages,
             expected_report,
             min_read_index,

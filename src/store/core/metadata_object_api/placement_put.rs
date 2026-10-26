@@ -31,7 +31,7 @@ impl MatrixObjectStore {
                 Some(replica_count),
             ))
         };
-        let metadata = self.apply_put_with_root_placement(
+        let metadata = self.apply_put_with_placement(
             bucket.to_string(),
             key.to_string(),
             data,

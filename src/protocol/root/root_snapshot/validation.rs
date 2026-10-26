@@ -206,13 +206,13 @@ pub(crate) fn validate_placement_roster(
             ));
         }
         let expected = if receipt.operation == "campaign" {
-            root_leader_campaign_request_checksum(
+            placement_leader_campaign_request_checksum(
                 &receipt.lease.leader_node_id,
                 receipt.lease.ttl_ms,
                 receipt.lease.acquire_time_ms,
             )
         } else {
-            root_leader_renew_request_checksum(
+            placement_leader_renew_request_checksum(
                 &receipt.lease.leader_node_id,
                 receipt.lease.epoch,
                 receipt.lease.ttl_ms,

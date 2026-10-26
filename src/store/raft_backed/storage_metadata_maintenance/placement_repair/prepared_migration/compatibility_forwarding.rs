@@ -1,47 +1,47 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_root_placement_migration_prepared(
+    pub fn propose_placement_migration_prepared(
         &mut self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
         let prepared =
-            self.prepare_root_placement_migration_raft_entry(plan, expected_plan_checksum)?;
-        self.propose_prepared_root_placement_migration(prepared)
+            self.prepare_placement_migration_raft_entry(plan, expected_plan_checksum)?;
+        self.propose_prepared_placement_migration(prepared)
     }
 
-    pub fn propose_root_placement_migration_prepared_linearizable(
+    pub fn propose_placement_migration_prepared_linearizable(
         &mut self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
     ) -> Result<ObjectMetadata, ObjectError> {
-        let prepared = self.prepare_root_placement_migration_raft_entry_linearizable(
+        let prepared = self.prepare_placement_migration_raft_entry_linearizable(
             plan,
             expected_plan_checksum,
         )?;
-        self.propose_prepared_root_placement_migration_linearizable(prepared)
+        self.propose_prepared_placement_migration_linearizable(prepared)
     }
 
-    pub fn propose_root_placement_migration_prepared_with_envelope_linearizable(
+    pub fn propose_placement_migration_prepared_with_envelope_linearizable(
         &mut self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
     ) -> Result<CommittedPlacementMigration, ObjectError> {
-        let prepared = self.prepare_root_placement_migration_raft_entry_linearizable(
+        let prepared = self.prepare_placement_migration_raft_entry_linearizable(
             plan,
             expected_plan_checksum,
         )?;
-        self.propose_prepared_root_placement_migration_with_envelope_linearizable(prepared)
+        self.propose_prepared_placement_migration_with_envelope_linearizable(prepared)
     }
 
-    pub fn propose_root_placement_migration_prepared_with_envelope_and_read_proof_linearizable(
+    pub fn propose_placement_migration_prepared_with_envelope_and_read_proof_linearizable(
         &mut self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
         now_ms: u64,
     ) -> Result<ProvenMetadataRead<CommittedPlacementMigration>, ObjectError> {
-        self.propose_root_placement_migration_prepared_with_envelope_and_read_proof_linearizable_committed_at(
+        self.propose_placement_migration_prepared_with_envelope_and_read_proof_linearizable_committed_at(
             plan,
             expected_plan_checksum,
             now_ms,
@@ -50,7 +50,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_root_placement_migration_prepared_with_envelope_and_read_proof_linearizable_committed_at(
+    pub fn propose_placement_migration_prepared_with_envelope_and_read_proof_linearizable_committed_at(
         &mut self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
@@ -64,7 +64,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let committed = self.propose_root_placement_migration_prepared_with_envelope_linearizable(
+        let committed = self.propose_placement_migration_prepared_with_envelope_linearizable(
             plan,
             expected_plan_checksum,
         )?;
@@ -77,14 +77,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven_metadata_read(committed, &readiness))
     }
 
-    pub fn propose_root_placement_migration_prepared_with_envelope_and_route_proof_linearizable_fenced(
+    pub fn propose_placement_migration_prepared_with_envelope_and_route_proof_linearizable_fenced(
         &mut self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenRouteFencedMetadataRead<CommittedPlacementMigration>, ObjectError> {
-        self.propose_root_placement_migration_prepared_with_envelope_and_route_proof_linearizable_fenced_committed_at(
+        self.propose_placement_migration_prepared_with_envelope_and_route_proof_linearizable_fenced_committed_at(
             plan,
             expected_plan_checksum,
             now_ms,
@@ -94,7 +94,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_root_placement_migration_prepared_with_envelope_and_route_proof_linearizable_fenced_committed_at(
+    pub fn propose_placement_migration_prepared_with_envelope_and_route_proof_linearizable_fenced_committed_at(
         &mut self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
@@ -110,7 +110,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
-            .propose_root_placement_migration_prepared_with_envelope_and_read_proof_linearizable_committed_at(
+            .propose_placement_migration_prepared_with_envelope_and_read_proof_linearizable_committed_at(
                 plan,
                 expected_plan_checksum,
                 now_ms,

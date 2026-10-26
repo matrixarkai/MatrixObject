@@ -64,7 +64,7 @@ impl MatrixObjectStore {
             page_health: NodePageHealth::default(),
             chunk_health: NodeChunkHealth::default(),
         };
-        let node = self.register_root_node(node)?;
+        let node = self.register_placement_node(node)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
                 if let Some(rollback) = rollback {
@@ -183,7 +183,7 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let node = self.heartbeat_root_node(
+        let node = self.heartbeat_placement_node(
             node_id,
             used_bytes,
             effective_capacity,
@@ -308,7 +308,7 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let node = self.heartbeat_root_node(
+        let node = self.heartbeat_placement_node(
             node_id,
             existing.used_bytes,
             existing.capacity_bytes,

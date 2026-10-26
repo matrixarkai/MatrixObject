@@ -95,7 +95,7 @@ impl MatrixObjectStore {
         append_persistent_journal_frame(&self.persistent_journal_path, &payload)
     }
 
-    fn append_root_coordinator_config_journal_record(
+    fn append_placement_coordinator_config_journal_record(
         &self,
         config: &MetadataCoordinatorConfig,
     ) -> Result<(), ObjectError> {

@@ -48,14 +48,14 @@ impl MatrixObjectStore {
                 now_ms,
                 idempotency_key,
             } => {
-                let (lease, _) = self.renew_root_leader_idempotent(
+                let (lease, _) = self.renew_placement_leader_idempotent(
                     &node_id,
                     epoch,
                     ttl_ms,
                     now_ms,
                     &idempotency_key,
                 )?;
-                Ok(root_leader_lease_metadata(
+                Ok(placement_leader_lease_metadata(
                     &lease,
                     "rootserver/leader-renew-idempotent",
                 ))
@@ -222,7 +222,7 @@ impl MatrixObjectStore {
                 expected_checksum,
                 replica_count,
                 update_time_ms,
-            } => self.apply_complete_multipart_upload_with_root_placement(
+            } => self.apply_complete_multipart_upload_with_placement(
                 upload_id,
                 expected_size,
                 expected_etag,

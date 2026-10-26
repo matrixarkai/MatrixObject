@@ -125,7 +125,7 @@ impl MatrixMetaService {
             coverage.total_batch_discard_receipt_count = coverage
                 .total_batch_discard_receipt_count
                 .saturating_add(node.page_health.batch_discard_receipt_count);
-            let health = root_pageserver_health_summary(&node.page_health);
+            let health = placement_pageserver_health_summary(&node.page_health);
             match health.status {
                 "healthy" => coverage.health_ok_count = coverage.health_ok_count.saturating_add(1),
                 "degraded" => {
@@ -341,7 +341,7 @@ struct PlacementPageServerHealthSummary {
     read_quorum_margin: u64,
 }
 
-fn root_pageserver_health_summary(health: &NodePageHealth) -> PlacementPageServerHealthSummary {
+fn placement_pageserver_health_summary(health: &NodePageHealth) -> PlacementPageServerHealthSummary {
     let required_write = health.write_quorum.max(1);
     let required_read = health.read_quorum.max(1);
     let write_available = health

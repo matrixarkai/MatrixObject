@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_batch_put_objects_with_root_placement(
+    pub fn propose_batch_put_objects_with_placement(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -9,7 +9,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         replica_count: usize,
         update_time_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.propose_batch_put_objects_with_root_placement_fenced(
+        self.propose_batch_put_objects_with_placement_fenced(
             requests,
             max_items,
             max_payload_bytes,
@@ -19,7 +19,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_batch_put_objects_with_root_placement_fenced(
+    pub fn propose_batch_put_objects_with_placement_fenced(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -53,7 +53,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_batch_put_objects_with_root_placement_fenced_with_read_proof_linearizable(
+    pub fn propose_batch_put_objects_with_placement_fenced_with_read_proof_linearizable(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -72,7 +72,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .map(|request| request.options.min_commit_index)
             .max()
             .unwrap_or(0);
-        self.propose_batch_put_objects_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+        self.propose_batch_put_objects_with_placement_fenced_with_read_proof_linearizable_committed_at(
             requests,
             max_items,
             max_payload_bytes,
@@ -84,7 +84,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_batch_put_objects_with_root_placement_with_route_proof_linearizable_fenced(
+    pub fn propose_batch_put_objects_with_placement_with_route_proof_linearizable_fenced(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -103,7 +103,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .map(|request| request.options.min_commit_index)
             .max()
             .unwrap_or(0);
-        self.propose_batch_put_objects_with_root_placement_with_route_proof_linearizable_fenced_committed_at(
+        self.propose_batch_put_objects_with_placement_with_route_proof_linearizable_fenced_committed_at(
             requests,
             max_items,
             max_payload_bytes,
@@ -115,7 +115,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_batch_put_objects_with_root_placement_with_route_proof_linearizable_fenced_committed_at(
+    pub fn propose_batch_put_objects_with_placement_with_route_proof_linearizable_fenced_committed_at(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -135,7 +135,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
-            .propose_batch_put_objects_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+            .propose_batch_put_objects_with_placement_fenced_with_read_proof_linearizable_committed_at(
                 requests,
                 max_items,
                 max_payload_bytes,
@@ -153,7 +153,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_batch_put_objects_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+    pub fn propose_batch_put_objects_with_placement_fenced_with_read_proof_linearizable_committed_at(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -170,7 +170,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let metadata = self.propose_batch_put_objects_with_root_placement_fenced(
+        let metadata = self.propose_batch_put_objects_with_placement_fenced(
             requests,
             max_items,
             max_payload_bytes,
@@ -187,7 +187,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(proven_metadata_read(metadata, &readiness))
     }
 
-    pub fn propose_batch_put_objects_with_root_placement_from_meta_shard(
+    pub fn propose_batch_put_objects_with_placement_from_meta_shard(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -212,7 +212,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_required_read_index,
             Self::put_requests_min_commit_index(&requests),
         )?;
-        self.propose_batch_put_objects_with_root_placement_fenced(
+        self.propose_batch_put_objects_with_placement_fenced(
             requests,
             max_items,
             max_payload_bytes,
@@ -222,7 +222,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_batch_put_objects_with_root_placement_with_read_proof_from_meta_shard(
+    pub fn propose_batch_put_objects_with_placement_with_read_proof_from_meta_shard(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -241,7 +241,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_shard_epoch,
             update_time_ms,
         )?;
-        self.propose_batch_put_objects_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+        self.propose_batch_put_objects_with_placement_fenced_with_read_proof_linearizable_committed_at(
             requests,
             max_items,
             max_payload_bytes,
@@ -253,7 +253,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_batch_put_objects_with_root_placement_with_route_proof_from_meta_shard_fenced(
+    pub fn propose_batch_put_objects_with_placement_with_route_proof_from_meta_shard_fenced(
         &mut self,
         requests: Vec<ObjectPutRequest>,
         max_items: usize,
@@ -272,7 +272,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_shard_epoch,
             update_time_ms,
         )?;
-        self.propose_batch_put_objects_with_root_placement_with_route_proof_linearizable_fenced_committed_at(
+        self.propose_batch_put_objects_with_placement_with_route_proof_linearizable_fenced_committed_at(
             requests,
             max_items,
             max_payload_bytes,

@@ -6,7 +6,7 @@ impl CatalogBootstrapReport {
     }
 
     pub fn report_checksum(&self) -> String {
-        root_catalog_bootstrap_report_checksum(self)
+        catalog_bootstrap_report_checksum(self)
     }
 
     pub fn verify_expected_report_checksum(

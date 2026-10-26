@@ -71,7 +71,7 @@ impl PlacementSnapshotDecodeFeatures {
     }
 }
 
-fn read_root_snapshot_nodes(
+fn read_placement_snapshot_nodes(
     mut cursor: &mut SnapshotByteCursor<'_>,
     features: PlacementSnapshotDecodeFeatures,
 ) -> Result<BTreeMap<String, PlacementNode>, ObjectError> {
@@ -154,7 +154,7 @@ fn read_root_snapshot_nodes(
                 1
             },
             meta_health: if has_root_meta_health {
-                read_root_meta_health(
+                read_placement_meta_health(
                     &mut cursor,
                     has_control2_meta_health,
                     has_control3_meta_health,
@@ -329,7 +329,7 @@ fn read_root_snapshot_nodes(
                 NodePageHealth::default()
             },
             chunk_health: if has_root_chunk_health {
-                read_root_chunk_health(
+                read_placement_chunk_health(
                     &mut cursor,
                     has_root_chunk_control_health,
                     has_root_chunk_reclaim_health,

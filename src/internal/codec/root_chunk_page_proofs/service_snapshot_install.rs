@@ -22,7 +22,7 @@ pub(crate) fn service_snapshot_install_source_proof_checksum(
     etag(&material)
 }
 
-pub fn root_service_snapshot_install_source_proof_report(
+pub fn placement_service_snapshot_install_source_proof_report(
     report: &PlacementSnapshotProofStreamReport,
 ) -> ServiceSnapshotInstallSourceProofReport {
     let service = "rootserver".to_string();
@@ -81,7 +81,7 @@ pub fn metaserver_snapshot_install_source_proof_report(
 ///  2. There is NO DECODER for it anywhere -- it has `to_control_fields` and no counterpart,
 ///     so it is output-only and is never received from a peer, a frame or a stored byte.
 ///  3. The two entry points that would accept an externally supplied `expected` --
-///     `install_root_snapshot_chunks_with_read_proof_source_report` and
+///     `install_placement_snapshot_chunks_with_read_proof_source_report` and
 ///     `install_raft_metadata_snapshot_chunks_with_read_proof_source_report` -- have ZERO
 ///     callers. Each computes `actual` locally from the same report the caller passed.
 ///

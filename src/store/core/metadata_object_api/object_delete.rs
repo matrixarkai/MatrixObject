@@ -103,7 +103,7 @@ impl MatrixObjectStore {
         } else {
             Some(self.capture_object_mutation_rollback())
         };
-        let metadata = self.apply_delete_with_root_release(
+        let metadata = self.apply_delete_with_placement_release(
             bucket.to_string(),
             key.to_string(),
             update_time_ms,
@@ -124,7 +124,7 @@ impl MatrixObjectStore {
         Ok(metadata)
     }
 
-    pub fn delete_object_with_root_release_fenced(
+    pub fn delete_object_with_placement_release_fenced(
         &mut self,
         bucket: &str,
         key: &str,
@@ -153,7 +153,7 @@ impl MatrixObjectStore {
         })
     }
 
-    pub fn delete_object_with_root_release_and_metadata_read(
+    pub fn delete_object_with_placement_release_and_metadata_read(
         &mut self,
         bucket: &str,
         key: &str,
@@ -162,7 +162,7 @@ impl MatrixObjectStore {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ObjectDeleteReport, ObjectError> {
         let (_, readiness) = self.head_object_with_metadata_read(bucket, key, read_options)?;
-        let mut report = self.delete_object_with_root_release_fenced(
+        let mut report = self.delete_object_with_placement_release_fenced(
             bucket,
             key,
             if_match_etag,

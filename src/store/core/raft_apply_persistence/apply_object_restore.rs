@@ -71,7 +71,7 @@ impl MatrixObjectStore {
         )
     }
 
-    fn apply_restore_object_version_with_root_placement(
+    fn apply_restore_object_version_with_placement(
         &mut self,
         bucket: String,
         key: String,
@@ -86,7 +86,7 @@ impl MatrixObjectStore {
         options.user_metadata = source.user_metadata.clone().into();
         options.tags = source.tags.clone().into();
         options.storage_class = Some(source.storage_class.to_string());
-        self.apply_put_with_root_placement(
+        self.apply_put_with_placement(
             object_id.bucket.to_string(),
             object_id.key.to_string(),
             data,

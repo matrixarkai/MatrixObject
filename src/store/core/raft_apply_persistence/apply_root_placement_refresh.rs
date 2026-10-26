@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    fn apply_refresh_object_root_placement(
+    fn apply_refresh_object_placement(
         &mut self,
         bucket: String,
         key: String,
         replica_count: usize,
         update_time_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.apply_refresh_object_root_placement_inner(bucket, key, replica_count, update_time_ms)
+        self.apply_refresh_object_placement_inner(bucket, key, replica_count, update_time_ms)
             .map(|(metadata, _)| metadata)
     }
 
-    fn apply_refresh_object_root_placement_inner(
+    fn apply_refresh_object_placement_inner(
         &mut self,
         bucket: String,
         key: String,
@@ -73,7 +73,7 @@ impl MatrixObjectStore {
         Ok((metadata, true))
     }
 
-    pub(crate) fn apply_refresh_object_root_placements_page(
+    pub(crate) fn apply_refresh_object_placements_page(
         &mut self,
         marker: Option<ObjectId>,
         max_objects: usize,
@@ -100,7 +100,7 @@ impl MatrixObjectStore {
             ..PlacementRefreshReport::default()
         };
         for object_id in object_ids.iter().cloned() {
-            match self.apply_refresh_object_root_placement_inner(
+            match self.apply_refresh_object_placement_inner(
                 object_id.bucket.to_string(),
                 object_id.key.to_string(),
                 replica_count,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn propose_append_with_root_placement(
+    pub fn propose_append_with_placement(
         &mut self,
         bucket: &str,
         key: &str,
@@ -11,7 +11,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         options: PutOptions,
         update_time_ms: u64,
     ) -> Result<ObjectMetadata, ObjectError> {
-        self.propose_append_with_root_placement_fenced(
+        self.propose_append_with_placement_fenced(
             bucket,
             key,
             data,
@@ -23,7 +23,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_append_with_root_placement_fenced(
+    pub fn propose_append_with_placement_fenced(
         &mut self,
         bucket: &str,
         key: &str,
@@ -50,7 +50,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_append_with_root_placement_fenced_with_read_proof_linearizable(
+    pub fn propose_append_with_placement_fenced_with_read_proof_linearizable(
         &mut self,
         bucket: &str,
         key: &str,
@@ -61,7 +61,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         update_time_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_append_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+        self.propose_append_with_placement_fenced_with_read_proof_linearizable_committed_at(
             bucket,
             key,
             data,
@@ -75,7 +75,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_append_with_root_placement_with_route_proof_linearizable_fenced(
+    pub fn propose_append_with_placement_with_route_proof_linearizable_fenced(
         &mut self,
         bucket: &str,
         key: &str,
@@ -86,7 +86,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         update_time_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ProvenRouteFencedMetadataRead<ObjectMetadata>, ObjectError> {
-        self.propose_append_with_root_placement_with_route_proof_linearizable_fenced_committed_at(
+        self.propose_append_with_placement_with_route_proof_linearizable_fenced_committed_at(
             bucket,
             key,
             data,
@@ -100,7 +100,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )
     }
 
-    pub fn propose_append_with_root_placement_with_route_proof_linearizable_fenced_committed_at(
+    pub fn propose_append_with_placement_with_route_proof_linearizable_fenced_committed_at(
         &mut self,
         bucket: &str,
         key: &str,
@@ -121,7 +121,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         let route_control_proof = self.store.chunk_service.route_control_proof();
         let proven = self
-            .propose_append_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+            .propose_append_with_placement_fenced_with_read_proof_linearizable_committed_at(
                 bucket,
                 key,
                 data,
@@ -141,7 +141,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
-    pub fn propose_append_with_root_placement_fenced_with_read_proof_linearizable_committed_at(
+    pub fn propose_append_with_placement_fenced_with_read_proof_linearizable_committed_at(
         &mut self,
         bucket: &str,
         key: &str,
@@ -160,7 +160,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             min_read_index,
             min_commit_index,
         )?;
-        let metadata = self.propose_append_with_root_placement_fenced(
+        let metadata = self.propose_append_with_placement_fenced(
             bucket,
             key,
             data,

@@ -42,7 +42,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn prepare_root_placement_migration_raft_entry(
+    pub fn prepare_placement_migration_raft_entry(
         &self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: &str,
@@ -52,7 +52,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn prepare_root_placement_migration_raft_entry_with_min_free(
+    pub fn prepare_placement_migration_raft_entry_with_min_free(
         &self,
         plan: PlacementMigrationPlan,
         expected_plan_checksum: &str,
@@ -67,7 +67,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn apply_prepared_root_placement_migration(
+    pub fn apply_prepared_placement_migration(
         &mut self,
         prepared: PreparedPlacementMigration,
     ) -> Result<ObjectPlacement, ObjectError> {

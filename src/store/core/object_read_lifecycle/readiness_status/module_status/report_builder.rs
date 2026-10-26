@@ -55,7 +55,7 @@ fn build_objectstore_module_status(
         control_checksum: String::new(),
         ..Default::default()
     };
-    populate_root_module_status(&mut status, &readiness);
+    populate_placement_module_status(&mut status, &readiness);
     populate_metadata_module_status(&mut status, &readiness, metadata_replication_proof);
     populate_storage_module_status(&mut status, &readiness);
     populate_lifecycle_module_status(&mut status, &readiness);

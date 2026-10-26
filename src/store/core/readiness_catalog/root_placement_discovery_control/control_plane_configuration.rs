@@ -15,7 +15,7 @@ impl MatrixObjectStore {
         let metaserver_endpoint =
             metaserver_endpoint.or_else(|| self.configured_metaserver_catalog_endpoints());
         let rootserver_endpoint =
-            rootserver_endpoint.or_else(|| self.configured_rootserver_fallback_endpoint());
+            rootserver_endpoint.or_else(|| self.configured_placement_fallback_endpoint());
         let endpoint_set =
             mode.select_catalog_endpoint_set(metaserver_endpoint, rootserver_endpoint)?;
         let previous_mode = self.options.control_plane_mode.clone();
@@ -67,7 +67,7 @@ impl MatrixObjectStore {
         self.select_catalog_endpoint_set(None, None)
     }
 
-    pub fn configured_rootserver_fallback_endpoint(&self) -> Option<&str> {
+    pub fn configured_placement_fallback_endpoint(&self) -> Option<&str> {
         non_empty_endpoint(Some(self.options.rootserver_catalog_endpoint.as_str()))
     }
 
@@ -82,7 +82,7 @@ impl MatrixObjectStore {
     /// This is also the JOURNAL REPLAY path: `catalog_operations` replays a recorded
     /// endpoint by calling this function, so a journal carrying one is refused on replay by
     /// the same check, rather than quietly restoring a setting this build cannot serve.
-    pub fn configure_rootserver_fallback_endpoint(
+    pub fn configure_placement_fallback_endpoint(
         &mut self,
         rootserver_endpoint: impl AsRef<str>,
     ) -> Result<ControlPlaneCatalogEndpointSet, ObjectError> {
@@ -107,7 +107,7 @@ impl MatrixObjectStore {
         };
         let metaserver_endpoint = metaserver_endpoint.or(configured_metaserver_endpoint.as_deref());
         let rootserver_endpoint =
-            rootserver_endpoint.or_else(|| self.configured_rootserver_fallback_endpoint());
+            rootserver_endpoint.or_else(|| self.configured_placement_fallback_endpoint());
         self.options
             .control_plane_mode
             .select_catalog_endpoint(metaserver_endpoint, rootserver_endpoint)
@@ -121,7 +121,7 @@ impl MatrixObjectStore {
         let metaserver_endpoints =
             metaserver_endpoints.or_else(|| self.configured_metaserver_catalog_endpoints());
         let rootserver_endpoint =
-            rootserver_endpoint.or_else(|| self.configured_rootserver_fallback_endpoint());
+            rootserver_endpoint.or_else(|| self.configured_placement_fallback_endpoint());
         self.options
             .control_plane_mode
             .select_catalog_endpoint_set(metaserver_endpoints, rootserver_endpoint)

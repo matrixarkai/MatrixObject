@@ -140,7 +140,7 @@ impl MatrixObjectStore {
         Ok(metadata)
     }
 
-    pub fn restore_object_version_with_root_placement(
+    pub fn restore_object_version_with_placement(
         &mut self,
         bucket: &str,
         key: &str,

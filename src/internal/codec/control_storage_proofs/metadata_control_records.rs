@@ -55,7 +55,7 @@ pub(crate) fn metadata_coordinator_config_metadata(
     }
 }
 
-pub(crate) fn root_coordinator_config_metadata(
+pub(crate) fn placement_coordinator_config_metadata(
     config: &MetadataCoordinatorConfig,
 ) -> ObjectMetadata {
     let mut material = Vec::new();
@@ -101,7 +101,7 @@ pub(crate) fn metadata_lease_metadata(lease: &MetadataLease, content_type: &str)
     }
 }
 
-pub(crate) fn root_leader_lease_metadata(
+pub(crate) fn placement_leader_lease_metadata(
     lease: &PlacementLeaderLease,
     content_type: &str,
 ) -> ObjectMetadata {

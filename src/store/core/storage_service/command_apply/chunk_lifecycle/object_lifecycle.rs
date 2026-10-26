@@ -14,7 +14,7 @@ impl MatrixObjectStore {
                 key,
                 update_time_ms,
                 if_match_etag,
-            } => self.apply_delete_with_root_release(bucket, key, update_time_ms, if_match_etag),
+            } => self.apply_delete_with_placement_release(bucket, key, update_time_ms, if_match_etag),
             ObjectCommand::BatchDeleteObjects {
                 requests,
                 max_items,
@@ -84,7 +84,7 @@ impl MatrixObjectStore {
                 replica_count,
                 update_time_ms,
             } => {
-                self.apply_refresh_object_root_placement(bucket, key, replica_count, update_time_ms)
+                self.apply_refresh_object_placement(bucket, key, replica_count, update_time_ms)
             }
             ObjectCommand::RefreshAllObjectRootPlacements {
                 marker,
@@ -92,7 +92,7 @@ impl MatrixObjectStore {
                 replica_count,
                 update_time_ms,
             } => {
-                let report = self.apply_refresh_object_root_placements_page(
+                let report = self.apply_refresh_object_placements_page(
                     marker,
                     max_objects,
                     replica_count,

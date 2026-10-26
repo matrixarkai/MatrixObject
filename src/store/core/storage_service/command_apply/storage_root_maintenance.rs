@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    fn apply_storage_root_maintenance_command(
+    fn apply_storage_placement_maintenance_command(
         &mut self,
         command: ObjectCommand,
         _raft_entry_index: Option<u64>,

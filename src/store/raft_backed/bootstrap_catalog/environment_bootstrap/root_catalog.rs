@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    pub fn bootstrap_root_catalog_from_env(
+    pub fn bootstrap_catalog_from_env(
         &mut self,
     ) -> Result<Option<CatalogBootstrapReport>, ObjectError> {
         let require_bootstrap =
@@ -16,7 +16,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             return Ok(None);
         }
 
-        let before_status = self.store.root_raft_status(0);
+        let before_status = self.store.placement_raft_status(0);
         let target_commit_index = requested_commit_index.unwrap_or(before_status.commit_index);
         let target_read_index = requested_read_index.unwrap_or(before_status.read_index);
         let target_index = target_commit_index.max(target_read_index);
@@ -31,7 +31,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 .unwrap_or(65_536);
         let preferred_node_id = first_non_empty_env(&MATRIX_PLACEMENT_NODE_ID_ENV_NAMES)?;
         if before_status.commit_index >= target_index {
-            let after_status = self.store.root_raft_status(0);
+            let after_status = self.store.placement_raft_status(0);
             if after_status.read_index < target_read_index {
                 return Err(ObjectError::PreconditionFailed(format!(
                     "root catalog bootstrap read index is below target: target={} local={}",
@@ -57,7 +57,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         }
         let select_root_node = |store: &MatrixObjectStore| -> Result<PlacementNode, ObjectError> {
             let mut nodes: Vec<PlacementNode> = store
-                .root_nodes()
+                .placement_nodes()
                 .into_iter()
                 .filter(|node| {
                     is_control_plane_leader_candidate(node)
@@ -82,7 +82,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         let bootstrap_node = select_root_node(&self.store)?;
         let mut applied_steps = 0;
         let mut last_metadata = None;
-        while self.store.root_raft_status(0).commit_index < target_index {
+        while self.store.placement_raft_status(0).commit_index < target_index {
             if applied_steps >= max_steps {
                 return Err(ObjectError::PreconditionFailed(
                     "root catalog bootstrap exceeded max steps before target commit/read index"
@@ -96,7 +96,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             }
             let current = self
                 .store
-                .root_nodes()
+                .placement_nodes()
                 .into_iter()
                 .find(|node| node.node_id == bootstrap_node.node_id)
                 .ok_or_else(|| {
@@ -106,7 +106,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                     ))
                 })?;
             let now_ms = now_millis().max(current.last_heartbeat_ms.saturating_add(1));
-            let metadata = self.propose_heartbeat_root_node(
+            let metadata = self.propose_heartbeat_placement_node(
                 &current.node_id,
                 current.used_bytes,
                 current.capacity_bytes,
@@ -118,7 +118,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             applied_steps += 1;
         }
 
-        let after_status = self.store.root_raft_status(0);
+        let after_status = self.store.placement_raft_status(0);
         if after_status.read_index < target_read_index {
             return Err(ObjectError::PreconditionFailed(format!(
                 "root catalog bootstrap read index is below target: target={} local={}",
@@ -143,12 +143,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(Some(report))
     }
 
-    pub fn bootstrap_root_service_from_env_report(
+    pub fn bootstrap_placement_service_from_env_report(
         &mut self,
     ) -> Result<PlacementServiceBootstrapReport, ObjectError> {
-        let before_status = self.store.root_raft_status(0);
-        let catalog_report = self.bootstrap_root_catalog_from_env()?;
-        let after_status = self.store.root_raft_status(0);
+        let before_status = self.store.placement_raft_status(0);
+        let catalog_report = self.bootstrap_catalog_from_env()?;
+        let after_status = self.store.placement_raft_status(0);
         let report = PlacementServiceBootstrapReport {
             catalog_report,
             before_status,

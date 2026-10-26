@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
-    fn apply_root_bucket_command(
+    fn apply_placement_bucket_command(
         &mut self,
         command: ObjectCommand,
         raft_entry_index: Option<u64>,
@@ -57,7 +57,7 @@ impl MatrixObjectStore {
                 .map(|receipt| receipt.metadata),
             ObjectCommand::RegisterRootNode { node } => {
                 let node_id = node.node_id.clone();
-                self.register_root_node(node)?;
+                self.register_placement_node(node)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new("_rootnode", node_id),
                     version: 0,
@@ -82,7 +82,7 @@ impl MatrixObjectStore {
                 online,
                 now_ms,
             } => {
-                self.heartbeat_root_node(
+                self.heartbeat_placement_node(
                     &node_id,
                     used_bytes,
                     capacity_bytes,
@@ -111,7 +111,7 @@ impl MatrixObjectStore {
                 health,
                 now_ms,
             } => {
-                self.heartbeat_root_page_health(&node_id, health, now_ms)?;
+                self.heartbeat_placement_page_health(&node_id, health, now_ms)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new("_rootblockhealth", node_id),
                     version: now_ms,
@@ -133,7 +133,7 @@ impl MatrixObjectStore {
                 health,
                 now_ms,
             } => {
-                self.heartbeat_root_chunk_health(&node_id, health, now_ms)?;
+                self.heartbeat_placement_chunk_health(&node_id, health, now_ms)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new("_rootchunkhealth", node_id),
                     version: now_ms,
@@ -151,7 +151,7 @@ impl MatrixObjectStore {
                 })
             }
             ObjectCommand::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => {
-                let expired_count = self.expire_root_node_heartbeats(ttl_ms, now_ms)?;
+                let expired_count = self.expire_placement_node_heartbeats(ttl_ms, now_ms)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new("_rootheartbeatexpiry", "nodes"),
                     version: now_ms,
@@ -173,7 +173,7 @@ impl MatrixObjectStore {
                 force,
                 now_ms,
             } => {
-                let report = self.remove_root_node(&node_id, force)?;
+                let report = self.remove_placement_node(&node_id, force)?;
                 Ok(ObjectMetadata {
                     object_id: ObjectId::new("_rootnoderemove", node_id),
                     version: now_ms,
@@ -191,16 +191,16 @@ impl MatrixObjectStore {
                 })
             }
             ObjectCommand::ConfigureRootCoordinator { config } => {
-                let config = self.configure_root_coordinator_config(config)?;
-                Ok(root_coordinator_config_metadata(&config))
+                let config = self.configure_placement_coordinator_config(config)?;
+                Ok(placement_coordinator_config_metadata(&config))
             }
             ObjectCommand::CampaignRootLeader {
                 node_id,
                 ttl_ms,
                 now_ms,
             } => {
-                let lease = self.campaign_root_leader(&node_id, ttl_ms, now_ms)?;
-                Ok(root_leader_lease_metadata(
+                let lease = self.campaign_placement_leader(&node_id, ttl_ms, now_ms)?;
+                Ok(placement_leader_lease_metadata(
                     &lease,
                     "rootserver/leader-campaign",
                 ))
@@ -211,13 +211,13 @@ impl MatrixObjectStore {
                 now_ms,
                 idempotency_key,
             } => {
-                let (lease, receipt) = self.campaign_root_leader_idempotent(
+                let (lease, receipt) = self.campaign_placement_leader_idempotent(
                     &node_id,
                     ttl_ms,
                     now_ms,
                     &idempotency_key,
                 )?;
-                Ok(root_leader_lease_metadata(
+                Ok(placement_leader_lease_metadata(
                     &lease,
                     if receipt.idempotency_key == idempotency_key {
                         "rootserver/leader-campaign-idempotent"
@@ -232,8 +232,8 @@ impl MatrixObjectStore {
                 ttl_ms,
                 now_ms,
             } => {
-                let lease = self.renew_root_leader(&node_id, epoch, ttl_ms, now_ms)?;
-                Ok(root_leader_lease_metadata(
+                let lease = self.renew_placement_leader(&node_id, epoch, ttl_ms, now_ms)?;
+                Ok(placement_leader_lease_metadata(
                     &lease,
                     "rootserver/leader-renew",
                 ))

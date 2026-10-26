@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
 
-    pub fn plan_draining_root_placement_repairs(
+    pub fn plan_draining_placement_repairs(
         &self,
         max_objects: usize,
     ) -> PlacementRepairReport {
@@ -11,7 +11,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn repair_draining_root_placements(
+    pub fn repair_draining_placements(
         &mut self,
         max_objects: usize,
     ) -> PlacementRepairReport {
@@ -19,7 +19,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn plan_unhealthy_root_placement_repairs(
+    pub fn plan_unhealthy_placement_repairs(
         &self,
         marker: Option<&ObjectId>,
         max_objects: usize,
@@ -37,7 +37,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn repair_unhealthy_root_placements(
+    pub fn repair_unhealthy_placements(
         &mut self,
         marker: Option<&ObjectId>,
         max_objects: usize,
@@ -55,7 +55,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn prepare_draining_root_placement_repair_raft_entry(
+    pub fn prepare_draining_placement_repair_raft_entry(
         &self,
         max_objects: usize,
     ) -> PreparedPlacementRepair {
@@ -64,7 +64,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn apply_prepared_draining_root_placement_repair(
+    pub fn apply_prepared_draining_placement_repair(
         &mut self,
         prepared: PreparedPlacementRepair,
     ) -> Result<PlacementRepairReport, ObjectError> {
@@ -73,7 +73,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn prepare_unhealthy_root_placement_repair_raft_entry(
+    pub fn prepare_unhealthy_placement_repair_raft_entry(
         &self,
         marker: Option<&ObjectId>,
         max_objects: usize,
@@ -92,7 +92,7 @@ impl MatrixObjectStore {
     }
 
 
-    pub fn apply_prepared_unhealthy_root_placement_repair(
+    pub fn apply_prepared_unhealthy_placement_repair(
         &mut self,
         prepared: PreparedUnhealthyPlacementRepair,
     ) -> Result<PlacementRepairReport, ObjectError> {
