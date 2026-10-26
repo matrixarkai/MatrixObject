@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
-    pub fn chunkserver_coverage(&self, min_free_bytes: u64) -> PlacementChunkServerCoverage {
-        let mut coverage = PlacementChunkServerCoverage {
+    pub fn replicaserver_coverage(&self, min_free_bytes: u64) -> PlacementReplicaServerCoverage {
+        let mut coverage = PlacementReplicaServerCoverage {
             min_free_bytes,
             status: "none".to_string(),
-            ..PlacementChunkServerCoverage::default()
+            ..PlacementReplicaServerCoverage::default()
         };
         for node in self.nodes.values() {
             if node.service_kind != "chunkserver" || !node.data_eligible || !node.online {
@@ -60,8 +60,8 @@ impl MatrixMetaService {
                 || node.chunk_health.fragmented_chunk_count > 0
                 || node.chunk_health.fragmented_discarded_bytes > 0
             {
-                coverage.reclaim_pressure_chunkserver_count = coverage
-                    .reclaim_pressure_chunkserver_count
+                coverage.reclaim_pressure_replicaserver_count = coverage
+                    .reclaim_pressure_replicaserver_count
                     .saturating_add(1);
             }
             match node.chunk_health.service_health.as_str() {
@@ -97,16 +97,16 @@ impl MatrixMetaService {
             let mode_read_only = node.chunk_health.service_mode == "read_only";
             let mode_draining = node.chunk_health.service_mode == "draining";
             if node.chunk_health.frozen {
-                coverage.frozen_chunkserver_count =
-                    coverage.frozen_chunkserver_count.saturating_add(1);
+                coverage.frozen_replicaserver_count =
+                    coverage.frozen_replicaserver_count.saturating_add(1);
             }
             if mode_read_only || !node.chunk_health.accepting_writes {
-                coverage.read_only_chunkserver_count =
-                    coverage.read_only_chunkserver_count.saturating_add(1);
+                coverage.read_only_replicaserver_count =
+                    coverage.read_only_replicaserver_count.saturating_add(1);
             }
             if !node.chunk_health.raft_writable {
-                coverage.raft_unwritable_chunkserver_count =
-                    coverage.raft_unwritable_chunkserver_count.saturating_add(1);
+                coverage.raft_unwritable_replicaserver_count =
+                    coverage.raft_unwritable_replicaserver_count.saturating_add(1);
             }
             let has_control_proof = !node.chunk_health.control_proof_checksum.is_empty();
             let control_blocked = has_control_proof
@@ -119,26 +119,26 @@ impl MatrixMetaService {
                 || mode_read_only
                 || mode_draining;
             if node.draining || health_blocked {
-                coverage.draining_chunkserver_count =
-                    coverage.draining_chunkserver_count.saturating_add(1);
-                coverage.placement_ineligible_chunkserver_count = coverage
-                    .placement_ineligible_chunkserver_count
+                coverage.draining_replicaserver_count =
+                    coverage.draining_replicaserver_count.saturating_add(1);
+                coverage.placement_ineligible_replicaserver_count = coverage
+                    .placement_ineligible_replicaserver_count
                     .saturating_add(1);
                 continue;
             }
             if reported_free < min_free_bytes {
-                coverage.capacity_floor_blocked_chunkserver_count = coverage
-                    .capacity_floor_blocked_chunkserver_count
+                coverage.capacity_floor_blocked_replicaserver_count = coverage
+                    .capacity_floor_blocked_replicaserver_count
                     .saturating_add(1);
-                coverage.placement_ineligible_chunkserver_count = coverage
-                    .placement_ineligible_chunkserver_count
+                coverage.placement_ineligible_replicaserver_count = coverage
+                    .placement_ineligible_replicaserver_count
                     .saturating_add(1);
                 continue;
             }
-            coverage.writable_chunkserver_count =
-                coverage.writable_chunkserver_count.saturating_add(1);
-            coverage.placement_eligible_chunkserver_count = coverage
-                .placement_eligible_chunkserver_count
+            coverage.writable_replicaserver_count =
+                coverage.writable_replicaserver_count.saturating_add(1);
+            coverage.placement_eligible_replicaserver_count = coverage
+                .placement_eligible_replicaserver_count
                 .saturating_add(1);
         }
         if coverage.control_proof_count > 0 {
@@ -188,14 +188,14 @@ impl MatrixMetaService {
         ) {
             status
         } else {
-            chunkserver_coverage_status(
+            replicaserver_coverage_status(
                 coverage.active_replicaserver_count,
-                coverage.writable_chunkserver_count,
-                coverage.draining_chunkserver_count,
-                coverage.capacity_floor_blocked_chunkserver_count,
-                coverage.frozen_chunkserver_count,
-                coverage.read_only_chunkserver_count,
-                coverage.raft_unwritable_chunkserver_count,
+                coverage.writable_replicaserver_count,
+                coverage.draining_replicaserver_count,
+                coverage.capacity_floor_blocked_replicaserver_count,
+                coverage.frozen_replicaserver_count,
+                coverage.read_only_replicaserver_count,
+                coverage.raft_unwritable_replicaserver_count,
             )
         }
         .to_string();

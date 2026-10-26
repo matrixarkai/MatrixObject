@@ -12,39 +12,39 @@ fn placement_raft_status_chunk_fields(
         ),
         (
             "placement_writable_chunkserver_count",
-            status.root_writable_chunkserver_count,
+            status.root_writable_replicaserver_count,
         ),
         (
             "placement_eligible_chunkserver_count",
-            status.root_placement_eligible_chunkserver_count,
+            status.root_placement_eligible_replicaserver_count,
         ),
         (
             "placement_ineligible_chunkserver_count",
-            status.root_placement_ineligible_chunkserver_count,
+            status.root_placement_ineligible_replicaserver_count,
         ),
         (
             "placement_chunkserver_control_proof_count",
-            status.root_chunkserver_control_proof_count,
+            status.root_replicaserver_control_proof_count,
         ),
         (
             "placement_chunkserver_control_read_ready_count",
-            status.root_chunkserver_control_read_ready_count,
+            status.root_replicaserver_control_read_ready_count,
         ),
         (
             "placement_chunkserver_control_write_ready_count",
-            status.root_chunkserver_control_write_ready_count,
+            status.root_replicaserver_control_write_ready_count,
         ),
         (
             "placement_chunkserver_control_min_raft_commit_index",
-            status.root_chunkserver_control_min_raft_commit_index,
+            status.root_replicaserver_control_min_raft_commit_index,
         ),
         (
             "placement_chunkserver_control_max_raft_commit_index",
-            status.root_chunkserver_control_max_raft_commit_index,
+            status.root_replicaserver_control_max_raft_commit_index,
         ),
         (
             "placement_chunkserver_total_discarded_range_count",
-            status.root_chunkserver_total_discarded_range_count,
+            status.root_replicaserver_total_discarded_range_count,
         ),
         (
             "placement_chunkserver_total_reclaimable_bytes",
@@ -64,7 +64,7 @@ fn placement_raft_status_chunk_fields(
         ),
         (
             "placement_reclaim_pressure_chunkserver_count",
-            status.root_reclaim_pressure_chunkserver_count,
+            status.root_reclaim_pressure_replicaserver_count,
         ),
         (
             "root_chunkserver_health_ok_count",

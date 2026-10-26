@@ -147,79 +147,79 @@ pub(crate) fn root_raft_status_checksum(status: &PlacementRaftStatus) -> String 
         status.root_page_allocator_shards_complete as u64,
     );
     append_string(&mut material, &status.root_page_allocator_shard_status);
-    append_u64(&mut material, status.root_ready_chunkserver_count);
-    append_u64(&mut material, status.root_read_ready_chunkserver_count);
+    append_u64(&mut material, status.root_ready_pageserver_count);
+    append_u64(&mut material, status.root_read_ready_pageserver_count);
     append_u64(
         &mut material,
-        status.root_chunkserver_route_control_proof_count,
+        status.root_pageserver_route_control_proof_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_route_control_read_ready_count,
+        status.root_pageserver_route_control_read_ready_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_route_control_write_ready_count,
+        status.root_pageserver_route_control_write_ready_count,
     );
     append_string(
         &mut material,
-        &status.root_chunkserver_route_control_proof_checksum,
+        &status.root_pageserver_route_control_proof_checksum,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_route_control_min_commit_index,
+        status.root_pageserver_route_control_min_commit_index,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_route_control_max_commit_index,
+        status.root_pageserver_route_control_max_commit_index,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_chunk_metadata_dirty_endpoint_count,
+        status.root_pageserver_total_chunk_metadata_dirty_endpoint_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_chunk_metadata_dirty_mutations,
+        status.root_pageserver_total_chunk_metadata_dirty_mutations,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_max_chunk_metadata_checkpoint_interval,
+        status.root_pageserver_max_chunk_metadata_checkpoint_interval,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_deferred_metadata_checkpoint_endpoint_count,
+        status.root_pageserver_total_deferred_metadata_checkpoint_endpoint_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_deferred_metadata_checkpoint_requests,
+        status.root_pageserver_total_deferred_metadata_checkpoint_requests,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_deferred_metadata_checkpoint_runs,
+        status.root_pageserver_total_deferred_metadata_checkpoint_runs,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_chunk_capacity_rejected_writes,
+        status.root_pageserver_total_chunk_capacity_rejected_writes,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_replica_service_mode_rejected_mutations,
+        status.root_pageserver_total_replica_service_mode_rejected_mutations,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_chunk_physical_write_count,
+        status.root_pageserver_total_chunk_physical_write_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_chunk_physical_write_bytes,
+        status.root_pageserver_total_chunk_physical_write_bytes,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_chunk_physical_discard_range_count,
+        status.root_pageserver_total_chunk_physical_discard_range_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_chunk_physical_discard_bytes,
+        status.root_pageserver_total_chunk_physical_discard_bytes,
     );
     append_u64(
         &mut material,
@@ -239,31 +239,31 @@ pub(crate) fn root_raft_status_checksum(status: &PlacementRaftStatus) -> String 
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_allocation_receipt_count,
+        status.root_pageserver_total_allocation_receipt_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_batch_allocation_receipt_count,
+        status.root_pageserver_total_batch_allocation_receipt_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_release_allocation_receipt_count,
+        status.root_pageserver_total_release_allocation_receipt_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_write_receipt_count,
+        status.root_pageserver_total_write_receipt_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_batch_write_receipt_count,
+        status.root_pageserver_total_batch_write_receipt_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_discard_receipt_count,
+        status.root_pageserver_total_discard_receipt_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_batch_discard_receipt_count,
+        status.root_pageserver_total_batch_discard_receipt_count,
     );
     append_u64(&mut material, status.root_pageserver_health_ok_count);
     append_u64(&mut material, status.root_pageserver_health_degraded_count);
@@ -282,24 +282,24 @@ pub(crate) fn root_raft_status_checksum(status: &PlacementRaftStatus) -> String 
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_write_quorum,
+        status.root_pageserver_total_write_quorum,
     );
-    append_u64(&mut material, status.root_chunkserver_total_read_quorum);
+    append_u64(&mut material, status.root_pageserver_total_read_quorum);
     append_u64(
         &mut material,
-        status.root_chunkserver_total_write_quorum_deficit,
-    );
-    append_u64(
-        &mut material,
-        status.root_chunkserver_total_read_quorum_deficit,
+        status.root_pageserver_total_write_quorum_deficit,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_write_quorum_margin,
+        status.root_pageserver_total_read_quorum_deficit,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_read_quorum_margin,
+        status.root_pageserver_total_write_quorum_margin,
+    );
+    append_u64(
+        &mut material,
+        status.root_pageserver_total_read_quorum_margin,
     );
     append_string(
         &mut material,
@@ -307,42 +307,42 @@ pub(crate) fn root_raft_status_checksum(status: &PlacementRaftStatus) -> String 
     );
     append_string(
         &mut material,
-        &status.root_chunkserver_service_coverage_status,
+        &status.root_pageserver_service_coverage_status,
     );
     append_u64(&mut material, status.root_active_replicaserver_count);
-    append_u64(&mut material, status.root_writable_chunkserver_count);
+    append_u64(&mut material, status.root_writable_replicaserver_count);
     append_u64(
         &mut material,
-        status.root_placement_eligible_chunkserver_count,
+        status.root_placement_eligible_replicaserver_count,
     );
     append_u64(
         &mut material,
-        status.root_placement_ineligible_chunkserver_count,
+        status.root_placement_ineligible_replicaserver_count,
     );
-    append_u64(&mut material, status.root_chunkserver_control_proof_count);
+    append_u64(&mut material, status.root_replicaserver_control_proof_count);
     append_u64(
         &mut material,
-        status.root_chunkserver_control_read_ready_count,
+        status.root_replicaserver_control_read_ready_count,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_control_write_ready_count,
+        status.root_replicaserver_control_write_ready_count,
     );
     append_string(
         &mut material,
-        &status.root_chunkserver_control_proof_checksum,
+        &status.root_replicaserver_control_proof_checksum,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_control_min_raft_commit_index,
+        status.root_replicaserver_control_min_raft_commit_index,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_control_max_raft_commit_index,
+        status.root_replicaserver_control_max_raft_commit_index,
     );
     append_u64(
         &mut material,
-        status.root_chunkserver_total_discarded_range_count,
+        status.root_replicaserver_total_discarded_range_count,
     );
     append_u64(
         &mut material,
@@ -362,9 +362,9 @@ pub(crate) fn root_raft_status_checksum(status: &PlacementRaftStatus) -> String 
     );
     append_u64(
         &mut material,
-        status.root_reclaim_pressure_chunkserver_count,
+        status.root_reclaim_pressure_replicaserver_count,
     );
-    append_string(&mut material, &status.root_chunkserver_coverage_status);
+    append_string(&mut material, &status.root_replicaserver_coverage_status);
     append_u64(&mut material, status.root_replicaserver_health_ok_count);
     append_u64(
         &mut material,

@@ -111,9 +111,9 @@ pub(crate) fn append_chunk_storage_bootstrap_readiness(
     append_u64(out, readiness.discard_receipt_count);
     append_u64(out, readiness.batch_write_receipt_count);
     append_u64(out, readiness.batch_discard_receipt_count);
-    append_string(out, &readiness.chunkserver_control_proof_format);
-    append_string(out, &readiness.chunkserver_control_proof_checksum);
-    append_u64(out, readiness.chunkserver_control_proof_bytes);
+    append_string(out, &readiness.replicaserver_control_proof_format);
+    append_string(out, &readiness.replicaserver_control_proof_checksum);
+    append_u64(out, readiness.replicaserver_control_proof_bytes);
     append_replica_service_control_proof(out, &readiness.control_proof);
 }
 

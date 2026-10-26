@@ -83,13 +83,13 @@ impl ReplicaServiceBootstrapReport {
         fields.insert(
             format!("{field_prefix}before_chunkserver_control_proof_checksum"),
             self.before_readiness
-                .chunkserver_control_proof_checksum
+                .replicaserver_control_proof_checksum
                 .clone(),
         );
         fields.insert(
             format!("{field_prefix}after_chunkserver_control_proof_checksum"),
             self.after_readiness
-                .chunkserver_control_proof_checksum
+                .replicaserver_control_proof_checksum
                 .clone(),
         );
         fields.extend(

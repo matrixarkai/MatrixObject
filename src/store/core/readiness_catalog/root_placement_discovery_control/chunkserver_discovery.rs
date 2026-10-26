@@ -17,22 +17,22 @@ impl MatrixObjectStore {
         if let Some(expected) = expected_catalog_route_checksum {
             endpoint_set.require_catalog_route_checksum(expected)?;
         }
-        let coverage = self.meta_service.chunkserver_coverage(min_free_bytes);
+        let coverage = self.meta_service.replicaserver_coverage(min_free_bytes);
         if coverage.status == "none" {
             return Err(ObjectError::PreconditionFailed(
                 "catalog has no active chunkserver endpoints".to_string(),
             ));
         }
-        if coverage.status == "no_writable" || coverage.writable_chunkserver_count == 0 {
+        if coverage.status == "no_writable" || coverage.writable_replicaserver_count == 0 {
             return Err(ObjectError::PreconditionFailed(format!(
                 "catalog has no writable chunkserver endpoints: status={} writable={} draining={} capacity_floor_blocked={} frozen={} read_only={} raft_unwritable={}",
                 coverage.status,
-                coverage.writable_chunkserver_count,
-                coverage.draining_chunkserver_count,
-                coverage.capacity_floor_blocked_chunkserver_count,
-                coverage.frozen_chunkserver_count,
-                coverage.read_only_chunkserver_count,
-                coverage.raft_unwritable_chunkserver_count
+                coverage.writable_replicaserver_count,
+                coverage.draining_replicaserver_count,
+                coverage.capacity_floor_blocked_replicaserver_count,
+                coverage.frozen_replicaserver_count,
+                coverage.read_only_replicaserver_count,
+                coverage.raft_unwritable_replicaserver_count
             )));
         }
 
@@ -80,10 +80,10 @@ impl MatrixObjectStore {
         let writable = endpoints
             .len()
             .saturating_sub(disabled_endpoint_indexes.len()) as u64;
-        if writable != coverage.writable_chunkserver_count {
+        if writable != coverage.writable_replicaserver_count {
             return Err(ObjectError::Corruption(format!(
                 "catalog chunkserver coverage does not match discovered routes: writable={writable} root_writable={}",
-                coverage.writable_chunkserver_count
+                coverage.writable_replicaserver_count
             )));
         }
         Ok(CatalogChunkEndpointDiscovery {
@@ -103,13 +103,13 @@ impl MatrixObjectStore {
             disabled_endpoint_indexes,
             min_free_bytes,
             active_replicaserver_count: coverage.active_replicaserver_count,
-            writable_chunkserver_count: coverage.writable_chunkserver_count,
-            draining_chunkserver_count: coverage.draining_chunkserver_count,
-            capacity_floor_blocked_chunkserver_count: coverage
-                .capacity_floor_blocked_chunkserver_count,
-            frozen_chunkserver_count: coverage.frozen_chunkserver_count,
-            read_only_chunkserver_count: coverage.read_only_chunkserver_count,
-            raft_unwritable_chunkserver_count: coverage.raft_unwritable_chunkserver_count,
+            writable_replicaserver_count: coverage.writable_replicaserver_count,
+            draining_replicaserver_count: coverage.draining_replicaserver_count,
+            capacity_floor_blocked_replicaserver_count: coverage
+                .capacity_floor_blocked_replicaserver_count,
+            frozen_replicaserver_count: coverage.frozen_replicaserver_count,
+            read_only_replicaserver_count: coverage.read_only_replicaserver_count,
+            raft_unwritable_replicaserver_count: coverage.raft_unwritable_replicaserver_count,
             coverage_status: coverage.status,
         })
     }
