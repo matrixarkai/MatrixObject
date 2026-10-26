@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
-    pub fn pageserver_service_coverage(&self) -> PlacementPageServerServiceCoverage {
-        let mut coverage = PlacementPageServerServiceCoverage {
+    pub fn chunkserver_service_coverage(&self) -> PlacementChunkServerServiceCoverage {
+        let mut coverage = PlacementChunkServerServiceCoverage {
             status: "none".to_string(),
-            ..PlacementPageServerServiceCoverage::default()
+            ..PlacementChunkServerServiceCoverage::default()
         };
         for node in self.nodes.values() {
             if node.service_kind != "blockserver"
@@ -16,12 +16,12 @@ impl MatrixMetaService {
             }
             coverage.active_pageserver_count = coverage.active_pageserver_count.saturating_add(1);
             if node.page_health.ready {
-                coverage.ready_pageserver_count =
-                    coverage.ready_pageserver_count.saturating_add(1);
+                coverage.ready_chunkserver_count =
+                    coverage.ready_chunkserver_count.saturating_add(1);
             }
             if node.page_health.read_ready {
-                coverage.read_ready_pageserver_count =
-                    coverage.read_ready_pageserver_count.saturating_add(1);
+                coverage.read_ready_chunkserver_count =
+                    coverage.read_ready_chunkserver_count.saturating_add(1);
             }
             coverage.total_chunk_endpoint_count = coverage
                 .total_chunk_endpoint_count
@@ -125,7 +125,7 @@ impl MatrixMetaService {
             coverage.total_batch_discard_receipt_count = coverage
                 .total_batch_discard_receipt_count
                 .saturating_add(node.page_health.batch_discard_receipt_count);
-            let health = placement_pageserver_health_summary(&node.page_health);
+            let health = placement_chunkserver_health_summary(&node.page_health);
             match health.status {
                 "healthy" => coverage.health_ok_count = coverage.health_ok_count.saturating_add(1),
                 "degraded" => {
@@ -319,8 +319,8 @@ impl MatrixMetaService {
         } else {
             service_read_write_coverage_status(
                 coverage.active_pageserver_count,
-                coverage.read_ready_pageserver_count,
-                coverage.ready_pageserver_count,
+                coverage.read_ready_chunkserver_count,
+                coverage.ready_chunkserver_count,
             )
         }
         .to_string();
@@ -328,7 +328,7 @@ impl MatrixMetaService {
     }
 }
 
-struct PlacementPageServerHealthSummary {
+struct PlacementChunkServerHealthSummary {
     status: &'static str,
     fault_tolerant: bool,
     reason_count: u64,
@@ -341,7 +341,7 @@ struct PlacementPageServerHealthSummary {
     read_quorum_margin: u64,
 }
 
-fn placement_pageserver_health_summary(health: &NodePageHealth) -> PlacementPageServerHealthSummary {
+fn placement_chunkserver_health_summary(health: &NodePageHealth) -> PlacementChunkServerHealthSummary {
     let required_write = health.write_quorum.max(1);
     let required_read = health.read_quorum.max(1);
     let write_available = health
@@ -388,7 +388,7 @@ fn placement_pageserver_health_summary(health: &NodePageHealth) -> PlacementPage
     } else {
         "degraded"
     };
-    PlacementPageServerHealthSummary {
+    PlacementChunkServerHealthSummary {
         status,
         fault_tolerant,
         reason_count: reasons.len() as u64,

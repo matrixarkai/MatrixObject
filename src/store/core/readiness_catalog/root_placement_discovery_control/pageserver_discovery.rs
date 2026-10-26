@@ -29,7 +29,7 @@ impl MatrixObjectStore {
             endpoint_set.require_catalog_route_checksum(expected)?;
         }
         let coverage = self.meta_service.page_allocator_shard_coverage();
-        let service_coverage = self.meta_service.pageserver_service_coverage();
+        let service_coverage = self.meta_service.chunkserver_service_coverage();
         if coverage.status == "none" {
             return Err(ObjectError::PreconditionFailed(
                 "catalog has no active blockserver allocator shards".to_string(),
@@ -121,8 +121,8 @@ impl MatrixObjectStore {
             skipped_write_not_ready,
             skipped_read_not_ready,
             active_pageserver_count: coverage.active_pageserver_count,
-            ready_pageserver_count: service_coverage.ready_pageserver_count,
-            read_ready_pageserver_count: service_coverage.read_ready_pageserver_count,
+            ready_chunkserver_count: service_coverage.ready_chunkserver_count,
+            read_ready_chunkserver_count: service_coverage.read_ready_chunkserver_count,
             allocator_shard_count: coverage.shard_count,
             allocator_covered_shards: coverage.covered_shards,
             allocator_status: coverage.status,

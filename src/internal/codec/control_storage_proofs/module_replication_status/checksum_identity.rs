@@ -14,8 +14,8 @@ fn append_module_identity(mut material: &mut Vec<u8>, status: &ObjectStoreModule
     append_string(&mut material, &status.compression_status);
     append_string(&mut material, &status.ec_status);
     append_u64(&mut material, status.objectstore_open as u64);
-    append_u64(&mut material, status.replicaserver_open as u64);
-    append_u64(&mut material, status.pageserver_ready as u64);
+    append_u64(&mut material, status.chunkserver_open as u64);
+    append_u64(&mut material, status.chunkserver_ready as u64);
     append_u64(&mut material, status.bsclient_ready as u64);
     append_u64(&mut material, status.placement_ready as u64);
     append_u64(&mut material, status.placement_leader_ready as u64);

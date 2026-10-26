@@ -83,9 +83,9 @@ pub struct ReplicaStorageReadiness {
     pub discard_receipt_count: u64,
     pub batch_write_receipt_count: u64,
     pub batch_discard_receipt_count: u64,
-    pub replicaserver_control_proof_format: String,
-    pub replicaserver_control_proof_checksum: String,
-    pub replicaserver_control_proof_bytes: u64,
+    pub chunkserver_control_proof_format: String,
+    pub chunkserver_control_proof_checksum: String,
+    pub chunkserver_control_proof_bytes: u64,
     pub control_proof: ReplicaServiceControlProof,
 }
 
@@ -151,11 +151,11 @@ impl ReplicaStorageReadiness {
         );
         fields.insert(
             format!("{field_prefix}chunkserver_control_proof_format"),
-            self.replicaserver_control_proof_format.clone(),
+            self.chunkserver_control_proof_format.clone(),
         );
         fields.insert(
             format!("{field_prefix}chunkserver_control_proof_checksum"),
-            self.replicaserver_control_proof_checksum.clone(),
+            self.chunkserver_control_proof_checksum.clone(),
         );
         fields.insert(
             format!("{field_prefix}last_partial_reclaim_failure_status"),
@@ -299,7 +299,7 @@ impl ReplicaStorageReadiness {
             ),
             (
                 "chunkserver_control_proof_bytes",
-                self.replicaserver_control_proof_bytes,
+                self.chunkserver_control_proof_bytes,
             ),
         ] {
             fields.insert(format!("{field_prefix}{name}"), value.to_string());
