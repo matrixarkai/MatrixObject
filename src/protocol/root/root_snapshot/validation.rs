@@ -140,41 +140,62 @@ impl RootSnapshot {
             }
             receipt.verify_proof_checksum()?;
         }
-        let mut checksum_compatibility_names = vec![
-            "current", "v26", "v22", "v21", "v20", "v18", "v19", "v16", "v11", "v10", "v9", "v8",
-            "v7", "v2",
-        ];
-        let mut accepted_checksums = vec![
-            self.checksum_material_hash(),
-            self.v26_checksum_material_hash(),
-            self.v22_checksum_material_hash(),
-            self.v21_checksum_material_hash(),
-            self.v20_checksum_material_hash(),
-            self.v18_checksum_material_hash(),
-            self.v19_checksum_material_hash(),
-            self.v16_checksum_material_hash(),
-            self.v11_checksum_material_hash(),
-            self.v10_checksum_material_hash(),
-            self.v9_checksum_material_hash(),
-            self.v8_checksum_material_hash(),
-            self.v7_checksum_material_hash(),
-            self.v2_checksum_material_hash(),
-        ];
-        if self.leader_lease_receipts.is_empty() {
-            accepted_checksums.push(self.legacy_checksum_material_hash());
-            checksum_compatibility_names.push("legacy");
-        }
-        if !accepted_checksums
-            .iter()
-            .any(|checksum| checksum == &self.checksum)
-        {
+        // ONE LIST OF PAIRS, NOT TWO LISTS CORRELATED BY INDEX. The names and the hashes
+        // used to be separate `vec![..]`s that had to stay in the same order, and nothing
+        // checked that they did -- so a format inserted into one and not the other would
+        // have made the error message name the wrong format while still validating
+        // correctly, which is the quietest kind of wrong.
+        let accepted = self.accepted_checksum_formats();
+        if !accepted.iter().any(|(_, checksum)| checksum == &self.checksum) {
             return Err(ObjectError::Corruption(format!(
                 "root snapshot checksum mismatch: stored {}, current {}, accepted formats {}",
                 self.checksum,
-                accepted_checksums.first().cloned().unwrap_or_default(),
-                checksum_compatibility_names.join(",")
+                accepted
+                    .first()
+                    .map(|(_, checksum)| checksum.clone())
+                    .unwrap_or_default(),
+                accepted
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(",")
             )));
         }
         Ok(())
+    }
+
+    /// Every checksum format this build will accept for a stored snapshot, newest first.
+    ///
+    /// # WHY THIS IS A FUNCTION AND NOT A LIST INSIDE `validate`
+    ///
+    /// The whole read-old-forever discipline rests on this list: a snapshot written by any
+    /// earlier build stored one of these hashes, and dropping an entry makes that store fail
+    /// to load. Measured, not assumed -- removing one and running the entire library suite
+    /// left it green, so nothing anywhere asserted that an older snapshot still validates.
+    /// Exposing the list is what lets a guard walk it and check each one.
+    pub(crate) fn accepted_checksum_formats(&self) -> Vec<(&'static str, String)> {
+        let mut accepted = vec![
+            ("current", self.checksum_material_hash()),
+            // The format that was current until the page raft endpoint counts joined the
+            // material. Every snapshot written by an earlier build stored this one.
+            ("v32", self.v32_checksum_material_hash()),
+            ("v26", self.v26_checksum_material_hash()),
+            ("v22", self.v22_checksum_material_hash()),
+            ("v21", self.v21_checksum_material_hash()),
+            ("v20", self.v20_checksum_material_hash()),
+            ("v18", self.v18_checksum_material_hash()),
+            ("v19", self.v19_checksum_material_hash()),
+            ("v16", self.v16_checksum_material_hash()),
+            ("v11", self.v11_checksum_material_hash()),
+            ("v10", self.v10_checksum_material_hash()),
+            ("v9", self.v9_checksum_material_hash()),
+            ("v8", self.v8_checksum_material_hash()),
+            ("v7", self.v7_checksum_material_hash()),
+            ("v2", self.v2_checksum_material_hash()),
+        ];
+        if self.leader_lease_receipts.is_empty() {
+            accepted.push(("legacy", self.legacy_checksum_material_hash()));
+        }
+        accepted
     }
 }
