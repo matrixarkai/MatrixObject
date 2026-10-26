@@ -571,6 +571,35 @@ jobs:
       # matters is the live gate and the snapshot DECODE gate: those two disagreeing means a
       # store writes a snapshot it cannot read back, so this guard round-trips both the lease
       # this store now writes and the one an older store would carry.
+      # THESE THREE PIN A DECISION, not just a behaviour. When a control proof exists but
+      # is not ready AND no endpoint is writable, two labels are true: the proof names the
+      # proximate cause and the endpoint count names the consequence. The proof leads, and
+      # the reason that answer was chosen over the other is recorded at the assertions
+      # themselves. Flipping the precedence fails all three -- measured, by planting it.
+      - name: The coverage status leads with the control proof
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::rootserver_raft_status_exposes_service_coverage -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::rootserver_raft_status_exposes_service_coverage did not run"; exit 1; }
+
+      - name: The pageserver coverage status leads with the route control proof
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::rootserver_tracks_pageserver_service_coverage_for_write_routing -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::rootserver_tracks_pageserver_service_coverage_for_write_routing did not run"; exit 1; }
+
+      - name: A health heartbeat moves the coverage status it reports
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::rootserver_health_heartbeats_update_service_coverage -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::rootserver_health_heartbeats_update_service_coverage did not run"; exit 1; }
+
       - name: The control plane leader lease is the metaserver's and old snapshots still load
         run: |
           set -o pipefail
