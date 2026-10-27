@@ -50206,3 +50206,47 @@ fn binary_placement_outcome_raft_checkpoint_preserves_replay_position() {
     assert_eq!(restored.last_log_id().index,1);
     assert_eq!(restored.store().meta_service.placement_state_fingerprint(),leader.placement_state_fingerprint());
 }
+
+#[test]
+fn reclaim_receipt_decoder_consumes_each_supported_snapshot_version() {
+    for version in 15..=22 {
+        let mut bytes = Vec::new();
+        // The initial receipt report has fifteen scalar fields.
+        for value in 1..=15 {
+            append_u64(&mut bytes, value);
+        }
+        if version >= 17 {
+            append_u64(&mut bytes, 16);
+        }
+        if version >= 20 {
+            append_u64(&mut bytes, 17);
+        }
+        if version >= 21 {
+            append_string(&mut bytes, "io_failure");
+        }
+        let mut cursor = SnapshotByteCursor::new(&bytes);
+        let report = read_chunk_partial_reclaim_report(&mut cursor, version).unwrap();
+        assert_eq!(cursor.position(), bytes.len(), "version {version}");
+        assert_eq!(report.scanned_chunks, 1);
+        assert_eq!(report.trim_flow_throttled_bytes, 15);
+        assert_eq!(
+            report.trim_flow_throttled_ops,
+            if version >= 17 { 16 } else { 0 }
+        );
+        assert_eq!(
+            report.partial_reclaim_failures,
+            if version >= 20 { 17 } else { 0 }
+        );
+        assert_eq!(
+            report.last_partial_reclaim_failure_status,
+            if version >= 21 { "io_failure" } else { "ok" }
+        );
+        for end in 0..bytes.len() {
+            let mut truncated = SnapshotByteCursor::new(&bytes[..end]);
+            assert!(
+                read_chunk_partial_reclaim_report(&mut truncated, version).is_err(),
+                "version {version}, length {end}"
+            );
+        }
+    }
+}
