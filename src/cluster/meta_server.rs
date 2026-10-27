@@ -33,9 +33,11 @@
 
 use std::io::{BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use super::shutdown::ServerShutdown;
 
 use crate::cluster::meta_message::{
     encode_meta_reply, CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment,
@@ -95,7 +97,7 @@ pub struct MetaNodeServer {
     meta: Arc<Mutex<MatrixMetaService>>,
     options: MetaNodeOptions,
     counters: Arc<MetaCounters>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
 }
 
 impl MetaNodeServer {
@@ -107,12 +109,13 @@ impl MetaNodeServer {
     /// change that gives this node something to recover.
     pub fn bind(addr: &str, options: MetaNodeOptions) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
             meta: Arc::new(Mutex::new(MatrixMetaService::new())),
             options,
             counters: Arc::new(MetaCounters::default()),
-            stop: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(ServerShutdown::default()),
         })
     }
 
@@ -187,7 +190,7 @@ impl MetaNodeServer {
         Ok(guard.nodes.len())
     }
 
-    /// A handle that stops the accept loops.
+    /// A handle that stops accept loops and closes active connections.
     pub fn shutdown_handle(&self) -> MetaNodeShutdown {
         MetaNodeShutdown {
             stop: Arc::clone(&self.stop),
@@ -220,12 +223,12 @@ impl MetaNodeServer {
 /// Stops a running [`MetaNodeServer`].
 #[derive(Clone, Debug)]
 pub struct MetaNodeShutdown {
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
 }
 
 impl MetaNodeShutdown {
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.stop.stop();
     }
 }
 
@@ -233,21 +236,29 @@ fn accept_loop(
     listener: TcpListener,
     meta: Arc<Mutex<MatrixMetaService>>,
     counters: Arc<MetaCounters>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
     options: MetaNodeOptions,
 ) {
-    while !stop.load(Ordering::SeqCst) {
+    while !stop.is_stopped() {
         match listener.accept() {
             Ok((stream, _peer)) => {
+                let _active = match stop.track(&stream) {
+                    Ok(Some(active)) => active,
+                    Ok(None) => return,
+                    Err(_) => continue,
+                };
+                if stream.set_nonblocking(false).is_err() {
+                    continue;
+                }
                 let _ = stream.set_read_timeout(Some(options.read_timeout));
                 let _ = stream.set_write_timeout(Some(options.write_timeout));
                 let _ = stream.set_nodelay(true);
                 serve_connection(stream, &meta, &counters, &options);
             }
             Err(_) => {
-                // An accept that failed is not a reason to stop accepting -- a single
-                // refused connection would otherwise take the control plane down.
-                continue;
+                // Nonblocking accept lets idle workers observe shutdown. Back off on
+                // all accept errors so resource exhaustion cannot create a busy loop.
+                std::thread::sleep(Duration::from_millis(20));
             }
         }
     }

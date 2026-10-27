@@ -46156,7 +46156,15 @@ fn every_guard_the_workflow_pins_by_name_exists() {
     // This is that missing half: rename a pinned guard and the suite says so, here, before
     // the push.
     const WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
-    const SUITE: &str = include_str!("tests.rs");
+    // Ask the compiled test harness, including tests in nested server modules.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--list", "--format", "terse"])
+        .output()
+        .expect("the test harness should list its tests");
+    assert!(output.status.success(), "listing compiled tests failed");
+    let listing = String::from_utf8(output.stdout).unwrap();
+    let compiled: Vec<&str> = listing.lines().filter_map(|line| line.strip_suffix(": test")).collect();
+    assert!(compiled.len() >= 25, "the compiled test list must not be empty");
 
     // `tests::<name>` is how the workflow spells a filter. Taken from the workflow rather
     // than from a list kept here, so a step ADDED later is covered without anyone
@@ -46186,7 +46194,7 @@ fn every_guard_the_workflow_pins_by_name_exists() {
     let missing: Vec<&str> = pinned
         .iter()
         .copied()
-        .filter(|name| !SUITE.contains(&format!("fn {name}(")))
+        .filter(|name| !compiled.iter().any(|test| test.ends_with(&format!("::{name}"))))
         .collect();
     assert!(
         missing.is_empty(),
@@ -46202,7 +46210,7 @@ fn every_guard_the_workflow_pins_by_name_exists() {
     // the steps rely on a single test passing, so none of them may name a filter that
     // matches more than one test.
     for name in &pinned {
-        let matches = SUITE.matches(&format!("fn {name}(")).count();
+        let matches = compiled.iter().filter(|test| test.ends_with(&format!("::{name}"))).count();
         assert_eq!(
             matches, 1,
             "a pinned guard must name exactly one test, and {name} names {matches}"
