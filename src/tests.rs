@@ -28033,7 +28033,7 @@ fn raft_backed_store_replays_placement_commands() {
         .unwrap();
     assert_eq!(
         committed_migration.envelope.envelope_format,
-        "MOSRSROOT-PLACEMENT-MIGRATION-COMMIT-ENVELOPE1"
+        "MOSRSROOT-PLACEMENT-MIGRATION-COMMIT-ENVELOPE2"
     );
     assert_eq!(committed_migration.envelope.object_id, plan.object_id);
     assert_eq!(
@@ -50248,5 +50248,139 @@ fn reclaim_receipt_decoder_consumes_each_supported_snapshot_version() {
                 "version {version}, length {end}"
             );
         }
+    }
+}
+
+#[test]
+fn prepared_migration_proofs_share_purpose_and_reject_changed_state() {
+    let make = || {
+        let mut replicated = RaftBackedObjectStore::new(
+            InMemoryRustRaft::new(1).unwrap(),
+            MatrixObjectStore::new(test_options()).unwrap(),
+        );
+        for (id, domain) in [
+            ("chunk-a", "rack-a"),
+            ("chunk-b", "rack-b"),
+            ("chunk-c", "rack-c"),
+        ] {
+            replicated
+                .propose_register_placement_node(placement_node(id, domain, 64))
+                .unwrap();
+        }
+        replicated
+            .propose_put_with_placement(
+                "bucket",
+                "object",
+                b"data".to_vec(),
+                "text/plain",
+                2,
+                PutOptions::default(),
+                10,
+            )
+            .unwrap();
+        replicated
+    };
+    for mode in 0..3 {
+        let mut replicated = make();
+        let placement = replicated
+            .store()
+            .object_placement("bucket", "object")
+            .unwrap();
+        let source = placement.node_ids[0].clone();
+        let target = ["chunk-a", "chunk-b", "chunk-c"]
+            .into_iter()
+            .find(|id| !placement.node_ids.iter().any(|node| node == id))
+            .unwrap();
+        let plan = replicated
+            .store()
+            .plan_object_placement_migration("bucket", "object", &source, target)
+            .unwrap();
+        let prepared = replicated
+            .prepare_placement_migration_raft_entry_linearizable(plan.clone(), &plan.plan_checksum)
+            .unwrap();
+        let proven = replicated
+            .prepare_placement_migration_envelope_with_read_proof_linearizable(
+                plan.clone(),
+                &plan.plan_checksum,
+            )
+            .unwrap();
+        assert_eq!(
+            prepared.raft_entry_checksum,
+            proven.envelope.raft_entry_checksum
+        );
+        assert_eq!(
+            prepared.root_read_proof_checksum,
+            proven.proof.proof_checksum
+        );
+        let initial_index = replicated.raft_commit_index();
+        for field in 0..5 {
+            let mut changed = prepared.clone();
+            match field {
+                0 => changed.placement_read_index += 1,
+                1 => changed.placement_raft_term += 1,
+                2 => {
+                    let mut proof = proven.proof.clone();
+                    proof.operation = "another operation".into();
+                    changed.root_read_proof_checksum = root_read_proof_checksum(&proof);
+                }
+                3 => changed.before_state_fingerprint = "changed".into(),
+                _ => changed.expected_previous_commit_index += 1,
+            }
+            changed.raft_entry_checksum = prepared_placement_migration_checksum(&changed);
+            assert!(
+                replicated
+                    .propose_prepared_placement_migration(changed)
+                    .is_err(),
+                "field {field}"
+            );
+            assert_eq!(replicated.raft_commit_index(), initial_index);
+            assert_eq!(
+                replicated
+                    .store()
+                    .object_placement("bucket", "object")
+                    .unwrap(),
+                placement
+            );
+        }
+        if mode == 2 {
+            replicated
+                .propose_register_placement_node(placement_node("chunk-d", "rack-d", 64))
+                .unwrap();
+            let index = replicated.raft_commit_index();
+            assert!(replicated
+                .propose_prepared_placement_migration(prepared)
+                .is_err());
+            assert_eq!(replicated.raft_commit_index(), index);
+            continue;
+        }
+        if mode == 0 {
+            replicated
+                .propose_prepared_placement_migration(prepared)
+                .unwrap();
+        } else {
+            let envelope = proven.envelope.clone();
+            replicated
+                .propose_proven_placement_migration_envelope_fenced(
+                    proven,
+                    &envelope.envelope_checksum,
+                    &envelope.raft_entry_checksum,
+                    &envelope.expected_plan_checksum,
+                )
+                .unwrap();
+        }
+        assert_eq!(replicated.raft_commit_index(), initial_index + 1);
+        let mut follower = MatrixObjectStore::new(test_options()).unwrap();
+        replicated.replay_into(&mut follower).unwrap();
+        assert_eq!(
+            follower
+                .object_placement("bucket", "object")
+                .unwrap()
+                .node_ids,
+            plan.after_node_ids
+        );
+        assert_eq!(
+            follower.get_object("bucket", "object").unwrap().data,
+            b"data"
+        );
     }
 }

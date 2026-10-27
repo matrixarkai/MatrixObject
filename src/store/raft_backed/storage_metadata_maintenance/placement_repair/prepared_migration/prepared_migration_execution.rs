@@ -6,7 +6,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         prepared: PreparedPlacementMigration,
     ) -> Result<ObjectMetadata, ObjectError> {
         if !prepared.root_read_proof_checksum.is_empty() {
-            let proof = self.ensure_placement_read_index("propose prepared root placement migration")?;
+            // Rebuild the proof under the purpose used to prepare the artifact.
+            let proof = self.ensure_placement_read_index("prepare root placement migration")?;
             if proof.requested_placement_read_index != prepared.placement_read_index
                 || proof.placement_raft_term != prepared.placement_raft_term
                 || proof.proof_checksum != prepared.root_read_proof_checksum
