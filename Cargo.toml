@@ -57,6 +57,7 @@ replica-server = ["dep:fs2"]
 # something names an endpoint.
 meta-server = ["dep:fs2"]
 matrix-raft = ["dep:matrixraft"]
+chunk-consensus = ["replica-server", "matrix-raft", "matrixraft/peer-runtime"]
 metadata-consensus = ["meta-server", "matrix-raft", "matrixraft/peer-runtime"]
 
 [dependencies]

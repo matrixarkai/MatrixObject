@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject.chunk_consensus;
+// Encoded inside MatrixRaft peer log entries. An empty outcome is a read barrier.
+message Entry { uint32 version = 1; bytes outcome = 2; }
+// Prefixed by MOCB in chunk.peer.base. All voters must have identical bounds.
+message Bootstrap { uint32 version = 1; uint64 capacity_bytes = 2; uint64 max_pages = 3; }

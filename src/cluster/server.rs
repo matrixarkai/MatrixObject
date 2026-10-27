@@ -57,6 +57,12 @@ mod heartbeat;
 #[cfg(feature = "meta-server")]
 pub use heartbeat::ReplicaHeartbeatOptions;
 
+#[cfg(feature = "chunk-consensus")]
+#[path = "chunk_consensus.rs"]
+mod consensus;
+#[cfg(feature = "chunk-consensus")]
+pub use consensus::ChunkRaftOptions;
+
 struct NodeReplica {
     service: MatrixReplicaService,
     journal: Option<ReplicaJournal>,
@@ -119,6 +125,8 @@ pub struct ReplicaNodeServer {
     stop: Arc<ServerShutdown>,
     #[cfg(feature = "meta-server")]
     heartbeat: Option<ReplicaHeartbeatOptions>,
+    #[cfg(feature = "chunk-consensus")]
+    consensus: Option<Arc<consensus::ChunkConsensus>>,
 }
 
 impl ReplicaNodeServer {
@@ -175,7 +183,27 @@ impl ReplicaNodeServer {
             stop: Arc::new(ServerShutdown::default()),
             #[cfg(feature = "meta-server")]
             heartbeat: None,
+            #[cfg(feature = "chunk-consensus")]
+            consensus: None,
         })
+    }
+
+    /// Enable one independently durable Raft voter before serving any requests.
+    #[cfg(feature = "chunk-consensus")]
+    pub fn enable_consensus(&mut self, options: ChunkRaftOptions) -> std::io::Result<()> {
+        if self.consensus.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "chunk consensus already configured",
+            ));
+        }
+        self.consensus = Some(Arc::new(consensus::ChunkConsensus::open(
+            options,
+            Arc::clone(&self.replica),
+            Arc::clone(&self.stop),
+            self.options.max_payload_bytes,
+        )?));
+        Ok(())
     }
 
     /// Enable periodic health reports to an explicitly configured metaserver catalog.
@@ -218,8 +246,18 @@ impl ReplicaNodeServer {
             let counters = Arc::clone(&self.counters);
             let stop = Arc::clone(&self.stop);
             let options = self.options.clone();
+            #[cfg(feature = "chunk-consensus")]
+            let consensus = self.consensus.clone();
             handles.push(std::thread::spawn(move || {
-                accept_loop(listener, replica, counters, stop, options);
+                accept_loop(
+                    listener,
+                    replica,
+                    counters,
+                    stop,
+                    options,
+                    #[cfg(feature = "chunk-consensus")]
+                    consensus,
+                );
             }));
         }
         #[cfg(feature = "meta-server")]
@@ -234,6 +272,13 @@ impl ReplicaNodeServer {
             // A worker that panicked has already stopped serving; joining it is how that
             // becomes visible rather than a thread count quietly dropping to zero.
             let _ = handle.join();
+        }
+        #[cfg(feature = "chunk-consensus")]
+        if self.consensus.as_ref().is_some_and(|c| c.is_failed()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "chunk consensus worker failed",
+            ));
         }
         Ok(())
     }
@@ -257,6 +302,7 @@ fn accept_loop(
     counters: Arc<NodeCounters>,
     stop: Arc<ServerShutdown>,
     options: ReplicaNodeOptions,
+    #[cfg(feature = "chunk-consensus")] consensus: Option<Arc<consensus::ChunkConsensus>>,
 ) {
     while !stop.is_stopped() {
         match listener.accept() {
@@ -275,7 +321,14 @@ fn accept_loop(
                 // before the next one is sent, so Nagle has nothing to coalesce and only
                 // adds latency to every write in the fan-out.
                 let _ = stream.set_nodelay(true);
-                serve_connection(stream, &replica, &counters, &options);
+                serve_connection(
+                    stream,
+                    &replica,
+                    &counters,
+                    &options,
+                    #[cfg(feature = "chunk-consensus")]
+                    consensus.as_deref(),
+                );
             }
             Err(_) => {
                 // Nonblocking accept lets idle workers observe shutdown. Back off on
@@ -296,6 +349,7 @@ fn serve_connection(
     replica: &Arc<Mutex<NodeReplica>>,
     counters: &Arc<NodeCounters>,
     options: &ReplicaNodeOptions,
+    #[cfg(feature = "chunk-consensus")] consensus: Option<&consensus::ChunkConsensus>,
 ) {
     let mut writer = match stream.try_clone() {
         Ok(writer) => writer,
@@ -343,7 +397,14 @@ fn serve_connection(
                     encode_failure(StatusCode::for_error(&err), &err.to_string())
                 }
                 Ok(request) => {
-                    match apply(replica, request, options.max_payload_bytes).and_then(|reply| {
+                    #[cfg(feature = "chunk-consensus")]
+                    let result = match consensus {
+                        Some(c) => c.request(request),
+                        None => apply(replica, request, options.max_payload_bytes),
+                    };
+                    #[cfg(not(feature = "chunk-consensus"))]
+                    let result = apply(replica, request, options.max_payload_bytes);
+                    match result.and_then(|reply| {
                         crate::cluster::message::check_reply_size(
                             reply.payload_len(),
                             options.max_payload_bytes,

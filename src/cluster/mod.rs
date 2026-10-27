@@ -162,17 +162,17 @@ pub use message::{ReplicaReply, ReplicaRequest};
 pub use wire::{RequestCode, StatusCode, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP};
 
 #[cfg(feature = "replica-server")]
-pub use client::{ReplicaClientOptions, RemoteReplicaClient};
+pub use client::{RemoteReplicaClient, ReplicaClientOptions};
 #[cfg(feature = "replica-server")]
 pub use placement::{
     check_quorums, majority, InProcessReplicaSet, ReplicaFanout, ReplicaPlacement,
 };
 #[cfg(feature = "replica-server")]
 pub use replica_set::RemoteReplicaSet;
-#[cfg(feature = "replica-server")]
-pub use server::{ReplicaNodeOptions, ReplicaNodeServer, ReplicaNodeShutdown};
 #[cfg(all(feature = "replica-server", feature = "meta-server"))]
 pub use server::ReplicaHeartbeatOptions;
+#[cfg(feature = "replica-server")]
+pub use server::{ReplicaNodeOptions, ReplicaNodeServer, ReplicaNodeShutdown};
 
 #[cfg(feature = "meta-server")]
 pub use directory::{ControlPlaneStatus, MetaDirectory};
@@ -202,3 +202,6 @@ mod placement_journal;
 mod meta_consensus;
 #[cfg(feature = "metadata-consensus")]
 pub use meta_consensus::MetaRaftOptions;
+
+#[cfg(feature = "chunk-consensus")]
+pub use server::ChunkRaftOptions;

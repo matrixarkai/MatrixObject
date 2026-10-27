@@ -784,7 +784,7 @@ Two invariants worth knowing before you start:
 
 ## Continuous integration
 
-On pushes to `main` and on every pull request, three jobs:
+On pushes to `main` and on every pull request, four jobs:
 
 - **build & docs** -- `cargo build --all-targets` and `cargo doc`, each for the
   default features and for `--all-features`, with warnings denied.
@@ -798,6 +798,10 @@ On pushes to `main` and on every pull request, three jobs:
 
 - **network metadata consensus** -- twenty-one named routing, process, recovery, storage, and
   checkpoint tests with the optional consensus feature enabled.
+
+- **network chunk consensus** -- nine named checks of independently durable chunk
+  voters, leader loss, restart recovery, capacity, shutdown, and metadata health.
+  See [chunk consensus configuration](docs/chunk-consensus.md).
 
 CI does not run the whole library suite. `tools/suite_gate.sh` does, locally: it
 compares the failures by name against the 17 recorded in

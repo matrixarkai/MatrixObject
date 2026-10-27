@@ -51,6 +51,11 @@
 //! It grows with writes; checkpointing and log compaction are not implemented.
 //! A recovered node still needs coordinated repair for writes missed while offline.
 //!
+//! The optional `chunk-consensus` feature enables independently durable Raft voters.
+//! Configure `MATRIXOBJECT_CHUNK_RAFT_PEERS`, `MATRIXOBJECT_CHUNK_RAFT_NODE_ID`, and
+//! `MATRIXOBJECT_CHUNK_RAFT_STATE_DIR` instead of a local journal. See
+//! `docs/chunk-consensus.md` for group configuration, binary outcomes, and bounds.
+//!
 //! # IT IS UNAUTHENTICATED
 //!
 //! No signing, no token, no TLS. Anything that can open a socket to this port can read and
@@ -112,7 +117,26 @@ fn main() {
         ..Default::default()
     };
     let journal = std::env::var_os("MATRIXOBJECT_REPLICA_JOURNAL");
-    let storage = if journal.is_some() {
+    let raft_peers = std::env::var_os("MATRIXOBJECT_CHUNK_RAFT_PEERS");
+    if raft_peers.is_none()
+        && [
+            "MATRIXOBJECT_CHUNK_RAFT_NODE_ID",
+            "MATRIXOBJECT_CHUNK_RAFT_STATE_DIR",
+            "MATRIXOBJECT_CHUNK_RAFT_GROUP_ID",
+            "MATRIXOBJECT_CHUNK_RAFT_TIMEOUT_MS",
+        ]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+    {
+        eprintln!("partial Raft configuration: MATRIXOBJECT_CHUNK_RAFT_PEERS is required");
+        std::process::exit(2);
+    }
+    if raft_peers.is_some() && journal.is_some() {
+        eprintln!("local chunk journal and Raft state cannot be configured together");
+        std::process::exit(2);
+    }
+    #[allow(unused_mut)]
+    let mut storage = if journal.is_some() {
         "journal"
     } else {
         "memory"
@@ -131,6 +155,64 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    if let Some(raw) = raft_peers {
+        #[cfg(not(feature = "chunk-consensus"))]
+        {
+            let _ = raw;
+            eprintln!("Raft configuration requires the chunk-consensus feature");
+            std::process::exit(2);
+        }
+        #[cfg(feature = "chunk-consensus")]
+        {
+            let configured = (|| -> Result<_, String> {
+                let raw = raw.into_string().map_err(|_| "peer list is not UTF-8")?;
+                if raw.len() > 4096 {
+                    return Err("peer list exceeds size bound".into());
+                }
+                let mut peers = std::collections::BTreeMap::new();
+                for item in raw.split(',') {
+                    let (id, address) = item.split_once('@').ok_or("expected id@address peers")?;
+                    let id = id.parse::<u64>().map_err(|_| "invalid voter id")?;
+                    let address = address
+                        .parse::<std::net::SocketAddr>()
+                        .map_err(|_| "invalid voter address")?;
+                    if peers.insert(id, address).is_some() {
+                        return Err("duplicate voter id".into());
+                    }
+                }
+                let node_id = std::env::var("MATRIXOBJECT_CHUNK_RAFT_NODE_ID")
+                    .map_err(|_| "missing Raft node id")?
+                    .parse::<u64>()
+                    .map_err(|_| "invalid Raft node id")?;
+                let directory = std::env::var_os("MATRIXOBJECT_CHUNK_RAFT_STATE_DIR")
+                    .ok_or("missing Raft state directory")?
+                    .into();
+                Ok(matrixobjectstore_rs::cluster::ChunkRaftOptions {
+                    node_id,
+                    group_id: env_usize("MATRIXOBJECT_CHUNK_RAFT_GROUP_ID", 1) as u64,
+                    peers,
+                    directory,
+                    request_timeout: std::time::Duration::from_millis(env_usize(
+                        "MATRIXOBJECT_CHUNK_RAFT_TIMEOUT_MS",
+                        3000,
+                    ) as u64),
+                })
+            })();
+            let options = match configured {
+                Ok(options) => options,
+                Err(error) => {
+                    eprintln!("invalid Raft configuration: {error}");
+                    std::process::exit(2);
+                }
+            };
+            if let Err(error) = server.enable_consensus(options) {
+                eprintln!("opening chunk consensus failed: {error}");
+                std::process::exit(1);
+            }
+            storage = "raft";
+        }
+    }
 
     let bound = match server.local_addr() {
         Ok(bound) => bound,
