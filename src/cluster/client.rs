@@ -85,6 +85,7 @@ pub struct RemoteReplicaClient {
     read_timeout: Duration,
     write_timeout: Duration,
     catalog: Option<(Vec<String>, ReplicaClientOptions)>,
+    group_identity: Option<crate::cluster::ChunkGroupIdentity>,
 }
 
 impl RemoteReplicaClient {
@@ -120,6 +121,7 @@ impl RemoteReplicaClient {
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
             catalog: None,
+            group_identity: None,
         })
     }
 
@@ -177,6 +179,64 @@ impl RemoteReplicaClient {
             }
         }
         Err(last.unwrap())
+    }
+
+    /// Connect to a Raft group, checking its ID before any data request.
+    /// Every subsequent connection must match the initial voter's full configuration.
+    /// This guards configuration errors, not malicious servers; transport authentication is separate.
+    pub fn connect_raft_catalog(
+        endpoints: &[String],
+        group_id: u64,
+        options: &ReplicaClientOptions,
+    ) -> Result<Self, ObjectError> {
+        if group_id == 0 {
+            return Err(ObjectError::InvalidArgument(
+                "chunk group ID must be nonzero".into(),
+            ));
+        }
+        let mut client = Self::connect_catalog(endpoints, options)?;
+        let identity = client.chunk_group_identity()?;
+        if identity.group_id != group_id {
+            return Err(ObjectError::PreconditionFailed(
+                "chunk group ID does not match catalog".into(),
+            ));
+        }
+        client.group_identity = Some(identity);
+        Ok(client)
+    }
+
+    /// Connect against an operator- or metadata-supplied complete configuration.
+    /// Unlike discovery by numeric ID, this also checks the very first connection's membership.
+    pub fn connect_verified_raft_catalog(
+        endpoints: &[String],
+        expected: &crate::cluster::ChunkGroupIdentity,
+        options: &ReplicaClientOptions,
+    ) -> Result<Self, ObjectError> {
+        expected.validate()?;
+        let client = Self::connect_raft_catalog(endpoints, expected.group_id, options)?;
+        if !expected.same_group(
+            client
+                .group_identity
+                .as_ref()
+                .expect("Raft catalog has an identity"),
+        ) {
+            return Err(ObjectError::PreconditionFailed(
+                "initial chunk voter configuration does not match catalog".into(),
+            ));
+        }
+        Ok(client)
+    }
+
+    /// Describe the currently connected voter without a read barrier or leader redirection.
+    pub fn chunk_group_identity(
+        &mut self,
+    ) -> Result<crate::cluster::ChunkGroupIdentity, ObjectError> {
+        match self.call_one(&ReplicaRequest::GroupIdentity)? {
+            ReplicaReply::GroupIdentity(identity) => Ok(identity),
+            _ => Err(ObjectError::Corruption(
+                "missing chunk group identity".into(),
+            )),
+        }
     }
 
     /// The currently selected endpoint; catalogs use canonical IP sockets.
@@ -322,6 +382,15 @@ impl RemoteReplicaClient {
             if !self.connection_usable || self.endpoint != *endpoint {
                 match Self::connect(endpoint, &options) {
                     Ok(mut next) => {
+                        if let Some(expected) = &self.group_identity {
+                            let actual = next.chunk_group_identity()?;
+                            if !expected.same_group(&actual) {
+                                return Err(ObjectError::PreconditionFailed(
+                                    "chunk voter configuration does not match catalog".into(),
+                                ));
+                            }
+                            next.group_identity = Some(expected.clone());
+                        }
                         next.catalog = Some((endpoints.clone(), options.clone()));
                         *self = next;
                     }

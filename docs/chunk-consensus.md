@@ -62,14 +62,33 @@ The process tests cover three independent voters, acknowledged writes and
 discards, leader loss, refusal below quorum, restart of all processes, capacity
 refusal, storage guards, shutdown, and metadata reports. They are functional
 fault tests, not a large-scale throughput result. Metadata placement of Raft groups,
-group identity verification in clients, the HTTP distributed backend,
+the HTTP distributed backend,
 authentication, snapshots, log compaction, and membership changes remain unfinished.
 
 ## Bounded leader routing
 
-Use `RemoteReplicaClient::connect_catalog(&endpoints, &options)` to select a leader
-from one through seven distinct API IP sockets. All endpoints must belong to the
-same Raft group; this is trusted configuration, with no identity handshake yet.
+Use `RemoteReplicaClient::connect_verified_raft_catalog(&endpoints, &identity, &options)`
+with an operator-supplied complete configuration to check every connection,
+including the first, before data can be sent. The expected voter's node ID may
+name any member of that configuration.
+
+For discovery from a trusted initial voter,
+`RemoteReplicaClient::connect_raft_catalog(&endpoints, group_id, &options)` selects
+a leader from one through seven distinct API IP sockets. Before sending a
+data request, the client checks the expected group ID and pins the first voter's
+membership, peer addresses, capacity, and page limit. Every new connection must
+match that configuration. A numeric ID reused by two different voter groups is
+therefore refused. An unavailable endpoint can be skipped before connection; an
+identity mismatch or failed handshake stops the call without sending data.
+
+Identity responses use bounded canonical binary protobuf described in
+`proto/chunk_group_identity.proto`. Leaders and followers can describe their
+immutable configuration without adding a read barrier to the log. This does not
+assert quorum, catch-up, or readiness, and does not authenticate a server. A trusted
+initial configuration and trusted transport are still required. Old servers and
+standalone replicas cannot satisfy a verified Raft catalog. The older
+`connect_catalog` API remains available for explicitly trusted catalogs without
+identity verification.
 Do not count several connections to the same group as independent star-write
 replicas. Catalogs reject hostnames, zero ports, wildcards, multicast addresses,
 and duplicate sockets including mapped IPv4 aliases before opening a connection.

@@ -75,6 +75,8 @@ pub enum RequestCode {
     Ping = 5,
     /// Read a bounded batch of page identities and write sequences, after an exclusive cursor.
     PageInventory = 6,
+    /// Describe the immutable Raft voter configuration. Empty payload.
+    GroupIdentity = 7,
 }
 
 impl RequestCode {
@@ -91,6 +93,7 @@ impl RequestCode {
             4 => Some(RequestCode::DiscardChunk),
             5 => Some(RequestCode::Ping),
             6 => Some(RequestCode::PageInventory),
+            7 => Some(RequestCode::GroupIdentity),
             _ => None,
         }
     }
@@ -145,7 +148,9 @@ impl StatusCode {
     /// The error this status carries, given the message the replica sent with it.
     pub fn into_error(self, message: String) -> ObjectError {
         match self {
-            StatusCode::NotLeader => ObjectError::PreconditionFailed("metadata request was not admitted by a leader".into()),
+            StatusCode::NotLeader => ObjectError::PreconditionFailed(
+                "metadata request was not admitted by a leader".into(),
+            ),
             StatusCode::NotFound => ObjectError::NotFound(message),
             StatusCode::InvalidArgument => ObjectError::InvalidArgument(message),
             StatusCode::PreconditionFailed => ObjectError::PreconditionFailed(message),

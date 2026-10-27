@@ -16,6 +16,7 @@ use crate::cluster::wire::{
     put_bytes, put_str, put_u64, Cursor, RequestCode, StatusCode, PROTOCOL_STAMP,
 };
 use crate::{ChunkId, DataRange, ObjectError, PageId, ReplicaHead, ReplicaReadResult};
+use prost::Message;
 
 /// Maximum page rows in one inventory response (32 bytes per row on the wire).
 pub const MAX_INVENTORY_PAGES: u64 = 4096;
@@ -36,6 +37,51 @@ pub(crate) fn check_inventory_limit(limit: u64) -> Result<(), ObjectError> {
         )));
     }
     Ok(())
+}
+
+/// Immutable voter configuration, available on leaders and followers.
+/// This identifies configuration; it does not authenticate a server or establish readiness.
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct ChunkGroupIdentity {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint64, tag = "2")]
+    pub group_id: u64,
+    #[prost(uint64, tag = "3")]
+    pub node_id: u64,
+    #[prost(uint64, tag = "4")]
+    pub capacity_bytes: u64,
+    #[prost(uint64, tag = "5")]
+    pub max_pages: u64,
+    #[prost(uint64, repeated, tag = "6")]
+    pub voters: Vec<u64>,
+    #[prost(string, repeated, tag = "7")]
+    pub peer_endpoints: Vec<String>,
+}
+impl ChunkGroupIdentity {
+    pub(crate) fn validate(&self) -> Result<(), ObjectError> {
+        let mut sockets = std::collections::BTreeSet::new();
+        if self.version != 1 || self.group_id == 0 || self.node_id == 0
+            || self.voters.is_empty() || self.voters.len() > 7
+            || self.voters[0] == 0 || self.voters.windows(2).any(|w| w[0] >= w[1])
+            || !self.voters.contains(&self.node_id)
+            || self.peer_endpoints.len() != self.voters.len()
+            || self.peer_endpoints.iter().any(|value| {
+                let Ok(address) = value.parse::<std::net::SocketAddr>() else { return true; };
+                value.len() > 128 || address.port() == 0 || address.ip().is_unspecified()
+                    || address.ip().is_multicast() || address.to_string() != *value
+                    || matches!(address.ip(), std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some())
+                    || !sockets.insert(address)
+            }) {
+            return Err(ObjectError::Corruption("invalid chunk group identity".into()));
+        }
+        Ok(())
+    }
+    pub(crate) fn same_group(&self, other: &Self) -> bool {
+        let mut normalized = other.clone();
+        normalized.node_id = self.node_id;
+        *self == normalized
+    }
 }
 
 /// A request as both ends understand it.
@@ -60,6 +106,7 @@ pub enum ReplicaRequest {
         length: u64,
     },
     Ping,
+    GroupIdentity,
     PageInventory {
         after: Option<PageId>,
         limit: u64,
@@ -74,6 +121,7 @@ impl ReplicaRequest {
             ReplicaRequest::HeadChunk { .. } => RequestCode::HeadChunk,
             ReplicaRequest::DiscardChunk { .. } => RequestCode::DiscardChunk,
             ReplicaRequest::Ping => RequestCode::Ping,
+            ReplicaRequest::GroupIdentity => RequestCode::GroupIdentity,
             ReplicaRequest::PageInventory { .. } => RequestCode::PageInventory,
         }
     }
@@ -106,7 +154,7 @@ impl ReplicaRequest {
                 put_u64(&mut out, *length);
             }
             ReplicaRequest::HeadChunk { page_id } => put_page_id(&mut out, page_id),
-            ReplicaRequest::Ping => {}
+            ReplicaRequest::Ping | ReplicaRequest::GroupIdentity => {}
             ReplicaRequest::PageInventory { after, limit } => {
                 put_u64(&mut out, u64::from(after.is_some()));
                 if let Some(id) = after {
@@ -161,6 +209,7 @@ impl ReplicaRequest {
                 }
             }
             RequestCode::Ping => ReplicaRequest::Ping,
+            RequestCode::GroupIdentity => ReplicaRequest::GroupIdentity,
             RequestCode::PageInventory => {
                 let after = match cursor.take_u64()? {
                     0 => None,
@@ -201,12 +250,14 @@ pub enum ReplicaReply {
         page_count: u64,
     },
     PageInventory(PageInventory),
+    GroupIdentity(ChunkGroupIdentity),
 }
 
 impl ReplicaReply {
     pub(crate) fn payload_len(&self) -> usize {
         match self {
             Self::Applied | Self::NotLeader => 0,
+            Self::GroupIdentity(identity) => identity.encoded_len(),
             Self::Read(read) => 16usize
                 .saturating_add(read.checksum.len())
                 .saturating_add(read.data.len()),
@@ -225,6 +276,7 @@ impl ReplicaReply {
         let mut out = Vec::new();
         match self {
             ReplicaReply::Applied | ReplicaReply::NotLeader => {}
+            ReplicaReply::GroupIdentity(identity) => return identity.encode_to_vec(),
             ReplicaReply::Read(read) => {
                 put_u64(&mut out, read.write_sequence);
                 put_str(&mut out, &read.checksum);
@@ -260,8 +312,25 @@ impl ReplicaReply {
     /// whose shape is read from the reply itself can be read as the wrong shape. The caller
     /// knows what it asked.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::GroupIdentity {
+            if payload.len() > 2048 {
+                return Err(ObjectError::Corruption(
+                    "chunk group identity exceeds size bound".into(),
+                ));
+            }
+            let identity = ChunkGroupIdentity::decode(payload)
+                .map_err(|_| ObjectError::Corruption("invalid chunk group protobuf".into()))?;
+            identity.validate()?;
+            if identity.encode_to_vec() != payload {
+                return Err(ObjectError::Corruption(
+                    "noncanonical chunk group protobuf".into(),
+                ));
+            }
+            return Ok(ReplicaReply::GroupIdentity(identity));
+        }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
+            RequestCode::GroupIdentity => unreachable!(),
             RequestCode::WriteChunk | RequestCode::DiscardChunk => ReplicaReply::Applied,
             RequestCode::ReadChunk => {
                 let write_sequence = cursor.take_u64()?;

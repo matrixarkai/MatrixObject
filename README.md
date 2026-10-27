@@ -799,7 +799,7 @@ On pushes to `main` and on every pull request, four jobs:
 - **network metadata consensus** -- twenty-one named routing, process, recovery, storage, and
   checkpoint tests with the optional consensus feature enabled.
 
-- **network chunk consensus** -- sixteen named checks of independently durable chunk
+- **network chunk consensus** -- twenty-one named checks of independently durable chunk
   voters, leader loss, restart recovery, capacity, shutdown, and metadata health.
   See [chunk consensus configuration](docs/chunk-consensus.md).
 

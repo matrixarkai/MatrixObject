@@ -203,3 +203,134 @@ fn a_valid_chunk_not_leader_reply_preserves_the_connection() {
     assert_eq!(client.ping().unwrap(), 9);
     handle.join().unwrap();
 }
+
+fn identity(node: u64) -> matrixobjectstore_rs::cluster::ChunkGroupIdentity {
+    matrixobjectstore_rs::cluster::ChunkGroupIdentity {
+        version: 1,
+        group_id: 42,
+        node_id: node,
+        capacity_bytes: 4096,
+        max_pages: 16,
+        voters: vec![1, 2],
+        peer_endpoints: vec!["127.0.0.1:18001".into(), "127.0.0.1:18002".into()],
+    }
+}
+fn identity_server(
+    group: matrixobjectstore_rs::cluster::ChunkGroupIdentity,
+    answer: Option<ReplicaReply>,
+) -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap().to_string();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        assert_eq!(receive(&mut stream), 7);
+        stream
+            .write_all(&encode_reply(&ReplicaReply::GroupIdentity(group)))
+            .unwrap();
+        if let Some(answer) = answer {
+            assert_eq!(receive(&mut stream), 1);
+            stream.write_all(&encode_reply(&answer)).unwrap();
+        } else {
+            let mut byte = [0];
+            assert_eq!(
+                stream.read(&mut byte).unwrap(),
+                0,
+                "data reached a rejected voter"
+            );
+        }
+    });
+    (endpoint, handle)
+}
+#[test]
+fn verified_chunk_catalog_checks_identity_before_redirected_write() {
+    let (first, one) = identity_server(identity(1), Some(ReplicaReply::NotLeader));
+    let (second, two) = identity_server(identity(2), Some(ReplicaReply::Applied));
+    let mut client =
+        RemoteReplicaClient::connect_raft_catalog(&[first, second.clone()], 42, &options())
+            .unwrap();
+    client.write_chunk(page(), 0, b"data").unwrap();
+    assert_eq!(client.endpoint(), second);
+    one.join().unwrap();
+    two.join().unwrap();
+}
+#[test]
+fn verified_chunk_catalog_refuses_changed_configuration_before_data() {
+    for field in 0..5 {
+        let mut changed = identity(2);
+        match field {
+            0 => changed.group_id = 43,
+            1 => changed.capacity_bytes += 1,
+            2 => changed.max_pages += 1,
+            3 => {
+                changed.voters = vec![2, 3];
+            }
+            _ => changed.peer_endpoints[0] = "127.0.0.1:19001".into(),
+        }
+        let (first, one) = identity_server(identity(1), Some(ReplicaReply::NotLeader));
+        let (second, two) = identity_server(changed, None);
+        let mut client =
+            RemoteReplicaClient::connect_raft_catalog(&[first, second], 42, &options()).unwrap();
+        assert!(client.write_chunk(page(), 0, b"data").is_err());
+        one.join().unwrap();
+        two.join().unwrap();
+    }
+}
+#[test]
+fn verified_chunk_catalog_refuses_wrong_group_and_older_servers() {
+    let mut wrong = identity(1);
+    wrong.peer_endpoints[0] = "127.0.0.1:19001".into();
+    let (endpoint, handle) = identity_server(wrong, None);
+    assert!(RemoteReplicaClient::connect_verified_raft_catalog(
+        &[endpoint],
+        &identity(2),
+        &options()
+    )
+    .is_err());
+    handle.join().unwrap();
+    let (endpoint, handle) = identity_server(identity(1), None);
+    assert!(RemoteReplicaClient::connect_raft_catalog(&[endpoint], 43, &options()).is_err());
+    handle.join().unwrap();
+    let (endpoint, handle) = server(Some(encode_failure(
+        StatusCode::UnknownRequest,
+        "unsupported",
+    )));
+    assert!(RemoteReplicaClient::connect_raft_catalog(&[endpoint], 42, &options()).is_err());
+    assert_eq!(handle.join().unwrap(), 7);
+    assert!(RemoteReplicaClient::connect_raft_catalog(&[], 0, &options()).is_err());
+}
+#[test]
+fn chunk_group_protobuf_rejects_invalid_or_noncanonical_configuration() {
+    use matrixobjectstore_rs::cluster::RequestCode;
+    use prost::Message;
+    let valid = identity(1);
+    let bytes = valid.encode_to_vec();
+    assert_eq!(
+        ReplicaReply::decode(RequestCode::GroupIdentity, &bytes).unwrap(),
+        ReplicaReply::GroupIdentity(valid.clone())
+    );
+    for field in 0..9 {
+        let mut bad = valid.clone();
+        match field {
+            0 => bad.version = 2,
+            1 => bad.group_id = 0,
+            2 => bad.node_id = 3,
+            3 => bad.voters = vec![1, 1],
+            4 => bad.voters = vec![],
+            5 => bad.peer_endpoints.pop().map(|_| ()).unwrap(),
+            6 => bad.peer_endpoints[0] = "0.0.0.0:1".into(),
+            7 => bad.peer_endpoints[0] = bad.peer_endpoints[1].clone(),
+            _ => bad.peer_endpoints[0] = "[::ffff:127.0.0.1]:18001".into(),
+        }
+        assert!(ReplicaReply::decode(RequestCode::GroupIdentity, &bad.encode_to_vec()).is_err());
+    }
+    let mut unknown = bytes.clone();
+    unknown.extend([0x40, 1]);
+    for malformed in [
+        vec![],
+        vec![0; 2049],
+        bytes[..bytes.len() - 1].to_vec(),
+        unknown,
+    ] {
+        assert!(ReplicaReply::decode(RequestCode::GroupIdentity, &malformed).is_err());
+    }
+}

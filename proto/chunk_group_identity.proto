@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+// Immutable configuration, not a readiness or authentication assertion.
+message ChunkGroupIdentity {
+  uint32 version = 1;
+  uint64 group_id = 2;
+  uint64 node_id = 3;
+  uint64 capacity_bytes = 4;
+  uint64 max_pages = 5;
+  repeated uint64 voters = 6;
+  repeated string peer_endpoints = 7;
+}
