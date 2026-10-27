@@ -959,6 +959,15 @@ jobs:
       - name: Damaged connections cannot answer later calls
         run: |
           set -o pipefail
-          cargo test --locked --test failed_node_connections | tee /tmp/connections.log
-          grep -q '^running 4 tests$' /tmp/connections.log
-          grep -q '^test result: ok. 4 passed' /tmp/connections.log
+          cargo test --locked --test failed_node_connections replica_connections_close_after_damaged_replies -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test failed_node_connections meta_connections_close_after_damaged_replies -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test failed_node_connections replica_connections_survive_valid_refusals -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test failed_node_connections meta_connections_survive_valid_refusals -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
