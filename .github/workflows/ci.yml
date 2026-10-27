@@ -1430,6 +1430,25 @@ jobs:
           grep -q '^running 1 test$' /tmp/migration-proof.log
           grep -q '^test result: ok. 1 passed' /tmp/migration-proof.log
 
+      - name: preparation restores state and replays identical outcomes
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib cluster::meta_consensus::tests::preparation_restores_state_and_replays_identical_outcomes -- --exact | tee /tmp/metadata-preparation.log
+          grep -q '^running 1 test$' /tmp/metadata-preparation.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-preparation.log
+      - name: preparation restores rejections errors and unwinding
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib cluster::meta_consensus::tests::preparation_restores_rejections_errors_and_unwinding -- --exact | tee /tmp/metadata-preparation.log
+          grep -q '^running 1 test$' /tmp/metadata-preparation.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-preparation.log
+      - name: preparation restores placement when outcome exceeds limit
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib cluster::meta_consensus::tests::preparation_restores_placement_when_outcome_exceeds_limit -- --exact | tee /tmp/metadata-preparation.log
+          grep -q '^running 1 test$' /tmp/metadata-preparation.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-preparation.log
+
   chunk-consensus:
     name: network chunk consensus
     runs-on: ubuntu-latest

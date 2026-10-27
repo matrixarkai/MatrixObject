@@ -56,3 +56,33 @@ cargo test --locked --features metadata-consensus,chunk-consensus --test network
 
 This is a bounded functional and recovery test. It does not establish throughput,
 large-cluster capacity, authentication, or readiness for production traffic.
+
+## Metadata preparation cost
+
+The metadata Raft worker prepares heartbeat, expiry, and placement outcomes while
+holding exclusive access to the service. It preserves the full roster for global
+validation, saves only the affected nodes and optional object placement, and
+restores them before submitting the binary outcome to Raft. Errors and unwinding
+also restore the saved records and commit index. Derived snapshot caches are
+invalidated. Only committed outcomes change the visible metadata state.
+
+The local measurement below exercises catalogs of 1, 32, and 512 groups with
+zero or 10,000 placements. Each group has three physical voters and one logical
+placement target. It reports median per-operation preparation time over seven
+samples of sixteen operations, alongside full-service clone time and encoded
+outcome size. Fixture setup is outside the timed region.
+
+```sh
+cargo test --locked --release --features metadata-consensus --lib cluster::meta_consensus::tests::measure_heartbeat_preparation_by_catalog_size -- --exact --ignored --nocapture
+```
+
+This measures in-memory preparation on one machine, not network throughput or a
+running 512-group cluster. Catalog lookup and health projection still scan the
+catalog; expiration visits the roster. Disk latency, Raft communication, and
+checkpoint costs require separate end-to-end measurement.
+
+One release-mode run with 512 groups, 2,048 roster entries, and 10,000
+placements reduced median heartbeat preparation from 4.09 ms to 47.5 us.
+Both runs emitted a 126-byte outcome. With no placements, the same catalog
+changed from 1.43 ms to 6.49 us. These are local measurements, not latency
+promises; rerun the command on the target deployment hardware.
