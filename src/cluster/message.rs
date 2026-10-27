@@ -187,9 +187,11 @@ impl ReplicaRequest {
     }
 }
 
-/// A successful reply's contents.
+/// A decoded reply, including a typed pre-admission refusal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaReply {
+    /// This voter did not admit the request; a catalog may try another voter.
+    NotLeader,
     /// A write or a discard was applied. Nothing to carry back.
     Applied,
     Read(ReplicaReadResult),
@@ -204,7 +206,7 @@ pub enum ReplicaReply {
 impl ReplicaReply {
     pub(crate) fn payload_len(&self) -> usize {
         match self {
-            Self::Applied => 0,
+            Self::Applied | Self::NotLeader => 0,
             Self::Read(read) => 16usize
                 .saturating_add(read.checksum.len())
                 .saturating_add(read.data.len()),
@@ -222,7 +224,7 @@ impl ReplicaReply {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
-            ReplicaReply::Applied => {}
+            ReplicaReply::Applied | ReplicaReply::NotLeader => {}
             ReplicaReply::Read(read) => {
                 put_u64(&mut out, read.write_sequence);
                 put_str(&mut out, &read.checksum);
@@ -358,11 +360,16 @@ pub fn encode_request(request: &ReplicaRequest) -> Vec<u8> {
     frame
 }
 
-/// Lay out a complete success frame.
+/// Lay out a complete reply frame.
 pub fn encode_reply(reply: &ReplicaReply) -> Vec<u8> {
     let payload = reply.encode_payload();
     let mut frame = Vec::with_capacity(crate::cluster::wire::HEADER_BYTES + payload.len());
-    crate::cluster::wire::put_header(&mut frame, StatusCode::Ok as u8, payload.len());
+    let status = if matches!(reply, ReplicaReply::NotLeader) {
+        StatusCode::NotLeader
+    } else {
+        StatusCode::Ok
+    };
+    crate::cluster::wire::put_header(&mut frame, status as u8, payload.len());
     frame.extend_from_slice(&payload);
     frame
 }

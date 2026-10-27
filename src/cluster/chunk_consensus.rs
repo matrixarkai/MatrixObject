@@ -403,9 +403,7 @@ fn run(
                         .reply
                         .try_send(Err(refused("chunk request expired before proposal")));
                 } else if !peer.is_leader() || applied_term != peer.term() {
-                    let _ = request.reply.try_send(Err(ObjectError::PreconditionFailed(
-                        "chunk request was not admitted by a leader".into(),
-                    )));
+                    let _ = request.reply.try_send(Ok(ReplicaReply::NotLeader));
                 } else {
                     let (outcome, reply) =
                         match prepare(&node.service, &request.request, node.max_pages, limit) {

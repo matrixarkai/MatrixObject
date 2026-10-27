@@ -799,7 +799,7 @@ On pushes to `main` and on every pull request, four jobs:
 - **network metadata consensus** -- twenty-one named routing, process, recovery, storage, and
   checkpoint tests with the optional consensus feature enabled.
 
-- **network chunk consensus** -- nine named checks of independently durable chunk
+- **network chunk consensus** -- sixteen named checks of independently durable chunk
   voters, leader loss, restart recovery, capacity, shutdown, and metadata health.
   See [chunk consensus configuration](docs/chunk-consensus.md).
 
@@ -856,15 +856,16 @@ stale log positions, and more than 64 MiB of accumulated data. Legacy raw
 metadata snapshots remain readable through the metadata service API; they are
 not Raft checkpoints and cannot recover a Raft replay position.
 
-This is the state-machine adapter. The shipped metaserver still uses its local
-snapshot backend, and its network requests do not yet pass through MatrixRaft
-consensus. Multi-node elections, durable Raft runtime wiring, chunk replication
-selection, and large-cluster failure testing remain required before a distributed
-production-readiness claim.
+This section describes the state-machine adapter. The optional
+`metadata-consensus` and `chunk-consensus` features additionally run independent
+durable MatrixRaft voters. Group-aware placement, the distributed HTTP backend,
+and large-cluster failure testing remain required before a distributed
+production-readiness claim. See [chunk consensus configuration](docs/chunk-consensus.md).
 
 ### Binary page outcomes
 
-New chunk journal records and `ChunkRaftWriteGroup` proposals use the same
+New chunk journal records, `ChunkRaftWriteGroup` proposals, and independent
+`chunk-consensus` voters use the same
 binary protobuf `PageOutcome` schema in `proto/page_outcome.proto`. The outcome
 contains decided byte patches, page sequence, lengths, checksums, discard ranges,
 and physical counter increments. Recovery installs that state without running a
