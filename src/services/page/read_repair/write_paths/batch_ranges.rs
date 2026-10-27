@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
+    /// Compatibility spelling; use [`Self::write_page_ranges`].
+    #[deprecated(note = "use write_page_ranges")]
     pub fn write_slab_ranges(
+        &mut self,
+        writes: Vec<ChunkRangeWrite>,
+    ) -> Result<ChunkBatchStats, ObjectError> {
+        self.write_page_ranges(writes)
+    }
+
+    pub fn write_page_ranges(
         &mut self,
         writes: Vec<ChunkRangeWrite>,
     ) -> Result<ChunkBatchStats, ObjectError> {
@@ -16,7 +25,7 @@ impl MatrixChunkService {
     ) -> Result<ChunkBatchStats, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.check_expected_chunk_control_proof_checksum(expected_chunk_control_proof_checksum)?;
-        self.write_slab_ranges(writes)
+        self.write_page_ranges(writes)
     }
 
     pub fn write_chunk_ranges_storage_fenced_report(
@@ -191,15 +200,35 @@ impl MatrixChunkService {
         Ok(stats)
     }
 
+    /// Compatibility spelling; use [`Self::write_page_ranges_idempotent`].
+    #[deprecated(note = "use write_page_ranges_idempotent")]
     pub fn write_slab_ranges_idempotent(
         &mut self,
         writes: Vec<ChunkRangeWrite>,
         idempotency_key: &str,
     ) -> Result<(ChunkBatchStats, ChunkBatchWriteReceipt), ObjectError> {
-        self.write_slab_ranges_idempotent_borrowed(&writes, idempotency_key)
+        self.write_page_ranges_idempotent(writes, idempotency_key)
     }
 
+    pub fn write_page_ranges_idempotent(
+        &mut self,
+        writes: Vec<ChunkRangeWrite>,
+        idempotency_key: &str,
+    ) -> Result<(ChunkBatchStats, ChunkBatchWriteReceipt), ObjectError> {
+        self.write_page_ranges_idempotent_borrowed(&writes, idempotency_key)
+    }
+
+    /// Compatibility spelling; use [`Self::write_page_ranges_idempotent_borrowed`].
+    #[deprecated(note = "use write_page_ranges_idempotent_borrowed")]
     pub fn write_slab_ranges_idempotent_borrowed(
+        &mut self,
+        writes: &[ChunkRangeWrite],
+        idempotency_key: &str,
+    ) -> Result<(ChunkBatchStats, ChunkBatchWriteReceipt), ObjectError> {
+        self.write_page_ranges_idempotent_borrowed(writes, idempotency_key)
+    }
+
+    pub fn write_page_ranges_idempotent_borrowed(
         &mut self,
         writes: &[ChunkRangeWrite],
         idempotency_key: &str,
@@ -274,10 +303,10 @@ impl MatrixChunkService {
             .batch_write_request_receipts
             .contains_key(idempotency_key)
         {
-            return self.write_slab_ranges_idempotent(writes, idempotency_key);
+            return self.write_page_ranges_idempotent(writes, idempotency_key);
         }
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
-        self.write_slab_ranges_idempotent(writes, idempotency_key)
+        self.write_page_ranges_idempotent(writes, idempotency_key)
     }
 
     pub fn write_chunk_ranges_idempotent_fenced_report(

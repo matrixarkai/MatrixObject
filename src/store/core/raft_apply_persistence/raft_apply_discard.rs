@@ -224,7 +224,7 @@ impl MatrixObjectStore {
         let mut projected = self.clone();
         projected.apply_discard_borrowed(chunk_id, &ranges)?;
         let after_state_fingerprint = projected.state_fingerprint_without_payload_clones();
-        let request_checksum = slab_discard_request_checksum(chunk_id, &ranges);
+        let request_checksum = chunk_range_discard_request_checksum(chunk_id, &ranges);
         let route_control_proof = self.chunk_service.route_control_proof();
         let expected_route_control_checksum =
             expected_route_control_checksum.unwrap_or("").to_string();
@@ -258,7 +258,7 @@ impl MatrixObjectStore {
             ));
         }
         if prepared.request_checksum
-            != slab_discard_request_checksum(&prepared.chunk_id, &prepared.ranges)
+            != chunk_range_discard_request_checksum(&prepared.chunk_id, &prepared.ranges)
         {
             return Err(ObjectError::Corruption(
                 "prepared chunk discard request checksum mismatch".to_string(),

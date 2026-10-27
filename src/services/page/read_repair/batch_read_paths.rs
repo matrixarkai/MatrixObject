@@ -19,7 +19,16 @@ fn merge_page_range_result_fault_stats(target: &mut ChunkReadStats, source: &Chu
 }
 
 impl MatrixChunkService {
+    /// Compatibility spelling; use [`Self::read_page_ranges`].
+    #[deprecated(note = "use read_page_ranges")]
     pub fn read_slab_ranges(
+        &mut self,
+        requests: Vec<ChunkRangeRequest>,
+    ) -> Result<(Vec<ChunkRangeReadResult>, ChunkBatchStats), ObjectError> {
+        self.read_page_ranges(requests)
+    }
+
+    pub fn read_page_ranges(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
     ) -> Result<(Vec<ChunkRangeReadResult>, ChunkBatchStats), ObjectError> {

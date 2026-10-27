@@ -53,7 +53,7 @@ impl MatrixObjectStore {
                         .saturating_add(extent.length() - admitted_extent_len);
                 }
             }
-            let admission = self.chunk_service.can_accept_slab_discard(
+            let admission = self.chunk_service.can_accept_page_discard(
                 &extent.chunk_id,
                 extent.offset(),
                 admitted_extent_len,

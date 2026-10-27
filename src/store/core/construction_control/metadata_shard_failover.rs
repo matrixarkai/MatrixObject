@@ -156,7 +156,7 @@ impl MatrixObjectStore {
     fn apply_planned_chunk_discards(
         &mut self,
         plan: &StorageMaintenancePlan,
-        max_slabs: usize,
+        max_chunks: usize,
         expected_route_control_checksum: &str,
     ) -> ChunkDiscardRunReport {
         let mut report = ChunkDiscardRunReport {
@@ -179,7 +179,7 @@ impl MatrixObjectStore {
                     .push(discard.chunk_id.clone());
                 continue;
             }
-            if max_slabs == 0 || report.attempted_chunks >= max_slabs as u64 {
+            if max_chunks == 0 || report.attempted_chunks >= max_chunks as u64 {
                 report.skipped_limit_chunks = report.skipped_limit_chunks.saturating_add(1);
                 continue;
             }

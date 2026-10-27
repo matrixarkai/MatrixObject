@@ -327,7 +327,7 @@ impl StoreSnapshot {
                     version_total.saturating_add(metadata_size(metadata))
                 }))
         });
-        let slab_bytes = self.chunks.values().fold(0usize, |total, chunk| {
+        let chunk_bytes = self.chunks.values().fold(0usize, |total, chunk| {
             total.saturating_add(U64 * 2).saturating_add(chunk_size(chunk))
         });
         let applied_receipt_bytes = self
@@ -431,7 +431,7 @@ impl StoreSnapshot {
             .saturating_add(multipart_abort_receipt_bytes)
             .saturating_add(object_change_bytes)
             .saturating_add(object_change_cursor_bytes)
-            .saturating_add(slab_bytes)
+            .saturating_add(chunk_bytes)
             .saturating_add(applied_receipt_bytes)
             .saturating_add(self.raft_membership_receipts.len().saturating_mul(128))
             .saturating_add(self.page_disabled_chunk_endpoints.len().saturating_mul(8))

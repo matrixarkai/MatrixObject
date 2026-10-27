@@ -79,9 +79,9 @@ where
     );
     append_u64(
         &mut material,
-        page.storage_receipt_page_slab_filter().is_some() as u64,
+        page.storage_receipt_page_parent_chunk_filter().is_some() as u64,
     );
-    if let Some(chunk_id) = page.storage_receipt_page_slab_filter() {
+    if let Some(chunk_id) = page.storage_receipt_page_parent_chunk_filter() {
         append_chunk_id(&mut material, chunk_id);
     }
     append_u64(

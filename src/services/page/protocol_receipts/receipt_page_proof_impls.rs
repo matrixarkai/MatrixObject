@@ -133,6 +133,10 @@ macro_rules! impl_filtered_page_storage_receipt_page_source {
             }
 
             fn storage_receipt_page_slab_filter(&self) -> Option<&ChunkId> {
+                self.storage_receipt_page_parent_chunk_filter()
+            }
+
+            fn storage_receipt_page_parent_chunk_filter(&self) -> Option<&ChunkId> {
                 self.chunk_id.as_ref()
             }
 

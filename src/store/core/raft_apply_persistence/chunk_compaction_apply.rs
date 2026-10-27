@@ -90,7 +90,7 @@ impl MatrixObjectStore {
             return Ok(());
         };
         if drained > 0 {
-            self.chunk_service.discard_slab_ranges(vec![ChunkRangeRequest {
+            self.chunk_service.discard_page_ranges(vec![ChunkRangeRequest {
                 chunk_id: chunk_id.clone(),
                 offset: 0,
                 length: drained,

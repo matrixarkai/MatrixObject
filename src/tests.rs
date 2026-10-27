@@ -2918,7 +2918,7 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
         },
     ];
     assert!(matches!(
-        page.write_slab_ranges(writes.clone()),
+        page.write_page_ranges(writes.clone()),
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(page
@@ -2928,7 +2928,7 @@ fn chunk_service_preflights_chunk_write_admission_before_mutation() {
 
     page.replicas[0].set_capacity_bytes(8).unwrap();
     page.replicas[1].set_capacity_bytes(8).unwrap();
-    page.write_slab_ranges(writes).unwrap();
+    page.write_page_ranges(writes).unwrap();
     let (payload, stats) = page.read_chunk_range(&chunk_id, 0, 8).unwrap();
     assert_eq!(payload, b"abcdefgh".to_vec());
     assert_eq!(stats.quorum_verified_chunks, 2);
@@ -4350,7 +4350,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     let chunk_id = ChunkId::new(0, 70).unwrap();
     let mut page = MatrixChunkService::new(8, 3, 2).unwrap();
     let write_stats = page
-        .write_slab_ranges(vec![
+        .write_page_ranges(vec![
             ChunkRangeWrite {
                 chunk_id: chunk_id.clone(),
                 offset: 0,
@@ -4419,7 +4419,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
         },
     ];
     let bounded_write_admission = page
-        .can_accept_slab_writes(bounded_write_requests.clone(), 4, 0)
+        .can_accept_page_writes(bounded_write_requests.clone(), 4, 0)
         .unwrap();
     assert!(!bounded_write_admission.can_accept);
     assert!(bounded_write_admission.budget_limited);
@@ -4459,7 +4459,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
         Some("true")
     );
     let resumed_write_admission = page
-        .can_accept_slab_writes_from(
+        .can_accept_page_writes_from(
             bounded_write_requests.clone(),
             4,
             0,
@@ -4484,7 +4484,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
         .is_err());
 
     let (reads, batch_stats) = page
-        .read_slab_ranges(vec![
+        .read_page_ranges(vec![
             ChunkRangeRequest {
                 chunk_id: chunk_id.clone(),
                 offset: 0,
@@ -4557,7 +4557,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
         },
     ];
     let bounded_discard_admission = page
-        .can_accept_slab_discards(discard_admission_requests.clone(), 2)
+        .can_accept_page_discards(discard_admission_requests.clone(), 2)
         .unwrap();
     assert!(bounded_discard_admission.can_accept);
     assert!(bounded_discard_admission.discard_has_more);
@@ -4576,7 +4576,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
         Some("1")
     );
     let resumed_discard_admission = page
-        .can_accept_slab_discards_from(
+        .can_accept_page_discards_from(
             discard_admission_requests.clone(),
             2,
             bounded_discard_admission.next_discard_range_index,
@@ -4648,7 +4648,7 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     assert_eq!(still_live, b"ij".to_vec());
 
     let discard_stats = page
-        .discard_slab_ranges(vec![
+        .discard_page_ranges(vec![
             ChunkRangeRequest {
                 chunk_id: chunk_id.clone(),
                 offset: 0,
@@ -5767,7 +5767,7 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
     ];
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
     let (stats, first) = page
-        .write_slab_ranges_idempotent(batch.clone(), "block-batch-write-a")
+        .write_page_ranges_idempotent(batch.clone(), "block-batch-write-a")
         .unwrap();
     assert!(!first.deduped);
     assert_eq!(stats.input_ranges, 2);
@@ -5785,13 +5785,13 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
     );
 
     let (retry_stats, retry) = page
-        .write_slab_ranges_idempotent(batch.clone(), "block-batch-write-a")
+        .write_page_ranges_idempotent(batch.clone(), "block-batch-write-a")
         .unwrap();
     assert!(retry.deduped);
     assert_eq!(retry_stats, stats);
     assert_eq!(retry.request_checksum, first.request_checksum);
     assert!(matches!(
-        page.write_slab_ranges_idempotent(
+        page.write_page_ranges_idempotent(
             vec![ChunkRangeWrite {
                 chunk_id: chunk_id.clone(),
                 offset: 0,
@@ -5861,15 +5861,15 @@ fn chunk_service_dedupes_idempotent_batch_writes_across_snapshots() {
         6
     );
     let (_, restored_retry) = restored
-        .write_slab_ranges_idempotent(batch, "block-batch-write-a")
+        .write_page_ranges_idempotent(batch, "block-batch-write-a")
         .unwrap();
     assert!(restored_retry.deduped);
     assert!(matches!(
-        restored.write_slab_ranges_idempotent(Vec::new(), "block-batch-write-empty"),
+        restored.write_page_ranges_idempotent(Vec::new(), "block-batch-write-empty"),
         Err(ObjectError::InvalidArgument(_))
     ));
     assert!(matches!(
-        restored.write_slab_ranges_idempotent(
+        restored.write_page_ranges_idempotent(
             vec![ChunkRangeWrite {
                 chunk_id,
                 offset: 8,
@@ -6005,7 +6005,7 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
         .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
     let (stats, first) = page
-        .discard_slab_ranges_idempotent(requests.clone(), "block-batch-discard-a")
+        .discard_page_ranges_idempotent(requests.clone(), "block-batch-discard-a")
         .unwrap();
     assert!(!first.deduped);
     assert_eq!(stats.input_ranges, 2);
@@ -6019,12 +6019,12 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
         6
     );
     let (retry_stats, retry) = page
-        .discard_slab_ranges_idempotent(requests.clone(), "block-batch-discard-a")
+        .discard_page_ranges_idempotent(requests.clone(), "block-batch-discard-a")
         .unwrap();
     assert!(retry.deduped);
     assert_eq!(retry_stats, stats);
     assert!(matches!(
-        page.discard_slab_ranges_idempotent(
+        page.discard_page_ranges_idempotent(
             vec![ChunkRangeRequest {
                 chunk_id: chunk_id.clone(),
                 offset: 0,
@@ -6095,11 +6095,11 @@ fn chunk_service_dedupes_idempotent_batch_discards_across_snapshots() {
         6
     );
     let (_, restored_retry) = restored
-        .discard_slab_ranges_idempotent(requests, "block-batch-discard-a")
+        .discard_page_ranges_idempotent(requests, "block-batch-discard-a")
         .unwrap();
     assert!(restored_retry.deduped);
     assert!(matches!(
-        restored.discard_slab_ranges_idempotent(Vec::new(), "block-batch-empty"),
+        restored.discard_page_ranges_idempotent(Vec::new(), "block-batch-empty"),
         Err(ObjectError::InvalidArgument(_))
     ));
 }
@@ -22407,7 +22407,7 @@ fn raft_backed_store_replays_idempotent_batch_page_writes() {
         .unwrap();
     let (_, restored_retry) = restored
         .chunk_service
-        .write_slab_ranges_idempotent(batch, "raft-block-batch-write-a")
+        .write_page_ranges_idempotent(batch, "raft-block-batch-write-a")
         .unwrap();
     assert!(restored_retry.deduped);
 }
@@ -40719,7 +40719,7 @@ fn a_striped_page_reads_back_what_was_written_to_it() {
     // Five units' worth, so the write spans three groups and the last unit is partial.
     let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
     service
-        .write_slab_ranges(vec![ChunkRangeWrite {
+        .write_page_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
             offset: 0,
             data: payload.clone(),
@@ -40753,7 +40753,7 @@ fn a_striped_page_holds_one_and_a_half_copies_and_replication_holds_three() {
         };
         let chunk_id = ChunkId::new(1, 1).unwrap();
         service
-            .write_slab_ranges(vec![ChunkRangeWrite {
+            .write_page_ranges(vec![ChunkRangeWrite {
                 chunk_id,
                 offset: 0,
                 data: payload.to_vec(),
@@ -40807,7 +40807,7 @@ fn a_striped_page_still_reads_with_one_replica_gone() {
         let mut service = striped_chunk_service(64);
         let chunk_id = ChunkId::new(1, 1).unwrap();
         service
-            .write_slab_ranges(vec![ChunkRangeWrite {
+            .write_page_ranges(vec![ChunkRangeWrite {
                 chunk_id: chunk_id.clone(),
                 offset: 0,
                 data: payload.clone(),
@@ -40832,7 +40832,7 @@ fn a_striped_page_still_reads_with_one_replica_gone() {
     let mut service = striped_chunk_service(64);
     let chunk_id = ChunkId::new(1, 1).unwrap();
     service
-        .write_slab_ranges(vec![ChunkRangeWrite {
+        .write_page_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
             offset: 0,
             data: payload.clone(),
@@ -40908,7 +40908,7 @@ fn a_stripe_layout_is_refused_where_it_could_not_be_honoured() {
     service.configure_stripe_layout(Some(layout)).unwrap();
     let chunk_id = ChunkId::new(1, 1).unwrap();
     service
-        .write_slab_ranges(vec![ChunkRangeWrite {
+        .write_page_ranges(vec![ChunkRangeWrite {
             chunk_id,
             offset: 0,
             data: vec![b'x'; 200],
@@ -41251,7 +41251,7 @@ fn a_damaged_fragment_is_located_by_its_digest_rather_than_searched_for() {
     // Large enough for several fragments: the floor is 8 KiB a fragment, so 64 KiB is 8.
     let payload: Vec<u8> = (0..65_536u32).map(|index| (index % 251) as u8).collect();
     service
-        .write_slab_ranges(vec![ChunkRangeWrite {
+        .write_page_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
             offset: 0,
             data: payload.clone(),
@@ -41427,7 +41427,7 @@ fn a_replica_with_peers_stores_neither_sidecar_nor_digests() {
     let mut service = MatrixChunkService::new(1024 * 1024, 3, 2).unwrap();
     let chunk_id = ChunkId::new(1, 1).unwrap();
     service
-        .write_slab_ranges(vec![ChunkRangeWrite {
+        .write_page_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
             offset: 0,
             data: vec![b'x'; 65_536],
@@ -41454,7 +41454,7 @@ fn a_replica_with_peers_stores_neither_sidecar_nor_digests() {
     let mut alone = one_replica_chunk_service();
     let chunk_id = ChunkId::new(1, 1).unwrap();
     alone
-        .write_slab_ranges(vec![ChunkRangeWrite {
+        .write_page_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
             offset: 0,
             data: vec![b'x'; 65_536],
@@ -41482,7 +41482,7 @@ fn a_snapshot_cannot_carry_a_damaged_page() {
     let chunk_id = ChunkId::new(1, 1).unwrap();
     let payload: Vec<u8> = (0..65_536u32).map(|index| (index % 251) as u8).collect();
     service
-        .write_slab_ranges(vec![ChunkRangeWrite {
+        .write_page_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
             offset: 0,
             data: payload.clone(),
@@ -41617,7 +41617,7 @@ fn a_page_that_moves_to_a_replica_with_peers_gives_up_its_digests() {
     let mut alone = one_replica_chunk_service();
     let chunk_id = ChunkId::new(1, 1).unwrap();
     alone
-        .write_slab_ranges(vec![ChunkRangeWrite {
+        .write_page_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
             offset: 0,
             data: vec![b'x'; 65_536],
@@ -41648,7 +41648,7 @@ fn a_page_that_moves_to_a_replica_with_peers_gives_up_its_digests() {
 
     // The write is what runs the policy.
     with_peers
-        .write_slab_ranges(vec![ChunkRangeWrite {
+        .write_page_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
             offset: 0,
             data: vec![b'y'; 1024],
@@ -42024,7 +42024,7 @@ fn a_retried_striped_write_is_deduplicated_at_each_replica() {
     // did.
     //
     // THIS CALLS THE STRIPED WRITE DIRECTLY, and the reason is worth stating: both public
-    // idempotent entries -- `write_chunk_range_idempotent` and `write_slab_ranges_idempotent`
+    // idempotent entries -- `write_chunk_range_idempotent` and `write_page_ranges_idempotent`
     // -- dedupe at the SERVICE, out of `write_request_receipts`, before a replica is touched
     // at all. A retry through either of them is answered from that map, so it would pass with
     // the replica keying deleted. The physical write count is what sees the layer below.
@@ -42173,11 +42173,11 @@ fn a_striped_services_public_idempotent_write_is_answered_from_its_own_receipts(
         data: payload.clone(),
     }];
     let (_, first) = service
-        .write_slab_ranges_idempotent(writes.clone(), "stripe-public-1")
+        .write_page_ranges_idempotent(writes.clone(), "stripe-public-1")
         .unwrap();
     assert!(!first.deduped, "the first write of a key is not a retry");
     let (_, again) = service
-        .write_slab_ranges_idempotent(writes, "stripe-public-1")
+        .write_page_ranges_idempotent(writes, "stripe-public-1")
         .unwrap();
     assert!(
         again.deduped,
@@ -42408,7 +42408,7 @@ fn a_striped_page_that_has_lost_a_replica_is_reported_unrepaired() {
     let chunk_id = ChunkId::new(1, 1).unwrap();
     let payload: Vec<u8> = (0..300u32).map(|index| (index % 251) as u8).collect();
     service
-        .write_slab_ranges(vec![ChunkRangeWrite {
+        .write_page_ranges(vec![ChunkRangeWrite {
             chunk_id: chunk_id.clone(),
             offset: 0,
             data: payload.clone(),
@@ -50443,6 +50443,63 @@ fn a_registration_serves_one_tier_or_the_other() {
     meta.serves_page_tier = false;
     assert!(!meta.serves_chunk_tier(), "a metaserver must not serve the chunk tier");
     assert!(!meta.serves_page_tier(), "a metaserver must not serve the page tier");
+}
+
+#[test]
+#[allow(deprecated)]
+fn a_legacy_receipt_filter_still_binds_the_same_chunk() {
+    struct Legacy(Option<ChunkId>);
+    struct Canonical(Option<ChunkId>);
+    macro_rules! source {
+        ($ty:ty, $filter:ident) => {
+            impl StorageReceiptPageProofSource for $ty {
+                fn storage_receipt_page_kind(&self) -> &'static str {
+                    "block.write"
+                }
+                fn storage_receipt_page_receipt_count(&self) -> u64 {
+                    1
+                }
+                fn storage_receipt_page_total_receipt_count(&self) -> u64 {
+                    2
+                }
+                fn storage_receipt_page_scanned_count(&self) -> u64 {
+                    2
+                }
+                fn storage_receipt_page_limit(&self) -> u64 {
+                    3
+                }
+                fn storage_receipt_page_truncated(&self) -> bool {
+                    false
+                }
+                fn storage_receipt_page_next_marker(&self) -> Option<&str> {
+                    None
+                }
+                fn $filter(&self) -> Option<&ChunkId> {
+                    self.0.as_ref()
+                }
+                fn storage_receipt_page_typed_proof_checksum(&self) -> String {
+                    "receipt".into()
+                }
+            }
+        };
+    }
+    source!(Legacy, storage_receipt_page_slab_filter);
+    source!(Canonical, storage_receipt_page_parent_chunk_filter);
+    let chunk = ChunkId::new(17, 29).unwrap();
+    let legacy = Legacy(Some(chunk.clone()));
+    let canonical = Canonical(Some(chunk));
+    let read_proof = ReceiptReadProof::default();
+    let old = storage_receipt_page_proof(&legacy, &read_proof);
+    let new = storage_receipt_page_proof(&canonical, &read_proof);
+    assert_eq!(
+        old.storage_receipt_page_proof_checksum,
+        new.storage_receipt_page_proof_checksum
+    );
+    let unfiltered = storage_receipt_page_proof(&Legacy(None), &read_proof);
+    assert_ne!(
+        old.storage_receipt_page_proof_checksum,
+        unfiltered.storage_receipt_page_proof_checksum
+    );
 }
 
 fn replica_readmission_fixture() -> (MatrixChunkService, PageId) {

@@ -683,9 +683,9 @@ impl MatrixObjectStore {
         // The chunk records. Their two range lists grow with how fragmented a
         // chunk becomes, and both are merged on every extend, so this is what
         // fragmentation costs rather than what deletion does.
-        let mut slab_bytes = 0u64;
+        let mut chunk_bytes = 0u64;
         for chunk in self.chunks.values() {
-            slab_bytes = slab_bytes
+            chunk_bytes = chunk_bytes
                 .saturating_add(
                     (std::mem::size_of::<ChunkId>() + std::mem::size_of::<ChunkInfo>()) as u64,
                 )
@@ -694,7 +694,7 @@ impl MatrixObjectStore {
                         .saturating_mul(std::mem::size_of::<DataRange>() as u64),
                 );
         }
-        push("chunks.bytes", slab_bytes);
+        push("chunks.bytes", chunk_bytes);
 
         let metadata_bytes = objects_bytes
             .saturating_add(versions_bytes)
@@ -704,7 +704,7 @@ impl MatrixObjectStore {
             .saturating_add(multipart_metadata_bytes)
             .saturating_add(raft_receipt_bytes)
             .saturating_add(route_cache_bytes)
-            .saturating_add(slab_bytes);
+            .saturating_add(chunk_bytes);
         push("ACCOUNTED.metadata_bytes", metadata_bytes);
 
         // ---- the headline: bytes we can actually name ------------------------

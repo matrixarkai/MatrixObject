@@ -34,7 +34,7 @@ impl MatrixObjectStore {
             page_batch_mutation_image_fingerprint(&self.chunk_service);
         let mut projected = self.chunk_service.clone();
         let (_stats, receipt) =
-            projected.discard_slab_ranges_idempotent_borrowed(&requests, idempotency_key)?;
+            projected.discard_page_ranges_idempotent_borrowed(&requests, idempotency_key)?;
         let after_page_service_fingerprint = page_batch_mutation_image_fingerprint(&projected);
         let mut prepared = PreparedPageBatchDiscard {
             requests,
@@ -88,7 +88,7 @@ impl MatrixObjectStore {
                 "page prepared batch discard must contain at least one range".to_string(),
             ));
         }
-        let admission = self.chunk_service.can_accept_slab_discards_from_borrowed(
+        let admission = self.chunk_service.can_accept_page_discards_from_borrowed(
             &selected,
             max_discard_bytes,
             discard_start_range_index,
@@ -242,7 +242,7 @@ impl MatrixObjectStore {
                 "page prepared batch discard source fingerprint mismatch".to_string(),
             ));
         }
-        let (_stats, receipt) = self.chunk_service.discard_slab_ranges_idempotent_borrowed(
+        let (_stats, receipt) = self.chunk_service.discard_page_ranges_idempotent_borrowed(
             &prepared.requests,
             &prepared.receipt.idempotency_key,
         )?;

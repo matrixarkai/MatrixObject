@@ -1,15 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
+    /// Compatibility spelling; use [`Self::discard_page_ranges_idempotent`].
+    #[deprecated(note = "use discard_page_ranges_idempotent")]
     pub fn discard_slab_ranges_idempotent(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         idempotency_key: &str,
     ) -> Result<(ChunkBatchStats, ChunkBatchDiscardReceipt), ObjectError> {
-        self.discard_slab_ranges_idempotent_borrowed(&requests, idempotency_key)
+        self.discard_page_ranges_idempotent(requests, idempotency_key)
     }
 
+    pub fn discard_page_ranges_idempotent(
+        &mut self,
+        requests: Vec<ChunkRangeRequest>,
+        idempotency_key: &str,
+    ) -> Result<(ChunkBatchStats, ChunkBatchDiscardReceipt), ObjectError> {
+        self.discard_page_ranges_idempotent_borrowed(&requests, idempotency_key)
+    }
+
+    /// Compatibility spelling; use [`Self::discard_page_ranges_idempotent_borrowed`].
+    #[deprecated(note = "use discard_page_ranges_idempotent_borrowed")]
     pub fn discard_slab_ranges_idempotent_borrowed(
+        &mut self,
+        requests: &[ChunkRangeRequest],
+        idempotency_key: &str,
+    ) -> Result<(ChunkBatchStats, ChunkBatchDiscardReceipt), ObjectError> {
+        self.discard_page_ranges_idempotent_borrowed(requests, idempotency_key)
+    }
+
+    pub fn discard_page_ranges_idempotent_borrowed(
         &mut self,
         requests: &[ChunkRangeRequest],
         idempotency_key: &str,
@@ -78,13 +98,13 @@ impl MatrixChunkService {
         ObjectError,
     > {
         validate_idempotency_key(idempotency_key)?;
-        let admission = self.can_accept_slab_discards_from_borrowed(
+        let admission = self.can_accept_page_discards_from_borrowed(
             &requests,
             max_discard_bytes,
             discard_start_range_index,
         )?;
         let selected = select_admitted_page_discard_requests(requests, &admission)?;
-        let (stats, receipt) = self.discard_slab_ranges_idempotent(selected, idempotency_key)?;
+        let (stats, receipt) = self.discard_page_ranges_idempotent(selected, idempotency_key)?;
         if stats.payload_bytes != admission.selected_discard_bytes {
             return Err(ObjectError::Corruption(
                 "page idempotent bounded discard stats do not match admission".to_string(),
@@ -125,10 +145,10 @@ impl MatrixChunkService {
             .batch_discard_request_receipts
             .contains_key(idempotency_key)
         {
-            return self.discard_slab_ranges_idempotent(requests, idempotency_key);
+            return self.discard_page_ranges_idempotent(requests, idempotency_key);
         }
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
-        self.discard_slab_ranges_idempotent(requests, idempotency_key)
+        self.discard_page_ranges_idempotent(requests, idempotency_key)
     }
 
     pub fn discard_chunk_ranges_idempotent_fenced_report(

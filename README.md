@@ -904,3 +904,17 @@ A metaserver can load a fixed binary protobuf chunk catalog through
 placement target and one copy of capacity. Voters report health under separate
 member IDs. Metadata clients resolve the persisted membership and verify chunk
 configuration before sending data. See [catalog configuration and recovery](docs/chunk-group-catalog.md).
+
+### Storage naming compatibility
+
+The storage tiers are chunk, page, and fragment. Page-range operations on
+`MatrixChunkService` use `can_accept_page_*`, `read_page_ranges`,
+`write_page_ranges*`, and `discard_page_ranges*`. The corresponding fenced
+Raft read methods also use `read_page_ranges_*`.
+
+Older `slab`-named methods remain as deprecated forwarding methods for existing
+callers; internal calls use the page names. Receipt proof sources use
+`storage_receipt_page_parent_chunk_filter` to select a chunk. Its default still
+honors an existing implementation of the deprecated filter hook. This naming
+change does not alter persisted bytes, proof checksums, protocol headers, or
+accepted legacy node-kind values.
