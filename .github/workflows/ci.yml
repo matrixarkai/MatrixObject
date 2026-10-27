@@ -84,8 +84,24 @@ jobs:
       - name: Metadata and replica shutdown
         run: |
           set -o pipefail
-          cargo test --locked --test server_shutdown -- --test-threads=1 2>&1 | tee /tmp/server-shutdown.log
-          grep -q 'test result: ok. 6 passed' /tmp/server-shutdown.log
+          cargo test --locked --test server_shutdown meta_idle_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown meta_connected_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown meta_stopped_before_serve -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown replica_idle_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown replica_connected_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown replica_stopped_before_serve -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
 
       - name: Durable format constants are unchanged
         run: |
