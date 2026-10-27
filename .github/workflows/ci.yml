@@ -84,10 +84,15 @@ jobs:
       - name: Replica quorum members have distinct peers
         run: |
           set -o pipefail
-          cargo test --locked --test distinct_replica_peers -- --test-threads=1 \
-            | tee /tmp/distinct-peers.log
-          grep -q '^test result: ok. 3 passed' /tmp/distinct-peers.log \
-            || { echo "::error::the peer checks did not run"; exit 1; }
+          cargo test --locked --test distinct_replica_peers one_endpoint_cannot_supply_multiple_votes -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test distinct_replica_peers two_spellings_of_one_peer_cannot_supply_multiple_votes -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test distinct_replica_peers distinct_processes_can_still_form_a_quorum -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
 
       - name: Durable format constants are unchanged
         run: |
