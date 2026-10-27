@@ -189,6 +189,36 @@ impl RemoteReplicaClient {
         }
     }
 
+    /// Read at most `limit` page identities and sequences after an exclusive cursor.
+    /// Old servers refuse this new verb; no older frame layout has changed.
+    /// Multiple batches are a live traversal, not a snapshot: fence writers before readmission.
+    pub fn page_inventory(
+        &mut self,
+        after: Option<&PageId>,
+        limit: u64,
+    ) -> Result<crate::cluster::message::PageInventory, ObjectError> {
+        crate::cluster::message::check_inventory_limit(limit)?;
+        match self.call(ReplicaRequest::PageInventory {
+            after: after.cloned(),
+            limit,
+        })? {
+            ReplicaReply::PageInventory(batch) => {
+                if batch.entries.len() as u64 > limit
+                    || (batch.has_more && batch.entries.len() as u64 != limit)
+                    || after.is_some_and(|cursor| {
+                        batch.entries.first().is_some_and(|(id, _)| id <= cursor)
+                    })
+                {
+                    return Err(ObjectError::Corruption(
+                        "page inventory does not respect the requested cursor or limit".into(),
+                    ));
+                }
+                Ok(batch)
+            }
+            other => Err(unexpected_reply("a page inventory", &other)),
+        }
+    }
+
     /// Ask whether the replica is answering, and how many pages it holds.
     pub fn ping(&mut self) -> Result<u64, ObjectError> {
         match self.call(ReplicaRequest::Ping)? {

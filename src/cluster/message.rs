@@ -17,6 +17,27 @@ use crate::cluster::wire::{
 };
 use crate::{ChunkId, DataRange, ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 
+/// Maximum page rows in one inventory response (32 bytes per row on the wire).
+pub const MAX_INVENTORY_PAGES: u64 = 4096;
+
+/// One bounded read of a replica's page index. Resume after the last entry when `has_more`.
+/// Each call is consistent under the node lock; multiple calls are not a frozen snapshot.
+/// Writers must be fenced before using a traversal to certify replica readmission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PageInventory {
+    pub entries: Vec<(PageId, u64)>,
+    pub has_more: bool,
+}
+
+pub(crate) fn check_inventory_limit(limit: u64) -> Result<(), ObjectError> {
+    if limit == 0 || limit > MAX_INVENTORY_PAGES {
+        return Err(ObjectError::InvalidArgument(format!(
+            "page inventory limit must be between 1 and {MAX_INVENTORY_PAGES}, got {limit}"
+        )));
+    }
+    Ok(())
+}
+
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {
@@ -39,6 +60,7 @@ pub enum ReplicaRequest {
         length: u64,
     },
     Ping,
+    PageInventory { after: Option<PageId>, limit: u64 },
 }
 
 impl ReplicaRequest {
@@ -49,6 +71,7 @@ impl ReplicaRequest {
             ReplicaRequest::HeadChunk { .. } => RequestCode::HeadChunk,
             ReplicaRequest::DiscardChunk { .. } => RequestCode::DiscardChunk,
             ReplicaRequest::Ping => RequestCode::Ping,
+            ReplicaRequest::PageInventory { .. } => RequestCode::PageInventory,
         }
     }
 
@@ -81,6 +104,11 @@ impl ReplicaRequest {
             }
             ReplicaRequest::HeadChunk { page_id } => put_page_id(&mut out, page_id),
             ReplicaRequest::Ping => {}
+            ReplicaRequest::PageInventory { after, limit } => {
+                put_u64(&mut out, u64::from(after.is_some()));
+                if let Some(id) = after { put_page_id(&mut out, id); }
+                put_u64(&mut out, *limit);
+            }
         }
         out
     }
@@ -128,6 +156,16 @@ impl ReplicaRequest {
                 }
             }
             RequestCode::Ping => ReplicaRequest::Ping,
+            RequestCode::PageInventory => {
+                let after = match cursor.take_u64()? {
+                    0 => None,
+                    1 => Some(take_page_id(&mut cursor)?),
+                    _ => return Err(ObjectError::Corruption("invalid page inventory cursor tag".into())),
+                };
+                let limit = cursor.take_u64()?;
+                check_inventory_limit(limit)?;
+                ReplicaRequest::PageInventory { after, limit }
+            }
         };
         if cursor.remaining() != 0 {
             return Err(ObjectError::Corruption(format!(
@@ -149,6 +187,7 @@ pub enum ReplicaReply {
     Head(ReplicaHead),
     /// The replica is answering, and holds this many pages.
     Pong { page_count: u64 },
+    PageInventory(PageInventory),
 }
 
 impl ReplicaReply {
@@ -173,6 +212,14 @@ impl ReplicaReply {
                 }
             }
             ReplicaReply::Pong { page_count } => put_u64(&mut out, *page_count),
+            ReplicaReply::PageInventory(batch) => {
+                put_u64(&mut out, u64::from(batch.has_more));
+                put_u64(&mut out, batch.entries.len() as u64);
+                for (id, sequence) in &batch.entries {
+                    put_page_id(&mut out, id);
+                    put_u64(&mut out, *sequence);
+                }
+            }
         }
         out
     }
@@ -231,6 +278,28 @@ impl ReplicaReply {
             RequestCode::Ping => ReplicaReply::Pong {
                 page_count: cursor.take_u64()?,
             },
+            RequestCode::PageInventory => {
+                let has_more = match cursor.take_u64()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(ObjectError::Corruption("invalid page inventory continuation tag".into())),
+                };
+                let count = cursor.take_u64()?;
+                if count > MAX_INVENTORY_PAGES || count > (cursor.remaining() / 32) as u64
+                    || (has_more && count == 0) {
+                    return Err(ObjectError::Corruption("invalid page inventory row count".into()));
+                }
+                let mut entries = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    let id = take_page_id(&mut cursor)?;
+                    let sequence = cursor.take_u64()?;
+                    if entries.last().is_some_and(|(last, _)| last >= &id) {
+                        return Err(ObjectError::Corruption("page inventory rows are not strictly ordered".into()));
+                    }
+                    entries.push((id, sequence));
+                }
+                ReplicaReply::PageInventory(PageInventory { entries, has_more })
+            }
         };
         if cursor.remaining() != 0 {
             return Err(ObjectError::Corruption(format!(

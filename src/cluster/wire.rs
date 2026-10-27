@@ -73,6 +73,8 @@ pub enum RequestCode {
     DiscardChunk = 4,
     /// Ask whether this replica is answering, and how many pages it holds. Empty payload.
     Ping = 5,
+    /// Read a bounded batch of page identities and write sequences, after an exclusive cursor.
+    PageInventory = 6,
 }
 
 impl RequestCode {
@@ -88,6 +90,7 @@ impl RequestCode {
             3 => Some(RequestCode::HeadChunk),
             4 => Some(RequestCode::DiscardChunk),
             5 => Some(RequestCode::Ping),
+            6 => Some(RequestCode::PageInventory),
             _ => None,
         }
     }
