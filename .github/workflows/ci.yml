@@ -1285,3 +1285,51 @@ jobs:
           cargo test --locked --features metadata-consensus --test meta_restart_recovery explicit_roster_and_binary_heartbeats_survive_changed_bootstrap -- --exact | tee /tmp/data-roster.log
           grep -q '^running 1 test$' /tmp/data-roster.log
           grep -q '^test result: ok. 1 passed' /tmp/data-roster.log
+      - name: conditional chunk heartbeat is binary and refuses every truncated payload
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test chunk_health_reporting conditional_chunk_heartbeat_is_binary_and_refuses_every_truncated_payload -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: wrong endpoint heartbeat cannot admit a node or clear draining
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test chunk_health_reporting wrong_endpoint_heartbeat_cannot_admit_a_node_or_clear_draining -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: health worker shutdown is bounded and invalid configuration is refused
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test chunk_health_reporting health_worker_shutdown_is_bounded_and_invalid_configuration_is_refused -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: partial chunk heartbeat configuration is refused before serving
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test chunk_health_reporting partial_chunk_heartbeat_configuration_is_refused_before_serving -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: chunk processes report usage follow leaders and expire without manual heartbeats
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus chunk_processes_report_usage_follow_leaders_and_expire_without_manual_heartbeats -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: expiry journal only carries changed nodes and skips empty passes
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test meta_restart_recovery expiry_journal_only_carries_changed_nodes_and_skips_empty_passes -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: failed journal is reported offline with correct cached usage
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --lib cluster::server::heartbeat::tests::failed_journal_is_reported_offline_with_correct_cached_usage -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: reported usage and committed allocations both limit placement
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --test chunk_health_reporting reported_usage_and_committed_allocations_both_limit_placement -- --exact | tee /tmp/chunk-capacity.log
+          grep -q '^running 1 test$' /tmp/chunk-capacity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-capacity.log

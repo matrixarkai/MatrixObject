@@ -392,9 +392,15 @@ fn prepare(
     limit: usize,
 ) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
     let (nodes, object) = match request {
-        MetaRequest::HeartbeatRootNode { node_id, .. } => (vec![node_id.clone()], None),
-        MetaRequest::ExpireRootNodeHeartbeats { .. } => {
-            (service.nodes.keys().cloned().collect(), None)
+        MetaRequest::HeartbeatRootNode { node_id, .. }
+        | MetaRequest::HeartbeatChunkNode { node_id, .. } => (vec![node_id.clone()], None),
+        MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => {
+            let nodes = super::meta_server::expired_node_ids(service, *ttl_ms, *now_ms)?;
+            if nodes.is_empty() {
+                // Keep the read barrier, without cloning or logging the whole roster.
+                return Ok((Vec::new(), Some(MetaReply::Expired { offline_count: 0 })));
+            }
+            (nodes, None)
         }
         MetaRequest::CommitObjectPlacement { placement, .. } => {
             let object = super::meta_message::object_id(&placement.bucket, &placement.key);

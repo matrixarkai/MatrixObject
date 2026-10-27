@@ -266,3 +266,55 @@ fn explicit_roster_and_binary_heartbeats_survive_changed_bootstrap() {
         vec!["node-a"]
     );
 }
+
+
+#[test]
+fn expiry_journal_only_carries_changed_nodes_and_skips_empty_passes() {
+    let dir = StateDir::new();
+    let server =
+        MetaNodeServer::bind_with_snapshot("127.0.0.1:0", MetaNodeOptions::default(), &dir.0)
+            .unwrap();
+    let roster = (0..1024)
+        .map(|i| format!("node-{i}@127.0.0.1:{}@rack", 20000 + i))
+        .collect::<Vec<_>>()
+        .join(",");
+    server
+        .seed_data_roster(
+            &matrixobjectstore_rs::cluster::DataNodeSeed::parse_roster(&roster).unwrap(),
+            1024,
+        )
+        .unwrap();
+    let endpoint = server.local_addr().unwrap().to_string();
+    let stop = server.shutdown_handle();
+    let worker = std::thread::spawn(move || server.serve().unwrap());
+    let mut c = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    c.heartbeat_chunk_node("node-0", "127.0.0.1:20000", 1, 1024, true, 100)
+        .unwrap();
+    let journal = dir.0.join("metadata.outcomes");
+    let before = std::fs::metadata(&journal).unwrap().len();
+    assert_eq!(c.expire_placement_node_heartbeats(1000, 1200).unwrap(), 1);
+    let after = std::fs::metadata(&journal).unwrap().len();
+    assert!(
+        after > before && after - before < 1024,
+        "one expiry copied an entire roster: {} bytes",
+        after - before
+    );
+    assert_eq!(c.expire_placement_node_heartbeats(1000, 1300).unwrap(), 0);
+    assert_eq!(std::fs::metadata(&journal).unwrap().len(), after);
+    drop(c);
+    stop.stop();
+    worker.join().unwrap();
+    let node = start(&dir.0, "0");
+    let mut c = client(&node);
+    let nodes = c.list_placement_nodes().unwrap();
+    assert_eq!(nodes.len(), 1024);
+    assert!(nodes.iter().all(|n| !n.online));
+    assert_eq!(
+        nodes
+            .iter()
+            .find(|n| n.node_id == "node-0")
+            .unwrap()
+            .used_bytes,
+        1
+    );
+}

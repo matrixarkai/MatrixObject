@@ -171,6 +171,8 @@ pub use placement::{
 pub use replica_set::RemoteReplicaSet;
 #[cfg(feature = "replica-server")]
 pub use server::{ReplicaNodeOptions, ReplicaNodeServer, ReplicaNodeShutdown};
+#[cfg(all(feature = "replica-server", feature = "meta-server"))]
+pub use server::ReplicaHeartbeatOptions;
 
 #[cfg(feature = "meta-server")]
 pub use directory::{ControlPlaneStatus, MetaDirectory};
