@@ -1231,3 +1231,33 @@ jobs:
           cargo test --locked --features metadata-consensus --test network_metadata_consensus peer_storage_refuses_missing_zeroed_or_reidentified_history -- --exact | tee /tmp/metadata-consensus.log
           grep -q '^running 1 test$' /tmp/metadata-consensus.log
           grep -q '^test result: ok. 1 passed' /tmp/metadata-consensus.log
+      - name: typed not leader can route an unadmitted mutation
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test metadata_catalog_routing typed_not_leader_can_route_an_unadmitted_mutation -- --exact | tee /tmp/metadata-routing.log
+          grep -q '^running 1 test$' /tmp/metadata-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log
+      - name: uncertain mutations are never sent to another node
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test metadata_catalog_routing uncertain_mutations_are_never_sent_to_another_node -- --exact | tee /tmp/metadata-routing.log
+          grep -q '^running 1 test$' /tmp/metadata-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log
+      - name: reads can move after disconnect and catalog attempts are bounded
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test metadata_catalog_routing reads_can_move_after_disconnect_and_catalog_attempts_are_bounded -- --exact | tee /tmp/metadata-routing.log
+          grep -q '^running 1 test$' /tmp/metadata-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log
+      - name: malformed routing response closes the stream before buffered bytes can reply
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test metadata_catalog_routing malformed_routing_response_closes_the_stream_before_buffered_bytes_can_reply -- --exact | tee /tmp/metadata-routing.log
+          grep -q '^running 1 test$' /tmp/metadata-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log
+      - name: response timeout covers the entire frame not each byte
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test metadata_catalog_routing response_timeout_covers_the_entire_frame_not_each_byte -- --exact | tee /tmp/metadata-routing.log
+          grep -q '^running 1 test$' /tmp/metadata-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log

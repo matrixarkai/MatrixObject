@@ -796,7 +796,7 @@ On pushes to `main` and on every pull request, three jobs:
   `tests::` filter, so a rename would leave the filter matching nothing and the
   `1 passed` line absent rather than wrong.
 
-- **network metadata consensus** -- four named process, recovery, storage, and
+- **network metadata consensus** -- nine named routing, process, recovery, storage, and
   checkpoint tests with the optional consensus feature enabled.
 
 CI does not run the whole library suite. `tools/suite_gate.sh` does, locally: it
