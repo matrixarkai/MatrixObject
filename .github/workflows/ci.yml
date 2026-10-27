@@ -1417,6 +1417,19 @@ jobs:
           grep -q '^running 1 test$' /tmp/group-catalog.log
           grep -q '^test result: ok. 1 passed' /tmp/group-catalog.log
 
+      - name: raft backed store replays placement commands
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib tests::raft_backed_store_replays_placement_commands -- --exact | tee /tmp/migration-proof.log
+          grep -q '^running 1 test$' /tmp/migration-proof.log
+          grep -q '^test result: ok. 1 passed' /tmp/migration-proof.log
+      - name: prepared migration proofs share purpose and reject changed state
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib tests::prepared_migration_proofs_share_purpose_and_reject_changed_state -- --exact | tee /tmp/migration-proof.log
+          grep -q '^running 1 test$' /tmp/migration-proof.log
+          grep -q '^test result: ok. 1 passed' /tmp/migration-proof.log
+
   chunk-consensus:
     name: network chunk consensus
     runs-on: ubuntu-latest

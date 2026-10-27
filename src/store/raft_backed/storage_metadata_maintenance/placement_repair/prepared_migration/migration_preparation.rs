@@ -87,7 +87,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         plan: PlacementMigrationPlan,
         expected_plan_checksum: impl AsRef<str>,
     ) -> Result<ProvenPreparedPlacementMigrationEnvelope, ObjectError> {
-        let proof = self.ensure_placement_read_index("prepare root placement migration envelope")?;
+        let proof = self.ensure_placement_read_index("prepare root placement migration")?;
         let mut prepared =
             self.prepare_placement_migration_raft_entry(plan, expected_plan_checksum)?;
         prepared.placement_read_index = proof.requested_placement_read_index;
