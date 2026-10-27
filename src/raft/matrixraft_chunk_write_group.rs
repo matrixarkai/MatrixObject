@@ -292,7 +292,7 @@ impl ChunkRaftWriteGroup {
                 })?;
             match wait {
                 ApplyWait::Reached { .. } => acknowledged.push(*node_id),
-                ApplyWait::TimedOut { applied_index } | ApplyWait::GroupGone { applied_index } => {
+                ApplyWait::TimedOut { applied_index } | ApplyWait::GroupGone { applied_index } | ApplyWait::Stalled { applied_index } => {
                     behind.push((*node_id, applied_index))
                 }
             }

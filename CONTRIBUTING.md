@@ -57,6 +57,9 @@ Two jobs, both on a pinned toolchain:
 | **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
 | **format and rollback guards** | 97 individual tests in the library plus 44 integration tests, each run by name with `--exact` |
 
+The **network metadata consensus** job also runs four named integration tests
+with the optional consensus feature enabled.
+
 **CI does not run the suite.** It compiles everything and runs those 97 guards plus the integration tests. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run
 `tools/suite_gate.sh` yourself.
