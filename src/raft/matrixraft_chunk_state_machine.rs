@@ -20,14 +20,12 @@
 // Both are kept. A single-writer coordinator with a quorum is the cheaper answer when there is one
 // coordinator, and ordering through a log is the answer when there is more than one.
 //
-// # WHY `apply` CAN BE WIRED HERE AND COULD NOT BE FOR THE METADATA SERVICE
+// # THE CHUNK COMMAND FORMAT
 //
-// [`MetadataStateMachine::apply`] reports a refusal instead of applying, and the reason is in its
-// doc comment: a MatrixRaft payload is `Vec<u8>`, `ObjectCommand` has 212 variants and no byte
-// codec, and writing one would mean choosing the encoding of the raft log for the whole store's
-// command language -- a durable format decision far larger than the trait method that provoked it.
+// Metadata uses the versioned ObjectCommand codec. Chunk writes use the compact
+// range encoding below; each state machine refuses commands for the other tier.
 //
-// A chunk write is not that. What has to cross the log is a page identity -- three integers -- and
+// What crosses the chunk log is a page identity -- three integers -- and
 // a list of (offset, bytes) ranges. There is no enum to encode, the payload is already opaque
 // bytes, and the format below is 18 bytes of header and a length-prefixed run per range. It is
 // still a durable format, so it is versioned, its spelling is pinned byte-for-byte by a test, and

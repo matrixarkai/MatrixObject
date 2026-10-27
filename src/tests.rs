@@ -44324,28 +44324,95 @@ fn a_snapshot_chunk_at_the_wrong_offset_is_refused() {
 
 #[cfg(feature = "matrix-raft")]
 #[test]
-fn applying_an_entry_reports_the_codec_the_log_format_would_need() {
-    // The apply half is deliberately not wired. A MatrixRaft payload is bytes,
-    // so applying one means decoding an `ObjectCommand` -- 212 variants with no
-    // byte codec, where writing one fixes the raft log format for all of them.
-    // This asserts the refusal says so rather than failing obscurely.
-    let mut machine =
-        MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
-    let request = matrixraft::ApplyRequest {
-        group_id: 1,
-        log_id: matrixraft::LogId { term: 1, index: 7 },
-        payload: b"whatever".to_vec(),
-    };
-    match matrixraft::StateMachine::apply(&mut machine, request) {
-        Err(matrixraft::RaftError::InvalidRequest(message)) => {
-            assert!(
-                message.contains("ObjectCommand byte codec"),
-                "the refusal must name what is missing: {message}"
-            );
-        }
-        other => panic!("expected the codec refusal, got {other:?}"),
-    }
+fn metadata_log_apply_rejects_malformed_commands() {
+    let mut machine = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    let before = machine.store().metadata_state_fingerprint();
+    let request = matrixraft::ApplyRequest { group_id: 1, log_id: matrixraft::LogId { term: 1, index: 1 }, payload: b"whatever".to_vec() };
+    assert!(matrixraft::StateMachine::apply(&mut machine, request).is_err());
+    assert_eq!(machine.last_log_id().index, 0);
+    assert_eq!(machine.store().metadata_state_fingerprint(), before);
 }
+
+#[cfg(feature = "matrix-raft")]
+fn metadata_log_request(index: u64, owner: &str) -> matrixraft::ApplyRequest {
+    matrixraft::ApplyRequest { group_id: 1, log_id: matrixraft::LogId { term: 2, index },
+        payload: ObjectCommand::AcquireMetaLease { namespace: "records".into(), owner: owner.into(), ttl_ms: 1000, now_ms: 10 }.to_payload().unwrap() }
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn metadata_log_apply_orders_and_deduplicates_entries() {
+    use matrixraft::StateMachine;
+    let mut machine = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    let request = metadata_log_request(1, "owner");
+    let applied = machine.apply(request.clone()).unwrap();
+    assert_eq!(applied.response, vec![0]);
+    let before = machine.store().metadata_state_fingerprint();
+    assert_eq!(machine.apply(request.clone()).unwrap(), applied);
+    let mut invalid = vec![metadata_log_request(1, "another"), metadata_log_request(3, "owner")];
+    let mut wrong_group = metadata_log_request(2, "owner"); wrong_group.group_id = 2; invalid.push(wrong_group);
+    let mut older_term = metadata_log_request(2, "owner"); older_term.log_id.term = 1; invalid.push(older_term);
+    for request in invalid { assert!(machine.apply(request).is_err()); }
+    assert_eq!(machine.last_log_id().index, 1);
+    assert_eq!(machine.store().metadata_state_fingerprint(), before);
+    let rejected = machine.apply(metadata_log_request(2, "another")).unwrap();
+    assert_eq!(rejected.response[0], 1);
+    assert_eq!(rejected.applied_index, 2);
+    assert_eq!(machine.apply(metadata_log_request(2, "another")).unwrap(), rejected);
+    assert_eq!(machine.apply(metadata_log_request(3, "owner")).unwrap().applied_index, 3);
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn metadata_log_checkpoint_restores_replay_position_and_roster() {
+    use matrixraft::StateMachine;
+    let mut source = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    let mut node = placement_node("data-a", "domain-a", 1024);
+    // The metadata codec canonicalizes the legacy empty backend spelling.
+    node.meta_health.control_proof.coordinator_backend = "embedded-raft".into();
+    source.store_mut().register_placement_node(node).unwrap();
+    source.apply(metadata_log_request(1, "owner")).unwrap();
+    let last = source.apply(metadata_log_request(2, "another")).unwrap();
+    assert!(!source.store().meta_service.export_snapshot().placement_nodes.is_empty());
+    let snapshot = source.snapshot().unwrap();
+    assert_eq!(snapshot.meta.last_log_id, matrixraft::LogId { term: 2, index: 2 });
+    let mut target = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    let halfway = snapshot.data.len()/2;
+    let mut first = snapshot.clone(); first.data.truncate(halfway); first.done = false;
+    target.install_snapshot(first).unwrap();
+    let mut second = snapshot.clone(); second.offset = halfway as u64; second.data = second.data[halfway..].to_vec();
+    target.install_snapshot(second).unwrap();
+    assert_eq!(target.store().metadata_state_fingerprint(), source.store().metadata_state_fingerprint());
+    assert_eq!(target.store().meta_service.export_snapshot().placement_nodes, source.store().meta_service.export_snapshot().placement_nodes);
+    assert_eq!(target.apply(metadata_log_request(2, "another")).unwrap(), last);
+    let next = metadata_log_request(3, "owner");
+    assert_eq!(source.apply(next.clone()).unwrap(), target.apply(next).unwrap());
+    assert_eq!(source.snapshot().unwrap(), target.snapshot().unwrap());
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn metadata_log_checkpoint_rejects_corruption_and_wrong_identity() {
+    use matrixraft::StateMachine;
+    let mut source = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    source.apply(metadata_log_request(1, "owner")).unwrap();
+    let old = source.snapshot().unwrap();
+    source.apply(metadata_log_request(2, "another")).unwrap();
+    let current = source.snapshot().unwrap();
+    let mut target = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    target.install_snapshot(current.clone()).unwrap();
+    assert!(target.install_snapshot(old).is_err());
+    let mut broken = current.clone(); let at = broken.data.len()-1; broken.data[at] ^= 1;
+    assert!(target.install_snapshot(broken).is_err());
+    let mut wrong_log = current.clone(); wrong_log.meta.last_log_id.index += 1;
+    assert!(target.install_snapshot(wrong_log).is_err());
+    let mut foreign = MetadataStateMachine::for_group(2, MatrixObjectStore::new(test_options()).unwrap()).unwrap();
+    assert!(foreign.install_snapshot(current.clone()).is_err());
+    target.set_min_commit_index(u64::MAX);
+    assert!(target.install_snapshot(current.clone()).is_err());
+    assert_eq!(target.snapshot().unwrap(), current);
+}
+
 
 #[test]
 fn keys_on_one_shard_share_three_cached_checksums() {
@@ -49975,4 +50042,41 @@ fn replica_readmission_waits_until_candidate_can_receive_writes() {
     service.set_replica_frozen(0, false).unwrap();
     service.check_in_replica(0).unwrap();
     assert!(service.stale_replica_indices().is_empty());
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn metadata_log_replay_agrees_across_three_state_machines() {
+    use matrixraft::StateMachine;
+    let mut nodes: Vec<_> = (0..3).map(|_| MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap())).collect();
+    for index in 1..=128 {
+        let mut request = metadata_log_request(index, if index % 2 == 0 { "other" } else { "owner" });
+        request.log_id.term = 2 + index/32;
+        let expected = nodes[0].apply(request.clone()).unwrap();
+        for node in &mut nodes[1..] { assert_eq!(node.apply(request.clone()).unwrap(), expected); }
+        if index == 64 {
+            let checkpoint = nodes[0].snapshot().unwrap();
+            nodes[2] = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+            nodes[2].install_snapshot(checkpoint).unwrap();
+        }
+    }
+    for node in &nodes[1..] { assert_eq!(nodes[0].snapshot().unwrap(), node.snapshot().unwrap()); }
+}
+
+#[cfg(feature = "matrix-raft")]
+#[test]
+fn metadata_log_snapshot_stream_rejects_mixed_identity_and_oversize() {
+    use matrixraft::StateMachine;
+    let source = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    let checkpoint = source.snapshot().unwrap();
+    let mut target = MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    let before = target.snapshot().unwrap();
+    let mut first = checkpoint.clone(); first.data.truncate(12); first.done = false;
+    target.install_snapshot(first).unwrap();
+    let mut rest = checkpoint.clone(); rest.offset = 12; rest.data = rest.data[12..].to_vec(); rest.meta.snapshot_id.push_str("-changed");
+    assert!(target.install_snapshot(rest).is_err());
+    let mut huge = checkpoint.clone(); huge.data = vec![0; 64 * 1024 * 1024 + 1];
+    assert!(target.install_snapshot(huge).is_err());
+    assert_eq!(target.snapshot().unwrap(), before);
+    target.install_snapshot(checkpoint).unwrap();
 }

@@ -826,3 +826,27 @@ A reply-size refusal leaves the connection usable. Request smaller read ranges
 or inventory batches when necessary. Roster listing currently has no pagination;
 configure enough space for the roster. Head replies may require more space as
 discarded ranges accumulate. Client and server limits are configured separately.
+
+### Metadata Raft command application
+
+With `matrix-raft`, `MetadataStateMachine` applies the eight lease and shard
+migration commands carried by `ObjectCommand::to_payload`. It checks group,
+term, and consecutive log indexes. Repeating the latest identical entry returns
+its saved response without applying it again; conflicting or older delivery is
+refused. A response starts with byte 0 for success, or byte 1 followed by UTF-8
+text for a committed application refusal. Business refusals advance the log;
+corruption errors stop application until a checkpoint is installed.
+
+The `MOMRAFT1` checkpoint contains metadata, group and Raft log identity, the
+latest command and its response, and a checksum. It preserves the Raft index
+separately from the metadata service commit counter, including across rejected
+commands. Checkpoint transfers reject changed identities, invalid offsets,
+stale log positions, and more than 64 MiB of accumulated data. Legacy raw
+metadata snapshots remain readable through the metadata service API; they are
+not Raft checkpoints and cannot recover a Raft replay position.
+
+This is the state-machine adapter. The shipped metaserver still uses its local
+snapshot backend, and its network requests do not yet pass through MatrixRaft
+consensus. Multi-node elections, durable Raft runtime wiring, chunk replication
+selection, and large-cluster failure testing remain required before a distributed
+production-readiness claim.
