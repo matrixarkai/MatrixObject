@@ -71,9 +71,10 @@ impl Default for ReplicaClientOptions {
     }
 }
 
-/// One connection to one replica node.
-/// A transport or framing failure closes this connection. Construct a new client before another call;
-/// a failed write may have reached the node, so mutations are never retried automatically.
+/// One active connection, optionally selected from a fixed chunk catalog.
+/// A transport or framing failure closes its connection. A single-endpoint client
+/// must be replaced before another call; a catalog can establish another connection.
+/// A failed write may have reached the node and is never replayed on uncertainty.
 #[derive(Debug)]
 pub struct RemoteReplicaClient {
     endpoint: String,
@@ -83,6 +84,7 @@ pub struct RemoteReplicaClient {
     connection_usable: bool,
     read_timeout: Duration,
     write_timeout: Duration,
+    catalog: Option<(Vec<String>, ReplicaClientOptions)>,
 }
 
 impl RemoteReplicaClient {
@@ -117,10 +119,67 @@ impl RemoteReplicaClient {
             connection_usable: true,
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
+            catalog: None,
         })
     }
 
-    /// The endpoint this client was asked for, as written.
+    /// Connect to a fixed catalog of one through seven chunk API IP sockets.
+    /// Only typed pre-admission refusals allow a mutation to move between voters.
+    /// Reads may also move after transport failure. Each call visits the catalog once.
+    /// Every endpoint must belong to the same configured Raft group.
+    pub fn connect_catalog(
+        endpoints: &[String],
+        options: &ReplicaClientOptions,
+    ) -> Result<Self, ObjectError> {
+        if endpoints.is_empty() || endpoints.len() > 7 {
+            return Err(ObjectError::InvalidArgument(
+                "chunk catalog requires one through seven endpoints".into(),
+            ));
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        let mut canonical = Vec::with_capacity(endpoints.len());
+        for value in endpoints {
+            if value.len() > 128 {
+                return Err(ObjectError::InvalidArgument(
+                    "chunk endpoint exceeds size bound".into(),
+                ));
+            }
+            let address = value.parse::<SocketAddr>().map_err(|_| {
+                ObjectError::InvalidArgument("chunk catalog endpoints must be IP sockets".into())
+            })?;
+            let address = match address {
+                SocketAddr::V6(v) => v
+                    .ip()
+                    .to_ipv4_mapped()
+                    .map(|ip| SocketAddr::new(ip.into(), v.port()))
+                    .unwrap_or(address),
+                _ => address,
+            };
+            if address.port() == 0
+                || address.ip().is_unspecified()
+                || address.ip().is_multicast()
+                || !unique.insert(address)
+            {
+                return Err(ObjectError::InvalidArgument(
+                    "chunk catalog endpoints must be valid and distinct".into(),
+                ));
+            }
+            canonical.push(address.to_string());
+        }
+        let mut last = None;
+        for endpoint in &canonical {
+            match Self::connect(endpoint, options) {
+                Ok(mut client) => {
+                    client.catalog = Some((canonical, options.clone()));
+                    return Ok(client);
+                }
+                Err(error) => last = Some(error),
+            }
+        }
+        Err(last.unwrap())
+    }
+
+    /// The currently selected endpoint; catalogs use canonical IP sockets.
     pub fn endpoint(&self) -> &str {
         &self.endpoint
     }
@@ -239,6 +298,56 @@ impl RemoteReplicaClient {
     }
 
     fn call(&mut self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+        let Some((endpoints, options)) = self.catalog.clone() else {
+            return match self.call_one(&request) {
+                Ok(ReplicaReply::NotLeader) => Err(not_leader()),
+                other => other,
+            };
+        };
+        let start = endpoints
+            .iter()
+            .position(|e| e == &self.endpoint)
+            .unwrap_or(0);
+        let start = (start + usize::from(!self.connection_usable)) % endpoints.len();
+        let read_only = matches!(
+            request,
+            ReplicaRequest::Ping
+                | ReplicaRequest::ReadChunk { .. }
+                | ReplicaRequest::HeadChunk { .. }
+                | ReplicaRequest::PageInventory { .. }
+        );
+        let mut last = not_leader();
+        for offset in 0..endpoints.len() {
+            let endpoint = &endpoints[(start + offset) % endpoints.len()];
+            if !self.connection_usable || self.endpoint != *endpoint {
+                match Self::connect(endpoint, &options) {
+                    Ok(mut next) => {
+                        next.catalog = Some((endpoints.clone(), options.clone()));
+                        *self = next;
+                    }
+                    Err(error) => {
+                        last = error;
+                        continue;
+                    }
+                }
+            }
+            match self.call_one(&request) {
+                Ok(ReplicaReply::NotLeader) => last = not_leader(),
+                Ok(reply) => return Ok(reply),
+                Err(error) => {
+                    // A decoded server refusal is authoritative. A transport failure
+                    // after sending a mutation is uncertain, so neither is replayed.
+                    if self.connection_usable || !read_only {
+                        return Err(error);
+                    }
+                    last = error;
+                }
+            }
+        }
+        Err(last)
+    }
+
+    fn call_one(&mut self, request: &ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
         if !self.connection_usable {
             return Err(transport_error(
                 &self.endpoint,
@@ -256,7 +365,7 @@ impl RemoteReplicaClient {
         result
     }
 
-    fn exchange(&mut self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+    fn exchange(&mut self, request: &ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
         let code = request.code();
         let frame = encode_request(&request);
         write_before(
@@ -297,6 +406,15 @@ impl RemoteReplicaClient {
                 &err.to_string(),
             )
         })?;
+        if status == StatusCode::NotLeader {
+            if !payload.is_empty() {
+                return Err(ObjectError::Corruption(
+                    "not-leader response must have an empty payload".into(),
+                ));
+            }
+            self.connection_usable = true;
+            return Ok(ReplicaReply::NotLeader);
+        }
         if status == StatusCode::Ok {
             let reply = ReplicaReply::decode(code, &payload)?;
             self.connection_usable = true;
@@ -387,4 +505,8 @@ fn write_before(
         bytes = &bytes[count..];
     }
     Ok(())
+}
+
+fn not_leader() -> ObjectError {
+    ObjectError::PreconditionFailed("chunk request was not admitted by a leader".into())
 }

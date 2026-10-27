@@ -1442,3 +1442,45 @@ jobs:
           cargo test --locked --features chunk-consensus --test network_chunk_consensus multi_megabyte_chunk_outcomes_replicate_over_tcp_and_survive_leader_loss -- --exact | tee /tmp/chunk-consensus.log
           grep -q '^running 1 test$' /tmp/chunk-consensus.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-consensus.log
+      - name: chunk catalog routes only typed unadmitted mutations
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test chunk_catalog_routing chunk_catalog_routes_only_typed_unadmitted_mutations -- --exact | tee /tmp/chunk-routing.log
+          grep -q '^running 1 test$' /tmp/chunk-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-routing.log
+      - name: chunk catalog never replays uncertain or refused mutations
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test chunk_catalog_routing chunk_catalog_never_replays_uncertain_or_refused_mutations -- --exact | tee /tmp/chunk-routing.log
+          grep -q '^running 1 test$' /tmp/chunk-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-routing.log
+      - name: chunk reads fail over and each catalog pass is bounded
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test chunk_catalog_routing chunk_reads_fail_over_and_each_catalog_pass_is_bounded -- --exact | tee /tmp/chunk-routing.log
+          grep -q '^running 1 test$' /tmp/chunk-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-routing.log
+      - name: malformed chunk routing response cannot answer a later call
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test chunk_catalog_routing malformed_chunk_routing_response_cannot_answer_a_later_call -- --exact | tee /tmp/chunk-routing.log
+          grep -q '^running 1 test$' /tmp/chunk-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-routing.log
+      - name: chunk catalog validates all endpoints before connecting
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test chunk_catalog_routing chunk_catalog_validates_all_endpoints_before_connecting -- --exact | tee /tmp/chunk-routing.log
+          grep -q '^running 1 test$' /tmp/chunk-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-routing.log
+      - name: a valid chunk not leader reply preserves the connection
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test chunk_catalog_routing a_valid_chunk_not_leader_reply_preserves_the_connection -- --exact | tee /tmp/chunk-routing.log
+          grep -q '^running 1 test$' /tmp/chunk-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-routing.log
+      - name: chunk catalog finds the leader and moves reads after process loss
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus chunk_catalog_finds_the_leader_and_moves_reads_after_process_loss -- --exact | tee /tmp/chunk-routing.log
+          grep -q '^running 1 test$' /tmp/chunk-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-routing.log

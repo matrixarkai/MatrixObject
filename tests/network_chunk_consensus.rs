@@ -504,3 +504,52 @@ fn multi_megabyte_chunk_outcomes_replicate_over_tcp_and_survive_leader_loss() {
         b"updated"
     );
 }
+
+#[test]
+fn chunk_catalog_finds_the_leader_and_moves_reads_after_process_loss() {
+    let mut group = Group::new();
+    let first = group.leader();
+    let mut endpoints: Vec<_> = (0..3)
+        .filter(|i| *i != first)
+        .map(|i| group.nodes[i].as_ref().unwrap().endpoint.clone())
+        .collect();
+    endpoints.push(group.nodes[first].as_ref().unwrap().endpoint.clone());
+    let mut client = RemoteReplicaClient::connect_catalog(
+        &endpoints,
+        &ReplicaClientOptions {
+            connect_timeout: Duration::from_millis(200),
+            read_timeout: Duration::from_secs(2),
+            write_timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_ne!(
+        client.endpoint(),
+        group.nodes[first].as_ref().unwrap().endpoint
+    );
+    client.write_chunk(page(0), 0, b"routed").unwrap();
+    assert_eq!(
+        client.endpoint(),
+        group.nodes[first].as_ref().unwrap().endpoint
+    );
+    assert_eq!(client.head_chunk(&page(0)).unwrap().write_sequence, 1);
+    group.kill(first);
+    let next = group.leader();
+    assert_ne!(next, first);
+    assert_eq!(client.read_chunk(&page(0), 0, 6).unwrap().data, b"routed");
+    assert_eq!(
+        client.endpoint(),
+        group.nodes[next].as_ref().unwrap().endpoint
+    );
+    client.write_chunk(page(0), 6, b" again").unwrap();
+    assert_eq!(client.head_chunk(&page(0)).unwrap().write_sequence, 2);
+    assert_eq!(
+        client.read_chunk(&page(0), 0, 12).unwrap().data,
+        b"routed again"
+    );
+    let other = (0..3).find(|i| *i != first && *i != next).unwrap();
+    group.kill(other);
+    assert!(client.write_chunk(page(1), 0, b"uncertain").is_err());
+    assert!(client.read_chunk(&page(0), 0, 12).is_err());
+}
