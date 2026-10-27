@@ -7645,7 +7645,7 @@ fn snapshot_chunks_restore_replacement_nodes() {
     // pinned by `every_durable_format_constant_is_accounted_for`, which already names
     // MOSRSROOT32; this literal said MOSRSROOT30 and had simply been left behind by two
     // version bumps, so the test failed on a stamp nothing else in the tree still expected.
-    assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSROOT32");
+    assert_eq!(snapshot_cursor.read_string().unwrap(), "MOSRSROOT33");
     let snapshot = PlacementSnapshot::from_bytes(&snapshot_bytes).unwrap();
     assert_eq!(snapshot.nodes.len(), 4);
     assert_eq!(snapshot.placements.len(), 1);
@@ -34116,7 +34116,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSROOT-FINGERPRINT1",
         "MOSRSROOT-PLACEMENT-MIGRATION-COMMIT-ENVELOPE2",
         "MOSRSROOT-PLACEMENT-MIGRATION-ENVELOPE2",
-        "MOSRSROOT32",
+        "MOSRSROOT33",
         "MOSRSROOTRAFTSTATUS7",
         "MOSRSSTORE",
         "MOSRSSTORE28",
@@ -47136,7 +47136,8 @@ fn every_accepted_snapshot_checksum_format_still_validates() {
     // against this list, by name; a format added on purpose fails here too, which is the
     // right amount of friction for changing what an existing store may carry.
     let expected: Vec<&str> = vec![
-        "current", "v32", "v26", "v22", "v21", "v20", "v18", "v19", "v16", "v11", "v10", "v9",
+        "current", "pre-page-tier", "v32", "v26", "v22", "v21", "v20", "v18", "v19", "v16",
+        "v11", "v10", "v9",
         "v8", "v7", "v2", "legacy",
     ];
     let names: Vec<&str> = accepted.iter().map(|(name, _)| *name).collect();
@@ -47392,11 +47393,11 @@ fn the_placement_snapshot_encoding_is_byte_for_byte_what_it_was() {
     // CAPTURED BEFORE THE LIFT, on this exact fixture.
     assert_eq!(
         bytes.len(),
-        1457,
+        1465,
         "the encoded length moved, so a field was added, dropped or rewidened"
     );
     assert_eq!(
-        hash, 0x0ba2de2366a92537,
+        hash, 0x557f28490110fe1d,
         "the encoded bytes moved while the length held, which is a reordered or substituted \
          field"
     );
@@ -47974,6 +47975,22 @@ fn a_store_written_before_the_roster_had_one_home_still_loads() {
         .expect("the node the fixture was captured with");
     assert_eq!(node.endpoint, "block-a.local:9100", "the node arrived but not intact");
     assert_eq!(node.service_kind, "blockserver");
+
+    // THE FOURTH PROPERTY OF THE PAGE-TIER MIGRATION, on committed bytes rather than a
+    // round trip. These bytes are shape 27, which predates the field entirely, so the
+    // decoder has to DERIVE it -- and the kind they were written with is what it derives
+    // from. Asserting the absence first is what stops this passing on a record that
+    // happens to carry the field.
+    assert!(
+        !PlacementSnapshotDecodeFeatures::for_version(27).has_serves_page_tier,
+        "shape 27 is supposed to predate the page-tier field; if it carries one, this \
+         fixture is no longer testing the derivation"
+    );
+    assert!(
+        node.serves_page_tier,
+        "a record written under the retired page kind must come back serving the page \
+         tier, or adding the field changed what every existing record means"
+    );
     assert_eq!(node.capacity_bytes, 4096);
     assert_eq!(
         snapshot.meta_snapshot.placement_commit_index, 1,
@@ -49633,14 +49650,25 @@ fn a_record_without_the_page_tier_field_derives_it_from_its_kind() {
     let mut bytes = Vec::new();
     snapshot.append_to_bytes(&mut bytes);
 
-    // NON-VACUITY: the bytes must be the shape that LACKS the field, or this proves
-    // nothing about an old record. The encoder is still on the pre-field stamp.
+    // The encoder now writes the field, so this exercises the PRESENT branch. The
+    // absent branch lives in `a_store_written_before_the_roster_had_one_home_still_loads`,
+    // against committed bytes, which is the stronger place for it.
     let mut cursor = SnapshotByteCursor::new(&bytes);
     let stamp = cursor.read_string().expect("stamp");
     assert_eq!(
-        stamp, "MOSRSROOT32",
-        "the encoder has started writing a newer shape, so this no longer exercises the \
-         absent-field path"
+        stamp, "MOSRSROOT33",
+        "the encoder stamp moved; the shape this test reasons about is no longer the one \
+         being written"
+    );
+    // NON-VACUITY ON THE GATE ITSELF: the field is read only at shape 33 and derived
+    // below it, so these two must disagree or neither branch is reachable.
+    assert!(
+        !PlacementSnapshotDecodeFeatures::for_version(32).has_serves_page_tier,
+        "shape 32 must NOT carry the field, or an old record would be read past its end"
+    );
+    assert!(
+        PlacementSnapshotDecodeFeatures::for_version(33).has_serves_page_tier,
+        "shape 33 must carry the field, or the writer emits bytes the reader skips"
     );
 
     let restored = PlacementSnapshot::from_bytes(&bytes)
@@ -49692,15 +49720,29 @@ fn the_node_decoder_accepts_the_page_tier_shape_before_the_encoder_writes_it() {
         "the decoder no longer derives the field from the retired kind, so an existing \
          record would lose its meaning"
     );
+    // THE WRITER HAS LANDED, AND THE PAIR MUST AGREE. The reader learned shape 33 in
+    // the change before this one; now the encoder stamps 33 and writes the field. If
+    // either side moves alone, a build emits bytes its own reader misreads.
     assert!(
-        ENCODER.contains("MOSRSROOT32"),
-        "the encoder stamp moved; if it now writes the page-tier shape, this guard has to \
-         move with it and the fixture needs the new committed bytes"
+        ENCODER.contains("MOSRSROOT33"),
+        "the encoder no longer stamps the shape whose field the decoder reads"
     );
     assert!(
-        !ENCODER.contains("serves_page_tier"),
-        "the encoder has started writing the page-tier field while this guard still claims \
-         reader-first; land the reader everywhere first"
+        ENCODER.contains("append_u64(out, node.serves_page_tier as u64)"),
+        "the encoder stamps shape 33 but does not write the field it promises"
+    );
+    // AND THE OLD SHAPE IS STILL ACCEPTED. Narrowing this range is what would make every
+    // existing store unreadable, so it is asserted rather than assumed.
+    const DECODING: &str = include_str!("protocol/root/root_snapshot/decoding.rs");
+    assert!(
+        DECODING.contains("(1..=33).contains(version)"),
+        "the accepted shape range no longer spans the old shapes through the new one"
+    );
+    assert!(
+        DECODING.contains("PLACEMENT_ROSTER_SHAPE_VERSION: u64 = 32"),
+        "the roster shape that OTHER snapshots write was bumped along with this encoder; \
+         that silently changes a different snapshot's bytes, and the metadata old-bytes \
+         fixture is what catches it"
     );
 }
 

@@ -46,6 +46,8 @@ impl PlacementSnapshot {
     pub(crate) fn accepted_checksum_formats(&self) -> Vec<(&'static str, String)> {
         let mut accepted = vec![
             ("current", self.checksum_material_hash()),
+            // The format current until the page-tier field joined the material.
+            ("pre-page-tier", self.pre_page_tier_checksum_material_hash()),
             // The format that was current until the page raft endpoint counts joined the
             // material. Every snapshot written by an earlier build stored this one.
             ("v32", self.v32_checksum_material_hash()),

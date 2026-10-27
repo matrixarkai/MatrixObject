@@ -3,37 +3,48 @@
 impl PlacementSnapshot {
     fn v26_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, true, true, true, false, false, false, false, false,
+            false, true, true, true, true, true, true, false, false, false, false, false,
         )
     }
 
     fn v22_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, true, true, false, false, false, false, false, false,
+            false, true, true, true, true, true, false, false, false, false, false, false,
         )
     }
 
     fn v21_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, true, false, false, false, false, false, false, false,
+            false, true, true, true, true, false, false, false, false, false, false, false,
         )
     }
 
     fn v20_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, false, false, false, false, false, false, false, false,
+            false, true, true, true, false, false, false, false, false, false, false, false,
         )
     }
 
     fn v19_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, false, false, false, false, false, false, false, false, false,
+            false, true, true, false, false, false, false, false, false, false, false, false,
         )
     }
 
     fn v18_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, false, false, false, false, false, false, false, false, false, false,
+            false, true, false, false, false, false, false, false, false, false, false, false,
+        )
+    }
+
+    /// The format that was CURRENT until the PAGE-TIER FIELD joined the material.
+    ///
+    /// Every snapshot written between the raft endpoint counts and the page-tier field
+    /// stored this hash. Without it in the accepted list, adding the field would have made
+    /// every one of those stores fail to load -- which the old-bytes fixtures caught.
+    fn pre_page_tier_checksum_material_hash(&self) -> String {
+        self.checksum_material_hash_with_chunk_control(
+            false, true, true, true, true, true, true, true, true, true, true, true,
         )
     }
 
@@ -44,18 +55,19 @@ impl PlacementSnapshot {
     /// store fail to load, which is a break and not a fix.
     fn v32_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, true, true, true, true, true, true, true, false,
+            false, true, true, true, true, true, true, true, true, true, true, false,
         )
     }
 
     fn v16_checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            false, false, false, false, false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false, false, false,
         )
     }
 
     pub(crate) fn checksum_material_hash_with_chunk_control(
         &self,
+        include_serves_page_tier: bool,
         include_chunk_control: bool,
         include_page_allocator_receipts: bool,
         include_node_endpoint: bool,
@@ -95,6 +107,13 @@ impl PlacementSnapshot {
             append_u64(&mut material, node.last_heartbeat_ms);
             append_u64(&mut material, node.page_allocator_shard_index);
             append_u64(&mut material, node.page_allocator_shard_count);
+            // A STORED FIELD THAT NOTHING HASHES IS A STORED FIELD NOTHING PROTECTS. For a
+            // record written before the field existed it is derived from the kind, which is
+            // already in this material; for a record that carries it, this is what stops it
+            // being changed without the checksum noticing.
+            if include_serves_page_tier {
+                append_u64(&mut material, node.serves_page_tier as u64);
+            }
             append_placement_meta_health(&mut material, &node.meta_health);
             append_u64(&mut material, node.page_health.ready as u64);
             append_u64(&mut material, node.page_health.read_ready as u64);

@@ -10,8 +10,8 @@ impl PlacementSnapshot {
 
     pub(crate) fn append_to_bytes(&self, mut out: &mut Vec<u8>) {
         let snapshot_start = out.len();
-        const PLACEMENT_SNAPSHOT_WITH_RECEIPT_PROOFS_VERSION: &str = "MOSRSROOT32";
-        const PLACEMENT_SNAPSHOT_BASE_VERSION: &str = "MOSRSROOT32";
+        const PLACEMENT_SNAPSHOT_WITH_RECEIPT_PROOFS_VERSION: &str = "MOSRSROOT33";
+        const PLACEMENT_SNAPSHOT_BASE_VERSION: &str = "MOSRSROOT33";
         const PLACEMENT_SNAPSHOT_RECEIPT_PROOF_PERSISTENCE_THRESHOLD: u64 = 27;
         let snapshot_version = if self.leader_lease_receipts.is_empty() {
             PLACEMENT_SNAPSHOT_BASE_VERSION
@@ -152,7 +152,7 @@ impl PlacementSnapshot {
                 .fold(0usize, |total, (idempotency_key, receipt)| {
                     total.saturating_add(leader_lease_receipt_size(idempotency_key, receipt))
                 });
-        encoded_string_len("MOSRSROOT32")
+        encoded_string_len("MOSRSROOT33")
             .saturating_add(U64)
             .saturating_add(U64)
             .saturating_add(node_bytes)
@@ -211,6 +211,10 @@ pub(crate) fn append_placement_roster(
         append_u64(out, node.last_heartbeat_ms);
         append_u64(out, node.page_allocator_shard_index);
         append_u64(out, node.page_allocator_shard_count);
+        // AT THE POSITION THE DECODER ALREADY READS IT. The reader learned this shape in
+        // the change before this one, so a checksum written here is verifiable by a build
+        // that shipped before it.
+        append_u64(out, node.serves_page_tier as u64);
         append_placement_meta_health(out, &node.meta_health);
         append_placement_page_health(out, &node.page_health);
         append_placement_chunk_health(out, &node.chunk_health, true, true, true);

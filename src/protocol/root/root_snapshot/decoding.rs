@@ -7,7 +7,7 @@ impl PlacementSnapshot {
         let version = magic
             .strip_prefix("MOSRSROOT")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=32).contains(version))
+            .filter(|version| (1..=33).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("root snapshot byte magic mismatch".to_string())
             })?;
@@ -61,7 +61,7 @@ impl PlacementSnapshot {
 
     pub(crate) fn checksum_material_hash(&self) -> String {
         self.checksum_material_hash_with_chunk_control(
-            true, true, true, true, true, true, true, true, true, true, true,
+            true, true, true, true, true, true, true, true, true, true, true, true,
         )
     }
 }
