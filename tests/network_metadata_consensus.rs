@@ -18,9 +18,13 @@ struct Group {
     nodes: Vec<Option<NodeProcess>>,
     peers: BTreeMap<u64, std::net::SocketAddr>,
     root: PathBuf,
+    roster: Option<String>,
 }
 impl Group {
     fn new() -> Self {
+        Self::with_roster(None)
+    }
+    fn with_roster(roster: Option<String>) -> Self {
         let root = std::env::temp_dir().join(node_regime::run_token("metadata-peers"));
         std::fs::create_dir(&root).unwrap();
         let reserved: Vec<_> = (0..3)
@@ -36,6 +40,7 @@ impl Group {
             nodes: vec![None, None, None],
             peers,
             root,
+            roster,
         };
         for i in 0..3 {
             std::fs::create_dir(group.root.join(i.to_string())).unwrap();
@@ -52,20 +57,29 @@ impl Group {
             .join(",");
         let id = (i + 1).to_string();
         let path = self.root.join(i.to_string());
-        let node = processes::start(
-            env!("CARGO_BIN_EXE_metaserver"),
-            &[
-                ("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0"),
-                ("MATRIXOBJECT_METASERVER_SEED_DATA_NODES", "3"),
-                ("MATRIXOBJECT_METASERVER_RAFT_PEERS", &peers),
-                ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", &id),
-                (
-                    "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
-                    path.to_str().unwrap(),
-                ),
-                ("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", "700"),
-            ],
-        );
+        let mut environment = vec![
+            ("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0"),
+            ("MATRIXOBJECT_METASERVER_RAFT_PEERS", &peers),
+            ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", &id),
+            (
+                "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
+                path.to_str().unwrap(),
+            ),
+            ("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", "700"),
+        ];
+        let roster = self.roster.as_ref().map(|roster| {
+            let mut entries: Vec<_> = roster.split(',').collect();
+            if i % 2 == 1 {
+                entries.reverse();
+            }
+            entries.join(",")
+        });
+        if let Some(roster) = &roster {
+            environment.push(("MATRIXOBJECT_METASERVER_DATA_ROSTER", roster));
+        } else {
+            environment.push(("MATRIXOBJECT_METASERVER_SEED_DATA_NODES", "3"));
+        }
+        let node = processes::start(env!("CARGO_BIN_EXE_metaserver"), &environment);
         assert_ne!(node.pid, std::process::id());
         assert!(node.startup_line.contains("storage=raft"));
         self.nodes[i] = Some(node);
@@ -353,4 +367,172 @@ fn peer_storage_refuses_missing_zeroed_or_reidentified_history() {
         "missing bootstrap accepted old WAL"
     );
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(feature = "replica-server")]
+#[test]
+fn configured_placement_writes_real_chunk_processes_and_recovers_after_failover() {
+    use matrixobjectstore_rs::cluster::{
+        RemoteReplicaClient, RemoteReplicaSet, ReplicaClientOptions,
+    };
+    use matrixobjectstore_rs::{ChunkId, PageId};
+    struct Chunks {
+        nodes: Vec<NodeProcess>,
+        root: PathBuf,
+    }
+    impl Drop for Chunks {
+        fn drop(&mut self) {
+            self.nodes.clear();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+    let root = std::env::temp_dir().join(node_regime::run_token("roster-chunks"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Chunks {
+        nodes: Vec::new(),
+        root,
+    };
+    for index in 0..3 {
+        let path = chunks.root.join(format!("{index}.log"));
+        chunks.nodes.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
+            ],
+        ));
+    }
+    let roster = chunks
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, node)| format!("chunk-{i}@{}@rack-{i}", node.endpoint))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut group = Group::with_roster(Some(roster));
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert!(client
+        .list_placement_nodes()
+        .unwrap()
+        .iter()
+        .all(|n| !n.online));
+    assert!(client
+        .plan_object_placement("bucket", "object", 16, 3)
+        .is_err());
+    // The controller admits only endpoints whose actual chunk process answers.
+    for (i, node) in chunks.nodes.iter().enumerate() {
+        assert_ne!(node.pid, std::process::id());
+        let mut replica =
+            RemoteReplicaClient::connect(&node.endpoint, &ReplicaClientOptions::default()).unwrap();
+        replica.ping().unwrap();
+        client
+            .heartbeat_placement_node(&format!("chunk-{i}"), 0, 1 << 28, false, true, 100)
+            .unwrap();
+    }
+    let roster = client.list_placement_nodes().unwrap();
+    let plan = client
+        .plan_object_placement("bucket", "object", 16, 3)
+        .unwrap();
+    let endpoints: Vec<_> = plan
+        .node_ids
+        .iter()
+        .map(|id| {
+            roster
+                .iter()
+                .find(|node| &node.node_id == id)
+                .unwrap()
+                .endpoint
+                .clone()
+        })
+        .collect();
+    assert_eq!(endpoints.len(), 3);
+    for endpoint in &endpoints {
+        assert!(chunks.nodes.iter().any(|node| &node.endpoint == endpoint));
+    }
+    let page = PageId {
+        chunk_id: ChunkId::new(9, 1).unwrap(),
+        page_index: 0,
+    };
+    let payload = b"binary\0outcome\xff!";
+    let mut replicas =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    assert_eq!(replicas.write_chunk(&page, 0, payload).unwrap(), 3);
+    let placement = client
+        .commit_object_placement(
+            CommittedPlacement {
+                bucket: plan.bucket,
+                key: plan.key,
+                length: plan.length,
+                node_ids: plan.node_ids,
+                version: 1,
+                update_time_ms: 101,
+            },
+            &plan.plan_checksum,
+        )
+        .unwrap();
+    drop(client);
+    group.kill(leader);
+    let mut client = group.client(group.leader());
+    assert_eq!(
+        client.object_placement("bucket", "object").unwrap(),
+        placement
+    );
+    assert_eq!(
+        replicas
+            .read_chunk(&page, 0, payload.len() as u64)
+            .unwrap()
+            .data,
+        payload
+    );
+    drop(replicas);
+    drop(client);
+    let addresses: Vec<_> = chunks
+        .nodes
+        .iter()
+        .map(|node| node.endpoint.clone())
+        .collect();
+    chunks.nodes.clear();
+    for (i, address) in addresses.iter().enumerate() {
+        let path = chunks.root.join(format!("{i}.log"));
+        assert_eq!(&std::fs::read(&path).unwrap()[..4], b"MOR2");
+        chunks.nodes.push(processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", address),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
+            ],
+        ));
+    }
+    for i in 0..3 {
+        if group.nodes[i].is_some() {
+            group.kill(i);
+        }
+    }
+    for i in 0..3 {
+        group.start(i);
+    }
+    let mut client = group.client(group.leader());
+    assert_eq!(
+        client
+            .list_placement_nodes()
+            .unwrap()
+            .iter()
+            .map(|n| &n.endpoint)
+            .collect::<Vec<_>>(),
+        roster.iter().map(|n| &n.endpoint).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        client.object_placement("bucket", "object").unwrap(),
+        placement
+    );
+    let mut replicas =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    assert_eq!(
+        replicas
+            .read_chunk(&page, 0, payload.len() as u64)
+            .unwrap()
+            .data,
+        payload
+    );
 }

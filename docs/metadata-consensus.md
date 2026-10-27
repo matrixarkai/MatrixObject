@@ -71,3 +71,37 @@ The process tests exercise three independent servers, leader termination, quorum
 loss, complete restart, binary outcome replay, storage identity, election no-op
 checkpoints, and shutdown with a slow connection. They do not establish power-loss
 durability or large-scale performance.
+
+
+## Configuring real chunk endpoints
+
+Set `MATRIXOBJECT_METASERVER_DATA_ROSTER` on every metaserver before its first
+start. Entries are comma-separated `node-id@socket-address@failure-domain`, for
+example `chunk-a@10.0.1.10:17400@rack-a,chunk-b@10.0.2.10:17400@rack-b`.
+Addresses must be concrete IP sockets with nonzero ports. IDs and domains use
+1..128 ASCII letters, digits, dots, underscores or hyphens. Up to 4096 distinct
+node IDs and endpoints are accepted; IPv4-mapped addresses are normalized before
+duplicate detection. Domain names may repeat to describe shared failure domains.
+The roster is sorted by node ID before allocator indices and the consensus
+bootstrap identity are computed. Every peer must receive the same roster and
+seed capacity, although entry order may differ.
+
+Configured nodes start offline. A controller must verify each chunk endpoint and
+publish its health through `heartbeat_placement_node` before it can receive new
+placements. Periodic health reporting and expiry are not automated by this
+configuration. This prevents a configured but absent process from being selected
+solely because its address appears in an environment variable.
+
+`MATRIXOBJECT_METASERVER_SEED_CAPACITY_BYTES` supplies initial capacity, which must
+be positive for an explicit roster. The old `MATRIXOBJECT_METASERVER_SEED_DATA_NODES`
+loopback bootstrap remains available for development, but cannot be combined with
+an explicit roster. Neither mechanism changes a roster recovered from disk;
+editing bootstrap settings is not a membership update. A live in-memory roster
+also cannot be replaced by calling the seed method again.
+
+The process test starts three metaserver voters and three journal-backed chunk
+servers. It checks offline admission, canonical bootstrap across differently
+ordered configurations, placement-selected star writes, leader loss, and full
+restart recovery from binary outcomes. This validates the directory and chunk
+client path. The HTTP object-server backend and automatic chunk health reporting
+still require separate integration.

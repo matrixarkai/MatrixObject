@@ -92,6 +92,84 @@ use crate::{
     MatrixMetaService, NodeChunkHealth, NodeMetaHealth, NodePageHealth, ObjectError, PlacementNode,
 };
 
+/// One operator-configured chunk endpoint. Seeds start offline until a heartbeat.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DataNodeSeed {
+    pub node_id: String,
+    pub endpoint: SocketAddr,
+    pub failure_domain: String,
+}
+
+impl DataNodeSeed {
+    /// Parse comma-separated `node-id@socket-address@failure-domain` entries.
+    pub fn parse_roster(raw: &str) -> Result<Vec<Self>, ObjectError> {
+        if raw.len() > 1024 * 1024 {
+            return Err(ObjectError::InvalidArgument(
+                "data roster exceeds size bound".into(),
+            ));
+        }
+        let nodes = raw
+            .split(',')
+            .map(|entry| {
+                let fields: Vec<_> = entry.trim().split('@').collect();
+                if fields.len() != 3 {
+                    return Err(ObjectError::InvalidArgument(
+                        "expected node-id@socket-address@failure-domain".into(),
+                    ));
+                }
+                Ok(Self {
+                    node_id: fields[0].into(),
+                    endpoint: fields[1].parse().map_err(|_| {
+                        ObjectError::InvalidArgument("invalid data node socket address".into())
+                    })?,
+                    failure_domain: fields[2].into(),
+                })
+            })
+            .collect::<Result<Vec<_>, ObjectError>>()?;
+        Self::validated(&nodes)
+    }
+
+    fn validated(nodes: &[Self]) -> Result<Vec<Self>, ObjectError> {
+        use std::collections::BTreeSet;
+        if nodes.is_empty() || nodes.len() > 4096 {
+            return Err(ObjectError::InvalidArgument(
+                "data roster must contain 1..4096 nodes".into(),
+            ));
+        }
+        let mut nodes = nodes.to_vec();
+        let mut ids = BTreeSet::new();
+        let mut addresses = BTreeSet::new();
+        for node in &mut nodes {
+            let valid_name = |name: &str| {
+                !name.is_empty()
+                    && name.len() <= 128
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            };
+            if let std::net::IpAddr::V6(ip) = node.endpoint.ip() {
+                if let Some(ip) = ip.to_ipv4_mapped() {
+                    node.endpoint = SocketAddr::new(ip.into(), node.endpoint.port());
+                }
+            }
+            if !valid_name(&node.node_id)
+                || !valid_name(&node.failure_domain)
+                || node.endpoint.port() == 0
+                || node.endpoint.ip().is_unspecified()
+                || node.endpoint.ip().is_multicast()
+                || !ids.insert(node.node_id.clone())
+                || !addresses.insert(node.endpoint)
+            {
+                return Err(ObjectError::InvalidArgument(
+                    "invalid or duplicate data node identity/address".into(),
+                ));
+            }
+        }
+        nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        Ok(nodes)
+    }
+}
+
 /// How a metaserver node is sized and bounded.
 #[derive(Clone, Debug)]
 pub struct MetaNodeOptions {
@@ -215,52 +293,70 @@ impl MetaNodeServer {
         self.listener.local_addr()
     }
 
-    /// Put `count` data nodes in this metaserver's roster before it starts serving.
-    ///
-    /// # WHY A SEED AND NOT A REGISTRATION VERB
-    ///
-    /// Placement needs a roster, and registration is deliberately not one of this service's
-    /// verbs: a `PlacementNode` is nineteen fields of which three are health structures carrying
-    /// about a hundred fields between them, and the only existing byte encoding for one is
-    /// inlined in a durable snapshot format. See [`crate::cluster::meta_wire`].
-    ///
-    /// So the roster is populated in this process, and this is the stand-in for the
-    /// membership a later change will agree between metaserver nodes rather than read from
-    /// one node's environment. It is named `seed` so that nothing mistakes it for the real
-    /// thing.
-    ///
-    /// # WHY THESE NODES DIFFER FROM EACH OTHER
-    ///
-    /// Each seeded node gets its own `failure_domain` and its own allocator shard index. A
-    /// roster whose nodes are interchangeable cannot test a placement policy that spreads
-    /// across failure domains -- it would pass whatever the policy did -- and the allocator
-    /// shard index must be unique or `register_node` refuses the second node outright.
-    ///
-    /// They are `blockserver`s rather than `chunkserver`s, and that is forced rather than
-    /// chosen: the placement policy asks a `chunkserver` for health telemetry it would only
-    /// have after a health heartbeat, so a chunkserver seeded with default health is not a
-    /// placement candidate. Fail-closed, and the asymmetry belongs in a comment where someone
-    /// will read it rather than in a surprise.
+    /// Seed the legacy loopback roster for local development.
     pub fn seed_data_nodes(&self, count: usize, capacity_bytes: u64) -> Result<usize, ObjectError> {
+        if count > 4096 {
+            return Err(ObjectError::InvalidArgument(
+                "data roster exceeds 4096 nodes".into(),
+            ));
+        }
+        let nodes: Vec<_> = (0..count)
+            .map(|index| DataNodeSeed {
+                node_id: format!("data-{index}"),
+                endpoint: SocketAddr::from(([127, 0, 0, 1], 17400 + index as u16)),
+                failure_domain: format!("domain-{index}"),
+            })
+            .collect();
+        self.seed_roster(&nodes, capacity_bytes, true)
+    }
+
+    /// Install a canonical roster before serving. Configured nodes remain offline
+    /// until heartbeats arrive. Recovered storage takes precedence over new seeds.
+    pub fn seed_data_roster(
+        &self,
+        nodes: &[DataNodeSeed],
+        capacity_bytes: u64,
+    ) -> Result<usize, ObjectError> {
+        let nodes = DataNodeSeed::validated(nodes)?;
+        if capacity_bytes == 0 {
+            return Err(ObjectError::InvalidArgument(
+                "data node capacity must be positive".into(),
+            ));
+        }
+        self.seed_roster(&nodes, capacity_bytes, false)
+    }
+
+    fn seed_roster(
+        &self,
+        nodes: &[DataNodeSeed],
+        capacity_bytes: u64,
+        online: bool,
+    ) -> Result<usize, ObjectError> {
         let mut guard = self.meta.lock().map_err(|_| {
             ObjectError::Corruption("this metaserver's state is locked".to_string())
         })?;
         guard.ensure_healthy()?;
         #[cfg(feature = "metadata-consensus")]
         if guard.consensus.is_some() {
-            return Err(ObjectError::InvalidArgument("seed before enabling consensus".into()));
+            return Err(ObjectError::InvalidArgument(
+                "seed before enabling consensus".into(),
+            ));
         }
         if guard.recovered {
             return Ok(guard.nodes.len());
         }
-        for index in 0..count {
-            guard.register_node(PlacementNode {
-                node_id: format!("data-{index}"),
-                endpoint: format!("127.0.0.1:{}", 17_400 + index),
+        if !guard.nodes.is_empty() {
+            return Err(ObjectError::InvalidArgument(
+                "data roster is already initialized".into(),
+            ));
+        }
+        let mut staged = guard.service.clone();
+        for (index, node) in nodes.iter().enumerate() {
+            staged.register_node(PlacementNode {
+                node_id: node.node_id.clone(),
+                endpoint: node.endpoint.to_string(),
                 service_kind: "chunkserver".to_string(),
-                // ONE DOMAIN PER NODE. The policy prefers one node per failure domain before
-                // it backfills, so identical domains would make the first pass a no-op.
-                failure_domain: format!("domain-{index}"),
+                failure_domain: node.failure_domain.clone(),
                 metadata_eligible: false,
                 data_eligible: true,
                 gateway_eligible: false,
@@ -270,15 +366,16 @@ impl MetaNodeServer {
                 used_bytes: 0,
                 committed_bytes: 0,
                 draining: false,
-                online: true,
-                last_heartbeat_ms: 1,
+                online,
+                last_heartbeat_ms: u64::from(online),
                 page_allocator_shard_index: index as u64,
-                page_allocator_shard_count: count.max(1) as u64,
+                page_allocator_shard_count: nodes.len().max(1) as u64,
                 meta_health: NodeMetaHealth::default(),
                 page_health: NodePageHealth::default(),
                 chunk_health: NodeChunkHealth::default(),
             })?;
         }
+        guard.service = staged;
         guard.persist()?;
         guard.recovered = guard.storage.is_some();
         Ok(guard.nodes.len())
