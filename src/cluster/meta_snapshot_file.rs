@@ -11,6 +11,7 @@ const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 pub(super) struct MetaSnapshotFile {
     directory: PathBuf,
     lock: File,
+    journal: Option<super::placement_journal::PlacementJournal>,
 }
 
 impl MetaSnapshotFile {
@@ -26,7 +27,7 @@ impl MetaSnapshotFile {
             .truncate(false)
             .open(directory.join("metadata.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
-        let storage = Self { directory, lock };
+        let mut storage = Self { directory, lock, journal: None };
         let recovered = match File::open(storage.directory.join("metadata.snapshot")) {
             Ok(file) => {
                 if file.metadata()?.len() > MAX_SNAPSHOT_BYTES {
@@ -60,7 +61,28 @@ impl MetaSnapshotFile {
             }
             Err(err) => return Err(err),
         };
+        let mut marker = Vec::with_capacity(2);
+        File::open(storage.directory.join("metadata.lock"))?.take(2).read_to_end(&mut marker)?;
+        let initialized = match marker.as_slice() {
+            b"" | b"1" => false,
+            b"2" => true,
+            _ => return Err(invalid("invalid metadata storage marker")),
+        };
+        let path = storage.directory.join("metadata.outcomes");
+        if !recovered && path.exists() && path.metadata()?.len() != 0 {
+            return Err(invalid("placement outcomes exist without a base snapshot"));
+        }
+        storage.journal = Some(super::placement_journal::PlacementJournal::open(&path, service, initialized)?);
+        if recovered {
+            let mut lock = &storage.lock;
+            lock.write_all(b"2")?;
+            lock.sync_all()?;
+        }
         Ok((storage, recovered))
+    }
+
+    pub(super) fn append_outcome(&mut self, outcome: &crate::placement_outcome::PlacementOutcome) -> io::Result<()> {
+        self.journal.as_mut().ok_or_else(|| invalid("placement journal is not open"))?.append(outcome)
     }
 
     pub(super) fn persist(&self, service: &MatrixMetaService) -> io::Result<()> {
@@ -86,7 +108,7 @@ impl MetaSnapshotFile {
         // acknowledged snapshot must never be mistaken for a new empty directory.
         if self.lock.metadata()?.len() == 0 {
             let mut lock = &self.lock;
-            lock.write_all(b"1")?;
+            lock.write_all(b"2")?;
             lock.sync_all()?;
         }
         Ok(())

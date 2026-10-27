@@ -47,6 +47,7 @@ fn placements_roster_and_commit_index_survive_process_kills() {
     let dir = StateDir::new();
     let node = start(&dir.0, "3");
     let mut c = client(&node);
+    let bootstrap = std::fs::read(dir.snapshot()).unwrap();
     let plan = c
         .plan_object_placement("bucket", "object", 1024, 2)
         .unwrap();
@@ -66,6 +67,8 @@ fn placements_roster_and_commit_index_survive_process_kills() {
     let roster = c.list_placement_nodes().unwrap();
     let status = c.probe().into_result().unwrap();
     let saved = std::fs::read(dir.snapshot()).unwrap();
+    assert_eq!(saved, bootstrap);
+    assert!(std::fs::read(dir.0.join("metadata.outcomes")).unwrap().starts_with(b"MOMJ"));
     assert!(c.commit_object_placement(placement, "invalid").is_err());
     assert_eq!(std::fs::read(dir.snapshot()).unwrap(), saved);
     drop(node);
@@ -132,14 +135,16 @@ fn interrupted_snapshot_and_bootstrap_do_not_replace_committed_state() {
 }
 
 #[test]
-fn failed_snapshot_write_blocks_requests_and_recovers_old_state() {
+fn failed_outcome_append_recovers_last_durable_state() {
     let dir = StateDir::new();
     let node = start(&dir.0, "3");
     let mut c = client(&node);
     let roster = c.list_placement_nodes().unwrap();
     let saved = std::fs::read(dir.snapshot()).unwrap();
-    // A directory cannot be opened as the pending snapshot file.
-    std::fs::create_dir(dir.0.join("metadata.pending")).unwrap();
+    // Limit only this disposable child so its next durable append cannot complete.
+    assert!(std::process::Command::new("prlimit")
+        .args(["--pid", &node.pid.to_string(), "--fsize=1:1"])
+        .status().unwrap().success());
     assert!(c
         .heartbeat_placement_node("data-0", 10, 1 << 30, true, true, 50)
         .is_err());
@@ -147,7 +152,6 @@ fn failed_snapshot_write_blocks_requests_and_recovers_old_state() {
     assert!(c.probe().into_result().is_err());
     assert_eq!(std::fs::read(dir.snapshot()).unwrap(), saved);
     drop(node);
-    std::fs::remove_dir(dir.0.join("metadata.pending")).unwrap();
     let node = start(&dir.0, "3");
     assert_eq!(client(&node).list_placement_nodes().unwrap(), roster);
 }
@@ -171,4 +175,53 @@ fn restored_metadata_leases_remain_in_later_snapshots() {
     assert_eq!(saved.leases.get("namespace"), Some(&lease));
     assert_eq!(saved.next_commit_index, original.next_commit_index);
     assert_eq!(saved.placement_nodes.len(), 3);
+}
+
+#[test]
+fn missing_outcome_journal_is_not_treated_as_empty_history() {
+    let dir=StateDir::new();
+    let node=start(&dir.0,"3");
+    drop(node);
+    // A snapshot-only installation upgrades once, then requires its outcome journal.
+    std::fs::write(dir.0.join("metadata.lock"), b"1").unwrap();
+    std::fs::remove_file(dir.0.join("metadata.outcomes")).unwrap();
+    let node=start(&dir.0,"3");
+    assert_eq!(std::fs::read(dir.0.join("metadata.lock")).unwrap(), b"2");
+    client(&node).heartbeat_placement_node("data-0",10,1<<30,false,true,20).unwrap();
+    drop(node);
+    std::fs::remove_file(dir.0.join("metadata.outcomes")).unwrap();
+    std::fs::write(dir.0.join("metadata.lock"), b"3").unwrap();
+    assert!(MetaNodeServer::bind_with_snapshot("127.0.0.1:0",MetaNodeOptions::default(),&dir.0).is_err());
+    std::fs::write(dir.0.join("metadata.lock"), b"2").unwrap();
+    assert!(MetaNodeServer::bind_with_snapshot("127.0.0.1:0",MetaNodeOptions::default(),&dir.0).is_err());
+}
+
+#[test]
+fn placement_journal_append_size_does_not_grow_with_catalog() {
+    let dir=StateDir::new();
+    let node=start(&dir.0,"3");
+    let bootstrap=std::fs::read(dir.snapshot()).unwrap();
+    let mut c=client(&node);
+    let journal=dir.0.join("metadata.outcomes");
+    let mut largest=0;
+    for index in 0..256 {
+        let key=format!("item-{index:04}");
+        let plan=c.plan_object_placement("bucket",&key,64,2).unwrap();
+        let before=std::fs::metadata(&journal).unwrap().len();
+        c.commit_object_placement(CommittedPlacement {
+            bucket:plan.bucket,key:plan.key,length:plan.length,node_ids:plan.node_ids,version:1,update_time_ms:10,
+        },&plan.plan_checksum).unwrap();
+        let appended=std::fs::metadata(&journal).unwrap().len()-before;
+        largest=largest.max(appended);
+        assert!(appended<1024,"append {index} wrote {appended} bytes");
+    }
+    assert!(largest>0);
+    assert_eq!(std::fs::read(dir.snapshot()).unwrap(),bootstrap);
+    let committed=c.object_placement("bucket","item-0255").unwrap();
+    let status=c.probe().into_result().unwrap();
+    drop(c); drop(node);
+    let node=start(&dir.0,"0");
+    let mut c=client(&node);
+    assert_eq!(c.object_placement("bucket","item-0255").unwrap(),committed);
+    assert_eq!(c.probe().into_result().unwrap(),status);
 }

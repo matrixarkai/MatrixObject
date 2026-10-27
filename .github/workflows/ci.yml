@@ -192,7 +192,7 @@ jobs:
           cargo test --locked --test meta_restart_recovery interrupted_snapshot_and_bootstrap_do_not_replace_committed_state -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
           grep -q '^running 1 test$' /tmp/meta-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
-          cargo test --locked --test meta_restart_recovery failed_snapshot_write_blocks_requests_and_recovers_old_state -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          cargo test --locked --test meta_restart_recovery failed_outcome_append_recovers_last_durable_state -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
           grep -q '^running 1 test$' /tmp/meta-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
 
@@ -530,6 +530,42 @@ jobs:
           cargo test --locked --lib cluster::replica_journal::outcome_tests::binary_outcome_journal_recovers_mixed_history_and_rejects_damage -- --exact 2>&1 | tee /tmp/binary-outcome.log
           grep -q '^running 1 test$' /tmp/binary-outcome.log
           grep -q '^test result: ok. 1 passed' /tmp/binary-outcome.log
+
+      - name: binary placement outcome replays decided changes and refuses wrong state
+        run: |
+          cargo test --locked --lib tests::binary_placement_outcome_replays_decided_changes_and_refuses_wrong_state -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
+
+      - name: binary placement outcome carries object and capacity atomically
+        run: |
+          cargo test --locked --lib tests::binary_placement_outcome_carries_object_and_capacity_atomically -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
+
+      - name: binary placement outcome raft checkpoint preserves replay position
+        run: |
+          cargo test --locked --lib --features matrix-raft tests::binary_placement_outcome_raft_checkpoint_preserves_replay_position -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
+
+      - name: placement journal rejects corruption and recovers every torn tail
+        run: |
+          cargo test --locked --lib cluster::placement_journal::tests::placement_journal_rejects_corruption_and_recovers_every_torn_tail -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
+
+      - name: missing outcome journal is not treated as empty history
+        run: |
+          cargo test --locked --test meta_restart_recovery missing_outcome_journal_is_not_treated_as_empty_history -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
+
+      - name: Placement journal append size stays bounded as catalog grows
+        run: |
+          cargo test --locked --test meta_restart_recovery placement_journal_append_size_does_not_grow_with_catalog -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
 
       - name: Every Rust source carries the licence header
         run: |

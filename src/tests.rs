@@ -50129,3 +50129,79 @@ fn binary_page_outcome_local_and_raft_apply_identical_bytes() {
     matrixraft::StateMachine::apply(&mut distributed, chunk_raft_entry(1, 1, bytes)).unwrap();
     assert_eq!(local.read_chunk_state(&page).unwrap(), distributed.replica().read_chunk_state(&page).unwrap());
 }
+
+#[test]
+fn binary_placement_outcome_replays_decided_changes_and_refuses_wrong_state() {
+    use crate::placement_outcome::PlacementOutcome;
+    let mut source=MatrixMetaService::new();
+    source.register_node(placement_node("node-a", "zone-a", 10000)).unwrap();
+    let mut target=source.clone();
+    let before=PlacementOutcome::capture(&source, vec!["node-a".into()], None).unwrap();
+    source.heartbeat_node("node-a", 100, 10000, false, true, 100).unwrap();
+    let outcome=before.finish(&source).unwrap();
+    let bytes=outcome.to_payload().unwrap();
+    assert!(bytes.len()<256);
+    let outcome=PlacementOutcome::from_payload(&bytes).unwrap();
+    outcome.apply(&mut target).unwrap();
+    assert_eq!(target.placement_state_fingerprint(), source.placement_state_fingerprint());
+    let held=target.placement_state_fingerprint();
+    assert!(outcome.apply(&mut target).is_err());
+    assert_eq!(held,target.placement_state_fingerprint());
+    for index in 0..bytes.len() {
+        let mut damaged=bytes.clone(); damaged[index]^=1;
+        assert!(PlacementOutcome::from_payload(&damaged).is_err());
+    }
+    let capture=PlacementOutcome::capture(&source, vec!["node-a".into()], None).unwrap();
+    source.expire_node_heartbeats(10, 200).unwrap();
+    capture.finish(&source).unwrap().apply(&mut target).unwrap();
+    assert_eq!(target.placement_state_fingerprint(),source.placement_state_fingerprint());
+}
+
+#[test]
+fn binary_placement_outcome_carries_object_and_capacity_atomically() {
+    use crate::placement_outcome::PlacementOutcome;
+    let mut source=MatrixMetaService::new();
+    // Chunk health can report capacity beyond the roster's older measurement.
+    let mut node=placement_node("node-a", "zone-a", 100);
+    node.chunk_health.accepting_writes=true;
+    node.chunk_health.raft_writable=true;
+    node.chunk_health.capacity_free_bytes=1000;
+    source.register_node(node).unwrap();
+    let id=ObjectId::new("bucket", "object");
+    let plan=source.plan_object_placement(id.clone(),200,1).unwrap();
+    let mut target=source.clone();
+    let before=PlacementOutcome::capture(&source,plan.node_ids.clone(),Some(id.clone())).unwrap();
+    source.commit_object_placement(ObjectPlacement { object_id:id.clone(), version:1,length:200,node_ids:plan.node_ids,update_time_ms:10 },&plan.plan_checksum).unwrap();
+    let outcome=before.finish(&source).unwrap();
+    let mut bad=outcome.clone();
+    bad.placements[0].after.as_mut().unwrap().node_ids.push("missing".into());
+    let held=target.placement_state_fingerprint();
+    assert!(bad.apply(&mut target).is_err());
+    assert_eq!(held,target.placement_state_fingerprint());
+    PlacementOutcome::from_payload(&outcome.to_payload().unwrap()).unwrap().apply(&mut target).unwrap();
+    assert_eq!(target.placement_state_fingerprint(),source.placement_state_fingerprint());
+}
+
+#[cfg(feature="matrix-raft")]
+#[test]
+fn binary_placement_outcome_raft_checkpoint_preserves_replay_position() {
+    use crate::placement_outcome::PlacementOutcome;
+    let mut store=MatrixObjectStore::new(test_options()).unwrap();
+    let mut node=placement_node("node-a","zone-a",10000);
+    node.meta_health.control_proof.coordinator_backend="embedded-raft".into();
+    store.meta_service.register_node(node).unwrap();
+    let mut leader=store.meta_service.clone();
+    let before=PlacementOutcome::capture(&leader,vec!["node-a".into()],None).unwrap();
+    leader.heartbeat_node("node-a",10,10000,false,true,100).unwrap();
+    let payload=before.finish(&leader).unwrap().to_payload().unwrap();
+    let mut machine=MetadataStateMachine::new(store);
+    let request=matrixraft::ApplyRequest { group_id:1,log_id:matrixraft::LogId { term:1,index:1 },payload };
+    matrixraft::StateMachine::apply(&mut machine,request.clone()).unwrap();
+    assert_eq!(machine.store().meta_service.placement_state_fingerprint(),leader.placement_state_fingerprint());
+    let checkpoint=matrixraft::StateMachine::snapshot(&machine).unwrap();
+    let mut restored=MetadataStateMachine::new(MatrixObjectStore::new(test_options()).unwrap());
+    matrixraft::StateMachine::install_snapshot(&mut restored,checkpoint).unwrap();
+    matrixraft::StateMachine::apply(&mut restored,request).unwrap();
+    assert_eq!(restored.last_log_id().index,1);
+    assert_eq!(restored.store().meta_service.placement_state_fingerprint(),leader.placement_state_fingerprint());
+}

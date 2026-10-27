@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject.outcome.v1;
+// MOMP prefix, this binary message, then an eight-byte big-endian FNV checksum.
+message NodeUsage {
+  string node_id = 1;
+  uint64 used_bytes = 2;
+  uint64 capacity_bytes = 3;
+  uint64 committed_bytes = 4;
+  bool draining = 5;
+  bool online = 6;
+  uint64 last_heartbeat_ms = 7;
+}
+message PlacementValue {
+  string bucket = 1;
+  string key = 2;
+  uint64 version = 3;
+  uint64 length = 4;
+  repeated string node_ids = 5;
+  uint64 update_time_ms = 6;
+}
+message NodeChange { NodeUsage before = 1; NodeUsage after = 2; }
+message PlacementChange { PlacementValue before = 1; PlacementValue after = 2; }
+message PlacementOutcome {
+  uint32 version = 1;
+  uint64 before_index = 2;
+  uint64 after_index = 3;
+  repeated NodeChange nodes = 4;
+  repeated PlacementChange placements = 5;
+}
