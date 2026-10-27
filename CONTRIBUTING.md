@@ -60,8 +60,9 @@ Four jobs, all on a pinned toolchain:
 The **network metadata consensus** job also runs twenty-nine named health, routing, and consensus tests
 with the optional consensus feature enabled.
 
-The **network chunk consensus** job runs twenty-four identity, routing, process, recovery, configuration,
-capacity, shutdown, and metadata-health tests with the chunk consensus feature.
+The **network chunk consensus** job runs twenty-five identity, routing, process, recovery, configuration,
+capacity, shutdown, and metadata-health tests with the chunk consensus feature. The coupled
+quorum test additionally enables metadata consensus and starts three voters for each service.
 
 Across these jobs, 106 individual tests run in the library.
 

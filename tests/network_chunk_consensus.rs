@@ -693,3 +693,264 @@ fn metadata_catalog_routes_chunk_group_through_leader_loss() {
     meta.child.kill().unwrap();
     assert!(processes::reap_within(&mut meta.child, Duration::from_secs(3)).is_some());
 }
+
+#[cfg(feature = "metadata-consensus")]
+mod coupled_groups {
+    use super::*;
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, CommittedPlacement,
+        MetaClientOptions, RemoteMetaClient,
+    };
+
+    struct MetadataGroup {
+        nodes: Vec<Option<NodeProcess>>,
+        api: Vec<String>,
+        peers: String,
+        root: PathBuf,
+        reservations: Vec<Option<(TcpListener, TcpListener)>>,
+    }
+    impl MetadataGroup {
+        fn new(chunk: &Group) -> Self {
+            let root = chunk.root.join("metadata");
+            std::fs::create_dir(&root).unwrap();
+            let sockets: Vec<_> = (0..3)
+                .map(|_| {
+                    (
+                        TcpListener::bind("127.0.0.1:0").unwrap(),
+                        TcpListener::bind("127.0.0.1:0").unwrap(),
+                    )
+                })
+                .collect();
+            let api = sockets
+                .iter()
+                .map(|(a, _)| a.local_addr().unwrap().to_string())
+                .collect();
+            let peers = sockets
+                .iter()
+                .enumerate()
+                .map(|(i, (_, p))| format!("{}@{}", i + 1, p.local_addr().unwrap()))
+                .collect::<Vec<_>>()
+                .join(",");
+            let catalog = ChunkGroupCatalog::new(vec![ChunkGroupConfig {
+                placement_id: "group-a".into(),
+                failure_domain: "rack-a".into(),
+                identity: Some(ChunkGroupIdentity {
+                    version: 1,
+                    group_id: 1,
+                    node_id: 1,
+                    capacity_bytes: chunk.capacity,
+                    max_pages: 64,
+                    voters: chunk.peers.keys().copied().collect(),
+                    peer_endpoints: chunk.peers.values().map(ToString::to_string).collect(),
+                }),
+                api_endpoints: chunk
+                    .api_addresses
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                member_ids: (0..3).map(|i| format!("chunk-{i}")).collect(),
+            }])
+            .unwrap();
+            std::fs::write(root.join("catalog.bin"), catalog.to_bytes().unwrap()).unwrap();
+            let mut group = Self {
+                nodes: vec![None, None, None],
+                api,
+                peers,
+                root,
+                reservations: sockets.into_iter().map(Some).collect(),
+            };
+            for i in 0..3 {
+                std::fs::create_dir(group.root.join(i.to_string())).unwrap();
+                group.start(i);
+            }
+            group
+        }
+        fn start(&mut self, i: usize) {
+            let id = (i + 1).to_string();
+            let state = self.root.join(i.to_string());
+            let catalog = self.root.join("catalog.bin");
+            drop(self.reservations[i].take());
+            let node = processes::start(
+                env!("CARGO_BIN_EXE_metaserver"),
+                &[
+                    ("MATRIXOBJECT_METASERVER_ADDR", &self.api[i]),
+                    ("MATRIXOBJECT_METASERVER_RAFT_PEERS", &self.peers),
+                    ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", &id),
+                    (
+                        "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
+                        state.to_str().unwrap(),
+                    ),
+                    ("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", "700"),
+                    (
+                        "MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE",
+                        catalog.to_str().unwrap(),
+                    ),
+                    ("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", "1500"),
+                ],
+            );
+            assert_eq!(node.endpoint, self.api[i]);
+            assert!(node.startup_line.contains("storage=raft"));
+            self.nodes[i] = Some(node);
+        }
+        fn ready(&self) -> RemoteMetaClient {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let options = MetaClientOptions {
+                    connect_timeout: Duration::from_millis(200),
+                    read_timeout: Duration::from_secs(2),
+                    write_timeout: Duration::from_secs(2),
+                    ..Default::default()
+                };
+                if let Ok(mut client) = RemoteMetaClient::connect_catalog(&self.api, &options) {
+                    if client.probe().into_result().is_ok() {
+                        return client;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "metadata quorum did not become readable"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        fn kill(&mut self, i: usize) {
+            let mut node = self.nodes[i].take().unwrap();
+            node.child.kill().unwrap();
+            assert!(processes::reap_within(&mut node.child, Duration::from_secs(3)).is_some());
+        }
+    }
+    impl Drop for MetadataGroup {
+        fn drop(&mut self) {
+            self.nodes.clear();
+        }
+    }
+    fn health(client: &mut RemoteMetaClient, online: bool, used: u64, committed: u64) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let nodes = client.list_placement_nodes().unwrap();
+            let group = nodes.iter().find(|n| n.node_id == "group-a").unwrap();
+            if group.online == online
+                && group.used_bytes == used
+                && group.committed_bytes == committed
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "group health did not converge: {nodes:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    fn store(
+        client: &mut RemoteMetaClient,
+        chunk: &mut RemoteReplicaClient,
+        n: u64,
+    ) -> CommittedPlacement {
+        let data = vec![n as u8; 256];
+        chunk.write_chunk(page(n), 0, &data).unwrap();
+        let plan = client
+            .plan_object_placement("bucket", &format!("object-{n}"), 256, 1)
+            .unwrap();
+        assert_eq!(plan.node_ids, vec!["group-a"]);
+        client
+            .commit_object_placement(
+                CommittedPlacement {
+                    bucket: plan.bucket,
+                    key: plan.key,
+                    length: 256,
+                    node_ids: plan.node_ids,
+                    version: 1,
+                    update_time_ms: n + 1,
+                },
+                &plan.plan_checksum,
+            )
+            .unwrap()
+    }
+    fn verify(
+        client: &mut RemoteMetaClient,
+        chunk: &mut RemoteReplicaClient,
+        placements: &[CommittedPlacement],
+    ) {
+        for (n, p) in placements.iter().enumerate() {
+            assert_eq!(client.object_placement(&p.bucket, &p.key).unwrap(), *p);
+            assert_eq!(
+                chunk.read_chunk(&page(n as u64), 0, 256).unwrap().data,
+                vec![n as u8; 256]
+            );
+            assert_eq!(chunk.head_chunk(&page(n as u64)).unwrap().write_sequence, 1);
+        }
+    }
+    #[test]
+    fn metadata_and_chunk_quorums_recover_together_and_refuse_minority_operations() {
+        let mut chunks = Group::configured(65536);
+        let mut metadata = MetadataGroup::new(&chunks);
+        chunks.report = Some((metadata.api.join(","), chunks.api_addresses.clone()));
+        for i in 0..3 {
+            chunks.start(i);
+        }
+        let chunk_leader = chunks.leader();
+        let mut client = metadata.ready();
+        health(&mut client, true, 0, 0);
+        let meta_leader = metadata
+            .api
+            .iter()
+            .position(|a| a == client.endpoint())
+            .unwrap();
+        let mut chunk = client
+            .connect_chunk_group("group-a", &ReplicaClientOptions::default())
+            .unwrap();
+        let mut placements: Vec<_> = (0..32).map(|n| store(&mut client, &mut chunk, n)).collect();
+        health(&mut client, true, 8192, 8192);
+        metadata.kill(meta_leader);
+        chunks.kill(chunk_leader);
+        metadata.ready();
+        chunks.leader();
+        verify(&mut client, &mut chunk, &placements);
+        placements.push(store(&mut client, &mut chunk, 32));
+        for i in 0..3 {
+            if chunks.nodes[i].is_some() {
+                chunks.kill(i);
+            }
+            if metadata.nodes[i].is_some() {
+                metadata.kill(i);
+            }
+        }
+        for i in 0..3 {
+            metadata.start(i);
+        }
+        for i in 0..3 {
+            chunks.start(i);
+        }
+        client = metadata.ready();
+        chunks.leader();
+        health(&mut client, true, 8448, 8448);
+        chunk = client
+            .connect_chunk_group("group-a", &ReplicaClientOptions::default())
+            .unwrap();
+        verify(&mut client, &mut chunk, &placements);
+        let leader = chunks.leader();
+        for i in 0..3 {
+            if i != leader {
+                chunks.kill(i);
+            }
+        }
+        assert!(chunk.write_chunk(page(33), 0, b"minority").is_err());
+        assert!(chunk.read_chunk(&page(0), 0, 256).is_err());
+        health(&mut client, false, 8448, 8448);
+        assert!(client
+            .plan_object_placement("bucket", "unavailable", 1, 1)
+            .is_err());
+        let current = metadata
+            .api
+            .iter()
+            .position(|a| a == client.endpoint())
+            .unwrap();
+        for i in 0..3 {
+            if i != current {
+                metadata.kill(i);
+            }
+        }
+        assert!(client.object_placement("bucket", "object-0").is_err());
+    }
+}
