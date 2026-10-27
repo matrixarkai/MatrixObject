@@ -81,6 +81,12 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Replica storage admission limits
+        run: |
+          set -o pipefail
+          cargo test --locked --test replica_storage_limits -- --test-threads=1 2>&1 | tee /tmp/replica-limits.log
+          grep -q 'test result: ok. 4 passed' /tmp/replica-limits.log
+
       - name: Durable format constants are unchanged
         run: |
           set -o pipefail

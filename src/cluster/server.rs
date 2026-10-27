@@ -58,6 +58,11 @@ pub struct ReplicaNodeOptions {
     /// A length field arrives before the bytes it describes, so this is the bound on what
     /// one frame can make the node allocate.
     pub max_payload_bytes: usize,
+    /// Maximum total page payload bytes, including zero-filled space before write offsets.
+    /// This excludes indexes, caches, sidecars, and transport buffers. Must be positive.
+    pub capacity_bytes: u64,
+    /// Maximum page identities, including pages created by empty writes. Must be positive.
+    pub max_pages: usize,
     /// Connections handled at once.
     pub worker_threads: usize,
     /// How long a connection may go without sending before it is dropped.
@@ -70,6 +75,8 @@ impl Default for ReplicaNodeOptions {
     fn default() -> Self {
         Self {
             max_payload_bytes: MAX_PAYLOAD_BYTES,
+            capacity_bytes: 256 * 1024 * 1024,
+            max_pages: 65_536,
             worker_threads: 4,
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
@@ -104,7 +111,16 @@ impl ReplicaNodeServer {
     /// state to load from, so its only possible caller is a recovery path that does not
     /// exist. It belongs in the change that gives a node something to recover.
     pub fn bind(addr: &str, options: ReplicaNodeOptions) -> std::io::Result<Self> {
-        let replica = MatrixReplicaService::new();
+        if options.capacity_bytes == 0 || options.max_pages == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "replica capacity_bytes and max_pages must be positive",
+            ));
+        }
+        let mut replica = MatrixReplicaService::new();
+        replica.set_capacity_bytes(options.capacity_bytes).map_err(|err| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
+        })?;
         let listener = TcpListener::bind(addr)?;
         Ok(Self {
             listener,
@@ -247,7 +263,7 @@ fn serve_connection(
                     counters.failures.fetch_add(1, Ordering::Relaxed);
                     encode_failure(StatusCode::for_error(&err), &err.to_string())
                 }
-                Ok(request) => match apply(replica, request) {
+                Ok(request) => match apply(replica, request, options.max_pages) {
                     Ok(reply) => encode_reply(&reply),
                     Err(err) => {
                         counters.failures.fetch_add(1, Ordering::Relaxed);
@@ -296,6 +312,7 @@ fn read_frame(
 fn apply(
     replica: &Arc<Mutex<MatrixReplicaService>>,
     request: ReplicaRequest,
+    max_pages: usize,
 ) -> Result<ReplicaReply, ObjectError> {
     let mut guard = replica.lock().map_err(|_| {
         // A poisoned lock means a previous request panicked while holding the replica, so
@@ -313,6 +330,13 @@ fn apply(
             offset,
             data,
         } => {
+            // Check admission while holding the same lock used for the mutation.
+            // Empty writes still create a page and must consume an identity slot.
+            if guard.page_count() >= max_pages && guard.page_write_sequence(&page_id).is_none() {
+                return Err(ObjectError::PreconditionFailed(
+                    "replica page count limit exceeded".to_string(),
+                ));
+            }
             guard.write_chunk(page_id, offset, &data)?;
             Ok(ReplicaReply::Applied)
         }
