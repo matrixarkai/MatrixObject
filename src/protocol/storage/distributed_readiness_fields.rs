@@ -243,7 +243,7 @@ impl ObjectStoreDistributedReadiness {
                 &self.root_pageserver_route_control_proof_checksum,
             ),
             (
-                "root_blockserver_first_health_reasons",
+                "root_pageserver_first_health_reasons",
                 &self.root_pageserver_first_health_reasons,
             ),
             (
@@ -278,11 +278,11 @@ impl ObjectStoreDistributedReadiness {
                 self.placement_metadata_write_ready,
             ),
             (
-                "root_blockserver_read_ready",
+                "root_pageserver_read_ready",
                 self.root_pageserver_read_ready,
             ),
             (
-                "root_blockserver_write_ready",
+                "root_pageserver_write_ready",
                 self.root_pageserver_write_ready,
             ),
             (
@@ -487,51 +487,51 @@ impl ObjectStoreDistributedReadiness {
                 self.root_pageserver_route_control_write_ready_count,
             ),
             (
-                "root_blockserver_health_ok_count",
+                "root_pageserver_health_ok_count",
                 self.root_pageserver_health_ok_count,
             ),
             (
-                "root_blockserver_health_degraded_count",
+                "root_pageserver_health_degraded_count",
                 self.root_pageserver_health_degraded_count,
             ),
             (
-                "root_blockserver_health_unavailable_count",
+                "root_pageserver_health_unavailable_count",
                 self.root_pageserver_health_unavailable_count,
             ),
             (
-                "root_blockserver_health_unknown_count",
+                "root_pageserver_health_unknown_count",
                 self.root_pageserver_health_unknown_count,
             ),
             (
-                "root_blockserver_not_fault_tolerant_count",
+                "root_pageserver_not_fault_tolerant_count",
                 self.root_pageserver_not_fault_tolerant_count,
             ),
             (
-                "root_blockserver_total_health_reason_count",
+                "root_pageserver_total_health_reason_count",
                 self.root_pageserver_total_health_reason_count,
             ),
             (
-                "root_blockserver_total_write_quorum",
+                "root_pageserver_total_write_quorum",
                 self.root_pageserver_total_write_quorum,
             ),
             (
-                "root_blockserver_total_read_quorum",
+                "root_pageserver_total_read_quorum",
                 self.root_pageserver_total_read_quorum,
             ),
             (
-                "root_blockserver_total_write_quorum_deficit",
+                "root_pageserver_total_write_quorum_deficit",
                 self.root_pageserver_total_write_quorum_deficit,
             ),
             (
-                "root_blockserver_total_read_quorum_deficit",
+                "root_pageserver_total_read_quorum_deficit",
                 self.root_pageserver_total_read_quorum_deficit,
             ),
             (
-                "root_blockserver_total_write_quorum_margin",
+                "root_pageserver_total_write_quorum_margin",
                 self.root_pageserver_total_write_quorum_margin,
             ),
             (
-                "root_blockserver_total_read_quorum_margin",
+                "root_pageserver_total_read_quorum_margin",
                 self.root_pageserver_total_read_quorum_margin,
             ),
             (

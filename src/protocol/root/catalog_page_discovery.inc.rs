@@ -63,15 +63,15 @@ impl CatalogPageEndpointDiscovery {
             self.skipped_read_not_ready.to_string(),
         );
         fields.insert(
-            "active_blockserver_count".to_string(),
+            "active_pageserver_count".to_string(),
             self.active_pageserver_count.to_string(),
         );
         fields.insert(
-            "ready_blockserver_count".to_string(),
+            "ready_pageserver_count".to_string(),
             self.ready_pageserver_count.to_string(),
         );
         fields.insert(
-            "read_ready_blockserver_count".to_string(),
+            "read_ready_pageserver_count".to_string(),
             self.read_ready_pageserver_count.to_string(),
         );
         fields.insert(
