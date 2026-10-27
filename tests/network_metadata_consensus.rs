@@ -18,6 +18,8 @@ struct Group {
     nodes: Vec<Option<NodeProcess>>,
     peers: BTreeMap<u64, std::net::SocketAddr>,
     root: PathBuf,
+    api_addresses: Vec<std::net::SocketAddr>,
+    reservations: Vec<Option<(TcpListener, TcpListener)>>,
     roster: Option<String>,
     heartbeat_ttl: Option<String>,
 }
@@ -32,18 +34,28 @@ impl Group {
         let root = std::env::temp_dir().join(node_regime::run_token("metadata-peers"));
         std::fs::create_dir(&root).unwrap();
         let reserved: Vec<_> = (0..3)
-            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .map(|_| {
+                (
+                    TcpListener::bind("127.0.0.1:0").unwrap(),
+                    TcpListener::bind("127.0.0.1:0").unwrap(),
+                )
+            })
             .collect();
         let peers = reserved
             .iter()
             .enumerate()
-            .map(|(i, l)| (i as u64 + 1, l.local_addr().unwrap()))
+            .map(|(i, (_, peer))| (i as u64 + 1, peer.local_addr().unwrap()))
             .collect();
-        drop(reserved);
+        let api_addresses = reserved
+            .iter()
+            .map(|(api, _)| api.local_addr().unwrap())
+            .collect();
         let mut group = Self {
             nodes: vec![None, None, None],
             peers,
             root,
+            api_addresses,
+            reservations: reserved.into_iter().map(Some).collect(),
             roster,
             heartbeat_ttl,
         };
@@ -62,8 +74,9 @@ impl Group {
             .join(",");
         let id = (i + 1).to_string();
         let path = self.root.join(i.to_string());
+        let bind = self.api_addresses[i].to_string();
         let mut environment = vec![
-            ("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0"),
+            ("MATRIXOBJECT_METASERVER_ADDR", bind.as_str()),
             ("MATRIXOBJECT_METASERVER_RAFT_PEERS", &peers),
             ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", &id),
             (
@@ -87,7 +100,13 @@ impl Group {
         if let Some(ttl) = &self.heartbeat_ttl {
             environment.push(("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", ttl));
         }
+        drop(self.reservations[i].take());
         let node = processes::start(env!("CARGO_BIN_EXE_metaserver"), &environment);
+        assert_eq!(node.endpoint, bind);
+        assert!(!self
+            .peers
+            .values()
+            .any(|peer| peer.to_string() == node.endpoint));
         assert_ne!(node.pid, std::process::id());
         assert!(node.startup_line.contains("storage=raft"));
         self.nodes[i] = Some(node);

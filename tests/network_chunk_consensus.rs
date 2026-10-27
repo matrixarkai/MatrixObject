@@ -20,6 +20,8 @@ struct Group {
     peers: BTreeMap<u64, SocketAddr>,
     root: PathBuf,
     capacity: u64,
+    api_addresses: Vec<SocketAddr>,
+    reservations: Vec<Option<(TcpListener, TcpListener)>>,
     report: Option<(String, Vec<SocketAddr>)>,
 }
 impl Group {
@@ -27,27 +29,45 @@ impl Group {
         Self::with_capacity(65536)
     }
     fn with_capacity(capacity: u64) -> Self {
+        let mut group = Self::configured(capacity);
+        for i in 0..3 {
+            group.start(i);
+        }
+        group
+    }
+    fn configured(capacity: u64) -> Self {
         let root = std::env::temp_dir().join(node_regime::run_token("chunk-peers"));
         std::fs::create_dir(&root).unwrap();
+        // Hold all six distinct listeners until their process takes ownership.
+        // API port selection must never consume a future voter's Raft endpoint.
         let reserved: Vec<_> = (0..3)
-            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .map(|_| {
+                (
+                    TcpListener::bind("127.0.0.1:0").unwrap(),
+                    TcpListener::bind("127.0.0.1:0").unwrap(),
+                )
+            })
             .collect();
         let peers = reserved
             .iter()
             .enumerate()
-            .map(|(i, l)| (i as u64 + 1, l.local_addr().unwrap()))
+            .map(|(i, (_, peer))| (i as u64 + 1, peer.local_addr().unwrap()))
             .collect();
-        drop(reserved);
-        let mut g = Self {
+        let api_addresses = reserved
+            .iter()
+            .map(|(api, _)| api.local_addr().unwrap())
+            .collect();
+        let g = Self {
             nodes: vec![None, None, None],
             peers,
             root,
             capacity,
+            api_addresses,
+            reservations: reserved.into_iter().map(Some).collect(),
             report: None,
         };
         for i in 0..3 {
             std::fs::create_dir(g.root.join(i.to_string())).unwrap();
-            g.start(i);
         }
         g
     }
@@ -64,7 +84,7 @@ impl Group {
             .report
             .as_ref()
             .map(|(_, a)| a[i].to_string())
-            .unwrap_or_else(|| "127.0.0.1:0".into());
+            .unwrap_or_else(|| self.api_addresses[i].to_string());
         let node_id = format!("chunk-{i}");
         let capacity = self.capacity.to_string();
         let timeout = if self.capacity > 65536 { "5000" } else { "700" };
@@ -84,7 +104,13 @@ impl Group {
                 ("MATRIXOBJECT_CHUNK_HEARTBEAT_MS", "100"),
             ]);
         }
+        drop(self.reservations[i].take());
         let node = processes::start(env!("CARGO_BIN_EXE_chunkserver"), &environment);
+        assert_eq!(node.endpoint, bind);
+        assert!(!self
+            .peers
+            .values()
+            .any(|peer| peer.to_string() == node.endpoint));
         assert_ne!(node.pid, std::process::id());
         assert!(node.startup_line.contains("storage=raft"));
         self.nodes[i] = Some(node);
@@ -254,8 +280,8 @@ fn slow_chunk_peer_packets_do_not_prevent_shutdown() {
     std::fs::create_dir(&directory).unwrap();
     let socket = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = socket.local_addr().unwrap();
-    drop(socket);
     let mut server = ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
+    drop(socket);
     server
         .enable_consensus(ChunkRaftOptions {
             node_id: 1,
@@ -358,14 +384,8 @@ fn metadata_reports_track_committed_chunk_bytes_on_every_voter() {
     use matrixobjectstore_rs::cluster::{
         DataNodeSeed, MetaClientOptions, MetaNodeOptions, MetaNodeServer, RemoteMetaClient,
     };
-    let mut g = Group::new();
-    for i in 0..3 {
-        g.kill(i);
-    }
-    let sockets: Vec<_> = (0..3)
-        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
-        .collect();
-    let addresses: Vec<_> = sockets.iter().map(|s| s.local_addr().unwrap()).collect();
+    let mut g = Group::configured(65536);
+    let addresses = g.api_addresses.clone();
     let roster = addresses
         .iter()
         .enumerate()
@@ -379,7 +399,6 @@ fn metadata_reports_track_committed_chunk_bytes_on_every_voter() {
     let endpoint = meta.local_addr().unwrap().to_string();
     let stop = meta.shutdown_handle();
     let worker = std::thread::spawn(move || meta.serve().unwrap());
-    drop(sockets);
     g.report = Some((endpoint.clone(), addresses));
     for i in 0..3 {
         g.start(i);
@@ -434,8 +453,8 @@ fn oversized_chunk_outcome_is_refused_without_poisoning_the_group() {
     std::fs::create_dir(&directory).unwrap();
     let socket = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = socket.local_addr().unwrap();
-    drop(socket);
     let mut server = ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
+    drop(socket);
     server
         .enable_consensus(ChunkRaftOptions {
             node_id: 1,

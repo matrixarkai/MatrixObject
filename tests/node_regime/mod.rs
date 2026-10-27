@@ -57,7 +57,7 @@ pub fn run_token(label: &str) -> String {
 }
 
 pub mod processes {
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Read};
     use std::process::{Child, Command, Stdio};
 
     /// A node process a test started.
@@ -168,10 +168,17 @@ pub mod processes {
         BufReader::new(stdout)
             .read_line(&mut line)
             .expect("the node's first line could be read");
-        assert!(
-            !line.trim().is_empty(),
-            "the node process produced no startup line, so it died before it listened"
-        );
+        if line.trim().is_empty() {
+            let _ = child.kill();
+            let status = reap_within(&mut child, std::time::Duration::from_secs(3));
+            let mut diagnostic = String::new();
+            if status.is_some() {
+                if let Some(stderr) = child.stderr.take() {
+                    let _ = stderr.take(8192).read_to_string(&mut diagnostic);
+                }
+            }
+            panic!("node produced no startup line; exit={status:?}; stderr={diagnostic}");
+        }
         let endpoint = field(&line, "listening on ")
             .unwrap_or_else(|| panic!("no bound address in the startup line {line:?}"));
         let reported_pid: u32 = field(&line, "pid=")
