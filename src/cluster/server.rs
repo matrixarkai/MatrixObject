@@ -571,6 +571,9 @@ pub(super) fn apply_to_replica(
     max_pages: usize,
 ) -> Result<ReplicaReply, ObjectError> {
     match request {
+        ReplicaRequest::GroupIdentity => Err(ObjectError::PreconditionFailed(
+            "standalone replica has no Raft group identity".into(),
+        )),
         ReplicaRequest::WriteChunk {
             page_id,
             offset,

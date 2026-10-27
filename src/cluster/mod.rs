@@ -158,7 +158,7 @@ pub mod meta_server;
 #[cfg(feature = "meta-server")]
 pub mod meta_wire;
 
-pub use message::{ReplicaReply, ReplicaRequest};
+pub use message::{ChunkGroupIdentity, ReplicaReply, ReplicaRequest};
 pub use wire::{RequestCode, StatusCode, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP};
 
 #[cfg(feature = "replica-server")]

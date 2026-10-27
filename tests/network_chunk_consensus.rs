@@ -514,8 +514,9 @@ fn chunk_catalog_finds_the_leader_and_moves_reads_after_process_loss() {
         .map(|i| group.nodes[i].as_ref().unwrap().endpoint.clone())
         .collect();
     endpoints.push(group.nodes[first].as_ref().unwrap().endpoint.clone());
-    let mut client = RemoteReplicaClient::connect_catalog(
+    let mut client = RemoteReplicaClient::connect_raft_catalog(
         &endpoints,
+        1,
         &ReplicaClientOptions {
             connect_timeout: Duration::from_millis(200),
             read_timeout: Duration::from_secs(2),
@@ -552,4 +553,33 @@ fn chunk_catalog_finds_the_leader_and_moves_reads_after_process_loss() {
     group.kill(other);
     assert!(client.write_chunk(page(1), 0, b"uncertain").is_err());
     assert!(client.read_chunk(&page(0), 0, 12).is_err());
+}
+
+#[test]
+fn chunk_catalog_rejects_another_group_with_the_same_numeric_id() {
+    let first = Group::new();
+    let leader = first.leader();
+    let second = Group::new();
+    let other = second.leader();
+    let follower = (leader + 1) % 3;
+    let mut source = first.client(follower);
+    let description = source.chunk_group_identity().unwrap();
+    assert_eq!(description.group_id, 1);
+    assert_eq!(description.node_id, (follower + 1) as u64);
+    let endpoints = vec![
+        first.nodes[follower].as_ref().unwrap().endpoint.clone(),
+        second.nodes[other].as_ref().unwrap().endpoint.clone(),
+    ];
+    let mut routed =
+        RemoteReplicaClient::connect_raft_catalog(&endpoints, 1, &ReplicaClientOptions::default())
+            .unwrap();
+    assert!(routed.write_chunk(page(0), 0, b"misdirected").is_err());
+    assert!(matches!(
+        second.client(other).head_chunk(&page(0)),
+        Err(matrixobjectstore_rs::ObjectError::NotFound(_))
+    ));
+    assert!(matches!(
+        first.client(leader).head_chunk(&page(0)),
+        Err(matrixobjectstore_rs::ObjectError::NotFound(_))
+    ));
 }

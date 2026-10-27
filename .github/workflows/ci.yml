@@ -1484,3 +1484,33 @@ jobs:
           cargo test --locked --features chunk-consensus --test network_chunk_consensus chunk_catalog_finds_the_leader_and_moves_reads_after_process_loss -- --exact | tee /tmp/chunk-routing.log
           grep -q '^running 1 test$' /tmp/chunk-routing.log
           grep -q '^test result: ok. 1 passed' /tmp/chunk-routing.log
+      - name: verified chunk catalog checks identity before redirected write
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test chunk_catalog_routing verified_chunk_catalog_checks_identity_before_redirected_write -- --exact | tee /tmp/chunk-identity.log
+          grep -q '^running 1 test$' /tmp/chunk-identity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-identity.log
+      - name: verified chunk catalog refuses changed configuration before data
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test chunk_catalog_routing verified_chunk_catalog_refuses_changed_configuration_before_data -- --exact | tee /tmp/chunk-identity.log
+          grep -q '^running 1 test$' /tmp/chunk-identity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-identity.log
+      - name: verified chunk catalog refuses wrong group and older servers
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test chunk_catalog_routing verified_chunk_catalog_refuses_wrong_group_and_older_servers -- --exact | tee /tmp/chunk-identity.log
+          grep -q '^running 1 test$' /tmp/chunk-identity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-identity.log
+      - name: chunk group protobuf rejects invalid or noncanonical configuration
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test chunk_catalog_routing chunk_group_protobuf_rejects_invalid_or_noncanonical_configuration -- --exact | tee /tmp/chunk-identity.log
+          grep -q '^running 1 test$' /tmp/chunk-identity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-identity.log
+      - name: chunk catalog rejects another group with the same numeric id
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus chunk_catalog_rejects_another_group_with_the_same_numeric_id -- --exact | tee /tmp/chunk-identity.log
+          grep -q '^running 1 test$' /tmp/chunk-identity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-identity.log

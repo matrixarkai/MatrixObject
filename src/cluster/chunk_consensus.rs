@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 //! One durable chunk voter with bounded TCP delivery and committed read barriers.
 use super::{apply_to_replica, NodeReplica};
-use crate::cluster::message::{ReplicaReply, ReplicaRequest};
+use crate::cluster::message::{ChunkGroupIdentity, ReplicaReply, ReplicaRequest};
 use crate::cluster::shutdown::ServerShutdown;
 use crate::outcome::PageOutcome;
 use crate::{MatrixReplicaService, ObjectError};
@@ -65,6 +65,7 @@ struct Pending {
     reply: Option<Result<ReplicaReply, ObjectError>>,
 }
 pub(super) struct ChunkConsensus {
+    identity: ChunkGroupIdentity,
     requests: SyncSender<Request>,
     timeout: Duration,
     stop: Arc<ServerShutdown>,
@@ -165,6 +166,19 @@ impl ChunkConsensus {
             bytes
         } else {
             expected
+        };
+        let group_identity = ChunkGroupIdentity {
+            version: 1,
+            group_id: options.group_id,
+            node_id: options.node_id,
+            capacity_bytes: configuration.capacity_bytes,
+            max_pages: configuration.max_pages,
+            voters: options.peers.keys().copied().collect(),
+            peer_endpoints: options
+                .peers
+                .values()
+                .map(|a| canonical_address(*a).to_string())
+                .collect(),
         };
         let mut identity = b"chunk-consensus".to_vec();
         identity.extend_from_slice(&bytes);
@@ -275,6 +289,7 @@ impl ChunkConsensus {
             }
         }));
         Ok(Self {
+            identity: group_identity,
             requests,
             timeout: options.request_timeout,
             stop,
@@ -286,6 +301,12 @@ impl ChunkConsensus {
         self.failed.load(Ordering::SeqCst)
     }
     pub(super) fn request(&self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+        if matches!(request, ReplicaRequest::GroupIdentity) {
+            if self.is_failed() {
+                return Err(refused("chunk consensus unavailable"));
+            }
+            return Ok(ReplicaReply::GroupIdentity(self.identity.clone()));
+        }
         let (reply, rx) = mpsc::sync_channel(1);
         let deadline = Instant::now() + self.timeout;
         self.requests
