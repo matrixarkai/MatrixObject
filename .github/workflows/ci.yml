@@ -1214,6 +1214,35 @@ jobs:
           grep -q '^running 1 test$' /tmp/inventory.log
           grep -q '^test result: ok. 1 passed' /tmp/inventory.log
 
+      - name: Damaged connections cannot answer later calls
+        run: |
+          set -o pipefail
+          cargo test --locked --test failed_node_connections replica_connections_close_after_damaged_replies -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test failed_node_connections meta_connections_close_after_damaged_replies -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test failed_node_connections replica_connections_survive_valid_refusals -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test failed_node_connections meta_connections_survive_valid_refusals -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: replica response deadline covers the whole fragmented frame
+        run: |
+          set -o pipefail
+          cargo test --locked --test failed_node_connections replica_response_deadline_covers_the_whole_fragmented_frame -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+      - name: a timed out replica write cannot supply a later acknowledgment
+        run: |
+          set -o pipefail
+          cargo test --locked --test failed_node_connections a_timed_out_replica_write_cannot_supply_a_later_acknowledgment -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
   metadata-consensus:
     name: network metadata consensus
     runs-on: ubuntu-latest

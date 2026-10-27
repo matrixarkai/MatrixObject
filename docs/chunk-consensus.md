@@ -67,5 +67,8 @@ authentication, snapshots, log compaction, and membership changes remain
 unfinished. Current clients must select the leader explicitly and must not
 blindly retry an uncertain mutation.
 
-After a transport timeout or malformed response, discard that client connection
-and reconnect. Do not reuse a stream whose response boundary is uncertain.
+The chunk client closes its connection after a transport timeout or malformed
+response. Construct a new client before another request. The read timeout bounds
+the entire response frame, including a fragmented header and payload; slow bytes
+do not reset that deadline. Fully decoded server refusals leave the connection
+usable. A transport failure never triggers an automatic mutation retry.

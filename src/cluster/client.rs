@@ -40,8 +40,8 @@
 //! anyone.
 
 use std::io::{BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::time::{Duration, Instant};
 
 use crate::cluster::message::{
     check_stamp, decode_failure, encode_request, ReplicaReply, ReplicaRequest,
@@ -53,7 +53,9 @@ use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 #[derive(Clone, Debug)]
 pub struct ReplicaClientOptions {
     pub connect_timeout: Duration,
+    /// Deadline for the complete response header and payload.
     pub read_timeout: Duration,
+    /// Deadline for writing the complete request frame.
     pub write_timeout: Duration,
     pub max_payload_bytes: usize,
 }
@@ -70,12 +72,17 @@ impl Default for ReplicaClientOptions {
 }
 
 /// One connection to one replica node.
+/// A transport or framing failure closes this connection. Construct a new client before another call;
+/// a failed write may have reached the node, so mutations are never retried automatically.
 #[derive(Debug)]
 pub struct RemoteReplicaClient {
     endpoint: String,
     reader: BufReader<TcpStream>,
     writer: TcpStream,
     max_payload_bytes: usize,
+    connection_usable: bool,
+    read_timeout: Duration,
+    write_timeout: Duration,
 }
 
 impl RemoteReplicaClient {
@@ -86,10 +93,7 @@ impl RemoteReplicaClient {
     /// of small writes -- and partly so that a cluster has something an operator can look at:
     /// an established socket with a PID on each end is the observable form of "these
     /// processes are talking to each other".
-    pub fn connect(
-        endpoint: &str,
-        options: &ReplicaClientOptions,
-    ) -> Result<Self, ObjectError> {
+    pub fn connect(endpoint: &str, options: &ReplicaClientOptions) -> Result<Self, ObjectError> {
         let address = resolve(endpoint)?;
         let stream = TcpStream::connect_timeout(&address, options.connect_timeout)
             .map_err(|err| transport_error(endpoint, "connecting", &err.to_string()))?;
@@ -110,6 +114,9 @@ impl RemoteReplicaClient {
             reader: BufReader::new(stream),
             writer,
             max_payload_bytes: options.max_payload_bytes,
+            connection_usable: true,
+            read_timeout: options.read_timeout,
+            write_timeout: options.write_timeout,
         })
     }
 
@@ -120,16 +127,20 @@ impl RemoteReplicaClient {
 
     /// This end of the connection.
     pub fn local_addr(&self) -> Result<SocketAddr, ObjectError> {
-        self.writer
-            .local_addr()
-            .map_err(|err| transport_error(&self.endpoint, "reading the local address", &err.to_string()))
+        self.writer.local_addr().map_err(|err| {
+            transport_error(
+                &self.endpoint,
+                "reading the local address",
+                &err.to_string(),
+            )
+        })
     }
 
     /// The replica's end of the connection.
     pub fn peer_addr(&self) -> Result<SocketAddr, ObjectError> {
-        self.writer
-            .peer_addr()
-            .map_err(|err| transport_error(&self.endpoint, "reading the peer address", &err.to_string()))
+        self.writer.peer_addr().map_err(|err| {
+            transport_error(&self.endpoint, "reading the peer address", &err.to_string())
+        })
     }
 
     pub fn write_chunk(
@@ -228,17 +239,40 @@ impl RemoteReplicaClient {
     }
 
     fn call(&mut self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+        if !self.connection_usable {
+            return Err(transport_error(
+                &self.endpoint,
+                "reusing a failed connection",
+                "reconnect before sending another request",
+            ));
+        }
+        // A failed exchange can leave an unknown number of bytes in either direction.
+        // Only a completely decoded reply makes this connection reusable.
+        self.connection_usable = false;
+        let result = self.exchange(request);
+        if !self.connection_usable {
+            let _ = self.writer.shutdown(Shutdown::Both);
+        }
+        result
+    }
+
+    fn exchange(&mut self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
         let code = request.code();
         let frame = encode_request(&request);
-        self.writer
-            .write_all(&frame)
-            .map_err(|err| transport_error(&self.endpoint, "sending a request", &err.to_string()))?;
-        self.writer
-            .flush()
-            .map_err(|err| transport_error(&self.endpoint, "flushing a request", &err.to_string()))?;
+        write_before(
+            &mut self.writer,
+            &frame,
+            exchange_deadline(self.write_timeout)?,
+        )
+        .map_err(|err| transport_error(&self.endpoint, "sending a request", &err.to_string()))?;
+        let deadline = exchange_deadline(self.read_timeout)?;
         let mut header = [0u8; HEADER_BYTES];
-        self.reader.read_exact(&mut header).map_err(|err| {
-            transport_error(&self.endpoint, "reading a response header", &err.to_string())
+        read_before(&mut self.reader, &mut header, deadline).map_err(|err| {
+            transport_error(
+                &self.endpoint,
+                "reading a response header",
+                &err.to_string(),
+            )
         })?;
         check_stamp(header[0])?;
         let status = StatusCode::from_u8(header[1]).ok_or_else(|| {
@@ -247,8 +281,7 @@ impl RemoteReplicaClient {
                 self.endpoint, header[1]
             ))
         })?;
-        let payload_len =
-            u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
+        let payload_len = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
         if payload_len > self.max_payload_bytes {
             return Err(ObjectError::Corruption(format!(
                 "the replica at {} declared a {payload_len}-byte response, past the \
@@ -257,7 +290,7 @@ impl RemoteReplicaClient {
             )));
         }
         let mut payload = vec![0u8; payload_len];
-        self.reader.read_exact(&mut payload).map_err(|err| {
+        read_before(&mut self.reader, &mut payload, deadline).map_err(|err| {
             transport_error(
                 &self.endpoint,
                 "reading a response payload",
@@ -265,9 +298,12 @@ impl RemoteReplicaClient {
             )
         })?;
         if status == StatusCode::Ok {
-            return ReplicaReply::decode(code, &payload);
+            let reply = ReplicaReply::decode(code, &payload)?;
+            self.connection_usable = true;
+            return Ok(reply);
         }
         let message = decode_failure(&payload)?;
+        self.connection_usable = true;
         Err(status.into_error(message))
     }
 }
@@ -301,4 +337,54 @@ fn unexpected_reply(asked: &str, got: &ReplicaReply) -> ObjectError {
     ObjectError::Corruption(format!(
         "{asked} was answered with {got:?}, which does not belong to that request"
     ))
+}
+
+fn exchange_deadline(timeout: Duration) -> Result<Instant, ObjectError> {
+    Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| ObjectError::InvalidArgument("replica timeout exceeds clock range".into()))
+}
+fn time_left(deadline: Instant) -> std::io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|d| !d.is_zero())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "replica frame deadline"))
+}
+fn read_before(
+    reader: &mut BufReader<TcpStream>,
+    mut bytes: &mut [u8],
+    deadline: Instant,
+) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        reader
+            .get_ref()
+            .set_read_timeout(Some(time_left(deadline)?))?;
+        let count = reader.read(bytes)?;
+        if count == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "incomplete replica frame",
+            ));
+        }
+        bytes = &mut bytes[count..];
+    }
+    Ok(())
+}
+fn write_before(
+    writer: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        writer.set_write_timeout(Some(time_left(deadline)?))?;
+        let count = writer.write(bytes)?;
+        if count == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "incomplete replica frame",
+            ));
+        }
+        bytes = &bytes[count..];
+    }
+    Ok(())
 }
