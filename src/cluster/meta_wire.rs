@@ -71,6 +71,8 @@ pub enum MetaRequestCode {
     ReadObjectRootPlacement = 69,
     /// Ask whether this metaserver is answering, and what it holds. Empty payload.
     Ping = 70,
+    /// Refresh a chunk only if its configured endpoint matches the sender.
+    HeartbeatChunkNode = 71,
 }
 
 impl MetaRequestCode {
@@ -88,6 +90,7 @@ impl MetaRequestCode {
             68 => Some(MetaRequestCode::CommitObjectPlacement),
             69 => Some(MetaRequestCode::ReadObjectRootPlacement),
             70 => Some(MetaRequestCode::Ping),
+            71 => Some(MetaRequestCode::HeartbeatChunkNode),
             _ => None,
         }
     }
@@ -102,6 +105,7 @@ impl MetaRequestCode {
             MetaRequestCode::CommitObjectPlacement,
             MetaRequestCode::ReadObjectRootPlacement,
             MetaRequestCode::Ping,
+            MetaRequestCode::HeartbeatChunkNode,
         ]
     }
 }

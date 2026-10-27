@@ -114,6 +114,8 @@ pub enum StatusCode {
     /// The replica does not know the request code. Distinct from the four above because it
     /// is a statement about the two builds, not about the store's contents.
     UnknownRequest = 5,
+    /// Metadata voter refused the request before proposing it. Empty payload.
+    NotLeader = 6,
 }
 
 impl StatusCode {
@@ -125,6 +127,7 @@ impl StatusCode {
             3 => Some(StatusCode::PreconditionFailed),
             4 => Some(StatusCode::Corruption),
             5 => Some(StatusCode::UnknownRequest),
+            6 => Some(StatusCode::NotLeader),
             _ => None,
         }
     }
@@ -142,6 +145,7 @@ impl StatusCode {
     /// The error this status carries, given the message the replica sent with it.
     pub fn into_error(self, message: String) -> ObjectError {
         match self {
+            StatusCode::NotLeader => ObjectError::PreconditionFailed("metadata request was not admitted by a leader".into()),
             StatusCode::NotFound => ObjectError::NotFound(message),
             StatusCode::InvalidArgument => ObjectError::InvalidArgument(message),
             StatusCode::PreconditionFailed => ObjectError::PreconditionFailed(message),

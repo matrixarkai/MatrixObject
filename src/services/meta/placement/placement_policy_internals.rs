@@ -103,7 +103,8 @@ impl MatrixMetaService {
         if node.serves_chunk_tier() && node.chunk_health.capacity_free_bytes > 0 {
             node.chunk_health.capacity_free_bytes
         } else {
-            node.capacity_bytes.saturating_sub(node.committed_bytes)
+            node.capacity_bytes
+                .saturating_sub(node.used_bytes.max(node.committed_bytes))
         }
     }
 

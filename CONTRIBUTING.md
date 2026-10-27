@@ -50,14 +50,19 @@ add and leave the rest alone.
 
 ## What CI runs, and what it does not
 
-Two jobs, both on a pinned toolchain:
+Three jobs, all on a pinned toolchain:
 
 | job | what it does |
 |---|---|
 | **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
-| **format and rollback guards** | 74 individual tests, each run by name with `--exact` |
+| **format and rollback guards** | 97 individual tests in the library plus 48 integration tests, each run by name with `--exact` |
 
-**CI does not run the suite.** It compiles everything and runs those 74 guards. A green
+The **network metadata consensus** job also runs twenty-one named health, routing, and consensus tests
+with the optional consensus feature enabled.
+
+Across these jobs, 98 individual tests run in the library.
+
+**CI does not run the suite.** It compiles everything and runs those 98 guards plus the integration tests. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run
 `tools/suite_gate.sh` yourself.
 

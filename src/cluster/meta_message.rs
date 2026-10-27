@@ -44,7 +44,7 @@
 
 use crate::cluster::meta_wire::{put_bool, take_bool, MetaRequestCode};
 use crate::cluster::wire::{put_str, put_u64, Cursor, StatusCode};
-use crate::{ObjectError, ObjectId, ObjectPlacement, PlacementPlan, PlacementNode};
+use crate::{ObjectError, ObjectId, ObjectPlacement, PlacementNode, PlacementPlan};
 
 /// A node in the roster, as the wire reports it: everything except the telemetry.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -205,6 +205,14 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
+    HeartbeatChunkNode {
+        node_id: String,
+        expected_endpoint: String,
+        used_bytes: u64,
+        capacity_bytes: u64,
+        online: bool,
+        now_ms: u64,
+    },
     HeartbeatRootNode {
         node_id: String,
         used_bytes: u64,
@@ -239,15 +247,14 @@ impl MetaRequest {
     pub fn code(&self) -> MetaRequestCode {
         match self {
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
+            MetaRequest::HeartbeatChunkNode { .. } => MetaRequestCode::HeartbeatChunkNode,
             MetaRequest::ExpireRootNodeHeartbeats { .. } => {
                 MetaRequestCode::ExpireRootNodeHeartbeats
             }
             MetaRequest::ListRootNodes => MetaRequestCode::ListRootNodes,
             MetaRequest::PlanObjectPlacement { .. } => MetaRequestCode::PlanObjectPlacement,
             MetaRequest::CommitObjectPlacement { .. } => MetaRequestCode::CommitObjectPlacement,
-            MetaRequest::ReadObjectRootPlacement { .. } => {
-                MetaRequestCode::ReadObjectRootPlacement
-            }
+            MetaRequest::ReadObjectRootPlacement { .. } => MetaRequestCode::ReadObjectRootPlacement,
             MetaRequest::Ping => MetaRequestCode::Ping,
         }
     }
@@ -255,6 +262,21 @@ impl MetaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            MetaRequest::HeartbeatChunkNode {
+                node_id,
+                expected_endpoint,
+                used_bytes,
+                capacity_bytes,
+                online,
+                now_ms,
+            } => {
+                put_str(&mut out, node_id);
+                put_str(&mut out, expected_endpoint);
+                put_u64(&mut out, *used_bytes);
+                put_u64(&mut out, *capacity_bytes);
+                put_bool(&mut out, *online);
+                put_u64(&mut out, *now_ms);
+            }
             MetaRequest::HeartbeatRootNode {
                 node_id,
                 used_bytes,
@@ -309,6 +331,14 @@ impl MetaRequest {
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = Cursor::new(payload);
         let request = match code {
+            MetaRequestCode::HeartbeatChunkNode => MetaRequest::HeartbeatChunkNode {
+                node_id: cursor.take_str()?,
+                expected_endpoint: cursor.take_str()?,
+                used_bytes: cursor.take_u64()?,
+                capacity_bytes: cursor.take_u64()?,
+                online: take_bool(&mut cursor)?,
+                now_ms: cursor.take_u64()?,
+            },
             MetaRequestCode::HeartbeatRootNode => MetaRequest::HeartbeatRootNode {
                 node_id: cursor.take_str()?,
                 used_bytes: cursor.take_u64()?,
@@ -349,13 +379,17 @@ impl MetaRequest {
     }
 }
 
-/// A successful reply's contents.
+/// Reply contents, including a pre-admission leader-routing response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
+    /// A routing response: this request was not proposed or applied.
+    NotLeader,
     PlacementNode(PlacementNodeSummary),
     RootNodes(Vec<PlacementNodeSummary>),
     /// How many nodes this call took offline.
-    Expired { offline_count: u64 },
+    Expired {
+        offline_count: u64,
+    },
     Plan(PlacementAssignment),
     Placement(CommittedPlacement),
     /// The metaserver is answering, and this is what it holds.
@@ -367,9 +401,43 @@ pub enum MetaReply {
 }
 
 impl MetaReply {
+    pub(crate) fn payload_len(&self) -> usize {
+        let strings = |values: &[String]| {
+            values
+                .iter()
+                .fold(0usize, |n, v| n.saturating_add(4).saturating_add(v.len()))
+        };
+        match self {
+            Self::NotLeader => 0,
+            Self::PlacementNode(node) => node_payload_len(
+                &node.node_id,
+                &node.endpoint,
+                &node.service_kind,
+                &node.failure_domain,
+            ),
+            Self::RootNodes(nodes) => nodes.iter().fold(8usize, |n, node| {
+                n.saturating_add(node_payload_len(
+                    &node.node_id,
+                    &node.endpoint,
+                    &node.service_kind,
+                    &node.failure_domain,
+                ))
+            }),
+            Self::Expired { .. } => 8,
+            Self::Plan(plan) => 52usize
+                .saturating_add(plan.bucket.len())
+                .saturating_add(plan.key.len())
+                .saturating_add(plan.plan_checksum.len())
+                .saturating_add(strings(&plan.node_ids)),
+            Self::Placement(placement) => placement_payload_len(placement),
+            Self::Pong { .. } => 24,
+        }
+    }
+
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            MetaReply::NotLeader => {}
             MetaReply::PlacementNode(node) => put_node(&mut out, node),
             MetaReply::RootNodes(nodes) => {
                 put_u64(&mut out, nodes.len() as u64);
@@ -413,7 +481,9 @@ impl MetaReply {
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = Cursor::new(payload);
         let reply = match code {
-            MetaRequestCode::HeartbeatRootNode => MetaReply::PlacementNode(take_node(&mut cursor)?),
+            MetaRequestCode::HeartbeatRootNode | MetaRequestCode::HeartbeatChunkNode => {
+                MetaReply::PlacementNode(take_node(&mut cursor)?)
+            }
             MetaRequestCode::ListRootNodes => {
                 let count = cursor.take_u64()?;
                 // BOUNDED BEFORE ANYTHING IS RESERVED. A node is at least this many bytes on
@@ -464,8 +534,7 @@ impl MetaReply {
                     plan_checksum: cursor.take_str()?,
                 })
             }
-            MetaRequestCode::CommitObjectPlacement
-            | MetaRequestCode::ReadObjectRootPlacement => {
+            MetaRequestCode::CommitObjectPlacement | MetaRequestCode::ReadObjectRootPlacement => {
                 MetaReply::Placement(take_placement(&mut cursor)?)
             }
             MetaRequestCode::Ping => MetaReply::Pong {
@@ -489,6 +558,21 @@ impl MetaReply {
 /// A floor, not an estimate, and used only to bound a roster count before a `Vec` is reserved
 /// for it: four 4-byte string headers, five 8-byte booleans and seven 8-byte numbers.
 const MIN_NODE_BYTES: usize = 4 * 4 + 5 * 8 + 7 * 8;
+
+pub(crate) fn node_payload_len(id: &str, endpoint: &str, kind: &str, domain: &str) -> usize {
+    [id, endpoint, kind, domain]
+        .iter()
+        .fold(MIN_NODE_BYTES, |n, text| n.saturating_add(text.len()))
+}
+
+pub(crate) fn placement_payload_len(placement: &CommittedPlacement) -> usize {
+    placement.node_ids.iter().fold(
+        40usize
+            .saturating_add(placement.bucket.len())
+            .saturating_add(placement.key.len()),
+        |n, id| n.saturating_add(4).saturating_add(id.len()),
+    )
+}
 
 fn put_node(out: &mut Vec<u8>, node: &PlacementNodeSummary) {
     put_str(out, &node.node_id);
@@ -583,7 +667,12 @@ pub fn encode_meta_request(request: &MetaRequest) -> Vec<u8> {
 pub fn encode_meta_reply(reply: &MetaReply) -> Vec<u8> {
     let payload = reply.encode_payload();
     let mut frame = Vec::with_capacity(crate::cluster::wire::HEADER_BYTES + payload.len());
-    crate::cluster::wire::put_header(&mut frame, StatusCode::Ok as u8, payload.len());
+    let status = if matches!(reply, MetaReply::NotLeader) {
+        StatusCode::NotLeader
+    } else {
+        StatusCode::Ok
+    };
+    crate::cluster::wire::put_header(&mut frame, status as u8, payload.len());
     frame.extend_from_slice(&payload);
     frame
 }

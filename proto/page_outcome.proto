@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject.outcome.v1;
+// Payloads have a four-byte MOPO prefix followed by this binary message.
+// Field numbers are durable. New semantics require a new version.
+message BytePatch { uint64 offset = 1; bytes data = 2; }
+message DiscardRange { uint64 offset = 1; uint64 length = 2; }
+message PageOutcome {
+  uint32 version = 1;
+  uint64 volume_id = 2;
+  uint64 chunk_id = 3;
+  uint64 page_index = 4;
+  string before_checksum = 5;
+  uint64 logical_length = 6;
+  uint64 write_sequence = 7;
+  fixed64 data_checksum = 8;
+  repeated BytePatch patches = 9;
+  repeated DiscardRange discarded_ranges = 10;
+  string after_checksum = 11;
+  uint64 data_length = 12;
+  // Writes, written bytes, discard ranges, discarded bytes; exactly four items.
+  repeated uint64 physical_deltas = 13 [packed = true];
+}

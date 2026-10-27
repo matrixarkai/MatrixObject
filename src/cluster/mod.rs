@@ -171,6 +171,8 @@ pub use placement::{
 pub use replica_set::RemoteReplicaSet;
 #[cfg(feature = "replica-server")]
 pub use server::{ReplicaNodeOptions, ReplicaNodeServer, ReplicaNodeShutdown};
+#[cfg(all(feature = "replica-server", feature = "meta-server"))]
+pub use server::ReplicaHeartbeatOptions;
 
 #[cfg(feature = "meta-server")]
 pub use directory::{ControlPlaneStatus, MetaDirectory};
@@ -181,6 +183,22 @@ pub use meta_message::{
     CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment, PlacementNodeSummary,
 };
 #[cfg(feature = "meta-server")]
-pub use meta_server::{MetaNodeOptions, MetaNodeServer, MetaNodeShutdown};
+pub use meta_server::{DataNodeSeed, MetaNodeOptions, MetaNodeServer, MetaNodeShutdown};
 #[cfg(feature = "meta-server")]
 pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
+
+#[cfg(feature = "replica-server")]
+mod replica_journal;
+
+#[cfg(any(feature = "replica-server", feature = "meta-server"))]
+mod shutdown;
+
+#[cfg(feature = "meta-server")]
+mod meta_snapshot_file;
+#[cfg(feature = "meta-server")]
+mod placement_journal;
+
+#[cfg(feature = "metadata-consensus")]
+mod meta_consensus;
+#[cfg(feature = "metadata-consensus")]
+pub use meta_consensus::MetaRaftOptions;

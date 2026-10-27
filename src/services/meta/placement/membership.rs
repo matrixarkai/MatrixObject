@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
-    fn invalidate_snapshot_export_cache(&self) {
+    pub(crate) fn invalidate_snapshot_export_cache(&self) {
         *self.placement_snapshot_export_cache.borrow_mut() = None;
         *self.root_state_fingerprint_cache.borrow_mut() = None;
     }

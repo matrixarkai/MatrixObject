@@ -74,3 +74,21 @@ fn distinct_processes_can_still_form_a_quorum() {
         b"two independent peers"
     );
 }
+
+#[test]
+fn mapped_ipv6_and_ipv4_cannot_supply_multiple_votes() {
+    let token = node_regime::run_token("mapped-peer");
+    let node = start_replica(env!("CARGO_BIN_EXE_chunkserver"), &token);
+    let address: std::net::SocketAddrV4 = node.endpoint.parse().unwrap();
+    let alias = format!("[{}]:{}", address.ip().to_ipv6_mapped(), address.port());
+    let result = RemoteReplicaSet::connect(
+        &[node.endpoint.clone(), alias],
+        2,
+        2,
+        &ReplicaClientOptions::default(),
+    );
+    assert!(
+        matches!(result, Err(ObjectError::InvalidArgument(_))),
+        "mapped address supplied a second vote: {result:?}"
+    );
+}

@@ -231,9 +231,24 @@ impl ChunkRaftWriteGroup {
         ranges: Vec<(u64, Vec<u8>)>,
         timeout: Duration,
     ) -> Result<ChunkRaftWriteOutcome, ObjectError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for node in to {
+            if !seen.insert(*node) || self.handler(*node).is_none() {
+                return Err(ObjectError::InvalidArgument("chunk outcome targets must be distinct group members".to_string()));
+            }
+        }
         let index = self.next_index;
-        self.next_index = self.next_index.saturating_add(1);
-        let payload = ChunkStateMachine::encode_write(page_id, ranges);
+        let source = self.handlers.iter().find(|(_, h)| h.applied_index() == index - 1)
+            .ok_or_else(|| ObjectError::PreconditionFailed("no replica has the preceding outcome".to_string()))?;
+        let payload = source.1.with_replica(|replica| -> Result<Vec<u8>, ObjectError> {
+            let before = match replica.read_chunk_state(&page_id) {
+                Ok(state) => Some(state), Err(ObjectError::NotFound(_)) => None, Err(err) => return Err(err),
+            };
+            let mut staged = replica.clone();
+            staged.write_chunk_ranges(page_id.clone(), ranges)?;
+            crate::outcome::PageOutcome::between(&page_id, before.as_ref(), &staged.read_chunk_state(&page_id)?)?.with_counters(crate::outcome::PageOutcome::counters(replica), crate::outcome::PageOutcome::counters(&staged)).to_payload()
+        })?;
+        self.next_index = self.next_index.checked_add(1).ok_or_else(|| ObjectError::PreconditionFailed("chunk log index exhausted".to_string()))?;
         let entry = LogEntry {
             log_id: LogId {
                 term: self.term,
@@ -277,7 +292,7 @@ impl ChunkRaftWriteGroup {
                 })?;
             match wait {
                 ApplyWait::Reached { .. } => acknowledged.push(*node_id),
-                ApplyWait::TimedOut { applied_index } | ApplyWait::GroupGone { applied_index } => {
+                ApplyWait::TimedOut { applied_index } | ApplyWait::GroupGone { applied_index } | ApplyWait::Stalled { applied_index } => {
                     behind.push((*node_id, applied_index))
                 }
             }
