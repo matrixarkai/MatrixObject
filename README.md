@@ -560,6 +560,7 @@ MATRIXOBJECT_REPLICA_ADDR=127.0.0.1:17301 cargo run --release --bin chunkserver
 | `MATRIXOBJECT_REPLICA_ADDR` | `127.0.0.1:17300` | address to bind; port `0` lets the kernel choose |
 | `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
 | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
+| `MATRIXOBJECT_REPLICA_JOURNAL` | *(unset)* | append-only replica journal file in an existing directory |
 
 The bound address and the PID are printed on the first line of stdout and flushed before the
 accept loop starts, so a supervisor -- or a test standing three of these up on port `0` --
@@ -580,10 +581,31 @@ let mut fanout = placement.open(&ReplicaClientOptions::default())?;
 fanout.write_chunk(&page_id, 0, &bytes)?;      // three processes, one quorum
 ```
 
-It adds **no dependencies**: a six-byte frame header and a payload, on the standard library
-alone, for the reason `src/net` gives. The frame carries a protocol stamp in both directions
+The network transport uses a six-byte frame header and a payload on the standard library.
+The `fs2` dependency supplies the exclusive journal file lock. The frame carries a protocol stamp in both directions
 so that a rolling restart -- a new coordinator reaching an old replica -- refuses the frame
 by name instead of taking its length field from the wrong offset.
+
+### Replica restart recovery
+
+Set `MATRIXOBJECT_REPLICA_JOURNAL` to retain a replica's writes and discards across restarts.
+The server locks and replays the file before listening, then syncs each successful mutation
+before acknowledging it. Failed persistence blocks all further requests until restart.
+Unset keeps the existing in-memory behavior; startup reports `storage=journal` or
+`storage=memory`. Each node needs its own journal on persistent storage.
+
+Records contain a version marker, bounded length, header checksum, payload checksum, and
+encoded mutation. Recovery truncates only an incomplete final record and refuses complete
+records with checksum or decoding failures. The checksums detect accidental corruption;
+they do not authenticate the file. A lost acknowledgment can leave a durable operation, so
+blind mutation retries are not idempotent. Linux process-kill tests verify writes, discards,
+exclusive ownership, and recovery of all three replicas followed by another node loss.
+Power-loss and non-Linux filesystem behavior have not been tested.
+
+The journal grows with mutations; checkpointing and compaction remain unfinished. Do not
+replace or remove a journal while its server runs. Recovery restores that node's own history;
+it does not fetch writes missed while offline, authorize readmission, or persist the metadata
+server. Those require additional coordinated recovery work.
 
 ### What the kill test establishes, and in what order
 

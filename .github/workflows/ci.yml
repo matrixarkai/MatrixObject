@@ -81,6 +81,16 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Replica journal recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --test replica_restart_recovery -- --test-threads=1 2>&1 | tee /tmp/restart.log
+          grep -q 'test result: ok. 4 passed' /tmp/restart.log
+          cargo test --locked --lib cluster::replica_journal::tests -- --test-threads=1 2>&1 | tee /tmp/journal.log
+          grep -q 'test result: ok. 2 passed' /tmp/journal.log
+          cargo test --locked --lib cluster::server::journal_failure_tests -- --test-threads=1 2>&1 | tee /tmp/journal-failure.log
+          grep -q 'test result: ok. 1 passed' /tmp/journal-failure.log
+
       - name: Durable format constants are unchanged
         run: |
           set -o pipefail

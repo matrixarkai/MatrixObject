@@ -36,12 +36,14 @@
 //! these up on port `0` -- has no other way to learn which port the kernel chose. A line
 //! printed after the first request would be a line that arrives too late to connect with.
 //!
-//! # NOTHING SURVIVES THE PROCESS
+//! # RESTART RECOVERY
 //!
-//! This replica is held entirely in memory. There is no snapshot path and no write to disk:
-//! what the kill test below demonstrates is that the OTHER replicas survive one process
-//! ending, not that any one of them survives its own. Restarting a node gives you an empty
-//! node, which is a repair problem this binary does not solve.
+//! Set `MATRIXOBJECT_REPLICA_JOURNAL` to a file in an existing directory to retain
+//! writes and discards across restarts. Each successful mutation is synced before
+//! acknowledgment. Without this setting the replica remains in memory only.
+//! The journal is exclusively locked, checksummed, and replayed before listening.
+//! It grows with writes; checkpointing and log compaction are not implemented.
+//! A recovered node still needs coordinated repair for writes missed while offline.
 //!
 //! # IT IS UNAUTHENTICATED
 //!
@@ -95,14 +97,14 @@ fn main() {
     let max_payload_bytes =
         env_usize("MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES);
 
-    let server = match ReplicaNodeServer::bind(
-        &addr,
-        ReplicaNodeOptions {
-            max_payload_bytes,
-            worker_threads,
-            ..ReplicaNodeOptions::default()
-        },
-    ) {
+    let options = ReplicaNodeOptions { max_payload_bytes, worker_threads, ..Default::default() };
+    let journal = std::env::var_os("MATRIXOBJECT_REPLICA_JOURNAL");
+    let storage = if journal.is_some() { "journal" } else { "memory" };
+    let bound_server = match journal {
+        Some(path) => ReplicaNodeServer::bind_with_journal(&addr, options, std::path::Path::new(&path)),
+        None => ReplicaNodeServer::bind(&addr, options),
+    };
+    let server = match bound_server {
         Ok(server) => server,
         Err(err) => {
             eprintln!("binding {addr} failed: {err}");
@@ -121,7 +123,7 @@ fn main() {
     println!(
         "chunkserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \
-         storage=memory",
+         storage={storage}",
         std::process::id()
     );
     if !bound.ip().is_loopback() {

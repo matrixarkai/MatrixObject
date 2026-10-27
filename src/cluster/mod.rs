@@ -184,3 +184,6 @@ pub use meta_message::{
 pub use meta_server::{MetaNodeOptions, MetaNodeServer, MetaNodeShutdown};
 #[cfg(feature = "meta-server")]
 pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
+
+#[cfg(feature = "replica-server")]
+mod replica_journal;
