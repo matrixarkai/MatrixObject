@@ -882,15 +882,24 @@ read the new records. The page codec does not establish network Raft consensus. 
 The metaserver journal and metadata MatrixRaft adapter accept the same `PlacementOutcome`
 binary protobuf schema in `proto/placement_outcome.proto`. Each outcome carries prior and
 resulting node usage or object placement values and consecutive placement commit indexes.
-All prior-state and shape checks complete before mutation. A heartbeat captures only its node;
-an object placement captures the object and its affected nodes. Heartbeat expiry scans the roster.
+All prior-state and shape checks complete before mutation. A heartbeat captures its node and,
+for a catalog member, its logical chunk group. An object placement captures the object and its
+affected nodes. Heartbeat expiry scans the roster.
 The payload is limited to 8 MiB and protected by a checksum.
 
 This covers the network placement API. Other metadata commands still use their existing codec,
-and checkpoints still use the metadata snapshot format. Network requests are not yet routed
-through MatrixRaft consensus; the adapter tests cover state application and checkpoint recovery.
+and checkpoints retain the metadata snapshot inside a group-aware envelope when a chunk catalog
+is configured. With `metadata-consensus`, network placement requests commit through MatrixRaft.
 
 ### Network metadata voters
 
 The optional `metadata-consensus` feature runs one durable MatrixRaft voter per
 metaserver process. See [configuration, recovery, and current limits](docs/metadata-consensus.md).
+
+### Raft chunk groups in placement
+
+A metaserver can load a fixed binary protobuf chunk catalog through
+`MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE`. Each replicated group contributes one
+placement target and one copy of capacity. Voters report health under separate
+member IDs. Metadata clients resolve the persisted membership and verify chunk
+configuration before sending data. See [catalog configuration and recovery](docs/chunk-group-catalog.md).

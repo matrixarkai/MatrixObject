@@ -259,6 +259,33 @@ impl RemoteMetaClient {
         }
     }
 
+    /// Resolve one persisted Raft chunk group through the metadata read path.
+    pub fn read_chunk_group(
+        &mut self,
+        placement_id: &str,
+    ) -> Result<super::ChunkGroupConfig, ObjectError> {
+        match self.call(MetaRequest::ReadChunkGroup {
+            placement_id: placement_id.into(),
+        })? {
+            MetaReply::ChunkGroup(group) => Ok(group),
+            _ => Err(ObjectError::Corruption("missing chunk group reply".into())),
+        }
+    }
+    /// Resolve metadata membership and verify the first chunk connection before data can be sent.
+    #[cfg(feature = "replica-server")]
+    pub fn connect_chunk_group(
+        &mut self,
+        placement_id: &str,
+        options: &super::ReplicaClientOptions,
+    ) -> Result<super::RemoteReplicaClient, ObjectError> {
+        let group = self.read_chunk_group(placement_id)?;
+        super::RemoteReplicaClient::connect_verified_raft_catalog(
+            &group.api_endpoints,
+            group.identity.as_ref().unwrap(),
+            options,
+        )
+    }
+
     pub fn plan_object_placement(
         &mut self,
         bucket: &str,
@@ -325,6 +352,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ListRootNodes
                 | MetaRequest::PlanObjectPlacement { .. }
                 | MetaRequest::ReadObjectRootPlacement { .. }
+                | MetaRequest::ReadChunkGroup { .. }
         );
         let mut last = not_leader();
         for offset in 0..endpoints.len() {

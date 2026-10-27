@@ -21,6 +21,7 @@ struct Group {
     api_addresses: Vec<std::net::SocketAddr>,
     reservations: Vec<Option<(TcpListener, TcpListener)>>,
     roster: Option<String>,
+    catalog: Option<PathBuf>,
     heartbeat_ttl: Option<String>,
 }
 impl Group {
@@ -31,6 +32,13 @@ impl Group {
         Self::with_health(roster, None)
     }
     fn with_health(roster: Option<String>, heartbeat_ttl: Option<String>) -> Self {
+        Self::with_catalog(roster, heartbeat_ttl, None)
+    }
+    fn with_catalog(
+        roster: Option<String>,
+        heartbeat_ttl: Option<String>,
+        catalog: Option<Vec<u8>>,
+    ) -> Self {
         let root = std::env::temp_dir().join(node_regime::run_token("metadata-peers"));
         std::fs::create_dir(&root).unwrap();
         let reserved: Vec<_> = (0..3)
@@ -50,6 +58,11 @@ impl Group {
             .iter()
             .map(|(api, _)| api.local_addr().unwrap())
             .collect();
+        let catalog = catalog.map(|bytes| {
+            let path = root.join("catalog.bin");
+            std::fs::write(&path, bytes).unwrap();
+            path
+        });
         let mut group = Self {
             nodes: vec![None, None, None],
             peers,
@@ -57,6 +70,7 @@ impl Group {
             api_addresses,
             reservations: reserved.into_iter().map(Some).collect(),
             roster,
+            catalog,
             heartbeat_ttl,
         };
         for i in 0..3 {
@@ -92,7 +106,12 @@ impl Group {
             }
             entries.join(",")
         });
-        if let Some(roster) = &roster {
+        if let Some(path) = &self.catalog {
+            environment.push((
+                "MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE",
+                path.to_str().unwrap(),
+            ));
+        } else if let Some(roster) = &roster {
             environment.push(("MATRIXOBJECT_METASERVER_DATA_ROSTER", roster));
         } else {
             environment.push(("MATRIXOBJECT_METASERVER_SEED_DATA_NODES", "3"));
@@ -701,4 +720,127 @@ fn chunk_processes_report_usage_follow_leaders_and_expire_without_manual_heartbe
     let mut replica =
         RemoteReplicaClient::connect(&endpoints[0], &ReplicaClientOptions::default()).unwrap();
     assert_eq!(replica.read_chunk(&page, 4096, 3).unwrap().data, b"abc");
+}
+
+#[test]
+fn metadata_raft_recovers_chunk_catalog_and_group_health() {
+    use matrixobjectstore_rs::cluster::{ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity};
+    let config = ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 1,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 65536,
+            max_pages: 64,
+            voters: vec![1, 2, 3],
+            peer_endpoints: vec![
+                "127.0.0.1:9101".into(),
+                "127.0.0.1:9102".into(),
+                "127.0.0.1:9103".into(),
+            ],
+        }),
+        api_endpoints: vec![
+            "127.0.0.1:9201".into(),
+            "127.0.0.1:9202".into(),
+            "127.0.0.1:9203".into(),
+        ],
+        member_ids: vec!["member-a".into(), "member-b".into(), "member-c".into()],
+    };
+    let catalog = ChunkGroupCatalog::new(vec![config.clone()]).unwrap();
+    let mut group = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
+    for id in ["member-a", "member-b"] {
+        client
+            .heartbeat_placement_node(id, 123, 65536, false, true, 1000)
+            .unwrap();
+    }
+    let plan = client
+        .plan_object_placement("bucket", "key", 100, 1)
+        .unwrap();
+    assert_eq!(plan.node_ids, vec!["group-a"]);
+    group.kill(leader);
+    let next = group.leader();
+    assert_eq!(
+        group.client(next).read_chunk_group("group-a").unwrap(),
+        config
+    );
+    for i in 0..3 {
+        if group.nodes[i].is_some() {
+            group.kill(i);
+        }
+    }
+    // A different valid bootstrap cannot replace already committed membership.
+    std::fs::write(
+        group.catalog.as_ref().unwrap(),
+        ChunkGroupCatalog::default().to_bytes().unwrap(),
+    )
+    .unwrap();
+    for i in 0..3 {
+        group.start(i);
+    }
+    let current = group.leader();
+    let mut client = group.client(current);
+    assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
+    let nodes = client.list_placement_nodes().unwrap();
+    let logical = nodes.iter().find(|n| n.node_id == "group-a").unwrap();
+    assert!(logical.online);
+    assert_eq!(logical.used_bytes, 123);
+    for i in 0..3 {
+        assert!(
+            std::fs::read(group.root.join(i.to_string()).join("metadata.peer.base"))
+                .unwrap()
+                .starts_with(b"MOGB")
+        );
+    }
+}
+
+#[test]
+fn invalid_chunk_catalog_startup_is_refused_before_serving() {
+    use std::process::{Command, Stdio};
+    let root = std::env::temp_dir().join(node_regime::run_token("invalid-catalog"));
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("catalog.bin");
+    let valid = matrixobjectstore_rs::cluster::ChunkGroupCatalog::default()
+        .to_bytes()
+        .unwrap();
+    for (payload, conflict) in [
+        (b"bad".to_vec(), None),
+        (vec![0; 2 * 1024 * 1024 + 5], None),
+        (valid.clone(), Some("MATRIXOBJECT_METASERVER_DATA_ROSTER")),
+        (
+            valid.clone(),
+            Some("MATRIXOBJECT_METASERVER_SEED_DATA_NODES"),
+        ),
+        (valid, Some("MATRIXOBJECT_METASERVER_SEED_CAPACITY_BYTES")),
+    ] {
+        std::fs::write(&path, payload).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_metaserver"));
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("MATRIXOBJECT_") {
+                command.env_remove(key);
+            }
+        }
+        command
+            .env("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0")
+            .env("MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE", &path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(key) = conflict {
+            command.env(key, "0");
+        }
+        let mut child = command.spawn().unwrap();
+        match processes::reap_within(&mut child, Duration::from_secs(3)) {
+            Some(status) => assert_eq!(status, 2),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("invalid catalog started serving");
+            }
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }

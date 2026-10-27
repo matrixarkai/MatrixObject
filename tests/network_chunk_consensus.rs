@@ -602,3 +602,94 @@ fn chunk_catalog_rejects_another_group_with_the_same_numeric_id() {
         Err(matrixobjectstore_rs::ObjectError::NotFound(_))
     ));
 }
+
+#[cfg(feature = "meta-server")]
+#[test]
+fn metadata_catalog_routes_chunk_group_through_leader_loss() {
+    use matrixobjectstore_rs::cluster::{
+        ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity, MetaClientOptions,
+        RemoteMetaClient,
+    };
+    let mut group = Group::configured(65536);
+    let catalog = ChunkGroupCatalog::new(vec![ChunkGroupConfig {
+        placement_id: "group-a".into(),
+        failure_domain: "rack-a".into(),
+        identity: Some(ChunkGroupIdentity {
+            version: 1,
+            group_id: 1,
+            node_id: 1,
+            capacity_bytes: 65536,
+            max_pages: 64,
+            voters: group.peers.keys().copied().collect(),
+            peer_endpoints: group.peers.values().map(ToString::to_string).collect(),
+        }),
+        api_endpoints: group
+            .api_addresses
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        member_ids: (0..3).map(|i| format!("chunk-{i}")).collect(),
+    }])
+    .unwrap();
+    let catalog_path = group.root.join("catalog.bin");
+    std::fs::write(&catalog_path, catalog.to_bytes().unwrap()).unwrap();
+    let mut meta = processes::start(
+        env!("CARGO_BIN_EXE_metaserver"),
+        &[
+            ("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0"),
+            (
+                "MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE",
+                catalog_path.to_str().unwrap(),
+            ),
+            ("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", "1500"),
+        ],
+    );
+    group.report = Some((meta.endpoint.clone(), group.api_addresses.clone()));
+    for i in 0..3 {
+        group.start(i);
+    }
+    let leader = group.leader();
+    let mut client =
+        RemoteMetaClient::connect(&meta.endpoint, &MetaClientOptions::default()).unwrap();
+    assert_eq!(
+        client.read_chunk_group("group-a").unwrap(),
+        catalog.get("group-a").unwrap().clone()
+    );
+    let mut chunk = client
+        .connect_chunk_group("group-a", &ReplicaClientOptions::default())
+        .unwrap();
+    chunk.write_chunk(page(0), 0, b"catalog-data").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let nodes = client.list_placement_nodes().unwrap();
+        let logical = nodes.iter().find(|n| n.node_id == "group-a").unwrap();
+        if logical.online && logical.used_bytes == 12 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "group health did not converge: {nodes:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let plan = client
+        .plan_object_placement("bucket", "key", 32, 1)
+        .unwrap();
+    assert_eq!(plan.node_ids, vec!["group-a"]);
+    assert!(client
+        .plan_object_placement("bucket", "key", 32, 2)
+        .is_err());
+    group.kill(leader);
+    group.leader();
+    assert_eq!(
+        chunk.read_chunk(&page(0), 0, 12).unwrap().data,
+        b"catalog-data"
+    );
+    chunk.write_chunk(page(0), 12, b"!").unwrap();
+    assert_eq!(
+        chunk.read_chunk(&page(0), 0, 13).unwrap().data,
+        b"catalog-data!"
+    );
+    meta.child.kill().unwrap();
+    assert!(processes::reap_within(&mut meta.child, Duration::from_secs(3)).is_some());
+}

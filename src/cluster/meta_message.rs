@@ -45,6 +45,7 @@
 use crate::cluster::meta_wire::{put_bool, take_bool, MetaRequestCode};
 use crate::cluster::wire::{put_str, put_u64, Cursor, StatusCode};
 use crate::{ObjectError, ObjectId, ObjectPlacement, PlacementNode, PlacementPlan};
+use prost::Message;
 
 /// A node in the roster, as the wire reports it: everything except the telemetry.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -226,6 +227,9 @@ pub enum MetaRequest {
         now_ms: u64,
     },
     ListRootNodes,
+    ReadChunkGroup {
+        placement_id: String,
+    },
     PlanObjectPlacement {
         bucket: String,
         key: String,
@@ -252,6 +256,7 @@ impl MetaRequest {
                 MetaRequestCode::ExpireRootNodeHeartbeats
             }
             MetaRequest::ListRootNodes => MetaRequestCode::ListRootNodes,
+            MetaRequest::ReadChunkGroup { .. } => MetaRequestCode::ReadChunkGroup,
             MetaRequest::PlanObjectPlacement { .. } => MetaRequestCode::PlanObjectPlacement,
             MetaRequest::CommitObjectPlacement { .. } => MetaRequestCode::CommitObjectPlacement,
             MetaRequest::ReadObjectRootPlacement { .. } => MetaRequestCode::ReadObjectRootPlacement,
@@ -262,6 +267,7 @@ impl MetaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            MetaRequest::ReadChunkGroup { placement_id } => put_str(&mut out, placement_id),
             MetaRequest::HeartbeatChunkNode {
                 node_id,
                 expected_endpoint,
@@ -331,6 +337,9 @@ impl MetaRequest {
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = Cursor::new(payload);
         let request = match code {
+            MetaRequestCode::ReadChunkGroup => MetaRequest::ReadChunkGroup {
+                placement_id: cursor.take_str()?,
+            },
             MetaRequestCode::HeartbeatChunkNode => MetaRequest::HeartbeatChunkNode {
                 node_id: cursor.take_str()?,
                 expected_endpoint: cursor.take_str()?,
@@ -382,6 +391,7 @@ impl MetaRequest {
 /// Reply contents, including a pre-admission leader-routing response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
+    ChunkGroup(super::ChunkGroupConfig),
     /// A routing response: this request was not proposed or applied.
     NotLeader,
     PlacementNode(PlacementNodeSummary),
@@ -409,6 +419,7 @@ impl MetaReply {
         };
         match self {
             Self::NotLeader => 0,
+            Self::ChunkGroup(group) => group.encoded_len(),
             Self::PlacementNode(node) => node_payload_len(
                 &node.node_id,
                 &node.endpoint,
@@ -438,6 +449,7 @@ impl MetaReply {
         let mut out = Vec::new();
         match self {
             MetaReply::NotLeader => {}
+            MetaReply::ChunkGroup(group) => return group.encode_to_vec(),
             MetaReply::PlacementNode(node) => put_node(&mut out, node),
             MetaReply::RootNodes(nodes) => {
                 put_u64(&mut out, nodes.len() as u64);
@@ -479,8 +491,27 @@ impl MetaReply {
     /// shape is read from the reply itself can be read as the wrong shape. The caller knows
     /// what it asked.
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == MetaRequestCode::ReadChunkGroup {
+            if payload.len() > 4096 {
+                return Err(ObjectError::Corruption(
+                    "chunk group response exceeds size bound".into(),
+                ));
+            }
+            let group = super::ChunkGroupConfig::decode(payload).map_err(|_| {
+                ObjectError::Corruption("invalid chunk group response protobuf".into())
+            })?;
+            let catalog = super::ChunkGroupCatalog::new(vec![group])?;
+            let normalized = catalog.groups().next().unwrap();
+            if normalized.encode_to_vec() != payload {
+                return Err(ObjectError::Corruption(
+                    "noncanonical chunk group response".into(),
+                ));
+            }
+            return Ok(MetaReply::ChunkGroup(normalized.clone()));
+        }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
+            MetaRequestCode::ReadChunkGroup => unreachable!(),
             MetaRequestCode::HeartbeatRootNode | MetaRequestCode::HeartbeatChunkNode => {
                 MetaReply::PlacementNode(take_node(&mut cursor)?)
             }

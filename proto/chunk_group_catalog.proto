@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+import "chunk_group_identity.proto";
+message ChunkGroupConfig {
+  string placement_id = 1;
+  string failure_domain = 2;
+  ChunkGroupIdentity identity = 3;
+  repeated string api_endpoints = 4;
+  repeated string member_ids = 5;
+}
+// Canonical encoding follows the four-byte MOGC prefix.
+message ChunkGroupCatalogImage {
+  uint32 version = 1;
+  repeated ChunkGroupConfig groups = 2;
+}
+// MOGB prefix, canonical protobuf, then little-endian FNV-1a checksum.
+message MetadataGroupBootstrap {
+  uint32 version = 1;
+  bytes snapshot = 2;
+  bytes catalog = 3;
+}

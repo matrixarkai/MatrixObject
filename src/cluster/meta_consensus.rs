@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 //! One durable metadata voter with bounded TCP delivery and committed read barriers.
 use super::meta_message::{MetaReply, MetaRequest};
-use super::meta_server::apply_to_meta;
+use super::meta_server::apply_with_groups;
 use super::shutdown::ServerShutdown;
 use crate::placement_outcome::PlacementOutcome;
 use crate::{MatrixMetaService, MetaSnapshot, ObjectError};
@@ -78,6 +78,7 @@ impl MetaConsensus {
     pub(super) fn open(
         options: MetaRaftOptions,
         mut service: MatrixMetaService,
+        groups: super::ChunkGroupCatalog,
         stop: Arc<ServerShutdown>,
         limit: usize,
     ) -> io::Result<Self> {
@@ -131,19 +132,22 @@ impl MetaConsensus {
             file.read_to_end(&mut bytes)?;
             bytes
         } else {
-            service.export_snapshot().to_bytes().map_err(invalid)?
+            super::chunk_groups::encode_bootstrap(&service, &groups).map_err(invalid)?
         };
         if bytes.len() > 64 * 1024 * 1024 {
             return Err(invalid("metadata bootstrap too large"));
         }
-        let snapshot = MetaSnapshot::from_bytes(&bytes).map_err(invalid)?;
+        let (snapshot_bytes, groups) =
+            super::chunk_groups::decode_bootstrap(&bytes).map_err(invalid)?;
+        let snapshot = MetaSnapshot::from_bytes(&snapshot_bytes).map_err(invalid)?;
         service = MatrixMetaService::new();
         service
             .install_placement_roster(&snapshot)
             .map_err(invalid)?;
         service
-            .install_raft_snapshot_bytes(&bytes, 0)
+            .install_raft_snapshot_bytes(&snapshot_bytes, 0)
             .map_err(invalid)?;
+        groups.validate_roster(&service).map_err(invalid)?;
         // Different bootstrap images cannot form one voting group.
         let mut identity = bytes.clone();
         identity.extend_from_slice(&options.group_id.to_be_bytes());
@@ -239,6 +243,7 @@ impl MetaConsensus {
             if let Err(error) = run(
                 &mut peer,
                 &mut service,
+                &groups,
                 rx,
                 packets,
                 outgoing,
@@ -292,6 +297,7 @@ impl Drop for MetaConsensus {
 fn run(
     peer: &mut DurablePeer,
     service: &mut MatrixMetaService,
+    groups: &super::ChunkGroupCatalog,
     requests: Receiver<Request>,
     packets: Receiver<Vec<u8>>,
     outgoing: BTreeMap<u64, SyncSender<Vec<u8>>>,
@@ -333,7 +339,7 @@ fn run(
                 let p = pending.take().unwrap();
                 let reply = match p.reply {
                     Some(reply) => reply,
-                    None => apply_to_meta(service, p.request.request, limit),
+                    None => apply_with_groups(service, p.request.request, limit, groups),
                 };
                 let _ = p.request.reply.try_send(reply);
             }
@@ -364,7 +370,7 @@ fn run(
                 } else if !peer.is_leader() || applied_term != peer.term() {
                     let _ = request.reply.try_send(Ok(MetaReply::NotLeader));
                 } else {
-                    let (outcome, reply) = match prepare(service, &request.request, limit) {
+                    let (outcome, reply) = match prepare(service, &request.request, limit, groups) {
                         Ok((outcome, reply)) => (outcome, reply.map(Ok)),
                         Err(error) => (Vec::new(), Some(Err(error))),
                     };
@@ -390,7 +396,9 @@ fn prepare(
     service: &MatrixMetaService,
     request: &MetaRequest,
     limit: usize,
+    groups: &super::ChunkGroupCatalog,
 ) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
+    groups.check_request(request)?;
     let (nodes, object) = match request {
         MetaRequest::HeartbeatRootNode { node_id, .. }
         | MetaRequest::HeartbeatChunkNode { node_id, .. } => (vec![node_id.clone()], None),
@@ -412,9 +420,9 @@ fn prepare(
         }
         _ => return Ok((Vec::new(), None)),
     };
-    let before = PlacementOutcome::capture(service, nodes, object)?;
+    let before = PlacementOutcome::capture(service, groups.affected_nodes(nodes), object)?;
     let mut candidate = service.clone();
-    let reply = apply_to_meta(&mut candidate, request.clone(), limit)?;
+    let reply = apply_with_groups(&mut candidate, request.clone(), limit, groups)?;
     Ok((before.finish(&candidate)?.to_payload()?, Some(reply)))
 }
 
