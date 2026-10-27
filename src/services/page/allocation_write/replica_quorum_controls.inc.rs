@@ -146,9 +146,10 @@ impl MatrixChunkService {
     /// The epoch exists so that a returning replica cannot be mistaken for current. An
     /// entry point that simply set it would hand that mistake straight back to whichever
     /// caller felt confident. So this reads the evidence: for every page any believable
-    /// replica holds, the candidate must hold one whose `write_sequence` is at least as
-    /// high. One page behind and the check-in is refused, naming the page and both
-    /// sequences.
+    /// replica holds, the candidate must match the highest observed write sequence and
+    /// the complete page head: length, payload checksum, state checksum, and discards.
+    /// Current sources at that sequence must agree. Unverified extra pages, newer local
+    /// sequences, and an absence of current sources all keep the candidate stale.
     ///
     /// # WHAT IT DOES NOT DO
     ///
@@ -162,36 +163,61 @@ impl MatrixChunkService {
                 "replica index is out of range".to_string(),
             ));
         }
-        if !self.replica_active(replica_index) {
+        if !self.replica_writable(replica_index) || !self.replicas[replica_index].accepting_writes() {
             return Err(ObjectError::PreconditionFailed(
-                "a quarantined or disabled replica cannot be checked in: it is not serving"
+                "a quarantined, disabled, frozen, draining, or write-disabled replica cannot be checked in"
                     .to_string(),
             ));
         }
-        // The best sequence any believable replica holds, per page. Taken from the current
-        // replicas only: a stale replica's own sequence is exactly what is in question.
-        let mut best: BTreeMap<PageId, u64> = BTreeMap::new();
-        for index in 0..self.replicas.len() {
-            if index == replica_index || !self.replica_current(index) {
-                continue;
-            }
-            // ONE BATCHED READ PER REPLICA, of a page index and not a page map: a
-            // `(PageId, write_sequence)` pair per page and no payload. The whole set is
-            // needed -- this is deciding about pages the returning replica may not hold --
-            // so asking page by page would be a round trip per page.
+        if !self.stale_replicas.contains(&replica_index) {
+            return Ok(());
+        }
+        let current: Vec<usize> = (0..self.replicas.len())
+            .filter(|index| *index != replica_index && self.replica_current(*index)
+                && self.replica_writable(*index) && self.replicas[*index].accepting_writes())
+            .collect();
+        if current.is_empty() {
+            return Err(ObjectError::PreconditionFailed(
+                "replica check-in requires a current source".to_string(),
+            ));
+        }
+        // Keep a source index alongside each maximum sequence. Inventory stays small;
+        // full heads are compared one page at a time after collecting all maxima.
+        let mut best: BTreeMap<PageId, (u64, usize)> = BTreeMap::new();
+        for &index in &current {
             for (page_id, sequence) in self.replicas[index].page_write_sequences() {
-                let entry = best.entry(page_id).or_default();
-                *entry = (*entry).max(sequence);
+                let entry = best.entry(page_id).or_insert((sequence, index));
+                if sequence > entry.0 { *entry = (sequence, index); }
             }
         }
         let candidate = &self.replicas[replica_index];
-        for (page_id, required) in &best {
+        for (page_id, (required, source)) in &best {
             let held = candidate.page_write_sequence(page_id).unwrap_or_default();
-            if held < *required {
+            if held != *required {
                 return Err(ObjectError::PreconditionFailed(format!(
                     "replica {replica_index} cannot be checked in: page {page_id:?} is at write sequence {held} and a current replica holds {required}",
                 )));
             }
+            let expected = self.replicas[*source].head_chunk(page_id)?;
+            for &index in &current {
+                if self.replicas[index].page_write_sequence(page_id) == Some(*required)
+                    && self.replicas[index].head_chunk(page_id)? != expected
+                {
+                    return Err(ObjectError::PreconditionFailed(format!(
+                        "replica check-in has conflicting current states for page {page_id:?} at write sequence {required}",
+                    )));
+                }
+            }
+            if candidate.head_chunk(page_id).ok().as_ref() != Some(&expected) {
+                return Err(ObjectError::PreconditionFailed(format!(
+                    "replica {replica_index} cannot be checked in: page {page_id:?} does not match current page state",
+                )));
+            }
+        }
+        if candidate.page_count() != best.len() {
+            return Err(ObjectError::PreconditionFailed(
+                "replica check-in found unverified extra pages".to_string(),
+            ));
         }
         self.stale_replicas.remove(&replica_index);
         Ok(())

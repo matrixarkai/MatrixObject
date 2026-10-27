@@ -178,3 +178,110 @@ fn replica_connections_survive_valid_refusals() {
 fn meta_connections_survive_valid_refusals() {
     valid_refusals_keep_the_connection(true);
 }
+
+#[test]
+fn replica_response_deadline_covers_the_whole_fragmented_frame() {
+    use std::time::Instant;
+    for split_header in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            request(&mut socket);
+            let bytes = pong(false);
+            let start = if split_header {
+                0
+            } else {
+                socket.write_all(&bytes[..6]).unwrap();
+                6
+            };
+            for byte in &bytes[start..] {
+                if socket.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            let mut next = [0; 1];
+            match socket.read(&mut next) {
+                Ok(0) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => true,
+                _ => false,
+            }
+        });
+        let mut client = RemoteReplicaClient::connect(
+            &endpoint,
+            &ReplicaClientOptions {
+                read_timeout: Duration::from_millis(80),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let started = Instant::now();
+        let first = client.ping();
+        let elapsed = started.elapsed();
+        let second = client.ping();
+        drop(client);
+        let closed = peer.join().unwrap();
+        assert!(
+            first.is_err(),
+            "fragmented frame escaped its total deadline"
+        );
+        assert!(elapsed < Duration::from_millis(600));
+        assert!(second.is_err());
+        assert!(closed, "a second request reached the expired connection");
+    }
+}
+#[test]
+fn a_timed_out_replica_write_cannot_supply_a_later_acknowledgment() {
+    use matrixobjectstore_rs::{ChunkId, PageId};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap().to_string();
+    let peer = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut header = [0; 6];
+        socket.read_exact(&mut header).unwrap();
+        let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+        assert!(length < 1024);
+        let mut payload = vec![0; length];
+        socket.read_exact(&mut payload).unwrap();
+        let reply = encode_reply(&ReplicaReply::Applied);
+        // No header byte arrives before the first call times out. A later complete
+        // acknowledgment must not be mistaken for the next write's acknowledgment.
+        thread::sleep(Duration::from_millis(120));
+        let _ = socket.write_all(&reply);
+        let _ = socket.write_all(&reply);
+        let mut next = [0; 1];
+        match socket.read(&mut next) {
+            Ok(0) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => true,
+            _ => false,
+        }
+    });
+    let mut client = RemoteReplicaClient::connect(
+        &endpoint,
+        &ReplicaClientOptions {
+            read_timeout: Duration::from_millis(80),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let page = PageId {
+        chunk_id: ChunkId::new(1, 1).unwrap(),
+        page_index: 0,
+    };
+    assert!(client.write_chunk(page.clone(), 0, b"first").is_err());
+    let later = client.write_chunk(page, 0, b"second");
+    drop(client);
+    let closed = peer.join().unwrap();
+    assert!(
+        later.is_err(),
+        "an old acknowledgment answered the next write"
+    );
+    assert!(closed, "uncertain write reused its connection");
+}

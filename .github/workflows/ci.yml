@@ -22,7 +22,7 @@ jobs:
       # not ship. Without this the build fails in 30 seconds with
       # "Could not find `protoc` installation".
       - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler autoconf automake libtool
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
@@ -69,7 +69,7 @@ jobs:
       # not ship. Without this the build fails in 30 seconds with
       # "Could not find `protoc` installation".
       - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler autoconf automake libtool
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
@@ -81,6 +81,144 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Replica quorum members have distinct peers
+        run: |
+          set -o pipefail
+          cargo test --locked --test distinct_replica_peers one_endpoint_cannot_supply_multiple_votes -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test distinct_replica_peers two_spellings_of_one_peer_cannot_supply_multiple_votes -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test distinct_replica_peers mapped_ipv6_and_ipv4_cannot_supply_multiple_votes -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test distinct_replica_peers distinct_processes_can_still_form_a_quorum -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: Replica readmission verifies complete page state
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::replica_readmission_rejects_equal_sequence_with_different_bytes -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_equal_sequence_with_different_discards -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_unverified_higher_sequences -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_unverified_extra_pages -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_disagreement_between_current_sources -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_requires_a_current_source -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+
+      - name: Frozen replicas cannot check in early
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::replica_readmission_waits_until_candidate_can_receive_writes -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+
+      - name: Replica journal recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --test replica_restart_recovery acknowledged_writes_and_discards_survive_process_kills -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_restart_recovery a_live_journal_cannot_be_opened_by_a_second_server -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_restart_recovery a_damaged_committed_record_prevents_startup -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_restart_recovery a_three_node_quorum_recovers_after_every_process_is_killed -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --lib cluster::replica_journal::tests::corruption_in_each_record_byte_is_rejected_without_truncation -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --lib cluster::replica_journal::tests::every_incomplete_final_record_preserves_the_committed_prefix -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --lib cluster::server::journal_failure_tests::failed_persistence_blocks_acknowledgment_and_all_later_requests -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: Metadata and replica shutdown
+        run: |
+          set -o pipefail
+          cargo test --locked --test server_shutdown meta_idle_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown meta_connected_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown meta_stopped_before_serve -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown replica_idle_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown replica_connected_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown replica_stopped_before_serve -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: Replica storage admission limits
+        run: |
+          set -o pipefail
+          cargo test --locked --test replica_storage_limits sparse_writes_are_charged_for_the_whole_allocation -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_storage_limits byte_budget_is_shared_by_all_pages -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_storage_limits zero_length_pages_cannot_bypass_the_page_budget -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_storage_limits zero_storage_limits_are_rejected_at_startup -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: Recovery applies storage admission limits
+        run: |
+          set -o pipefail
+          cargo test --locked --test replica_restart_recovery recovery_enforces_storage_limits_without_changing_the_journal -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: Metadata restart recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --test meta_restart_recovery placements_roster_and_commit_index_survive_process_kills -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          grep -q '^running 1 test$' /tmp/meta-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
+          cargo test --locked --test meta_restart_recovery directory_lock_and_corruption_prevent_unsafe_startup -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          grep -q '^running 1 test$' /tmp/meta-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
+          cargo test --locked --test meta_restart_recovery interrupted_snapshot_and_bootstrap_do_not_replace_committed_state -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          grep -q '^running 1 test$' /tmp/meta-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
+          cargo test --locked --test meta_restart_recovery failed_outcome_append_recovers_last_durable_state -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          grep -q '^running 1 test$' /tmp/meta-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
+
+      - name: Recovered metadata leases survive later mutations
+        run: |
+          set -o pipefail
+          cargo test --locked --test meta_restart_recovery restored_metadata_leases_remain_in_later_snapshots -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          grep -q '^running 1 test$' /tmp/meta-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
+
       - name: Durable format constants are unchanged
         run: |
           set -o pipefail
@@ -350,10 +488,100 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/matrixraft.log \
             || { echo "::error::a_snapshot_chunk_at_the_wrong_offset_is_refused did not run"; exit 1; }
           cargo test --lib --features matrix-raft \
-            tests::applying_an_entry_reports_the_codec_the_log_format_would_need -- --exact \
+            tests::metadata_log_apply_rejects_malformed_commands -- --exact \
             | tee /tmp/matrixraft.log
           grep -q '^test result: ok. 1 passed' /tmp/matrixraft.log \
-            || { echo "::error::applying_an_entry_reports_the_codec_the_log_format_would_need did not run"; exit 1; }
+            || { echo "::error::metadata_log_apply_rejects_malformed_commands did not run"; exit 1; }
+
+      - name: metadata log apply orders and deduplicates entries
+        run: |
+          cargo test --locked --lib --features matrix-raft tests::metadata_log_apply_orders_and_deduplicates_entries -- --exact 2>&1 | tee /tmp/metadata-log.log
+          grep -q '^running 1 test$' /tmp/metadata-log.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-log.log
+
+      - name: metadata log checkpoint restores replay position and roster
+        run: |
+          cargo test --locked --lib --features matrix-raft tests::metadata_log_checkpoint_restores_replay_position_and_roster -- --exact 2>&1 | tee /tmp/metadata-log.log
+          grep -q '^running 1 test$' /tmp/metadata-log.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-log.log
+
+      - name: metadata log checkpoint rejects corruption and wrong identity
+        run: |
+          cargo test --locked --lib --features matrix-raft tests::metadata_log_checkpoint_rejects_corruption_and_wrong_identity -- --exact 2>&1 | tee /tmp/metadata-log.log
+          grep -q '^running 1 test$' /tmp/metadata-log.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-log.log
+
+      - name: metadata log replay agrees across three state machines
+        run: |
+          cargo test --locked --lib --features matrix-raft tests::metadata_log_replay_agrees_across_three_state_machines -- --exact 2>&1 | tee /tmp/metadata-log.log
+          grep -q '^running 1 test$' /tmp/metadata-log.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-log.log
+
+      - name: metadata log snapshot stream rejects mixed identity and oversize
+        run: |
+          cargo test --locked --lib --features matrix-raft tests::metadata_log_snapshot_stream_rejects_mixed_identity_and_oversize -- --exact 2>&1 | tee /tmp/metadata-log.log
+          grep -q '^running 1 test$' /tmp/metadata-log.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-log.log
+
+      - name: binary page outcome append is bounded and replays decided state
+        run: |
+          cargo test --locked --lib tests::binary_page_outcome_append_is_bounded_and_replays_decided_state -- --exact 2>&1 | tee /tmp/binary-outcome.log
+          grep -q '^running 1 test$' /tmp/binary-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/binary-outcome.log
+
+      - name: binary page outcome discard and zero extension preserve state
+        run: |
+          cargo test --locked --lib tests::binary_page_outcome_discard_and_zero_extension_preserve_state -- --exact 2>&1 | tee /tmp/binary-outcome.log
+          grep -q '^running 1 test$' /tmp/binary-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/binary-outcome.log
+
+      - name: binary page outcome local and raft apply identical bytes
+        run: |
+          cargo test --locked --lib --features matrix-raft tests::binary_page_outcome_local_and_raft_apply_identical_bytes -- --exact 2>&1 | tee /tmp/binary-outcome.log
+          grep -q '^running 1 test$' /tmp/binary-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/binary-outcome.log
+
+      - name: binary outcome journal recovers mixed history and rejects damage
+        run: |
+          cargo test --locked --lib cluster::replica_journal::outcome_tests::binary_outcome_journal_recovers_mixed_history_and_rejects_damage -- --exact 2>&1 | tee /tmp/binary-outcome.log
+          grep -q '^running 1 test$' /tmp/binary-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/binary-outcome.log
+
+      - name: binary placement outcome replays decided changes and refuses wrong state
+        run: |
+          cargo test --locked --lib tests::binary_placement_outcome_replays_decided_changes_and_refuses_wrong_state -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
+
+      - name: binary placement outcome carries object and capacity atomically
+        run: |
+          cargo test --locked --lib tests::binary_placement_outcome_carries_object_and_capacity_atomically -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
+
+      - name: binary placement outcome raft checkpoint preserves replay position
+        run: |
+          cargo test --locked --lib --features matrix-raft tests::binary_placement_outcome_raft_checkpoint_preserves_replay_position -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
+
+      - name: placement journal rejects corruption and recovers every torn tail
+        run: |
+          cargo test --locked --lib cluster::placement_journal::tests::placement_journal_rejects_corruption_and_recovers_every_torn_tail -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
+
+      - name: missing outcome journal is not treated as empty history
+        run: |
+          cargo test --locked --test meta_restart_recovery missing_outcome_journal_is_not_treated_as_empty_history -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
+
+      - name: Placement journal append size stays bounded as catalog grows
+        run: |
+          cargo test --locked --test meta_restart_recovery placement_journal_append_size_does_not_grow_with_catalog -- --exact 2>&1 | tee /tmp/placement-outcome.log
+          grep -q '^running 1 test$' /tmp/placement-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/placement-outcome.log
 
       - name: Every Rust source carries the licence header
         run: |
@@ -777,6 +1005,36 @@ jobs:
       # `--test` names the one integration target, and the `running 1 test` check is
       # here as well as the `1 passed` one because `cargo test` exits 0 when a filter
       # matches nothing: without it, renaming the test would turn this step green.
+      - name: metadata rejects large heartbeat reply before mutation
+        run: |
+          cargo test --locked --test bounded_server_replies metadata_rejects_large_heartbeat_reply_before_mutation -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: replica read budget includes overhead and keeps connection usable
+        run: |
+          cargo test --locked --test bounded_server_replies replica_read_budget_includes_overhead_and_keeps_connection_usable -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: replica head and inventory obey reply budget
+        run: |
+          cargo test --locked --test bounded_server_replies replica_head_and_inventory_obey_reply_budget -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: metadata roster budget keeps connection usable
+        run: |
+          cargo test --locked --test bounded_server_replies metadata_roster_budget_keeps_connection_usable -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: metadata failure text is bounded utf8
+        run: |
+          cargo test --locked --test bounded_server_replies metadata_failure_text_is_bounded_utf8 -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: server reply budgets must fit status and frame lengths
+        run: |
+          cargo test --locked --test bounded_server_replies server_reply_budgets_must_fit_status_and_frame_lengths -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
       - name: Three replica processes keep the data when one is killed
         run: |
           set -o pipefail
@@ -971,3 +1229,216 @@ jobs:
           cargo test --locked --test failed_node_connections meta_connections_survive_valid_refusals -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
           grep -q '^running 1 test$' /tmp/node-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: replica response deadline covers the whole fragmented frame
+        run: |
+          set -o pipefail
+          cargo test --locked --test failed_node_connections replica_response_deadline_covers_the_whole_fragmented_frame -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+      - name: a timed out replica write cannot supply a later acknowledgment
+        run: |
+          set -o pipefail
+          cargo test --locked --test failed_node_connections a_timed_out_replica_write_cannot_supply_a_later_acknowledgment -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+  metadata-consensus:
+    name: network metadata consensus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protocol build tools
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler autoconf automake libtool
+      - name: process quorum preserves outcomes across leader loss and total restart
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus process_quorum_preserves_outcomes_across_leader_loss_and_total_restart -- --exact | tee /tmp/metadata-consensus.log
+          grep -q '^running 1 test$' /tmp/metadata-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-consensus.log
+      - name: a slow peer connection does not prevent shutdown
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus a_slow_peer_connection_does_not_prevent_shutdown -- --exact | tee /tmp/metadata-consensus.log
+          grep -q '^running 1 test$' /tmp/metadata-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-consensus.log
+      - name: election noops checkpoint and replay without changing metadata
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus election_noops_checkpoint_and_replay_without_changing_metadata -- --exact | tee /tmp/metadata-consensus.log
+          grep -q '^running 1 test$' /tmp/metadata-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-consensus.log
+      - name: peer storage refuses missing zeroed or reidentified history
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus peer_storage_refuses_missing_zeroed_or_reidentified_history -- --exact | tee /tmp/metadata-consensus.log
+          grep -q '^running 1 test$' /tmp/metadata-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-consensus.log
+      - name: typed not leader can route an unadmitted mutation
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test metadata_catalog_routing typed_not_leader_can_route_an_unadmitted_mutation -- --exact | tee /tmp/metadata-routing.log
+          grep -q '^running 1 test$' /tmp/metadata-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log
+      - name: uncertain mutations are never sent to another node
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test metadata_catalog_routing uncertain_mutations_are_never_sent_to_another_node -- --exact | tee /tmp/metadata-routing.log
+          grep -q '^running 1 test$' /tmp/metadata-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log
+      - name: reads can move after disconnect and catalog attempts are bounded
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test metadata_catalog_routing reads_can_move_after_disconnect_and_catalog_attempts_are_bounded -- --exact | tee /tmp/metadata-routing.log
+          grep -q '^running 1 test$' /tmp/metadata-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log
+      - name: malformed routing response closes the stream before buffered bytes can reply
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test metadata_catalog_routing malformed_routing_response_closes_the_stream_before_buffered_bytes_can_reply -- --exact | tee /tmp/metadata-routing.log
+          grep -q '^running 1 test$' /tmp/metadata-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log
+      - name: response timeout covers the entire frame not each byte
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test metadata_catalog_routing response_timeout_covers_the_entire_frame_not_each_byte -- --exact | tee /tmp/metadata-routing.log
+          grep -q '^running 1 test$' /tmp/metadata-routing.log
+          grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log
+      - name: configured roster is canonical and rejects invalid identities
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test configured_data_roster configured_roster_is_canonical_and_rejects_invalid_identities -- --exact | tee /tmp/data-roster.log
+          grep -q '^running 1 test$' /tmp/data-roster.log
+          grep -q '^test result: ok. 1 passed' /tmp/data-roster.log
+      - name: refused roster is atomic and valid nodes start offline
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test configured_data_roster refused_roster_is_atomic_and_valid_nodes_start_offline -- --exact | tee /tmp/data-roster.log
+          grep -q '^running 1 test$' /tmp/data-roster.log
+          grep -q '^test result: ok. 1 passed' /tmp/data-roster.log
+      - name: configured placement writes real chunk processes and recovers after failover
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus configured_placement_writes_real_chunk_processes_and_recovers_after_failover -- --exact | tee /tmp/data-roster.log
+          grep -q '^running 1 test$' /tmp/data-roster.log
+          grep -q '^test result: ok. 1 passed' /tmp/data-roster.log
+      - name: explicit roster and binary heartbeats survive changed bootstrap
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test meta_restart_recovery explicit_roster_and_binary_heartbeats_survive_changed_bootstrap -- --exact | tee /tmp/data-roster.log
+          grep -q '^running 1 test$' /tmp/data-roster.log
+          grep -q '^test result: ok. 1 passed' /tmp/data-roster.log
+      - name: conditional chunk heartbeat is binary and refuses every truncated payload
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test chunk_health_reporting conditional_chunk_heartbeat_is_binary_and_refuses_every_truncated_payload -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: wrong endpoint heartbeat cannot admit a node or clear draining
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test chunk_health_reporting wrong_endpoint_heartbeat_cannot_admit_a_node_or_clear_draining -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: health worker shutdown is bounded and invalid configuration is refused
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test chunk_health_reporting health_worker_shutdown_is_bounded_and_invalid_configuration_is_refused -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: partial chunk heartbeat configuration is refused before serving
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test chunk_health_reporting partial_chunk_heartbeat_configuration_is_refused_before_serving -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: chunk processes report usage follow leaders and expire without manual heartbeats
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus chunk_processes_report_usage_follow_leaders_and_expire_without_manual_heartbeats -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: expiry journal only carries changed nodes and skips empty passes
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test meta_restart_recovery expiry_journal_only_carries_changed_nodes_and_skips_empty_passes -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: failed journal is reported offline with correct cached usage
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --lib cluster::server::heartbeat::tests::failed_journal_is_reported_offline_with_correct_cached_usage -- --exact | tee /tmp/chunk-health.log
+          grep -q '^running 1 test$' /tmp/chunk-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-health.log
+      - name: reported usage and committed allocations both limit placement
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --test chunk_health_reporting reported_usage_and_committed_allocations_both_limit_placement -- --exact | tee /tmp/chunk-capacity.log
+          grep -q '^running 1 test$' /tmp/chunk-capacity.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-capacity.log
+
+  chunk-consensus:
+    name: network chunk consensus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protocol build tools
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler autoconf automake libtool
+      - name: chunk processes commit binary outcomes survive leader loss and total restart
+        run: |
+          set -o pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus chunk_processes_commit_binary_outcomes_survive_leader_loss_and_total_restart -- --exact | tee /tmp/chunk-consensus.log
+          grep -q '^running 1 test$' /tmp/chunk-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-consensus.log
+      - name: chunk raft capacity refusal does not commit partial page state
+        run: |
+          set -o pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus chunk_raft_capacity_refusal_does_not_commit_partial_page_state -- --exact | tee /tmp/chunk-consensus.log
+          grep -q '^running 1 test$' /tmp/chunk-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-consensus.log
+      - name: chunk peer storage lock configuration and truncation fail closed
+        run: |
+          set -o pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus chunk_peer_storage_lock_configuration_and_truncation_fail_closed -- --exact | tee /tmp/chunk-consensus.log
+          grep -q '^running 1 test$' /tmp/chunk-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-consensus.log
+      - name: slow chunk peer packets do not prevent shutdown
+        run: |
+          set -o pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus slow_chunk_peer_packets_do_not_prevent_shutdown -- --exact | tee /tmp/chunk-consensus.log
+          grep -q '^running 1 test$' /tmp/chunk-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-consensus.log
+      - name: partial chunk raft settings and local journal combination are refused
+        run: |
+          set -o pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus partial_chunk_raft_settings_and_local_journal_combination_are_refused -- --exact | tee /tmp/chunk-consensus.log
+          grep -q '^running 1 test$' /tmp/chunk-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-consensus.log
+      - name: chunk voter catalog rejects aliases and invalid addresses before storage
+        run: |
+          set -o pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus chunk_voter_catalog_rejects_aliases_and_invalid_addresses_before_storage -- --exact | tee /tmp/chunk-consensus.log
+          grep -q '^running 1 test$' /tmp/chunk-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-consensus.log
+      - name: metadata reports track committed chunk bytes on every voter
+        run: |
+          set -o pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus metadata_reports_track_committed_chunk_bytes_on_every_voter -- --exact | tee /tmp/chunk-consensus.log
+          grep -q '^running 1 test$' /tmp/chunk-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-consensus.log
+      - name: oversized chunk outcome is refused without poisoning the group
+        run: |
+          set -o pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus oversized_chunk_outcome_is_refused_without_poisoning_the_group -- --exact | tee /tmp/chunk-consensus.log
+          grep -q '^running 1 test$' /tmp/chunk-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-consensus.log
+      - name: multi megabyte chunk outcomes replicate over TCP and survive leader loss
+        run: |
+          set -o pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus multi_megabyte_chunk_outcomes_replicate_over_tcp_and_survive_leader_loss -- --exact | tee /tmp/chunk-consensus.log
+          grep -q '^running 1 test$' /tmp/chunk-consensus.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-consensus.log

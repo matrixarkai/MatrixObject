@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject.metadata.v1;
+// The durable application payload in a MatrixRaft peer WAL entry.
+// Version 1 requires canonical binary protobuf encoding. An empty outcome is
+// a committed read barrier. Raft election no-ops have an entirely empty payload.
+message Entry {
+  uint32 version = 1;
+  // The complete MOMP placement outcome envelope used by the local journal.
+  bytes outcome = 2;
+}

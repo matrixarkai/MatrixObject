@@ -20,20 +20,9 @@
 // Both are kept. A single-writer coordinator with a quorum is the cheaper answer when there is one
 // coordinator, and ordering through a log is the answer when there is more than one.
 //
-// # WHY `apply` CAN BE WIRED HERE AND COULD NOT BE FOR THE METADATA SERVICE
-//
-// [`MetadataStateMachine::apply`] reports a refusal instead of applying, and the reason is in its
-// doc comment: a MatrixRaft payload is `Vec<u8>`, `ObjectCommand` has 212 variants and no byte
-// codec, and writing one would mean choosing the encoding of the raft log for the whole store's
-// command language -- a durable format decision far larger than the trait method that provoked it.
-//
-// A chunk write is not that. What has to cross the log is a page identity -- three integers -- and
-// a list of (offset, bytes) ranges. There is no enum to encode, the payload is already opaque
-// bytes, and the format below is 18 bytes of header and a length-prefixed run per range. It is
-// still a durable format, so it is versioned, its spelling is pinned byte-for-byte by a test, and
-// a decoder that meets anything it does not recognise REFUSES rather than guessing -- including
-// trailing bytes, because a laxer decoder on one replica and a stricter one on another is how two
-// replicas come to disagree about what an entry said.
+// New group proposals carry binary protobuf PageOutcome messages. The proposer
+// resolves the write once; replicas install byte patches and decided metadata.
+// The command codec below remains for recovery of older logs and legacy callers.
 
 // Everything else this file names -- ApplyRequest, ApplyResponse, LogId, RaftError,
 // SnapshotChunk, SnapshotMetadata, StateMachine -- is already in scope: both facade files are
@@ -271,6 +260,7 @@ impl ChunkStateMachine {
                     },
                     membership: Vec::new(),
                     members: Vec::new(),
+                    payload_bytes: bytes.len() as u64,
                 },
                 offset: 0,
                 data: bytes.to_vec(),
@@ -330,11 +320,18 @@ impl StateMachine for ChunkStateMachine {
                 self.last_applied_index
             )));
         }
+        if request.payload.starts_with(crate::outcome::OUTCOME_MAGIC) {
+            crate::outcome::PageOutcome::from_payload(&request.payload)
+                .and_then(|outcome| outcome.apply(&mut self.replica, usize::MAX))
+                .map_err(|err| RaftError::Storage(format!("chunk outcome apply failed: {err}")))?;
+        } else {
+            // Read older logs during recovery.
         let command = ChunkWriteCommand::from_payload(&request.payload)
             .map_err(|err| RaftError::InvalidRequest(err.to_string()))?;
         self.replica
             .write_chunk_ranges(command.page_id, command.ranges)
             .map_err(|err| RaftError::Storage(format!("chunk write apply failed: {err}")))?;
+        }
         self.last_applied_index = request.log_id.index;
         Ok(ApplyResponse {
             applied_index: self.last_applied_index,
@@ -366,6 +363,7 @@ impl StateMachine for ChunkStateMachine {
                 },
                 membership: Vec::new(),
                 members: Vec::new(),
+                payload_bytes: data.len() as u64,
             },
             offset: 0,
             data,

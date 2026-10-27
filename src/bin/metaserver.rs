@@ -21,16 +21,18 @@
 //! | variable | default | meaning |
 //! |---|---|---|
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
+//! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `0` | automatic expiry TTL, 1000..3600000 ms; zero disables |
 //! | `MATRIXOBJECT_METASERVER_THREADS` | `2` | connections served at once |
 //! | `MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
+//! | `MATRIXOBJECT_METASERVER_STATE_DIR` | *(unset)* | existing directory for locked, atomic metadata snapshots |
+//! | `MATRIXOBJECT_METASERVER_DATA_ROSTER` | *(unset)* | comma-separated `node-id@socket-address@failure-domain`; starts offline until heartbeat |
 //! | `MATRIXOBJECT_METASERVER_SEED_DATA_NODES` | `0` | data nodes to put in the roster before serving |
 //! | `MATRIXOBJECT_METASERVER_SEED_CAPACITY_BYTES` | `1073741824` | capacity each seeded node reports |
 //!
-//! The two seed settings are a bootstrap, and named so. Placement needs a roster, and
-//! registration is deliberately not one of this service's verbs -- see
-//! `crate::cluster::meta_wire` for why a `PlacementNode` is not on this wire. They stand in for
-//! the membership a later change will agree between metaserver nodes rather than read from
-//! one node's environment.
+//! The explicit roster supplies operator-selected chunk endpoints and starts them offline.
+//! A controller must heartbeat verified chunk processes before placement can select them.
+//! The legacy node-count bootstrap is for loopback development and cannot be combined with
+//! an explicit roster. Persisted membership takes precedence over all bootstrap settings.
 //!
 //! # THE FIRST LINE OF OUTPUT IS A CONTRACT
 //!
@@ -49,13 +51,12 @@
 //! supervisor that can read one startup line can read both, and the alternative is two
 //! parsers for two lines that say the same six things.
 //!
-//! # NOTHING SURVIVES THE PROCESS
+//! # RESTART RECOVERY
 //!
-//! This control plane is held entirely in memory. There is no snapshot path and no write to
-//! disk, so a restarted metaserver has an empty roster and no placements. `MatrixMetaService`
-//! has a durable form already -- a `MetaSnapshot` of twenty-eight fields with a checksum --
-//! and this binary does not write it. **This process is a single point of failure for
-//! placement**, and that is stated rather than implied.
+//! `MATRIXOBJECT_METASERVER_STATE_DIR` enables atomic, synced metadata snapshots in
+//! an existing directory. A restored roster takes precedence over bootstrap settings.
+//! Without this setting, restart loses the in-memory control plane. Durable snapshots
+//! recover one server; they do not provide a replicated or highly available control plane.
 //!
 //! # IT IS UNAUTHENTICATED
 //!
@@ -77,7 +78,7 @@ fn main() {
     use std::io::Write;
 
     use matrixobjectstore_rs::cluster::{
-        MetaNodeOptions, MetaNodeServer, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP,
+        DataNodeSeed, MetaNodeOptions, MetaNodeServer, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP,
     };
 
     fn env_string(name: &str, default: &str) -> String {
@@ -106,23 +107,84 @@ fn main() {
 
     let addr = env_string("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:17200");
     let worker_threads = env_usize("MATRIXOBJECT_METASERVER_THREADS", 2).max(1);
-    let max_payload_bytes =
-        env_usize("MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES);
+    let max_payload_bytes = env_usize(
+        "MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES",
+        MAX_PAYLOAD_BYTES,
+    );
 
-    let server = match MetaNodeServer::bind(
-        &addr,
-        MetaNodeOptions {
-            max_payload_bytes,
-            worker_threads,
-            ..MetaNodeOptions::default()
-        },
-    ) {
+    let options = MetaNodeOptions {
+        max_payload_bytes,
+        worker_threads,
+        ..Default::default()
+    };
+    let state_dir = std::env::var_os("MATRIXOBJECT_METASERVER_STATE_DIR");
+    #[allow(unused_mut)]
+    let mut storage = if state_dir.is_some() {
+        "snapshot"
+    } else {
+        "memory"
+    };
+    let raft_peers = std::env::var_os("MATRIXOBJECT_METASERVER_RAFT_PEERS");
+    if raft_peers.is_none()
+        && [
+            "MATRIXOBJECT_METASERVER_RAFT_NODE_ID",
+            "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
+            "MATRIXOBJECT_METASERVER_RAFT_GROUP_ID",
+            "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS",
+        ]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+    {
+        eprintln!("partial Raft configuration: MATRIXOBJECT_METASERVER_RAFT_PEERS is required");
+        std::process::exit(2);
+    }
+    if raft_peers.is_some() && state_dir.is_some() {
+        eprintln!("local metadata state and Raft state cannot be configured together");
+        std::process::exit(2);
+    }
+    let configured_roster = match std::env::var("MATRIXOBJECT_METASERVER_DATA_ROSTER") {
+        Ok(raw) => {
+            if std::env::var_os("MATRIXOBJECT_METASERVER_SEED_DATA_NODES").is_some() {
+                eprintln!("data roster and legacy seed count cannot be configured together");
+                std::process::exit(2);
+            }
+            match DataNodeSeed::parse_roster(&raw) {
+                Ok(nodes) => Some(nodes),
+                Err(error) => {
+                    eprintln!("invalid data roster: {error}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => {
+            eprintln!("invalid data roster: {error}");
+            std::process::exit(2);
+        }
+    };
+
+    let bound_server = match state_dir {
+        Some(path) => {
+            MetaNodeServer::bind_with_snapshot(&addr, options, std::path::Path::new(&path))
+        }
+        None => MetaNodeServer::bind(&addr, options),
+    };
+    #[allow(unused_mut)]
+    let mut server = match bound_server {
         Ok(server) => server,
         Err(err) => {
             eprintln!("binding {addr} failed: {err}");
             std::process::exit(1);
         }
     };
+
+    let heartbeat_ttl_ms = env_usize("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", 0) as u64;
+    if heartbeat_ttl_ms != 0 {
+        if let Err(error) = server.enable_heartbeat_expiry(heartbeat_ttl_ms) {
+            eprintln!("invalid heartbeat expiry: {error}");
+            std::process::exit(2);
+        }
+    }
 
     let seed_nodes = env_usize("MATRIXOBJECT_METASERVER_SEED_DATA_NODES", 0);
     let seed_capacity = env_usize(
@@ -132,13 +194,73 @@ fn main() {
     // SEEDED BEFORE THE STARTUP LINE IS PRINTED, so that a supervisor reading that line and
     // connecting immediately cannot see a roster that is still filling. The count is printed
     // on the line, so a test does not have to ask whether the seed happened.
-    let seeded = match server.seed_data_nodes(seed_nodes, seed_capacity) {
-        Ok(seeded) => seeded,
-        Err(err) => {
-            eprintln!("seeding {seed_nodes} data node(s) failed: {err}");
-            std::process::exit(1);
+    #[allow(unused_mut)]
+    let mut seeded = match configured_roster {
+        Some(nodes) => server.seed_data_roster(&nodes, seed_capacity),
+        None => server.seed_data_nodes(seed_nodes, seed_capacity),
+    }
+    .unwrap_or_else(|err| {
+        eprintln!("seeding data roster failed: {err}");
+        std::process::exit(1);
+    });
+
+    if let Some(raw) = raft_peers {
+        #[cfg(not(feature = "metadata-consensus"))]
+        {
+            let _ = raw;
+            eprintln!("Raft configuration requires the metadata-consensus feature");
+            std::process::exit(2);
         }
-    };
+        #[cfg(feature = "metadata-consensus")]
+        {
+            let configured = (|| -> Result<_, String> {
+                let raw = raw.into_string().map_err(|_| "peer list is not UTF-8")?;
+                let mut peers = std::collections::BTreeMap::new();
+                for item in raw.split(',') {
+                    let (id, address) = item.split_once('@').ok_or("expected id@address peers")?;
+                    let id = id.parse::<u64>().map_err(|_| "invalid voter id")?;
+                    let address = address
+                        .parse::<std::net::SocketAddr>()
+                        .map_err(|_| "invalid voter address")?;
+                    if peers.insert(id, address).is_some() {
+                        return Err("duplicate voter id".into());
+                    }
+                }
+                let node_id = std::env::var("MATRIXOBJECT_METASERVER_RAFT_NODE_ID")
+                    .map_err(|_| "missing Raft node id")?
+                    .parse::<u64>()
+                    .map_err(|_| "invalid Raft node id")?;
+                let directory = std::env::var_os("MATRIXOBJECT_METASERVER_RAFT_STATE_DIR")
+                    .ok_or("missing Raft state directory")?
+                    .into();
+                Ok(matrixobjectstore_rs::cluster::MetaRaftOptions {
+                    node_id,
+                    group_id: env_usize("MATRIXOBJECT_METASERVER_RAFT_GROUP_ID", 1) as u64,
+                    peers,
+                    directory,
+                    request_timeout: std::time::Duration::from_millis(env_usize(
+                        "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS",
+                        3000,
+                    ) as u64),
+                })
+            })();
+            let options = match configured {
+                Ok(options) => options,
+                Err(error) => {
+                    eprintln!("invalid Raft configuration: {error}");
+                    std::process::exit(2);
+                }
+            };
+            seeded = match server.enable_raft(options) {
+                Ok(count) => count,
+                Err(error) => {
+                    eprintln!("opening metadata consensus failed: {error}");
+                    std::process::exit(1);
+                }
+            };
+            storage = "raft";
+        }
+    }
 
     let bound = match server.local_addr() {
         Ok(bound) => bound,
@@ -151,7 +273,7 @@ fn main() {
     println!(
         "metaserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \
-         storage=memory roster_nodes={seeded}",
+         storage={storage} roster_nodes={seeded}",
         std::process::id()
     );
     if !bound.ip().is_loopback() {

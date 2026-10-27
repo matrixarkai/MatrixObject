@@ -60,7 +60,10 @@ pub enum ReplicaRequest {
         length: u64,
     },
     Ping,
-    PageInventory { after: Option<PageId>, limit: u64 },
+    PageInventory {
+        after: Option<PageId>,
+        limit: u64,
+    },
 }
 
 impl ReplicaRequest {
@@ -106,7 +109,9 @@ impl ReplicaRequest {
             ReplicaRequest::Ping => {}
             ReplicaRequest::PageInventory { after, limit } => {
                 put_u64(&mut out, u64::from(after.is_some()));
-                if let Some(id) = after { put_page_id(&mut out, id); }
+                if let Some(id) = after {
+                    put_page_id(&mut out, id);
+                }
                 put_u64(&mut out, *limit);
             }
         }
@@ -160,7 +165,11 @@ impl ReplicaRequest {
                 let after = match cursor.take_u64()? {
                     0 => None,
                     1 => Some(take_page_id(&mut cursor)?),
-                    _ => return Err(ObjectError::Corruption("invalid page inventory cursor tag".into())),
+                    _ => {
+                        return Err(ObjectError::Corruption(
+                            "invalid page inventory cursor tag".into(),
+                        ))
+                    }
                 };
                 let limit = cursor.take_u64()?;
                 check_inventory_limit(limit)?;
@@ -186,11 +195,30 @@ pub enum ReplicaReply {
     Read(ReplicaReadResult),
     Head(ReplicaHead),
     /// The replica is answering, and holds this many pages.
-    Pong { page_count: u64 },
+    Pong {
+        page_count: u64,
+    },
     PageInventory(PageInventory),
 }
 
 impl ReplicaReply {
+    pub(crate) fn payload_len(&self) -> usize {
+        match self {
+            Self::Applied => 0,
+            Self::Read(read) => 16usize
+                .saturating_add(read.checksum.len())
+                .saturating_add(read.data.len()),
+            Self::Head(head) => 32usize
+                .saturating_add(head.checksum.len())
+                .saturating_add(head.state_checksum.len())
+                .saturating_add(head.discarded_ranges.len().saturating_mul(16)),
+            Self::Pong { .. } => 8,
+            Self::PageInventory(batch) => {
+                16usize.saturating_add(batch.entries.len().saturating_mul(32))
+            }
+        }
+    }
+
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
@@ -282,19 +310,29 @@ impl ReplicaReply {
                 let has_more = match cursor.take_u64()? {
                     0 => false,
                     1 => true,
-                    _ => return Err(ObjectError::Corruption("invalid page inventory continuation tag".into())),
+                    _ => {
+                        return Err(ObjectError::Corruption(
+                            "invalid page inventory continuation tag".into(),
+                        ))
+                    }
                 };
                 let count = cursor.take_u64()?;
-                if count > MAX_INVENTORY_PAGES || count > (cursor.remaining() / 32) as u64
-                    || (has_more && count == 0) {
-                    return Err(ObjectError::Corruption("invalid page inventory row count".into()));
+                if count > MAX_INVENTORY_PAGES
+                    || count > (cursor.remaining() / 32) as u64
+                    || (has_more && count == 0)
+                {
+                    return Err(ObjectError::Corruption(
+                        "invalid page inventory row count".into(),
+                    ));
                 }
                 let mut entries = Vec::with_capacity(count as usize);
                 for _ in 0..count {
                     let id = take_page_id(&mut cursor)?;
                     let sequence = cursor.take_u64()?;
                     if entries.last().is_some_and(|(last, _)| last >= &id) {
-                        return Err(ObjectError::Corruption("page inventory rows are not strictly ordered".into()));
+                        return Err(ObjectError::Corruption(
+                            "page inventory rows are not strictly ordered".into(),
+                        ));
                     }
                     entries.push((id, sequence));
                 }
@@ -337,6 +375,34 @@ pub fn encode_failure(status: StatusCode, message: &str) -> Vec<u8> {
     crate::cluster::wire::put_header(&mut frame, status as u8, payload.len());
     frame.extend_from_slice(&payload);
     frame
+}
+
+/// Encode a failure without allowing its text to exceed the connection budget.
+pub(crate) fn encode_bounded_failure(status: StatusCode, message: &str, limit: usize) -> Vec<u8> {
+    let mut end = message.len().min(limit.saturating_sub(4));
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    encode_failure(status, &message[..end])
+}
+
+pub(crate) fn check_reply_size(size: usize, limit: usize) -> Result<(), ObjectError> {
+    if size > limit || size > u32::MAX as usize {
+        return Err(ObjectError::PreconditionFailed(
+            "reply exceeds payload budget".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_payload_limit(limit: usize) -> std::io::Result<()> {
+    if !(24..=u32::MAX as usize).contains(&limit) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "payload budget must fit a status reply and the frame length",
+        ));
+    }
+    Ok(())
 }
 
 /// Read a failure frame's message.

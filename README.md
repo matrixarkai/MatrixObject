@@ -560,6 +560,16 @@ MATRIXOBJECT_REPLICA_ADDR=127.0.0.1:17301 cargo run --release --bin chunkserver
 | `MATRIXOBJECT_REPLICA_ADDR` | `127.0.0.1:17300` | address to bind; port `0` lets the kernel choose |
 | `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
 | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
+| `MATRIXOBJECT_REPLICA_JOURNAL` | *(unset)* | append-only replica journal file in an existing directory |
+| `MATRIXOBJECT_REPLICA_CAPACITY_BYTES` | `268435456` | total page payload bytes, including zero-filled space before write offsets; positive |
+| `MATRIXOBJECT_REPLICA_MAX_PAGES` | `65536` | maximum page identities, including empty pages; positive |
+
+The payload and page limits are checked before admitting a write and during journal replay.
+Restart with limits below the saved history is refused without truncating the journal. Overwrites that do not
+increase either budget remain available at capacity. These are storage admission limits,
+not a process memory ceiling: indexes, caches, sidecars, and network buffers use additional
+memory. Discard marks byte ranges and does not release the underlying payload allocation.
+Zero disables neither limit; it is rejected at startup.
 
 The bound address and the PID are printed on the first line of stdout and flushed before the
 accept loop starts, so a supervisor -- or a test standing three of these up on port `0` --
@@ -580,10 +590,54 @@ let mut fanout = placement.open(&ReplicaClientOptions::default())?;
 fanout.write_chunk(&page_id, 0, &bytes)?;      // three processes, one quorum
 ```
 
-It adds **no dependencies**: a six-byte frame header and a payload, on the standard library
-alone, for the reason `src/net` gives. The frame carries a protocol stamp in both directions
+The network transport uses a six-byte frame header and a payload on the standard library.
+The `fs2` dependency supplies the exclusive journal file lock. The frame carries a protocol stamp in both directions
 so that a rolling restart -- a new coordinator reaching an old replica -- refuses the frame
 by name instead of taking its length field from the wrong offset.
+
+### Replica restart recovery
+
+Set `MATRIXOBJECT_REPLICA_JOURNAL` to retain a replica's writes and discards across restarts.
+The server locks and replays the file before listening, then syncs each successful mutation
+before acknowledging it. Failed persistence blocks all further requests until restart.
+Unset keeps the existing in-memory behavior; startup reports `storage=journal` or
+`storage=memory`. Each node needs its own journal on persistent storage.
+
+Records contain a version marker, bounded length, header checksum, payload checksum, and
+encoded mutation. Recovery truncates only an incomplete final record and refuses complete
+records with checksum or decoding failures. The checksums detect accidental corruption;
+they do not authenticate the file. A lost acknowledgment can leave a durable operation, so
+blind mutation retries are not idempotent. Linux process-kill tests verify writes, discards,
+exclusive ownership, and recovery of all three replicas followed by another node loss.
+Power-loss and non-Linux filesystem behavior have not been tested.
+
+The journal grows with mutations; checkpointing and compaction remain unfinished. Do not
+replace or remove a journal while its server runs. Recovery restores that node's own history;
+it does not fetch writes missed while offline, authorize readmission, or replicate the metadata
+server. Those require additional coordinated recovery work.
+
+### Metadata restart recovery
+
+Set `MATRIXOBJECT_METASERVER_STATE_DIR` to an existing directory to enable durable metadata with
+a bootstrap snapshot and an incremental binary protobuf outcome journal. Initial roster
+bootstrap saves a synced snapshot. Subsequent heartbeats, heartbeat expiry, and placement
+commits append decided record changes to `metadata.outcomes` and sync before acknowledgment.
+A directory lock prevents another server from opening the same directory. Startup retains
+its `storage=snapshot` label for the snapshot-plus-journal backend.
+
+Recovery validates the snapshot, restores metadata and placement state, then installs each
+outcome without rerunning placement decisions or expiry logic. A recovered roster overrides
+bootstrap environment settings. Interrupted temporary snapshots are ignored; only an incomplete
+final journal record is truncated. A missing initialized snapshot or outcome journal, a damaged
+complete record, or a prior-state mismatch prevents startup. Persistence failures stop requests
+until restart. The journal currently retains its full history; automatic checkpoint compaction
+is still required for bounded long-running deployments. Older binaries must not open a directory
+after it starts recording outcomes because they do not replay the journal.
+
+Keep all files in the state directory together and do not modify them while the node runs.
+Linux process-kill recovery and write failures are tested; power-loss and non-Linux filesystem
+behavior are not. A lost acknowledgment may still mean a durable mutation. This provides
+single-node recovery, not a replicated or highly available metadata service.
 
 ### What the kill test establishes, and in what order
 
@@ -730,7 +784,7 @@ Two invariants worth knowing before you start:
 
 ## Continuous integration
 
-On pushes to `main` and on every pull request, two jobs:
+On pushes to `main` and on every pull request, four jobs:
 
 - **build & docs** -- `cargo build --all-targets` and `cargo doc`, each for the
   default features and for `--all-features`, with warnings denied.
@@ -741,6 +795,13 @@ On pushes to `main` and on every pull request, two jobs:
   `running 1 test` as well: they name a test of an integration target rather than a
   `tests::` filter, so a rename would leave the filter matching nothing and the
   `1 passed` line absent rather than wrong.
+
+- **network metadata consensus** -- twenty-one named routing, process, recovery, storage, and
+  checkpoint tests with the optional consensus feature enabled.
+
+- **network chunk consensus** -- nine named checks of independently durable chunk
+  voters, leader loss, restart recovery, capacity, shutdown, and metadata health.
+  See [chunk consensus configuration](docs/chunk-consensus.md).
 
 CI does not run the whole library suite. `tools/suite_gate.sh` does, locally: it
 compares the failures by name against the 17 recorded in
@@ -761,3 +822,74 @@ Every Rust source opens with the two lines that say so:
 `every_rust_source_carries_the_licence_header` walks the tree and fails if a source
 is missing either line, if the walk finds fewer than a thousand sources, or if the
 `LICENSE` and `NOTICE` stop saying what the header claims.
+
+### Node reply budgets
+
+The replica and metadata server `max_payload_bytes` setting bounds both incoming
+and outgoing payloads. It must be between 24 bytes and the four-byte frame length
+maximum; the default remains 8 MiB. A read includes 40 bytes of sequence, checksum,
+and length fields, so its data must fit within the remaining budget. Oversized
+reads are refused before copying data, and oversized roster lists before copying
+the roster. Other successful replies are checked before wire encoding. Failure
+messages are shortened on UTF-8 boundaries to fit the same budget.
+
+A reply-size refusal leaves the connection usable. Request smaller read ranges
+or inventory batches when necessary. Roster listing currently has no pagination;
+configure enough space for the roster. Head replies may require more space as
+discarded ranges accumulate. Client and server limits are configured separately.
+
+### Metadata Raft command application
+
+With `matrix-raft`, `MetadataStateMachine` applies the eight lease and shard
+migration commands carried by `ObjectCommand::to_payload`. It checks group,
+term, and consecutive log indexes. Repeating the latest identical entry returns
+its saved response without applying it again; conflicting or older delivery is
+refused. A response starts with byte 0 for success, or byte 1 followed by UTF-8
+text for a committed application refusal. Business refusals advance the log;
+corruption errors stop application until a checkpoint is installed.
+
+The `MOMRAFT1` checkpoint contains metadata, group and Raft log identity, the
+latest command and its response, and a checksum. It preserves the Raft index
+separately from the metadata service commit counter, including across rejected
+commands. Checkpoint transfers reject changed identities, invalid offsets,
+stale log positions, and more than 64 MiB of accumulated data. Legacy raw
+metadata snapshots remain readable through the metadata service API; they are
+not Raft checkpoints and cannot recover a Raft replay position.
+
+This is the state-machine adapter. The shipped metaserver still uses its local
+snapshot backend, and its network requests do not yet pass through MatrixRaft
+consensus. Multi-node elections, durable Raft runtime wiring, chunk replication
+selection, and large-cluster failure testing remain required before a distributed
+production-readiness claim.
+
+### Binary page outcomes
+
+New chunk journal records and `ChunkRaftWriteGroup` proposals use the same
+binary protobuf `PageOutcome` schema in `proto/page_outcome.proto`. The outcome
+contains decided byte patches, page sequence, lengths, checksums, discard ranges,
+and physical counter increments. Recovery installs that state without running a
+write command again. A prior-state digest rejects reordered or mismatched changes.
+Appending six bytes to a 1 MiB page produces an outcome smaller than 256 bytes.
+
+Payloads are bounded to 8 MiB and materialized pages to 256 MiB on this path.
+The local `MOR2` journal framing adds header and payload checksums. Older `MOR1`
+records and chunk command log entries remain readable. Older binaries cannot
+read the new records. The page codec does not establish network Raft consensus. The group adapter remains an in-process apply harness.
+
+### Binary placement outcomes
+
+The metaserver journal and metadata MatrixRaft adapter accept the same `PlacementOutcome`
+binary protobuf schema in `proto/placement_outcome.proto`. Each outcome carries prior and
+resulting node usage or object placement values and consecutive placement commit indexes.
+All prior-state and shape checks complete before mutation. A heartbeat captures only its node;
+an object placement captures the object and its affected nodes. Heartbeat expiry scans the roster.
+The payload is limited to 8 MiB and protected by a checksum.
+
+This covers the network placement API. Other metadata commands still use their existing codec,
+and checkpoints still use the metadata snapshot format. Network requests are not yet routed
+through MatrixRaft consensus; the adapter tests cover state application and checkpoint recovery.
+
+### Network metadata voters
+
+The optional `metadata-consensus` feature runs one durable MatrixRaft voter per
+metaserver process. See [configuration, recovery, and current limits](docs/metadata-consensus.md).

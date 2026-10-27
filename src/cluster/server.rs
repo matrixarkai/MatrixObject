@@ -40,15 +40,36 @@
 
 use std::io::{BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::cluster::message::{
-    check_stamp, encode_failure, encode_reply, ReplicaReply, ReplicaRequest,
-};
+use super::shutdown::ServerShutdown;
+
+use super::replica_journal::ReplicaJournal;
+use crate::cluster::message::{check_stamp, encode_reply, ReplicaReply, ReplicaRequest};
 use crate::cluster::wire::{RequestCode, StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::{MatrixReplicaService, ObjectError};
+
+#[cfg(feature = "meta-server")]
+#[path = "server_heartbeat.rs"]
+mod heartbeat;
+#[cfg(feature = "meta-server")]
+pub use heartbeat::ReplicaHeartbeatOptions;
+
+#[cfg(feature = "chunk-consensus")]
+#[path = "chunk_consensus.rs"]
+mod consensus;
+#[cfg(feature = "chunk-consensus")]
+pub use consensus::ChunkRaftOptions;
+
+struct NodeReplica {
+    service: MatrixReplicaService,
+    journal: Option<ReplicaJournal>,
+    max_pages: usize,
+    used_bytes: u64,
+    failed: bool,
+}
 
 /// How a replica node is sized and bounded.
 #[derive(Clone, Debug)]
@@ -57,7 +78,13 @@ pub struct ReplicaNodeOptions {
     ///
     /// A length field arrives before the bytes it describes, so this is the bound on what
     /// one frame can make the node allocate.
+    /// Also bounds outgoing payloads, including failure messages; minimum 24 bytes.
     pub max_payload_bytes: usize,
+    /// Maximum total page payload bytes, including zero-filled space before write offsets.
+    /// This excludes indexes, caches, sidecars, and transport buffers. Must be positive.
+    pub capacity_bytes: u64,
+    /// Maximum page identities, including pages created by empty writes. Must be positive.
+    pub max_pages: usize,
     /// Connections handled at once.
     pub worker_threads: usize,
     /// How long a connection may go without sending before it is dropped.
@@ -70,6 +97,8 @@ impl Default for ReplicaNodeOptions {
     fn default() -> Self {
         Self {
             max_payload_bytes: MAX_PAYLOAD_BYTES,
+            capacity_bytes: 256 * 1024 * 1024,
+            max_pages: 65_536,
             worker_threads: 4,
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
@@ -90,29 +119,105 @@ struct NodeCounters {
 /// A bound listener and the one replica behind it.
 pub struct ReplicaNodeServer {
     listener: TcpListener,
-    replica: Arc<Mutex<MatrixReplicaService>>,
+    replica: Arc<Mutex<NodeReplica>>,
     options: ReplicaNodeOptions,
     counters: Arc<NodeCounters>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
+    #[cfg(feature = "meta-server")]
+    heartbeat: Option<ReplicaHeartbeatOptions>,
+    #[cfg(feature = "chunk-consensus")]
+    consensus: Option<Arc<consensus::ChunkConsensus>>,
 }
 
 impl ReplicaNodeServer {
-    /// Bind `addr` and serve a fresh, empty replica.
-    ///
-    /// There is deliberately no `bind_with_replica` taking a preloaded one. It was written,
-    /// and removed before this landed: nothing calls it, because this node has no durable
-    /// state to load from, so its only possible caller is a recovery path that does not
-    /// exist. It belongs in the change that gives a node something to recover.
+    /// Bind `addr` and serve a fresh in-memory replica.
     pub fn bind(addr: &str, options: ReplicaNodeOptions) -> std::io::Result<Self> {
-        let replica = MatrixReplicaService::new();
+        Self::bind_storage(addr, options, None)
+    }
+
+    /// Replay a locked journal and sync every successful mutation before replying.
+    /// The parent directory must already exist. This does not repair missed writes
+    /// from other nodes or establish membership after a restart.
+    pub fn bind_with_journal(
+        addr: &str,
+        options: ReplicaNodeOptions,
+        path: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        Self::bind_storage(addr, options, Some(path))
+    }
+
+    fn bind_storage(
+        addr: &str,
+        options: ReplicaNodeOptions,
+        path: Option<&std::path::Path>,
+    ) -> std::io::Result<Self> {
+        crate::cluster::message::validate_payload_limit(options.max_payload_bytes)?;
+        if options.capacity_bytes == 0 || options.max_pages == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "replica capacity_bytes and max_pages must be positive",
+            ));
+        }
+        let mut service = MatrixReplicaService::new();
+        service
+            .set_capacity_bytes(options.capacity_bytes)
+            .map_err(|err| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
+            })?;
+        let journal = path
+            .map(|path| ReplicaJournal::open_with_limits(path, &mut service, options.max_pages))
+            .transpose()?;
         let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
-            replica: Arc::new(Mutex::new(replica)),
+            replica: Arc::new(Mutex::new(NodeReplica {
+                used_bytes: service.physical_bytes(),
+                service,
+                journal,
+                max_pages: options.max_pages,
+                failed: false,
+            })),
             options,
             counters: Arc::new(NodeCounters::default()),
-            stop: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(ServerShutdown::default()),
+            #[cfg(feature = "meta-server")]
+            heartbeat: None,
+            #[cfg(feature = "chunk-consensus")]
+            consensus: None,
         })
+    }
+
+    /// Enable one independently durable Raft voter before serving any requests.
+    #[cfg(feature = "chunk-consensus")]
+    pub fn enable_consensus(&mut self, options: ChunkRaftOptions) -> std::io::Result<()> {
+        if self.consensus.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "chunk consensus already configured",
+            ));
+        }
+        self.consensus = Some(Arc::new(consensus::ChunkConsensus::open(
+            options,
+            Arc::clone(&self.replica),
+            Arc::clone(&self.stop),
+            self.options.max_payload_bytes,
+        )?));
+        Ok(())
+    }
+
+    /// Enable periodic health reports to an explicitly configured metaserver catalog.
+    #[cfg(feature = "meta-server")]
+    pub fn enable_heartbeats(&mut self, options: ReplicaHeartbeatOptions) -> std::io::Result<()> {
+        options.validate()?;
+        if self.heartbeat.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "heartbeats already configured",
+            ));
+        }
+        self.heartbeat = Some(options);
+        Ok(())
     }
 
     /// The address actually bound.
@@ -124,7 +229,7 @@ impl ReplicaNodeServer {
         self.listener.local_addr()
     }
 
-    /// A handle that stops the accept loops.
+    /// A handle that stops accept loops and closes active connections.
     pub fn shutdown_handle(&self) -> ReplicaNodeShutdown {
         ReplicaNodeShutdown {
             stop: Arc::clone(&self.stop),
@@ -141,14 +246,39 @@ impl ReplicaNodeServer {
             let counters = Arc::clone(&self.counters);
             let stop = Arc::clone(&self.stop);
             let options = self.options.clone();
+            #[cfg(feature = "chunk-consensus")]
+            let consensus = self.consensus.clone();
             handles.push(std::thread::spawn(move || {
-                accept_loop(listener, replica, counters, stop, options);
+                accept_loop(
+                    listener,
+                    replica,
+                    counters,
+                    stop,
+                    options,
+                    #[cfg(feature = "chunk-consensus")]
+                    consensus,
+                );
+            }));
+        }
+        #[cfg(feature = "meta-server")]
+        if let Some(options) = self.heartbeat {
+            let replica = Arc::clone(&self.replica);
+            let stop = Arc::clone(&self.stop);
+            handles.push(std::thread::spawn(move || {
+                heartbeat::run(options, replica, stop)
             }));
         }
         for handle in handles {
             // A worker that panicked has already stopped serving; joining it is how that
             // becomes visible rather than a thread count quietly dropping to zero.
             let _ = handle.join();
+        }
+        #[cfg(feature = "chunk-consensus")]
+        if self.consensus.as_ref().is_some_and(|c| c.is_failed()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "chunk consensus worker failed",
+            ));
         }
         Ok(())
     }
@@ -157,38 +287,53 @@ impl ReplicaNodeServer {
 /// Stops a running [`ReplicaNodeServer`].
 #[derive(Clone, Debug)]
 pub struct ReplicaNodeShutdown {
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
 }
 
 impl ReplicaNodeShutdown {
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.stop.stop();
     }
 }
 
 fn accept_loop(
     listener: TcpListener,
-    replica: Arc<Mutex<MatrixReplicaService>>,
+    replica: Arc<Mutex<NodeReplica>>,
     counters: Arc<NodeCounters>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
     options: ReplicaNodeOptions,
+    #[cfg(feature = "chunk-consensus")] consensus: Option<Arc<consensus::ChunkConsensus>>,
 ) {
-    while !stop.load(Ordering::SeqCst) {
+    while !stop.is_stopped() {
         match listener.accept() {
             Ok((stream, _peer)) => {
+                let _active = match stop.track(&stream) {
+                    Ok(Some(active)) => active,
+                    Ok(None) => return,
+                    Err(_) => continue,
+                };
+                if stream.set_nonblocking(false).is_err() {
+                    continue;
+                }
                 let _ = stream.set_read_timeout(Some(options.read_timeout));
                 let _ = stream.set_write_timeout(Some(options.write_timeout));
                 // TCP_NODELAY: a replica call is one small frame and the answer is wanted
                 // before the next one is sent, so Nagle has nothing to coalesce and only
                 // adds latency to every write in the fan-out.
                 let _ = stream.set_nodelay(true);
-                serve_connection(stream, &replica, &counters, &options);
+                serve_connection(
+                    stream,
+                    &replica,
+                    &counters,
+                    &options,
+                    #[cfg(feature = "chunk-consensus")]
+                    consensus.as_deref(),
+                );
             }
             Err(_) => {
-                // An accept that failed is not a reason to stop accepting -- a single
-                // refused connection would otherwise take the node down. The loop continues
-                // and the shutdown flag is the only thing that ends it.
-                continue;
+                // Nonblocking accept lets idle workers observe shutdown. Back off on
+                // all accept errors so resource exhaustion cannot create a busy loop.
+                std::thread::sleep(Duration::from_millis(20));
             }
         }
     }
@@ -201,15 +346,19 @@ fn accept_loop(
 /// the cluster -- a connection per request would leave nothing to look at between calls.
 fn serve_connection(
     stream: TcpStream,
-    replica: &Arc<Mutex<MatrixReplicaService>>,
+    replica: &Arc<Mutex<NodeReplica>>,
     counters: &Arc<NodeCounters>,
     options: &ReplicaNodeOptions,
+    #[cfg(feature = "chunk-consensus")] consensus: Option<&consensus::ChunkConsensus>,
 ) {
     let mut writer = match stream.try_clone() {
         Ok(writer) => writer,
         Err(_) => return,
     };
     let mut reader = BufReader::new(stream);
+    let encode_failure = |status, message: &str| {
+        crate::cluster::message::encode_bounded_failure(status, message, options.max_payload_bytes)
+    };
     loop {
         let mut header = [0u8; HEADER_BYTES];
         if reader.read_exact(&mut header).is_err() {
@@ -247,13 +396,28 @@ fn serve_connection(
                     counters.failures.fetch_add(1, Ordering::Relaxed);
                     encode_failure(StatusCode::for_error(&err), &err.to_string())
                 }
-                Ok(request) => match apply(replica, request) {
-                    Ok(reply) => encode_reply(&reply),
-                    Err(err) => {
-                        counters.failures.fetch_add(1, Ordering::Relaxed);
-                        encode_failure(StatusCode::for_error(&err), &err.to_string())
+                Ok(request) => {
+                    #[cfg(feature = "chunk-consensus")]
+                    let result = match consensus {
+                        Some(c) => c.request(request),
+                        None => apply(replica, request, options.max_payload_bytes),
+                    };
+                    #[cfg(not(feature = "chunk-consensus"))]
+                    let result = apply(replica, request, options.max_payload_bytes);
+                    match result.and_then(|reply| {
+                        crate::cluster::message::check_reply_size(
+                            reply.payload_len(),
+                            options.max_payload_bytes,
+                        )?;
+                        Ok(reply)
+                    }) {
+                        Ok(reply) => encode_reply(&reply),
+                        Err(err) => {
+                            counters.failures.fetch_add(1, Ordering::Relaxed);
+                            encode_failure(StatusCode::for_error(&err), &err.to_string())
+                        }
                     }
-                },
+                }
             },
         };
         if writer.write_all(&response).is_err() || writer.flush().is_err() {
@@ -269,8 +433,7 @@ fn read_frame(
 ) -> Result<(u8, Vec<u8>), ObjectError> {
     check_stamp(header[0])?;
     let code = header[1];
-    let payload_len =
-        u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
+    let payload_len = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
     // CHECKED BEFORE THE ALLOCATION, not after the read. The length is four bytes from a
     // socket; without this the frame chooses how much memory this process asks for.
     if payload_len > max_payload_bytes {
@@ -294,8 +457,9 @@ fn read_frame(
 /// own message, so a caller reading the failure learns what the store said and not what this
 /// file thought about it.
 fn apply(
-    replica: &Arc<Mutex<MatrixReplicaService>>,
+    replica: &Arc<Mutex<NodeReplica>>,
     request: ReplicaRequest,
+    max_payload_bytes: usize,
 ) -> Result<ReplicaReply, ObjectError> {
     let mut guard = replica.lock().map_err(|_| {
         // A poisoned lock means a previous request panicked while holding the replica, so
@@ -307,12 +471,116 @@ fn apply(
                 .to_string(),
         )
     })?;
+    if guard.failed {
+        return Err(ObjectError::Corruption(
+            "replica journal failed; restart and recover before serving requests".to_string(),
+        ));
+    }
+    if let ReplicaRequest::ReadChunk { length, .. } = &request {
+        // Include sequence, checksum, and lengths before copying any page bytes.
+        let size = usize::try_from(*length)
+            .unwrap_or(usize::MAX)
+            .saturating_add(40);
+        crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
+    }
+    let page = if guard.journal.is_some() {
+        match &request {
+            ReplicaRequest::WriteChunk { page_id, .. }
+            | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let before = if let Some(page) = &page {
+        match guard.service.read_chunk_state(page) {
+            Ok(state) => Some(state),
+            Err(ObjectError::NotFound(_)) => None,
+            Err(err) => return Err(err),
+        }
+    } else {
+        None
+    };
+    let counters = crate::outcome::PageOutcome::counters(&guard.service);
+    let max_pages = guard.max_pages;
+    let changed_page = match &request {
+        ReplicaRequest::WriteChunk { page_id, .. }
+        | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
+        _ => None,
+    };
+    let previous_bytes = changed_page
+        .as_ref()
+        .map_or(0, |page| guard.service.page_physical_len(page));
+    let result = apply_to_replica(&mut guard.service, request, max_pages);
+    if let Some(page) = changed_page {
+        let current_bytes = guard.service.page_physical_len(&page);
+        match guard
+            .used_bytes
+            .checked_sub(previous_bytes)
+            .and_then(|n| n.checked_add(current_bytes))
+        {
+            Some(bytes) => guard.used_bytes = bytes,
+            None => {
+                guard.failed = true;
+                return Err(ObjectError::Corruption(
+                    "replica usage accounting overflow".into(),
+                ));
+            }
+        }
+    }
+    let reply = result?;
+    if let Some(page) = page {
+        let persist = (|| -> Result<(), ObjectError> {
+            let after = match guard.service.read_chunk_state(&page) {
+                Ok(state) => state,
+                Err(ObjectError::NotFound(_)) if before.is_none() => return Ok(()),
+                Err(err) => return Err(err),
+            };
+            if before.as_ref() == Some(&after)
+                && counters == crate::outcome::PageOutcome::counters(&guard.service)
+            {
+                return Ok(());
+            }
+            let outcome = crate::outcome::PageOutcome::between(&page, before.as_ref(), &after)?
+                .with_counters(
+                    counters,
+                    crate::outcome::PageOutcome::counters(&guard.service),
+                );
+            let record = ReplicaJournal::encode_outcome(&outcome)
+                .map_err(|err| ObjectError::Corruption(err.to_string()))?;
+            guard
+                .journal
+                .as_mut()
+                .unwrap()
+                .append(&record)
+                .map_err(|err| ObjectError::Corruption(err.to_string()))
+        })();
+        if let Err(err) = persist {
+            guard.failed = true;
+            return Err(ObjectError::Corruption(format!(
+                "replica outcome persistence failed: {err}"
+            )));
+        }
+    }
+    Ok(reply)
+}
+
+pub(super) fn apply_to_replica(
+    guard: &mut MatrixReplicaService,
+    request: ReplicaRequest,
+    max_pages: usize,
+) -> Result<ReplicaReply, ObjectError> {
     match request {
         ReplicaRequest::WriteChunk {
             page_id,
             offset,
             data,
         } => {
+            if guard.page_count() >= max_pages && guard.page_write_sequence(&page_id).is_none() {
+                return Err(ObjectError::PreconditionFailed(
+                    "replica page count limit exceeded".to_string(),
+                ));
+            }
             guard.write_chunk(page_id, offset, &data)?;
             Ok(ReplicaReply::Applied)
         }
@@ -320,9 +588,9 @@ fn apply(
             page_id,
             offset,
             length,
-        } => Ok(ReplicaReply::Read(guard.read_chunk(
-            &page_id, offset, length,
-        )?)),
+        } => Ok(ReplicaReply::Read(
+            guard.read_chunk(&page_id, offset, length)?,
+        )),
         ReplicaRequest::HeadChunk { page_id } => {
             Ok(ReplicaReply::Head(guard.head_chunk(&page_id)?))
         }
@@ -342,9 +610,58 @@ fn apply(
             let mut entries = guard.page_write_sequences_after(after.as_ref(), limit as usize + 1);
             let has_more = entries.len() > limit as usize;
             entries.truncate(limit as usize);
-            Ok(ReplicaReply::PageInventory(crate::cluster::message::PageInventory {
-                entries, has_more,
-            }))
+            Ok(ReplicaReply::PageInventory(
+                crate::cluster::message::PageInventory { entries, has_more },
+            ))
         }
+    }
+}
+
+#[cfg(test)]
+mod journal_failure_tests {
+    use super::*;
+    use crate::{ChunkId, PageId};
+
+    #[test]
+    fn failed_persistence_blocks_acknowledgment_and_all_later_requests() {
+        let path = std::env::temp_dir().join(format!(
+            "replica-readonly-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, []).unwrap();
+        let replica = Arc::new(Mutex::new(NodeReplica {
+            used_bytes: 0,
+            service: MatrixReplicaService::new(),
+            journal: Some(ReplicaJournal::read_only_for_test(&path)),
+            max_pages: 65_536,
+            failed: false,
+        }));
+        let page = PageId {
+            chunk_id: ChunkId::new(1, 2).unwrap(),
+            page_index: 3,
+        };
+        let write = ReplicaRequest::WriteChunk {
+            page_id: page.clone(),
+            offset: 0,
+            data: b"uncommitted".to_vec(),
+        };
+        assert!(apply(&replica, write.clone(), MAX_PAYLOAD_BYTES).is_err());
+        assert!(replica.lock().unwrap().failed);
+        for request in [
+            write,
+            ReplicaRequest::Ping,
+            ReplicaRequest::HeadChunk { page_id: page },
+        ] {
+            assert!(apply(&replica, request, MAX_PAYLOAD_BYTES).is_err());
+        }
+        drop(replica);
+        let mut recovered = MatrixReplicaService::new();
+        drop(ReplicaJournal::open(&path, &mut recovered).unwrap());
+        assert_eq!(recovered.page_count(), 0);
+        std::fs::remove_file(path).unwrap();
     }
 }

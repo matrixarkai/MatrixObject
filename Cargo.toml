@@ -37,8 +37,8 @@ http-server = []
 s3 = ["http-server"]
 # Replicas in other processes (`src/cluster`, and the `chunkserver` binary).
 #
-# ON by default, and it adds NO dependencies -- the standard library alone, for the same
-# reason `http-server` gives. What the feature gates is a listener, a client and the quorum
+# ON by default. The fs2 dependency provides the exclusive durable-journal file lock.
+# What the feature gates is a listener, a client and the quorum
 # over them, none of which costs anything until something binds a port: the default
 # `ReplicaPlacement` is the in-process arrangement this store has always had, so a build with
 # this feature on behaves exactly as it did before something asks for remote replicas.
@@ -46,19 +46,22 @@ s3 = ["http-server"]
 # On by default rather than opt-in because the thing it makes possible -- surviving the loss
 # of one replica process -- is what the replication factor this store already pays for is
 # supposed to buy. A flag standing between a user and that is a barrier in front of the point.
-replica-server = []
+replica-server = ["dep:fs2"]
 # The control plane in another process (`src/cluster`'s metaserver half, and the `metaserver`
 # binary).
 #
-# ON by default, and it adds NO dependencies -- the standard library alone, and it reuses the
-# replica slice's framing rather than bringing a second one. What the feature gates is a
+# ON by default. It reuses the replica framing and the fs2 storage-lock dependency. What the feature gates is a
 # listener, a client and the directory over them, none of which costs anything until something
 # binds a port: an empty `metaserver_catalog_endpoints` is the in-process control plane this
 # store has always had, so a build with this feature on behaves exactly as it did before
 # something names an endpoint.
-meta-server = []
+meta-server = ["dep:fs2"]
 matrix-raft = ["dep:matrixraft"]
+chunk-consensus = ["replica-server", "matrix-raft", "matrixraft/peer-runtime"]
+metadata-consensus = ["meta-server", "matrix-raft", "matrixraft/peer-runtime"]
 
 [dependencies]
+prost = "0.11.9"
+fs2 = { version = "0.4.3", optional = true }
 raft = { version = "0.7", optional = true, default-features = false, features = ["prost-codec"] }
-matrixraft = { git = "https://github.com/matrixarkai/matrixraft.git", optional = true }
+matrixraft = { git = "https://github.com/matrixarkai/matrixraft.git", rev = "d0090b8750627cc3a4b6596605c5ad6d6bdc5456", optional = true }
