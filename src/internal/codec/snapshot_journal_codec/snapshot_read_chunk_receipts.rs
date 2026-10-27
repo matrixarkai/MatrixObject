@@ -93,12 +93,12 @@ pub(crate) fn read_chunk_partial_reclaim_report(
         } else {
             0
         },
-        partial_reclaim_failures: if snapshot_version >= 26 {
+        partial_reclaim_failures: if snapshot_version >= 20 {
             cursor.read_u64()?
         } else {
             0
         },
-        last_partial_reclaim_failure_status: if snapshot_version >= 27 {
+        last_partial_reclaim_failure_status: if snapshot_version >= 21 {
             cursor.read_string()?
         } else {
             "ok".to_string()

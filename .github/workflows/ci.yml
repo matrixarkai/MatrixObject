@@ -1558,3 +1558,15 @@ jobs:
           cargo test --locked --features chunk-consensus --test network_chunk_consensus metadata_catalog_routes_chunk_group_through_leader_loss -- --exact | tee /tmp/group-catalog.log
           grep -q '^running 1 test$' /tmp/group-catalog.log
           grep -q '^test result: ok. 1 passed' /tmp/group-catalog.log
+      - name: replica service dedupes state install and reclaim receipts across snapshots
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --lib tests::replica_service_dedupes_state_install_and_reclaim_receipts_across_snapshots -- --exact | tee /tmp/receipt-recovery.log
+          grep -q '^running 1 test$' /tmp/receipt-recovery.log
+          grep -q '^test result: ok. 1 passed' /tmp/receipt-recovery.log
+      - name: reclaim receipt decoder consumes each supported snapshot version
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --lib tests::reclaim_receipt_decoder_consumes_each_supported_snapshot_version -- --exact | tee /tmp/receipt-recovery.log
+          grep -q '^running 1 test$' /tmp/receipt-recovery.log
+          grep -q '^test result: ok. 1 passed' /tmp/receipt-recovery.log
