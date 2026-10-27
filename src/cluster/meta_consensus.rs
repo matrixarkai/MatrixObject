@@ -393,7 +393,7 @@ fn run(
     Ok(())
 }
 fn prepare(
-    service: &MatrixMetaService,
+    service: &mut MatrixMetaService,
     request: &MetaRequest,
     limit: usize,
     groups: &super::ChunkGroupCatalog,
@@ -420,10 +420,61 @@ fn prepare(
         }
         _ => return Ok((Vec::new(), None)),
     };
-    let before = PlacementOutcome::capture(service, groups.affected_nodes(nodes), object)?;
-    let mut candidate = service.clone();
-    let reply = apply_with_groups(&mut candidate, request.clone(), limit, groups)?;
-    Ok((before.finish(&candidate)?.to_payload()?, Some(reply)))
+    let nodes = groups.affected_nodes(nodes);
+    let before = PlacementOutcome::capture(service, nodes.clone(), object.clone())?;
+    // The worker exclusively owns this service. Keep the entire roster available to
+    // validation, but save only records these three mutation kinds can change.
+    let draft = PlacementDraft::new(service, nodes, object);
+    let reply = apply_with_groups(draft.service, request.clone(), limit, groups)?;
+    let payload = before.finish(draft.service)?.to_payload()?;
+    // Restore before the caller can propose, acknowledge, or handle another request.
+    drop(draft);
+    Ok((payload, Some(reply)))
+}
+
+/// Undo state for the closed set of placement mutations admitted by `prepare`.
+/// Never use this for membership, health reports, or other metadata operations.
+struct PlacementDraft<'a> {
+    service: &'a mut MatrixMetaService,
+    nodes: Vec<crate::PlacementNode>,
+    object: Option<(crate::ObjectId, Option<crate::ObjectPlacement>)>,
+    index: u64,
+}
+impl<'a> PlacementDraft<'a> {
+    fn new(
+        service: &'a mut MatrixMetaService,
+        nodes: Vec<String>,
+        object: Option<crate::ObjectId>,
+    ) -> Self {
+        let nodes = nodes.iter().map(|id| service.nodes[id].clone()).collect();
+        let object = object.map(|id| {
+            let previous = service.placements.get(&id).cloned();
+            (id, previous)
+        });
+        let index = service.placement_commit_index;
+        Self {
+            service,
+            nodes,
+            object,
+            index,
+        }
+    }
+}
+impl Drop for PlacementDraft<'_> {
+    fn drop(&mut self) {
+        for node in self.nodes.drain(..) {
+            self.service.nodes.insert(node.node_id.clone(), node);
+        }
+        if let Some((id, previous)) = self.object.take() {
+            if let Some(previous) = previous {
+                self.service.placements.insert(id, previous);
+            } else {
+                self.service.placements.remove(&id);
+            }
+        }
+        self.service.placement_commit_index = self.index;
+        self.service.invalidate_snapshot_export_cache();
+    }
 }
 
 fn remaining(deadline: Instant) -> io::Result<Duration> {
@@ -459,4 +510,312 @@ fn write_until(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> i
         bytes = &bytes[n..];
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cluster::{ChunkGroupCatalog, ChunkGroupConfig, ChunkGroupIdentity};
+    use crate::{ObjectId, ObjectPlacement, PlacementNode};
+    fn fixture(count: usize, objects: usize) -> (MatrixMetaService, ChunkGroupCatalog) {
+        let groups = ChunkGroupCatalog::new(
+            (0..count)
+                .map(|g| {
+                    let port = 10000 + g * 6;
+                    ChunkGroupConfig {
+                        placement_id: format!("group-{g}"),
+                        failure_domain: format!("rack-{g}"),
+                        identity: Some(ChunkGroupIdentity {
+                            version: 1,
+                            group_id: g as u64 + 1,
+                            node_id: 1,
+                            capacity_bytes: 1 << 30,
+                            max_pages: 1024,
+                            voters: vec![1, 2, 3],
+                            peer_endpoints: (0..3)
+                                .map(|v| format!("127.0.0.1:{}", port + v))
+                                .collect(),
+                        }),
+                        api_endpoints: (3..6).map(|v| format!("127.0.0.1:{}", port + v)).collect(),
+                        member_ids: (0..3).map(|v| format!("member-{g}-{v}")).collect(),
+                    }
+                })
+                .collect(),
+        )
+        .unwrap();
+        let mut service = MatrixMetaService::new();
+        for group in groups.groups() {
+            for (id, endpoint, eligible) in
+                std::iter::once((&group.placement_id, &group.api_endpoints[0], true)).chain(
+                    group
+                        .member_ids
+                        .iter()
+                        .zip(&group.api_endpoints)
+                        .map(|(id, ep)| (id, ep, false)),
+                )
+            {
+                let index = service.nodes.len() as u64;
+                service.nodes.insert(
+                    id.clone(),
+                    PlacementNode {
+                        node_id: id.clone(),
+                        endpoint: endpoint.clone(),
+                        service_kind: "chunkserver".into(),
+                        failure_domain: group.failure_domain.clone(),
+                        metadata_eligible: false,
+                        data_eligible: eligible,
+                        gateway_eligible: false,
+                        serves_page_tier: true,
+                        metadata_value_bytes: 0,
+                        capacity_bytes: 1 << 30,
+                        used_bytes: 0,
+                        committed_bytes: 0,
+                        draining: false,
+                        online: true,
+                        last_heartbeat_ms: 1,
+                        page_allocator_shard_index: index,
+                        page_allocator_shard_count: (count * 4) as u64,
+                        meta_health: Default::default(),
+                        page_health: Default::default(),
+                        chunk_health: Default::default(),
+                    },
+                );
+            }
+        }
+        for n in 0..objects {
+            let id = ObjectId::new("bucket", format!("object-{n}"));
+            service.placements.insert(
+                id.clone(),
+                ObjectPlacement {
+                    object_id: id,
+                    version: 1,
+                    length: 128,
+                    node_ids: vec!["group-0".into()],
+                    update_time_ms: 1,
+                },
+            );
+        }
+        service.nodes.get_mut("group-0").unwrap().committed_bytes = objects as u64 * 128;
+        service.placement_commit_index = (service.nodes.len() + objects) as u64;
+        groups.validate_roster(&service).unwrap();
+        (service, groups)
+    }
+
+    fn heartbeat() -> MetaRequest {
+        MetaRequest::HeartbeatChunkNode {
+            node_id: "member-0-0".into(),
+            expected_endpoint: "127.0.0.1:10003".into(),
+            used_bytes: 256,
+            capacity_bytes: 1 << 30,
+            online: true,
+            now_ms: 2,
+        }
+    }
+    fn placement(service: &MatrixMetaService, key: &str) -> MetaRequest {
+        let plan = service
+            .plan_object_placement(ObjectId::new("bucket", key), 256, 1)
+            .unwrap();
+        MetaRequest::CommitObjectPlacement {
+            placement: super::super::meta_message::CommittedPlacement {
+                bucket: "bucket".into(),
+                key: key.into(),
+                version: 2,
+                length: 256,
+                node_ids: plan.node_ids,
+                update_time_ms: 2,
+            },
+            expected_plan_checksum: plan.plan_checksum,
+        }
+    }
+    fn state(service: &MatrixMetaService) -> (Vec<u8>, String) {
+        (
+            service.export_snapshot().to_bytes().unwrap(),
+            service.placement_state_fingerprint(),
+        )
+    }
+    fn compare_preparation(
+        service: &mut MatrixMetaService,
+        groups: &ChunkGroupCatalog,
+        request: MetaRequest,
+    ) {
+        let saved = state(service);
+        let mut candidate = service.clone();
+        let object = match &request {
+            MetaRequest::CommitObjectPlacement { placement, .. } => Some(ObjectId::new(
+                placement.bucket.clone(),
+                placement.key.clone(),
+            )),
+            _ => None,
+        };
+        let before =
+            PlacementOutcome::capture(service, service.nodes.keys().cloned().collect(), object)
+                .unwrap();
+        let reply =
+            apply_with_groups(&mut candidate, request.clone(), 16 * 1024 * 1024, groups).unwrap();
+        let expected = before.finish(&candidate).unwrap().to_payload().unwrap();
+        let (actual, actual_reply) = prepare(service, &request, 16 * 1024 * 1024, groups).unwrap();
+        assert_eq!(state(service), saved, "preparation changed committed state");
+        assert_eq!(actual_reply, Some(reply));
+        assert_eq!(actual, expected);
+        PlacementOutcome::from_payload(&actual)
+            .unwrap()
+            .apply(service)
+            .unwrap();
+        assert_eq!(state(service), state(&candidate));
+    }
+    #[test]
+    fn preparation_restores_state_and_replays_identical_outcomes() {
+        let (mut service, groups) = fixture(32, 1000);
+        compare_preparation(&mut service, &groups, heartbeat());
+        assert_eq!(service.nodes["group-0"].used_bytes, 256);
+        let new = placement(&service, "new-object");
+        compare_preparation(&mut service, &groups, new);
+        let replacement = placement(&service, "object-0");
+        compare_preparation(&mut service, &groups, replacement);
+        compare_preparation(
+            &mut service,
+            &groups,
+            MetaRequest::ExpireRootNodeHeartbeats {
+                ttl_ms: 1,
+                now_ms: 5,
+            },
+        );
+        assert!(service.nodes.values().all(|n| !n.online));
+        let saved = state(&service);
+        let (payload, reply) = prepare(
+            &mut service,
+            &MetaRequest::ExpireRootNodeHeartbeats {
+                ttl_ms: 1,
+                now_ms: 6,
+            },
+            65536,
+            &groups,
+        )
+        .unwrap();
+        assert!(payload.is_empty());
+        assert_eq!(reply, Some(MetaReply::Expired { offline_count: 0 }));
+        assert_eq!(state(&service), saved);
+    }
+    #[test]
+    fn preparation_restores_rejections_errors_and_unwinding() {
+        let (mut service, groups) = fixture(2, 1);
+        let saved = state(&service);
+        let mut invalid = heartbeat();
+        if let MetaRequest::HeartbeatChunkNode { capacity_bytes, .. } = &mut invalid {
+            *capacity_bytes = 0;
+        }
+        assert!(prepare(&mut service, &invalid, 65536, &groups).is_err());
+        assert_eq!(state(&service), saved);
+        for panic in [false, true] {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || -> Result<(), ObjectError> {
+                    let draft = PlacementDraft::new(
+                        &mut service,
+                        groups.affected_nodes(vec!["member-0-0".into()]),
+                        None,
+                    );
+                    apply_with_groups(draft.service, heartbeat(), 65536, &groups)?;
+                    assert_eq!(draft.service.nodes["group-0"].used_bytes, 256);
+                    if panic {
+                        panic!("injected preparation unwind");
+                    }
+                    Err(ObjectError::InvalidArgument(
+                        "injected preparation failure".into(),
+                    ))
+                },
+            ));
+            if panic {
+                assert!(result.is_err());
+            } else {
+                assert!(result.unwrap().is_err());
+            }
+            assert_eq!(state(&service), saved);
+        }
+        // Full-roster allocator checks must still see nodes outside the undo set.
+        let groups = ChunkGroupCatalog::default();
+        service
+            .nodes
+            .get_mut("group-1")
+            .unwrap()
+            .page_allocator_shard_index = service.nodes["group-0"].page_allocator_shard_index;
+        service.invalidate_snapshot_export_cache();
+        let saved = state(&service);
+        let invalid = MetaRequest::HeartbeatRootNode {
+            node_id: "group-0".into(),
+            used_bytes: 256,
+            capacity_bytes: 1 << 30,
+            draining: false,
+            online: true,
+            now_ms: 2,
+        };
+        assert!(prepare(&mut service, &invalid, 65536, &groups).is_err());
+        assert_eq!(state(&service), saved);
+    }
+    #[test]
+    fn preparation_restores_placement_when_outcome_exceeds_limit() {
+        let (mut service, groups) = fixture(1, 0);
+        let key = "k".repeat(4 * 1024 * 1024);
+        let request = placement(&service, &key);
+        apply_with_groups(&mut service, request, 16 * 1024 * 1024, &groups).unwrap();
+        let mut request = placement(&service, &key);
+        if let MetaRequest::CommitObjectPlacement { placement, .. } = &mut request {
+            placement.version = 3;
+        }
+        let saved = state(&service);
+        let error = prepare(&mut service, &request, 16 * 1024 * 1024, &groups).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("placement outcome exceeds size limit"),
+            "{error}"
+        );
+        assert_eq!(state(&service), saved);
+    }
+    #[test]
+    #[ignore = "bounded local preparation timing; run with --release and --nocapture"]
+    fn measure_heartbeat_preparation_by_catalog_size() {
+        println!("groups,nodes,placements,clone_ns,prepare_ns,outcome_bytes");
+        for count in [1, 32, 512] {
+            for objects in [0, 10000] {
+                let (mut service, groups) = fixture(count, objects);
+                let request = MetaRequest::HeartbeatChunkNode {
+                    node_id: "member-0-0".into(),
+                    expected_endpoint: "127.0.0.1:10003".into(),
+                    used_bytes: 1,
+                    capacity_bytes: 1 << 30,
+                    online: true,
+                    now_ms: 2,
+                };
+                let size = prepare(&mut service, &request, 65536, &groups)
+                    .unwrap()
+                    .0
+                    .len();
+                let mut clones = Vec::new();
+                let mut preparations = Vec::new();
+                for _ in 0..7 {
+                    let start = Instant::now();
+                    for _ in 0..16 {
+                        std::hint::black_box(service.clone());
+                    }
+                    clones.push(start.elapsed().as_nanos() / 16);
+                    let start = Instant::now();
+                    for _ in 0..16 {
+                        std::hint::black_box(
+                            prepare(&mut service, &request, 65536, &groups).unwrap(),
+                        );
+                    }
+                    preparations.push(start.elapsed().as_nanos() / 16);
+                }
+                clones.sort_unstable();
+                preparations.sort_unstable();
+                assert_eq!(service.nodes["member-0-0"].used_bytes, 0);
+                println!(
+                    "{count},{},{objects},{},{},{size}",
+                    service.nodes.len(),
+                    clones[3],
+                    preparations[3]
+                );
+            }
+        }
+    }
 }
