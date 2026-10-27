@@ -55,7 +55,7 @@ Two jobs, both on a pinned toolchain:
 | job | what it does |
 |---|---|
 | **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
-| **format and rollback guards** | 84 individual tests in the library plus 36 integration tests, each run by name with `--exact` |
+| **format and rollback guards** | 84 individual tests in the library plus 42 integration tests, each run by name with `--exact` |
 
 **CI does not run the suite.** It compiles everything and runs those 84 guards plus the integration tests. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run

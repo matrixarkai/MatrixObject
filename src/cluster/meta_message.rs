@@ -44,7 +44,7 @@
 
 use crate::cluster::meta_wire::{put_bool, take_bool, MetaRequestCode};
 use crate::cluster::wire::{put_str, put_u64, Cursor, StatusCode};
-use crate::{ObjectError, ObjectId, ObjectPlacement, PlacementPlan, PlacementNode};
+use crate::{ObjectError, ObjectId, ObjectPlacement, PlacementNode, PlacementPlan};
 
 /// A node in the roster, as the wire reports it: everything except the telemetry.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -245,9 +245,7 @@ impl MetaRequest {
             MetaRequest::ListRootNodes => MetaRequestCode::ListRootNodes,
             MetaRequest::PlanObjectPlacement { .. } => MetaRequestCode::PlanObjectPlacement,
             MetaRequest::CommitObjectPlacement { .. } => MetaRequestCode::CommitObjectPlacement,
-            MetaRequest::ReadObjectRootPlacement { .. } => {
-                MetaRequestCode::ReadObjectRootPlacement
-            }
+            MetaRequest::ReadObjectRootPlacement { .. } => MetaRequestCode::ReadObjectRootPlacement,
             MetaRequest::Ping => MetaRequestCode::Ping,
         }
     }
@@ -355,7 +353,9 @@ pub enum MetaReply {
     PlacementNode(PlacementNodeSummary),
     RootNodes(Vec<PlacementNodeSummary>),
     /// How many nodes this call took offline.
-    Expired { offline_count: u64 },
+    Expired {
+        offline_count: u64,
+    },
     Plan(PlacementAssignment),
     Placement(CommittedPlacement),
     /// The metaserver is answering, and this is what it holds.
@@ -367,6 +367,38 @@ pub enum MetaReply {
 }
 
 impl MetaReply {
+    pub(crate) fn payload_len(&self) -> usize {
+        let strings = |values: &[String]| {
+            values
+                .iter()
+                .fold(0usize, |n, v| n.saturating_add(4).saturating_add(v.len()))
+        };
+        match self {
+            Self::PlacementNode(node) => node_payload_len(
+                &node.node_id,
+                &node.endpoint,
+                &node.service_kind,
+                &node.failure_domain,
+            ),
+            Self::RootNodes(nodes) => nodes.iter().fold(8usize, |n, node| {
+                n.saturating_add(node_payload_len(
+                    &node.node_id,
+                    &node.endpoint,
+                    &node.service_kind,
+                    &node.failure_domain,
+                ))
+            }),
+            Self::Expired { .. } => 8,
+            Self::Plan(plan) => 52usize
+                .saturating_add(plan.bucket.len())
+                .saturating_add(plan.key.len())
+                .saturating_add(plan.plan_checksum.len())
+                .saturating_add(strings(&plan.node_ids)),
+            Self::Placement(placement) => placement_payload_len(placement),
+            Self::Pong { .. } => 24,
+        }
+    }
+
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
@@ -464,8 +496,7 @@ impl MetaReply {
                     plan_checksum: cursor.take_str()?,
                 })
             }
-            MetaRequestCode::CommitObjectPlacement
-            | MetaRequestCode::ReadObjectRootPlacement => {
+            MetaRequestCode::CommitObjectPlacement | MetaRequestCode::ReadObjectRootPlacement => {
                 MetaReply::Placement(take_placement(&mut cursor)?)
             }
             MetaRequestCode::Ping => MetaReply::Pong {
@@ -489,6 +520,21 @@ impl MetaReply {
 /// A floor, not an estimate, and used only to bound a roster count before a `Vec` is reserved
 /// for it: four 4-byte string headers, five 8-byte booleans and seven 8-byte numbers.
 const MIN_NODE_BYTES: usize = 4 * 4 + 5 * 8 + 7 * 8;
+
+pub(crate) fn node_payload_len(id: &str, endpoint: &str, kind: &str, domain: &str) -> usize {
+    [id, endpoint, kind, domain]
+        .iter()
+        .fold(MIN_NODE_BYTES, |n, text| n.saturating_add(text.len()))
+}
+
+pub(crate) fn placement_payload_len(placement: &CommittedPlacement) -> usize {
+    placement.node_ids.iter().fold(
+        40usize
+            .saturating_add(placement.bucket.len())
+            .saturating_add(placement.key.len()),
+        |n, id| n.saturating_add(4).saturating_add(id.len()),
+    )
+}
 
 fn put_node(out: &mut Vec<u8>, node: &PlacementNodeSummary) {
     put_str(out, &node.node_id);

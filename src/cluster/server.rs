@@ -46,12 +46,10 @@ use std::time::Duration;
 
 use super::shutdown::ServerShutdown;
 
-use crate::cluster::message::{
-    check_stamp, encode_failure, encode_reply, ReplicaReply, ReplicaRequest,
-};
+use super::replica_journal::ReplicaJournal;
+use crate::cluster::message::{check_stamp, encode_reply, ReplicaReply, ReplicaRequest};
 use crate::cluster::wire::{RequestCode, StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::{MatrixReplicaService, ObjectError};
-use super::replica_journal::ReplicaJournal;
 
 struct NodeReplica {
     service: MatrixReplicaService,
@@ -67,6 +65,7 @@ pub struct ReplicaNodeOptions {
     ///
     /// A length field arrives before the bytes it describes, so this is the bound on what
     /// one frame can make the node allocate.
+    /// Also bounds outgoing payloads, including failure messages; minimum 24 bytes.
     pub max_payload_bytes: usize,
     /// Maximum total page payload bytes, including zero-filled space before write offsets.
     /// This excludes indexes, caches, sidecars, and transport buffers. Must be positive.
@@ -122,25 +121,45 @@ impl ReplicaNodeServer {
     /// Replay a locked journal and sync every successful mutation before replying.
     /// The parent directory must already exist. This does not repair missed writes
     /// from other nodes or establish membership after a restart.
-    pub fn bind_with_journal(addr: &str, options: ReplicaNodeOptions, path: &std::path::Path) -> std::io::Result<Self> {
+    pub fn bind_with_journal(
+        addr: &str,
+        options: ReplicaNodeOptions,
+        path: &std::path::Path,
+    ) -> std::io::Result<Self> {
         Self::bind_storage(addr, options, Some(path))
     }
 
-    fn bind_storage(addr: &str, options: ReplicaNodeOptions, path: Option<&std::path::Path>) -> std::io::Result<Self> {
+    fn bind_storage(
+        addr: &str,
+        options: ReplicaNodeOptions,
+        path: Option<&std::path::Path>,
+    ) -> std::io::Result<Self> {
+        crate::cluster::message::validate_payload_limit(options.max_payload_bytes)?;
         if options.capacity_bytes == 0 || options.max_pages == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
-                "replica capacity_bytes and max_pages must be positive"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "replica capacity_bytes and max_pages must be positive",
+            ));
         }
         let mut service = MatrixReplicaService::new();
-        service.set_capacity_bytes(options.capacity_bytes).map_err(|err| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
-        })?;
-        let journal = path.map(|path| ReplicaJournal::open_with_limits(path, &mut service, options.max_pages)).transpose()?;
+        service
+            .set_capacity_bytes(options.capacity_bytes)
+            .map_err(|err| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
+            })?;
+        let journal = path
+            .map(|path| ReplicaJournal::open_with_limits(path, &mut service, options.max_pages))
+            .transpose()?;
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
-            replica: Arc::new(Mutex::new(NodeReplica { service, journal, max_pages: options.max_pages, failed: false })),
+            replica: Arc::new(Mutex::new(NodeReplica {
+                service,
+                journal,
+                max_pages: options.max_pages,
+                failed: false,
+            })),
             options,
             counters: Arc::new(NodeCounters::default()),
             stop: Arc::new(ServerShutdown::default()),
@@ -249,6 +268,9 @@ fn serve_connection(
         Err(_) => return,
     };
     let mut reader = BufReader::new(stream);
+    let encode_failure = |status, message: &str| {
+        crate::cluster::message::encode_bounded_failure(status, message, options.max_payload_bytes)
+    };
     loop {
         let mut header = [0u8; HEADER_BYTES];
         if reader.read_exact(&mut header).is_err() {
@@ -286,13 +308,21 @@ fn serve_connection(
                     counters.failures.fetch_add(1, Ordering::Relaxed);
                     encode_failure(StatusCode::for_error(&err), &err.to_string())
                 }
-                Ok(request) => match apply(replica, request) {
-                    Ok(reply) => encode_reply(&reply),
-                    Err(err) => {
-                        counters.failures.fetch_add(1, Ordering::Relaxed);
-                        encode_failure(StatusCode::for_error(&err), &err.to_string())
+                Ok(request) => {
+                    match apply(replica, request, options.max_payload_bytes).and_then(|reply| {
+                        crate::cluster::message::check_reply_size(
+                            reply.payload_len(),
+                            options.max_payload_bytes,
+                        )?;
+                        Ok(reply)
+                    }) {
+                        Ok(reply) => encode_reply(&reply),
+                        Err(err) => {
+                            counters.failures.fetch_add(1, Ordering::Relaxed);
+                            encode_failure(StatusCode::for_error(&err), &err.to_string())
+                        }
                     }
-                },
+                }
             },
         };
         if writer.write_all(&response).is_err() || writer.flush().is_err() {
@@ -308,8 +338,7 @@ fn read_frame(
 ) -> Result<(u8, Vec<u8>), ObjectError> {
     check_stamp(header[0])?;
     let code = header[1];
-    let payload_len =
-        u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
+    let payload_len = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
     // CHECKED BEFORE THE ALLOCATION, not after the read. The length is four bytes from a
     // socket; without this the frame chooses how much memory this process asks for.
     if payload_len > max_payload_bytes {
@@ -335,6 +364,7 @@ fn read_frame(
 fn apply(
     replica: &Arc<Mutex<NodeReplica>>,
     request: ReplicaRequest,
+    max_payload_bytes: usize,
 ) -> Result<ReplicaReply, ObjectError> {
     let mut guard = replica.lock().map_err(|_| {
         // A poisoned lock means a previous request panicked while holding the replica, so
@@ -347,11 +377,29 @@ fn apply(
         )
     })?;
     if guard.failed {
-        return Err(ObjectError::Corruption("replica journal failed; restart and recover before serving requests".to_string()));
+        return Err(ObjectError::Corruption(
+            "replica journal failed; restart and recover before serving requests".to_string(),
+        ));
     }
-    let record = if guard.journal.is_some() && matches!(request, ReplicaRequest::WriteChunk { .. } | ReplicaRequest::DiscardChunk { .. }) {
-        Some(ReplicaJournal::encode(&request).map_err(|err| ObjectError::InvalidArgument(err.to_string()))?)
-    } else { None };
+    if let ReplicaRequest::ReadChunk { length, .. } = &request {
+        // Include sequence, checksum, and lengths before copying any page bytes.
+        let size = usize::try_from(*length)
+            .unwrap_or(usize::MAX)
+            .saturating_add(40);
+        crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
+    }
+    let record = if guard.journal.is_some()
+        && matches!(
+            request,
+            ReplicaRequest::WriteChunk { .. } | ReplicaRequest::DiscardChunk { .. }
+        ) {
+        Some(
+            ReplicaJournal::encode(&request)
+                .map_err(|err| ObjectError::InvalidArgument(err.to_string()))?,
+        )
+    } else {
+        None
+    };
     let max_pages = guard.max_pages;
     let reply = apply_to_replica(&mut guard.service, request, max_pages)?;
     if let Some(record) = record {
@@ -359,13 +407,19 @@ fn apply(
             // The mutation may be in memory or partly on disk. Never expose that
             // uncertain state to another request, and never acknowledge this write.
             guard.failed = true;
-            return Err(ObjectError::Corruption(format!("replica journal append failed: {err}")));
+            return Err(ObjectError::Corruption(format!(
+                "replica journal append failed: {err}"
+            )));
         }
     }
     Ok(reply)
 }
 
-pub(super) fn apply_to_replica(guard: &mut MatrixReplicaService, request: ReplicaRequest, max_pages: usize) -> Result<ReplicaReply, ObjectError> {
+pub(super) fn apply_to_replica(
+    guard: &mut MatrixReplicaService,
+    request: ReplicaRequest,
+    max_pages: usize,
+) -> Result<ReplicaReply, ObjectError> {
     match request {
         ReplicaRequest::WriteChunk {
             page_id,
@@ -373,7 +427,9 @@ pub(super) fn apply_to_replica(guard: &mut MatrixReplicaService, request: Replic
             data,
         } => {
             if guard.page_count() >= max_pages && guard.page_write_sequence(&page_id).is_none() {
-                return Err(ObjectError::PreconditionFailed("replica page count limit exceeded".to_string()));
+                return Err(ObjectError::PreconditionFailed(
+                    "replica page count limit exceeded".to_string(),
+                ));
             }
             guard.write_chunk(page_id, offset, &data)?;
             Ok(ReplicaReply::Applied)
@@ -382,9 +438,9 @@ pub(super) fn apply_to_replica(guard: &mut MatrixReplicaService, request: Replic
             page_id,
             offset,
             length,
-        } => Ok(ReplicaReply::Read(guard.read_chunk(
-            &page_id, offset, length,
-        )?)),
+        } => Ok(ReplicaReply::Read(
+            guard.read_chunk(&page_id, offset, length)?,
+        )),
         ReplicaRequest::HeadChunk { page_id } => {
             Ok(ReplicaReply::Head(guard.head_chunk(&page_id)?))
         }
@@ -404,9 +460,9 @@ pub(super) fn apply_to_replica(guard: &mut MatrixReplicaService, request: Replic
             let mut entries = guard.page_write_sequences_after(after.as_ref(), limit as usize + 1);
             let has_more = entries.len() > limit as usize;
             entries.truncate(limit as usize);
-            Ok(ReplicaReply::PageInventory(crate::cluster::message::PageInventory {
-                entries, has_more,
-            }))
+            Ok(ReplicaReply::PageInventory(
+                crate::cluster::message::PageInventory { entries, has_more },
+            ))
         }
     }
 }
@@ -418,8 +474,14 @@ mod journal_failure_tests {
 
     #[test]
     fn failed_persistence_blocks_acknowledgment_and_all_later_requests() {
-        let path = std::env::temp_dir().join(format!("replica-readonly-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let path = std::env::temp_dir().join(format!(
+            "replica-readonly-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::write(&path, []).unwrap();
         let replica = Arc::new(Mutex::new(NodeReplica {
             service: MatrixReplicaService::new(),
@@ -427,12 +489,23 @@ mod journal_failure_tests {
             max_pages: 65_536,
             failed: false,
         }));
-        let page = PageId { chunk_id: ChunkId::new(1, 2).unwrap(), page_index: 3 };
-        let write = ReplicaRequest::WriteChunk { page_id: page.clone(), offset: 0, data: b"uncommitted".to_vec() };
-        assert!(apply(&replica, write.clone()).is_err());
+        let page = PageId {
+            chunk_id: ChunkId::new(1, 2).unwrap(),
+            page_index: 3,
+        };
+        let write = ReplicaRequest::WriteChunk {
+            page_id: page.clone(),
+            offset: 0,
+            data: b"uncommitted".to_vec(),
+        };
+        assert!(apply(&replica, write.clone(), MAX_PAYLOAD_BYTES).is_err());
         assert!(replica.lock().unwrap().failed);
-        for request in [write, ReplicaRequest::Ping, ReplicaRequest::HeadChunk { page_id: page }] {
-            assert!(apply(&replica, request).is_err());
+        for request in [
+            write,
+            ReplicaRequest::Ping,
+            ReplicaRequest::HeadChunk { page_id: page },
+        ] {
+            assert!(apply(&replica, request, MAX_PAYLOAD_BYTES).is_err());
         }
         drop(replica);
         let mut recovered = MatrixReplicaService::new();
