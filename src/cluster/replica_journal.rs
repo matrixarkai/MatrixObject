@@ -26,7 +26,11 @@ impl ReplicaJournal {
         Self::open_with_limits(path, service, usize::MAX)
     }
 
-    pub(super) fn open_with_limits(path: &Path, service: &mut MatrixReplicaService, max_pages: usize) -> io::Result<Self> {
+    pub(super) fn open_with_limits(
+        path: &Path,
+        service: &mut MatrixReplicaService,
+        max_pages: usize,
+    ) -> io::Result<Self> {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -51,14 +55,14 @@ impl ReplicaJournal {
                 let mut tail = vec![0; remaining as usize];
                 file.read_exact(&mut tail)?;
                 let prefix = tail.len().min(MAGIC.len());
-                if tail[..prefix] != MAGIC[..prefix] {
+                if tail[..prefix] != MAGIC[..prefix] && tail[..prefix] != b"MOR2"[..prefix] {
                     return Err(invalid("replica journal has a damaged final header"));
                 }
                 break;
             }
             let mut header = [0; HEADER_LEN];
             file.read_exact(&mut header)?;
-            if &header[..4] != MAGIC
+            if (&header[..4] != MAGIC && &header[..4] != b"MOR2")
                 || fnv1a64(&header[..8]) != u64::from_be_bytes(header[8..16].try_into().unwrap())
             {
                 return Err(invalid("replica journal header checksum mismatch"));
@@ -75,13 +79,20 @@ impl ReplicaJournal {
             if fnv1a64(&payload) != u64::from_be_bytes(header[16..24].try_into().unwrap()) {
                 return Err(invalid("replica journal payload checksum mismatch"));
             }
-            let code = RequestCode::from_u8(payload[0])
-                .ok_or_else(|| invalid("unknown replica journal operation"))?;
-            if !matches!(code, RequestCode::WriteChunk | RequestCode::DiscardChunk) {
-                return Err(invalid("replica journal contains a non-mutating operation"));
+            if &header[..4] == b"MOR2" {
+                crate::outcome::PageOutcome::from_payload(&payload)
+                    .map_err(invalid)?
+                    .apply(service, max_pages)
+                    .map_err(invalid)?;
+            } else {
+                let code = RequestCode::from_u8(payload[0])
+                    .ok_or_else(|| invalid("unknown replica journal operation"))?;
+                if !matches!(code, RequestCode::WriteChunk | RequestCode::DiscardChunk) {
+                    return Err(invalid("replica journal contains a non-mutating operation"));
+                }
+                let request = ReplicaRequest::decode(code, &payload[1..]).map_err(invalid)?;
+                super::server::apply_to_replica(service, request, max_pages).map_err(invalid)?;
             }
-            let request = ReplicaRequest::decode(code, &payload[1..]).map_err(invalid)?;
-            super::server::apply_to_replica(service, request, max_pages).map_err(invalid)?;
             offset += HEADER_LEN as u64 + length as u64;
         }
         if offset != file_len {
@@ -94,6 +105,7 @@ impl ReplicaJournal {
         Ok(Self { file })
     }
 
+    #[cfg(test)]
     pub(super) fn encode(request: &ReplicaRequest) -> io::Result<Vec<u8>> {
         let payload = request.encode_payload();
         if payload.len() > MAX_PAYLOAD_BYTES {
@@ -108,6 +120,16 @@ impl ReplicaJournal {
         record.extend_from_slice(&payload);
         let checksum = fnv1a64(&record[HEADER_LEN..]);
         record[16..24].copy_from_slice(&checksum.to_be_bytes());
+        Ok(record)
+    }
+
+    pub(super) fn encode_outcome(outcome: &crate::outcome::PageOutcome) -> io::Result<Vec<u8>> {
+        let payload = outcome.to_payload().map_err(invalid)?;
+        let mut record = b"MOR2".to_vec();
+        record.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        record.extend_from_slice(&fnv1a64(&record).to_be_bytes());
+        record.extend_from_slice(&fnv1a64(&payload).to_be_bytes());
+        record.extend_from_slice(&payload);
         Ok(record)
     }
 
@@ -196,6 +218,66 @@ mod tests {
                 "byte {index}"
             );
             assert_eq!(std::fs::read(&path).unwrap(), damaged);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    use crate::{outcome::PageOutcome, ChunkId, PageId};
+    #[test]
+    fn binary_outcome_journal_recovers_mixed_history_and_rejects_damage() {
+        let page = PageId {
+            chunk_id: ChunkId::new(1, 2).unwrap(),
+            page_index: 0,
+        };
+        let request = ReplicaRequest::WriteChunk {
+            page_id: page.clone(),
+            offset: 0,
+            data: b"old".to_vec(),
+        };
+        let first = ReplicaJournal::encode(&request).unwrap();
+        let mut source = MatrixReplicaService::new();
+        super::super::server::apply_to_replica(&mut source, request, 1).unwrap();
+        let before = source.read_chunk_state(&page).unwrap();
+        let counts = PageOutcome::counters(&source);
+        source.write_chunk(page.clone(), 3, b"new").unwrap();
+        let outcome = PageOutcome::between(
+            &page,
+            Some(&before),
+            &source.read_chunk_state(&page).unwrap(),
+        )
+        .unwrap()
+        .with_counters(counts, PageOutcome::counters(&source));
+        let second = ReplicaJournal::encode_outcome(&outcome).unwrap();
+        let path = std::env::temp_dir().join(format!("binary-journal-{}", std::process::id()));
+        for cut in 0..second.len() {
+            std::fs::write(&path, [first.as_slice(), &second[..cut]].concat()).unwrap();
+            let mut recovered = MatrixReplicaService::new();
+            let mut journal = ReplicaJournal::open(&path, &mut recovered).unwrap();
+            assert_eq!(recovered.read_chunk_state(&page).unwrap(), before);
+            journal.append(&second).unwrap();
+            drop(journal);
+            let mut recovered = MatrixReplicaService::new();
+            drop(ReplicaJournal::open(&path, &mut recovered).unwrap());
+            assert_eq!(
+                recovered.read_chunk_state(&page).unwrap(),
+                source.read_chunk_state(&page).unwrap()
+            );
+            assert_eq!(
+                PageOutcome::counters(&recovered),
+                PageOutcome::counters(&source)
+            );
+        }
+        for index in 0..second.len() {
+            let mut damaged = second.clone();
+            damaged[index] ^= 1;
+            let bytes = [first.as_slice(), damaged.as_slice()].concat();
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(ReplicaJournal::open(&path, &mut MatrixReplicaService::new()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
         }
         std::fs::remove_file(path).unwrap();
     }

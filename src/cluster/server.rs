@@ -388,28 +388,37 @@ fn apply(
             .saturating_add(40);
         crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
     }
-    let record = if guard.journal.is_some()
-        && matches!(
-            request,
-            ReplicaRequest::WriteChunk { .. } | ReplicaRequest::DiscardChunk { .. }
-        ) {
-        Some(
-            ReplicaJournal::encode(&request)
-                .map_err(|err| ObjectError::InvalidArgument(err.to_string()))?,
-        )
-    } else {
-        None
-    };
+    let page = if guard.journal.is_some() {
+        match &request {
+            ReplicaRequest::WriteChunk { page_id, .. } | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
+            _ => None,
+        }
+    } else { None };
+    let before = if let Some(page) = &page {
+        match guard.service.read_chunk_state(page) {
+            Ok(state) => Some(state), Err(ObjectError::NotFound(_)) => None, Err(err) => return Err(err),
+        }
+    } else { None };
+    let counters = crate::outcome::PageOutcome::counters(&guard.service);
     let max_pages = guard.max_pages;
     let reply = apply_to_replica(&mut guard.service, request, max_pages)?;
-    if let Some(record) = record {
-        if let Err(err) = guard.journal.as_mut().unwrap().append(&record) {
-            // The mutation may be in memory or partly on disk. Never expose that
-            // uncertain state to another request, and never acknowledge this write.
+    if let Some(page) = page {
+        let persist = (|| -> Result<(), ObjectError> {
+            let after = match guard.service.read_chunk_state(&page) {
+                Ok(state) => state,
+                Err(ObjectError::NotFound(_)) if before.is_none() => return Ok(()),
+                Err(err) => return Err(err),
+            };
+            if before.as_ref() == Some(&after) && counters == crate::outcome::PageOutcome::counters(&guard.service) {
+                return Ok(());
+            }
+            let outcome = crate::outcome::PageOutcome::between(&page, before.as_ref(), &after)?.with_counters(counters, crate::outcome::PageOutcome::counters(&guard.service));
+            let record = ReplicaJournal::encode_outcome(&outcome).map_err(|err| ObjectError::Corruption(err.to_string()))?;
+            guard.journal.as_mut().unwrap().append(&record).map_err(|err| ObjectError::Corruption(err.to_string()))
+        })();
+        if let Err(err) = persist {
             guard.failed = true;
-            return Err(ObjectError::Corruption(format!(
-                "replica journal append failed: {err}"
-            )));
+            return Err(ObjectError::Corruption(format!("replica outcome persistence failed: {err}")));
         }
     }
     Ok(reply)
