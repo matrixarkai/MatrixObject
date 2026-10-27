@@ -28,10 +28,11 @@
 //! Without that, a test that writes a corpus, kills a node and then reads a key that was
 //! never written cannot tell the absence it is checking for from the outage it just caused.
 
-use crate::cluster::client::{ReplicaClientOptions, RemoteReplicaClient};
+use crate::cluster::client::{RemoteReplicaClient, ReplicaClientOptions};
 use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 
 /// A set of replica nodes in other processes, and the quorums over them.
 #[derive(Debug)]
@@ -42,7 +43,12 @@ pub struct RemoteReplicaSet {
 }
 
 impl RemoteReplicaSet {
-    /// Connect to every endpoint, REFUSING to return a partly connected set.
+    /// Connect to every endpoint, refusing incomplete or duplicate membership.
+    ///
+    /// Each connected socket must name a distinct peer address. Multiple connections
+    /// to the same peer cannot supply independent quorum votes. Address aliases are
+    /// checked after connection, using the actual peer rather than endpoint text.
+    /// This does not establish separate machines or failure domains behind proxies.
     ///
     /// An endpoint that cannot be reached at startup fails the whole call. The alternative --
     /// carrying on with the ones that answered -- produces a set whose `write_quorum` is
@@ -61,8 +67,25 @@ impl RemoteReplicaSet {
         }
         crate::cluster::placement::check_quorums(endpoints.len(), write_quorum, read_quorum)?;
         let mut replicas = Vec::with_capacity(endpoints.len());
+        let mut peers = BTreeSet::new();
         for endpoint in endpoints {
-            replicas.push(RemoteReplicaClient::connect(endpoint, options)?);
+            let replica = RemoteReplicaClient::connect(endpoint, options)?;
+            let peer = replica.peer_addr()?;
+            // An IPv4-mapped IPv6 address still names the same IPv4 peer.
+            let identity = match peer {
+                SocketAddr::V6(address) => address
+                    .ip()
+                    .to_ipv4_mapped()
+                    .map(|ip| SocketAddr::new(ip.into(), address.port()))
+                    .unwrap_or(peer),
+                SocketAddr::V4(_) => peer,
+            };
+            if !peers.insert(identity) {
+                return Err(ObjectError::InvalidArgument(format!(
+                    "remote replica endpoint {endpoint} repeats peer {identity}; each quorum member must have a distinct peer"
+                )));
+            }
+            replicas.push(replica);
         }
         Ok(Self {
             replicas,
@@ -213,7 +236,11 @@ impl RemoteReplicaSet {
         // this line.
         let mut votes: BTreeMap<(u64, String, Vec<u8>), usize> = BTreeMap::new();
         for read in &answered {
-            let key = (read.write_sequence, read.checksum.clone(), read.data.clone());
+            let key = (
+                read.write_sequence,
+                read.checksum.clone(),
+                read.data.clone(),
+            );
             *votes.entry(key).or_insert(0) += 1;
         }
         let (winning_key, winning_count) = votes

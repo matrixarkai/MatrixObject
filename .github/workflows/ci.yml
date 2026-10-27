@@ -81,6 +81,22 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Replica quorum members have distinct peers
+        run: |
+          set -o pipefail
+          cargo test --locked --test distinct_replica_peers one_endpoint_cannot_supply_multiple_votes -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test distinct_replica_peers two_spellings_of_one_peer_cannot_supply_multiple_votes -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test distinct_replica_peers mapped_ipv6_and_ipv4_cannot_supply_multiple_votes -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test distinct_replica_peers distinct_processes_can_still_form_a_quorum -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
       - name: Replica readmission verifies complete page state
         run: |
           set -o pipefail
