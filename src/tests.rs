@@ -44121,35 +44121,18 @@ fn an_entry_the_replica_refuses_stops_the_group_reporting_progress_past_it() {
         .propose(page_id.clone(), vec![(0, vec![b'k'; 4])], CHUNK_RAFT_WAIT)
         .expect("accepted");
 
-    // Encodes cleanly, and every replica's write path refuses it: the range ends past the
-    // pipeline offset limit.
-    let outcome = group
-        .propose(
-            page_id.clone(),
-            vec![(PIPELINE_OFFSET_MAX, vec![0xff; 8])],
-            std::time::Duration::from_millis(400),
-        )
-        .expect("accepted for delivery");
-    assert!(
-        !outcome.committed,
-        "a write every replica refused was reported as committed: {outcome:?}"
-    );
-    assert!(outcome.acknowledged.is_empty(), "{outcome:?}");
-    assert_eq!(
-        outcome.behind,
-        vec![(1, 1), (2, 1), (3, 1)],
-        "every replica must be reported as still at the last index that applied: {outcome:?}"
-    );
+    // Invalid writes and target lists fail before a log position is allocated.
+    assert!(group.propose_to(&[1, 1], page_id.clone(), vec![(4, vec![1])], CHUNK_RAFT_WAIT).is_err());
+    assert!(group.propose_to(&[1, 99], page_id.clone(), vec![(4, vec![1])], CHUNK_RAFT_WAIT).is_err());
+    assert!(group.propose(page_id.clone(), vec![(PIPELINE_OFFSET_MAX, vec![0xff; 8])], CHUNK_RAFT_WAIT).is_err());
     for node_id in group.node_ids() {
         let handler = group.handler(node_id).unwrap();
-        assert_eq!(handler.applied_index(), 1, "node {node_id}");
-        assert_eq!(handler.refusals().len(), 1, "node {node_id}");
-        assert_eq!(
-            handler.with_replica(|replica| replica.pages_local().get(&page_id).unwrap().data.len()),
-            4,
-            "node {node_id} kept bytes from the refused write"
-        );
+        assert_eq!(handler.applied_index(), 1);
+        assert!(handler.refusals().is_empty());
     }
+    let next = group.propose(page_id.clone(), vec![(4, vec![1])], CHUNK_RAFT_WAIT).unwrap();
+    assert_eq!(next.index, 2);
+    assert!(next.committed);
     group.stop();
 }
 
@@ -50079,4 +50062,70 @@ fn metadata_log_snapshot_stream_rejects_mixed_identity_and_oversize() {
     assert!(target.install_snapshot(huge).is_err());
     assert_eq!(target.snapshot().unwrap(), before);
     target.install_snapshot(checkpoint).unwrap();
+}
+
+#[test]
+fn binary_page_outcome_append_is_bounded_and_replays_decided_state() {
+    use crate::outcome::PageOutcome;
+    let page = PageId { chunk_id: ChunkId::new(1, 2).unwrap(), page_index: 3 };
+    let mut source = MatrixReplicaService::new();
+    source.write_chunk(page.clone(), 0, &vec![7; 1024 * 1024]).unwrap();
+    let mut target = source.clone();
+    let before = source.read_chunk_state(&page).unwrap();
+    let counts = PageOutcome::counters(&source);
+    source.write_chunk(page.clone(), 1024 * 1024, b"append").unwrap();
+    let after = source.read_chunk_state(&page).unwrap();
+    let outcome = PageOutcome::between(&page, Some(&before), &after).unwrap().with_counters(counts, PageOutcome::counters(&source));
+    let bytes = outcome.to_payload().unwrap();
+    assert!(bytes.len() < 256, "{}", bytes.len());
+    let decoded = PageOutcome::from_payload(&bytes).unwrap();
+    decoded.apply(&mut target, 10).unwrap();
+    assert_eq!(target.read_chunk_state(&page).unwrap(), after);
+    assert_eq!(PageOutcome::counters(&source), PageOutcome::counters(&target));
+    let held = target.read_chunk_state(&page).unwrap();
+    assert!(decoded.apply(&mut target, 10).is_err());
+    assert_eq!(target.read_chunk_state(&page).unwrap(), held);
+    let mut damaged = decoded.clone();
+    damaged.patches[0].data[0] ^= 1;
+    let mut untouched = MatrixReplicaService::new();
+    untouched.install_chunk_state(page.clone(), before).unwrap();
+    assert!(damaged.apply(&mut untouched, 10).is_err());
+    assert!(PageOutcome::from_payload(&[bytes.as_slice(), &[0]].concat()).is_err());
+}
+
+#[test]
+fn binary_page_outcome_discard_and_zero_extension_preserve_state() {
+    use crate::outcome::PageOutcome;
+    let page = PageId { chunk_id: ChunkId::new(1, 2).unwrap(), page_index: 3 };
+    let mut source = MatrixReplicaService::new();
+    source.write_chunk(page.clone(), 1024, &[0; 32]).unwrap();
+    let first = PageOutcome::between(&page, None, &source.read_chunk_state(&page).unwrap()).unwrap();
+    assert!(first.patches.is_empty());
+    let mut target = MatrixReplicaService::new();
+    first.apply(&mut target, 1).unwrap();
+    let before = source.read_chunk_state(&page).unwrap();
+    source.discard_chunk(&page, 10, 200).unwrap();
+    let second = PageOutcome::between(&page, Some(&before), &source.read_chunk_state(&page).unwrap()).unwrap();
+    second.apply(&mut target, 1).unwrap();
+    assert_eq!(source.read_chunk_state(&page).unwrap(), target.read_chunk_state(&page).unwrap());
+    let mut limited = MatrixReplicaService::new();
+    limited.set_capacity_bytes(16).unwrap();
+    assert!(first.apply(&mut limited, 1).is_err());
+    assert_eq!(limited.page_count(), 0);
+    assert!(first.apply(&mut MatrixReplicaService::new(), 0).is_err());
+}
+
+#[cfg(feature="matrix-raft")]
+#[test]
+fn binary_page_outcome_local_and_raft_apply_identical_bytes() {
+    use crate::outcome::PageOutcome;
+    let page = chunk_raft_page();
+    let mut source = MatrixReplicaService::new();
+    source.write_chunk(page.clone(), 0, b"binary outcome").unwrap();
+    let bytes = PageOutcome::between(&page, None, &source.read_chunk_state(&page).unwrap()).unwrap().to_payload().unwrap();
+    let mut local = MatrixReplicaService::new();
+    PageOutcome::from_payload(&bytes).unwrap().apply(&mut local, 1).unwrap();
+    let mut distributed = ChunkStateMachine::new(1, MatrixReplicaService::new());
+    matrixraft::StateMachine::apply(&mut distributed, chunk_raft_entry(1, 1, bytes)).unwrap();
+    assert_eq!(local.read_chunk_state(&page).unwrap(), distributed.replica().read_chunk_state(&page).unwrap());
 }

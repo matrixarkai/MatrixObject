@@ -507,6 +507,30 @@ jobs:
           grep -q '^running 1 test$' /tmp/metadata-log.log
           grep -q '^test result: ok. 1 passed' /tmp/metadata-log.log
 
+      - name: binary page outcome append is bounded and replays decided state
+        run: |
+          cargo test --locked --lib tests::binary_page_outcome_append_is_bounded_and_replays_decided_state -- --exact 2>&1 | tee /tmp/binary-outcome.log
+          grep -q '^running 1 test$' /tmp/binary-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/binary-outcome.log
+
+      - name: binary page outcome discard and zero extension preserve state
+        run: |
+          cargo test --locked --lib tests::binary_page_outcome_discard_and_zero_extension_preserve_state -- --exact 2>&1 | tee /tmp/binary-outcome.log
+          grep -q '^running 1 test$' /tmp/binary-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/binary-outcome.log
+
+      - name: binary page outcome local and raft apply identical bytes
+        run: |
+          cargo test --locked --lib --features matrix-raft tests::binary_page_outcome_local_and_raft_apply_identical_bytes -- --exact 2>&1 | tee /tmp/binary-outcome.log
+          grep -q '^running 1 test$' /tmp/binary-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/binary-outcome.log
+
+      - name: binary outcome journal recovers mixed history and rejects damage
+        run: |
+          cargo test --locked --lib cluster::replica_journal::outcome_tests::binary_outcome_journal_recovers_mixed_history_and_rejects_damage -- --exact 2>&1 | tee /tmp/binary-outcome.log
+          grep -q '^running 1 test$' /tmp/binary-outcome.log
+          grep -q '^test result: ok. 1 passed' /tmp/binary-outcome.log
+
       - name: Every Rust source carries the licence header
         run: |
           set -o pipefail

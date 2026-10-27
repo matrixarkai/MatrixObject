@@ -79,7 +79,7 @@ impl MatrixReplicaService {
         self.checkpoint_metadata()
     }
 
-    fn mark_metadata_mutation(&mut self) {
+    pub(crate) fn mark_metadata_mutation(&mut self) {
         self.metadata_dirty = true;
         self.metadata_dirty_mutations = self.metadata_dirty_mutations.saturating_add(1);
         if self.defer_metadata_checkpoints

@@ -850,3 +850,19 @@ snapshot backend, and its network requests do not yet pass through MatrixRaft
 consensus. Multi-node elections, durable Raft runtime wiring, chunk replication
 selection, and large-cluster failure testing remain required before a distributed
 production-readiness claim.
+
+### Binary page outcomes
+
+New chunk journal records and `ChunkRaftWriteGroup` proposals use the same
+binary protobuf `PageOutcome` schema in `proto/page_outcome.proto`. The outcome
+contains decided byte patches, page sequence, lengths, checksums, discard ranges,
+and physical counter increments. Recovery installs that state without running a
+write command again. A prior-state digest rejects reordered or mismatched changes.
+Appending six bytes to a 1 MiB page produces an outcome smaller than 256 bytes.
+
+Payloads are bounded to 8 MiB and materialized pages to 256 MiB on this path.
+The local `MOR2` journal framing adds header and payload checksums. Older `MOR1`
+records and chunk command log entries remain readable. Older binaries cannot
+read the new records. Metadata logs and snapshots still use their existing
+formats; this page codec does not convert those paths or establish network Raft
+consensus. The group adapter remains an in-process apply harness.

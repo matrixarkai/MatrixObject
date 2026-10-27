@@ -64,7 +64,7 @@ impl MatrixReplicaService {
             })
     }
 
-    fn ensure_capacity_for_chunk_len(
+    pub(crate) fn ensure_capacity_for_chunk_len(
         &mut self,
         page_id: &PageId,
         new_len: u64,
