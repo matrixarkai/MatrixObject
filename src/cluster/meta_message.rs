@@ -92,6 +92,11 @@ impl PlacementNodeSummary {
             last_heartbeat_ms,
             page_allocator_shard_index,
             page_allocator_shard_count,
+            // DISCARDED ON PURPOSE. The wire view keeps its shape: this field is not sent,
+            // and a receiver derives it from the kind in the same way the snapshot decoder
+            // does for a record that predates the field. Named rather than swept into `..`
+            // so that the next field added here has to be thought about too.
+            serves_page_tier: _,
             // DISCARDED, NAMED, AND THE REASON IS THE MODULE NOTE. About a hundred fields of
             // telemetry between the three. A reader of this wire gets a node's identity,
             // eligibility, capacity and clock; it does not get the health the placement

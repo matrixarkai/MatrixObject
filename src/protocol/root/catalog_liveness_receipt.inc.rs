@@ -132,6 +132,7 @@ impl CatalogLivenessReceipt {
             metadata_eligible: require_liveness_bool(fields, "metadata_eligible")?,
             data_eligible: require_liveness_bool(fields, "data_eligible")?,
             gateway_eligible: require_liveness_bool(fields, "gateway_eligible")?,
+            serves_page_tier: service_kind == "blockserver",
             metadata_value_bytes: optional_liveness_u64(fields, "metadata_value_bytes")?
                 .unwrap_or(0),
             capacity_bytes: require_liveness_u64(fields, "capacity_bytes")?,

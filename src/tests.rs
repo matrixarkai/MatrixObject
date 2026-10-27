@@ -44,6 +44,7 @@ fn placement_node(node_id: &str, domain: &str, capacity_bytes: u64) -> Placement
         metadata_eligible: false,
         data_eligible: true,
         gateway_eligible: false,
+        serves_page_tier: false,
         metadata_value_bytes: 0,
         capacity_bytes,
         used_bytes: 0,
@@ -73,6 +74,7 @@ fn pageserver_placement_node(
         metadata_eligible: false,
         data_eligible: true,
         gateway_eligible: false,
+        serves_page_tier: true,
         metadata_value_bytes: 0,
         capacity_bytes: 1,
         used_bytes: 0,
@@ -156,6 +158,7 @@ fn metaserver_placement_node(
         metadata_eligible: true,
         data_eligible: false,
         gateway_eligible: false,
+        serves_page_tier: false,
         metadata_value_bytes: meta_health.control_proof.state_bytes,
         capacity_bytes: 0,
         used_bytes: 0,
@@ -7526,6 +7529,7 @@ fn snapshot_chunks_restore_replacement_nodes() {
         metadata_eligible: true,
         data_eligible: false,
         gateway_eligible: false,
+        serves_page_tier: false,
         metadata_value_bytes: meta_health.control_proof.state_bytes,
         capacity_bytes: 0,
         used_bytes: 0,
@@ -7711,6 +7715,7 @@ fn placement_leader_lease_is_fenced_and_snapshotted() {
         metadata_eligible: false,
         data_eligible: false,
         gateway_eligible: false,
+        serves_page_tier: false,
         metadata_value_bytes: 0,
         capacity_bytes: 1,
         used_bytes: 0,
@@ -7733,6 +7738,7 @@ fn placement_leader_lease_is_fenced_and_snapshotted() {
         metadata_eligible: false,
         data_eligible: false,
         gateway_eligible: false,
+        serves_page_tier: false,
         metadata_value_bytes: 0,
         capacity_bytes: 1,
         used_bytes: 0,
@@ -7826,6 +7832,7 @@ fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
             metadata_eligible: false,
             data_eligible: false,
             gateway_eligible: false,
+            serves_page_tier: false,
             metadata_value_bytes: 0,
             capacity_bytes: 1,
             used_bytes: 0,
@@ -7982,6 +7989,7 @@ fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
             metadata_eligible: false,
             data_eligible: false,
             gateway_eligible: false,
+            serves_page_tier: false,
             metadata_value_bytes: 0,
             capacity_bytes: 1,
             used_bytes: 0,
@@ -8057,6 +8065,7 @@ fn distributed_readiness_uses_placement_observed_metaserver_coverage() {
             metadata_eligible: false,
             data_eligible: false,
             gateway_eligible: false,
+            serves_page_tier: false,
             metadata_value_bytes: 0,
             capacity_bytes: 1,
             used_bytes: 0,
@@ -8151,6 +8160,7 @@ fn placement_raft_status_exposes_service_coverage() {
         metadata_eligible: false,
         data_eligible: false,
         gateway_eligible: false,
+        serves_page_tier: false,
         metadata_value_bytes: 0,
         capacity_bytes: 1,
         used_bytes: 0,
@@ -8333,6 +8343,7 @@ fn placement_tracks_page_allocator_shard_coverage() {
             metadata_eligible: false,
             data_eligible: false,
             gateway_eligible: false,
+            serves_page_tier: false,
             metadata_value_bytes: 0,
             capacity_bytes: 1,
             used_bytes: 0,
@@ -8460,6 +8471,7 @@ fn placement_tracks_pageserver_service_coverage_for_write_routing() {
             metadata_eligible: false,
             data_eligible: false,
             gateway_eligible: false,
+            serves_page_tier: false,
             metadata_value_bytes: 0,
             capacity_bytes: 1,
             used_bytes: 0,
@@ -8662,6 +8674,7 @@ fn placement_tracks_chunkserver_coverage_for_write_routing() {
             metadata_eligible: false,
             data_eligible: false,
             gateway_eligible: false,
+            serves_page_tier: false,
             metadata_value_bytes: 0,
             capacity_bytes: 1,
             used_bytes: 0,
@@ -9891,6 +9904,7 @@ fn distributed_put_uses_placement_and_releases_capacity() {
             metadata_eligible: false,
             data_eligible: false,
             gateway_eligible: false,
+            serves_page_tier: false,
             metadata_value_bytes: 0,
             capacity_bytes: 1,
             used_bytes: 0,
@@ -27893,6 +27907,7 @@ fn raft_backed_store_replays_placement_leader_lease() {
         metadata_eligible: false,
         data_eligible: false,
         gateway_eligible: false,
+        serves_page_tier: false,
         metadata_value_bytes: 0,
         capacity_bytes: 1,
         used_bytes: 0,
@@ -28484,6 +28499,7 @@ fn raft_backed_store_replays_placement_draining_repairs() {
             metadata_eligible: false,
             data_eligible: true,
             gateway_eligible: false,
+            serves_page_tier: false,
             metadata_value_bytes: 0,
             capacity_bytes: 64,
             used_bytes: 11,
@@ -46750,6 +46766,7 @@ fn the_control_plane_leader_lease_is_the_metaservers_and_old_snapshots_still_loa
             metadata_eligible: true,
             data_eligible: false,
             gateway_eligible: false,
+            serves_page_tier: service_kind == "blockserver",
             metadata_value_bytes: 0,
             capacity_bytes: 0,
             used_bytes: 0,
@@ -46957,6 +46974,7 @@ fn every_page_health_field_the_snapshot_carries_is_covered_by_its_checksum() {
             metadata_eligible: false,
             data_eligible: true,
             gateway_eligible: false,
+            serves_page_tier: true,
             metadata_value_bytes: 0,
             capacity_bytes: 1024,
             used_bytes: 0,
@@ -47074,6 +47092,7 @@ fn every_accepted_snapshot_checksum_format_still_validates() {
         metadata_eligible: false,
         data_eligible: true,
         gateway_eligible: false,
+        serves_page_tier: true,
         metadata_value_bytes: 0,
         capacity_bytes: 4096,
         used_bytes: 0,
@@ -47218,6 +47237,7 @@ fn the_placement_snapshot_encoding_is_byte_for_byte_what_it_was() {
         metadata_eligible: true,
         data_eligible: false,
         gateway_eligible: true,
+        serves_page_tier: false,
         metadata_value_bytes: 1005,
         capacity_bytes: 1006,
         used_bytes: 1007,
@@ -47686,6 +47706,7 @@ fn a_placement_snapshot_that_validates() -> PlacementSnapshot {
         metadata_eligible: false,
         data_eligible: true,
         gateway_eligible: false,
+        serves_page_tier: true,
         metadata_value_bytes: 0,
         capacity_bytes: 4096,
         used_bytes: 0,
@@ -49424,6 +49445,7 @@ fn the_route_checksum_migration_holds_against_committed_values() {
         metadata_eligible: false,
         data_eligible: true,
         gateway_eligible: true,
+        serves_page_tier: true,
         metadata_value_bytes: 0,
         capacity_bytes: 4096,
         used_bytes: 0,
@@ -49577,5 +49599,174 @@ fn the_route_checksum_migration_holds_against_committed_values() {
     assert_ne!(
         binding_page, legacy_page,
         "the binding form equals the kind-derived form it replaced"
+    );
+}
+
+
+/// A RECORD WITHOUT THE PAGE-TIER FIELD DERIVES IT FROM THE KIND IT WAS WRITTEN WITH.
+///
+/// This is the whole migration. The encoder does not write the field yet, so every
+/// record that goes through here is genuinely ABSENT the field and the decoder must
+/// derive it -- the derive branch is structural, not simulated.
+#[test]
+fn a_record_without_the_page_tier_field_derives_it_from_its_kind() {
+    let mut page = placement_node("page-derive", "domain-a", 1 << 20);
+    page.service_kind = "blockserver".to_string();
+    page.serves_page_tier = true;
+    let mut chunk = placement_node("chunk-derive", "domain-a", 1 << 20);
+    chunk.serves_page_tier = false;
+    assert_eq!(chunk.service_kind, "chunkserver");
+
+    let mut nodes = BTreeMap::new();
+    nodes.insert(page.node_id.clone(), page);
+    nodes.insert(chunk.node_id.clone(), chunk);
+    let mut snapshot = PlacementSnapshot {
+        nodes,
+        placements: BTreeMap::new(),
+        leader_lease: None,
+        leader_lease_receipts: BTreeMap::new(),
+        coordinator_config: MetadataCoordinatorConfig::default(),
+        next_commit_index: 1,
+        checksum: String::new(),
+    };
+    snapshot.checksum = snapshot.checksum_material_hash();
+    let mut bytes = Vec::new();
+    snapshot.append_to_bytes(&mut bytes);
+
+    // NON-VACUITY: the bytes must be the shape that LACKS the field, or this proves
+    // nothing about an old record. The encoder is still on the pre-field stamp.
+    let mut cursor = SnapshotByteCursor::new(&bytes);
+    let stamp = cursor.read_string().expect("stamp");
+    assert_eq!(
+        stamp, "MOSRSROOT32",
+        "the encoder has started writing a newer shape, so this no longer exercises the \
+         absent-field path"
+    );
+
+    let restored = PlacementSnapshot::from_bytes(&bytes)
+        .expect("a snapshot without the page-tier field must still load");
+
+    let page_back = restored
+        .nodes
+        .get("page-derive")
+        .expect("the page node survived the round trip");
+    let chunk_back = restored
+        .nodes
+        .get("chunk-derive")
+        .expect("the chunk node survived the round trip");
+
+    assert!(
+        page_back.serves_page_tier,
+        "a record written under the page kind must come back serving the page tier"
+    );
+    assert!(
+        !chunk_back.serves_page_tier,
+        "a record written under the chunk kind must NOT come back serving the page tier"
+    );
+    // and the accessor agrees with the field, which is what makes the next step a
+    // one-line change rather than a behaviour change.
+    assert_eq!(page_back.serves_page_tier, page_back.serves_page_tier());
+    assert_eq!(chunk_back.serves_page_tier, chunk_back.serves_page_tier());
+}
+
+/// THE DECODER LEARNED THE NEW SHAPE BEFORE ANY WRITER EMITS IT.
+///
+/// Reader-first, asserted structurally rather than described in a commit message: the
+/// decoder gates the field on shape version 33, and the encoder still stamps 32. If
+/// those ever cross in the wrong order, a build would emit a shape that older readers
+/// cannot interpret.
+#[test]
+fn the_node_decoder_accepts_the_page_tier_shape_before_the_encoder_writes_it() {
+    const DECODER: &str = include_str!("protocol/root/root_snapshot/decoding_nodes.rs");
+    const ENCODER: &str = include_str!("protocol/root/root_snapshot/encoding.rs");
+
+    assert!(DECODER.len() > 1000, "the decoder source did not load");
+    assert!(ENCODER.len() > 1000, "the encoder source did not load");
+
+    assert!(
+        DECODER.contains("has_serves_page_tier: version >= 33"),
+        "the decoder no longer gates the page-tier field on shape 33"
+    );
+    assert!(
+        DECODER.contains("service_kind == \"blockserver\""),
+        "the decoder no longer derives the field from the retired kind, so an existing \
+         record would lose its meaning"
+    );
+    assert!(
+        ENCODER.contains("MOSRSROOT32"),
+        "the encoder stamp moved; if it now writes the page-tier shape, this guard has to \
+         move with it and the fixture needs the new committed bytes"
+    );
+    assert!(
+        !ENCODER.contains("serves_page_tier"),
+        "the encoder has started writing the page-tier field while this guard still claims \
+         reader-first; land the reader everywhere first"
+    );
+}
+
+/// THE PAGE-TIER FIELD IS DECIDED ON IN ONE PLACE.
+///
+/// The field and its accessor share a name, so a caller can reach past the accessor and
+/// read the field directly. That would undo the point of #253: the rule has to be
+/// changeable in one line, in one place. Production code therefore asks the accessor;
+/// only the declaration, the decoder and the constructors touch the field itself.
+#[test]
+fn the_page_tier_field_is_decided_on_through_its_accessor_only() {
+    const SOURCES: &[(&str, &str)] = &[
+        (
+            "placement policy",
+            include_str!("services/meta/placement/placement_policy_internals.rs"),
+        ),
+        (
+            "membership",
+            include_str!("services/meta/placement/membership.rs"),
+        ),
+        (
+            "page coverage",
+            include_str!("services/meta/placement/coverage_raft/pageserver_coverage.rs"),
+        ),
+        (
+            "allocator coverage",
+            include_str!("services/meta/placement/coverage_raft/allocator_coverage.rs"),
+        ),
+        (
+            "page discovery",
+            include_str!(
+                "store/core/readiness_catalog/root_placement_discovery_control/pageserver_discovery.rs"
+            ),
+        ),
+        (
+            "page offline",
+            include_str!("store/core/readiness_catalog/service_catalog_pageserver_offline.rs"),
+        ),
+    ];
+
+    let mut checked = 0usize;
+    for (name, text) in SOURCES {
+        assert!(text.len() > 200, "{name} source did not load");
+        for (lineno, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let Some(at) = line.find("serves_page_tier") else {
+                continue;
+            };
+            checked += 1;
+            let rest = &line[at + "serves_page_tier".len()..];
+            assert!(
+                rest.starts_with("()"),
+                "{name}:{} reads the page-tier field directly instead of asking the \
+                 accessor, so the rule is no longer decided in one place",
+                lineno + 1
+            );
+        }
+    }
+
+    // NON-VACUITY: if none of these files mentioned the name, every assertion above
+    // would be skipped and this would pass over nothing.
+    assert!(
+        checked >= 8,
+        "only {checked} uses found across the page-tier predicates, so this guard is not \
+         looking at the code it is about"
     );
 }

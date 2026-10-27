@@ -169,6 +169,7 @@ impl MetaNodeServer {
                 metadata_eligible: false,
                 data_eligible: true,
                 gateway_eligible: false,
+                serves_page_tier: true,
                 metadata_value_bytes: 0,
                 capacity_bytes,
                 used_bytes: 0,
