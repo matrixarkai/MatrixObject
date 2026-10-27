@@ -44,9 +44,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::cluster::message::{
-    check_stamp, encode_failure, encode_reply, ReplicaReply, ReplicaRequest,
-};
+use crate::cluster::message::{check_stamp, encode_reply, ReplicaReply, ReplicaRequest};
 use crate::cluster::wire::{RequestCode, StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::{MatrixReplicaService, ObjectError};
 
@@ -57,6 +55,7 @@ pub struct ReplicaNodeOptions {
     ///
     /// A length field arrives before the bytes it describes, so this is the bound on what
     /// one frame can make the node allocate.
+    /// Also bounds outgoing payloads, including failure messages; minimum 24 bytes.
     pub max_payload_bytes: usize,
     /// Connections handled at once.
     pub worker_threads: usize,
@@ -104,6 +103,7 @@ impl ReplicaNodeServer {
     /// state to load from, so its only possible caller is a recovery path that does not
     /// exist. It belongs in the change that gives a node something to recover.
     pub fn bind(addr: &str, options: ReplicaNodeOptions) -> std::io::Result<Self> {
+        crate::cluster::message::validate_payload_limit(options.max_payload_bytes)?;
         let replica = MatrixReplicaService::new();
         let listener = TcpListener::bind(addr)?;
         Ok(Self {
@@ -210,6 +210,9 @@ fn serve_connection(
         Err(_) => return,
     };
     let mut reader = BufReader::new(stream);
+    let encode_failure = |status, message: &str| {
+        crate::cluster::message::encode_bounded_failure(status, message, options.max_payload_bytes)
+    };
     loop {
         let mut header = [0u8; HEADER_BYTES];
         if reader.read_exact(&mut header).is_err() {
@@ -247,13 +250,21 @@ fn serve_connection(
                     counters.failures.fetch_add(1, Ordering::Relaxed);
                     encode_failure(StatusCode::for_error(&err), &err.to_string())
                 }
-                Ok(request) => match apply(replica, request) {
-                    Ok(reply) => encode_reply(&reply),
-                    Err(err) => {
-                        counters.failures.fetch_add(1, Ordering::Relaxed);
-                        encode_failure(StatusCode::for_error(&err), &err.to_string())
+                Ok(request) => {
+                    match apply(replica, request, options.max_payload_bytes).and_then(|reply| {
+                        crate::cluster::message::check_reply_size(
+                            reply.payload_len(),
+                            options.max_payload_bytes,
+                        )?;
+                        Ok(reply)
+                    }) {
+                        Ok(reply) => encode_reply(&reply),
+                        Err(err) => {
+                            counters.failures.fetch_add(1, Ordering::Relaxed);
+                            encode_failure(StatusCode::for_error(&err), &err.to_string())
+                        }
                     }
-                },
+                }
             },
         };
         if writer.write_all(&response).is_err() || writer.flush().is_err() {
@@ -269,8 +280,7 @@ fn read_frame(
 ) -> Result<(u8, Vec<u8>), ObjectError> {
     check_stamp(header[0])?;
     let code = header[1];
-    let payload_len =
-        u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
+    let payload_len = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
     // CHECKED BEFORE THE ALLOCATION, not after the read. The length is four bytes from a
     // socket; without this the frame chooses how much memory this process asks for.
     if payload_len > max_payload_bytes {
@@ -296,6 +306,7 @@ fn read_frame(
 fn apply(
     replica: &Arc<Mutex<MatrixReplicaService>>,
     request: ReplicaRequest,
+    max_payload_bytes: usize,
 ) -> Result<ReplicaReply, ObjectError> {
     let mut guard = replica.lock().map_err(|_| {
         // A poisoned lock means a previous request panicked while holding the replica, so
@@ -320,9 +331,17 @@ fn apply(
             page_id,
             offset,
             length,
-        } => Ok(ReplicaReply::Read(guard.read_chunk(
-            &page_id, offset, length,
-        )?)),
+        } => {
+            // A read carries an eight-byte sequence, two four-byte lengths and
+            // the 24-byte checksum. Refuse before the service copies page data.
+            let size = usize::try_from(length)
+                .unwrap_or(usize::MAX)
+                .saturating_add(40);
+            crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
+            Ok(ReplicaReply::Read(
+                guard.read_chunk(&page_id, offset, length)?,
+            ))
+        }
         ReplicaRequest::HeadChunk { page_id } => {
             Ok(ReplicaReply::Head(guard.head_chunk(&page_id)?))
         }
@@ -342,9 +361,9 @@ fn apply(
             let mut entries = guard.page_write_sequences_after(after.as_ref(), limit as usize + 1);
             let has_more = entries.len() > limit as usize;
             entries.truncate(limit as usize);
-            Ok(ReplicaReply::PageInventory(crate::cluster::message::PageInventory {
-                entries, has_more,
-            }))
+            Ok(ReplicaReply::PageInventory(
+                crate::cluster::message::PageInventory { entries, has_more },
+            ))
         }
     }
 }

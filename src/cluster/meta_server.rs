@@ -37,16 +37,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::cluster::message::check_stamp;
 use crate::cluster::meta_message::{
     encode_meta_reply, CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment,
     PlacementNodeSummary,
 };
 use crate::cluster::meta_wire::MetaRequestCode;
-use crate::cluster::message::{check_stamp, encode_failure};
 use crate::cluster::wire::{StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::{
-    MatrixMetaService, ObjectError, NodeChunkHealth, NodeMetaHealth, PlacementNode,
-    NodePageHealth,
+    MatrixMetaService, NodeChunkHealth, NodeMetaHealth, NodePageHealth, ObjectError, PlacementNode,
 };
 
 /// How a metaserver node is sized and bounded.
@@ -56,6 +55,7 @@ pub struct MetaNodeOptions {
     ///
     /// A length field arrives before the bytes it describes, so this is the bound on what one
     /// frame can make the node allocate.
+    /// Also bounds outgoing payloads, including failure messages; minimum 24 bytes.
     pub max_payload_bytes: usize,
     /// Connections handled at once.
     pub worker_threads: usize,
@@ -106,6 +106,7 @@ impl MetaNodeServer {
     /// only possible caller is a recovery path that does not exist yet. It belongs in the
     /// change that gives this node something to recover.
     pub fn bind(addr: &str, options: MetaNodeOptions) -> std::io::Result<Self> {
+        crate::cluster::message::validate_payload_limit(options.max_payload_bytes)?;
         let listener = TcpListener::bind(addr)?;
         Ok(Self {
             listener,
@@ -150,11 +151,7 @@ impl MetaNodeServer {
     /// have after a health heartbeat, so a chunkserver seeded with default health is not a
     /// placement candidate. Fail-closed, and the asymmetry belongs in a comment where someone
     /// will read it rather than in a surprise.
-    pub fn seed_data_nodes(
-        &self,
-        count: usize,
-        capacity_bytes: u64,
-    ) -> Result<usize, ObjectError> {
+    pub fn seed_data_nodes(&self, count: usize, capacity_bytes: u64) -> Result<usize, ObjectError> {
         let mut guard = self.meta.lock().map_err(|_| {
             ObjectError::Corruption("this metaserver's state is locked".to_string())
         })?;
@@ -269,6 +266,9 @@ fn serve_connection(
         Err(_) => return,
     };
     let mut reader = BufReader::new(stream);
+    let encode_failure = |status, message: &str| {
+        crate::cluster::message::encode_bounded_failure(status, message, options.max_payload_bytes)
+    };
     loop {
         let mut header = [0u8; HEADER_BYTES];
         if reader.read_exact(&mut header).is_err() {
@@ -306,13 +306,21 @@ fn serve_connection(
                     counters.failures.fetch_add(1, Ordering::Relaxed);
                     encode_failure(StatusCode::for_error(&err), &err.to_string())
                 }
-                Ok(request) => match apply(meta, request) {
-                    Ok(reply) => encode_meta_reply(&reply),
-                    Err(err) => {
-                        counters.failures.fetch_add(1, Ordering::Relaxed);
-                        encode_failure(StatusCode::for_error(&err), &err.to_string())
+                Ok(request) => {
+                    match apply(meta, request, options.max_payload_bytes).and_then(|reply| {
+                        crate::cluster::message::check_reply_size(
+                            reply.payload_len(),
+                            options.max_payload_bytes,
+                        )?;
+                        Ok(reply)
+                    }) {
+                        Ok(reply) => encode_meta_reply(&reply),
+                        Err(err) => {
+                            counters.failures.fetch_add(1, Ordering::Relaxed);
+                            encode_failure(StatusCode::for_error(&err), &err.to_string())
+                        }
                     }
-                },
+                }
             },
         };
         if writer.write_all(&response).is_err() || writer.flush().is_err() {
@@ -356,6 +364,7 @@ fn read_frame(
 fn apply(
     meta: &Arc<Mutex<MatrixMetaService>>,
     request: MetaRequest,
+    max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     let mut guard = meta.lock().map_err(|_| {
         // A poisoned lock means a previous request panicked while holding the control plane,
@@ -377,6 +386,15 @@ fn apply(
             online,
             now_ms,
         } => {
+            if let Some(node) = guard.nodes.get(&node_id) {
+                let size = crate::cluster::meta_message::node_payload_len(
+                    &node.node_id,
+                    &node.endpoint,
+                    &node.service_kind,
+                    &node.failure_domain,
+                );
+                crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
+            }
             let node = guard.heartbeat_node(
                 &node_id,
                 used_bytes,
@@ -385,18 +403,31 @@ fn apply(
                 online,
                 now_ms,
             )?;
-            Ok(MetaReply::PlacementNode(PlacementNodeSummary::from_placement_node(&node)))
+            Ok(MetaReply::PlacementNode(
+                PlacementNodeSummary::from_placement_node(&node),
+            ))
         }
         MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => Ok(MetaReply::Expired {
             offline_count: guard.expire_node_heartbeats(ttl_ms, now_ms)?,
         }),
-        MetaRequest::ListRootNodes => Ok(MetaReply::RootNodes(
-            guard
-                .nodes
-                .values()
-                .map(PlacementNodeSummary::from_placement_node)
-                .collect(),
-        )),
+        MetaRequest::ListRootNodes => {
+            let size = guard.nodes.values().fold(8usize, |n, node| {
+                n.saturating_add(crate::cluster::meta_message::node_payload_len(
+                    &node.node_id,
+                    &node.endpoint,
+                    &node.service_kind,
+                    &node.failure_domain,
+                ))
+            });
+            crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
+            Ok(MetaReply::RootNodes(
+                guard
+                    .nodes
+                    .values()
+                    .map(PlacementNodeSummary::from_placement_node)
+                    .collect(),
+            ))
+        }
         MetaRequest::PlanObjectPlacement {
             bucket,
             key,
@@ -420,6 +451,10 @@ fn apply(
             placement,
             expected_plan_checksum,
         } => {
+            crate::cluster::message::check_reply_size(
+                crate::cluster::meta_message::placement_payload_len(&placement),
+                max_payload_bytes,
+            )?;
             let committed = guard
                 .commit_object_placement(placement.into_placement(), &expected_plan_checksum)?;
             Ok(MetaReply::Placement(CommittedPlacement::from_placement(

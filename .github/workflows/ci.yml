@@ -777,6 +777,36 @@ jobs:
       # `--test` names the one integration target, and the `running 1 test` check is
       # here as well as the `1 passed` one because `cargo test` exits 0 when a filter
       # matches nothing: without it, renaming the test would turn this step green.
+      - name: metadata rejects large heartbeat reply before mutation
+        run: |
+          cargo test --locked --test bounded_server_replies metadata_rejects_large_heartbeat_reply_before_mutation -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: replica read budget includes overhead and keeps connection usable
+        run: |
+          cargo test --locked --test bounded_server_replies replica_read_budget_includes_overhead_and_keeps_connection_usable -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: replica head and inventory obey reply budget
+        run: |
+          cargo test --locked --test bounded_server_replies replica_head_and_inventory_obey_reply_budget -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: metadata roster budget keeps connection usable
+        run: |
+          cargo test --locked --test bounded_server_replies metadata_roster_budget_keeps_connection_usable -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: metadata failure text is bounded utf8
+        run: |
+          cargo test --locked --test bounded_server_replies metadata_failure_text_is_bounded_utf8 -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: server reply budgets must fit status and frame lengths
+        run: |
+          cargo test --locked --test bounded_server_replies server_reply_budgets_must_fit_status_and_frame_lengths -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
       - name: Three replica processes keep the data when one is killed
         run: |
           set -o pipefail

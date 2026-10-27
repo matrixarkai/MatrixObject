@@ -761,3 +761,18 @@ Every Rust source opens with the two lines that say so:
 `every_rust_source_carries_the_licence_header` walks the tree and fails if a source
 is missing either line, if the walk finds fewer than a thousand sources, or if the
 `LICENSE` and `NOTICE` stop saying what the header claims.
+
+### Node reply budgets
+
+The replica and metadata server `max_payload_bytes` setting bounds both incoming
+and outgoing payloads. It must be between 24 bytes and the four-byte frame length
+maximum; the default remains 8 MiB. A read includes 40 bytes of sequence, checksum,
+and length fields, so its data must fit within the remaining budget. Oversized
+reads are refused before copying data, and oversized roster lists before copying
+the roster. Other successful replies are checked before wire encoding. Failure
+messages are shortened on UTF-8 boundaries to fit the same budget.
+
+A reply-size refusal leaves the connection usable. Request smaller read ranges
+or inventory batches when necessary. Roster listing currently has no pagination;
+configure enough space for the roster. Head replies may require more space as
+discarded ranges accumulate. Client and server limits are configured separately.
