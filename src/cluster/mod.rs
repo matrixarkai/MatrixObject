@@ -195,3 +195,8 @@ mod shutdown;
 mod meta_snapshot_file;
 #[cfg(feature = "meta-server")]
 mod placement_journal;
+
+#[cfg(feature = "metadata-consensus")]
+mod meta_consensus;
+#[cfg(feature = "metadata-consensus")]
+pub use meta_consensus::MetaRaftOptions;

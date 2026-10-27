@@ -43890,6 +43890,7 @@ fn a_snapshot_chunk_out_of_order_is_refused_rather_than_assembled_wrongly() {
         matrixraft::SnapshotChunk {
             meta: matrixraft::SnapshotMetadata {
                 snapshot_id: "chunk-2-1".to_string(),
+                payload_bytes: 8,
                 last_log_id: matrixraft::LogId { term: 0, index: 1 },
                 membership: Vec::new(),
                 members: Vec::new(),

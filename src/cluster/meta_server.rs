@@ -43,6 +43,8 @@ struct NodeMeta {
     storage: Option<MetaSnapshotFile>,
     recovered: bool,
     failed: bool,
+    #[cfg(feature = "metadata-consensus")]
+    consensus: Option<Arc<super::meta_consensus::MetaConsensus>>,
 }
 
 impl std::ops::Deref for NodeMeta {
@@ -179,11 +181,30 @@ impl MetaNodeServer {
                 storage,
                 recovered,
                 failed: false,
+                #[cfg(feature = "metadata-consensus")]
+                consensus: None,
             })),
             options,
             counters: Arc::new(MetaCounters::default()),
             stop: Arc::new(ServerShutdown::default()),
         })
+    }
+
+    /// Enable network consensus after seeding and before serving. Local snapshot
+    /// storage and replicated storage must use separate directories.
+    #[cfg(feature = "metadata-consensus")]
+    pub fn enable_raft(&mut self, options: super::MetaRaftOptions) -> std::io::Result<usize> {
+        let mut meta = self.meta.lock().map_err(|_| std::io::Error::other("metadata lock poisoned"))?;
+        if meta.storage.is_some() || meta.consensus.is_some() {
+            return Err(std::io::Error::other("metadata storage mode already configured"));
+        }
+        let consensus = super::meta_consensus::MetaConsensus::open(
+            options, meta.service.clone(), Arc::clone(&self.stop), self.options.max_payload_bytes,
+        )?;
+        let node_count = consensus.node_count;
+        meta.consensus = Some(Arc::new(consensus));
+        meta.service = MatrixMetaService::new();
+        Ok(node_count)
     }
 
     /// The address actually bound.
@@ -225,6 +246,10 @@ impl MetaNodeServer {
             ObjectError::Corruption("this metaserver's state is locked".to_string())
         })?;
         guard.ensure_healthy()?;
+        #[cfg(feature = "metadata-consensus")]
+        if guard.consensus.is_some() {
+            return Err(ObjectError::InvalidArgument("seed before enabling consensus".into()));
+        }
         if guard.recovered {
             return Ok(guard.nodes.len());
         }
@@ -284,6 +309,11 @@ impl MetaNodeServer {
             // A worker that panicked has already stopped serving; joining it is how that
             // becomes visible rather than a thread count quietly dropping to zero.
             let _ = handle.join();
+        }
+        #[cfg(feature = "metadata-consensus")]
+        if self.meta.lock().map_err(|_| std::io::Error::other("metadata lock poisoned"))?
+            .consensus.as_ref().is_some_and(|c| c.is_failed()) {
+            return Err(std::io::Error::other("metadata consensus worker failed"));
         }
         Ok(())
     }
@@ -461,6 +491,11 @@ fn apply(
         )
     })?;
     guard.ensure_healthy()?;
+    #[cfg(feature = "metadata-consensus")]
+    if let Some(consensus) = guard.consensus.clone() {
+        drop(guard);
+        return consensus.request(request);
+    }
     let mutating = matches!(
         request,
         MetaRequest::HeartbeatRootNode { .. }
@@ -494,7 +529,7 @@ fn apply(
     Ok(reply)
 }
 
-fn apply_to_meta(
+pub(super) fn apply_to_meta(
     guard: &mut MatrixMetaService,
     request: MetaRequest,
     max_payload_bytes: usize,

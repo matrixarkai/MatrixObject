@@ -111,12 +111,25 @@ fn main() {
 
     let options = MetaNodeOptions { max_payload_bytes, worker_threads, ..Default::default() };
     let state_dir = std::env::var_os("MATRIXOBJECT_METASERVER_STATE_DIR");
-    let storage = if state_dir.is_some() { "snapshot" } else { "memory" };
+    #[allow(unused_mut)]
+    let mut storage = if state_dir.is_some() { "snapshot" } else { "memory" };
+    let raft_peers = std::env::var_os("MATRIXOBJECT_METASERVER_RAFT_PEERS");
+    if raft_peers.is_none() && ["MATRIXOBJECT_METASERVER_RAFT_NODE_ID",
+        "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR", "MATRIXOBJECT_METASERVER_RAFT_GROUP_ID",
+        "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS"].iter().any(|name| std::env::var_os(name).is_some()) {
+        eprintln!("partial Raft configuration: MATRIXOBJECT_METASERVER_RAFT_PEERS is required");
+        std::process::exit(2);
+    }
+    if raft_peers.is_some() && state_dir.is_some() {
+        eprintln!("local metadata state and Raft state cannot be configured together");
+        std::process::exit(2);
+    }
     let bound_server = match state_dir {
         Some(path) => MetaNodeServer::bind_with_snapshot(&addr, options, std::path::Path::new(&path)),
         None => MetaNodeServer::bind(&addr, options),
     };
-    let server = match bound_server {
+    #[allow(unused_mut)]
+    let mut server = match bound_server {
         Ok(server) => server,
         Err(err) => {
             eprintln!("binding {addr} failed: {err}");
@@ -132,13 +145,53 @@ fn main() {
     // SEEDED BEFORE THE STARTUP LINE IS PRINTED, so that a supervisor reading that line and
     // connecting immediately cannot see a roster that is still filling. The count is printed
     // on the line, so a test does not have to ask whether the seed happened.
-    let seeded = match server.seed_data_nodes(seed_nodes, seed_capacity) {
+    #[allow(unused_mut)]
+    let mut seeded = match server.seed_data_nodes(seed_nodes, seed_capacity) {
         Ok(seeded) => seeded,
         Err(err) => {
             eprintln!("seeding {seed_nodes} data node(s) failed: {err}");
             std::process::exit(1);
         }
     };
+
+    if let Some(raw) = raft_peers {
+        #[cfg(not(feature = "metadata-consensus"))]
+        {
+            let _ = raw;
+            eprintln!("Raft configuration requires the metadata-consensus feature");
+            std::process::exit(2);
+        }
+        #[cfg(feature = "metadata-consensus")]
+        {
+            let configured = (|| -> Result<_, String> {
+                let raw = raw.into_string().map_err(|_| "peer list is not UTF-8")?;
+                let mut peers = std::collections::BTreeMap::new();
+                for item in raw.split(',') {
+                    let (id, address) = item.split_once('@').ok_or("expected id@address peers")?;
+                    let id = id.parse::<u64>().map_err(|_| "invalid voter id")?;
+                    let address = address.parse::<std::net::SocketAddr>().map_err(|_| "invalid voter address")?;
+                    if peers.insert(id, address).is_some() { return Err("duplicate voter id".into()); }
+                }
+                let node_id = std::env::var("MATRIXOBJECT_METASERVER_RAFT_NODE_ID")
+                    .map_err(|_| "missing Raft node id")?.parse::<u64>().map_err(|_| "invalid Raft node id")?;
+                let directory = std::env::var_os("MATRIXOBJECT_METASERVER_RAFT_STATE_DIR")
+                    .ok_or("missing Raft state directory")?.into();
+                Ok(matrixobjectstore_rs::cluster::MetaRaftOptions {
+                    node_id, group_id: env_usize("MATRIXOBJECT_METASERVER_RAFT_GROUP_ID", 1) as u64,
+                    peers, directory,
+                    request_timeout: std::time::Duration::from_millis(env_usize("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", 3000) as u64),
+                })
+            })();
+            let options = match configured { Ok(options) => options, Err(error) => {
+                eprintln!("invalid Raft configuration: {error}"); std::process::exit(2);
+            }};
+            seeded = match server.enable_raft(options) {
+                Ok(count) => count,
+                Err(error) => { eprintln!("opening metadata consensus failed: {error}"); std::process::exit(1); }
+            };
+            storage = "raft";
+        }
+    }
 
     let bound = match server.local_addr() {
         Ok(bound) => bound,

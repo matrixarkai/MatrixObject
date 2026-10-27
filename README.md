@@ -784,7 +784,7 @@ Two invariants worth knowing before you start:
 
 ## Continuous integration
 
-On pushes to `main` and on every pull request, two jobs:
+On pushes to `main` and on every pull request, three jobs:
 
 - **build & docs** -- `cargo build --all-targets` and `cargo doc`, each for the
   default features and for `--all-features`, with warnings denied.
@@ -795,6 +795,9 @@ On pushes to `main` and on every pull request, two jobs:
   `running 1 test` as well: they name a test of an integration target rather than a
   `tests::` filter, so a rename would leave the filter matching nothing and the
   `1 passed` line absent rather than wrong.
+
+- **network metadata consensus** -- four named process, recovery, storage, and
+  checkpoint tests with the optional consensus feature enabled.
 
 CI does not run the whole library suite. `tools/suite_gate.sh` does, locally: it
 compares the failures by name against the 17 recorded in
@@ -881,3 +884,8 @@ The payload is limited to 8 MiB and protected by a checksum.
 This covers the network placement API. Other metadata commands still use their existing codec,
 and checkpoints still use the metadata snapshot format. Network requests are not yet routed
 through MatrixRaft consensus; the adapter tests cover state application and checkpoint recovery.
+
+### Network metadata voters
+
+The optional `metadata-consensus` feature runs one durable MatrixRaft voter per
+metaserver process. See [configuration, recovery, and current limits](docs/metadata-consensus.md).

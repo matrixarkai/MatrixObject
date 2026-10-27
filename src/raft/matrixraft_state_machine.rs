@@ -164,7 +164,9 @@ impl MetadataStateMachine {
                 return Err(invalid("empty log has an apply receipt"));
             }
         } else {
-            if payload.starts_with(crate::placement_outcome::PLACEMENT_OUTCOME_MAGIC) {
+            if payload.is_empty() {
+                if response != [0] { return Err(invalid("invalid election no-op receipt")); }
+            } else if payload.starts_with(crate::placement_outcome::PLACEMENT_OUTCOME_MAGIC) {
                 crate::placement_outcome::PlacementOutcome::from_payload(payload).map_err(|e| invalid(&e.to_string()))?;
             } else {
                 ObjectCommand::from_payload(payload).map_err(|e| invalid(&e.to_string()))?;
@@ -235,7 +237,9 @@ impl StateMachine for MetadataStateMachine {
                 "metadata entry is stale, conflicting, or out of order".into(),
             ));
         }
-        let applied = if request.payload.starts_with(crate::placement_outcome::PLACEMENT_OUTCOME_MAGIC) {
+        let applied = if request.payload.is_empty() {
+            Ok(())
+        } else if request.payload.starts_with(crate::placement_outcome::PLACEMENT_OUTCOME_MAGIC) {
             let outcome = crate::placement_outcome::PlacementOutcome::from_payload(&request.payload)
                 .map_err(|e| RaftError::InvalidRequest(e.to_string()))?;
             outcome.apply(&mut self.store.meta_service)
@@ -271,6 +275,7 @@ impl StateMachine for MetadataStateMachine {
     }
 
     fn snapshot(&self) -> Result<SnapshotChunk, RaftError> {
+        let data = self.checkpoint_bytes()?;
         Ok(SnapshotChunk {
             meta: SnapshotMetadata {
                 snapshot_id: format!(
@@ -280,9 +285,10 @@ impl StateMachine for MetadataStateMachine {
                 last_log_id: self.last_log_id.clone(),
                 membership: Vec::new(),
                 members: Vec::new(),
+                payload_bytes: data.len() as u64,
             },
             offset: 0,
-            data: self.checkpoint_bytes()?,
+            data,
             done: true,
         })
     }
