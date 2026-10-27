@@ -37,3 +37,22 @@ ReadChunkGroup verb. Upgrade all metadata voters and clients before bootstrappin
 a catalog-enabled deployment. Older binaries cannot reopen the new envelope;
 there is no automatic downgrade or conversion of an existing individual-node
 roster into groups. Keep a verified backup before changing deployment formats.
+
+## Coupled quorum validation
+
+The six-process test starts three metadata voters and three chunk voters with
+independent durable directories. It writes 33 payloads and commits their logical
+group placements, kills both elected leaders, restarts all six processes, and
+checks placement recovery, payload bytes, write sequences, and one-copy capacity
+accounting. It then removes each service's quorum and checks that chunk data and
+metadata reads cannot succeed from a minority. Missing chunk voters expire from
+metadata placement eligibility through their real health reports.
+
+Run it with:
+
+```sh
+cargo test --locked --features metadata-consensus,chunk-consensus --test network_chunk_consensus coupled_groups::metadata_and_chunk_quorums_recover_together_and_refuse_minority_operations -- --exact
+```
+
+This is a bounded functional and recovery test. It does not establish throughput,
+large-cluster capacity, authentication, or readiness for production traffic.
