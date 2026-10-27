@@ -7,7 +7,7 @@ fn placement_raft_status_page_fields(
     let mut fields = BTreeMap::new();
     for (name, value) in [
         (
-            "placement_active_blockserver_count",
+            "placement_active_pageserver_count",
             status.root_active_pageserver_count,
         ),
         (
@@ -19,11 +19,11 @@ fn placement_raft_status_page_fields(
             status.root_page_allocator_covered_shards,
         ),
         (
-            "placement_ready_blockserver_count",
+            "placement_ready_pageserver_count",
             status.root_ready_pageserver_count,
         ),
         (
-            "placement_read_ready_blockserver_count",
+            "placement_read_ready_pageserver_count",
             status.root_read_ready_pageserver_count,
         ),
         (

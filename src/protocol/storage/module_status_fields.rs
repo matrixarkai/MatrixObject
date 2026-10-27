@@ -41,11 +41,11 @@ impl ObjectStoreModuleStatus {
             self.placement_metadata_write_ready.to_string(),
         );
         fields.insert(
-            "root_blockserver_read_ready".to_string(),
+            "root_pageserver_read_ready".to_string(),
             self.root_pageserver_read_ready.to_string(),
         );
         fields.insert(
-            "root_blockserver_write_ready".to_string(),
+            "root_pageserver_write_ready".to_string(),
             self.root_pageserver_write_ready.to_string(),
         );
         fields.insert(

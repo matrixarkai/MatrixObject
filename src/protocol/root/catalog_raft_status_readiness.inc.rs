@@ -18,11 +18,11 @@ fn placement_raft_status_readiness_fields(
             self_.placement_metadata_write_ready,
         ),
         (
-            "root_blockserver_read_ready",
+            "root_pageserver_read_ready",
             self_.root_pageserver_read_ready,
         ),
         (
-            "root_blockserver_write_ready",
+            "root_pageserver_write_ready",
             self_.root_pageserver_write_ready,
         ),
         (
