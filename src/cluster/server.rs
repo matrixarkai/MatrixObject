@@ -40,9 +40,11 @@
 
 use std::io::{BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use super::shutdown::ServerShutdown;
 
 use crate::cluster::message::{
     check_stamp, encode_failure, encode_reply, ReplicaReply, ReplicaRequest,
@@ -100,7 +102,7 @@ pub struct ReplicaNodeServer {
     replica: Arc<Mutex<NodeReplica>>,
     options: ReplicaNodeOptions,
     counters: Arc<NodeCounters>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
 }
 
 impl ReplicaNodeServer {
@@ -120,12 +122,13 @@ impl ReplicaNodeServer {
         let mut service = MatrixReplicaService::new();
         let journal = path.map(|path| ReplicaJournal::open(path, &mut service)).transpose()?;
         let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
             replica: Arc::new(Mutex::new(NodeReplica { service, journal, failed: false })),
             options,
             counters: Arc::new(NodeCounters::default()),
-            stop: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(ServerShutdown::default()),
         })
     }
 
@@ -138,7 +141,7 @@ impl ReplicaNodeServer {
         self.listener.local_addr()
     }
 
-    /// A handle that stops the accept loops.
+    /// A handle that stops accept loops and closes active connections.
     pub fn shutdown_handle(&self) -> ReplicaNodeShutdown {
         ReplicaNodeShutdown {
             stop: Arc::clone(&self.stop),
@@ -171,12 +174,12 @@ impl ReplicaNodeServer {
 /// Stops a running [`ReplicaNodeServer`].
 #[derive(Clone, Debug)]
 pub struct ReplicaNodeShutdown {
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
 }
 
 impl ReplicaNodeShutdown {
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.stop.stop();
     }
 }
 
@@ -184,12 +187,20 @@ fn accept_loop(
     listener: TcpListener,
     replica: Arc<Mutex<NodeReplica>>,
     counters: Arc<NodeCounters>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
     options: ReplicaNodeOptions,
 ) {
-    while !stop.load(Ordering::SeqCst) {
+    while !stop.is_stopped() {
         match listener.accept() {
             Ok((stream, _peer)) => {
+                let _active = match stop.track(&stream) {
+                    Ok(Some(active)) => active,
+                    Ok(None) => return,
+                    Err(_) => continue,
+                };
+                if stream.set_nonblocking(false).is_err() {
+                    continue;
+                }
                 let _ = stream.set_read_timeout(Some(options.read_timeout));
                 let _ = stream.set_write_timeout(Some(options.write_timeout));
                 // TCP_NODELAY: a replica call is one small frame and the answer is wanted
@@ -199,10 +210,9 @@ fn accept_loop(
                 serve_connection(stream, &replica, &counters, &options);
             }
             Err(_) => {
-                // An accept that failed is not a reason to stop accepting -- a single
-                // refused connection would otherwise take the node down. The loop continues
-                // and the shutdown flag is the only thing that ends it.
-                continue;
+                // Nonblocking accept lets idle workers observe shutdown. Back off on
+                // all accept errors so resource exhaustion cannot create a busy loop.
+                std::thread::sleep(Duration::from_millis(20));
             }
         }
     }
