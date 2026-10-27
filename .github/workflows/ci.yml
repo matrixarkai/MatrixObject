@@ -81,6 +81,128 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Replica readmission verifies complete page state
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::replica_readmission_rejects_equal_sequence_with_different_bytes -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_equal_sequence_with_different_discards -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_unverified_higher_sequences -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_unverified_extra_pages -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_disagreement_between_current_sources -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_requires_a_current_source -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+
+      - name: Frozen replicas cannot check in early
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::replica_readmission_waits_until_candidate_can_receive_writes -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+
+      - name: Replica journal recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --test replica_restart_recovery acknowledged_writes_and_discards_survive_process_kills -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_restart_recovery a_live_journal_cannot_be_opened_by_a_second_server -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_restart_recovery a_damaged_committed_record_prevents_startup -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_restart_recovery a_three_node_quorum_recovers_after_every_process_is_killed -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --lib cluster::replica_journal::tests::corruption_in_each_record_byte_is_rejected_without_truncation -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --lib cluster::replica_journal::tests::every_incomplete_final_record_preserves_the_committed_prefix -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --lib cluster::server::journal_failure_tests::failed_persistence_blocks_acknowledgment_and_all_later_requests -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: Metadata and replica shutdown
+        run: |
+          set -o pipefail
+          cargo test --locked --test server_shutdown meta_idle_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown meta_connected_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown meta_stopped_before_serve -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown replica_idle_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown replica_connected_shutdown -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test server_shutdown replica_stopped_before_serve -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: Replica storage admission limits
+        run: |
+          set -o pipefail
+          cargo test --locked --test replica_storage_limits sparse_writes_are_charged_for_the_whole_allocation -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_storage_limits byte_budget_is_shared_by_all_pages -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_storage_limits zero_length_pages_cannot_bypass_the_page_budget -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_storage_limits zero_storage_limits_are_rejected_at_startup -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: Recovery applies storage admission limits
+        run: |
+          set -o pipefail
+          cargo test --locked --test replica_restart_recovery recovery_enforces_storage_limits_without_changing_the_journal -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+
+      - name: Metadata restart recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --test meta_restart_recovery placements_roster_and_commit_index_survive_process_kills -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          grep -q '^running 1 test$' /tmp/meta-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
+          cargo test --locked --test meta_restart_recovery directory_lock_and_corruption_prevent_unsafe_startup -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          grep -q '^running 1 test$' /tmp/meta-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
+          cargo test --locked --test meta_restart_recovery interrupted_snapshot_and_bootstrap_do_not_replace_committed_state -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          grep -q '^running 1 test$' /tmp/meta-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
+          cargo test --locked --test meta_restart_recovery failed_snapshot_write_blocks_requests_and_recovers_old_state -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          grep -q '^running 1 test$' /tmp/meta-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
+
+      - name: Recovered metadata leases survive later mutations
+        run: |
+          set -o pipefail
+          cargo test --locked --test meta_restart_recovery restored_metadata_leases_remain_in_later_snapshots -- --exact --test-threads=1 2>&1 | tee /tmp/meta-guard.log
+          grep -q '^running 1 test$' /tmp/meta-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/meta-guard.log
+
       - name: Durable format constants are unchanged
         run: |
           set -o pipefail

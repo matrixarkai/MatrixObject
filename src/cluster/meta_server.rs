@@ -16,14 +16,12 @@
 //! **losing it does not lose the mapping from an object to its bytes.** See
 //! [`crate::cluster::directory`] for what it does lose and what that means for a caller.
 //!
-//! # NOTHING SURVIVES THE PROCESS
+//! # RESTART RECOVERY
 //!
-//! This metaserver is held entirely in memory. There is no snapshot path and no write to
-//! disk, so a restarted metaserver is an empty one: an empty roster, no placements, and a
-//! commit index back at its initial value. `MatrixMetaService` has a durable form already --
-//! a `MetaSnapshot` of twenty-eight fields with a checksum -- and this node does not use it.
-//! Giving this node a durable log is the next change and not this one; what is asserted here
-//! is that the node is a separate process, not that it survives being one.
+//! Set `MATRIXOBJECT_METASERVER_STATE_DIR` on the binary, or use
+//! `MetaNodeServer::bind_with_snapshot`, to persist and restore the metadata state.
+//! Mutations replace a synced snapshot before acknowledgment. The in-memory bind
+//! remains available. This recovers a single node; it does not replicate the control plane.
 //!
 //! # IT IS UNAUTHENTICATED
 //!
@@ -33,9 +31,53 @@
 
 use std::io::{BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use super::meta_snapshot_file::MetaSnapshotFile;
+use super::shutdown::ServerShutdown;
+
+struct NodeMeta {
+    service: MatrixMetaService,
+    storage: Option<MetaSnapshotFile>,
+    recovered: bool,
+    failed: bool,
+}
+
+impl std::ops::Deref for NodeMeta {
+    type Target = MatrixMetaService;
+    fn deref(&self) -> &Self::Target {
+        &self.service
+    }
+}
+impl std::ops::DerefMut for NodeMeta {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.service
+    }
+}
+impl NodeMeta {
+    fn ensure_healthy(&self) -> Result<(), ObjectError> {
+        if self.failed {
+            Err(ObjectError::Corruption(
+                "metadata persistence failed; restart before serving requests".to_string(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    fn persist(&mut self) -> Result<(), ObjectError> {
+        if let Some(storage) = &self.storage {
+            if let Err(err) = storage.persist(&self.service) {
+                self.failed = true;
+                return Err(ObjectError::Corruption(format!(
+                    "metadata persistence failed: {err}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
 
 use crate::cluster::message::check_stamp;
 use crate::cluster::meta_message::{
@@ -92,28 +134,55 @@ struct MetaCounters {
 /// A bound listener and the one metaserver behind it.
 pub struct MetaNodeServer {
     listener: TcpListener,
-    meta: Arc<Mutex<MatrixMetaService>>,
+    meta: Arc<Mutex<NodeMeta>>,
     options: MetaNodeOptions,
     counters: Arc<MetaCounters>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
 }
 
 impl MetaNodeServer {
-    /// Bind `addr` and serve a fresh, empty metaserver.
-    ///
-    /// There is deliberately no `bind_with_snapshot` taking a `MetaSnapshot`. It was written
-    /// and removed before this landed: this node has no durable state to load from, so the
-    /// only possible caller is a recovery path that does not exist yet. It belongs in the
-    /// change that gives this node something to recover.
+    /// Bind `addr` and serve a fresh in-memory metaserver.
     pub fn bind(addr: &str, options: MetaNodeOptions) -> std::io::Result<Self> {
+        Self::bind_storage(addr, options, None)
+    }
+
+    /// Restore the metadata and placement snapshot from an exclusively locked directory.
+    /// The directory must already exist. Mutations are synced before acknowledgment.
+    pub fn bind_with_snapshot(
+        addr: &str,
+        options: MetaNodeOptions,
+        directory: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        Self::bind_storage(addr, options, Some(directory))
+    }
+
+    fn bind_storage(
+        addr: &str,
+        options: MetaNodeOptions,
+        directory: Option<&std::path::Path>,
+    ) -> std::io::Result<Self> {
         crate::cluster::message::validate_payload_limit(options.max_payload_bytes)?;
+        let mut service = MatrixMetaService::new();
+        let (storage, recovered) = match directory {
+            Some(directory) => {
+                let (storage, recovered) = MetaSnapshotFile::open(directory, &mut service)?;
+                (Some(storage), recovered)
+            }
+            None => (None, false),
+        };
         let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
-            meta: Arc::new(Mutex::new(MatrixMetaService::new())),
+            meta: Arc::new(Mutex::new(NodeMeta {
+                service,
+                storage,
+                recovered,
+                failed: false,
+            })),
             options,
             counters: Arc::new(MetaCounters::default()),
-            stop: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(ServerShutdown::default()),
         })
     }
 
@@ -155,6 +224,10 @@ impl MetaNodeServer {
         let mut guard = self.meta.lock().map_err(|_| {
             ObjectError::Corruption("this metaserver's state is locked".to_string())
         })?;
+        guard.ensure_healthy()?;
+        if guard.recovered {
+            return Ok(guard.nodes.len());
+        }
         for index in 0..count {
             guard.register_node(PlacementNode {
                 node_id: format!("data-{index}"),
@@ -181,10 +254,11 @@ impl MetaNodeServer {
                 chunk_health: NodeChunkHealth::default(),
             })?;
         }
+        guard.persist()?;
         Ok(guard.nodes.len())
     }
 
-    /// A handle that stops the accept loops.
+    /// A handle that stops accept loops and closes active connections.
     pub fn shutdown_handle(&self) -> MetaNodeShutdown {
         MetaNodeShutdown {
             stop: Arc::clone(&self.stop),
@@ -217,34 +291,42 @@ impl MetaNodeServer {
 /// Stops a running [`MetaNodeServer`].
 #[derive(Clone, Debug)]
 pub struct MetaNodeShutdown {
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
 }
 
 impl MetaNodeShutdown {
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.stop.stop();
     }
 }
 
 fn accept_loop(
     listener: TcpListener,
-    meta: Arc<Mutex<MatrixMetaService>>,
+    meta: Arc<Mutex<NodeMeta>>,
     counters: Arc<MetaCounters>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<ServerShutdown>,
     options: MetaNodeOptions,
 ) {
-    while !stop.load(Ordering::SeqCst) {
+    while !stop.is_stopped() {
         match listener.accept() {
             Ok((stream, _peer)) => {
+                let _active = match stop.track(&stream) {
+                    Ok(Some(active)) => active,
+                    Ok(None) => return,
+                    Err(_) => continue,
+                };
+                if stream.set_nonblocking(false).is_err() {
+                    continue;
+                }
                 let _ = stream.set_read_timeout(Some(options.read_timeout));
                 let _ = stream.set_write_timeout(Some(options.write_timeout));
                 let _ = stream.set_nodelay(true);
                 serve_connection(stream, &meta, &counters, &options);
             }
             Err(_) => {
-                // An accept that failed is not a reason to stop accepting -- a single
-                // refused connection would otherwise take the control plane down.
-                continue;
+                // Nonblocking accept lets idle workers observe shutdown. Back off on
+                // all accept errors so resource exhaustion cannot create a busy loop.
+                std::thread::sleep(Duration::from_millis(20));
             }
         }
     }
@@ -257,7 +339,7 @@ fn accept_loop(
 /// statement about the cluster.
 fn serve_connection(
     stream: TcpStream,
-    meta: &Arc<Mutex<MatrixMetaService>>,
+    meta: &Arc<Mutex<NodeMeta>>,
     counters: &Arc<MetaCounters>,
     options: &MetaNodeOptions,
 ) {
@@ -362,7 +444,7 @@ fn read_frame(
 /// with its own message, so a caller reading the failure learns what the metaserver said and
 /// not what this file thought about it.
 fn apply(
-    meta: &Arc<Mutex<MatrixMetaService>>,
+    meta: &Arc<Mutex<NodeMeta>>,
     request: MetaRequest,
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
@@ -377,6 +459,25 @@ fn apply(
                 .to_string(),
         )
     })?;
+    guard.ensure_healthy()?;
+    let mutating = matches!(
+        request,
+        MetaRequest::HeartbeatRootNode { .. }
+            | MetaRequest::ExpireRootNodeHeartbeats { .. }
+            | MetaRequest::CommitObjectPlacement { .. }
+    );
+    let reply = apply_to_meta(&mut guard.service, request, max_payload_bytes)?;
+    if mutating {
+        guard.persist()?;
+    }
+    Ok(reply)
+}
+
+fn apply_to_meta(
+    guard: &mut MatrixMetaService,
+    request: MetaRequest,
+    max_payload_bytes: usize,
+) -> Result<MetaReply, ObjectError> {
     match request {
         MetaRequest::HeartbeatRootNode {
             node_id,

@@ -275,7 +275,44 @@ fn server_reply_budgets_must_fit_status_and_frame_lengths() {
     if usize::BITS > 32 {
         limits.push(usize::MAX);
     }
+    let directory = std::env::temp_dir().join(format!(
+        "matrixobject-budget-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
     for limit in limits {
+        let journal = directory.join("replica.journal");
+        assert!(ReplicaNodeServer::bind_with_journal(
+            "127.0.0.1:0",
+            ReplicaNodeOptions {
+                max_payload_bytes: limit,
+                ..Default::default()
+            },
+            &journal
+        )
+        .is_err());
+        assert!(
+            !journal.exists(),
+            "invalid budget must not create a journal"
+        );
+        assert!(MetaNodeServer::bind_with_snapshot(
+            "127.0.0.1:0",
+            MetaNodeOptions {
+                max_payload_bytes: limit,
+                ..Default::default()
+            },
+            &directory
+        )
+        .is_err());
+        assert!(
+            !directory.join("metadata.lock").exists(),
+            "invalid budget must not open metadata storage"
+        );
+
         assert!(ReplicaNodeServer::bind(
             "127.0.0.1:0",
             ReplicaNodeOptions {
@@ -293,6 +330,7 @@ fn server_reply_budgets_must_fit_status_and_frame_lengths() {
         )
         .is_err());
     }
+    std::fs::remove_dir(&directory).unwrap();
 }
 
 #[test]

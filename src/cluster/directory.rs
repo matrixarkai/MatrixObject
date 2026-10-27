@@ -64,28 +64,10 @@
 //! is worth more than pretending otherwise.** What makes it survivable rather than fatal is
 //! the fifth row: the data plane is not behind it.
 //!
-//! What recovery would cost, since nothing here is durable yet: `placements` is
-//! reconstructible in principle, because a placement says which nodes hold an object and the
-//! nodes can be asked what they hold -- at the cost of a full walk of every replica's page
-//! map, which is a snapshot transfer per node rather than a query. The roster is **not**
-//! recoverable that way: `capacity_bytes`, `failure_domain` and `draining` are configuration
-//! an operator supplied, not facts a replica can be asked for, so a rebuilt roster would be
-//! missing exactly the fields the placement policy decides on. `MatrixMetaService` already has
-//! a durable form -- a `MetaSnapshot` of twenty-seven fields and a checksum, with a decoder
-//! that reads seventeen versions -- and this node does not write it. That is the honest cost:
-//! the recovery story is a durable log this node does not yet have, not a derivation from the
-//! replicas.
-//!
-//! # REACHABILITY IS A ROUND TRIP, NOT A REMEMBERED FLAG
-//!
-//! [`MetaDirectory::status`] sends a frame and waits, every time it is called. There is no
-//! cached `reachable` on this type, deliberately: a health answer taken from a value the
-//! checker last wrote down is a comparison against itself and can never fire, so a node that
-//! had stopped talking to its control plane would go on reporting that it had one.
-//!
-//! One source is still one source. This reports what a round trip just found and nothing
-//! more; combining it with the node's own report and a second observer is a later change, and
-//! until then `reachable` means "it answered me, now".
+//! The metaserver can restore its own roster and placements from the durable snapshot
+//! selected by `MATRIXOBJECT_METASERVER_STATE_DIR`. Without that setting its state is
+//! in memory only. Snapshot recovery does not discover missed writes from replica nodes
+//! or replicate the control plane; availability still depends on this one metadata node.
 
 use crate::cluster::meta_client::{MetaCallOutcome, MetaClientOptions, RemoteMetaClient};
 use crate::cluster::meta_message::{

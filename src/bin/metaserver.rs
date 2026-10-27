@@ -23,6 +23,7 @@
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_METASERVER_THREADS` | `2` | connections served at once |
 //! | `MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
+//! | `MATRIXOBJECT_METASERVER_STATE_DIR` | *(unset)* | existing directory for locked, atomic metadata snapshots |
 //! | `MATRIXOBJECT_METASERVER_SEED_DATA_NODES` | `0` | data nodes to put in the roster before serving |
 //! | `MATRIXOBJECT_METASERVER_SEED_CAPACITY_BYTES` | `1073741824` | capacity each seeded node reports |
 //!
@@ -49,13 +50,12 @@
 //! supervisor that can read one startup line can read both, and the alternative is two
 //! parsers for two lines that say the same six things.
 //!
-//! # NOTHING SURVIVES THE PROCESS
+//! # RESTART RECOVERY
 //!
-//! This control plane is held entirely in memory. There is no snapshot path and no write to
-//! disk, so a restarted metaserver has an empty roster and no placements. `MatrixMetaService`
-//! has a durable form already -- a `MetaSnapshot` of twenty-eight fields with a checksum --
-//! and this binary does not write it. **This process is a single point of failure for
-//! placement**, and that is stated rather than implied.
+//! `MATRIXOBJECT_METASERVER_STATE_DIR` enables atomic, synced metadata snapshots in
+//! an existing directory. A restored roster takes precedence over bootstrap settings.
+//! Without this setting, restart loses the in-memory control plane. Durable snapshots
+//! recover one server; they do not provide a replicated or highly available control plane.
 //!
 //! # IT IS UNAUTHENTICATED
 //!
@@ -109,14 +109,14 @@ fn main() {
     let max_payload_bytes =
         env_usize("MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES);
 
-    let server = match MetaNodeServer::bind(
-        &addr,
-        MetaNodeOptions {
-            max_payload_bytes,
-            worker_threads,
-            ..MetaNodeOptions::default()
-        },
-    ) {
+    let options = MetaNodeOptions { max_payload_bytes, worker_threads, ..Default::default() };
+    let state_dir = std::env::var_os("MATRIXOBJECT_METASERVER_STATE_DIR");
+    let storage = if state_dir.is_some() { "snapshot" } else { "memory" };
+    let bound_server = match state_dir {
+        Some(path) => MetaNodeServer::bind_with_snapshot(&addr, options, std::path::Path::new(&path)),
+        None => MetaNodeServer::bind(&addr, options),
+    };
+    let server = match bound_server {
         Ok(server) => server,
         Err(err) => {
             eprintln!("binding {addr} failed: {err}");
@@ -151,7 +151,7 @@ fn main() {
     println!(
         "metaserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \
-         storage=memory roster_nodes={seeded}",
+         storage={storage} roster_nodes={seeded}",
         std::process::id()
     );
     if !bound.ip().is_loopback() {

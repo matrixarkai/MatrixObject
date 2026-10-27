@@ -46156,7 +46156,15 @@ fn every_guard_the_workflow_pins_by_name_exists() {
     // This is that missing half: rename a pinned guard and the suite says so, here, before
     // the push.
     const WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
-    const SUITE: &str = include_str!("tests.rs");
+    // Ask the compiled test harness, including tests in nested server modules.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--list", "--format", "terse"])
+        .output()
+        .expect("the test harness should list its tests");
+    assert!(output.status.success(), "listing compiled tests failed");
+    let listing = String::from_utf8(output.stdout).unwrap();
+    let compiled: Vec<&str> = listing.lines().filter_map(|line| line.strip_suffix(": test")).collect();
+    assert!(compiled.len() >= 25, "the compiled test list must not be empty");
 
     // `tests::<name>` is how the workflow spells a filter. Taken from the workflow rather
     // than from a list kept here, so a step ADDED later is covered without anyone
@@ -46186,7 +46194,7 @@ fn every_guard_the_workflow_pins_by_name_exists() {
     let missing: Vec<&str> = pinned
         .iter()
         .copied()
-        .filter(|name| !SUITE.contains(&format!("fn {name}(")))
+        .filter(|name| !compiled.iter().any(|test| test.ends_with(&format!("::{name}"))))
         .collect();
     assert!(
         missing.is_empty(),
@@ -46202,7 +46210,7 @@ fn every_guard_the_workflow_pins_by_name_exists() {
     // the steps rely on a single test passing, so none of them may name a filter that
     // matches more than one test.
     for name in &pinned {
-        let matches = SUITE.matches(&format!("fn {name}(")).count();
+        let matches = compiled.iter().filter(|test| test.ends_with(&format!("::{name}"))).count();
         assert_eq!(
             matches, 1,
             "a pinned guard must name exactly one test, and {name} names {matches}"
@@ -49891,4 +49899,80 @@ fn a_registration_serves_one_tier_or_the_other() {
     meta.serves_page_tier = false;
     assert!(!meta.serves_chunk_tier(), "a metaserver must not serve the chunk tier");
     assert!(!meta.serves_page_tier(), "a metaserver must not serve the page tier");
+}
+
+fn replica_readmission_fixture() -> (MatrixChunkService, PageId) {
+    let chunk_id = ChunkId::new(1, 913).unwrap();
+    let mut service = MatrixChunkService::new(4, 3, 2).unwrap();
+    service.write_chunk_range(&chunk_id, 0, b"good").unwrap();
+    service.set_replica_quarantine(0, true).unwrap();
+    service.set_replica_quarantine(0, false).unwrap();
+    (service, PageId { chunk_id, page_index: 0 })
+}
+
+fn assert_readmission_refused_without_erasing(service: &mut MatrixChunkService) {
+    let before = service.replicas[0].export_snapshot().to_bytes().unwrap();
+    assert!(matches!(service.check_in_replica(0), Err(ObjectError::PreconditionFailed(_))));
+    assert!(service.stale_replica_indices().contains(&0));
+    assert_eq!(service.replicas[0].export_snapshot().to_bytes().unwrap(), before);
+}
+
+#[test]
+fn replica_readmission_rejects_equal_sequence_with_different_bytes() {
+    let (mut service, id) = replica_readmission_fixture();
+    let mut other = MatrixReplicaService::new();
+    other.write_chunk(id.clone(), 0, b"evil").unwrap();
+    service.replicas[0].install_chunk_state(id.clone(), other.read_chunk_state(&id).unwrap()).unwrap();
+    assert_readmission_refused_without_erasing(&mut service);
+}
+
+#[test]
+fn replica_readmission_rejects_equal_sequence_with_different_discards() {
+    let (mut service, id) = replica_readmission_fixture();
+    let mut state = service.replicas[0].read_chunk_state(&id).unwrap();
+    state.discarded_ranges.push(DataRange { offset: 1, length: 1 });
+    service.replicas[0].install_chunk_state(id, state).unwrap();
+    assert_readmission_refused_without_erasing(&mut service);
+}
+
+#[test]
+fn replica_readmission_rejects_unverified_higher_sequences() {
+    let (mut service, id) = replica_readmission_fixture();
+    service.replicas[0].write_chunk(id, 0, b"good").unwrap();
+    assert_readmission_refused_without_erasing(&mut service);
+}
+
+#[test]
+fn replica_readmission_rejects_unverified_extra_pages() {
+    let (mut service, mut id) = replica_readmission_fixture();
+    id.page_index = 99;
+    service.replicas[0].write_chunk(id, 0, b"extra").unwrap();
+    assert_readmission_refused_without_erasing(&mut service);
+}
+
+#[test]
+fn replica_readmission_rejects_disagreement_between_current_sources() {
+    let (mut service, id) = replica_readmission_fixture();
+    service.replicas[1].write_chunk(id.clone(), 0, b"left").unwrap();
+    service.replicas[2].write_chunk(id.clone(), 0, b"rite").unwrap();
+    let state = service.replicas[1].read_chunk_state(&id).unwrap();
+    service.replicas[0].install_chunk_state(id, state).unwrap();
+    assert_readmission_refused_without_erasing(&mut service);
+}
+
+#[test]
+fn replica_readmission_requires_a_current_source() {
+    let (mut service, _) = replica_readmission_fixture();
+    service.stale_replicas.extend([1, 2]);
+    assert_readmission_refused_without_erasing(&mut service);
+}
+
+#[test]
+fn replica_readmission_waits_until_candidate_can_receive_writes() {
+    let (mut service, _) = replica_readmission_fixture();
+    service.set_replica_frozen(0, true).unwrap();
+    assert_readmission_refused_without_erasing(&mut service);
+    service.set_replica_frozen(0, false).unwrap();
+    service.check_in_replica(0).unwrap();
+    assert!(service.stale_replica_indices().is_empty());
 }
