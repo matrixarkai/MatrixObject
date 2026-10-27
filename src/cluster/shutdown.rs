@@ -3,12 +3,14 @@
 
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// Shares cancellation with accept workers and their currently active sockets.
 #[derive(Debug, Default)]
 pub(super) struct ServerShutdown {
     stopped: AtomicBool,
+    wake: Condvar,
+    wait_lock: Mutex<()>,
     connections: Mutex<Vec<Option<TcpStream>>>,
 }
 
@@ -17,9 +19,22 @@ impl ServerShutdown {
         self.stopped.load(Ordering::SeqCst)
     }
 
+    /// Wait between maintenance passes, waking immediately when shutdown begins.
+    #[cfg(feature = "meta-server")]
+    pub(super) fn wait_for(&self, duration: std::time::Duration) -> bool {
+        let guard = self.wait_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _wait = self
+            .wake
+            .wait_timeout_while(guard, duration, |_| !self.is_stopped())
+            .unwrap_or_else(|e| e.into_inner());
+        self.is_stopped()
+    }
+
     pub(super) fn stop(&self) {
         let connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
+        let _wait = self.wait_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.stopped.store(true, Ordering::SeqCst);
+        self.wake.notify_all();
         for stream in connections.iter().flatten() {
             let _ = stream.shutdown(Shutdown::Both);
         }

@@ -196,6 +196,29 @@ impl RemoteMetaClient {
         self.try_call(MetaRequest::Ping)
     }
 
+    /// Report one chunk's health only while its endpoint matches metadata membership.
+    pub fn heartbeat_chunk_node(
+        &mut self,
+        node_id: &str,
+        expected_endpoint: &str,
+        used_bytes: u64,
+        capacity_bytes: u64,
+        online: bool,
+        now_ms: u64,
+    ) -> Result<PlacementNodeSummary, ObjectError> {
+        match self.call(MetaRequest::HeartbeatChunkNode {
+            node_id: node_id.into(),
+            expected_endpoint: expected_endpoint.into(),
+            used_bytes,
+            capacity_bytes,
+            online,
+            now_ms,
+        })? {
+            MetaReply::PlacementNode(node) => Ok(node),
+            other => Err(unexpected_reply("a chunk heartbeat", &other)),
+        }
+    }
+
     pub fn heartbeat_placement_node(
         &mut self,
         node_id: &str,

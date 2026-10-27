@@ -20,6 +20,10 @@
 //! | variable | default | meaning |
 //! |---|---|---|
 //! | `MATRIXOBJECT_REPLICA_ADDR` | `127.0.0.1:17300` | address to bind; port `0` lets the kernel choose |
+//! | `MATRIXOBJECT_CHUNK_NODE_ID` | *(unset)* | configured metadata roster ID; enables reports with the catalog |
+//! | `MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS` | *(unset)* | comma-separated metaserver API IP sockets, 1..7 |
+//! | `MATRIXOBJECT_CHUNK_ADVERTISE_ADDR` | bound address | socket address matching the metadata roster |
+//! | `MATRIXOBJECT_CHUNK_HEARTBEAT_MS` | `1000` | report interval, 100..60000 ms |
 //! | `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 //! | `MATRIXOBJECT_REPLICA_CAPACITY_BYTES` | `268435456` | total page payload bytes; positive |
@@ -96,19 +100,31 @@ fn main() {
 
     let addr = env_string("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:17300");
     let worker_threads = env_usize("MATRIXOBJECT_REPLICA_THREADS", 4).max(1);
-    let max_payload_bytes =
-        env_usize("MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES);
+    let max_payload_bytes = env_usize("MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES);
 
     let capacity_bytes = env_usize("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", 256 * 1024 * 1024) as u64;
     let max_pages = env_usize("MATRIXOBJECT_REPLICA_MAX_PAGES", 65_536);
-    let options = ReplicaNodeOptions { max_payload_bytes, worker_threads, capacity_bytes, max_pages, ..Default::default() };
+    let options = ReplicaNodeOptions {
+        max_payload_bytes,
+        worker_threads,
+        capacity_bytes,
+        max_pages,
+        ..Default::default()
+    };
     let journal = std::env::var_os("MATRIXOBJECT_REPLICA_JOURNAL");
-    let storage = if journal.is_some() { "journal" } else { "memory" };
+    let storage = if journal.is_some() {
+        "journal"
+    } else {
+        "memory"
+    };
     let bound_server = match journal {
-        Some(path) => ReplicaNodeServer::bind_with_journal(&addr, options, std::path::Path::new(&path)),
+        Some(path) => {
+            ReplicaNodeServer::bind_with_journal(&addr, options, std::path::Path::new(&path))
+        }
         None => ReplicaNodeServer::bind(&addr, options),
     };
-    let server = match bound_server {
+    #[allow(unused_mut)]
+    let mut server = match bound_server {
         Ok(server) => server,
         Err(err) => {
             eprintln!("binding {addr} failed: {err}");
@@ -123,6 +139,70 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    let heartbeat_names = [
+        "MATRIXOBJECT_CHUNK_NODE_ID",
+        "MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS",
+        "MATRIXOBJECT_CHUNK_ADVERTISE_ADDR",
+        "MATRIXOBJECT_CHUNK_HEARTBEAT_MS",
+    ];
+    if heartbeat_names
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+    {
+        #[cfg(not(feature = "meta-server"))]
+        {
+            eprintln!("chunk heartbeats require the meta-server feature");
+            std::process::exit(2);
+        }
+        #[cfg(feature = "meta-server")]
+        {
+            let configured = (|| -> Result<_, String> {
+                let node_id = std::env::var("MATRIXOBJECT_CHUNK_NODE_ID")
+                    .map_err(|_| "missing chunk node ID")?;
+                let endpoints = std::env::var("MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS")
+                    .map_err(|_| "missing metadata endpoints")?;
+                if endpoints.len() > 4096 {
+                    return Err("metadata endpoint catalog exceeds size bound".into());
+                }
+                let metadata_endpoints = endpoints
+                    .split(',')
+                    .map(|s| {
+                        s.trim()
+                            .parse::<std::net::SocketAddr>()
+                            .map_err(|_| "invalid metadata socket address")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let advertised_endpoint = match std::env::var("MATRIXOBJECT_CHUNK_ADVERTISE_ADDR") {
+                    Ok(value) => value
+                        .parse()
+                        .map_err(|_| "invalid advertised socket address")?,
+                    Err(std::env::VarError::NotPresent) => bound,
+                    Err(_) => return Err("advertised address is not UTF-8".into()),
+                };
+                Ok(matrixobjectstore_rs::cluster::ReplicaHeartbeatOptions {
+                    node_id,
+                    advertised_endpoint,
+                    metadata_endpoints,
+                    interval: std::time::Duration::from_millis(env_usize(
+                        "MATRIXOBJECT_CHUNK_HEARTBEAT_MS",
+                        1000,
+                    ) as u64),
+                })
+            })();
+            let options = match configured {
+                Ok(options) => options,
+                Err(error) => {
+                    eprintln!("invalid chunk heartbeat configuration: {error}");
+                    std::process::exit(2);
+                }
+            };
+            if let Err(error) = server.enable_heartbeats(options) {
+                eprintln!("invalid chunk heartbeat configuration: {error}");
+                std::process::exit(2);
+            }
+        }
+    }
 
     println!(
         "chunkserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \

@@ -205,6 +205,14 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
+    HeartbeatChunkNode {
+        node_id: String,
+        expected_endpoint: String,
+        used_bytes: u64,
+        capacity_bytes: u64,
+        online: bool,
+        now_ms: u64,
+    },
     HeartbeatRootNode {
         node_id: String,
         used_bytes: u64,
@@ -239,6 +247,7 @@ impl MetaRequest {
     pub fn code(&self) -> MetaRequestCode {
         match self {
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
+            MetaRequest::HeartbeatChunkNode { .. } => MetaRequestCode::HeartbeatChunkNode,
             MetaRequest::ExpireRootNodeHeartbeats { .. } => {
                 MetaRequestCode::ExpireRootNodeHeartbeats
             }
@@ -253,6 +262,21 @@ impl MetaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            MetaRequest::HeartbeatChunkNode {
+                node_id,
+                expected_endpoint,
+                used_bytes,
+                capacity_bytes,
+                online,
+                now_ms,
+            } => {
+                put_str(&mut out, node_id);
+                put_str(&mut out, expected_endpoint);
+                put_u64(&mut out, *used_bytes);
+                put_u64(&mut out, *capacity_bytes);
+                put_bool(&mut out, *online);
+                put_u64(&mut out, *now_ms);
+            }
             MetaRequest::HeartbeatRootNode {
                 node_id,
                 used_bytes,
@@ -307,6 +331,14 @@ impl MetaRequest {
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = Cursor::new(payload);
         let request = match code {
+            MetaRequestCode::HeartbeatChunkNode => MetaRequest::HeartbeatChunkNode {
+                node_id: cursor.take_str()?,
+                expected_endpoint: cursor.take_str()?,
+                used_bytes: cursor.take_u64()?,
+                capacity_bytes: cursor.take_u64()?,
+                online: take_bool(&mut cursor)?,
+                now_ms: cursor.take_u64()?,
+            },
             MetaRequestCode::HeartbeatRootNode => MetaRequest::HeartbeatRootNode {
                 node_id: cursor.take_str()?,
                 used_bytes: cursor.take_u64()?,
@@ -405,7 +437,7 @@ impl MetaReply {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
-            MetaReply::NotLeader => {},
+            MetaReply::NotLeader => {}
             MetaReply::PlacementNode(node) => put_node(&mut out, node),
             MetaReply::RootNodes(nodes) => {
                 put_u64(&mut out, nodes.len() as u64);
@@ -449,7 +481,9 @@ impl MetaReply {
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
         let mut cursor = Cursor::new(payload);
         let reply = match code {
-            MetaRequestCode::HeartbeatRootNode => MetaReply::PlacementNode(take_node(&mut cursor)?),
+            MetaRequestCode::HeartbeatRootNode | MetaRequestCode::HeartbeatChunkNode => {
+                MetaReply::PlacementNode(take_node(&mut cursor)?)
+            }
             MetaRequestCode::ListRootNodes => {
                 let count = cursor.take_u64()?;
                 // BOUNDED BEFORE ANYTHING IS RESERVED. A node is at least this many bytes on
@@ -633,7 +667,11 @@ pub fn encode_meta_request(request: &MetaRequest) -> Vec<u8> {
 pub fn encode_meta_reply(reply: &MetaReply) -> Vec<u8> {
     let payload = reply.encode_payload();
     let mut frame = Vec::with_capacity(crate::cluster::wire::HEADER_BYTES + payload.len());
-    let status = if matches!(reply, MetaReply::NotLeader) { StatusCode::NotLeader } else { StatusCode::Ok };
+    let status = if matches!(reply, MetaReply::NotLeader) {
+        StatusCode::NotLeader
+    } else {
+        StatusCode::Ok
+    };
     crate::cluster::wire::put_header(&mut frame, status as u8, payload.len());
     frame.extend_from_slice(&payload);
     frame

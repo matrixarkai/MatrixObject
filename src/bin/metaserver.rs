@@ -21,6 +21,7 @@
 //! | variable | default | meaning |
 //! |---|---|---|
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
+//! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `0` | automatic expiry TTL, 1000..3600000 ms; zero disables |
 //! | `MATRIXOBJECT_METASERVER_THREADS` | `2` | connections served at once |
 //! | `MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 //! | `MATRIXOBJECT_METASERVER_STATE_DIR` | *(unset)* | existing directory for locked, atomic metadata snapshots |
@@ -106,17 +107,34 @@ fn main() {
 
     let addr = env_string("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:17200");
     let worker_threads = env_usize("MATRIXOBJECT_METASERVER_THREADS", 2).max(1);
-    let max_payload_bytes =
-        env_usize("MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES);
+    let max_payload_bytes = env_usize(
+        "MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES",
+        MAX_PAYLOAD_BYTES,
+    );
 
-    let options = MetaNodeOptions { max_payload_bytes, worker_threads, ..Default::default() };
+    let options = MetaNodeOptions {
+        max_payload_bytes,
+        worker_threads,
+        ..Default::default()
+    };
     let state_dir = std::env::var_os("MATRIXOBJECT_METASERVER_STATE_DIR");
     #[allow(unused_mut)]
-    let mut storage = if state_dir.is_some() { "snapshot" } else { "memory" };
+    let mut storage = if state_dir.is_some() {
+        "snapshot"
+    } else {
+        "memory"
+    };
     let raft_peers = std::env::var_os("MATRIXOBJECT_METASERVER_RAFT_PEERS");
-    if raft_peers.is_none() && ["MATRIXOBJECT_METASERVER_RAFT_NODE_ID",
-        "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR", "MATRIXOBJECT_METASERVER_RAFT_GROUP_ID",
-        "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS"].iter().any(|name| std::env::var_os(name).is_some()) {
+    if raft_peers.is_none()
+        && [
+            "MATRIXOBJECT_METASERVER_RAFT_NODE_ID",
+            "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
+            "MATRIXOBJECT_METASERVER_RAFT_GROUP_ID",
+            "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS",
+        ]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+    {
         eprintln!("partial Raft configuration: MATRIXOBJECT_METASERVER_RAFT_PEERS is required");
         std::process::exit(2);
     }
@@ -146,7 +164,9 @@ fn main() {
     };
 
     let bound_server = match state_dir {
-        Some(path) => MetaNodeServer::bind_with_snapshot(&addr, options, std::path::Path::new(&path)),
+        Some(path) => {
+            MetaNodeServer::bind_with_snapshot(&addr, options, std::path::Path::new(&path))
+        }
         None => MetaNodeServer::bind(&addr, options),
     };
     #[allow(unused_mut)]
@@ -157,6 +177,14 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    let heartbeat_ttl_ms = env_usize("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", 0) as u64;
+    if heartbeat_ttl_ms != 0 {
+        if let Err(error) = server.enable_heartbeat_expiry(heartbeat_ttl_ms) {
+            eprintln!("invalid heartbeat expiry: {error}");
+            std::process::exit(2);
+        }
+    }
 
     let seed_nodes = env_usize("MATRIXOBJECT_METASERVER_SEED_DATA_NODES", 0);
     let seed_capacity = env_usize(
@@ -191,25 +219,44 @@ fn main() {
                 for item in raw.split(',') {
                     let (id, address) = item.split_once('@').ok_or("expected id@address peers")?;
                     let id = id.parse::<u64>().map_err(|_| "invalid voter id")?;
-                    let address = address.parse::<std::net::SocketAddr>().map_err(|_| "invalid voter address")?;
-                    if peers.insert(id, address).is_some() { return Err("duplicate voter id".into()); }
+                    let address = address
+                        .parse::<std::net::SocketAddr>()
+                        .map_err(|_| "invalid voter address")?;
+                    if peers.insert(id, address).is_some() {
+                        return Err("duplicate voter id".into());
+                    }
                 }
                 let node_id = std::env::var("MATRIXOBJECT_METASERVER_RAFT_NODE_ID")
-                    .map_err(|_| "missing Raft node id")?.parse::<u64>().map_err(|_| "invalid Raft node id")?;
+                    .map_err(|_| "missing Raft node id")?
+                    .parse::<u64>()
+                    .map_err(|_| "invalid Raft node id")?;
                 let directory = std::env::var_os("MATRIXOBJECT_METASERVER_RAFT_STATE_DIR")
-                    .ok_or("missing Raft state directory")?.into();
+                    .ok_or("missing Raft state directory")?
+                    .into();
                 Ok(matrixobjectstore_rs::cluster::MetaRaftOptions {
-                    node_id, group_id: env_usize("MATRIXOBJECT_METASERVER_RAFT_GROUP_ID", 1) as u64,
-                    peers, directory,
-                    request_timeout: std::time::Duration::from_millis(env_usize("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", 3000) as u64),
+                    node_id,
+                    group_id: env_usize("MATRIXOBJECT_METASERVER_RAFT_GROUP_ID", 1) as u64,
+                    peers,
+                    directory,
+                    request_timeout: std::time::Duration::from_millis(env_usize(
+                        "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS",
+                        3000,
+                    ) as u64),
                 })
             })();
-            let options = match configured { Ok(options) => options, Err(error) => {
-                eprintln!("invalid Raft configuration: {error}"); std::process::exit(2);
-            }};
+            let options = match configured {
+                Ok(options) => options,
+                Err(error) => {
+                    eprintln!("invalid Raft configuration: {error}");
+                    std::process::exit(2);
+                }
+            };
             seeded = match server.enable_raft(options) {
                 Ok(count) => count,
-                Err(error) => { eprintln!("opening metadata consensus failed: {error}"); std::process::exit(1); }
+                Err(error) => {
+                    eprintln!("opening metadata consensus failed: {error}");
+                    std::process::exit(1);
+                }
             };
             storage = "raft";
         }

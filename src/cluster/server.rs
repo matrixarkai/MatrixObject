@@ -51,10 +51,17 @@ use crate::cluster::message::{check_stamp, encode_reply, ReplicaReply, ReplicaRe
 use crate::cluster::wire::{RequestCode, StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::{MatrixReplicaService, ObjectError};
 
+#[cfg(feature = "meta-server")]
+#[path = "server_heartbeat.rs"]
+mod heartbeat;
+#[cfg(feature = "meta-server")]
+pub use heartbeat::ReplicaHeartbeatOptions;
+
 struct NodeReplica {
     service: MatrixReplicaService,
     journal: Option<ReplicaJournal>,
     max_pages: usize,
+    used_bytes: u64,
     failed: bool,
 }
 
@@ -110,6 +117,8 @@ pub struct ReplicaNodeServer {
     options: ReplicaNodeOptions,
     counters: Arc<NodeCounters>,
     stop: Arc<ServerShutdown>,
+    #[cfg(feature = "meta-server")]
+    heartbeat: Option<ReplicaHeartbeatOptions>,
 }
 
 impl ReplicaNodeServer {
@@ -155,6 +164,7 @@ impl ReplicaNodeServer {
         Ok(Self {
             listener,
             replica: Arc::new(Mutex::new(NodeReplica {
+                used_bytes: service.physical_bytes(),
                 service,
                 journal,
                 max_pages: options.max_pages,
@@ -163,7 +173,23 @@ impl ReplicaNodeServer {
             options,
             counters: Arc::new(NodeCounters::default()),
             stop: Arc::new(ServerShutdown::default()),
+            #[cfg(feature = "meta-server")]
+            heartbeat: None,
         })
+    }
+
+    /// Enable periodic health reports to an explicitly configured metaserver catalog.
+    #[cfg(feature = "meta-server")]
+    pub fn enable_heartbeats(&mut self, options: ReplicaHeartbeatOptions) -> std::io::Result<()> {
+        options.validate()?;
+        if self.heartbeat.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "heartbeats already configured",
+            ));
+        }
+        self.heartbeat = Some(options);
+        Ok(())
     }
 
     /// The address actually bound.
@@ -194,6 +220,14 @@ impl ReplicaNodeServer {
             let options = self.options.clone();
             handles.push(std::thread::spawn(move || {
                 accept_loop(listener, replica, counters, stop, options);
+            }));
+        }
+        #[cfg(feature = "meta-server")]
+        if let Some(options) = self.heartbeat {
+            let replica = Arc::clone(&self.replica);
+            let stop = Arc::clone(&self.stop);
+            handles.push(std::thread::spawn(move || {
+                heartbeat::run(options, replica, stop)
             }));
         }
         for handle in handles {
@@ -390,18 +424,50 @@ fn apply(
     }
     let page = if guard.journal.is_some() {
         match &request {
-            ReplicaRequest::WriteChunk { page_id, .. } | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
+            ReplicaRequest::WriteChunk { page_id, .. }
+            | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
             _ => None,
         }
-    } else { None };
+    } else {
+        None
+    };
     let before = if let Some(page) = &page {
         match guard.service.read_chunk_state(page) {
-            Ok(state) => Some(state), Err(ObjectError::NotFound(_)) => None, Err(err) => return Err(err),
+            Ok(state) => Some(state),
+            Err(ObjectError::NotFound(_)) => None,
+            Err(err) => return Err(err),
         }
-    } else { None };
+    } else {
+        None
+    };
     let counters = crate::outcome::PageOutcome::counters(&guard.service);
     let max_pages = guard.max_pages;
-    let reply = apply_to_replica(&mut guard.service, request, max_pages)?;
+    let changed_page = match &request {
+        ReplicaRequest::WriteChunk { page_id, .. }
+        | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
+        _ => None,
+    };
+    let previous_bytes = changed_page
+        .as_ref()
+        .map_or(0, |page| guard.service.page_physical_len(page));
+    let result = apply_to_replica(&mut guard.service, request, max_pages);
+    if let Some(page) = changed_page {
+        let current_bytes = guard.service.page_physical_len(&page);
+        match guard
+            .used_bytes
+            .checked_sub(previous_bytes)
+            .and_then(|n| n.checked_add(current_bytes))
+        {
+            Some(bytes) => guard.used_bytes = bytes,
+            None => {
+                guard.failed = true;
+                return Err(ObjectError::Corruption(
+                    "replica usage accounting overflow".into(),
+                ));
+            }
+        }
+    }
+    let reply = result?;
     if let Some(page) = page {
         let persist = (|| -> Result<(), ObjectError> {
             let after = match guard.service.read_chunk_state(&page) {
@@ -409,16 +475,30 @@ fn apply(
                 Err(ObjectError::NotFound(_)) if before.is_none() => return Ok(()),
                 Err(err) => return Err(err),
             };
-            if before.as_ref() == Some(&after) && counters == crate::outcome::PageOutcome::counters(&guard.service) {
+            if before.as_ref() == Some(&after)
+                && counters == crate::outcome::PageOutcome::counters(&guard.service)
+            {
                 return Ok(());
             }
-            let outcome = crate::outcome::PageOutcome::between(&page, before.as_ref(), &after)?.with_counters(counters, crate::outcome::PageOutcome::counters(&guard.service));
-            let record = ReplicaJournal::encode_outcome(&outcome).map_err(|err| ObjectError::Corruption(err.to_string()))?;
-            guard.journal.as_mut().unwrap().append(&record).map_err(|err| ObjectError::Corruption(err.to_string()))
+            let outcome = crate::outcome::PageOutcome::between(&page, before.as_ref(), &after)?
+                .with_counters(
+                    counters,
+                    crate::outcome::PageOutcome::counters(&guard.service),
+                );
+            let record = ReplicaJournal::encode_outcome(&outcome)
+                .map_err(|err| ObjectError::Corruption(err.to_string()))?;
+            guard
+                .journal
+                .as_mut()
+                .unwrap()
+                .append(&record)
+                .map_err(|err| ObjectError::Corruption(err.to_string()))
         })();
         if let Err(err) = persist {
             guard.failed = true;
-            return Err(ObjectError::Corruption(format!("replica outcome persistence failed: {err}")));
+            return Err(ObjectError::Corruption(format!(
+                "replica outcome persistence failed: {err}"
+            )));
         }
     }
     Ok(reply)
@@ -493,6 +573,7 @@ mod journal_failure_tests {
         ));
         std::fs::write(&path, []).unwrap();
         let replica = Arc::new(Mutex::new(NodeReplica {
+            used_bytes: 0,
             service: MatrixReplicaService::new(),
             journal: Some(ReplicaJournal::read_only_for_test(&path)),
             max_pages: 65_536,

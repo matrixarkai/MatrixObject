@@ -19,12 +19,16 @@ struct Group {
     peers: BTreeMap<u64, std::net::SocketAddr>,
     root: PathBuf,
     roster: Option<String>,
+    heartbeat_ttl: Option<String>,
 }
 impl Group {
     fn new() -> Self {
         Self::with_roster(None)
     }
     fn with_roster(roster: Option<String>) -> Self {
+        Self::with_health(roster, None)
+    }
+    fn with_health(roster: Option<String>, heartbeat_ttl: Option<String>) -> Self {
         let root = std::env::temp_dir().join(node_regime::run_token("metadata-peers"));
         std::fs::create_dir(&root).unwrap();
         let reserved: Vec<_> = (0..3)
@@ -41,6 +45,7 @@ impl Group {
             peers,
             root,
             roster,
+            heartbeat_ttl,
         };
         for i in 0..3 {
             std::fs::create_dir(group.root.join(i.to_string())).unwrap();
@@ -78,6 +83,9 @@ impl Group {
             environment.push(("MATRIXOBJECT_METASERVER_DATA_ROSTER", roster));
         } else {
             environment.push(("MATRIXOBJECT_METASERVER_SEED_DATA_NODES", "3"));
+        }
+        if let Some(ttl) = &self.heartbeat_ttl {
+            environment.push(("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", ttl));
         }
         let node = processes::start(env!("CARGO_BIN_EXE_metaserver"), &environment);
         assert_ne!(node.pid, std::process::id());
@@ -535,4 +543,143 @@ fn configured_placement_writes_real_chunk_processes_and_recovers_after_failover(
             .data,
         payload
     );
+}
+
+#[cfg(feature = "replica-server")]
+#[test]
+fn chunk_processes_report_usage_follow_leaders_and_expire_without_manual_heartbeats() {
+    use matrixobjectstore_rs::cluster::{RemoteReplicaClient, ReplicaClientOptions};
+    use matrixobjectstore_rs::{ChunkId, PageId};
+    struct Chunks {
+        nodes: Vec<Option<NodeProcess>>,
+        root: PathBuf,
+    }
+    impl Drop for Chunks {
+        fn drop(&mut self) {
+            self.nodes.clear();
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+    fn wait_roster(
+        client: &mut RemoteMetaClient,
+        expected: impl Fn(&[matrixobjectstore_rs::cluster::PlacementNodeSummary]) -> bool,
+    ) {
+        let until = Instant::now() + Duration::from_secs(12);
+        loop {
+            if let Ok(nodes) = client.list_placement_nodes() {
+                if expected(&nodes) {
+                    return;
+                }
+            }
+            assert!(
+                Instant::now() < until,
+                "automatic health did not reach the expected state"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    let reserved: Vec<_> = (0..3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = reserved
+        .iter()
+        .map(|s| s.local_addr().unwrap().to_string())
+        .collect();
+    let roster = endpoints
+        .iter()
+        .enumerate()
+        .map(|(i, e)| format!("auto-{i}@{e}@rack-{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut group = Group::with_health(Some(roster), Some("1500".into()));
+    let initial_leader = group.leader();
+    let metadata = group
+        .nodes
+        .iter()
+        .map(|n| n.as_ref().unwrap().endpoint.clone())
+        .collect::<Vec<_>>()
+        .join(",");
+    let root = std::env::temp_dir().join(node_regime::run_token("automatic-health"));
+    std::fs::create_dir(&root).unwrap();
+    let mut chunks = Chunks {
+        nodes: Vec::new(),
+        root,
+    };
+    drop(reserved);
+    let start = |i: usize, path: &std::path::Path| {
+        processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", &endpoints[i]),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
+                ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "8192"),
+                ("MATRIXOBJECT_CHUNK_NODE_ID", &format!("auto-{i}")),
+                ("MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS", &metadata),
+                ("MATRIXOBJECT_CHUNK_HEARTBEAT_MS", "100"),
+            ],
+        )
+    };
+    for i in 0..3 {
+        chunks
+            .nodes
+            .push(Some(start(i, &chunks.root.join(format!("{i}.log")))));
+    }
+    let mut client = group.client(initial_leader);
+    wait_roster(&mut client, |nodes| {
+        nodes.len() == 3
+            && nodes
+                .iter()
+                .all(|n| n.online && n.capacity_bytes == 8192 && n.used_bytes == 0)
+    });
+    let page = PageId {
+        chunk_id: ChunkId::new(7, 2).unwrap(),
+        page_index: 0,
+    };
+    let mut replica =
+        RemoteReplicaClient::connect(&endpoints[0], &ReplicaClientOptions::default()).unwrap();
+    replica.write_chunk(page.clone(), 4096, b"abc").unwrap();
+    replica.discard_chunk(&page, 0, 1024).unwrap();
+    wait_roster(&mut client, |nodes| {
+        nodes
+            .iter()
+            .any(|n| n.node_id == "auto-0" && n.used_bytes == 4099)
+    });
+    assert!(replica.write_chunk(page.clone(), 8192, b"x").is_err());
+    wait_roster(&mut client, |nodes| {
+        nodes
+            .iter()
+            .any(|n| n.node_id == "auto-0" && n.used_bytes == 4099)
+    });
+    drop(client);
+    group.kill(initial_leader);
+    let mut client = group.client(group.leader());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    wait_roster(&mut client, |nodes| {
+        nodes.iter().all(|n| n.online && n.last_heartbeat_ms >= now)
+    });
+    drop(replica);
+    let mut killed = chunks.nodes[0].take().unwrap();
+    killed.child.kill().unwrap();
+    assert!(processes::reap_within(&mut killed.child, Duration::from_secs(3)).is_some());
+    drop(killed);
+    wait_roster(&mut client, |nodes| {
+        nodes.iter().all(|n| n.online == (n.node_id != "auto-0"))
+    });
+    let plan = client
+        .plan_object_placement("bucket", "remaining", 1, 2)
+        .unwrap();
+    assert!(!plan.node_ids.contains(&"auto-0".into()));
+    chunks.nodes[0] = Some(start(0, &chunks.root.join("0.log")));
+    wait_roster(&mut client, |nodes| {
+        nodes.iter().all(|n| n.online)
+            && nodes
+                .iter()
+                .any(|n| n.node_id == "auto-0" && n.used_bytes == 4099)
+    });
+    let mut replica =
+        RemoteReplicaClient::connect(&endpoints[0], &ReplicaClientOptions::default()).unwrap();
+    assert_eq!(replica.read_chunk(&page, 4096, 3).unwrap().data, b"abc");
 }

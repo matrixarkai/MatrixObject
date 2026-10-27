@@ -218,6 +218,7 @@ pub struct MetaNodeServer {
     options: MetaNodeOptions,
     counters: Arc<MetaCounters>,
     stop: Arc<ServerShutdown>,
+    heartbeat_ttl_ms: Option<u64>,
 }
 
 impl MetaNodeServer {
@@ -265,19 +266,41 @@ impl MetaNodeServer {
             options,
             counters: Arc::new(MetaCounters::default()),
             stop: Arc::new(ServerShutdown::default()),
+            heartbeat_ttl_ms: None,
         })
+    }
+
+    /// Periodically expire stale chunk health through the same durable mutation path.
+    /// In consensus mode only the leader can commit expiry outcomes.
+    pub fn enable_heartbeat_expiry(&mut self, ttl_ms: u64) -> std::io::Result<()> {
+        if !(1000..=3_600_000).contains(&ttl_ms) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "heartbeat TTL must be 1000..3600000 ms",
+            ));
+        }
+        self.heartbeat_ttl_ms = Some(ttl_ms);
+        Ok(())
     }
 
     /// Enable network consensus after seeding and before serving. Local snapshot
     /// storage and replicated storage must use separate directories.
     #[cfg(feature = "metadata-consensus")]
     pub fn enable_raft(&mut self, options: super::MetaRaftOptions) -> std::io::Result<usize> {
-        let mut meta = self.meta.lock().map_err(|_| std::io::Error::other("metadata lock poisoned"))?;
+        let mut meta = self
+            .meta
+            .lock()
+            .map_err(|_| std::io::Error::other("metadata lock poisoned"))?;
         if meta.storage.is_some() || meta.consensus.is_some() {
-            return Err(std::io::Error::other("metadata storage mode already configured"));
+            return Err(std::io::Error::other(
+                "metadata storage mode already configured",
+            ));
         }
         let consensus = super::meta_consensus::MetaConsensus::open(
-            options, meta.service.clone(), Arc::clone(&self.stop), self.options.max_payload_bytes,
+            options,
+            meta.service.clone(),
+            Arc::clone(&self.stop),
+            self.options.max_payload_bytes,
         )?;
         let node_count = consensus.node_count;
         meta.consensus = Some(Arc::new(consensus));
@@ -402,14 +425,44 @@ impl MetaNodeServer {
                 accept_loop(listener, meta, counters, stop, options);
             }));
         }
+        if let Some(ttl_ms) = self.heartbeat_ttl_ms {
+            let meta = Arc::clone(&self.meta);
+            let stop = Arc::clone(&self.stop);
+            let limit = self.options.max_payload_bytes;
+            handles.push(std::thread::spawn(move || {
+                let interval = Duration::from_millis((ttl_ms / 3).min(1000));
+                while !stop.is_stopped() {
+                    if let Ok(elapsed) =
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    {
+                        if let Ok(now_ms) = u64::try_from(elapsed.as_millis()) {
+                            let _ = apply(
+                                &meta,
+                                MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms },
+                                limit,
+                            );
+                        }
+                    }
+                    if stop.wait_for(interval) {
+                        break;
+                    }
+                }
+            }));
+        }
         for handle in handles {
             // A worker that panicked has already stopped serving; joining it is how that
             // becomes visible rather than a thread count quietly dropping to zero.
             let _ = handle.join();
         }
         #[cfg(feature = "metadata-consensus")]
-        if self.meta.lock().map_err(|_| std::io::Error::other("metadata lock poisoned"))?
-            .consensus.as_ref().is_some_and(|c| c.is_failed()) {
+        if self
+            .meta
+            .lock()
+            .map_err(|_| std::io::Error::other("metadata lock poisoned"))?
+            .consensus
+            .as_ref()
+            .is_some_and(|c| c.is_failed())
+        {
             return Err(std::io::Error::other("metadata consensus worker failed"));
         }
         Ok(())
@@ -593,37 +646,91 @@ fn apply(
         drop(guard);
         return consensus.request(request);
     }
+    if let MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } = &request {
+        if expired_node_ids(&guard.service, *ttl_ms, *now_ms)?.is_empty() {
+            return Ok(MetaReply::Expired { offline_count: 0 });
+        }
+    }
     let mutating = matches!(
         request,
         MetaRequest::HeartbeatRootNode { .. }
+            | MetaRequest::HeartbeatChunkNode { .. }
             | MetaRequest::ExpireRootNodeHeartbeats { .. }
             | MetaRequest::CommitObjectPlacement { .. }
     );
     let outcome = if mutating && guard.storage.is_some() {
-        if !guard.recovered { guard.persist()?; guard.recovered = true; }
+        if !guard.recovered {
+            guard.persist()?;
+            guard.recovered = true;
+        }
         let (nodes, object) = match &request {
-            MetaRequest::HeartbeatRootNode { node_id, .. } => (vec![node_id.clone()], None),
-            MetaRequest::ExpireRootNodeHeartbeats { .. } => (guard.nodes.keys().cloned().collect(), None),
+            MetaRequest::HeartbeatRootNode { node_id, .. }
+            | MetaRequest::HeartbeatChunkNode { node_id, .. } => (vec![node_id.clone()], None),
+            MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => {
+                (expired_node_ids(&guard.service, *ttl_ms, *now_ms)?, None)
+            }
             MetaRequest::CommitObjectPlacement { placement, .. } => {
-                let object = crate::cluster::meta_message::object_id(&placement.bucket, &placement.key);
+                let object =
+                    crate::cluster::meta_message::object_id(&placement.bucket, &placement.key);
                 let mut nodes = placement.node_ids.clone();
-                if let Some(previous) = guard.placements.get(&object) { nodes.extend(previous.node_ids.iter().cloned()); }
+                if let Some(previous) = guard.placements.get(&object) {
+                    nodes.extend(previous.node_ids.iter().cloned());
+                }
                 (nodes, Some(object))
             }
             _ => unreachable!(),
         };
-        Some(crate::placement_outcome::PlacementOutcome::capture(&guard.service, nodes, object)?)
-    } else { None };
+        Some(crate::placement_outcome::PlacementOutcome::capture(
+            &guard.service,
+            nodes,
+            object,
+        )?)
+    } else {
+        None
+    };
     let reply = apply_to_meta(&mut guard.service, request, max_payload_bytes)?;
     if let Some(outcome) = outcome {
         let persisted = outcome.finish(&guard.service).and_then(|outcome| {
-            if outcome.before_index == outcome.after_index { return Ok(()); }
-            guard.storage.as_mut().unwrap().append_outcome(&outcome)
+            if outcome.before_index == outcome.after_index {
+                return Ok(());
+            }
+            guard
+                .storage
+                .as_mut()
+                .unwrap()
+                .append_outcome(&outcome)
                 .map_err(|err| ObjectError::Corruption(err.to_string()))
         });
-        if let Err(err) = persisted { guard.failed = true; return Err(err); }
+        if let Err(err) = persisted {
+            guard.failed = true;
+            return Err(err);
+        }
     }
     Ok(reply)
+}
+
+/// Restrict an expiry outcome to the nodes whose state actually changes.
+pub(super) fn expired_node_ids(
+    service: &MatrixMetaService,
+    ttl_ms: u64,
+    now_ms: u64,
+) -> Result<Vec<String>, ObjectError> {
+    if ttl_ms == 0 {
+        return Err(ObjectError::InvalidArgument(
+            "root heartbeat expiry requires ttl_ms".into(),
+        ));
+    }
+    Ok(service
+        .nodes
+        .values()
+        .filter(|node| {
+            node.online
+                && node.last_heartbeat_ms != 0
+                && now_ms > node.last_heartbeat_ms
+                && now_ms.saturating_sub(node.last_heartbeat_ms) > ttl_ms
+        })
+        .map(|node| node.node_id.clone())
+        .collect())
 }
 
 pub(super) fn apply_to_meta(
@@ -632,6 +739,37 @@ pub(super) fn apply_to_meta(
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     match request {
+        MetaRequest::HeartbeatChunkNode {
+            node_id,
+            expected_endpoint,
+            used_bytes,
+            capacity_bytes,
+            online,
+            now_ms,
+        } => {
+            let node = guard
+                .nodes
+                .get(&node_id)
+                .ok_or_else(|| ObjectError::NotFound("chunk heartbeat node missing".into()))?;
+            if node.endpoint != expected_endpoint || node.service_kind != "chunkserver" {
+                return Err(ObjectError::PreconditionFailed(
+                    "chunk heartbeat endpoint does not match membership".into(),
+                ));
+            }
+            let draining = node.draining;
+            apply_to_meta(
+                guard,
+                MetaRequest::HeartbeatRootNode {
+                    node_id,
+                    used_bytes,
+                    capacity_bytes,
+                    draining,
+                    online,
+                    now_ms,
+                },
+                max_payload_bytes,
+            )
+        }
         MetaRequest::HeartbeatRootNode {
             node_id,
             used_bytes,

@@ -88,8 +88,7 @@ seed capacity, although entry order may differ.
 
 Configured nodes start offline. A controller must verify each chunk endpoint and
 publish its health through `heartbeat_placement_node` before it can receive new
-placements. Periodic health reporting and expiry are not automated by this
-configuration. This prevents a configured but absent process from being selected
+placements. Automatic reporting and expiry are configured separately below. This prevents a configured but absent process from being selected
 solely because its address appears in an environment variable.
 
 `MATRIXOBJECT_METASERVER_SEED_CAPACITY_BYTES` supplies initial capacity, which must
@@ -103,5 +102,50 @@ The process test starts three metaserver voters and three journal-backed chunk
 servers. It checks offline admission, canonical bootstrap across differently
 ordered configurations, placement-selected star writes, leader loss, and full
 restart recovery from binary outcomes. This validates the directory and chunk
-client path. The HTTP object-server backend and automatic chunk health reporting
-still require separate integration.
+client path. The HTTP object-server backend still requires separate integration.
+
+
+## Automatic chunk health and expiry
+
+On each chunk process set `MATRIXOBJECT_CHUNK_NODE_ID` to its roster ID and
+`MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS` to 1..7 comma-separated metaserver API
+IP sockets. `MATRIXOBJECT_CHUNK_ADVERTISE_ADDR` defaults to the bound socket;
+set it explicitly when binding a wildcard address or advertising through a
+different address. Every report must match the endpoint stored in metadata.
+The binary heartbeat request uses code 71; older servers refuse it as unknown.
+It does not change the existing heartbeat request or durable protobuf format.
+
+`MATRIXOBJECT_CHUNK_HEARTBEAT_MS` defaults to 1000 and accepts 100..60000 ms.
+Reports carry the actual configured capacity and current page payload bytes,
+including zero-filled space. The byte count is initialized once after recovery
+and updated from the changed page on each mutation; reporting never scans all
+pages. A failed journal causes reports to mark the node offline. Reports preserve
+the metadata administrator's draining flag. Placement without a typed free-space
+report subtracts the larger of physical usage and committed allocations from
+capacity, so overlapping bytes are not counted twice. Invalid or partial configuration is
+refused before the process begins serving.
+
+Set `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` on each metaserver to enable expiry
+(1000..3600000 ms, default 0 disables it). Use a TTL comfortably larger than the
+report interval plus expected election, network, and storage delays, for example
+10000 ms with 1000 ms reports. Maintenance checks at most once a second and uses
+the normal durable mutation path; only a consensus leader can commit expiry.
+Expiry records contain only changed nodes. An empty local pass appends nothing;
+an empty consensus pass uses a compact read barrier. Clocks must be synchronized
+across processes because heartbeat and expiry timestamps use UTC wall time.
+
+Each reporting worker closes its metadata connection after one report, retains
+the last successful catalog ordering, and observes shutdown between calls.
+Connections have 100 ms connect/write and 500 ms whole-frame read deadlines.
+No mutation with an uncertain reply is replayed on another node; a later interval
+produces a fresh health measurement. Shutdown wakes interval waits immediately;
+an in-flight call remains bounded by the configured catalog and client deadlines.
+Abrupt termination is detected by TTL expiry, not by a graceful-offline message.
+
+The six-process health test verifies automatic admission, used-byte updates,
+metaserver leader loss, killed-chunk expiry, exclusion from new placement, and
+journal-backed chunk recovery. Additional tests cover wrong endpoints, draining,
+storage failure, binary request truncation, bounded shutdown, partial configuration,
+and a single-node expiry within a 1024-node roster. These are functional checks,
+not a large-scale throughput result. Full HTTP integration, network chunk Raft,
+authentication, membership changes, and log compaction remain separate work.
