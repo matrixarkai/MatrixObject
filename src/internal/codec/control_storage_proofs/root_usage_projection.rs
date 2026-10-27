@@ -56,6 +56,7 @@ pub(crate) fn unregistered_placement_node_usage(
             metadata_eligible: false,
             data_eligible: false,
             gateway_eligible: false,
+            serves_page_tier: false,
             metadata_value_bytes: 0,
             capacity_bytes: 0,
             used_bytes: 0,

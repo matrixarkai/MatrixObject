@@ -32,6 +32,7 @@ pub(crate) struct PlacementSnapshotDecodeFeatures {
     pub(crate) has_root_chunk_health: bool,
     pub(crate) has_root_chunk_control_health: bool,
     pub(crate) has_root_replica_service_health: bool,
+    pub(crate) has_serves_page_tier: bool,
 }
 
 impl PlacementSnapshotDecodeFeatures {
@@ -67,6 +68,7 @@ impl PlacementSnapshotDecodeFeatures {
             has_root_chunk_health: version >= 12,
             has_root_chunk_control_health: version >= 17,
             has_root_replica_service_health: version >= 32,
+            has_serves_page_tier: version >= 33,
         }
     }
 }
@@ -103,19 +105,27 @@ fn read_placement_snapshot_nodes(
         has_root_chunk_health,
         has_root_chunk_control_health,
         has_root_replica_service_health,
+        has_serves_page_tier,
         ..
     } = features;
     let mut nodes = BTreeMap::new();
     for _ in 0..cursor.read_count("root snapshot node count")? {
         let map_node_id = cursor.read_string()?;
+        // READ IN STREAM ORDER, THEN USED TWICE. The kind is hoisted out of the literal
+        // because `serves_page_tier` is DERIVED from it for any record written before the
+        // field existed, and deriving it inline would read the cursor a second time and
+        // consume the next field's bytes.
+        let node_id = cursor.read_string()?;
+        let endpoint = if has_node_endpoint {
+            cursor.read_string()?
+        } else {
+            String::new()
+        };
+        let service_kind = cursor.read_string()?;
         let node = PlacementNode {
-            node_id: cursor.read_string()?,
-            endpoint: if has_node_endpoint {
-                cursor.read_string()?
-            } else {
-                String::new()
-            },
-            service_kind: cursor.read_string()?,
+            node_id,
+            endpoint,
+            service_kind: service_kind.clone(),
             failure_domain: cursor.read_string()?,
             metadata_eligible: if has_node_eligibility {
                 cursor.read_u64()? != 0
@@ -152,6 +162,15 @@ fn read_placement_snapshot_nodes(
                 cursor.read_u64()?
             } else {
                 1
+            },
+            // ABSENT MEANS DERIVE, AND THE OLD KIND IS THE OLD RECORD'S SOURCE OF TRUTH.
+            // A record without this field was written when the page tier had its own node
+            // kind, so that kind says exactly what this field now says -- which is why no
+            // store has to be rewritten and none becomes unreadable.
+            serves_page_tier: if has_serves_page_tier {
+                cursor.read_u64()? != 0
+            } else {
+                service_kind == "blockserver"
             },
             meta_health: if has_root_meta_health {
                 read_placement_meta_health(

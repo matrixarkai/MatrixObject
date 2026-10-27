@@ -51,6 +51,7 @@ impl MatrixObjectStore {
             metadata_eligible: false,
             data_eligible: true,
             gateway_eligible: true,
+            serves_page_tier: true,
             metadata_value_bytes: 0,
             capacity_bytes,
             used_bytes: readiness.total_physical_bytes,

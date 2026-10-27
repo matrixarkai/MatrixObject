@@ -9,6 +9,16 @@ pub struct PlacementNode {
     pub metadata_eligible: bool,
     pub data_eligible: bool,
     pub gateway_eligible: bool,
+    /// WHETHER THIS NODE SERVES THE PAGE TIER.
+    ///
+    /// The store-plane node kinds merge, so the kind can no longer answer this: a node
+    /// serving pages and a node serving chunks are both `chunkserver`. This field carries
+    /// what the kind used to imply.
+    ///
+    /// A record written before this field existed does not carry it, and the decoder
+    /// derives it from the kind that record was written with -- so every existing record
+    /// keeps its exact current meaning and nothing has to be rewritten.
+    pub serves_page_tier: bool,
     pub metadata_value_bytes: u64,
     pub capacity_bytes: u64,
     pub used_bytes: u64,
