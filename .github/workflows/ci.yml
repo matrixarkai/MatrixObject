@@ -84,12 +84,27 @@ jobs:
       - name: Replica journal recovery
         run: |
           set -o pipefail
-          cargo test --locked --test replica_restart_recovery -- --test-threads=1 2>&1 | tee /tmp/restart.log
-          grep -q 'test result: ok. 4 passed' /tmp/restart.log
-          cargo test --locked --lib cluster::replica_journal::tests -- --test-threads=1 2>&1 | tee /tmp/journal.log
-          grep -q 'test result: ok. 2 passed' /tmp/journal.log
-          cargo test --locked --lib cluster::server::journal_failure_tests -- --test-threads=1 2>&1 | tee /tmp/journal-failure.log
-          grep -q 'test result: ok. 1 passed' /tmp/journal-failure.log
+          cargo test --locked --test replica_restart_recovery acknowledged_writes_and_discards_survive_process_kills -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_restart_recovery a_live_journal_cannot_be_opened_by_a_second_server -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_restart_recovery a_damaged_committed_record_prevents_startup -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_restart_recovery a_three_node_quorum_recovers_after_every_process_is_killed -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --lib cluster::replica_journal::tests::corruption_in_each_record_byte_is_rejected_without_truncation -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --lib cluster::replica_journal::tests::every_incomplete_final_record_preserves_the_committed_prefix -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --lib cluster::server::journal_failure_tests::failed_persistence_blocks_acknowledgment_and_all_later_requests -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
 
       - name: Durable format constants are unchanged
         run: |
