@@ -93,6 +93,21 @@ impl PlacementNode {
     /// one line, one place -- and whether that needs a new stored field becomes a
     /// question that can be answered by trying it.
     pub fn serves_page_tier(&self) -> bool {
-        self.service_kind == "blockserver"
+        self.serves_page_tier
+    }
+
+    /// WHETHER THIS NODE SERVES THE CHUNK TIER.
+    ///
+    /// The mirror of `serves_page_tier`, and it exists for the same reason: once the store
+    /// plane became ONE kind, eight predicates that asked `service_kind == "chunkserver"`
+    /// to mean "a chunk-tier node" started admitting page-tier nodes too. Only one of the
+    /// eight was covered by a test that could tell the difference.
+    ///
+    /// A store-plane node that is not a page node is a chunk node, which restores exactly
+    /// the division the two kinds used to draw. If a node ever needs to serve BOTH tiers
+    /// this is the one line that has to change -- and today nothing produces such a node,
+    /// which `a_registration_serves_one_tier_or_the_other` asserts.
+    pub fn serves_chunk_tier(&self) -> bool {
+        self.service_kind == "chunkserver" && !self.serves_page_tier
     }
 }

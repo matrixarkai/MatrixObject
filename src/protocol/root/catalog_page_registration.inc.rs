@@ -30,7 +30,7 @@ impl CatalogPageRegistration {
         expected_checksum: &str,
     ) -> Result<(), ObjectError> {
         require_route_checksum_for_service(
-            "blockserver",
+            "chunkserver",
             &[
                 &self.catalog_route_checksum(),
                 &self.legacy_kind_route_checksum(),
@@ -77,7 +77,7 @@ impl CatalogPageRegistration {
         catalog_endpoint_count: u64,
     ) -> Result<Self, ObjectError> {
         let (source, endpoint, count) = validate_catalog_route(
-            "blockserver",
+            "chunkserver",
             catalog_source,
             catalog_endpoint,
             catalog_endpoint_count,
@@ -90,7 +90,7 @@ impl CatalogPageRegistration {
 
     pub fn to_control_fields(&self) -> BTreeMap<String, String> {
         let mut fields = catalog_registration_fields(
-            "blockserver",
+            "chunkserver",
             CATALOG_PAGE_ROUTE_DISCRIMINATOR,
             &self.node,
             &self.catalog_source,

@@ -75,12 +75,16 @@ impl MatrixMetaService {
     }
 
     pub(crate) fn is_data_service_node(node: &PlacementNode) -> bool {
-        node.data_eligible
-            && (node.service_kind == "chunkserver" || node.service_kind == "blockserver")
+        // ONE STORE-PLANE KIND, AND BOTH TIERS ARE DATA NODES. This asks whether the node
+        // is a store-plane data node at all, which both spellings used to mean together --
+        // so it must NOT narrow to one tier. Narrowing it to the chunk tier made placement
+        // refuse with "could not satisfy replica count", caught by an integration test that
+        // the lib suite does not run.
+        node.data_eligible && node.service_kind == "chunkserver"
     }
 
     fn replica_service_pages_new_placement(node: &PlacementNode) -> bool {
-        node.service_kind == "chunkserver"
+        node.serves_chunk_tier()
             && (node.chunk_health.frozen
                 || !node.chunk_health.accepting_writes
                 || !node.chunk_health.raft_writable
@@ -96,7 +100,7 @@ impl MatrixMetaService {
     }
 
     pub(crate) fn node_effective_free_bytes(node: &PlacementNode) -> u64 {
-        if node.service_kind == "chunkserver" && node.chunk_health.capacity_free_bytes > 0 {
+        if node.serves_chunk_tier() && node.chunk_health.capacity_free_bytes > 0 {
             node.chunk_health.capacity_free_bytes
         } else {
             node.capacity_bytes.saturating_sub(node.committed_bytes)

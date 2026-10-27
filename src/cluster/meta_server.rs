@@ -162,7 +162,7 @@ impl MetaNodeServer {
             guard.register_node(PlacementNode {
                 node_id: format!("data-{index}"),
                 endpoint: format!("127.0.0.1:{}", 17_400 + index),
-                service_kind: "blockserver".to_string(),
+                service_kind: "chunkserver".to_string(),
                 // ONE DOMAIN PER NODE. The policy prefers one node per failure domain before
                 // it backfills, so identical domains would make the first pass a no-op.
                 failure_domain: format!("domain-{index}"),

@@ -111,6 +111,11 @@ pub(crate) fn current_service_kind_spelling(service_kind: &str) -> &str {
         // kind is a metaserver node -- including when it is the one holding the leader lease,
         // which is the case that kept the second spelling alive in the predicate below.
         "rootserver" => "metaserver",
+        // The store plane folded into one kind, so a node recorded under the page kind is a
+        // chunkserver that serves the page tier. What it SERVES is carried by
+        // `serves_page_tier`, which the node decoder derives from this same retired spelling
+        // BEFORE this rewrite runs -- so the two together lose nothing.
+        "blockserver" => "chunkserver",
         other => other,
     }
 }

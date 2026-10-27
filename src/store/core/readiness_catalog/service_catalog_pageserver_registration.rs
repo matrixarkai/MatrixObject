@@ -46,7 +46,7 @@ impl MatrixObjectStore {
         let node = PlacementNode {
             node_id: node_id.to_string(),
             endpoint: endpoint.to_string(),
-            service_kind: "blockserver".to_string(),
+            service_kind: "chunkserver".to_string(),
             failure_domain: failure_domain.to_string(),
             metadata_eligible: false,
             data_eligible: true,

@@ -8,7 +8,7 @@ impl MatrixMetaService {
             ..PlacementChunkServerCoverage::default()
         };
         for node in self.nodes.values() {
-            if node.service_kind != "chunkserver" || !node.data_eligible || !node.online {
+            if !node.serves_chunk_tier() || !node.data_eligible || !node.online {
                 continue;
             }
             coverage.active_chunkserver_count = coverage.active_chunkserver_count.saturating_add(1);
@@ -146,7 +146,7 @@ impl MatrixMetaService {
                 .nodes
                 .values()
                 .filter(|node| {
-                    node.service_kind == "chunkserver"
+                    node.serves_chunk_tier()
                         && node.online
                         && node.data_eligible
                         && !node.chunk_health.control_proof_checksum.is_empty()

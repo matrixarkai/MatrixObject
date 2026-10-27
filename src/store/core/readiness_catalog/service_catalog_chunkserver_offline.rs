@@ -22,7 +22,7 @@ impl MatrixObjectStore {
             .get(node_id)
             .ok_or_else(|| ObjectError::NotFound("root node missing".to_string()))?
             .clone();
-        if existing.service_kind != "chunkserver" || !existing.data_eligible {
+        if !existing.serves_chunk_tier() || !existing.data_eligible {
             return Err(ObjectError::PreconditionFailed(
                 "chunkserver catalog offline heartbeat requires registered chunkserver node"
                     .to_string(),

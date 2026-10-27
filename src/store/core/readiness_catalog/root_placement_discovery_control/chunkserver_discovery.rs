@@ -40,7 +40,7 @@ impl MatrixObjectStore {
         let mut disabled_endpoint_indexes = BTreeSet::new();
         let mut seen = BTreeSet::new();
         for node in self.meta_service.list_nodes() {
-            if node.service_kind != "chunkserver" || !node.online || !node.data_eligible {
+            if !node.serves_chunk_tier() || !node.online || !node.data_eligible {
                 continue;
             }
             if node.endpoint.is_empty() {
