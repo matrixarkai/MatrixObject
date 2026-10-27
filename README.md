@@ -613,8 +613,27 @@ Power-loss and non-Linux filesystem behavior have not been tested.
 
 The journal grows with mutations; checkpointing and compaction remain unfinished. Do not
 replace or remove a journal while its server runs. Recovery restores that node's own history;
-it does not fetch writes missed while offline, authorize readmission, or persist the metadata
+it does not fetch writes missed while offline, authorize readmission, or replicate the metadata
 server. Those require additional coordinated recovery work.
+
+### Metadata restart recovery
+
+Set `MATRIXOBJECT_METASERVER_STATE_DIR` to an existing directory to enable durable metadata
+snapshots. Each successful heartbeat, heartbeat expiry, placement commit, and initial roster
+bootstrap is saved before acknowledgment. A synced temporary snapshot atomically replaces
+the previous file, and the directory is synced on Unix. A separate file lock prevents another
+server from opening the same directory. Startup reports `storage=snapshot`.
+
+Recovery validates the snapshot and restores both metadata and placement state. A recovered
+roster overrides bootstrap environment settings. Interrupted temporary snapshots are ignored;
+a missing initialized snapshot or a corrupted snapshot prevents startup. Persistence failure
+blocks further requests until restart. Snapshot files are limited to 64 MiB. This path rewrites
+the full metadata snapshot per mutation; it is not an incremental metadata log.
+
+Keep all files in the state directory together and do not modify them while the node runs.
+Linux process-kill recovery and write failures are tested; power-loss and non-Linux filesystem
+behavior are not. A lost acknowledgment may still mean a durable mutation. This provides
+single-node recovery, not a replicated or highly available metadata service.
 
 ### What the kill test establishes, and in what order
 
