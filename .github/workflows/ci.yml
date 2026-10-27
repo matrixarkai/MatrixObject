@@ -84,8 +84,18 @@ jobs:
       - name: Replica storage admission limits
         run: |
           set -o pipefail
-          cargo test --locked --test replica_storage_limits -- --test-threads=1 2>&1 | tee /tmp/replica-limits.log
-          grep -q 'test result: ok. 4 passed' /tmp/replica-limits.log
+          cargo test --locked --test replica_storage_limits sparse_writes_are_charged_for_the_whole_allocation -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_storage_limits byte_budget_is_shared_by_all_pages -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_storage_limits zero_length_pages_cannot_bypass_the_page_budget -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test replica_storage_limits zero_storage_limits_are_rejected_at_startup -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q '^running 1 test$' /tmp/node-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
 
       - name: Durable format constants are unchanged
         run: |
