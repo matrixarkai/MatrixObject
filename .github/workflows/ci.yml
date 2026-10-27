@@ -81,6 +81,14 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Replica quorum members have distinct peers
+        run: |
+          set -o pipefail
+          cargo test --locked --test distinct_replica_peers -- --test-threads=1 \
+            | tee /tmp/distinct-peers.log
+          grep -q '^test result: ok. 3 passed' /tmp/distinct-peers.log \
+            || { echo "::error::the peer checks did not run"; exit 1; }
+
       - name: Durable format constants are unchanged
         run: |
           set -o pipefail
