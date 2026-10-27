@@ -81,6 +81,35 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Replica readmission verifies complete page state
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::replica_readmission_rejects_equal_sequence_with_different_bytes -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_equal_sequence_with_different_discards -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_unverified_higher_sequences -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_unverified_extra_pages -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_rejects_disagreement_between_current_sources -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+          cargo test --locked --lib tests::replica_readmission_requires_a_current_source -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+
+      - name: Frozen replicas cannot check in early
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::replica_readmission_waits_until_candidate_can_receive_writes -- --exact 2>&1 | tee /tmp/readmission.log
+          grep -q '^running 1 test$' /tmp/readmission.log
+          grep -q '^test result: ok. 1 passed' /tmp/readmission.log
+
       - name: Durable format constants are unchanged
         run: |
           set -o pipefail
