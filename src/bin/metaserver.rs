@@ -29,6 +29,12 @@
 //! | `MATRIXOBJECT_METASERVER_SEED_DATA_NODES` | `0` | data nodes to put in the roster before serving |
 //! | `MATRIXOBJECT_METASERVER_SEED_CAPACITY_BYTES` | `1073741824` | capacity each seeded node reports |
 //!
+//! `MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE` selects a canonical binary MOGC
+//! catalog instead of the individual-node roster. It cannot be combined with
+//! legacy seed count/capacity or DATA_ROSTER. Each group contributes one logical
+//! placement target; voter entries report health without adding placement capacity.
+//! The catalog is persisted with metadata and restored on restart.
+//!
 //! The explicit roster supplies operator-selected chunk endpoints and starts them offline.
 //! A controller must heartbeat verified chunk processes before placement can select them.
 //! The legacy node-count bootstrap is for loopback development and cannot be combined with
@@ -75,10 +81,11 @@ fn main() {
 
 #[cfg(feature = "meta-server")]
 fn main() {
-    use std::io::Write;
+    use std::io::{Read, Write};
 
     use matrixobjectstore_rs::cluster::{
-        DataNodeSeed, MetaNodeOptions, MetaNodeServer, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP,
+        ChunkGroupCatalog, DataNodeSeed, MetaNodeOptions, MetaNodeServer, MAX_PAYLOAD_BYTES,
+        PROTOCOL_STAMP,
     };
 
     fn env_string(name: &str, default: &str) -> String {
@@ -142,6 +149,33 @@ fn main() {
         eprintln!("local metadata state and Raft state cannot be configured together");
         std::process::exit(2);
     }
+    let configured_groups =
+        std::env::var_os("MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE").map(|path| {
+            if [
+                "MATRIXOBJECT_METASERVER_DATA_ROSTER",
+                "MATRIXOBJECT_METASERVER_SEED_DATA_NODES",
+                "MATRIXOBJECT_METASERVER_SEED_CAPACITY_BYTES",
+            ]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some())
+            {
+                eprintln!(
+                    "chunk group catalog cannot be combined with other bootstrap roster settings"
+                );
+                std::process::exit(2);
+            }
+            let read = || -> Result<ChunkGroupCatalog, Box<dyn std::error::Error>> {
+                let mut bytes = Vec::new();
+                std::fs::File::open(path)?
+                    .take(2 * 1024 * 1024 + 5)
+                    .read_to_end(&mut bytes)?;
+                Ok(ChunkGroupCatalog::from_bytes(&bytes)?)
+            };
+            read().unwrap_or_else(|error| {
+                eprintln!("invalid chunk group catalog: {error}");
+                std::process::exit(2);
+            })
+        });
     let configured_roster = match std::env::var("MATRIXOBJECT_METASERVER_DATA_ROSTER") {
         Ok(raw) => {
             if std::env::var_os("MATRIXOBJECT_METASERVER_SEED_DATA_NODES").is_some() {
@@ -195,9 +229,10 @@ fn main() {
     // connecting immediately cannot see a roster that is still filling. The count is printed
     // on the line, so a test does not have to ask whether the seed happened.
     #[allow(unused_mut)]
-    let mut seeded = match configured_roster {
-        Some(nodes) => server.seed_data_roster(&nodes, seed_capacity),
-        None => server.seed_data_nodes(seed_nodes, seed_capacity),
+    let mut seeded = match (configured_groups, configured_roster) {
+        (Some(groups), _) => server.seed_chunk_groups(groups),
+        (None, Some(nodes)) => server.seed_data_roster(&nodes, seed_capacity),
+        (None, None) => server.seed_data_nodes(seed_nodes, seed_capacity),
     }
     .unwrap_or_else(|err| {
         eprintln!("seeding data roster failed: {err}");

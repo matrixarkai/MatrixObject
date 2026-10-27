@@ -39,6 +39,7 @@ use super::meta_snapshot_file::MetaSnapshotFile;
 use super::shutdown::ServerShutdown;
 
 struct NodeMeta {
+    groups: Arc<super::ChunkGroupCatalog>,
     service: MatrixMetaService,
     storage: Option<MetaSnapshotFile>,
     recovered: bool,
@@ -70,7 +71,7 @@ impl NodeMeta {
     }
     fn persist(&mut self) -> Result<(), ObjectError> {
         if let Some(storage) = &self.storage {
-            if let Err(err) = storage.persist(&self.service) {
+            if let Err(err) = storage.persist(&self.service, &self.groups) {
                 self.failed = true;
                 return Err(ObjectError::Corruption(format!(
                     "metadata persistence failed: {err}"
@@ -256,6 +257,12 @@ impl MetaNodeServer {
         Ok(Self {
             listener,
             meta: Arc::new(Mutex::new(NodeMeta {
+                groups: Arc::new(
+                    storage
+                        .as_ref()
+                        .map(|s| s.groups.clone())
+                        .unwrap_or_default(),
+                ),
                 service,
                 storage,
                 recovered,
@@ -299,6 +306,7 @@ impl MetaNodeServer {
         let consensus = super::meta_consensus::MetaConsensus::open(
             options,
             meta.service.clone(),
+            (*meta.groups).clone(),
             Arc::clone(&self.stop),
             self.options.max_payload_bytes,
         )?;
@@ -402,6 +410,78 @@ impl MetaNodeServer {
         guard.persist()?;
         guard.recovered = guard.storage.is_some();
         Ok(guard.nodes.len())
+    }
+
+    /// Bootstrap logical Raft groups and their non-placeable health members.
+    /// Persisted membership wins over later startup configuration.
+    pub fn seed_chunk_groups(
+        &self,
+        catalog: super::ChunkGroupCatalog,
+    ) -> Result<usize, ObjectError> {
+        let mut guard = self
+            .meta
+            .lock()
+            .map_err(|_| ObjectError::Corruption("metadata state locked".into()))?;
+        guard.ensure_healthy()?;
+        #[cfg(feature = "metadata-consensus")]
+        if guard.consensus.is_some() {
+            return Err(ObjectError::InvalidArgument(
+                "seed before enabling consensus".into(),
+            ));
+        }
+        if guard.recovered {
+            return Ok(guard.nodes.len());
+        }
+        if !guard.nodes.is_empty() {
+            return Err(ObjectError::InvalidArgument(
+                "data roster is already initialized".into(),
+            ));
+        }
+        let count: usize = catalog.groups().map(|g| 1 + g.member_ids.len()).sum();
+        let mut staged = guard.service.clone();
+        let mut index = 0;
+        for group in catalog.groups() {
+            let capacity = group.identity.as_ref().unwrap().capacity_bytes;
+            for (id, endpoint, eligible) in
+                std::iter::once((&group.placement_id, &group.api_endpoints[0], true)).chain(
+                    group
+                        .member_ids
+                        .iter()
+                        .zip(&group.api_endpoints)
+                        .map(|(id, ep)| (id, ep, false)),
+                )
+            {
+                staged.register_node(PlacementNode {
+                    node_id: id.clone(),
+                    endpoint: endpoint.clone(),
+                    service_kind: "chunkserver".into(),
+                    failure_domain: group.failure_domain.clone(),
+                    metadata_eligible: false,
+                    data_eligible: eligible,
+                    gateway_eligible: false,
+                    serves_page_tier: true,
+                    metadata_value_bytes: 0,
+                    capacity_bytes: capacity,
+                    used_bytes: 0,
+                    committed_bytes: 0,
+                    draining: false,
+                    online: false,
+                    last_heartbeat_ms: 0,
+                    page_allocator_shard_index: index,
+                    page_allocator_shard_count: count.max(1) as u64,
+                    meta_health: NodeMetaHealth::default(),
+                    page_health: NodePageHealth::default(),
+                    chunk_health: NodeChunkHealth::default(),
+                })?;
+                index += 1;
+            }
+        }
+        catalog.validate_roster(&staged)?;
+        guard.service = staged;
+        guard.groups = Arc::new(catalog);
+        guard.persist()?;
+        guard.recovered = guard.storage.is_some();
+        Ok(count)
     }
 
     /// A handle that stops accept loops and closes active connections.
@@ -658,6 +738,7 @@ fn apply(
             | MetaRequest::ExpireRootNodeHeartbeats { .. }
             | MetaRequest::CommitObjectPlacement { .. }
     );
+    guard.groups.check_request(&request)?;
     let outcome = if mutating && guard.storage.is_some() {
         if !guard.recovered {
             guard.persist()?;
@@ -682,13 +763,14 @@ fn apply(
         };
         Some(crate::placement_outcome::PlacementOutcome::capture(
             &guard.service,
-            nodes,
+            guard.groups.affected_nodes(nodes),
             object,
         )?)
     } else {
         None
     };
-    let reply = apply_to_meta(&mut guard.service, request, max_payload_bytes)?;
+    let groups = guard.groups.clone();
+    let reply = apply_with_groups(&mut guard.service, request, max_payload_bytes, &groups)?;
     if let Some(outcome) = outcome {
         let persisted = outcome.finish(&guard.service).and_then(|outcome| {
             if outcome.before_index == outcome.after_index {
@@ -733,12 +815,46 @@ pub(super) fn expired_node_ids(
         .collect())
 }
 
+pub(super) fn apply_with_groups(
+    service: &mut MatrixMetaService,
+    request: MetaRequest,
+    limit: usize,
+    groups: &super::ChunkGroupCatalog,
+) -> Result<MetaReply, ObjectError> {
+    groups.check_request(&request)?;
+    if let MetaRequest::ReadChunkGroup { placement_id } = &request {
+        let reply = groups
+            .get(placement_id)
+            .cloned()
+            .map(MetaReply::ChunkGroup)
+            .ok_or_else(|| ObjectError::NotFound("chunk group missing".into()))?;
+        crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
+        return Ok(reply);
+    }
+    let affected = match &request {
+        MetaRequest::HeartbeatRootNode { node_id, .. }
+        | MetaRequest::HeartbeatChunkNode { node_id, .. } => vec![node_id.clone()],
+        MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => {
+            expired_node_ids(service, *ttl_ms, *now_ms)?
+        }
+        _ => Vec::new(),
+    };
+    let reply = apply_to_meta(service, request, limit)?;
+    if !affected.is_empty() {
+        groups.project(service, &affected);
+    }
+    Ok(reply)
+}
+
 pub(super) fn apply_to_meta(
     guard: &mut MatrixMetaService,
     request: MetaRequest,
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     match request {
+        MetaRequest::ReadChunkGroup { .. } => {
+            Err(ObjectError::NotFound("chunk group missing".into()))
+        }
         MetaRequest::HeartbeatChunkNode {
             node_id,
             expected_endpoint,
@@ -867,5 +983,173 @@ pub(super) fn apply_to_meta(
             placement_count: guard.placements.len() as u64,
             commit_index: guard.placement_commit_index,
         }),
+    }
+}
+
+#[cfg(test)]
+mod chunk_group_tests {
+    use super::*;
+    use crate::cluster::{chunk_groups::tests::config, ChunkGroupCatalog};
+    #[test]
+    fn group_catalog_and_projected_outcomes_survive_disk_recovery() {
+        let dir = std::env::temp_dir().join(format!(
+            "group-recovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let catalog = ChunkGroupCatalog::new(vec![config()]).unwrap();
+        let server =
+            MetaNodeServer::bind_with_snapshot("127.0.0.1:0", MetaNodeOptions::default(), &dir)
+                .unwrap();
+        server.seed_chunk_groups(catalog.clone()).unwrap();
+        for (id, used) in [("voter-a", 100), ("voter-b", 200)] {
+            apply(
+                &server.meta,
+                MetaRequest::HeartbeatRootNode {
+                    node_id: id.into(),
+                    used_bytes: used,
+                    capacity_bytes: 4096,
+                    draining: false,
+                    online: true,
+                    now_ms: 1000,
+                },
+                65536,
+            )
+            .unwrap();
+        }
+        let expected = server
+            .meta
+            .lock()
+            .unwrap()
+            .service
+            .export_snapshot()
+            .to_bytes()
+            .unwrap();
+        drop(server);
+        assert!(std::fs::read(dir.join("metadata.snapshot"))
+            .unwrap()
+            .starts_with(b"MOGB"));
+        let outcomes = std::fs::read(dir.join("metadata.outcomes")).unwrap();
+        assert!(outcomes.starts_with(b"MOMJ"));
+        assert!(outcomes.windows(4).any(|w| w == b"MOMP"));
+        let restored =
+            MetaNodeServer::bind_with_snapshot("127.0.0.1:0", MetaNodeOptions::default(), &dir)
+                .unwrap();
+        restored
+            .seed_chunk_groups(ChunkGroupCatalog::default())
+            .unwrap();
+        {
+            let state = restored.meta.lock().unwrap();
+            assert_eq!(
+                state.groups.to_bytes().unwrap(),
+                catalog.to_bytes().unwrap()
+            );
+            assert_eq!(
+                state.service.export_snapshot().to_bytes().unwrap(),
+                expected
+            );
+            assert!(state.service.nodes["group-a"].online);
+            assert_eq!(state.service.nodes["group-a"].used_bytes, 200);
+        }
+        drop(restored);
+        let mut bytes = std::fs::read(dir.join("metadata.snapshot")).unwrap();
+        bytes[10] ^= 1;
+        std::fs::write(dir.join("metadata.snapshot"), bytes).unwrap();
+        assert!(MetaNodeServer::bind_with_snapshot(
+            "127.0.0.1:0",
+            MetaNodeOptions::default(),
+            &dir
+        )
+        .is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn group_health_counts_one_capacity_and_requires_majority() {
+        let server = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
+        let catalog = ChunkGroupCatalog::new(vec![config()]).unwrap();
+        assert_eq!(server.seed_chunk_groups(catalog.clone()).unwrap(), 4);
+        let mut state = server.meta.lock().unwrap();
+        assert_eq!(
+            state
+                .service
+                .nodes
+                .values()
+                .filter(|n| n.data_eligible)
+                .count(),
+            1
+        );
+        assert!(!state.service.nodes["group-a"].online);
+        let heartbeat = |id: &str, used, now| MetaRequest::HeartbeatRootNode {
+            node_id: id.into(),
+            used_bytes: used,
+            capacity_bytes: 4096,
+            draining: false,
+            online: true,
+            now_ms: now,
+        };
+        apply_with_groups(
+            &mut state.service,
+            heartbeat("voter-a", 100, 1000),
+            65536,
+            &catalog,
+        )
+        .unwrap();
+        assert!(!state.service.nodes["group-a"].online);
+        apply_with_groups(
+            &mut state.service,
+            heartbeat("voter-b", 200, 1100),
+            65536,
+            &catalog,
+        )
+        .unwrap();
+        let group = &state.service.nodes["group-a"];
+        assert!(group.online);
+        assert_eq!(group.used_bytes, 200);
+        assert_eq!(group.capacity_bytes, 4096);
+        assert_eq!(group.last_heartbeat_ms, 1000);
+        let before = state.service.export_snapshot().to_bytes().unwrap();
+        assert!(apply_with_groups(
+            &mut state.service,
+            heartbeat("group-a", 0, 1200),
+            65536,
+            &catalog
+        )
+        .is_err());
+        assert_eq!(state.service.export_snapshot().to_bytes().unwrap(), before);
+        apply_with_groups(
+            &mut state.service,
+            MetaRequest::ExpireRootNodeHeartbeats {
+                ttl_ms: 1000,
+                now_ms: 2050,
+            },
+            65536,
+            &catalog,
+        )
+        .unwrap();
+        assert!(!state.service.nodes["group-a"].online);
+        let bytes =
+            crate::cluster::chunk_groups::encode_bootstrap(&state.service, &catalog).unwrap();
+        let (snapshot, restored) = crate::cluster::chunk_groups::decode_bootstrap(&bytes).unwrap();
+        assert_eq!(
+            snapshot,
+            state.service.export_snapshot().to_bytes().unwrap()
+        );
+        assert_eq!(restored.to_bytes().unwrap(), catalog.to_bytes().unwrap());
+        let mut corrupt = bytes;
+        corrupt[10] ^= 1;
+        assert!(crate::cluster::chunk_groups::decode_bootstrap(&corrupt).is_err());
+        assert!(apply_with_groups(
+            &mut state.service,
+            MetaRequest::ReadChunkGroup {
+                placement_id: "group-a".into()
+            },
+            1,
+            &catalog
+        )
+        .is_err());
     }
 }

@@ -205,3 +205,8 @@ pub use meta_consensus::MetaRaftOptions;
 
 #[cfg(feature = "chunk-consensus")]
 pub use server::ChunkRaftOptions;
+
+#[cfg(feature = "meta-server")]
+mod chunk_groups;
+#[cfg(feature = "meta-server")]
+pub use chunk_groups::{ChunkGroupCatalog, ChunkGroupConfig};

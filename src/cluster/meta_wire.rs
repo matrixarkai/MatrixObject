@@ -73,6 +73,8 @@ pub enum MetaRequestCode {
     Ping = 70,
     /// Refresh a chunk only if its configured endpoint matches the sender.
     HeartbeatChunkNode = 71,
+    /// Read one persisted chunk-group catalog entry.
+    ReadChunkGroup = 72,
 }
 
 impl MetaRequestCode {
@@ -91,6 +93,7 @@ impl MetaRequestCode {
             69 => Some(MetaRequestCode::ReadObjectRootPlacement),
             70 => Some(MetaRequestCode::Ping),
             71 => Some(MetaRequestCode::HeartbeatChunkNode),
+            72 => Some(MetaRequestCode::ReadChunkGroup),
             _ => None,
         }
     }
@@ -106,6 +109,7 @@ impl MetaRequestCode {
             MetaRequestCode::ReadObjectRootPlacement,
             MetaRequestCode::Ping,
             MetaRequestCode::HeartbeatChunkNode,
+            MetaRequestCode::ReadChunkGroup,
         ]
     }
 }
