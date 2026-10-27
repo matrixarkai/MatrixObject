@@ -113,7 +113,25 @@ impl Drop for Group {
 fn process_quorum_preserves_outcomes_across_leader_loss_and_total_restart() {
     let mut group = Group::new();
     let first = group.leader();
-    let mut client = group.client(first);
+    let mut endpoints: Vec<_> = (0..3)
+        .filter(|i| *i != first)
+        .map(|i| group.nodes[i].as_ref().unwrap().endpoint.clone())
+        .collect();
+    endpoints.push(group.nodes[first].as_ref().unwrap().endpoint.clone());
+    let mut client = RemoteMetaClient::connect_catalog(
+        &endpoints,
+        &MetaClientOptions {
+            connect_timeout: Duration::from_millis(200),
+            read_timeout: Duration::from_secs(2),
+            write_timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_ne!(
+        client.endpoint(),
+        group.nodes[first].as_ref().unwrap().endpoint
+    );
     let mut saved = Vec::new();
     for n in 0..32 {
         let key = format!("object-{n}");
@@ -134,15 +152,34 @@ fn process_quorum_preserves_outcomes_across_leader_loss_and_total_restart() {
                 .unwrap(),
         );
     }
-    drop(client);
+    assert_eq!(
+        client.endpoint(),
+        group.nodes[first].as_ref().unwrap().endpoint
+    );
     group.kill(first);
     let next = group.leader();
     assert_ne!(next, first);
-    let mut client = group.client(next);
     for value in &saved {
         assert_eq!(
             client.object_placement(&value.bucket, &value.key).unwrap(),
             *value
+        );
+    }
+    {
+        let mut directory = matrixobjectstore_rs::cluster::MetaDirectory::open(
+            &endpoints.join(","),
+            &MetaClientOptions {
+                connect_timeout: Duration::from_millis(200),
+                read_timeout: Duration::from_secs(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            directory
+                .object_placement(&saved[0].bucket, &saved[0].key)
+                .unwrap(),
+            saved[0]
         );
     }
     client

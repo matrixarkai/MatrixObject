@@ -30,9 +30,21 @@ planning, commit a barrier before reading the state. Mutations prepare a binary
 protobuf outcome against committed state, replicate it, and acknowledge only after
 durable commitment and application. Followers and leaders without quorum refuse
 calls. A timeout after proposal is ambiguous: the write may subsequently commit.
-Do not automatically retry mutations. The current directory client connects to its
-first configured endpoint; automatic leader discovery and safe retry routing remain
-unfinished. Connect to the leader when testing this mode.
+Do not automatically retry uncertain mutations. `MetaDirectory::open` and
+`RemoteMetaClient::connect_catalog` accept one through seven metadata API endpoints.
+A call tries each endpoint at most once. A typed `NotLeader` response (status 6,
+empty payload) certifies that the request was not proposed or applied, so the client
+can try another configured endpoint. A read can also move after a disconnect.
+After any submitted mutation loses its response or receives an ordinary refusal,
+the client returns that result without sending the mutation to another node.
+Connection failures before submission can select another endpoint safely.
+
+Single-endpoint `connect` remains available. Older clients do not understand the
+new routing status and refuse it. All clients retire damaged connections before
+another call; a read deadline covers the complete response frame, including its
+header and payload. Catalog attempts use the configured connection and frame
+limits per endpoint. Configure stable API addresses and one consistent Raft group;
+a catalog must not mix unrelated single-node services.
 
 `metadata.peer.base` stores the initial state and `metadata.peer.wal` stores binary
 protobuf consensus records containing the same placement outcome bytes used by the
@@ -50,7 +62,7 @@ joins the consensus and network workers.
 
 This is an integration stage, not a production-readiness claim. Peer traffic is
 unauthenticated and unencrypted; use an isolated test network. Membership changes,
-snapshot transfer, WAL compaction, leader discovery, authenticated transport, and
+snapshot transfer, WAL compaction, authenticated transport, and
 large-scale validation remain required. Each read currently appends a barrier and
 each mutation clones metadata to prepare its outcome; these costs must be addressed
 before scale claims. The underlying WAL stops writes at its 512 MiB bound.

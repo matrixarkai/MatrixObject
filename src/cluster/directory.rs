@@ -1,73 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Where this store's control plane is, and what the store does without one.
+//! Metadata location and behavior when the control plane is unavailable.
 //!
-//! # THERE IS NO NEW SETTING HERE, AND THAT IS THE POINT
+//! An empty catalog selects an in-process service. A non-empty catalog supplies
+//! one through seven metadata API endpoints. The client follows typed pre-admission
+//! leader refusals, and may reconnect reads after transport failure. It does not
+//! retry a mutation whose response was lost or whose admission is uncertain.
 //!
-//! `StoreOptions.metaserver_catalog_endpoints` has existed for a long time. It is parsed by
-//! `parse_catalog_endpoint_list`, normalised, validated, hashed into the store snapshot's
-//! checksum and written to the journal by
-//! `append_metaserver_catalog_endpoints_journal_record` -- and **nothing has ever opened a
-//! socket to it**. `discover_metaserver_endpoints_from_catalog` reports a constant,
-//! `EMBEDDED_PLACEMENT_CATALOG_ENDPOINT`, because the control plane has always been a field of the
-//! store.
+//! The metaserver owns the roster, placements, leases, shards, transactions, and
+//! metadata digests. The store owns object names and their chunk extents; replica
+//! nodes own the data. Existing object data reads therefore remain independent of
+//! metadata availability, while new placement requires a working control plane.
 //!
-//! So this module does not add a placement enum or a mode. The setting that was recorded and
-//! never dialled is the setting that is dialled: **an empty endpoint list is the in-process
-//! control plane this store has always had, and a non-empty one is a metaserver in another
-//! process.** A first draft of this module did invent a `MetaPlacement` enum beside it, which
-//! would have left two ways to say the same thing and a reader with no way to tell which one
-//! the store believes.
-//!
-//! `ControlPlaneMode` is likewise untouched. Its two arms, `Auto` and `MetaServer`, both
-//! already mean "the metaserver is this store's control plane", and they are hashed into a
-//! checksum format; a third arm would be a durable format change to say something the
-//! endpoint list already says.
-//!
-//! # WHAT THE METASERVER OWNS, READ FROM THE CODE RATHER THAN ASSUMED
-//!
-//! | state | who holds it | lost with the metaserver node? |
-//! |---|---|---|
-//! | the node roster (`nodes`) | metaserver | **yes** |
-//! | object placement onto nodes (`placements`) | metaserver | **yes** |
-//! | the leader lease, metadata leases, shards, transactions | metaserver | **yes** |
-//! | metadata records (`records`) | metaserver -- **a digest only** | the digest, yes |
-//! | **object name to chunk and byte range** (`objects`, each `ObjectMetadata.extents`) | **the store** | **no** |
-//! | **which bytes a chunk page holds** | **the replica nodes** | **no** |
-//!
-//! The fifth row is the one that decides the behaviour below. The authority on what an object
-//! *is* -- its length, its digest, and the chunk and byte range of every extent -- is the
-//! store's own `objects` collection. The metaserver holds a record carrying a name, two
-//! stamps and an eight-byte digest of what that object would render: enough to prove a record
-//! and an object agree, and not enough to reconstruct one from the other.
-//!
-//! So the metaserver is **not** the single holder of the mapping from an object to its bytes.
-//! It is the single holder of the roster and of placement.
-//!
-//! # WHAT HAPPENS WHEN THE METASERVER NODE IS UNREACHABLE
-//!
-//! Given that table, the answer is not a matter of taste:
-//!
-//! * **Reads of objects the store already knows keep working.** They consult the metaserver
-//!   on no path, so refusing them would refuse work the store can plainly still do.
-//! * **New placement stops, and says so.** Choosing nodes for an object needs the roster,
-//!   which is on the node that is gone. There is no safe local answer: placing without the
-//!   roster means placing onto nodes whose liveness and free capacity are unknown, and
-//!   charging `committed_bytes` that the metaserver would have to reconcile later.
-//!
-//! The refusal is [`ObjectError::PreconditionFailed`] and its message names the control plane
-//! rather than the data, so an operator reading only the text is not told the store is damaged
-//! when what happened is that one process stopped answering.
-//!
-//! **This is a single point of failure for placement and for the roster, and saying so plainly
-//! is worth more than pretending otherwise.** What makes it survivable rather than fatal is
-//! the fifth row: the data plane is not behind it.
-//!
-//! The metaserver can restore its own roster and placements from the durable snapshot
-//! selected by `MATRIXOBJECT_METASERVER_STATE_DIR`. Without that setting its state is
-//! in memory only. Snapshot recovery does not discover missed writes from replica nodes
-//! or replicate the control plane; availability still depends on this one metadata node.
+//! Single-node state can be persisted with `MATRIXOBJECT_METASERVER_STATE_DIR`.
+//! With the optional `metadata-consensus` feature and Raft configuration, metadata
+//! requests instead require a voting majority. Catalog endpoints must name the
+//! metadata API ports, not the separate consensus ports. A catalog does not itself
+//! turn independent single-node servers into a replicated group.
 
 use crate::cluster::meta_client::{MetaCallOutcome, MetaClientOptions, RemoteMetaClient};
 use crate::cluster::meta_message::{
@@ -120,11 +70,9 @@ pub enum MetaDirectory {
 impl MetaDirectory {
     /// Open the control plane the endpoint list describes.
     ///
-    /// An empty list is the in-process arrangement. A non-empty one connects to its first
-    /// entry; the rest are the membership a later change will elect a leader among, and
-    /// dialling only the first is recorded here rather than hidden, because a caller handed
-    /// three endpoints and reaching one of them should be able to find that out by reading
-    /// this.
+    /// An empty list is the in-process arrangement. A non-empty list forms a fixed
+    /// catalog of metadata API endpoints. Typed pre-admission refusals select another
+    /// voter; transport failures never cause a submitted mutation to be retried.
     pub fn open(
         metaserver_catalog_endpoints: &str,
         options: &MetaClientOptions,
@@ -132,8 +80,8 @@ impl MetaDirectory {
         let endpoints = crate::parse_catalog_endpoint_list(Some(metaserver_catalog_endpoints))?;
         match endpoints.first() {
             None => Ok(MetaDirectory::InProcess(Box::new(MatrixMetaService::new()))),
-            Some(endpoint) => Ok(MetaDirectory::Remote(RemoteMetaClient::connect(
-                endpoint, options,
+            Some(_) => Ok(MetaDirectory::Remote(RemoteMetaClient::connect_catalog(
+                &endpoints, options,
             )?)),
         }
     }

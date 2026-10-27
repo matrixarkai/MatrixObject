@@ -362,10 +362,7 @@ fn run(
                         .reply
                         .try_send(Err(refused("metadata request expired before proposal")));
                 } else if !peer.is_leader() || applied_term != peer.term() {
-                    let _ = request.reply.try_send(Err(refused(format!(
-                        "metadata leader unavailable; leader={:?}",
-                        peer.leader_id()
-                    ))));
+                    let _ = request.reply.try_send(Ok(MetaReply::NotLeader));
                 } else {
                     let (outcome, reply) = match prepare(service, &request.request, limit) {
                         Ok((outcome, reply)) => (outcome, reply.map(Ok)),

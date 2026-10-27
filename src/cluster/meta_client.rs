@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! One connection to a metaserver node in another process.
+//! A metaserver connection with optional fixed-catalog leader routing.
 //!
 //! # A TRANSPORT FAILURE IS NOT A REFUSAL, AND THEY ARRIVE THE SAME WAY
 //!
@@ -27,15 +27,15 @@
 //! for a round trip to find out. That is the cost of an answer that cannot be stale.
 
 use std::io::{BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::time::{Duration, Instant};
 
+use crate::cluster::message::{check_stamp, decode_failure};
 use crate::cluster::meta_message::{
     encode_meta_request, CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment,
     PlacementNodeSummary,
 };
 use crate::cluster::meta_wire::MetaRequestCode;
-use crate::cluster::message::{check_stamp, decode_failure};
 use crate::cluster::wire::{StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
 use crate::ObjectError;
 
@@ -91,13 +91,17 @@ impl MetaCallOutcome {
     }
 }
 
-/// One connection to one metaserver node.
+/// One active connection, optionally selected from a fixed metadata catalog.
 #[derive(Debug)]
 pub struct RemoteMetaClient {
     endpoint: String,
     reader: BufReader<TcpStream>,
     writer: TcpStream,
     max_payload_bytes: usize,
+    live: bool,
+    read_timeout: Duration,
+    write_timeout: Duration,
+    catalog: Option<(Vec<String>, MetaClientOptions)>,
 }
 
 impl RemoteMetaClient {
@@ -127,10 +131,40 @@ impl RemoteMetaClient {
             reader: BufReader::new(stream),
             writer,
             max_payload_bytes: options.max_payload_bytes,
+            live: true,
+            read_timeout: options.read_timeout,
+            write_timeout: options.write_timeout,
+            catalog: None,
         })
     }
 
-    /// The endpoint this client was asked for, as written.
+    /// Connect to a fixed catalog of up to seven metadata API endpoints.
+    /// Calls rotate on typed pre-admission refusals. Only reads may rotate after
+    /// transport failure; a submitted mutation is never retried on uncertainty.
+    pub fn connect_catalog(
+        endpoints: &[String],
+        options: &MetaClientOptions,
+    ) -> Result<Self, ObjectError> {
+        let unique: std::collections::BTreeSet<_> = endpoints.iter().collect();
+        if endpoints.is_empty() || endpoints.len() > 7 || unique.len() != endpoints.len() {
+            return Err(ObjectError::InvalidArgument(
+                "metadata catalog requires one through seven distinct endpoints".into(),
+            ));
+        }
+        let mut last = None;
+        for endpoint in endpoints {
+            match Self::connect(endpoint, options) {
+                Ok(mut client) => {
+                    client.catalog = Some((endpoints.to_vec(), options.clone()));
+                    return Ok(client);
+                }
+                Err(error) => last = Some(error),
+            }
+        }
+        Err(last.unwrap())
+    }
+
+    /// The currently selected metadata API endpoint.
     pub fn endpoint(&self) -> &str {
         &self.endpoint
     }
@@ -138,7 +172,11 @@ impl RemoteMetaClient {
     /// This end of the connection.
     pub fn local_addr(&self) -> Result<SocketAddr, ObjectError> {
         self.writer.local_addr().map_err(|err| {
-            transport_error(&self.endpoint, "reading the local address", &err.to_string())
+            transport_error(
+                &self.endpoint,
+                "reading the local address",
+                &err.to_string(),
+            )
         })
     }
 
@@ -250,14 +288,82 @@ impl RemoteMetaClient {
 
     /// Make a call and say which of the three things happened.
     pub fn try_call(&mut self, request: MetaRequest) -> MetaCallOutcome {
-        let code = request.code();
-        match self.exchange(&request, code) {
-            Ok(Ok(reply)) => MetaCallOutcome::Answered(reply),
-            // The metaserver answered with a failure status: its refusal, not a transport
-            // fault.
-            Ok(Err(refusal)) => MetaCallOutcome::Refused(refusal),
-            Err(unreachable) => MetaCallOutcome::Unreachable(unreachable),
+        let Some((endpoints, options)) = self.catalog.clone() else {
+            return self.call_one(&request);
+        };
+        let start = endpoints
+            .iter()
+            .position(|e| e == &self.endpoint)
+            .unwrap_or(0);
+        let start = (start + usize::from(!self.live)) % endpoints.len();
+        let read_only = matches!(
+            request,
+            MetaRequest::Ping
+                | MetaRequest::ListRootNodes
+                | MetaRequest::PlanObjectPlacement { .. }
+                | MetaRequest::ReadObjectRootPlacement { .. }
+        );
+        let mut last = not_leader();
+        for offset in 0..endpoints.len() {
+            let endpoint = &endpoints[(start + offset) % endpoints.len()];
+            if !self.live || self.endpoint != *endpoint {
+                match Self::connect(endpoint, &options) {
+                    Ok(mut next) => {
+                        next.catalog = Some((endpoints.clone(), options.clone()));
+                        *self = next;
+                    }
+                    Err(error) => {
+                        last = MetaCallOutcome::Unreachable(error);
+                        continue;
+                    }
+                }
+            }
+            match self.exchange(&request, request.code()) {
+                Ok(Ok(MetaReply::NotLeader)) => last = not_leader(),
+                Ok(Ok(reply)) => return MetaCallOutcome::Answered(reply),
+                Ok(Err(error)) => return MetaCallOutcome::Refused(error),
+                Err(error) => {
+                    last = MetaCallOutcome::Unreachable(error);
+                    if !read_only {
+                        return last;
+                    }
+                }
+            }
         }
+        last
+    }
+
+    fn call_one(&mut self, request: &MetaRequest) -> MetaCallOutcome {
+        match self.exchange(request, request.code()) {
+            Ok(Ok(MetaReply::NotLeader)) => not_leader(),
+            Ok(Ok(reply)) => MetaCallOutcome::Answered(reply),
+            Ok(Err(error)) => MetaCallOutcome::Refused(error),
+            Err(error) => MetaCallOutcome::Unreachable(error),
+        }
+    }
+
+    fn retire(&mut self) {
+        self.live = false;
+        let _ = self.writer.shutdown(Shutdown::Both);
+    }
+
+    fn exchange(
+        &mut self,
+        request: &MetaRequest,
+        code: MetaRequestCode,
+    ) -> Result<Result<MetaReply, ObjectError>, ObjectError> {
+        if !self.live {
+            return Err(transport_error(
+                &self.endpoint,
+                "using a closed connection",
+                "reconnect before another call",
+            ));
+        }
+        let result = self.exchange_inner(request, code);
+        if result.is_err() {
+            self.retire();
+        }
+        result
     }
 
     /// `Err` means the connection failed; `Ok(Err(..))` means the metaserver said no.
@@ -265,20 +371,37 @@ impl RemoteMetaClient {
     /// The two are separated here, at the one place that can tell them apart, rather than at
     /// the caller -- which cannot, because by then both are an `ObjectError`.
     #[allow(clippy::type_complexity)]
-    fn exchange(
+    fn exchange_inner(
         &mut self,
         request: &MetaRequest,
         code: MetaRequestCode,
     ) -> Result<Result<MetaReply, ObjectError>, ObjectError> {
         let frame = encode_meta_request(request);
-        self.writer.write_all(&frame).map_err(|err| {
-            transport_error(&self.endpoint, "sending a request", &err.to_string())
-        })?;
-        self.writer.flush().map_err(|err| {
-            transport_error(&self.endpoint, "flushing a request", &err.to_string())
-        })?;
+        write_before(
+            &mut self.writer,
+            &frame,
+            Instant::now()
+                .checked_add(self.write_timeout)
+                .ok_or_else(|| {
+                    transport_error(
+                        &self.endpoint,
+                        "setting a deadline",
+                        "write timeout exceeds clock range",
+                    )
+                })?,
+        )
+        .map_err(|err| transport_error(&self.endpoint, "sending a request", &err.to_string()))?;
+        let deadline = Instant::now()
+            .checked_add(self.read_timeout)
+            .ok_or_else(|| {
+                transport_error(
+                    &self.endpoint,
+                    "setting a deadline",
+                    "read timeout exceeds clock range",
+                )
+            })?;
         let mut header = [0u8; HEADER_BYTES];
-        self.reader.read_exact(&mut header).map_err(|err| {
+        read_before(&mut self.reader, &mut header, deadline).map_err(|err| {
             transport_error(
                 &self.endpoint,
                 "reading a response header",
@@ -289,9 +412,11 @@ impl RemoteMetaClient {
         // different formats. Reported as a refusal so that a rolling restart does not look
         // like an outage.
         if let Err(err) = check_stamp(header[0]) {
+            self.retire();
             return Ok(Err(err));
         }
         let Some(status) = StatusCode::from_u8(header[1]) else {
+            self.retire();
             return Ok(Err(ObjectError::Corruption(format!(
                 "the metaserver at {} answered with status {}, which this build does not know",
                 self.endpoint, header[1]
@@ -299,6 +424,7 @@ impl RemoteMetaClient {
         };
         let payload_len = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
         if payload_len > self.max_payload_bytes {
+            self.retire();
             return Ok(Err(ObjectError::Corruption(format!(
                 "the metaserver at {} declared a {payload_len}-byte response, past the \
                  {}-byte bound",
@@ -306,15 +432,28 @@ impl RemoteMetaClient {
             ))));
         }
         let mut payload = vec![0u8; payload_len];
-        self.reader.read_exact(&mut payload).map_err(|err| {
+        read_before(&mut self.reader, &mut payload, deadline).map_err(|err| {
             transport_error(
                 &self.endpoint,
                 "reading a response payload",
                 &err.to_string(),
             )
         })?;
+        if status == StatusCode::NotLeader {
+            if !payload.is_empty() {
+                self.retire();
+                return Ok(Err(ObjectError::Corruption(
+                    "not-leader response must have an empty payload".into(),
+                )));
+            }
+            return Ok(Ok(MetaReply::NotLeader));
+        }
         if status == StatusCode::Ok {
-            return Ok(MetaReply::decode(code, &payload));
+            let reply = MetaReply::decode(code, &payload);
+            if reply.is_err() {
+                self.retire();
+            }
+            return Ok(reply);
         }
         Ok(Err(status.into_error(decode_failure(&payload)?)))
     }
@@ -348,4 +487,55 @@ fn unexpected_reply(asked: &str, got: &MetaReply) -> ObjectError {
     ObjectError::Corruption(format!(
         "{asked} was answered with {got:?}, which does not belong to that request"
     ))
+}
+
+fn not_leader() -> MetaCallOutcome {
+    MetaCallOutcome::Refused(ObjectError::PreconditionFailed(
+        "metadata request was not admitted by a leader".into(),
+    ))
+}
+
+fn time_left(deadline: Instant) -> std::io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|d| !d.is_zero())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "metadata frame deadline"))
+}
+fn read_before(
+    reader: &mut BufReader<TcpStream>,
+    mut bytes: &mut [u8],
+    deadline: Instant,
+) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        reader
+            .get_ref()
+            .set_read_timeout(Some(time_left(deadline)?))?;
+        let count = reader.read(bytes)?;
+        if count == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "incomplete metadata frame",
+            ));
+        }
+        bytes = &mut bytes[count..];
+    }
+    Ok(())
+}
+fn write_before(
+    writer: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        writer.set_write_timeout(Some(time_left(deadline)?))?;
+        let count = writer.write(bytes)?;
+        if count == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "incomplete metadata frame",
+            ));
+        }
+        bytes = &bytes[count..];
+    }
+    Ok(())
 }
