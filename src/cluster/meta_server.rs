@@ -20,7 +20,7 @@
 //!
 //! Set `MATRIXOBJECT_METASERVER_STATE_DIR` on the binary, or use
 //! `MetaNodeServer::bind_with_snapshot`, to persist and restore the metadata state.
-//! Mutations replace a synced snapshot before acknowledgment. The in-memory bind
+//! Bootstrap saves a snapshot; mutations sync binary protobuf outcomes before acknowledgment. The in-memory bind
 //! remains available. This recovers a single node; it does not replicate the control plane.
 //!
 //! # IT IS UNAUTHENTICATED
@@ -255,6 +255,7 @@ impl MetaNodeServer {
             })?;
         }
         guard.persist()?;
+        guard.recovered = guard.storage.is_some();
         Ok(guard.nodes.len())
     }
 
@@ -466,9 +467,29 @@ fn apply(
             | MetaRequest::ExpireRootNodeHeartbeats { .. }
             | MetaRequest::CommitObjectPlacement { .. }
     );
+    let outcome = if mutating && guard.storage.is_some() {
+        if !guard.recovered { guard.persist()?; guard.recovered = true; }
+        let (nodes, object) = match &request {
+            MetaRequest::HeartbeatRootNode { node_id, .. } => (vec![node_id.clone()], None),
+            MetaRequest::ExpireRootNodeHeartbeats { .. } => (guard.nodes.keys().cloned().collect(), None),
+            MetaRequest::CommitObjectPlacement { placement, .. } => {
+                let object = crate::cluster::meta_message::object_id(&placement.bucket, &placement.key);
+                let mut nodes = placement.node_ids.clone();
+                if let Some(previous) = guard.placements.get(&object) { nodes.extend(previous.node_ids.iter().cloned()); }
+                (nodes, Some(object))
+            }
+            _ => unreachable!(),
+        };
+        Some(crate::placement_outcome::PlacementOutcome::capture(&guard.service, nodes, object)?)
+    } else { None };
     let reply = apply_to_meta(&mut guard.service, request, max_payload_bytes)?;
-    if mutating {
-        guard.persist()?;
+    if let Some(outcome) = outcome {
+        let persisted = outcome.finish(&guard.service).and_then(|outcome| {
+            if outcome.before_index == outcome.after_index { return Ok(()); }
+            guard.storage.as_mut().unwrap().append_outcome(&outcome)
+                .map_err(|err| ObjectError::Corruption(err.to_string()))
+        });
+        if let Err(err) = persisted { guard.failed = true; return Err(err); }
     }
     Ok(reply)
 }

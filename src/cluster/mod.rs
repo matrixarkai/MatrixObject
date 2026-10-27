@@ -193,3 +193,5 @@ mod shutdown;
 
 #[cfg(feature = "meta-server")]
 mod meta_snapshot_file;
+#[cfg(feature = "meta-server")]
+mod placement_journal;

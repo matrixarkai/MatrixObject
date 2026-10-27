@@ -164,7 +164,11 @@ impl MetadataStateMachine {
                 return Err(invalid("empty log has an apply receipt"));
             }
         } else {
-            ObjectCommand::from_payload(payload).map_err(|e| invalid(&e.to_string()))?;
+            if payload.starts_with(crate::placement_outcome::PLACEMENT_OUTCOME_MAGIC) {
+                crate::placement_outcome::PlacementOutcome::from_payload(payload).map_err(|e| invalid(&e.to_string()))?;
+            } else {
+                ObjectCommand::from_payload(payload).map_err(|e| invalid(&e.to_string()))?;
+            }
             if !matches!(response.first(), Some(0 | 1))
                 || std::str::from_utf8(&response[1..]).is_err()
             {
@@ -231,9 +235,16 @@ impl StateMachine for MetadataStateMachine {
                 "metadata entry is stale, conflicting, or out of order".into(),
             ));
         }
-        let command = ObjectCommand::from_payload(&request.payload)
-            .map_err(|e| RaftError::InvalidRequest(e.to_string()))?;
-        let response = match self.store.apply_command(command) {
+        let applied = if request.payload.starts_with(crate::placement_outcome::PLACEMENT_OUTCOME_MAGIC) {
+            let outcome = crate::placement_outcome::PlacementOutcome::from_payload(&request.payload)
+                .map_err(|e| RaftError::InvalidRequest(e.to_string()))?;
+            outcome.apply(&mut self.store.meta_service)
+        } else {
+            let command = ObjectCommand::from_payload(&request.payload)
+                .map_err(|e| RaftError::InvalidRequest(e.to_string()))?;
+            self.store.apply_command(command).map(|_| ())
+        };
+        let response = match applied {
             Ok(_) => vec![0],
             Err(ObjectError::Corruption(message)) => {
                 self.failed = true;

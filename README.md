@@ -618,17 +618,21 @@ server. Those require additional coordinated recovery work.
 
 ### Metadata restart recovery
 
-Set `MATRIXOBJECT_METASERVER_STATE_DIR` to an existing directory to enable durable metadata
-snapshots. Each successful heartbeat, heartbeat expiry, placement commit, and initial roster
-bootstrap is saved before acknowledgment. A synced temporary snapshot atomically replaces
-the previous file, and the directory is synced on Unix. A separate file lock prevents another
-server from opening the same directory. Startup reports `storage=snapshot`.
+Set `MATRIXOBJECT_METASERVER_STATE_DIR` to an existing directory to enable durable metadata with
+a bootstrap snapshot and an incremental binary protobuf outcome journal. Initial roster
+bootstrap saves a synced snapshot. Subsequent heartbeats, heartbeat expiry, and placement
+commits append decided record changes to `metadata.outcomes` and sync before acknowledgment.
+A directory lock prevents another server from opening the same directory. Startup retains
+its `storage=snapshot` label for the snapshot-plus-journal backend.
 
-Recovery validates the snapshot and restores both metadata and placement state. A recovered
-roster overrides bootstrap environment settings. Interrupted temporary snapshots are ignored;
-a missing initialized snapshot or a corrupted snapshot prevents startup. Persistence failure
-blocks further requests until restart. Snapshot files are limited to 64 MiB. This path rewrites
-the full metadata snapshot per mutation; it is not an incremental metadata log.
+Recovery validates the snapshot, restores metadata and placement state, then installs each
+outcome without rerunning placement decisions or expiry logic. A recovered roster overrides
+bootstrap environment settings. Interrupted temporary snapshots are ignored; only an incomplete
+final journal record is truncated. A missing initialized snapshot or outcome journal, a damaged
+complete record, or a prior-state mismatch prevents startup. Persistence failures stop requests
+until restart. The journal currently retains its full history; automatic checkpoint compaction
+is still required for bounded long-running deployments. Older binaries must not open a directory
+after it starts recording outcomes because they do not replay the journal.
 
 Keep all files in the state directory together and do not modify them while the node runs.
 Linux process-kill recovery and write failures are tested; power-loss and non-Linux filesystem
@@ -863,6 +867,17 @@ Appending six bytes to a 1 MiB page produces an outcome smaller than 256 bytes.
 Payloads are bounded to 8 MiB and materialized pages to 256 MiB on this path.
 The local `MOR2` journal framing adds header and payload checksums. Older `MOR1`
 records and chunk command log entries remain readable. Older binaries cannot
-read the new records. Metadata logs and snapshots still use their existing
-formats; this page codec does not convert those paths or establish network Raft
-consensus. The group adapter remains an in-process apply harness.
+read the new records. The page codec does not establish network Raft consensus. The group adapter remains an in-process apply harness.
+
+### Binary placement outcomes
+
+The metaserver journal and metadata MatrixRaft adapter accept the same `PlacementOutcome`
+binary protobuf schema in `proto/placement_outcome.proto`. Each outcome carries prior and
+resulting node usage or object placement values and consecutive placement commit indexes.
+All prior-state and shape checks complete before mutation. A heartbeat captures only its node;
+an object placement captures the object and its affected nodes. Heartbeat expiry scans the roster.
+The payload is limited to 8 MiB and protected by a checksum.
+
+This covers the network placement API. Other metadata commands still use their existing codec,
+and checkpoints still use the metadata snapshot format. Network requests are not yet routed
+through MatrixRaft consensus; the adapter tests cover state application and checkpoint recovery.
