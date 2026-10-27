@@ -56,6 +56,7 @@ use super::replica_journal::ReplicaJournal;
 struct NodeReplica {
     service: MatrixReplicaService,
     journal: Option<ReplicaJournal>,
+    max_pages: usize,
     failed: bool,
 }
 
@@ -67,6 +68,11 @@ pub struct ReplicaNodeOptions {
     /// A length field arrives before the bytes it describes, so this is the bound on what
     /// one frame can make the node allocate.
     pub max_payload_bytes: usize,
+    /// Maximum total page payload bytes, including zero-filled space before write offsets.
+    /// This excludes indexes, caches, sidecars, and transport buffers. Must be positive.
+    pub capacity_bytes: u64,
+    /// Maximum page identities, including pages created by empty writes. Must be positive.
+    pub max_pages: usize,
     /// Connections handled at once.
     pub worker_threads: usize,
     /// How long a connection may go without sending before it is dropped.
@@ -79,6 +85,8 @@ impl Default for ReplicaNodeOptions {
     fn default() -> Self {
         Self {
             max_payload_bytes: MAX_PAYLOAD_BYTES,
+            capacity_bytes: 256 * 1024 * 1024,
+            max_pages: 65_536,
             worker_threads: 4,
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
@@ -119,13 +127,20 @@ impl ReplicaNodeServer {
     }
 
     fn bind_storage(addr: &str, options: ReplicaNodeOptions, path: Option<&std::path::Path>) -> std::io::Result<Self> {
+        if options.capacity_bytes == 0 || options.max_pages == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                "replica capacity_bytes and max_pages must be positive"));
+        }
         let mut service = MatrixReplicaService::new();
-        let journal = path.map(|path| ReplicaJournal::open(path, &mut service)).transpose()?;
+        service.set_capacity_bytes(options.capacity_bytes).map_err(|err| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, err.to_string())
+        })?;
+        let journal = path.map(|path| ReplicaJournal::open_with_limits(path, &mut service, options.max_pages)).transpose()?;
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
-            replica: Arc::new(Mutex::new(NodeReplica { service, journal, failed: false })),
+            replica: Arc::new(Mutex::new(NodeReplica { service, journal, max_pages: options.max_pages, failed: false })),
             options,
             counters: Arc::new(NodeCounters::default()),
             stop: Arc::new(ServerShutdown::default()),
@@ -337,7 +352,8 @@ fn apply(
     let record = if guard.journal.is_some() && matches!(request, ReplicaRequest::WriteChunk { .. } | ReplicaRequest::DiscardChunk { .. }) {
         Some(ReplicaJournal::encode(&request).map_err(|err| ObjectError::InvalidArgument(err.to_string()))?)
     } else { None };
-    let reply = apply_to_replica(&mut guard.service, request)?;
+    let max_pages = guard.max_pages;
+    let reply = apply_to_replica(&mut guard.service, request, max_pages)?;
     if let Some(record) = record {
         if let Err(err) = guard.journal.as_mut().unwrap().append(&record) {
             // The mutation may be in memory or partly on disk. Never expose that
@@ -349,13 +365,16 @@ fn apply(
     Ok(reply)
 }
 
-pub(super) fn apply_to_replica(guard: &mut MatrixReplicaService, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+pub(super) fn apply_to_replica(guard: &mut MatrixReplicaService, request: ReplicaRequest, max_pages: usize) -> Result<ReplicaReply, ObjectError> {
     match request {
         ReplicaRequest::WriteChunk {
             page_id,
             offset,
             data,
         } => {
+            if guard.page_count() >= max_pages && guard.page_write_sequence(&page_id).is_none() {
+                return Err(ObjectError::PreconditionFailed("replica page count limit exceeded".to_string()));
+            }
             guard.write_chunk(page_id, offset, &data)?;
             Ok(ReplicaReply::Applied)
         }
@@ -405,6 +424,7 @@ mod journal_failure_tests {
         let replica = Arc::new(Mutex::new(NodeReplica {
             service: MatrixReplicaService::new(),
             journal: Some(ReplicaJournal::read_only_for_test(&path)),
+            max_pages: 65_536,
             failed: false,
         }));
         let page = PageId { chunk_id: ChunkId::new(1, 2).unwrap(), page_index: 3 };

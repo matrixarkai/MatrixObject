@@ -21,7 +21,12 @@ fn invalid(message: impl ToString) -> io::Error {
 }
 
 impl ReplicaJournal {
+    #[cfg(test)]
     pub(super) fn open(path: &Path, service: &mut MatrixReplicaService) -> io::Result<Self> {
+        Self::open_with_limits(path, service, usize::MAX)
+    }
+
+    pub(super) fn open_with_limits(path: &Path, service: &mut MatrixReplicaService, max_pages: usize) -> io::Result<Self> {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -76,7 +81,7 @@ impl ReplicaJournal {
                 return Err(invalid("replica journal contains a non-mutating operation"));
             }
             let request = ReplicaRequest::decode(code, &payload[1..]).map_err(invalid)?;
-            super::server::apply_to_replica(service, request).map_err(invalid)?;
+            super::server::apply_to_replica(service, request, max_pages).map_err(invalid)?;
             offset += HEADER_LEN as u64 + length as u64;
         }
         if offset != file_len {

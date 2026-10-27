@@ -167,3 +167,40 @@ fn a_three_node_quorum_recovers_after_every_process_is_killed() {
     }
     assert!(set.read_chunk(&page(24), 0, 1024).is_err());
 }
+
+#[test]
+fn recovery_enforces_storage_limits_without_changing_the_journal() {
+    let dir = JournalDir::new();
+    let node = processes::start(env!("CARGO_BIN_EXE_chunkserver"), &[
+        ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+        ("MATRIXOBJECT_REPLICA_JOURNAL", dir.file().to_str().unwrap()),
+        ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "4096"),
+        ("MATRIXOBJECT_REPLICA_MAX_PAGES", "2"),
+    ]);
+    let mut c = client(&node);
+    c.write_chunk(page(1), 4095, b"x").unwrap();
+    c.write_chunk(page(2), 0, b"").unwrap();
+    let saved = std::fs::read(dir.file()).unwrap();
+    assert!(c.write_chunk(page(1), 4096, b"y").is_err());
+    assert!(c.write_chunk(page(3), 0, b"").is_err());
+    assert_eq!(std::fs::read(dir.file()).unwrap(), saved);
+    drop(node);
+    drop(c);
+    for (capacity_bytes, max_pages) in [(4095, 2), (4096, 1)] {
+        let options = ReplicaNodeOptions { capacity_bytes, max_pages, ..Default::default() };
+        assert!(ReplicaNodeServer::bind_with_journal("127.0.0.1:0", options, &dir.file()).is_err());
+        assert_eq!(std::fs::read(dir.file()).unwrap(), saved);
+    }
+    let options = ReplicaNodeOptions { capacity_bytes: 4096, max_pages: 2, ..Default::default() };
+    let server = ReplicaNodeServer::bind_with_journal("127.0.0.1:0", options, &dir.file()).unwrap();
+    let endpoint = server.local_addr().unwrap().to_string();
+    let stop = server.shutdown_handle();
+    let thread = std::thread::spawn(move || server.serve().unwrap());
+    let mut c = RemoteReplicaClient::connect(&endpoint, &ReplicaClientOptions::default()).unwrap();
+    assert_eq!(c.read_chunk(&page(1), 4095, 1).unwrap().data, b"x");
+    assert_eq!(c.ping().unwrap(), 2);
+    stop.stop();
+    thread.join().unwrap();
+    // Shutdown also releases the journal lock while the client is still alive.
+    drop(ReplicaNodeServer::bind_with_journal("127.0.0.1:0", ReplicaNodeOptions::default(), &dir.file()).unwrap());
+}

@@ -561,6 +561,15 @@ MATRIXOBJECT_REPLICA_ADDR=127.0.0.1:17301 cargo run --release --bin chunkserver
 | `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
 | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 | `MATRIXOBJECT_REPLICA_JOURNAL` | *(unset)* | append-only replica journal file in an existing directory |
+| `MATRIXOBJECT_REPLICA_CAPACITY_BYTES` | `268435456` | total page payload bytes, including zero-filled space before write offsets; positive |
+| `MATRIXOBJECT_REPLICA_MAX_PAGES` | `65536` | maximum page identities, including empty pages; positive |
+
+The payload and page limits are checked before admitting a write and during journal replay.
+Restart with limits below the saved history is refused without truncating the journal. Overwrites that do not
+increase either budget remain available at capacity. These are storage admission limits,
+not a process memory ceiling: indexes, caches, sidecars, and network buffers use additional
+memory. Discard marks byte ranges and does not release the underlying payload allocation.
+Zero disables neither limit; it is rejected at startup.
 
 The bound address and the PID are printed on the first line of stdout and flushed before the
 accept loop starts, so a supervisor -- or a test standing three of these up on port `0` --

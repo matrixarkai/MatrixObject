@@ -22,6 +22,8 @@
 //! | `MATRIXOBJECT_REPLICA_ADDR` | `127.0.0.1:17300` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
+//! | `MATRIXOBJECT_REPLICA_CAPACITY_BYTES` | `268435456` | total page payload bytes; positive |
+//! | `MATRIXOBJECT_REPLICA_MAX_PAGES` | `65536` | page identities, including empty pages; positive |
 //!
 //! # THE FIRST LINE OF OUTPUT IS A CONTRACT
 //!
@@ -97,7 +99,9 @@ fn main() {
     let max_payload_bytes =
         env_usize("MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES);
 
-    let options = ReplicaNodeOptions { max_payload_bytes, worker_threads, ..Default::default() };
+    let capacity_bytes = env_usize("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", 256 * 1024 * 1024) as u64;
+    let max_pages = env_usize("MATRIXOBJECT_REPLICA_MAX_PAGES", 65_536);
+    let options = ReplicaNodeOptions { max_payload_bytes, worker_threads, capacity_bytes, max_pages, ..Default::default() };
     let journal = std::env::var_os("MATRIXOBJECT_REPLICA_JOURNAL");
     let storage = if journal.is_some() { "journal" } else { "memory" };
     let bound_server = match journal {
@@ -123,7 +127,7 @@ fn main() {
     println!(
         "chunkserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \
-         storage={storage}",
+         storage={storage} capacity_bytes={capacity_bytes} max_pages={max_pages}",
         std::process::id()
     );
     if !bound.ip().is_loopback() {
