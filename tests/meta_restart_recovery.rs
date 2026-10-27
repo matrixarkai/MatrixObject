@@ -225,3 +225,44 @@ fn placement_journal_append_size_does_not_grow_with_catalog() {
     assert_eq!(c.object_placement("bucket","item-0255").unwrap(),committed);
     assert_eq!(c.probe().into_result().unwrap(),status);
 }
+
+#[test]
+fn explicit_roster_and_binary_heartbeats_survive_changed_bootstrap() {
+    let dir = StateDir::new();
+    let start = |roster: &str| {
+        processes::start(
+            env!("CARGO_BIN_EXE_metaserver"),
+            &[
+                ("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_METASERVER_STATE_DIR", dir.0.to_str().unwrap()),
+                ("MATRIXOBJECT_METASERVER_DATA_ROSTER", roster),
+                ("MATRIXOBJECT_METASERVER_SEED_CAPACITY_BYTES", "1024"),
+            ],
+        )
+    };
+    let node = start("node-b@127.0.0.1:18502@rack-b,node-a@127.0.0.1:18501@rack-a");
+    let mut c = client(&node);
+    assert!(c
+        .list_placement_nodes()
+        .unwrap()
+        .iter()
+        .all(|node| !node.online));
+    c.heartbeat_placement_node("node-a", 11, 1024, false, true, 10)
+        .unwrap();
+    let saved = c.list_placement_nodes().unwrap();
+    drop(c);
+    drop(node);
+    assert_eq!(
+        &std::fs::read(dir.0.join("metadata.outcomes")).unwrap()[..4],
+        b"MOMJ"
+    );
+    let node = start("different-node@127.0.0.1:19999@new-rack");
+    let mut c = client(&node);
+    assert_eq!(c.list_placement_nodes().unwrap(), saved);
+    assert_eq!(
+        c.plan_object_placement("bucket", "object", 1, 1)
+            .unwrap()
+            .node_ids,
+        vec!["node-a"]
+    );
+}

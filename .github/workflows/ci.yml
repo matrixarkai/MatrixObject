@@ -1261,3 +1261,27 @@ jobs:
           cargo test --locked --features metadata-consensus --test metadata_catalog_routing response_timeout_covers_the_entire_frame_not_each_byte -- --exact | tee /tmp/metadata-routing.log
           grep -q '^running 1 test$' /tmp/metadata-routing.log
           grep -q '^test result: ok. 1 passed' /tmp/metadata-routing.log
+      - name: configured roster is canonical and rejects invalid identities
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test configured_data_roster configured_roster_is_canonical_and_rejects_invalid_identities -- --exact | tee /tmp/data-roster.log
+          grep -q '^running 1 test$' /tmp/data-roster.log
+          grep -q '^test result: ok. 1 passed' /tmp/data-roster.log
+      - name: refused roster is atomic and valid nodes start offline
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test configured_data_roster refused_roster_is_atomic_and_valid_nodes_start_offline -- --exact | tee /tmp/data-roster.log
+          grep -q '^running 1 test$' /tmp/data-roster.log
+          grep -q '^test result: ok. 1 passed' /tmp/data-roster.log
+      - name: configured placement writes real chunk processes and recovers after failover
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus configured_placement_writes_real_chunk_processes_and_recovers_after_failover -- --exact | tee /tmp/data-roster.log
+          grep -q '^running 1 test$' /tmp/data-roster.log
+          grep -q '^test result: ok. 1 passed' /tmp/data-roster.log
+      - name: explicit roster and binary heartbeats survive changed bootstrap
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test meta_restart_recovery explicit_roster_and_binary_heartbeats_survive_changed_bootstrap -- --exact | tee /tmp/data-roster.log
+          grep -q '^running 1 test$' /tmp/data-roster.log
+          grep -q '^test result: ok. 1 passed' /tmp/data-roster.log

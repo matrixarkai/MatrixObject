@@ -24,14 +24,14 @@
 //! | `MATRIXOBJECT_METASERVER_THREADS` | `2` | connections served at once |
 //! | `MATRIXOBJECT_METASERVER_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 //! | `MATRIXOBJECT_METASERVER_STATE_DIR` | *(unset)* | existing directory for locked, atomic metadata snapshots |
+//! | `MATRIXOBJECT_METASERVER_DATA_ROSTER` | *(unset)* | comma-separated `node-id@socket-address@failure-domain`; starts offline until heartbeat |
 //! | `MATRIXOBJECT_METASERVER_SEED_DATA_NODES` | `0` | data nodes to put in the roster before serving |
 //! | `MATRIXOBJECT_METASERVER_SEED_CAPACITY_BYTES` | `1073741824` | capacity each seeded node reports |
 //!
-//! The two seed settings are a bootstrap, and named so. Placement needs a roster, and
-//! registration is deliberately not one of this service's verbs -- see
-//! `crate::cluster::meta_wire` for why a `PlacementNode` is not on this wire. They stand in for
-//! the membership a later change will agree between metaserver nodes rather than read from
-//! one node's environment.
+//! The explicit roster supplies operator-selected chunk endpoints and starts them offline.
+//! A controller must heartbeat verified chunk processes before placement can select them.
+//! The legacy node-count bootstrap is for loopback development and cannot be combined with
+//! an explicit roster. Persisted membership takes precedence over all bootstrap settings.
 //!
 //! # THE FIRST LINE OF OUTPUT IS A CONTRACT
 //!
@@ -77,7 +77,7 @@ fn main() {
     use std::io::Write;
 
     use matrixobjectstore_rs::cluster::{
-        MetaNodeOptions, MetaNodeServer, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP,
+        DataNodeSeed, MetaNodeOptions, MetaNodeServer, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP,
     };
 
     fn env_string(name: &str, default: &str) -> String {
@@ -124,6 +124,27 @@ fn main() {
         eprintln!("local metadata state and Raft state cannot be configured together");
         std::process::exit(2);
     }
+    let configured_roster = match std::env::var("MATRIXOBJECT_METASERVER_DATA_ROSTER") {
+        Ok(raw) => {
+            if std::env::var_os("MATRIXOBJECT_METASERVER_SEED_DATA_NODES").is_some() {
+                eprintln!("data roster and legacy seed count cannot be configured together");
+                std::process::exit(2);
+            }
+            match DataNodeSeed::parse_roster(&raw) {
+                Ok(nodes) => Some(nodes),
+                Err(error) => {
+                    eprintln!("invalid data roster: {error}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => {
+            eprintln!("invalid data roster: {error}");
+            std::process::exit(2);
+        }
+    };
+
     let bound_server = match state_dir {
         Some(path) => MetaNodeServer::bind_with_snapshot(&addr, options, std::path::Path::new(&path)),
         None => MetaNodeServer::bind(&addr, options),
@@ -146,13 +167,14 @@ fn main() {
     // connecting immediately cannot see a roster that is still filling. The count is printed
     // on the line, so a test does not have to ask whether the seed happened.
     #[allow(unused_mut)]
-    let mut seeded = match server.seed_data_nodes(seed_nodes, seed_capacity) {
-        Ok(seeded) => seeded,
-        Err(err) => {
-            eprintln!("seeding {seed_nodes} data node(s) failed: {err}");
-            std::process::exit(1);
-        }
-    };
+    let mut seeded = match configured_roster {
+        Some(nodes) => server.seed_data_roster(&nodes, seed_capacity),
+        None => server.seed_data_nodes(seed_nodes, seed_capacity),
+    }
+    .unwrap_or_else(|err| {
+        eprintln!("seeding data roster failed: {err}");
+        std::process::exit(1);
+    });
 
     if let Some(raw) = raft_peers {
         #[cfg(not(feature = "metadata-consensus"))]

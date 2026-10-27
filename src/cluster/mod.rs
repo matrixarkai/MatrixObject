@@ -181,7 +181,7 @@ pub use meta_message::{
     CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment, PlacementNodeSummary,
 };
 #[cfg(feature = "meta-server")]
-pub use meta_server::{MetaNodeOptions, MetaNodeServer, MetaNodeShutdown};
+pub use meta_server::{DataNodeSeed, MetaNodeOptions, MetaNodeServer, MetaNodeShutdown};
 #[cfg(feature = "meta-server")]
 pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
 
