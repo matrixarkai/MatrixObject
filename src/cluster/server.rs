@@ -335,7 +335,16 @@ fn apply(
             Ok(ReplicaReply::Applied)
         }
         ReplicaRequest::Ping => Ok(ReplicaReply::Pong {
-            page_count: guard.page_ids().len() as u64,
+            page_count: guard.page_count() as u64,
         }),
+        ReplicaRequest::PageInventory { after, limit } => {
+            crate::cluster::message::check_inventory_limit(limit)?;
+            let mut entries = guard.page_write_sequences_after(after.as_ref(), limit as usize + 1);
+            let has_more = entries.len() > limit as usize;
+            entries.truncate(limit as usize);
+            Ok(ReplicaReply::PageInventory(crate::cluster::message::PageInventory {
+                entries, has_more,
+            }))
+        }
     }
 }

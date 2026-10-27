@@ -108,6 +108,22 @@ impl MatrixReplicaService {
             .collect()
     }
 
+    /// A bounded ordered slice of the page index, after an exclusive cursor.
+    /// Only identities and sequences are copied; page payloads stay on this node.
+    pub fn page_write_sequences_after(
+        &self,
+        after: Option<&PageId>,
+        limit: usize,
+    ) -> Vec<(PageId, u64)> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let start = after.cloned().map(Excluded).unwrap_or(Unbounded);
+        self.pages
+            .range((start, Unbounded))
+            .take(limit)
+            .map(|(id, state)| (id.clone(), state.write_sequence))
+            .collect()
+    }
+
     /// The logical length of one page, if this replica holds it.
     pub fn page_logical_length(&self, page_id: &PageId) -> Option<u64> {
         self.pages.get(page_id).map(|state| state.logical_length)

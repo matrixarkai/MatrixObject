@@ -606,7 +606,8 @@ address it is given.
 
 ### What is not remote yet, and how large it is
 
-Four calls cross the socket: `write_chunk`, `read_chunk`, `head_chunk`, `discard_chunk`.
+The data calls cross the socket: `write_chunk`, `read_chunk`, `head_chunk`, `discard_chunk`.
+The bounded `page_inventory` call below also reads page identities and sequences remotely.
 **`MatrixChunkService` -- the service that holds `replicas` and runs the fan-out described
 above -- is unchanged and does not route through `ReplicaPlacement`.**
 
@@ -627,6 +628,18 @@ socket call behind that, only a snapshot transfer with a different name. So the 
 pieces in order -- turn those reads into methods, deciding for each whether the answer is a
 value or a stream, and only then put the 82 methods behind a dispatch. `src/cluster/mod.rs`
 carries the table and the reasoning.
+
+### Remote page inventory
+
+`RemoteReplicaClient::page_inventory(after, limit)` reads page identities and write sequences
+from a replica node, without transferring payloads. Limits are 1–4,096 rows per request;
+each row occupies 32 wire bytes. When `has_more` is true, resume with the last returned
+`PageId` as the exclusive cursor. An empty final batch has `has_more = false`.
+
+This is a live ordered traversal, not a snapshot. Fence writers before using it to certify
+that a returning replica is current. The main chunk-service dispatch still uses local
+replicas; this inventory extends the remote client for that integration. Existing wire
+verbs keep their codes and layouts; older nodes explicitly refuse the new inventory verb.
 
 ## Building
 

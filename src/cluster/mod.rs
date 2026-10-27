@@ -34,7 +34,10 @@
 //!
 //! # WHAT IS NOT REMOTE, AND THE MEASURED SIZE OF IT
 //!
-//! Four calls cross the socket: `write_chunk`, `read_chunk`, `head_chunk`, `discard_chunk`.
+//! The data calls cross the socket: `write_chunk`, `read_chunk`, `head_chunk`, `discard_chunk`.
+//! `page_inventory` also returns bounded batches of page identities and write sequences,
+//! without copying payloads. Its exclusive cursor resumes in key order. A traversal is live,
+//! not a snapshot; writers must be fenced before it can certify replica readmission.
 //! Everything else a replica can do is in-process only, and `MatrixChunkService` -- the
 //! service that holds `replicas` and runs the historic fan-out -- is UNCHANGED by this
 //! module. It does not route through [`crate::cluster::placement::ReplicaFanout`].

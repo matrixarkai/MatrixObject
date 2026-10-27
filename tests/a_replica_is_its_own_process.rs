@@ -608,3 +608,141 @@ fn a_payload_past_the_declared_bound_is_refused_before_it_is_allocated() {
 
     stop.stop();
 }
+
+
+/// Inventory is served by the node, resumes without duplicates, and carries current sequences.
+#[cfg(target_os = "linux")]
+#[test]
+fn remote_page_inventory_is_bounded_and_resumable() {
+    use std::collections::BTreeMap;
+    use store::cluster::message::MAX_INVENTORY_PAGES;
+    use store::cluster::RemoteReplicaClient;
+    let token = node_regime::run_token("inventory-test");
+    let node = processes::start_replica(env!("CARGO_BIN_EXE_chunkserver"), &token);
+    assert_ne!(node.pid, std::process::id());
+    assert!(processes::is_live(node.pid));
+    let mut client =
+        RemoteReplicaClient::connect(&node.endpoint, &ReplicaClientOptions::default()).unwrap();
+    assert_eq!(client.ping().unwrap(), 0);
+    sockets::assert_established_two_ways(&[node.pid]);
+    let empty = client.page_inventory(None, 3).unwrap();
+    assert!(empty.entries.is_empty());
+    assert!(!empty.has_more);
+    let mut local = store::MatrixReplicaService::new();
+    // Reverse insertion and addresses across volumes distinguish key order from insertion order.
+    for i in (0..11).rev() {
+        let id = corpus_page_id(i);
+        let payload = corpus_payload(i);
+        client.write_chunk(id.clone(), 0, &payload).unwrap();
+        local.write_chunk(id, 0, &payload).unwrap();
+    }
+    // Make sequences nonuniform; a response of all zeroes or all ones must fail.
+    for i in [1, 4, 9] {
+        let id = corpus_page_id(i);
+        client.write_chunk(id.clone(), 0, b"updated").unwrap();
+        local.write_chunk(id, 0, b"updated").unwrap();
+    }
+    let expected = local.page_write_sequences();
+    assert_eq!(expected.len(), 11);
+    assert!(
+        expected
+            .values()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            > 1
+    );
+    for limit in [1, 3, 11, MAX_INVENTORY_PAGES] {
+        let mut after = None;
+        let mut collected = BTreeMap::new();
+        let mut batches = 0;
+        loop {
+            batches += 1;
+            assert!(batches <= 12, "inventory did not make progress");
+            let batch = client.page_inventory(after.as_ref(), limit).unwrap();
+            assert!(batch.entries.len() as u64 <= limit);
+            for (id, sequence) in &batch.entries {
+                assert!(after.as_ref().map_or(true, |last| id > last));
+                assert!(collected.insert(id.clone(), *sequence).is_none());
+            }
+            if !batch.has_more {
+                break;
+            }
+            assert_eq!(batch.entries.len() as u64, limit);
+            after = Some(batch.entries.last().unwrap().0.clone());
+        }
+        assert_eq!(collected, expected);
+    }
+    let end = client
+        .page_inventory(expected.keys().next_back(), 1)
+        .unwrap();
+    assert!(end.entries.is_empty());
+    assert!(!end.has_more);
+    for bad in [0, MAX_INVENTORY_PAGES + 1, u64::MAX] {
+        assert!(matches!(
+            client.page_inventory(None, bad),
+            Err(ObjectError::InvalidArgument(_))
+        ));
+    }
+    assert_eq!(
+        client.ping().unwrap(),
+        11,
+        "refused inventory must leave the connection usable"
+    );
+}
+
+#[test]
+fn page_inventory_codec_refuses_malformed_rows_and_preserves_old_verbs() {
+    use store::cluster::message::{
+        PageInventory, ReplicaReply, ReplicaRequest, MAX_INVENTORY_PAGES,
+    };
+    use store::cluster::wire::{put_u64, RequestCode};
+    let id = corpus_page_id(7);
+    for after in [None, Some(id.clone())] {
+        let request = ReplicaRequest::PageInventory { after, limit: 3 };
+        assert_eq!(
+            ReplicaRequest::decode(request.code(), &request.encode_payload()).unwrap(),
+            request
+        );
+        let mut trailing = request.encode_payload();
+        trailing.push(0);
+        assert!(ReplicaRequest::decode(request.code(), &trailing).is_err());
+    }
+    for limit in [0, MAX_INVENTORY_PAGES + 1, u64::MAX] {
+        let request = ReplicaRequest::PageInventory { after: None, limit };
+        assert!(matches!(
+            ReplicaRequest::decode(request.code(), &request.encode_payload()),
+            Err(ObjectError::InvalidArgument(_))
+        ));
+    }
+    let mut invalid_tag = Vec::new();
+    put_u64(&mut invalid_tag, 2);
+    put_u64(&mut invalid_tag, 1);
+    assert!(ReplicaRequest::decode(RequestCode::PageInventory, &invalid_tag).is_err());
+    for (more, count) in [(0, u64::MAX), (0, 1), (1, 0), (2, 0)] {
+        let mut bytes = Vec::new();
+        put_u64(&mut bytes, more);
+        put_u64(&mut bytes, count);
+        assert!(ReplicaReply::decode(RequestCode::PageInventory, &bytes).is_err());
+    }
+    let duplicate = ReplicaReply::PageInventory(PageInventory {
+        entries: vec![(id.clone(), 1), (id, 2)],
+        has_more: false,
+    });
+    assert!(ReplicaReply::decode(RequestCode::PageInventory, &duplicate.encode_payload()).is_err());
+    // The existing codes and exact ping frames remain unchanged.
+    for (byte, code) in [
+        (1, RequestCode::WriteChunk),
+        (2, RequestCode::ReadChunk),
+        (3, RequestCode::HeadChunk),
+        (4, RequestCode::DiscardChunk),
+        (5, RequestCode::Ping),
+    ] {
+        assert_eq!(RequestCode::from_u8(byte), Some(code));
+    }
+    assert_eq!(
+        store::cluster::message::encode_request(&ReplicaRequest::Ping),
+        vec![PROTOCOL_STAMP, 5, 0, 0, 0, 0]
+    );
+    assert!(RequestCode::from_u8(63).is_none());
+}
