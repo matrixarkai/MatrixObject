@@ -184,3 +184,12 @@ pub use meta_message::{
 pub use meta_server::{MetaNodeOptions, MetaNodeServer, MetaNodeShutdown};
 #[cfg(feature = "meta-server")]
 pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
+
+#[cfg(feature = "replica-server")]
+mod replica_journal;
+
+#[cfg(any(feature = "replica-server", feature = "meta-server"))]
+mod shutdown;
+
+#[cfg(feature = "meta-server")]
+mod meta_snapshot_file;

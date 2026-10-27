@@ -22,6 +22,8 @@
 //! | `MATRIXOBJECT_REPLICA_ADDR` | `127.0.0.1:17300` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
+//! | `MATRIXOBJECT_REPLICA_CAPACITY_BYTES` | `268435456` | total page payload bytes; positive |
+//! | `MATRIXOBJECT_REPLICA_MAX_PAGES` | `65536` | page identities, including empty pages; positive |
 //!
 //! # THE FIRST LINE OF OUTPUT IS A CONTRACT
 //!
@@ -36,12 +38,14 @@
 //! these up on port `0` -- has no other way to learn which port the kernel chose. A line
 //! printed after the first request would be a line that arrives too late to connect with.
 //!
-//! # NOTHING SURVIVES THE PROCESS
+//! # RESTART RECOVERY
 //!
-//! This replica is held entirely in memory. There is no snapshot path and no write to disk:
-//! what the kill test below demonstrates is that the OTHER replicas survive one process
-//! ending, not that any one of them survives its own. Restarting a node gives you an empty
-//! node, which is a repair problem this binary does not solve.
+//! Set `MATRIXOBJECT_REPLICA_JOURNAL` to a file in an existing directory to retain
+//! writes and discards across restarts. Each successful mutation is synced before
+//! acknowledgment. Without this setting the replica remains in memory only.
+//! The journal is exclusively locked, checksummed, and replayed before listening.
+//! It grows with writes; checkpointing and log compaction are not implemented.
+//! A recovered node still needs coordinated repair for writes missed while offline.
 //!
 //! # IT IS UNAUTHENTICATED
 //!
@@ -95,14 +99,16 @@ fn main() {
     let max_payload_bytes =
         env_usize("MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES", MAX_PAYLOAD_BYTES);
 
-    let server = match ReplicaNodeServer::bind(
-        &addr,
-        ReplicaNodeOptions {
-            max_payload_bytes,
-            worker_threads,
-            ..ReplicaNodeOptions::default()
-        },
-    ) {
+    let capacity_bytes = env_usize("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", 256 * 1024 * 1024) as u64;
+    let max_pages = env_usize("MATRIXOBJECT_REPLICA_MAX_PAGES", 65_536);
+    let options = ReplicaNodeOptions { max_payload_bytes, worker_threads, capacity_bytes, max_pages, ..Default::default() };
+    let journal = std::env::var_os("MATRIXOBJECT_REPLICA_JOURNAL");
+    let storage = if journal.is_some() { "journal" } else { "memory" };
+    let bound_server = match journal {
+        Some(path) => ReplicaNodeServer::bind_with_journal(&addr, options, std::path::Path::new(&path)),
+        None => ReplicaNodeServer::bind(&addr, options),
+    };
+    let server = match bound_server {
         Ok(server) => server,
         Err(err) => {
             eprintln!("binding {addr} failed: {err}");
@@ -121,7 +127,7 @@ fn main() {
     println!(
         "chunkserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \
-         storage=memory",
+         storage={storage} capacity_bytes={capacity_bytes} max_pages={max_pages}",
         std::process::id()
     );
     if !bound.ip().is_loopback() {
