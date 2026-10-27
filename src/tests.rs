@@ -69,7 +69,8 @@ fn pageserver_placement_node(
     PlacementNode {
         node_id: node_id.to_string(),
         endpoint: format!("{node_id}.matrix.local:9101"),
-        service_kind: "blockserver".to_string(),
+        // ONE STORE-PLANE KIND; the page tier is the FIELD below.
+        service_kind: "chunkserver".to_string(),
         failure_domain: domain.to_string(),
         metadata_eligible: false,
         data_eligible: true,
@@ -667,7 +668,7 @@ fn persistent_journal_replays_page_and_chunk_catalogs() {
     let reopened = MatrixObjectStore::new(options).unwrap();
     let page_offline = reopened.meta_service.nodes.get("block-j").unwrap();
     assert_eq!(page_offline.endpoint, "block-j.local:9300");
-    assert_eq!(page_offline.service_kind, "blockserver");
+    assert_eq!(page_offline.service_kind, "chunkserver");
     assert_eq!(page_offline.page_allocator_shard_index, 0);
     assert_eq!(page_offline.page_allocator_shard_count, 2);
     assert!(page_offline.draining);
@@ -9141,7 +9142,7 @@ fn raft_backed_catalog_service_wrappers_commit_registration_and_offline_state() 
     let page_heartbeat_fields = page_heartbeat_proven.to_control_fields();
     assert_eq!(
         page_heartbeat_fields.get("service_kind").unwrap(),
-        "blockserver"
+        "chunkserver"
     );
     assert_eq!(
         page_heartbeat_fields.get("raft_receipt_count").unwrap(),
@@ -11917,7 +11918,7 @@ fn rust_control_plane_catalog_selection_is_metaserver_first() {
         )
         .unwrap();
     let page_fields = page_registration.to_control_fields();
-    assert_eq!(page_fields.get("service_kind").unwrap(), "blockserver");
+    assert_eq!(page_fields.get("service_kind").unwrap(), "chunkserver");
     assert_eq!(page_fields.get("allocator_shard_index").unwrap(), "0");
     assert_eq!(page_fields.get("allocator_shard_count").unwrap(), "2");
     assert_eq!(
@@ -47702,7 +47703,10 @@ fn a_placement_snapshot_that_validates() -> PlacementSnapshot {
     let node = PlacementNode {
         node_id: "block-a".to_string(),
         endpoint: "block-a.local:9100".to_string(),
-        service_kind: "blockserver".to_string(),
+        // A KIND THIS BUILD PRODUCES. The retired spelling is rewritten on the way in, so
+        // a fixture using it made the write path refuse naming one kind and the read path
+        // refuse naming another -- the two-path guard refuses that, correctly.
+        service_kind: "chunkserver".to_string(),
         failure_domain: "rack-a".to_string(),
         metadata_eligible: false,
         data_eligible: true,
@@ -47974,7 +47978,13 @@ fn a_store_written_before_the_roster_had_one_home_still_loads() {
         .get("block-a")
         .expect("the node the fixture was captured with");
     assert_eq!(node.endpoint, "block-a.local:9100", "the node arrived but not intact");
-    assert_eq!(node.service_kind, "blockserver");
+    // THE RETIRED KIND IS REWRITTEN ON THE WAY IN. These bytes were written under the
+    // page kind; the store plane now has one kind, so the node arrives as a chunkserver.
+    // What it SERVES is the assertion below, and that is the half that must not change.
+    assert_eq!(
+        node.service_kind, "chunkserver",
+        "a node recorded under the retired page kind must arrive as the one store-plane kind"
+    );
 
     // THE FOURTH PROPERTY OF THE PAGE-TIER MIGRATION, on committed bytes rather than a
     // round trip. These bytes are shape 27, which predates the field entirely, so the
@@ -49059,30 +49069,57 @@ fn a_published_key_names_the_same_tier_as_the_field_behind_it() {
     }
 }
 
-/// `serves_page_tier()` IS TRUE FOR EXACTLY THE PAGE KIND, AND FOR NOTHING ELSE.
+/// `serves_page_tier()` ANSWERS FROM THE FIELD, AND THE KIND NO LONGER DECIDES.
 ///
-/// This pins the body of the one function that eight predicates now delegate to. It is
-/// the behaviour they had individually, so it is also the thing a later change to the
-/// rule has to move on purpose rather than by accident.
+/// This test used to assert the opposite -- that the page KIND decided -- and the kind
+/// merge is what made that premise false. The store plane has one kind now, so a
+/// predicate asking the kind would answer the same for a page node and a chunk node.
+///
+/// The field is made to DISAGREE with the kind in both directions, which is what proves
+/// the accessor reads the field rather than happening to agree with it.
 #[test]
-fn serves_page_tier_is_true_for_exactly_the_page_kind() {
+fn serves_page_tier_answers_from_the_field_not_the_kind() {
     let mut node = placement_node("page-1", "domain-a", 1 << 20);
 
-    node.service_kind = "blockserver".to_string();
+    node.service_kind = "chunkserver".to_string();
+    node.serves_page_tier = true;
     assert!(
         node.serves_page_tier(),
-        "the page kind must serve the page tier"
+        "the one store-plane kind must still be able to serve the page tier"
     );
 
-    // NON-VACUITY: a body of `true` would satisfy the assertion above, so every other
-    // kind this store registers is checked to be excluded.
-    for other in ["chunkserver", "metaserver", "objectstore", "rootserver", ""] {
+    // DISAGREEING THE OTHER WAY: the retired spelling with the field false must NOT serve
+    // the page tier. If the accessor still consulted the kind, this would pass wrongly.
+    node.service_kind = "blockserver".to_string();
+    node.serves_page_tier = false;
+    assert!(
+        !node.serves_page_tier(),
+        "the accessor is still reading the kind: the retired spelling decided this, not the \
+         field"
+    );
+
+    for other in ["metaserver", "objectstore", "rootserver", ""] {
         node.service_kind = other.to_string();
-        assert!(
-            !node.serves_page_tier(),
-            "`{other}` is not the page tier, but serves_page_tier() said it was"
-        );
+        node.serves_page_tier = false;
+        assert!(!node.serves_page_tier(), "`{other}` must not serve the page tier");
     }
+
+    // AND THE RETIRED SPELLING IS REWRITTEN, so no live predicate ever sees it.
+    assert_eq!(
+        current_service_kind_spelling("blockserver"),
+        "chunkserver",
+        "a stored page kind must normalise to the one store-plane kind"
+    );
+    assert_eq!(
+        current_service_kind_spelling("rootserver"),
+        "metaserver",
+        "the control-plane normalisation must not have been lost"
+    );
+    assert_eq!(
+        current_service_kind_spelling("chunkserver"),
+        "chunkserver",
+        "a current kind must pass through unchanged"
+    );
 }
 
 /// THE PAGE OFFLINE PRECONDITION GATES ON THE SAME FLAG AS ITS CHUNK SIBLING.
@@ -49500,13 +49537,18 @@ fn the_route_checksum_migration_holds_against_committed_values() {
         "the committed-bytes store fixture is gone, so nothing proves an old store loads"
     );
     assert!(
+        SELF_SOURCE.contains("must come back serving the page \\\n         tier"),
+        "the old-store fixture no longer asserts the page tier survives a retired-kind \
+         record, which is the half of property 1 that the merge could break"
+    );
+    assert!(
         SELF_SOURCE.contains("MOSRSSTORE27"),
         "the old-store fixture no longer pins the pre-fold stamp"
     );
     assert!(
-        SELF_SOURCE.contains("assert_eq!(node.service_kind, \"blockserver\")"),
-        "the old-store fixture no longer pins the retired kind spelling, so property 1 of \
-         this migration is unproven"
+        SELF_SOURCE.contains("a node recorded under the retired page kind must arrive"),
+        "the old-store fixture no longer pins what a retired-kind record becomes, so \
+         property 1 of this migration is unproven"
     );
 
     // ---------------------------------------------------------------- PROPERTY 2
@@ -49811,4 +49853,82 @@ fn the_page_tier_field_is_decided_on_through_its_accessor_only() {
         "only {checked} uses found across the page-tier predicates, so this guard is not \
          looking at the code it is about"
     );
+}
+
+/// A REGISTRATION SERVES ONE TIER OR THE OTHER, NEVER BOTH AND NEVER NEITHER.
+///
+/// `serves_chunk_tier()` is defined as "a store-plane node that is not a page node",
+/// which is exact only while no node serves both tiers. That is an assumption about the
+/// producers, so it is asserted against the producers rather than believed.
+///
+/// If a node ever needs to serve both, this test fails and names the place to change --
+/// which is better than the definition quietly becoming wrong.
+#[test]
+fn a_registration_serves_one_tier_or_the_other() {
+    const PAGE: &str =
+        include_str!("store/core/readiness_catalog/service_catalog_pageserver_registration.rs");
+    const CHUNK: &str =
+        include_str!("store/core/readiness_catalog/service_catalog_chunkserver_registration.rs");
+    const GATEWAY: &str =
+        include_str!("store/core/readiness_catalog/service_catalog_gateway_liveness.rs");
+    const ROOT: &str = include_str!("store/core/readiness_catalog/service_catalog_root_bootstrap.rs");
+
+    // NON-VACUITY: an unloaded source makes every check below pass over nothing.
+    for (name, text) in [
+        ("page registration", PAGE),
+        ("chunk registration", CHUNK),
+        ("gateway liveness", GATEWAY),
+        ("root bootstrap", ROOT),
+    ] {
+        assert!(text.len() > 400, "{name} source did not load");
+        assert!(
+            text.contains("serves_page_tier:"),
+            "{name} no longer sets the page-tier field, so this guard cannot see what it \
+             produces"
+        );
+    }
+
+    // The page registration is the ONLY producer that makes a page-tier node, and it is a
+    // store-plane node, so the two accessors must disagree for it.
+    assert!(
+        PAGE.contains("serves_page_tier: true"),
+        "the page registration must produce a page-tier node"
+    );
+    assert!(
+        PAGE.contains(r#"service_kind: "chunkserver".to_string()"#),
+        "the page registration must produce the one store-plane kind"
+    );
+
+    // Everything else produces a non-page node.
+    for (name, text) in [
+        ("chunk registration", CHUNK),
+        ("gateway liveness", GATEWAY),
+        ("root bootstrap", ROOT),
+    ] {
+        assert!(
+            text.contains("serves_page_tier: false"),
+            "{name} must not produce a page-tier node, or `serves_chunk_tier` stops being \
+             exact and eight predicates change meaning"
+        );
+    }
+
+    // THE BEHAVIOURAL HALF: the two accessors partition the store plane.
+    let chunk = placement_node("chunk-one", "domain-a", 1 << 20);
+    assert!(chunk.serves_chunk_tier(), "a chunk node must serve the chunk tier");
+    assert!(!chunk.serves_page_tier(), "a chunk node must not serve the page tier");
+
+    let page = pageserver_placement_node("page-one", "domain-a", 0, 2);
+    assert!(page.serves_page_tier(), "a page node must serve the page tier");
+    assert!(
+        !page.serves_chunk_tier(),
+        "a page node must not serve the chunk tier, or chunk discovery returns page \
+         endpoints -- which is exactly what the merge did until this was fixed"
+    );
+
+    // And a node outside the store plane serves neither.
+    let mut meta = placement_node("meta-one", "domain-a", 1 << 20);
+    meta.service_kind = "metaserver".to_string();
+    meta.serves_page_tier = false;
+    assert!(!meta.serves_chunk_tier(), "a metaserver must not serve the chunk tier");
+    assert!(!meta.serves_page_tier(), "a metaserver must not serve the page tier");
 }

@@ -124,7 +124,7 @@ impl MatrixMetaService {
             .nodes
             .get_mut(node_id)
             .ok_or_else(|| ObjectError::NotFound("root chunkserver node missing".to_string()))?;
-        if node.service_kind != "chunkserver" {
+        if !node.serves_chunk_tier() {
             return Err(ObjectError::PreconditionFailed(
                 "root chunk health heartbeat requires chunkserver node".to_string(),
             ));
