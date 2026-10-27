@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+use std::net::{Shutdown, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// Shares cancellation with accept workers and their currently active sockets.
+#[derive(Debug, Default)]
+pub(super) struct ServerShutdown {
+    stopped: AtomicBool,
+    connections: Mutex<Vec<Option<TcpStream>>>,
+}
+
+impl ServerShutdown {
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn stop(&self) {
+        let connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
+        self.stopped.store(true, Ordering::SeqCst);
+        for stream in connections.iter().flatten() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
+
+    pub(super) fn track(
+        self: &Arc<Self>,
+        stream: &TcpStream,
+    ) -> std::io::Result<Option<ActiveConnection>> {
+        let stream = stream.try_clone()?;
+        let mut connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
+        // Registration and cancellation share the lock so an accepted socket cannot
+        // start blocking after stop has already walked the active sockets.
+        if self.is_stopped() {
+            let _ = stream.shutdown(Shutdown::Both);
+            return Ok(None);
+        }
+        let slot = connections
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(connections.len());
+        if slot == connections.len() {
+            connections.push(Some(stream));
+        } else {
+            connections[slot] = Some(stream);
+        }
+        Ok(Some(ActiveConnection {
+            shutdown: Arc::clone(self),
+            slot,
+        }))
+    }
+}
+
+pub(super) struct ActiveConnection {
+    shutdown: Arc<ServerShutdown>,
+    slot: usize,
+}
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        self.shutdown
+            .connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())[self.slot] = None;
+    }
+}
