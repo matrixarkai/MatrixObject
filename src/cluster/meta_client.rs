@@ -23,11 +23,12 @@
 //! A node that reports its own liveness from a value it last wrote down will go on reporting
 //! it after it has stopped being true -- the comparison is against itself, so it can never
 //! fire. [`RemoteMetaClient::probe`] therefore sends a frame and waits for the answer every
-//! time it is called, and a caller that wants to know whether the control plane is up pays
+//! time it is called on a usable connection. A failed connection requires a new client.
+//! A caller that wants to know whether the control plane is up pays
 //! for a round trip to find out. That is the cost of an answer that cannot be stale.
 
 use std::io::{BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::cluster::meta_message::{
@@ -92,12 +93,15 @@ impl MetaCallOutcome {
 }
 
 /// One connection to one metaserver node.
+/// Transport or framing failures close this connection; construct a new client to reconnect.
+/// Valid server refusals leave the connection usable. Mutations are never retried automatically.
 #[derive(Debug)]
 pub struct RemoteMetaClient {
     endpoint: String,
     reader: BufReader<TcpStream>,
     writer: TcpStream,
     max_payload_bytes: usize,
+    connection_usable: bool,
 }
 
 impl RemoteMetaClient {
@@ -127,6 +131,7 @@ impl RemoteMetaClient {
             reader: BufReader::new(stream),
             writer,
             max_payload_bytes: options.max_payload_bytes,
+            connection_usable: true,
         })
     }
 
@@ -149,7 +154,8 @@ impl RemoteMetaClient {
         })
     }
 
-    /// Send a frame and wait for the answer, RIGHT NOW.
+    /// Send a frame and wait for the answer on a usable connection.
+    /// A connection closed by an earlier failure returns `Unreachable` without sending.
     ///
     /// Named `probe` rather than `is_healthy` because it is not a property of this client. It
     /// is one round trip, made when it is called, and its answer is about the moment it
@@ -250,8 +256,20 @@ impl RemoteMetaClient {
 
     /// Make a call and say which of the three things happened.
     pub fn try_call(&mut self, request: MetaRequest) -> MetaCallOutcome {
+        if !self.connection_usable {
+            return MetaCallOutcome::Unreachable(transport_error(
+                &self.endpoint,
+                "reusing a failed connection",
+                "reconnect before sending another request",
+            ));
+        }
         let code = request.code();
-        match self.exchange(&request, code) {
+        self.connection_usable = false;
+        let result = self.exchange(&request, code);
+        if !self.connection_usable {
+            let _ = self.writer.shutdown(Shutdown::Both);
+        }
+        match result {
             Ok(Ok(reply)) => MetaCallOutcome::Answered(reply),
             // The metaserver answered with a failure status: its refusal, not a transport
             // fault.
@@ -314,9 +332,13 @@ impl RemoteMetaClient {
             )
         })?;
         if status == StatusCode::Ok {
-            return Ok(MetaReply::decode(code, &payload));
+            let reply = MetaReply::decode(code, &payload);
+            self.connection_usable = reply.is_ok();
+            return Ok(reply);
         }
-        Ok(Err(status.into_error(decode_failure(&payload)?)))
+        let message = decode_failure(&payload)?;
+        self.connection_usable = true;
+        Ok(Err(status.into_error(message)))
     }
 }
 

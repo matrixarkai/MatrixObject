@@ -955,3 +955,10 @@ jobs:
             | tee /tmp/inventory.log
           grep -q '^running 1 test$' /tmp/inventory.log
           grep -q '^test result: ok. 1 passed' /tmp/inventory.log
+
+      - name: Damaged connections cannot answer later calls
+        run: |
+          set -o pipefail
+          cargo test --locked --test failed_node_connections | tee /tmp/connections.log
+          grep -q '^running 4 tests$' /tmp/connections.log
+          grep -q '^test result: ok. 4 passed' /tmp/connections.log

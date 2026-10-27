@@ -40,7 +40,7 @@
 //! anyone.
 
 use std::io::{BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::cluster::message::{
@@ -70,12 +70,15 @@ impl Default for ReplicaClientOptions {
 }
 
 /// One connection to one replica node.
+/// A transport or framing failure closes this connection. Construct a new client to retry;
+/// a failed write may have reached the node, so mutations are never retried automatically.
 #[derive(Debug)]
 pub struct RemoteReplicaClient {
     endpoint: String,
     reader: BufReader<TcpStream>,
     writer: TcpStream,
     max_payload_bytes: usize,
+    connection_usable: bool,
 }
 
 impl RemoteReplicaClient {
@@ -110,6 +113,7 @@ impl RemoteReplicaClient {
             reader: BufReader::new(stream),
             writer,
             max_payload_bytes: options.max_payload_bytes,
+            connection_usable: true,
         })
     }
 
@@ -228,6 +232,24 @@ impl RemoteReplicaClient {
     }
 
     fn call(&mut self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+        if !self.connection_usable {
+            return Err(transport_error(
+                &self.endpoint,
+                "reusing a failed connection",
+                "reconnect before sending another request",
+            ));
+        }
+        // A failed exchange can leave an unknown number of bytes in either direction.
+        // Only a completely decoded reply makes this connection reusable.
+        self.connection_usable = false;
+        let result = self.exchange(request);
+        if !self.connection_usable {
+            let _ = self.writer.shutdown(Shutdown::Both);
+        }
+        result
+    }
+
+    fn exchange(&mut self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
         let code = request.code();
         let frame = encode_request(&request);
         self.writer
@@ -265,9 +287,12 @@ impl RemoteReplicaClient {
             )
         })?;
         if status == StatusCode::Ok {
-            return ReplicaReply::decode(code, &payload);
+            let reply = ReplicaReply::decode(code, &payload)?;
+            self.connection_usable = true;
+            return Ok(reply);
         }
         let message = decode_failure(&payload)?;
+        self.connection_usable = true;
         Err(status.into_error(message))
     }
 }
