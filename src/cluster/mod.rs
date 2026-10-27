@@ -190,3 +190,6 @@ mod replica_journal;
 
 #[cfg(any(feature = "replica-server", feature = "meta-server"))]
 mod shutdown;
+
+#[cfg(feature = "meta-server")]
+mod meta_snapshot_file;

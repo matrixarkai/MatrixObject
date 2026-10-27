@@ -2,6 +2,16 @@
 // Copyright 2026 MatrixArkAI
 impl MetaSnapshot {
     pub fn from_bytes(data: &[u8]) -> Result<Self, ObjectError> {
+        // Version 18 exists with both the original roster layout and the explicit
+        // page-tier field emitted by the shared placement encoder. Both paths verify
+        // the complete envelope and validate the restored snapshot before accepting it.
+        Self::decode_with_roster_shape(data, PLACEMENT_ROSTER_SHAPE_VERSION)
+            .or_else(|original_error| {
+                Self::decode_with_roster_shape(data, 33).map_err(|_| original_error)
+            })
+    }
+
+    fn decode_with_roster_shape(data: &[u8], roster_shape: u64) -> Result<Self, ObjectError> {
         let mut cursor = SnapshotByteCursor::new(data);
         let magic = cursor.read_string()?;
         let version = magic
@@ -291,7 +301,7 @@ impl MetaSnapshot {
             let commit_index = cursor.read_u64()?;
             let roster = read_placement_roster(
                 &mut cursor,
-                PlacementSnapshotDecodeFeatures::for_version(PLACEMENT_ROSTER_SHAPE_VERSION),
+                PlacementSnapshotDecodeFeatures::for_version(roster_shape),
                 commit_index,
             )?;
             (commit_index, roster)

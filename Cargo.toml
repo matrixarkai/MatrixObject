@@ -50,13 +50,12 @@ replica-server = ["dep:fs2"]
 # The control plane in another process (`src/cluster`'s metaserver half, and the `metaserver`
 # binary).
 #
-# ON by default, and it adds NO dependencies -- the standard library alone, and it reuses the
-# replica slice's framing rather than bringing a second one. What the feature gates is a
+# ON by default. It reuses the replica framing and the fs2 storage-lock dependency. What the feature gates is a
 # listener, a client and the directory over them, none of which costs anything until something
 # binds a port: an empty `metaserver_catalog_endpoints` is the in-process control plane this
 # store has always had, so a build with this feature on behaves exactly as it did before
 # something names an endpoint.
-meta-server = []
+meta-server = ["dep:fs2"]
 matrix-raft = ["dep:matrixraft"]
 
 [dependencies]
