@@ -27,20 +27,16 @@ RUSTFLAGS="-D warnings" cargo build --all-targets --locked
 RUSTFLAGS="-D warnings" cargo build --all-targets --locked --all-features
 ```
 
-**17 tests fail on a clean checkout**, and they are recorded by
-name in [`tools/known_failures.txt`](tools/known_failures.txt). That is why a bare
-`cargo test` looks alarming on a clean checkout. Use the gate, which compares the
-failures against that baseline in both directions — a new failure fails it, and so does a
-recorded failure that has stopped happening:
+**There are no recorded library failures.** Both the default-feature and all-feature
+library configurations pass their enabled tests; ignored tests remain separate work.
+The gate compares failures against [`tools/known_failures.txt`](tools/known_failures.txt)
+in both directions, rejecting new failures and stale recorded failures:
 
 ```bash
 tools/suite_gate.sh
 ```
 
-Two things about the suite that will otherwise cost you an afternoon:
-
-- **One test does not return.** Skip it:
-  `cargo test --lib -- --skip round_backlog_cost::a_round_with_an_empty_backlog_still_costs_the_whole_store`.
+When running individual tests:
 - **`cargo test <filter>` exits 0 when the filter matches nothing.** If you run one test
   by name, check the output says `test result: ok. 1 passed` rather than trusting the exit
   code. `--exact` needs the full path, `tests::the_name`.
@@ -55,7 +51,7 @@ Four jobs, all on a pinned toolchain:
 | job | what it does |
 |---|---|
 | **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
-| **format and rollback guards** | 115 individual tests in the library plus 59 integration tests, each run by name with `--exact` |
+| **format and rollback guards** | 118 individual tests in the library plus 59 integration tests, each run by name with `--exact` |
 
 The **network metadata consensus** job also runs forty-one named health, routing, preparation, and consensus tests
 with the optional consensus feature enabled.
@@ -64,9 +60,9 @@ The **network chunk consensus** job runs twenty-nine identity, routing, process,
 capacity, shutdown, and metadata-health tests with the chunk consensus feature. The coupled
 quorum test additionally enables metadata consensus and starts three voters for each service.
 
-Across these jobs, 135 individual tests run in the library.
+Across these jobs, 138 individual tests run in the library.
 
-**CI does not run the suite.** It compiles everything and runs those 135 guards plus the integration tests. A green
+**CI does not run the suite.** It compiles everything and runs those 138 guards plus the integration tests. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run
 `tools/suite_gate.sh` yourself.
 

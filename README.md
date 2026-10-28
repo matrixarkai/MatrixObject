@@ -804,9 +804,10 @@ On pushes to `main` and on every pull request, four jobs:
   See [chunk consensus configuration](docs/chunk-consensus.md).
 
 CI does not run the whole library suite. `tools/suite_gate.sh` does, locally: it
-compares the failures by name against the 17 recorded in
-`tools/known_failures.txt`, and fails in **both** directions -- a failure that is
-new, and a recorded one that has started passing and should come off the list.
+compares failures by name against `tools/known_failures.txt` and fails in **both**
+directions: a new failure, or a recorded failure that has started passing.
+There are no recorded library failures. Ignored tests are not covered by this result;
+run optional consensus coverage separately with `cargo test --all-features --lib`.
 
 ## Licence
 

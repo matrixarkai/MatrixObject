@@ -781,11 +781,8 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::an_object_record_owns_no_heap_before_or_after_a_snapshot_load did not run"; exit 1; }
 
-      # THESE TWO GUARD WHAT A FOLD AND A BATCHED READ COULD DROP, and both were added
-      # because a plant against them left the whole suite at its recorded baseline. Each
-      # counter helper has exactly one production caller, in a prepared batch mutation's
-      # apply half, and every test driving those paths is in tools/known_failures.txt -- so
-      # without these steps the only cover for that accounting is a failing test.
+      # Direct checks keep both folded counter terms observable alongside
+      # the prepared-batch tests that exercise their production callers.
       - name: The folded replica counters advance every term they fold
         run: |
           set -o pipefail
@@ -1354,6 +1351,28 @@ jobs:
           cargo test --locked --lib tests::page_and_object_repair_large_ranges_with_cursors -- --exact | tee /tmp/repair-cursor.log
           grep -q '^running 1 test$' /tmp/repair-cursor.log
           grep -q '^test result: ok. 1 passed' /tmp/repair-cursor.log
+
+      - name: every guard the workflow pins by name exists
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact | tee /tmp/library-guard.log
+          grep -q '^running 1 test$' /tmp/library-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/library-guard.log
+          cargo test --locked --all-features --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact | tee /tmp/library-guard.log
+          grep -q '^running 1 test$' /tmp/library-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/library-guard.log
+      - name: rust distributed readiness fences checksums
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::rust_distributed_readiness_fences_checksums -- --exact | tee /tmp/library-guard.log
+          grep -q '^running 1 test$' /tmp/library-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/library-guard.log
+      - name: chunk service batches coalesce reads and discards
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::chunk_service_batches_coalesce_reads_and_discards -- --exact | tee /tmp/library-guard.log
+          grep -q '^running 1 test$' /tmp/library-guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/library-guard.log
 
       - name: capacity rebalance reserves destination space across the batch
         run: |
