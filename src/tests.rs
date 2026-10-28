@@ -7073,13 +7073,11 @@ fn page_and_object_reads_repair_missing_replicas() {
 fn page_and_object_repair_large_ranges_with_cursors() {
     let chunk_id = ChunkId::new(0, 91).unwrap();
     let mut page = MatrixChunkService::new(4, 3, 2).unwrap();
-    page
-        .write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
+    page.write_chunk_range(&chunk_id, 0, b"abcdefghijkl")
         .unwrap();
     let pages = page.map_range(&chunk_id, 0, 12).unwrap();
     for loc in &pages {
-        page
-            .remove_replica_chunk_for_repair(0, &loc.page_id)
+        page.remove_replica_chunk_for_repair(0, &loc.page_id)
             .unwrap();
     }
 
@@ -7185,11 +7183,67 @@ fn page_and_object_repair_large_ranges_with_cursors() {
             .remove_replica_chunk_for_repair(0, page_id)
             .unwrap();
     }
+    assert!(matches!(
+        multi_extent_store.repair_object_range_bounded(
+            "bucket",
+            "multi-extent-cursor-repair",
+            0,
+            12,
+            1,
+            4
+        ),
+        Err(ObjectError::InvalidArgument(_))
+    ));
+    assert_eq!(
+        multi_extent_store
+            .chunk_service
+            .scrub_chunk_replicas(false)
+            .unwrap()
+            .degraded_chunks,
+        3
+    );
+
+    let mut subrange = multi_extent_store.clone();
+    for cursor in 0..2 {
+        let repair = subrange
+            .repair_object_range_bounded("bucket", "multi-extent-cursor-repair", 4, 8, 1, cursor)
+            .unwrap();
+        assert_eq!(repair.total_chunk_count, 2);
+        assert_eq!(repair.candidate_repair_bytes, 8);
+        assert_eq!(repair.selected_chunk_count, 1);
+        assert_eq!(repair.selected_repair_bytes, 4);
+        assert_eq!(repair.skipped_page_count, 1 - cursor);
+        assert_eq!(repair.skipped_repair_bytes, (1 - cursor) * 4);
+        assert_eq!(repair.next_chunk_index, cursor + 1);
+        assert_eq!(repair.has_more, cursor == 0);
+        assert_eq!(repair.stats.repaired_replicas, 1);
+        assert_eq!(
+            subrange
+                .chunk_service
+                .scrub_chunk_replicas(false)
+                .unwrap()
+                .degraded_chunks,
+            2 - cursor
+        );
+    }
     let multi_first = multi_extent_store
         .repair_object_range_bounded("bucket", "multi-extent-cursor-repair", 0, 12, 1, 0)
         .unwrap();
     assert_eq!(multi_first.total_chunk_count, 3);
     assert_eq!(multi_first.selected_chunk_count, 1);
+    assert_eq!(multi_first.candidate_repair_bytes, 12);
+    assert_eq!(multi_first.selected_repair_bytes, 4);
+    assert_eq!(multi_first.skipped_page_count, 2);
+    assert_eq!(multi_first.skipped_repair_bytes, 8);
+    assert_eq!(multi_first.stats.repaired_replicas, 1);
+    assert_eq!(
+        multi_extent_store
+            .chunk_service
+            .scrub_chunk_replicas(false)
+            .unwrap()
+            .degraded_chunks,
+        2
+    );
     assert_eq!(multi_first.next_chunk_index, 1);
     assert!(multi_first.has_more);
     let multi_second = multi_extent_store
@@ -7204,6 +7258,19 @@ fn page_and_object_repair_large_ranges_with_cursors() {
         .unwrap();
     assert_eq!(multi_second.total_chunk_count, 3);
     assert_eq!(multi_second.selected_chunk_count, 1);
+    assert_eq!(multi_second.candidate_repair_bytes, 12);
+    assert_eq!(multi_second.selected_repair_bytes, 4);
+    assert_eq!(multi_second.skipped_page_count, 1);
+    assert_eq!(multi_second.skipped_repair_bytes, 4);
+    assert_eq!(multi_second.stats.repaired_replicas, 1);
+    assert_eq!(
+        multi_extent_store
+            .chunk_service
+            .scrub_chunk_replicas(false)
+            .unwrap()
+            .degraded_chunks,
+        1
+    );
     assert_eq!(multi_second.next_chunk_index, 2);
     assert!(multi_second.has_more);
     let multi_final = multi_extent_store
@@ -7218,8 +7285,29 @@ fn page_and_object_repair_large_ranges_with_cursors() {
         .unwrap();
     assert_eq!(multi_final.total_chunk_count, 3);
     assert_eq!(multi_final.selected_chunk_count, 1);
+    assert_eq!(multi_final.candidate_repair_bytes, 12);
+    assert_eq!(multi_final.selected_repair_bytes, 4);
+    assert_eq!(multi_final.skipped_page_count, 0);
+    assert_eq!(multi_final.skipped_repair_bytes, 0);
+    assert_eq!(multi_final.stats.repaired_replicas, 1);
+    assert_eq!(
+        multi_extent_store
+            .chunk_service
+            .scrub_chunk_replicas(false)
+            .unwrap()
+            .degraded_chunks,
+        0
+    );
     assert_eq!(multi_final.next_chunk_index, 3);
     assert!(!multi_final.has_more);
+    let exhausted = multi_extent_store
+        .repair_object_range_bounded("bucket", "multi-extent-cursor-repair", 0, 12, 1, 3)
+        .unwrap();
+    assert_eq!(exhausted.total_chunk_count, 3);
+    assert_eq!(exhausted.candidate_repair_bytes, 12);
+    assert_eq!(exhausted.selected_chunk_count, 0);
+    assert_eq!(exhausted.next_chunk_index, 3);
+    assert!(!exhausted.has_more);
     assert_eq!(
         multi_extent_store
             .get_object("bucket", "multi-extent-cursor-repair")

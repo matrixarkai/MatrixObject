@@ -1348,6 +1348,13 @@ jobs:
           grep -q '^running 1 test$' /tmp/control-maintenance.log
           grep -q '^test result: ok. 1 passed' /tmp/control-maintenance.log
 
+      - name: bounded object repair accounts for all extents and resumes within the range
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::page_and_object_repair_large_ranges_with_cursors -- --exact | tee /tmp/repair-cursor.log
+          grep -q '^running 1 test$' /tmp/repair-cursor.log
+          grep -q '^test result: ok. 1 passed' /tmp/repair-cursor.log
+
       - name: capacity rebalance reserves destination space across the batch
         run: |
           set -euo pipefail
