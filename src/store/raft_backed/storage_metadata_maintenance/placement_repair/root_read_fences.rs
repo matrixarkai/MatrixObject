@@ -11,18 +11,30 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
         read: impl FnOnce(MetadataReadOptions) -> Result<(T, MetadataRaftReadiness), ObjectError>,
     ) -> Result<(T, MetadataRaftReadiness), ObjectError> {
+        let (options, readiness) =
+            self.metadata_read_options_at_raft_position(operation, now_ms, min_commit_index)?;
+        let (value, _) = read(options)?;
+        Ok((value, readiness))
+    }
+
+    fn metadata_read_options_at_raft_position(
+        &self,
+        operation: &str,
+        now_ms: u64,
+        min_commit_index: u64,
+    ) -> Result<(MetadataReadOptions, MetadataRaftReadiness), ObjectError> {
         let readiness = self.ensure_metadata_read_index_committed_at(
             operation,
             now_ms,
             self.raft.commit_index(),
             min_commit_index,
         )?;
-        let (value, _) = read(MetadataReadOptions {
+        let options = MetadataReadOptions {
             min_read_index: readiness.applied_commit_index,
             now_ms,
             ..MetadataReadOptions::default()
-        })?;
-        Ok((value, readiness))
+        };
+        Ok((options, readiness))
     }
 
     fn ensure_placement_read_index(
@@ -152,24 +164,5 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             )));
         }
         Ok(readiness)
-    }
-
-    fn metadata_read_options_committed_at(
-        &self,
-        operation: &str,
-        now_ms: u64,
-        min_commit_index: u64,
-    ) -> Result<MetadataReadOptions, ObjectError> {
-        let readiness = self.ensure_metadata_read_index_committed_at(
-            operation,
-            now_ms,
-            self.raft.commit_index(),
-            min_commit_index,
-        )?;
-        Ok(MetadataReadOptions {
-            min_read_index: readiness.min_read_index,
-            now_ms,
-            ..MetadataReadOptions::default()
-        })
     }
 }

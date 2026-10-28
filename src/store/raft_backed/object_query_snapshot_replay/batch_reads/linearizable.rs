@@ -8,16 +8,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<ObjectBatchReadReport, ObjectError> {
-        self.store.batch_get_objects_with_metadata_read(
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "batch get objects linearizable",
+            now_ms,
+            0,
+        )?;
+        let mut report = self.store.batch_get_objects_with_metadata_read(
             requests,
             max_items,
             max_payload_bytes,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+            options,
+        )?;
+        report.read_proof = object_read_proof_from_readiness(&readiness);
+        stamp_object_batch_read_proof("BatchGetObjects", &mut report);
+        Ok(report)
     }
 
     pub fn batch_get_objects_linearizable_committed_at(
@@ -28,14 +32,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         min_commit_index: u64,
     ) -> Result<ObjectBatchReadReport, ObjectError> {
-        let options =
-            self.metadata_read_options_committed_at("batch object read", now_ms, min_commit_index)?;
-        self.store.batch_get_objects_with_metadata_read(
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "batch object read",
+            now_ms,
+            min_commit_index,
+        )?;
+        let mut report = self.store.batch_get_objects_with_metadata_read(
             requests,
             max_items,
             max_payload_bytes,
             options,
-        )
+        )?;
+        report.read_proof = object_read_proof_from_readiness(&readiness);
+        stamp_object_batch_read_proof("BatchGetObjects", &mut report);
+        Ok(report)
     }
 
     pub fn batch_get_objects_with_read_proof_linearizable(
@@ -181,6 +191,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<AdmittedObjectBatchReadReport, ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "batch get objects with bounded read admission linearizable fenced",
+            now_ms,
+            0,
+        )?;
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "admitted batch object read",
@@ -193,13 +208,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 max_items,
                 max_payload_bytes,
                 max_chunk_read_count,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
+                options,
             )?;
         report.expected_route_control_checksum = expected_page_route_control_checksum.to_string();
+        report.read_proof = object_read_proof_from_readiness(&readiness);
         stamp_admitted_object_batch_read_proof("BatchReadObjectsWithAdmission", &mut report);
         Ok(report)
     }
@@ -302,15 +314,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<AdmittedObjectBatchReadReport, ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "admitted batch object read",
+            now_ms,
+            min_commit_index,
+        )?;
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "admitted batch object read",
             expected_page_route_control_checksum,
-        )?;
-        let options = self.metadata_read_options_committed_at(
-            "admitted batch object read",
-            now_ms,
-            min_commit_index,
         )?;
         let mut report = self
             .store
@@ -322,6 +334,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 options,
             )?;
         report.expected_route_control_checksum = expected_page_route_control_checksum.to_string();
+        report.read_proof = object_read_proof_from_readiness(&readiness);
         stamp_admitted_object_batch_read_proof("BatchReadObjectsWithAdmission", &mut report);
         Ok(report)
     }

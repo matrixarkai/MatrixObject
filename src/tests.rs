@@ -50698,6 +50698,7 @@ fn metadata_raft_reads_follow_applied_entries_when_metadata_does_not_change() {
             .0,
         1000
     );
+    assert_payload_batches_observe_applied_raft_position(&mut replicated, "object", true);
 }
 
 #[test]
@@ -50716,7 +50717,7 @@ fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
         enabled: true,
     })
     .unwrap();
-    let replicated = RaftBackedObjectStore::new(raft, store);
+    let mut replicated = RaftBackedObjectStore::new(raft, store);
     let readiness = replicated.metadata_raft_readiness(1, 10);
     assert!(!readiness.readable);
     assert!(!readiness.read_fence_covered);
@@ -50735,6 +50736,7 @@ fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
     assert_inventory_reads_observe_applied_raft_position(&replicated, "object-0", false);
     assert_changefeed_reads_observe_applied_raft_position(&replicated, false);
     assert_metadata_queries_observe_applied_raft_position(&replicated, "object-0", false);
+    assert_payload_batches_observe_applied_raft_position(&mut replicated, "object-0", false);
 }
 
 #[test]
@@ -50780,6 +50782,7 @@ fn metadata_read_proofs_do_not_promote_mutation_counts_to_raft_positions() {
     assert_inventory_reads_observe_applied_raft_position(&replicated, "object-0", true);
     assert_changefeed_reads_observe_applied_raft_position(&replicated, true);
     assert_metadata_queries_observe_applied_raft_position(&replicated, "object-0", true);
+    assert_payload_batches_observe_applied_raft_position(&mut replicated, "object-0", true);
 }
 
 fn assert_object_reads_observe_applied_raft_position(
@@ -51717,5 +51720,260 @@ fn assert_metadata_queries_observe_applied_raft_position(
             assert_ne!(first.records, next.records);
             assert_eq!(r.safe_read_fence, nr.safe_read_fence);
         }
+    }
+}
+
+fn assert_payload_batches_observe_applied_raft_position(
+    replicated: &mut RaftBackedObjectStore<InMemoryRustRaft>,
+    key: &str,
+    readable: bool,
+) {
+    let version = replicated
+        .store()
+        .head_object("bucket", key)
+        .unwrap()
+        .version;
+    let requests = vec![ObjectReadRequest {
+        bucket: "bucket".into(),
+        key: key.into(),
+        range: None,
+        version: None,
+    }];
+    let conditional = vec![ConditionalObjectReadRequest {
+        bucket: "bucket".into(),
+        key: key.into(),
+        range: None,
+        preconditions: ObjectReadPreconditions::default(),
+    }];
+    let versioned = vec![VersionedConditionalObjectReadRequest {
+        bucket: "bucket".into(),
+        key: key.into(),
+        version,
+        range: None,
+        preconditions: ObjectReadPreconditions::default(),
+    }];
+    let committed = replicated.raft_commit_index();
+    macro_rules! check {
+        ($call:expr, $checksum:ident, $operation:literal, $field:ident) => {{
+            let result = $call;
+            if readable {
+                let report = result.unwrap();
+                assert_eq!(report.read_proof.consensus_read_index, committed);
+                assert_eq!(report.read_proof.metadata_commit_index, replicated.store().last_metadata_commit_index());
+                assert_eq!(report.$field, $checksum($operation, &report));
+                assert!(report.payload_bytes > 0);
+            } else { assert!(matches!(result, Err(ObjectError::PreconditionFailed(message)) if message.contains("metadata control read index is not satisfied"))); }
+        }};
+    }
+    check!(
+        replicated.batch_get_objects_linearizable(requests.clone(), 10, 65536, 10),
+        object_batch_read_proof_checksum,
+        "BatchGetObjects",
+        object_batch_read_proof_checksum
+    );
+    check!(
+        replicated.batch_get_objects_linearizable_committed_at(
+            requests.clone(),
+            10,
+            65536,
+            10,
+            committed
+        ),
+        object_batch_read_proof_checksum,
+        "BatchGetObjects",
+        object_batch_read_proof_checksum
+    );
+    check!(
+        replicated.batch_get_objects_with_bounded_read_admission_linearizable_fenced(
+            requests.clone(),
+            10,
+            65536,
+            0,
+            10,
+            ""
+        ),
+        admitted_object_batch_read_proof_checksum,
+        "BatchReadObjectsWithAdmission",
+        storage_admission_proof_checksum
+    );
+    check!(
+        replicated.batch_get_objects_with_bounded_read_admission_linearizable_committed_at_fenced(
+            requests.clone(),
+            10,
+            65536,
+            0,
+            10,
+            committed,
+            ""
+        ),
+        admitted_object_batch_read_proof_checksum,
+        "BatchReadObjectsWithAdmission",
+        storage_admission_proof_checksum
+    );
+    check!(
+        replicated.batch_get_objects_conditional_linearizable_fenced(
+            conditional.clone(),
+            10,
+            65536,
+            10,
+            ""
+        ),
+        conditional_object_batch_read_proof_checksum,
+        "ConditionalBatchReadObjects",
+        object_batch_read_proof_checksum
+    );
+    check!(
+        replicated.batch_get_objects_conditional_with_bounded_read_admission_linearizable_fenced(
+            conditional.clone(),
+            10,
+            65536,
+            0,
+            10,
+            ""
+        ),
+        admitted_conditional_object_batch_read_proof_checksum,
+        "ConditionalBatchReadObjectsWithAdmission",
+        storage_admission_proof_checksum
+    );
+    check!(
+        replicated.batch_get_object_versions_conditional_linearizable_fenced(
+            versioned.clone(),
+            10,
+            65536,
+            10,
+            ""
+        ),
+        versioned_conditional_object_batch_read_proof_checksum,
+        "VersionedConditionalBatchReadObjects",
+        object_batch_read_proof_checksum
+    );
+    check!(
+        replicated
+            .batch_get_object_versions_conditional_with_bounded_read_admission_linearizable_fenced(
+                versioned.clone(),
+                10,
+                65536,
+                0,
+                10,
+                ""
+            ),
+        admitted_versioned_conditional_object_batch_read_proof_checksum,
+        "VersionedConditionalBatchReadObjectsWithAdmission",
+        storage_admission_proof_checksum
+    );
+    assert!(replicated
+        .batch_get_objects_linearizable_committed_at(requests, 10, 65536, 10, committed + 1)
+        .is_err());
+    if readable {
+        let batch = replicated
+            .batch_get_objects_linearizable(
+                vec![ObjectReadRequest {
+                    bucket: "bucket".into(),
+                    key: key.into(),
+                    range: None,
+                    version: None,
+                }],
+                10,
+                65536,
+                10,
+            )
+            .unwrap();
+        let expected = replicated
+            .get_object_linearizable("bucket", key, 10)
+            .unwrap()
+            .0;
+        assert_eq!(batch.items[0].object.as_ref().unwrap().data, expected.data);
+        let requests = vec![ObjectReadRequest {
+            bucket: "bucket".into(),
+            key: key.into(),
+            range: None,
+            version: None,
+        }];
+        let admitted = replicated
+            .batch_get_objects_with_read_admission_linearizable(requests.clone(), 10, 65536, 10)
+            .unwrap();
+        admitted.verify_storage_admission_proof().unwrap();
+        let stable = replicated
+            .batch_get_objects_with_read_admission_linearizable(Vec::new(), 10, 65536, 10)
+            .unwrap();
+        replicated
+            .batch_get_objects_with_bounded_read_admission_linearizable_storage_fenced(
+                Vec::new(),
+                10,
+                65536,
+                0,
+                10,
+                "",
+                &stable.storage_admission_proof_checksum,
+            )
+            .unwrap();
+        assert!(replicated
+            .batch_get_objects_with_bounded_read_admission_linearizable_storage_fenced(
+                requests.clone(),
+                10,
+                65536,
+                0,
+                10,
+                "",
+                &admitted.storage_admission_proof_checksum
+            )
+            .is_err());
+        let verified = replicated
+            .batch_get_objects_with_bounded_read_admission_linearizable_storage_fenced(
+                requests.clone(),
+                10,
+                65536,
+                0,
+                10,
+                "",
+                "",
+            )
+            .unwrap();
+        assert_eq!(verified.read_proof.consensus_read_index, committed);
+        assert_eq!(
+            verified.items[0]
+                .object
+                .as_ref()
+                .unwrap()
+                .object
+                .as_ref()
+                .unwrap()
+                .data,
+            expected.data
+        );
+        assert!(replicated
+            .batch_get_objects_with_bounded_read_admission_linearizable_storage_fenced(
+                requests.clone(),
+                10,
+                65536,
+                0,
+                10,
+                "",
+                "invalid"
+            )
+            .is_err());
+        assert!(replicated
+            .batch_get_objects_with_bounded_read_admission_linearizable_fenced(
+                requests.clone(),
+                10,
+                65536,
+                0,
+                10,
+                "invalid"
+            )
+            .is_err());
+        assert!(replicated
+            .batch_get_objects_with_bounded_read_admission_linearizable_committed_at(
+                requests,
+                10,
+                65536,
+                0,
+                10,
+                committed + 1
+            )
+            .is_err());
+        let mut altered = admitted;
+        altered.read_proof.consensus_read_index += 1;
+        assert!(altered.verify_storage_admission_proof().is_err());
     }
 }

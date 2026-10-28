@@ -25,6 +25,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ConditionalObjectBatchReadReport, ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "batch get objects conditional linearizable fenced",
+            now_ms,
+            0,
+        )?;
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "conditional batch object read",
@@ -36,13 +41,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 requests,
                 max_items,
                 max_payload_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
+                options,
             )?;
         report.expected_route_control_checksum = expected_page_route_control_checksum.to_string();
+        report.read_proof = object_read_proof_from_readiness(&readiness);
         stamp_conditional_object_batch_read_proof("ConditionalBatchReadObjects", &mut report);
         Ok(report)
     }
@@ -161,6 +163,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<AdmittedConditionalObjectBatchReadReport, ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "batch get objects conditional with bounded read admission linearizable fenced",
+            now_ms,
+            0,
+        )?;
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "conditional admitted batch object read",
@@ -173,13 +180,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 max_items,
                 max_payload_bytes,
                 max_chunk_read_count,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
+                options,
             )?;
         report.expected_route_control_checksum = expected_page_route_control_checksum.to_string();
+        report.read_proof = object_read_proof_from_readiness(&readiness);
         stamp_admitted_conditional_object_batch_read_proof(
             "ConditionalBatchReadObjectsWithAdmission",
             &mut report,
