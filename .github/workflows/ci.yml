@@ -1317,6 +1317,19 @@ jobs:
           grep -q '^running 1 test$' /tmp/lifecycle.log
           grep -q '^test result: ok. 1 passed' /tmp/lifecycle.log
 
+      - name: capacity rebalance reserves destination space across the batch
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::raft_backed_capacity_rebalance_reserves_batch_space -- --exact | tee /tmp/capacity-budget.log
+          grep -q '^running 1 test$' /tmp/capacity-budget.log
+          grep -q '^test result: ok. 1 passed' /tmp/capacity-budget.log
+      - name: prepared placement actions enforce integrity and replay
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::raft_backed_store_gates_prepared_placement_actions -- --exact | tee /tmp/capacity-budget.log
+          grep -q '^running 1 test$' /tmp/capacity-budget.log
+          grep -q '^test result: ok. 1 passed' /tmp/capacity-budget.log
+
       - name: metadata raft reads follow applied entries when metadata does not change
         run: |
           set -euo pipefail

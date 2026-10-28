@@ -5,7 +5,8 @@ impl MatrixMetaService {
         &mut self,
         prepared: PreparedPlacementCapacityRebalance,
     ) -> Result<PlacementCapacityRebalanceReport, ObjectError> {
-        if prepared.expected_previous_commit_index != self.placement_commit_index.saturating_sub(1) {
+        if prepared.expected_previous_commit_index != self.placement_commit_index.saturating_sub(1)
+        {
             return Err(ObjectError::PreconditionFailed(
                 "root prepared capacity rebalance previous commit fence mismatch".to_string(),
             ));
@@ -55,6 +56,7 @@ impl MatrixMetaService {
         }
         let mut report = prepared.report;
         let mut updated_placements = Vec::new();
+        let mut budget_nodes = self.nodes.clone();
         for item in &report.items {
             let plan = &item.plan;
             if plan.plan_checksum != placement_migration_plan_checksum(plan) {
@@ -83,7 +85,7 @@ impl MatrixMetaService {
                 ));
             }
             for node_id in &plan.after_node_ids {
-                let node = self.nodes.get(node_id).ok_or_else(|| {
+                let node = budget_nodes.get(node_id).ok_or_else(|| {
                     ObjectError::NotFound("root placement node missing".to_string())
                 })?;
                 if !Self::node_accepts_new_placement(node) {
@@ -106,13 +108,24 @@ impl MatrixMetaService {
                         "root prepared capacity rebalance node lacks capacity".to_string(),
                     ));
                 }
-                if prepared.min_free_bytes > 0
+                if !current.node_ids.contains(node_id)
+                    && prepared.min_free_bytes > 0
                     && Self::node_effective_free_bytes(node).saturating_add(previous_bytes)
                         < plan.length.saturating_add(prepared.min_free_bytes)
                 {
                     return Err(ObjectError::PreconditionFailed(
                         "root prepared capacity rebalance node lacks capacity floor".to_string(),
                     ));
+                }
+            }
+            for node_id in &current.node_ids {
+                if let Some(node) = budget_nodes.get_mut(node_id) {
+                    node.committed_bytes = node.committed_bytes.saturating_sub(current.length);
+                }
+            }
+            for node_id in &plan.after_node_ids {
+                if let Some(node) = budget_nodes.get_mut(node_id) {
+                    node.committed_bytes = node.committed_bytes.saturating_add(plan.length);
                 }
             }
             updated_placements.push(ObjectPlacement {
