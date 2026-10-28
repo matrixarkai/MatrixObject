@@ -129,5 +129,29 @@ heartbeat load, concurrent client traffic and disk latency must be sized togethe
 
 The initial local 51-process debug run at the one-second heartbeat interval did
 not finish the first 1,024 writes within its 180-second workload deadline.
-The larger test is retained as an ignored, explicit capacity investigation;
-it is not a passing CI check or evidence of production readiness.
+With bounded metadata proposal batches, the same local debug workload completed
+the first 1,024 writes in 112.94 seconds and the next 256 writes after leader loss
+in 27.08 seconds (9.1 and 9.5 operations per second). The full 403.74-second run
+verified all 1,280 objects after restarting all 51 processes. This is a single-host
+recovery measurement, not a production capacity rating. The larger test remains
+ignored by default and is not a CI check.
+
+## Bounded metadata proposal batches
+
+The metadata Raft worker admits at most eight queued requests in one preparation
+pass, stopping before their combined encoded entries exceed 4 MiB. It prepares
+each mutation against the preceding staged outcomes, then restores the committed
+state before processing Raft readiness. Only the affected nodes and object
+placements are saved; an expiry pass also saves the roster it may change.
+
+Every request retains its own version-1 binary entry and log ID. Read barriers
+remain separate entries. Raft can persist and replicate the queued entries
+together, but each reply is sent only when its own committed entry applies. No
+new batch is prepared while any prior accepted proposal remains pending. Client
+timeouts do not discard accepted outcomes; leadership changes report uncertainty.
+Requests deferred by the byte bound stay queued for the next batch.
+
+The local workload prints per-worker time spent planning, connecting to a chunk
+group, writing chunk bytes and committing placement every 32 completed objects.
+These stage totals expose control-plane waiting separately from data writes and
+remain visible if the overall workload deadline is exceeded.

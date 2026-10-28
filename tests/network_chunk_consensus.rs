@@ -1059,22 +1059,29 @@ mod coupled_groups {
                         let mut clients = BTreeMap::new();
                         let mut saved = Vec::new();
                         let mut latencies = Vec::new();
+                        let mut stages = [0u128; 4];
                         for n in ((start + worker as u64)..end).step_by(workers) {
                             assert!(
                                 begin.elapsed() < Duration::from_secs(180),
-                                "bounded workload exceeded deadline after {} writes in worker {worker}", saved.len()
+                                "bounded workload exceeded deadline after {} writes in worker {worker}; plan/connect/write/commit_us={stages:?}", saved.len()
                             );
                             let started = Instant::now();
                             let plan = meta
                                 .plan_object_placement("load", &format!("object-{n}"), 1024, 1)
                                 .unwrap();
+                            stages[0] += started.elapsed().as_micros();
+                            let phase = Instant::now();
                             assert_eq!(plan.node_ids.len(), 1);
                             let group = plan.node_ids[0].clone();
                             let chunk = clients.entry(group.clone()).or_insert_with(|| {
                                 meta.connect_chunk_group(&group, &chunk_options()).unwrap()
                             });
+                            stages[1] += phase.elapsed().as_micros();
+                            let phase = Instant::now();
                             // No mutation retry: a failure after admission remains uncertain.
                             chunk.write_chunk(page(n), 0, &load_data(n)).unwrap();
+                            stages[2] += phase.elapsed().as_micros();
+                            let phase = Instant::now();
                             let placement = meta
                                 .commit_object_placement(
                                     CommittedPlacement {
@@ -1088,8 +1095,12 @@ mod coupled_groups {
                                     &plan.plan_checksum,
                                 )
                                 .unwrap();
+                            stages[3] += phase.elapsed().as_micros();
                             saved.push((n, placement));
                             latencies.push(started.elapsed().as_micros());
+                            if saved.len() % 32 == 0 {
+                                println!("MULTIGROUP_STAGE worker={worker} completed={} plan_us={} connect_us={} write_us={} commit_us={}", saved.len(), stages[0], stages[1], stages[2], stages[3]);
+                            }
                         }
                         (saved, latencies)
                     })
