@@ -57,7 +57,7 @@ impl MatrixMetaService {
             if selected.len() >= replica_count {
                 break;
             }
-            if used_domains.insert(node.failure_domain.clone()) || used_domains.len() == 1 {
+            if used_domains.insert(node.failure_domain.clone()) {
                 selected.push(node.node_id.clone());
             }
         }

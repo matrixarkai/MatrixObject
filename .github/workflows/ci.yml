@@ -81,6 +81,12 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Placement spreads copies across available failure domains
+        run: |
+          set -o pipefail
+          cargo test --locked --lib tests::placement_uses_distinct_domains_before_reusing_a_domain -- --exact | tee /tmp/placement-domains.log
+          grep -q 'test result: ok. 1 passed' /tmp/placement-domains.log
+
       - name: Replica quorum members have distinct peers
         run: |
           set -o pipefail
