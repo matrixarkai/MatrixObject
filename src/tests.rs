@@ -50618,6 +50618,7 @@ fn metadata_raft_reads_follow_applied_entries_when_metadata_does_not_change() {
     assert!(mismatched
         .get_object_linearizable("bucket", "object", 10)
         .is_err());
+    assert_object_reads_observe_applied_raft_position(&replicated, "object", true);
 }
 
 #[test]
@@ -50650,6 +50651,7 @@ fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
     assert!(replicated
         .list_objects_linearizable("bucket", "", None, 10, 10)
         .is_err());
+    assert_object_reads_observe_applied_raft_position(&replicated, "object-0", false);
 }
 
 #[test]
@@ -50690,4 +50692,198 @@ fn metadata_read_proofs_do_not_promote_mutation_counts_to_raft_positions() {
         local_identity.metadata_control_proof_checksum
     );
     assert_eq!(readiness.metadata_control_proof_bytes, local_identity.metadata_control_proof_bytes);
+    assert_object_reads_observe_applied_raft_position(&replicated, "object-0", true);
+}
+
+fn assert_object_reads_observe_applied_raft_position(
+    replicated: &RaftBackedObjectStore<InMemoryRustRaft>,
+    key: &str,
+    readable: bool,
+) {
+    let version = replicated
+        .store()
+        .head_object("bucket", key)
+        .unwrap()
+        .version;
+    let reads = [
+        (
+            "get_object_version_linearizable",
+            replicated
+                .get_object_version_linearizable("bucket", key, version, 10)
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_version_with_read_admission_linearizable",
+            replicated
+                .get_object_version_with_read_admission_linearizable(
+                    "bucket", key, version, 100, 10,
+                )
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_version_conditional_linearizable",
+            replicated
+                .get_object_version_conditional_linearizable(
+                    "bucket",
+                    key,
+                    version,
+                    &ObjectReadPreconditions::default(),
+                    10,
+                )
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_version_conditional_with_read_admission_linearizable",
+            replicated
+                .get_object_version_conditional_with_read_admission_linearizable(
+                    "bucket",
+                    key,
+                    version,
+                    100,
+                    &ObjectReadPreconditions::default(),
+                    10,
+                )
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "head_object_linearizable",
+            replicated
+                .head_object_linearizable("bucket", key, 10)
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "head_object_conditional_linearizable",
+            replicated
+                .head_object_conditional_linearizable(
+                    "bucket",
+                    key,
+                    &ObjectReadPreconditions::default(),
+                    10,
+                )
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "head_object_version_linearizable",
+            replicated
+                .head_object_version_linearizable("bucket", key, version, 10)
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "head_object_version_conditional_linearizable",
+            replicated
+                .head_object_version_conditional_linearizable(
+                    "bucket",
+                    key,
+                    version,
+                    &ObjectReadPreconditions::default(),
+                    10,
+                )
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_range_linearizable",
+            replicated
+                .get_object_range_linearizable("bucket", key, 1, 2, 100, 10)
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_range_with_read_admission_linearizable",
+            replicated
+                .get_object_range_with_read_admission_linearizable("bucket", key, 1, 2, 100, 10)
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_range_conditional_linearizable",
+            replicated
+                .get_object_range_conditional_linearizable(
+                    "bucket",
+                    key,
+                    1,
+                    2,
+                    100,
+                    &ObjectReadPreconditions::default(),
+                    10,
+                )
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_range_conditional_with_read_admission_linearizable",
+            replicated
+                .get_object_range_conditional_with_read_admission_linearizable(
+                    "bucket",
+                    key,
+                    1,
+                    2,
+                    100,
+                    &ObjectReadPreconditions::default(),
+                    10,
+                )
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_version_range_linearizable",
+            replicated
+                .get_object_version_range_linearizable("bucket", key, version, 1, 2, 100, 10)
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_version_range_with_read_admission_linearizable",
+            replicated
+                .get_object_version_range_with_read_admission_linearizable(
+                    "bucket", key, version, 1, 2, 100, 10,
+                )
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_version_range_conditional_linearizable",
+            replicated
+                .get_object_version_range_conditional_linearizable(
+                    "bucket",
+                    key,
+                    version,
+                    1,
+                    2,
+                    100,
+                    &ObjectReadPreconditions::default(),
+                    10,
+                )
+                .map(|(_, readiness)| readiness),
+        ),
+        (
+            "get_object_version_range_conditional_with_read_admission_linearizable",
+            replicated
+                .get_object_version_range_conditional_with_read_admission_linearizable(
+                    "bucket",
+                    key,
+                    version,
+                    1,
+                    2,
+                    100,
+                    &ObjectReadPreconditions::default(),
+                    10,
+                )
+                .map(|(_, readiness)| readiness),
+        ),
+    ];
+    for (operation, result) in reads {
+        if readable {
+            let readiness = result.unwrap_or_else(|error| panic!("{operation}: {error:?}"));
+            assert_eq!(
+                readiness.safe_read_fence,
+                replicated.raft_commit_index(),
+                "{operation}"
+            );
+            assert_eq!(
+                readiness.applied_commit_index,
+                replicated.store().last_metadata_commit_index(),
+                "{operation}"
+            );
+        } else {
+            assert!(
+                matches!(result, Err(ObjectError::PreconditionFailed(message))
+                if message.contains("metadata control read index is not satisfied")),
+                "{operation} must refuse the unapplied Raft position"
+            );
+        }
+    }
 }
