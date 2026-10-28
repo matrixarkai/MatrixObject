@@ -7,13 +7,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         key: &str,
         now_ms: u64,
     ) -> Result<(Vec<ObjectMetadata>, MetadataRaftReadiness), ObjectError> {
-        self.store.list_object_versions_with_metadata_read(
-            bucket,
-            key,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        self.read_metadata_at_raft_position(
+            "list object versions linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .list_object_versions_with_metadata_read(bucket, key, options)
             },
         )
     }
@@ -49,18 +49,24 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(ObjectVersionPage, MetadataRaftReadiness), ObjectError> {
-        self.store.list_object_versions_page_with_metadata_read(
-            bucket,
-            key,
-            marker,
-            limit,
-            max_payload_bytes,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        let (mut page, readiness) = self.read_metadata_at_raft_position(
+            "list object versions page linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store.list_object_versions_page_with_metadata_read(
+                    bucket,
+                    key,
+                    marker,
+                    limit,
+                    max_payload_bytes,
+                    options,
+                )
             },
-        )
+        )?;
+        page.read_proof = object_read_proof_from_readiness(&readiness);
+        stamp_object_version_page_proof("ListObjectVersions", &mut page, None)?;
+        Ok((page, readiness))
     }
 
     pub fn list_object_versions_page_linearizable_list_page_proof_fenced(
@@ -73,20 +79,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_object_list_page_proof_checksum: impl AsRef<str>,
     ) -> Result<(ObjectVersionPage, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .list_object_versions_page_with_metadata_read_list_page_proof_fenced(
-                bucket,
-                key,
-                marker,
-                limit,
-                max_payload_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-                Some(expected_object_list_page_proof_checksum.as_ref()),
-            )
+        let (mut page, readiness) = self.list_object_versions_page_linearizable(
+            bucket,
+            key,
+            marker,
+            limit,
+            max_payload_bytes,
+            now_ms,
+        )?;
+        stamp_object_version_page_proof(
+            "ListObjectVersions",
+            &mut page,
+            Some(expected_object_list_page_proof_checksum.as_ref()),
+        )?;
+        Ok((page, readiness))
     }
 
     pub fn list_object_versions_page_from_meta_shard(
@@ -159,21 +165,27 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(BucketObjectVersionPage, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .list_bucket_object_versions_page_with_metadata_read(
-                bucket,
-                prefix,
-                delimiter,
-                key_marker,
-                version_marker,
-                limit,
-                max_payload_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-            )
+        let (mut page, readiness) = self.read_metadata_at_raft_position(
+            "list bucket object versions page linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .list_bucket_object_versions_page_with_metadata_read(
+                        bucket,
+                        prefix,
+                        delimiter,
+                        key_marker,
+                        version_marker,
+                        limit,
+                        max_payload_bytes,
+                        options,
+                    )
+            },
+        )?;
+        page.read_proof = object_read_proof_from_readiness(&readiness);
+        stamp_bucket_object_version_page_proof("ListBucketObjectVersions", &mut page, None)?;
+        Ok((page, readiness))
     }
 
     pub fn list_bucket_object_versions_page_linearizable_list_page_proof_fenced(
@@ -188,22 +200,22 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_object_list_page_proof_checksum: impl AsRef<str>,
     ) -> Result<(BucketObjectVersionPage, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .list_bucket_object_versions_page_with_metadata_read_list_page_proof_fenced(
-                bucket,
-                prefix,
-                delimiter,
-                key_marker,
-                version_marker,
-                limit,
-                max_payload_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-                Some(expected_object_list_page_proof_checksum.as_ref()),
-            )
+        let (mut page, readiness) = self.list_bucket_object_versions_page_linearizable(
+            bucket,
+            prefix,
+            delimiter,
+            key_marker,
+            version_marker,
+            limit,
+            max_payload_bytes,
+            now_ms,
+        )?;
+        stamp_bucket_object_version_page_proof(
+            "ListBucketObjectVersions",
+            &mut page,
+            Some(expected_object_list_page_proof_checksum.as_ref()),
+        )?;
+        Ok((page, readiness))
     }
 
     pub fn list_bucket_object_versions_page_from_meta_shard(

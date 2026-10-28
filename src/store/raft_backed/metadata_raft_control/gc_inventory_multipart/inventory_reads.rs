@@ -10,18 +10,24 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(ObjectInventoryPage, MetadataRaftReadiness), ObjectError> {
-        self.store.list_object_inventory_with_metadata_read(
-            bucket,
-            prefix,
-            marker,
-            limit,
-            max_payload_bytes,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        let (mut page, readiness) = self.read_metadata_at_raft_position(
+            "list object inventory linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store.list_object_inventory_with_metadata_read(
+                    bucket,
+                    prefix,
+                    marker,
+                    limit,
+                    max_payload_bytes,
+                    options,
+                )
             },
-        )
+        )?;
+        page.read_proof = object_read_proof_from_readiness(&readiness);
+        stamp_object_inventory_page_proof("ListObjectInventory", &mut page, None)?;
+        Ok((page, readiness))
     }
 
     pub fn list_object_inventory_linearizable_list_page_proof_fenced(
@@ -34,20 +40,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_object_list_page_proof_checksum: impl AsRef<str>,
     ) -> Result<(ObjectInventoryPage, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .list_object_inventory_with_metadata_read_list_page_proof_fenced(
-                bucket,
-                prefix,
-                marker,
-                limit,
-                max_payload_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-                Some(expected_object_list_page_proof_checksum.as_ref()),
-            )
+        let (mut page, readiness) = self.list_object_inventory_linearizable(
+            bucket,
+            prefix,
+            marker,
+            limit,
+            max_payload_bytes,
+            now_ms,
+        )?;
+        stamp_object_inventory_page_proof(
+            "ListObjectInventory",
+            &mut page,
+            Some(expected_object_list_page_proof_checksum.as_ref()),
+        )?;
+        Ok((page, readiness))
     }
 
     pub fn list_object_inventory_from_meta_shard(
