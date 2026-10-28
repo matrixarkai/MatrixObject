@@ -97,6 +97,9 @@ impl MatrixObjectStore {
             let extent_repair_bytes = extent_locations.iter().fold(0u64, |total, location| {
                 total.saturating_add(location.length)
             });
+            aggregate.candidate_repair_bytes = aggregate
+                .candidate_repair_bytes
+                .saturating_add(extent_repair_bytes);
             let extent_start_chunk_index = extent_locations
                 .first()
                 .map(|location| location.page_id.page_index)
@@ -129,7 +132,10 @@ impl MatrixObjectStore {
             )?;
             let selected_chunk_count = report.selected_chunk_count;
             let mut object_report = report;
+            // Totals include every mapped extent, even those before the cursor
+            // or after the repair budget is exhausted.
             object_report.total_chunk_count = 0;
+            object_report.candidate_repair_bytes = 0;
             object_report.start_chunk_index = object_chunk_cursor.saturating_add(
                 object_report
                     .start_chunk_index
@@ -143,9 +149,6 @@ impl MatrixObjectStore {
             merge_bounded_repair_report(&mut aggregate, object_report);
             object_chunk_cursor = object_chunk_cursor.saturating_add(extent_chunk_count);
             remaining_chunks = remaining_chunks.saturating_sub(selected_chunk_count as usize);
-            if aggregate.has_more {
-                break;
-            }
         }
         if start_chunk_index > aggregate.total_chunk_count {
             return Err(ObjectError::InvalidArgument(
@@ -154,5 +157,4 @@ impl MatrixObjectStore {
         }
         Ok(aggregate)
     }
-
 }
