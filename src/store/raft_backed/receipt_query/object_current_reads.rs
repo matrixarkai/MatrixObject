@@ -7,15 +7,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         key: &str,
         now_ms: u64,
     ) -> Result<(ObjectData, MetadataRaftReadiness), ObjectError> {
-        self.store.get_object_with_metadata_read(
-            bucket,
-            key,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+        self.read_metadata_at_raft_position("get object linearizable", now_ms, 0, |options| {
+            self.store
+                .get_object_with_metadata_read(bucket, key, options)
+        })
     }
 
     pub fn get_object_linearizable_committed_at(
@@ -25,10 +20,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         min_commit_index: u64,
     ) -> Result<(ObjectData, MetadataRaftReadiness), ObjectError> {
-        let options =
-            self.metadata_read_options_committed_at("object read", now_ms, min_commit_index)?;
-        self.store
-            .get_object_with_metadata_read(bucket, key, options)
+        self.read_metadata_at_raft_position(
+            "get object linearizable committed at",
+            now_ms,
+            min_commit_index,
+            |options| {
+                self.store
+                    .get_object_with_metadata_read(bucket, key, options)
+            },
+        )
     }
 
     pub fn get_object_with_read_admission_linearizable(
@@ -38,14 +38,17 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(AdmittedObjectData, MetadataRaftReadiness), ObjectError> {
-        self.store.get_object_with_read_admission_and_metadata_read(
-            bucket,
-            key,
-            max_payload_bytes,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        self.read_metadata_at_raft_position(
+            "get object with read admission linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store.get_object_with_read_admission_and_metadata_read(
+                    bucket,
+                    key,
+                    max_payload_bytes,
+                    options,
+                )
             },
         )
     }
@@ -58,16 +61,18 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         min_commit_index: u64,
     ) -> Result<(AdmittedObjectData, MetadataRaftReadiness), ObjectError> {
-        let options = self.metadata_read_options_committed_at(
-            "admitted object read",
+        self.read_metadata_at_raft_position(
+            "get object with read admission linearizable committed at",
             now_ms,
             min_commit_index,
-        )?;
-        self.store.get_object_with_read_admission_and_metadata_read(
-            bucket,
-            key,
-            max_payload_bytes,
-            options,
+            |options| {
+                self.store.get_object_with_read_admission_and_metadata_read(
+                    bucket,
+                    key,
+                    max_payload_bytes,
+                    options,
+                )
+            },
         )
     }
 
@@ -78,14 +83,17 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         preconditions: &ObjectReadPreconditions,
         now_ms: u64,
     ) -> Result<(ConditionalObjectData, MetadataRaftReadiness), ObjectError> {
-        self.store.get_object_conditional_with_metadata_read(
-            bucket,
-            key,
-            preconditions,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        self.read_metadata_at_raft_position(
+            "get object conditional linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store.get_object_conditional_with_metadata_read(
+                    bucket,
+                    key,
+                    preconditions,
+                    options,
+                )
             },
         )
     }
@@ -98,13 +106,19 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         min_commit_index: u64,
     ) -> Result<(ConditionalObjectData, MetadataRaftReadiness), ObjectError> {
-        let options = self.metadata_read_options_committed_at(
-            "conditional object read",
+        self.read_metadata_at_raft_position(
+            "get object conditional linearizable committed at",
             now_ms,
             min_commit_index,
-        )?;
-        self.store
-            .get_object_conditional_with_metadata_read(bucket, key, preconditions, options)
+            |options| {
+                self.store.get_object_conditional_with_metadata_read(
+                    bucket,
+                    key,
+                    preconditions,
+                    options,
+                )
+            },
+        )
     }
 
     pub fn get_object_conditional_with_read_admission_linearizable(
@@ -115,18 +129,21 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         preconditions: &ObjectReadPreconditions,
         now_ms: u64,
     ) -> Result<(AdmittedConditionalObjectData, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .get_object_conditional_with_read_admission_and_metadata_read(
-                bucket,
-                key,
-                max_payload_bytes,
-                preconditions,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-            )
+        self.read_metadata_at_raft_position(
+            "get object conditional with read admission linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .get_object_conditional_with_read_admission_and_metadata_read(
+                        bucket,
+                        key,
+                        max_payload_bytes,
+                        preconditions,
+                        options,
+                    )
+            },
+        )
     }
 
     pub fn get_object_conditional_with_read_admission_linearizable_committed_at(
@@ -138,18 +155,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         min_commit_index: u64,
     ) -> Result<(AdmittedConditionalObjectData, MetadataRaftReadiness), ObjectError> {
-        let options = self.metadata_read_options_committed_at(
-            "conditional admitted object read",
+        self.read_metadata_at_raft_position(
+            "get object conditional with read admission linearizable committed at",
             now_ms,
             min_commit_index,
-        )?;
-        self.store
-            .get_object_conditional_with_read_admission_and_metadata_read(
-                bucket,
-                key,
-                max_payload_bytes,
-                preconditions,
-                options,
-            )
+            |options| {
+                self.store
+                    .get_object_conditional_with_read_admission_and_metadata_read(
+                        bucket,
+                        key,
+                        max_payload_bytes,
+                        preconditions,
+                        options,
+                    )
+            },
+        )
     }
 }

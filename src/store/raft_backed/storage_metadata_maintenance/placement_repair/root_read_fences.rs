@@ -1,7 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl<R: RustRaftLog> RaftBackedObjectStore<R> {
-    fn ensure_placement_read_index(&self, operation: &str) -> Result<PlacementReadProof, ObjectError> {
+    // Establish the outer log fence before translating to the metadata clock.
+    // The inner read still enforces its local metadata and shard checks. Its
+    // metadata-only proof must not replace the outer log proof returned here.
+    fn read_metadata_at_raft_position<T>(
+        &self,
+        operation: &str,
+        now_ms: u64,
+        min_commit_index: u64,
+        read: impl FnOnce(MetadataReadOptions) -> Result<(T, MetadataRaftReadiness), ObjectError>,
+    ) -> Result<(T, MetadataRaftReadiness), ObjectError> {
+        let readiness = self.ensure_metadata_read_index_committed_at(
+            operation,
+            now_ms,
+            self.raft.commit_index(),
+            min_commit_index,
+        )?;
+        let (value, _) = read(MetadataReadOptions {
+            min_read_index: readiness.applied_commit_index,
+            now_ms,
+            ..MetadataReadOptions::default()
+        })?;
+        Ok((value, readiness))
+    }
+
+    fn ensure_placement_read_index(
+        &self,
+        operation: &str,
+    ) -> Result<PlacementReadProof, ObjectError> {
         self.ensure_placement_read_index_committed_at(operation, self.raft.commit_index(), 0)
     }
 

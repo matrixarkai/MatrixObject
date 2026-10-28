@@ -14,9 +14,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_read_index: u64,
         now_ms: u64,
     ) -> MetadataRaftReadiness {
+        // The control checksum describes embedded metadata state. Keep that
+        // identity stable while applying the outer Raft fence to read readiness.
         self.store
             .metadata_raft_readiness(min_read_index, now_ms)
-            .with_raft_position(self.raft.term(), self.raft.commit_index())
+            .with_raft_position(
+                self.raft.term(),
+                self.raft.commit_index(),
+                self.store.last_applied_index(),
+            )
     }
 
     pub fn plan_metadata_integrity_linearizable(
@@ -55,12 +61,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         bucket: &str,
         now_ms: u64,
     ) -> Result<(bool, MetadataRaftReadiness), ObjectError> {
-        self.store.bucket_versioning_enabled_with_metadata_read(
-            bucket,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        self.read_metadata_at_raft_position(
+            "bucket versioning enabled linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .bucket_versioning_enabled_with_metadata_read(bucket, options)
             },
         )
     }
@@ -79,14 +86,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         bucket: &str,
         now_ms: u64,
     ) -> Result<(u64, MetadataRaftReadiness), ObjectError> {
-        self.store.bucket_retention_with_metadata_read(
-            bucket,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+        self.read_metadata_at_raft_position("bucket retention linearizable", now_ms, 0, |options| {
+            self.store
+                .bucket_retention_with_metadata_read(bucket, options)
+        })
     }
 
     pub fn bucket_retention_with_read_proof_linearizable(
@@ -157,14 +160,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         bucket: &str,
         now_ms: u64,
     ) -> Result<(BucketQuota, MetadataRaftReadiness), ObjectError> {
-        self.store.bucket_quota_with_metadata_read(
-            bucket,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+        self.read_metadata_at_raft_position("bucket quota linearizable", now_ms, 0, |options| {
+            self.store.bucket_quota_with_metadata_read(bucket, options)
+        })
     }
 
     pub fn bucket_quota_with_read_proof_linearizable(
@@ -181,14 +179,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         bucket: &str,
         now_ms: u64,
     ) -> Result<(BucketLifecyclePolicy, MetadataRaftReadiness), ObjectError> {
-        self.store.bucket_lifecycle_with_metadata_read(
-            bucket,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+        self.read_metadata_at_raft_position("bucket lifecycle linearizable", now_ms, 0, |options| {
+            self.store
+                .bucket_lifecycle_with_metadata_read(bucket, options)
+        })
     }
 
     pub fn bucket_lifecycle_with_read_proof_linearizable(
@@ -240,14 +234,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         bucket: &str,
         now_ms: u64,
     ) -> Result<(BucketCorsPolicy, MetadataRaftReadiness), ObjectError> {
-        self.store.bucket_cors_with_metadata_read(
-            bucket,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+        self.read_metadata_at_raft_position("bucket cors linearizable", now_ms, 0, |options| {
+            self.store.bucket_cors_with_metadata_read(bucket, options)
+        })
     }
 
     pub fn bucket_cors_with_read_proof_linearizable(
@@ -264,14 +253,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         bucket: &str,
         now_ms: u64,
     ) -> Result<(BucketPolicyDocument, MetadataRaftReadiness), ObjectError> {
-        self.store.bucket_policy_with_metadata_read(
-            bucket,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+        self.read_metadata_at_raft_position("bucket policy linearizable", now_ms, 0, |options| {
+            self.store.bucket_policy_with_metadata_read(bucket, options)
+        })
     }
 
     pub fn bucket_policy_with_read_proof_linearizable(
@@ -288,14 +272,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         bucket: &str,
         now_ms: u64,
     ) -> Result<(BucketTagSet, MetadataRaftReadiness), ObjectError> {
-        self.store.bucket_tagging_with_metadata_read(
-            bucket,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+        self.read_metadata_at_raft_position("bucket tagging linearizable", now_ms, 0, |options| {
+            self.store
+                .bucket_tagging_with_metadata_read(bucket, options)
+        })
     }
 
     pub fn bucket_tagging_with_read_proof_linearizable(
@@ -313,16 +293,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         request: BucketCorsPreflightRequest,
         now_ms: u64,
     ) -> Result<(BucketCorsPreflightDecision, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .evaluate_bucket_cors_preflight_with_metadata_read(
-                bucket,
-                request,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-            )
+        self.read_metadata_at_raft_position(
+            "evaluate bucket cors preflight linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .evaluate_bucket_cors_preflight_with_metadata_read(bucket, request, options)
+            },
+        )
     }
 
     pub fn evaluate_bucket_cors_preflight_with_read_proof_linearizable(
@@ -342,16 +321,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         origin: &str,
         now_ms: u64,
     ) -> Result<(Option<String>, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .bucket_cors_response_allowed_origin_with_metadata_read(
-                bucket,
-                origin,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-            )
+        self.read_metadata_at_raft_position(
+            "bucket cors response allowed origin linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .bucket_cors_response_allowed_origin_with_metadata_read(bucket, origin, options)
+            },
+        )
     }
 
     pub fn bucket_cors_response_allowed_origin_with_read_proof_linearizable(
@@ -364,5 +342,4 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             self.bucket_cors_response_allowed_origin_linearizable(bucket, origin, now_ms)?;
         Ok(proven_metadata_read(allowed_origin, &readiness))
     }
-
 }

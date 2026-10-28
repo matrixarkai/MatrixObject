@@ -9,17 +9,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         limit: usize,
         now_ms: u64,
     ) -> Result<(Vec<ObjectMetadata>, MetadataRaftReadiness), ObjectError> {
-        self.store.list_objects_with_metadata_read(
-            bucket,
-            prefix,
-            marker,
-            limit,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+        self.read_metadata_at_raft_position("list objects linearizable", now_ms, 0, |options| {
+            self.store
+                .list_objects_with_metadata_read(bucket, prefix, marker, limit, options)
+        })
     }
 
     pub fn list_objects_linearizable_committed_at(
@@ -31,10 +24,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         min_commit_index: u64,
     ) -> Result<(Vec<ObjectMetadata>, MetadataRaftReadiness), ObjectError> {
-        let options =
-            self.metadata_read_options_committed_at("list objects", now_ms, min_commit_index)?;
-        self.store
-            .list_objects_with_metadata_read(bucket, prefix, marker, limit, options)
+        self.read_metadata_at_raft_position(
+            "list objects linearizable committed at",
+            now_ms,
+            min_commit_index,
+            |options| {
+                self.store
+                    .list_objects_with_metadata_read(bucket, prefix, marker, limit, options)
+            },
+        )
     }
 
     pub fn list_objects_from_meta_shard(
@@ -62,5 +60,4 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             },
         )
     }
-
 }

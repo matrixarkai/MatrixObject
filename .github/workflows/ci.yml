@@ -1317,6 +1317,25 @@ jobs:
           grep -q '^running 1 test$' /tmp/lifecycle.log
           grep -q '^test result: ok. 1 passed' /tmp/lifecycle.log
 
+      - name: metadata raft reads follow applied entries when metadata does not change
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::metadata_raft_reads_follow_applied_entries_when_metadata_does_not_change -- --exact | tee /tmp/read-position.log
+          grep -q '^running 1 test$' /tmp/read-position.log
+          grep -q '^test result: ok. 1 passed' /tmp/read-position.log
+      - name: metadata mutation count cannot prove an unapplied raft entry
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::metadata_mutation_count_cannot_prove_an_unapplied_raft_entry -- --exact | tee /tmp/read-position.log
+          grep -q '^running 1 test$' /tmp/read-position.log
+          grep -q '^test result: ok. 1 passed' /tmp/read-position.log
+      - name: metadata read proofs do not promote mutation counts to raft positions
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::metadata_read_proofs_do_not_promote_mutation_counts_to_raft_positions -- --exact | tee /tmp/read-position.log
+          grep -q '^running 1 test$' /tmp/read-position.log
+          grep -q '^test result: ok. 1 passed' /tmp/read-position.log
+
   metadata-consensus:
     name: network metadata consensus
     runs-on: ubuntu-latest

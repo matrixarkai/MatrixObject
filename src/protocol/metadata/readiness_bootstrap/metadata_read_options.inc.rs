@@ -34,6 +34,10 @@ impl MetadataRaftReadiness {
             .applied_commit_index
             .saturating_sub(self.last_applied_metadata_mutation_commit_index);
         self.metadata_apply_caught_up = self.metadata_apply_commit_lag == 0;
+        self.finalize_status();
+    }
+
+    fn finalize_status(&mut self) {
         if !self.external_coordinator_required {
             self.external_coordinator_endpoints_ready = true;
         }
@@ -74,10 +78,31 @@ impl MetadataRaftReadiness {
         };
     }
 
-    pub(crate) fn with_raft_position(mut self, raft_term: u64, raft_log_commit_index: u64) -> Self {
+    // The outer Raft log and embedded metadata mutations have different clocks:
+    // one applied entry may make zero, one, or several metadata changes.
+    pub(crate) fn with_raft_position(
+        mut self,
+        raft_term: u64,
+        raft_log_commit_index: u64,
+        raft_applied_index: u64,
+    ) -> Self {
         self.raft_term = raft_term;
-        self.raft_log_commit_index = raft_log_commit_index.max(self.applied_commit_index);
+        self.raft_log_commit_index = raft_log_commit_index;
         self.finalize();
+        let required = self.min_read_index.max(raft_log_commit_index);
+        self.safe_read_fence = raft_log_commit_index.min(raft_applied_index);
+        self.read_fence_commit_lag = required.saturating_sub(raft_log_commit_index);
+        self.read_fence_read_index_lag = required.saturating_sub(raft_applied_index);
+        self.read_fence_applied_lag = self.read_fence_read_index_lag;
+        self.read_lag = self.read_fence_commit_lag.max(self.read_fence_applied_lag);
+        self.raft_applied_lag = raft_log_commit_index.saturating_sub(raft_applied_index);
+        self.finalize_status();
+        if raft_applied_index > raft_log_commit_index {
+            self.readable = false;
+            self.read_fence_covered = false;
+            self.ready = false;
+            self.reason = "raft_applied_index_exceeds_commit".into();
+        }
         self
     }
 }
