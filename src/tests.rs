@@ -50658,6 +50658,8 @@ fn metadata_raft_reads_follow_applied_entries_when_metadata_does_not_change() {
     assert_listing_reads_observe_applied_raft_position(&replicated, true);
     assert_inventory_reads_observe_applied_raft_position(&replicated, "object", true);
     assert_version_inventory_continuations_keep_consensus_proofs();
+    assert_changefeed_reads_observe_applied_raft_position(&replicated, true);
+    assert_multipart_reads_observe_applied_raft_position();
 }
 
 #[test]
@@ -50693,6 +50695,7 @@ fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
     assert_object_reads_observe_applied_raft_position(&replicated, "object-0", false);
     assert_listing_reads_observe_applied_raft_position(&replicated, false);
     assert_inventory_reads_observe_applied_raft_position(&replicated, "object-0", false);
+    assert_changefeed_reads_observe_applied_raft_position(&replicated, false);
 }
 
 #[test]
@@ -50736,6 +50739,7 @@ fn metadata_read_proofs_do_not_promote_mutation_counts_to_raft_positions() {
     assert_object_reads_observe_applied_raft_position(&replicated, "object-0", true);
     assert_listing_reads_observe_applied_raft_position(&replicated, true);
     assert_inventory_reads_observe_applied_raft_position(&replicated, "object-0", true);
+    assert_changefeed_reads_observe_applied_raft_position(&replicated, true);
 }
 
 fn assert_object_reads_observe_applied_raft_position(
@@ -51311,4 +51315,250 @@ fn assert_version_inventory_continuations_keep_consensus_proofs() {
         version_marker = page.next_version_marker;
     }
     assert_eq!(count, expected_versions.len() * 2);
+}
+
+fn assert_changefeed_reads_observe_applied_raft_position(
+    replicated: &RaftBackedObjectStore<InMemoryRustRaft>,
+    readable: bool,
+) {
+    let committed = replicated.raft_commit_index();
+    let results = [
+        replicated
+            .list_object_changes_after_linearizable(0, 10, 10)
+            .map(|(_, r)| r),
+        replicated
+            .list_object_changes_after_linearizable_committed_at(0, 10, 10, committed)
+            .map(|(_, r)| r),
+        replicated
+            .object_change_cursor_linearizable("reader", 10)
+            .map(|(_, r)| r),
+        replicated
+            .object_change_cursor_linearizable_committed_at("reader", 10, committed)
+            .map(|(_, r)| r),
+    ];
+    for result in results {
+        if readable {
+            assert_eq!(result.unwrap().safe_read_fence, committed);
+        } else {
+            assert!(
+                matches!(result, Err(ObjectError::PreconditionFailed(message)) if message.contains("metadata control read index is not satisfied"))
+            );
+        }
+    }
+    for result in [
+        replicated.list_object_changes_page_after_linearizable(0, 1, 65536, 10),
+        replicated
+            .list_object_changes_page_after_linearizable_committed_at(0, 1, 65536, 10, committed),
+    ] {
+        if !readable {
+            assert!(
+                matches!(result, Err(ObjectError::PreconditionFailed(message)) if message.contains("metadata control read index is not satisfied"))
+            );
+            continue;
+        }
+        let (page, readiness) = result.unwrap();
+        assert_eq!(
+            page.read_proof,
+            object_read_proof_from_readiness(&readiness)
+        );
+        assert_eq!(page.read_proof.consensus_read_index, committed);
+        assert_eq!(
+            page.object_change_page_proof_checksum,
+            object_change_page_proof_checksum(0, 1, "ListObjectChanges", &page)
+        );
+        let expected = &page.object_change_page_proof_checksum;
+        for result in [
+            replicated.list_object_changes_page_after_linearizable_change_page_proof_fenced(
+                0, 1, 65536, 10, expected,
+            ),
+            replicated
+                .list_object_changes_page_after_linearizable_change_page_proof_fenced_committed_at(
+                    0, 1, 65536, 10, committed, expected,
+                ),
+        ] {
+            let (fenced, _) = result.unwrap();
+            assert_eq!(&fenced.expected_object_change_page_proof_checksum, expected);
+            assert_eq!(fenced.read_proof, page.read_proof);
+        }
+        assert!(replicated
+            .list_object_changes_page_after_linearizable_change_page_proof_fenced(
+                0, 1, 65536, 10, "invalid"
+            )
+            .is_err());
+        if page.truncated {
+            let (next, _) = replicated
+                .list_object_changes_page_after_linearizable(page.next_sequence, 1, 65536, 10)
+                .unwrap();
+            assert!(next.next_sequence > page.next_sequence);
+            assert_eq!(next.read_proof.consensus_read_index, committed);
+            assert_eq!(
+                next.object_change_page_proof_checksum,
+                object_change_page_proof_checksum(
+                    page.next_sequence,
+                    1,
+                    "ListObjectChanges",
+                    &next
+                )
+            );
+        }
+    }
+    assert!(replicated
+        .list_object_changes_after_linearizable_committed_at(0, 10, 10, committed + 1)
+        .is_err());
+    assert!(replicated
+        .object_change_cursor_linearizable_committed_at("reader", 10, committed + 1)
+        .is_err());
+    assert!(replicated
+        .list_object_changes_page_after_linearizable_committed_at(0, 1, 65536, 10, committed + 1)
+        .is_err());
+}
+
+fn assert_multipart_reads_observe_applied_raft_position() {
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    let first = store
+        .create_multipart_upload("bucket", "a", "text/plain", PutOptions::default())
+        .unwrap();
+    store
+        .create_multipart_upload("bucket", "b", "text/plain", PutOptions::default())
+        .unwrap();
+    for part in 1..=2 {
+        store.upload_part(&first.upload_id, part, vec![1]).unwrap();
+    }
+    for n in 0..3 {
+        store
+            .put_object("bucket", &format!("object-{n}"), vec![1], "text/plain")
+            .unwrap();
+    }
+    let mut replicated = RaftBackedObjectStore::new(InMemoryRustRaft::new(1).unwrap(), store);
+    replicated
+        .propose_set_bucket_versioning("bucket", true)
+        .unwrap();
+    for state in 0..3 {
+        if state == 1 {
+            for _ in 0..10 {
+                replicated
+                    .propose_apply_bucket_lifecycle_transitions_report_with_read_proof_linearizable(
+                        10, 10,
+                    )
+                    .unwrap();
+            }
+        } else if state == 2 {
+            replicated
+                .raft
+                .append(ObjectCommand::SetBucketVersioning {
+                    bucket: "bucket".into(),
+                    enabled: false,
+                })
+                .unwrap();
+        }
+        let committed = replicated.raft_commit_index();
+        if state == 0 {
+            assert!(replicated.store().last_metadata_commit_index() > committed);
+        } else if state == 1 {
+            assert!(replicated.store().last_metadata_commit_index() < committed);
+        }
+
+        let pages = [
+            replicated
+                .list_multipart_parts_page_linearizable(&first.upload_id, 0, 1, 65536, 10)
+                .map(|(p, r)| (p.read_proof, r)),
+            replicated
+                .list_multipart_uploads_hierarchy_page_by_key_linearizable(
+                    Some("bucket"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    1,
+                    65536,
+                    10,
+                )
+                .map(|(p, r)| (p.read_proof, r)),
+        ];
+        let lists = [
+            replicated
+                .list_multipart_parts_linearizable(&first.upload_id, 0, 10, 10)
+                .map(|(p, r)| {
+                    assert_eq!(p.len(), 2);
+                    r
+                }),
+            replicated
+                .list_multipart_uploads_by_key_linearizable(
+                    Some("bucket"),
+                    None,
+                    None,
+                    None,
+                    10,
+                    10,
+                )
+                .map(|(p, r)| {
+                    assert_eq!(p.len(), 2);
+                    r
+                }),
+        ];
+        for result in pages {
+            if state == 2 {
+                assert!(
+                    matches!(result, Err(ObjectError::PreconditionFailed(message)) if message.contains("metadata control read index is not satisfied"))
+                );
+            } else {
+                let (proof, r) = result.unwrap();
+                assert_eq!(proof, object_read_proof_from_readiness(&r));
+                assert_eq!(proof.consensus_read_index, committed);
+            }
+        }
+        for result in lists {
+            if state == 2 {
+                assert!(
+                    matches!(result, Err(ObjectError::PreconditionFailed(message)) if message.contains("metadata control read index is not satisfied"))
+                );
+            } else {
+                assert_eq!(result.unwrap().safe_read_fence, committed);
+            }
+        }
+        if state != 2 {
+            let (page, _) = replicated
+                .list_multipart_parts_page_linearizable(&first.upload_id, 0, 1, 65536, 10)
+                .unwrap();
+            assert!(page.has_more);
+            let (next, _) = replicated
+                .list_multipart_parts_page_linearizable(
+                    &first.upload_id,
+                    page.next_part_marker.unwrap(),
+                    1,
+                    65536,
+                    10,
+                )
+                .unwrap();
+            assert_eq!(next.parts.len(), 1);
+            assert_ne!(page.parts, next.parts);
+            assert_eq!(next.read_proof.consensus_read_index, committed);
+            let (page, _) = replicated
+                .list_multipart_uploads_page_by_key_linearizable(
+                    Some("bucket"),
+                    None,
+                    None,
+                    None,
+                    1,
+                    65536,
+                    10,
+                )
+                .unwrap();
+            assert!(page.has_more);
+            let (next, _) = replicated
+                .list_multipart_uploads_page_by_key_linearizable(
+                    Some("bucket"),
+                    None,
+                    page.next_key_marker.as_deref(),
+                    page.next_marker.as_deref(),
+                    1,
+                    65536,
+                    10,
+                )
+                .unwrap();
+            assert_eq!(next.uploads.len(), 1);
+            assert_ne!(page.uploads, next.uploads);
+            assert_eq!(next.read_proof.consensus_read_index, committed);
+        }
+    }
 }
