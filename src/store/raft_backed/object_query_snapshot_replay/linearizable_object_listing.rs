@@ -53,18 +53,15 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(ObjectListPage, MetadataRaftReadiness), ObjectError> {
-        self.store.list_objects_hierarchy_page_with_metadata_read(
+        self.list_objects_hierarchy_page_linearizable_committed_at(
             bucket,
             prefix,
             delimiter,
             marker,
             limit,
             max_payload_bytes,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
+            now_ms,
+            0,
         )
     }
 
@@ -79,21 +76,17 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_object_list_page_proof_checksum: impl AsRef<str>,
     ) -> Result<(ObjectListPage, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .list_objects_hierarchy_page_with_metadata_read_list_page_proof_fenced(
-                bucket,
-                prefix,
-                delimiter,
-                marker,
-                limit,
-                max_payload_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-                Some(expected_object_list_page_proof_checksum.as_ref()),
-            )
+        self.list_objects_hierarchy_page_linearizable_list_page_proof_fenced_committed_at(
+            bucket,
+            prefix,
+            delimiter,
+            marker,
+            limit,
+            max_payload_bytes,
+            now_ms,
+            0,
+            expected_object_list_page_proof_checksum,
+        )
     }
 
     pub fn list_objects_page_linearizable_committed_at(
@@ -153,17 +146,25 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         min_commit_index: u64,
     ) -> Result<(ObjectListPage, MetadataRaftReadiness), ObjectError> {
-        let options =
-            self.metadata_read_options_committed_at("list object page", now_ms, min_commit_index)?;
-        self.store.list_objects_hierarchy_page_with_metadata_read(
-            bucket,
-            prefix,
-            delimiter,
-            marker,
-            limit,
-            max_payload_bytes,
-            options,
-        )
+        let (mut page, readiness) = self.read_metadata_at_raft_position(
+            "list object page",
+            now_ms,
+            min_commit_index,
+            |options| {
+                self.store.list_objects_hierarchy_page_with_metadata_read(
+                    bucket,
+                    prefix,
+                    delimiter,
+                    marker,
+                    limit,
+                    max_payload_bytes,
+                    options,
+                )
+            },
+        )?;
+        page.read_proof = object_read_proof_from_readiness(&readiness);
+        stamp_object_list_page_proof("ListObjects", &mut page, None)?;
+        Ok((page, readiness))
     }
 
     pub fn list_objects_hierarchy_page_linearizable_list_page_proof_fenced_committed_at(
@@ -178,19 +179,21 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         min_commit_index: u64,
         expected_object_list_page_proof_checksum: impl AsRef<str>,
     ) -> Result<(ObjectListPage, MetadataRaftReadiness), ObjectError> {
-        let options =
-            self.metadata_read_options_committed_at("list object page", now_ms, min_commit_index)?;
-        self.store
-            .list_objects_hierarchy_page_with_metadata_read_list_page_proof_fenced(
-                bucket,
-                prefix,
-                delimiter,
-                marker,
-                limit,
-                max_payload_bytes,
-                options,
-                Some(expected_object_list_page_proof_checksum.as_ref()),
-            )
+        let (mut page, readiness) = self.list_objects_hierarchy_page_linearizable_committed_at(
+            bucket,
+            prefix,
+            delimiter,
+            marker,
+            limit,
+            max_payload_bytes,
+            now_ms,
+            min_commit_index,
+        )?;
+        stamp_object_list_page_proof(
+            "ListObjects",
+            &mut page,
+            Some(expected_object_list_page_proof_checksum.as_ref()),
+        )?;
+        Ok((page, readiness))
     }
-
 }

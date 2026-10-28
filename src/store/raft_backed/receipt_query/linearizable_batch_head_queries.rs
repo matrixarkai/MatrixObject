@@ -8,16 +8,25 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(ObjectMetadataBatchRead, MetadataRaftReadiness), ObjectError> {
-        self.store.head_objects_batch_with_metadata_read(
-            objects,
-            max_items,
-            max_payload_bytes,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        let (mut batch, readiness) = self.read_metadata_at_raft_position(
+            "head objects batch linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store.head_objects_batch_with_metadata_read(
+                    objects,
+                    max_items,
+                    max_payload_bytes,
+                    options,
+                )
             },
-        )
+        )?;
+        stamp_object_metadata_batch_read_proof(
+            "HeadObjectsBatch",
+            &mut batch,
+            &object_read_proof_from_readiness(&readiness),
+        );
+        Ok((batch, readiness))
     }
 
     pub fn head_objects_batch_with_read_proof_linearizable(
@@ -66,17 +75,26 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(ConditionalObjectMetadataBatchRead, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .head_objects_conditional_batch_with_metadata_read(
-                requests,
-                max_items,
-                max_payload_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-            )
+        let (mut batch, readiness) = self.read_metadata_at_raft_position(
+            "head objects conditional batch linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .head_objects_conditional_batch_with_metadata_read(
+                        requests,
+                        max_items,
+                        max_payload_bytes,
+                        options,
+                    )
+            },
+        )?;
+        stamp_conditional_object_metadata_batch_read_proof(
+            "HeadObjectsConditionalBatch",
+            &mut batch,
+            &object_read_proof_from_readiness(&readiness),
+        );
+        Ok((batch, readiness))
     }
 
     pub fn head_objects_conditional_batch_with_read_proof_linearizable(
@@ -121,5 +139,4 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         proven.batch.expected_metadata_batch_read_proof_checksum = expected.to_string();
         Ok(proven)
     }
-
 }
