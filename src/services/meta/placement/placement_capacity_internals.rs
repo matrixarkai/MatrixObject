@@ -6,9 +6,9 @@ impl MatrixMetaService {
         placement: &ObjectPlacement,
         source_node_id: &str,
         min_free_bytes: u64,
+        budget_nodes: &BTreeMap<String, PlacementNode>,
     ) -> Result<PlacementMigrationPlan, ObjectError> {
-        let mut candidates: Vec<&PlacementNode> = self
-            .nodes
+        let mut candidates: Vec<&PlacementNode> = budget_nodes
             .values()
             .filter(|node| {
                 Self::node_accepts_new_placement(node)

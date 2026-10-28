@@ -6,6 +6,15 @@ impl MatrixMetaService {
         max_objects: usize,
         min_free_bytes: u64,
     ) -> PlacementCapacityRebalanceReport {
+        self.plan_capacity_rebalance_after(max_objects, min_free_bytes, None)
+    }
+
+    pub(crate) fn plan_capacity_rebalance_after(
+        &self,
+        max_objects: usize,
+        min_free_bytes: u64,
+        marker: Option<&ObjectId>,
+    ) -> PlacementCapacityRebalanceReport {
         let limit = if max_objects == 0 {
             usize::MAX
         } else {
@@ -29,7 +38,13 @@ impl MatrixMetaService {
             Self::finalize_placement_capacity_rebalance_report(&mut report);
             return report;
         }
+        // Reserve incoming bytes across the batch. Do not spend space released
+        // by another move until that move has actually been committed.
+        let mut budget_nodes = self.nodes.clone();
         for placement in self.placements.values() {
+            if marker.is_some_and(|marker| &placement.object_id <= marker) {
+                continue;
+            }
             report.scanned_objects = report.scanned_objects.saturating_add(1);
             let Some(source_node_id) = placement
                 .node_ids
@@ -44,8 +59,17 @@ impl MatrixMetaService {
                 report.has_more = true;
                 continue;
             }
-            match self.plan_capacity_rebalance_target(placement, &source_node_id, min_free_bytes) {
+            match self.plan_capacity_rebalance_target(
+                placement,
+                &source_node_id,
+                min_free_bytes,
+                &budget_nodes,
+            ) {
                 Ok(plan) => {
+                    let target = budget_nodes
+                        .get_mut(&plan.target_node_id)
+                        .expect("planned capacity target exists");
+                    target.committed_bytes = target.committed_bytes.saturating_add(plan.length);
                     report.rebalance_objects = report.rebalance_objects.saturating_add(1);
                     report.bytes_to_rebalance =
                         report.bytes_to_rebalance.saturating_add(plan.length);
@@ -118,5 +142,4 @@ impl MatrixMetaService {
         prepared.raft_entry_checksum = prepared_placement_capacity_rebalance_checksum(&prepared);
         prepared
     }
-
 }

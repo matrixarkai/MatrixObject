@@ -28154,7 +28154,7 @@ fn raft_backed_store_gates_prepared_placement_actions() {
         .unwrap();
     assert_eq!(
         migration_envelope.envelope.envelope_format,
-        "MOSRSROOT-PLACEMENT-MIGRATION-ENVELOPE1"
+        "MOSRSROOT-PLACEMENT-MIGRATION-ENVELOPE2"
     );
     assert_eq!(migration_envelope.envelope.object_id, plan.object_id);
     assert_eq!(
@@ -28183,7 +28183,7 @@ fn raft_backed_store_gates_prepared_placement_actions() {
     assert_eq!(migration.metadata.length, 32);
     assert_eq!(
         migration.envelope.envelope_format,
-        "MOSRSROOT-PLACEMENT-MIGRATION-COMMIT-ENVELOPE1"
+        "MOSRSROOT-PLACEMENT-MIGRATION-COMMIT-ENVELOPE2"
     );
     assert_eq!(migration.envelope.object_id, plan.object_id);
     assert_eq!(migration.envelope.after_node_ids, plan.after_node_ids);
@@ -52247,5 +52247,79 @@ fn assert_maintenance_reports_observe_applied_raft_position(
         assert!(replicated
             .object_gc_report_with_discard_policy_linearizable_fenced(1, 65536, 10, "invalid")
             .is_err());
+    }
+}
+
+#[test]
+fn raft_backed_capacity_rebalance_reserves_batch_space() {
+    for (capacity, expected) in [(80, 1), (104, 2), (136, 3)] {
+        let raft = InMemoryRustRaft::new(1).unwrap();
+        let store = MatrixObjectStore::new(test_options()).unwrap();
+        let mut replicated = RaftBackedObjectStore::new(raft, store);
+        for (id, rack) in [("chunk-a", "rack-a"), ("chunk-b", "rack-b")] {
+            replicated
+                .propose_register_placement_node(placement_node(id, rack, 128))
+                .unwrap();
+        }
+        for key in ["a", "b", "c"] {
+            replicated
+                .propose_put_with_placement(
+                    "bucket",
+                    key,
+                    vec![b'x'; 32],
+                    "application/octet-stream",
+                    2,
+                    PutOptions::default(),
+                    10,
+                )
+                .unwrap();
+        }
+        replicated
+            .propose_register_placement_node(placement_node("chunk-c", "rack-c", capacity))
+            .unwrap();
+        let before = replicated.store().placement_nodes();
+        let plan = replicated.plan_object_capacity_rebalance(0, 40, None);
+        assert_eq!(plan.items.len(), expected);
+        assert_eq!(replicated.store().placement_nodes(), before);
+        let marker = plan.items[0].object.object_id.clone();
+        let continued = replicated.plan_object_capacity_rebalance(1, 40, Some(&marker));
+        assert_eq!(continued.items.len(), 1);
+        assert_eq!(continued.items[0].object.object_id.key, "b");
+        assert!(continued.truncated);
+        assert_eq!(continued.next_marker.as_ref().unwrap().key, "b");
+
+        let mut local = MatrixObjectStore::new(test_options()).unwrap();
+        replicated.replay_into(&mut local).unwrap();
+        let local_run = local.rebalance_object_capacity(0, 40, None);
+        assert_eq!(local_run.failed_migration_objects, 0);
+        assert_eq!(local_run.migrated_objects, expected as u64);
+        let run = replicated
+            .propose_rebalance_object_capacity(0, 40, None)
+            .unwrap();
+        assert_eq!(run.failed_migration_objects, 0);
+        assert_eq!(run.migrated_objects, expected as u64);
+        assert_eq!(run.bytes_migrated, expected as u64 * 32);
+        let nodes = replicated.store().placement_nodes();
+        assert_eq!(local.placement_nodes(), nodes);
+        let target = nodes.iter().find(|node| node.node_id == "chunk-c").unwrap();
+        assert_eq!(target.committed_bytes, expected as u64 * 32);
+        assert!(target.capacity_bytes - target.committed_bytes >= 40);
+        assert_eq!(
+            nodes
+                .iter()
+                .find(|node| node.node_id == "chunk-b")
+                .unwrap()
+                .committed_bytes,
+            96
+        );
+        let mut follower = MatrixObjectStore::new(test_options()).unwrap();
+        replicated.replay_into(&mut follower).unwrap();
+        assert_eq!(follower.placement_nodes(), nodes);
+        for key in ["a", "b", "c"] {
+            assert_eq!(
+                follower.object_placement("bucket", key).unwrap(),
+                replicated.store().object_placement("bucket", key).unwrap()
+            );
+        }
     }
 }
