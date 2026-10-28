@@ -344,6 +344,7 @@ fn run(
 ) -> Result<(), RaftError> {
     let mut tick = Instant::now();
     let mut pending: Option<Pending> = None;
+    let mut pending_read: Option<(u64, Request)> = None;
     let mut applied_term = 0;
     while !stop.is_stopped() {
         for _ in 0..32 {
@@ -415,9 +416,26 @@ fn run(
                 "chunk leadership changed; write outcome may be committed",
             )));
         }
+        if let Some((token, _)) = &pending_read {
+            match peer.poll_read(*token) {
+                Ok(false) => {}
+                result => {
+                    let (_, request) = pending_read.take().unwrap();
+                    let reply = match result {
+                        Ok(true) => {
+                            let max_pages = node.max_pages;
+                            checked_apply(&mut node.service, request.request, max_pages, limit)
+                        }
+                        Err(error) => Err(refused(error)),
+                        Ok(false) => unreachable!(),
+                    };
+                    let _ = request.reply.try_send(reply);
+                }
+            }
+        }
         // A timed-out accepted proposal remains pending until applied or leadership changes.
         // Proposing a second outcome against the same old state would be invalid.
-        if pending.is_none() {
+        if pending.is_none() && pending_read.is_none() {
             if let Ok(request) = requests.try_recv() {
                 if request.deadline <= Instant::now() {
                     let _ = request
@@ -426,20 +444,29 @@ fn run(
                 } else if !peer.is_leader() || applied_term != peer.term() {
                     let _ = request.reply.try_send(Ok(ReplicaReply::NotLeader));
                 } else {
-                    let (outcome, reply) =
-                        match prepare(&node.service, &request.request, node.max_pages, limit) {
-                            Ok((outcome, reply)) => (outcome, reply.map(Ok)),
-                            Err(error) => (Vec::new(), Some(Err(error))),
-                        };
-                    let payload = Entry {
-                        version: 1,
-                        outcome,
-                    }
-                    .encode_to_vec();
-                    match peer.propose(payload) {
-                        Ok(id) => pending = Some(Pending { id, request, reply }),
-                        Err(e) => {
-                            let _ = request.reply.try_send(Err(refused(e)));
+                    if read_only(&request.request) {
+                        match peer.begin_read() {
+                            Ok(token) => pending_read = Some((token, request)),
+                            Err(error) => {
+                                let _ = request.reply.try_send(Err(refused(error)));
+                            }
+                        }
+                    } else {
+                        let (outcome, reply) =
+                            match prepare(&node.service, &request.request, node.max_pages, limit) {
+                                Ok((outcome, reply)) => (outcome, reply.map(Ok)),
+                                Err(error) => (Vec::new(), Some(Err(error))),
+                            };
+                        let payload = Entry {
+                            version: 1,
+                            outcome,
+                        }
+                        .encode_to_vec();
+                        match peer.propose(payload) {
+                            Ok(id) => pending = Some(Pending { id, request, reply }),
+                            Err(e) => {
+                                let _ = request.reply.try_send(Err(refused(e)));
+                            }
                         }
                     }
                 }
@@ -449,6 +476,16 @@ fn run(
         thread::sleep(Duration::from_millis(2));
     }
     Ok(())
+}
+fn read_only(request: &ReplicaRequest) -> bool {
+    match request {
+        ReplicaRequest::ReadChunk { .. }
+        | ReplicaRequest::HeadChunk { .. }
+        | ReplicaRequest::PageInventory { .. }
+        | ReplicaRequest::Ping
+        | ReplicaRequest::GroupIdentity => true,
+        ReplicaRequest::WriteChunk { .. } | ReplicaRequest::DiscardChunk { .. } => false,
+    }
 }
 fn checked_apply(
     service: &mut MatrixReplicaService,

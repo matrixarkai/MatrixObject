@@ -1276,3 +1276,36 @@ mod coupled_groups {
         multiple_group_load(16, 1024, 8);
     }
 }
+
+#[test]
+fn chunk_quorum_reads_leave_the_wal_unchanged_and_refuse_a_minority() {
+    let mut group = Group::new();
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    client.write_chunk(page(0), 0, b"committed bytes").unwrap();
+    let head = client.head_chunk(&page(0)).unwrap();
+    let path = group.root.join(leader.to_string()).join("chunk.peer.wal");
+    let before = std::fs::read(&path).unwrap();
+    for _ in 0..32 {
+        assert_eq!(
+            client.read_chunk(&page(0), 0, 15).unwrap().data,
+            b"committed bytes"
+        );
+        assert_eq!(client.head_chunk(&page(0)).unwrap(), head);
+        assert_eq!(client.ping().unwrap(), 1);
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    // A write following confirmed reads still becomes visible through consensus.
+    client.write_chunk(page(0), 0, b"updated bytes!!").unwrap();
+    assert_eq!(
+        client.read_chunk(&page(0), 0, 15).unwrap().data,
+        b"updated bytes!!"
+    );
+    for i in 0..3 {
+        if i != leader {
+            group.kill(i);
+        }
+    }
+    assert!(client.read_chunk(&page(0), 0, 15).is_err());
+    assert!(group.client(leader).ping().is_err());
+}

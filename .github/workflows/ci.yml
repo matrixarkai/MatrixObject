@@ -1492,6 +1492,12 @@ jobs:
           grep -q '^running 1 test$' /tmp/metadata-preparation.log
           grep -q '^test result: ok. 1 passed' /tmp/metadata-preparation.log
 
+      - name: metadata quorum reads leave the wal unchanged and refuse a minority
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus metadata_quorum_reads_leave_the_wal_unchanged_and_refuse_a_minority -- --exact | tee /tmp/quorum-reads.log
+          grep -q '^running 1 test$' /tmp/quorum-reads.log
+          grep -q '^test result: ok. 1 passed' /tmp/quorum-reads.log
       - name: proposal batch preserves ordered outcomes and commit only replies
         run: |
           set -euo pipefail
@@ -1514,6 +1520,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install protocol build tools
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler autoconf automake libtool
+      - name: chunk quorum reads leave the wal unchanged and refuse a minority
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus chunk_quorum_reads_leave_the_wal_unchanged_and_refuse_a_minority -- --exact | tee /tmp/quorum-reads.log
+          grep -q '^running 1 test$' /tmp/quorum-reads.log
+          grep -q '^test result: ok. 1 passed' /tmp/quorum-reads.log
       - name: chunk processes commit binary outcomes survive leader loss and total restart
         run: |
           set -o pipefail

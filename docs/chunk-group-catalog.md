@@ -156,8 +156,10 @@ each mutation against the preceding staged outcomes, then restores the committed
 state before processing Raft readiness. Only the affected nodes and object
 placements are saved; an expiry pass also saves the roster it may change.
 
-Every request retains its own version-1 binary entry and log ID. Read barriers
-remain separate entries. Raft can persist and replicate the queued entries
+Every mutation retains its own version-1 binary entry and log ID. Read-only calls
+use a shared quorum confirmation for consecutive admitted reads rather than log
+entries. Mutation batches stop before the next queued read; later writes wait
+until those reads complete. Older logged read barriers remain replayable. Raft can persist and replicate the queued entries
 together, but each reply is sent only when its own committed entry applies. No
 new batch is prepared while any prior accepted proposal remains pending. Client
 timeouts do not discard accepted outcomes; leadership changes report uncertainty.
@@ -167,3 +169,19 @@ The local workload prints per-worker time spent planning, connecting to a chunk
 group, writing chunk bytes and committing placement every 32 completed objects.
 These stage totals expose control-plane waiting separately from data writes and
 remain visible if the overall workload deadline is exceeded.
+
+
+## Quorum reads without log entries
+
+Read-only metadata calls and chunk reads use a quorum confirmation, checked in the
+current leadership term and after its committed index applies locally. Metadata
+may share a confirmation among consecutive reads already admitted to the queue;
+later mutations wait. Caller timeouts do not discard an unresolved confirmation.
+Process tests verify unchanged WAL bytes during repeated reads and refusal after
+losing a majority. Mutation outcomes and old persisted read entries remain readable.
+
+The subsequent 51-process local debug run recovered all 1,280 objects in 326.77
+seconds. Its write phases took 114.55 and 19.14 seconds, so this single run does not
+establish a throughput improvement. Read-generated WAL records are removed;
+heartbeat updates, expiry, writes and elections still need durable history, and
+snapshot compaction remains unfinished.

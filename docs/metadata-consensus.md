@@ -26,7 +26,8 @@ odd voter count for fault tolerance. Do not combine this mode with
 Configuration without the required feature is rejected.
 
 Only the current leader serves metadata calls. Reads, including probes and placement
-planning, commit a barrier before reading the state. Mutations prepare a binary
+planning, confirm a current-term quorum and wait for its commit index to apply
+locally before reading the state. They append no log entries. Mutations prepare a binary
 protobuf outcome against committed state, replicate it, and acknowledge only after
 durable commitment and application. Followers and leaders without quorum refuse
 calls. A timeout after proposal is ambiguous: the write may subsequently commit.
@@ -54,8 +55,10 @@ separates voters configured with different initial state. Existing stored bootst
 state takes precedence over seed environment settings on restart. Do not delete,
 copy between nodes, or independently replace these files in a live group.
 
-The worker serializes proposals and keeps one accepted proposal pending until it
-commits or leadership changes, even if its caller times out. Requests and packet
+The worker prepares bounded mutation batches and retains accepted proposals until
+they commit or leadership changes, even if callers time out. Consecutive admitted
+reads share one quorum confirmation; later writes cannot pass that read group.
+Only one read confirmation is outstanding, and caller timeouts do not discard it. Requests and packet
 queues are bounded; network delivery has a total deadline. Packet loss is handled
 by Raft retransmission. Storage or application failure stops the server. Shutdown
 joins the consensus and network workers.
@@ -147,5 +150,5 @@ metaserver leader loss, killed-chunk expiry, exclusion from new placement, and
 journal-backed chunk recovery. Additional tests cover wrong endpoints, draining,
 storage failure, binary request truncation, bounded shutdown, partial configuration,
 and a single-node expiry within a 1024-node roster. These are functional checks,
-not a large-scale throughput result. Full HTTP integration, network chunk Raft,
-authentication, membership changes, and log compaction remain separate work.
+not a large-scale throughput result. Full HTTP integration, authentication, membership changes, and log compaction
+remain separate work. Network chunk Raft is described in `chunk-consensus.md`.

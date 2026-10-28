@@ -57,10 +57,10 @@ Four jobs, all on a pinned toolchain:
 | **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
 | **format and rollback guards** | 99 individual tests in the library plus 59 integration tests, each run by name with `--exact` |
 
-The **network metadata consensus** job also runs thirty-four named health, routing, preparation, and consensus tests
+The **network metadata consensus** job also runs thirty-five named health, routing, preparation, and consensus tests
 with the optional consensus feature enabled.
 
-The **network chunk consensus** job runs twenty-six identity, routing, process, recovery, configuration,
+The **network chunk consensus** job runs twenty-seven identity, routing, process, recovery, configuration,
 capacity, shutdown, and metadata-health tests with the chunk consensus feature. The coupled
 quorum test additionally enables metadata consensus and starts three voters for each service.
 

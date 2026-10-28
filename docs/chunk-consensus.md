@@ -31,7 +31,9 @@ Writes and discards are prepared against committed state and encoded as `MOPO`
 binary protobuf page outcomes. The peer WAL syncs its Raft records before the
 outcome is applied and acknowledged. Recovery applies decided outcomes; it does
 not execute original write commands. Reads, inventories, heads, and pings require
-a committed barrier, so an isolated minority cannot answer from stale state.
+a current-term quorum confirmation and application through its commit index,
+so an isolated minority cannot answer from stale state. These reads append no log
+entries. One confirmation may be pending, including after a caller timeout.
 A timeout does not mean a submitted write was rolled back: it may commit later.
 The pending proposal remains serialized until commit or a leadership change.
 
@@ -55,14 +57,15 @@ The request queue holds 32 entries, peer queues hold eight packets, and peer TCP
 frames are bounded at 8 MiB with 100 ms transfer deadlines. MatrixRaft currently
 limits individual proposals to 4 MiB and its WAL to 512 MiB. Oversized proposals
 are refused without changing committed page state. The candidate preparation
-currently clones replica state, and each read adds a barrier to the log; these
-costs still need optimization and large-scale measurement.
+currently clones replica state. Quorum-confirmed reads avoid additional log
+entries, but write history still needs snapshot compaction and large-scale
+measurement.
 
 The process tests cover three independent voters, acknowledged writes and
 discards, leader loss, refusal below quorum, restart of all processes, capacity
 refusal, storage guards, shutdown, and metadata reports. They are functional
-fault tests, not a large-scale throughput result. Metadata placement of Raft groups,
-the HTTP distributed backend,
+fault tests, not a large-scale throughput result. Metadata placement of Raft groups
+is described in `chunk-group-catalog.md`. The HTTP distributed backend,
 authentication, snapshots, log compaction, and membership changes remain unfinished.
 
 ## Bounded leader routing
