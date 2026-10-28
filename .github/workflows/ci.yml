@@ -1243,6 +1243,43 @@ jobs:
           grep -q '^running 1 test$' /tmp/node-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
 
+      - name: metadata idle and partial sockets do not block other clients
+        run: |
+          set -euo pipefail
+          cargo test --locked --test node_connection_sharing metadata_idle_and_partial_sockets_do_not_block_other_clients -- --exact | tee /tmp/node-connections.log
+          grep -q '^running 1 test$' /tmp/node-connections.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-connections.log
+      - name: chunk idle and partial sockets do not block other clients
+        run: |
+          set -euo pipefail
+          cargo test --locked --test node_connection_sharing chunk_idle_and_partial_sockets_do_not_block_other_clients -- --exact | tee /tmp/node-connections.log
+          grep -q '^running 1 test$' /tmp/node-connections.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-connections.log
+      - name: metadata fragmented and pipelined frames keep their boundaries
+        run: |
+          set -euo pipefail
+          cargo test --locked --test node_connection_sharing metadata_fragmented_and_pipelined_frames_keep_their_boundaries -- --exact | tee /tmp/node-connections.log
+          grep -q '^running 1 test$' /tmp/node-connections.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-connections.log
+      - name: metadata partial frame has one deadline
+        run: |
+          set -euo pipefail
+          cargo test --locked --test node_connection_sharing metadata_partial_frame_has_one_deadline -- --exact | tee /tmp/node-connections.log
+          grep -q '^running 1 test$' /tmp/node-connections.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-connections.log
+      - name: chunk catalog reconnects before writing after idle expiry
+        run: |
+          set -euo pipefail
+          cargo test --locked --test node_connection_sharing chunk_catalog_reconnects_before_writing_after_idle_expiry -- --exact | tee /tmp/node-connections.log
+          grep -q '^running 1 test$' /tmp/node-connections.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-connections.log
+      - name: queued frame buffers stay bounded
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::connections::tests::frame_budget_bounds_queued_buffers_and_releases_on_disconnect -- --exact | tee /tmp/node-connections.log
+          grep -q '^running 1 test$' /tmp/node-connections.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-connections.log
+
   metadata-consensus:
     name: network metadata consensus
     runs-on: ubuntu-latest
@@ -1608,3 +1645,9 @@ jobs:
           cargo test --locked --features metadata-consensus,chunk-consensus --test network_chunk_consensus coupled_groups::metadata_and_chunk_quorums_recover_together_and_refuse_minority_operations -- --exact | tee /tmp/coupled-quorums.log
           grep -q '^running 1 test$' /tmp/coupled-quorums.log
           grep -q '^test result: ok. 1 passed' /tmp/coupled-quorums.log
+      - name: concurrent groups recover placement and data together
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus,chunk-consensus --test network_chunk_consensus coupled_groups::concurrent_groups_preserve_placement_and_data_through_failover_and_restart -- --exact | tee /tmp/multiple-groups.log
+          grep -q '^running 1 test$' /tmp/multiple-groups.log
+          grep -q '^test result: ok. 1 passed' /tmp/multiple-groups.log

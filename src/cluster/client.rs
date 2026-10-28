@@ -82,6 +82,7 @@ pub struct RemoteReplicaClient {
     writer: TcpStream,
     max_payload_bytes: usize,
     connection_usable: bool,
+    last_exchange: Instant,
     read_timeout: Duration,
     write_timeout: Duration,
     catalog: Option<(Vec<String>, ReplicaClientOptions)>,
@@ -118,6 +119,7 @@ impl RemoteReplicaClient {
             writer,
             max_payload_bytes: options.max_payload_bytes,
             connection_usable: true,
+            last_exchange: Instant::now(),
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
             catalog: None,
@@ -129,6 +131,8 @@ impl RemoteReplicaClient {
     /// Only typed pre-admission refusals allow a mutation to move between voters.
     /// Reads may also move after transport failure. Each call visits the catalog once.
     /// Every endpoint must belong to the same configured Raft group.
+    /// Connections idle for the smaller of five seconds and the response timeout
+    /// are replaced before sending a new request, with voter identity rechecked.
     pub fn connect_catalog(
         endpoints: &[String],
         options: &ReplicaClientOptions,
@@ -364,6 +368,12 @@ impl RemoteReplicaClient {
                 other => other,
             };
         };
+        // Retire an idle socket before any bytes of the next request are sent.
+        // This is connection maintenance, never a retry of an uncertain mutation.
+        if self.last_exchange.elapsed() >= options.read_timeout.min(Duration::from_secs(5)) {
+            self.connection_usable = false;
+            let _ = self.writer.shutdown(Shutdown::Both);
+        }
         let start = endpoints
             .iter()
             .position(|e| e == &self.endpoint)
@@ -428,6 +438,7 @@ impl RemoteReplicaClient {
         // Only a completely decoded reply makes this connection reusable.
         self.connection_usable = false;
         let result = self.exchange(request);
+        self.last_exchange = Instant::now();
         if !self.connection_usable {
             let _ = self.writer.shutdown(Shutdown::Both);
         }

@@ -86,3 +86,48 @@ placements reduced median heartbeat preparation from 4.09 ms to 47.5 us.
 Both runs emitted a 126-byte outcome. With no placements, the same catalog
 changed from 1.43 ms to 6.49 us. These are local measurements, not latency
 promises; rerun the command on the target deployment hardware.
+
+## Multiple groups and connection sharing
+
+Metadata and chunk APIs share persistent sockets across bounded request workers.
+Each configured worker has one companion I/O thread and accepts up to 128 sockets.
+Idle sockets, incomplete frames, and clients that stop reading do not occupy the
+request worker. Each socket has at most one admitted frame awaiting its reply.
+Queued input and output buffers share a reservation budget of twice the maximum
+frame size per worker; encoding one response can temporarily use one additional
+frame. A full budget or request queue closes the connection. A mutation whose
+reply is lost must still be treated as uncertain.
+
+Read and write timeouts cover complete frames, not individual bytes. Chunk catalog
+clients retire connections idle for the smaller of five seconds and their response
+timeout before sending another request. Reconnection checks configured voter
+identity again; it never retries an already-sent uncertain write.
+
+The default multi-group test uses three metadata voters and three groups of three
+chunk voters. Six clients plan placement, route writes through the selected group,
+and commit 120 objects. The test removes every group's leader and the metadata
+leader, writes again, restarts all twelve processes, and verifies every placement,
+payload, write sequence, and one-copy group capacity/usage total.
+
+```sh
+cargo test --locked --features metadata-consensus,chunk-consensus --test network_chunk_consensus coupled_groups::concurrent_groups_preserve_placement_and_data_through_failover_and_restart -- --exact --nocapture
+```
+
+A separate bounded measurement uses sixteen chunk groups, 51 processes, eight
+clients and 1,280 objects, with the shipped one-second heartbeat interval. It prints
+client operation latency percentiles and throughput, including placement and
+commit calls, then checks recovery. It uses temporary directories and reaps the
+processes on success or failure. Run it separately from other process workloads:
+
+```sh
+cargo test --locked --features metadata-consensus,chunk-consensus --test network_chunk_consensus coupled_groups::sixteen_groups_preserve_concurrent_writes_through_recovery -- --exact --ignored --nocapture
+```
+
+Neither run establishes a production capacity rating. A 100 ms heartbeat interval
+at 51 processes overloaded the local control plane during development; sustained
+heartbeat load, concurrent client traffic and disk latency must be sized together.
+
+The initial local 51-process debug run at the one-second heartbeat interval did
+not finish the first 1,024 writes within its 180-second workload deadline.
+The larger test is retained as an ignored, explicit capacity investigation;
+it is not a passing CI check or evidence of production readiness.

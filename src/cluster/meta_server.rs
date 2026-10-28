@@ -29,8 +29,7 @@
 //! Anything that can open a socket to this port can register a node, move a placement, or
 //! read the whole roster. The shipped binary binds loopback for that reason.
 
-use std::io::{BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -82,13 +81,12 @@ impl NodeMeta {
     }
 }
 
-use crate::cluster::message::check_stamp;
 use crate::cluster::meta_message::{
     encode_meta_reply, CommittedPlacement, MetaReply, MetaRequest, PlacementAssignment,
     PlacementNodeSummary,
 };
 use crate::cluster::meta_wire::MetaRequestCode;
-use crate::cluster::wire::{StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
+use crate::cluster::wire::{StatusCode, MAX_PAYLOAD_BYTES};
 use crate::{
     MatrixMetaService, NodeChunkHealth, NodeMetaHealth, NodePageHealth, ObjectError, PlacementNode,
 };
@@ -180,11 +178,11 @@ pub struct MetaNodeOptions {
     /// frame can make the node allocate.
     /// Also bounds outgoing payloads, including failure messages; minimum 24 bytes.
     pub max_payload_bytes: usize,
-    /// Connections handled at once.
+    /// Request workers; each has a companion that shares up to 128 connections.
     pub worker_threads: usize,
-    /// How long a connection may go without sending before it is dropped.
+    /// Deadline for receiving a complete frame, including initial idle time.
     pub read_timeout: Duration,
-    /// How long a write to a peer may block.
+    /// Deadline for sending a complete response.
     pub write_timeout: Duration,
 }
 
@@ -192,9 +190,8 @@ impl Default for MetaNodeOptions {
     fn default() -> Self {
         Self {
             max_payload_bytes: MAX_PAYLOAD_BYTES,
-            // Fewer than the replica node's four. A control-plane call happens once per node
-            // per heartbeat interval and once per object creation, not once per page write,
-            // so the concurrency a replica needs is capacity this node would hold idle.
+            // Idle sockets do not occupy a worker. Each worker shares up to 128 sockets
+            // and bounds reserved frame buffers to twice the maximum payload size.
             worker_threads: 2,
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
@@ -568,134 +565,64 @@ fn accept_loop(
     stop: Arc<ServerShutdown>,
     options: MetaNodeOptions,
 ) {
-    while !stop.is_stopped() {
-        match listener.accept() {
-            Ok((stream, _peer)) => {
-                let _active = match stop.track(&stream) {
-                    Ok(Some(active)) => active,
-                    Ok(None) => return,
-                    Err(_) => continue,
-                };
-                if stream.set_nonblocking(false).is_err() {
-                    continue;
-                }
-                let _ = stream.set_read_timeout(Some(options.read_timeout));
-                let _ = stream.set_write_timeout(Some(options.write_timeout));
-                let _ = stream.set_nodelay(true);
-                serve_connection(stream, &meta, &counters, &options);
-            }
-            Err(_) => {
-                // Nonblocking accept lets idle workers observe shutdown. Back off on
-                // all accept errors so resource exhaustion cannot create a busy loop.
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
+    super::connections::accept_loop(
+        listener,
+        &counters.requests,
+        &counters.failures,
+        |code, payload| frame_response(code, payload, &meta, &counters, &options),
+        stop,
+        super::connections::Options {
+            max_payload_bytes: options.max_payload_bytes,
+            read_timeout: options.read_timeout,
+            write_timeout: options.write_timeout,
+        },
+    );
 }
 
-/// Serve one connection until the peer closes it or a frame cannot be read.
-///
-/// A connection is PERSISTENT: a coordinator opens one socket to the metaserver and sends
-/// every request down it, which is what makes the established-socket count a usable
-/// statement about the cluster.
-fn serve_connection(
-    stream: TcpStream,
+fn frame_response(
+    code: u8,
+    payload: &[u8],
     meta: &Arc<Mutex<NodeMeta>>,
     counters: &Arc<MetaCounters>,
     options: &MetaNodeOptions,
-) {
-    let mut writer = match stream.try_clone() {
-        Ok(writer) => writer,
-        Err(_) => return,
-    };
-    let mut reader = BufReader::new(stream);
+) -> Vec<u8> {
     let encode_failure = |status, message: &str| {
         crate::cluster::message::encode_bounded_failure(status, message, options.max_payload_bytes)
     };
-    loop {
-        let mut header = [0u8; HEADER_BYTES];
-        if reader.read_exact(&mut header).is_err() {
-            return;
+    match MetaRequestCode::from_u8(code) {
+        None => {
+            counters.failures.fetch_add(1, Ordering::Relaxed);
+            // THIS IS THE ANSWER A REPLICA'S FRAME GETS. The metaserver's codes start
+            // past every replica code precisely so that a client pointed at the wrong
+            // port is told so instead of having its page write applied as a node
+            // registration.
+            encode_failure(
+                StatusCode::UnknownRequest,
+                &format!("request code {code} is not one this metaserver implements"),
+            )
         }
-        counters.requests.fetch_add(1, Ordering::Relaxed);
-        let (code, payload) = match read_frame(&mut reader, &header, options.max_payload_bytes) {
-            Ok(frame) => frame,
+        Some(code) => match MetaRequest::decode(code, payload) {
             Err(err) => {
                 counters.failures.fetch_add(1, Ordering::Relaxed);
-                let _ = writer.write_all(&encode_failure(
-                    StatusCode::for_error(&err),
-                    &err.to_string(),
-                ));
-                let _ = writer.flush();
-                // A frame that could not be read leaves the stream at an unknown offset, so
-                // there is no honest way to look for the next header in it.
-                return;
+                encode_failure(StatusCode::for_error(&err), &err.to_string())
             }
-        };
-        let response = match MetaRequestCode::from_u8(code) {
-            None => {
-                counters.failures.fetch_add(1, Ordering::Relaxed);
-                // THIS IS THE ANSWER A REPLICA'S FRAME GETS. The metaserver's codes start
-                // past every replica code precisely so that a client pointed at the wrong
-                // port is told so instead of having its page write applied as a node
-                // registration.
-                encode_failure(
-                    StatusCode::UnknownRequest,
-                    &format!("request code {code} is not one this metaserver implements"),
-                )
-            }
-            Some(code) => match MetaRequest::decode(code, &payload) {
-                Err(err) => {
-                    counters.failures.fetch_add(1, Ordering::Relaxed);
-                    encode_failure(StatusCode::for_error(&err), &err.to_string())
-                }
-                Ok(request) => {
-                    match apply(meta, request, options.max_payload_bytes).and_then(|reply| {
-                        crate::cluster::message::check_reply_size(
-                            reply.payload_len(),
-                            options.max_payload_bytes,
-                        )?;
-                        Ok(reply)
-                    }) {
-                        Ok(reply) => encode_meta_reply(&reply),
-                        Err(err) => {
-                            counters.failures.fetch_add(1, Ordering::Relaxed);
-                            encode_failure(StatusCode::for_error(&err), &err.to_string())
-                        }
+            Ok(request) => {
+                match apply(meta, request, options.max_payload_bytes).and_then(|reply| {
+                    crate::cluster::message::check_reply_size(
+                        reply.payload_len(),
+                        options.max_payload_bytes,
+                    )?;
+                    Ok(reply)
+                }) {
+                    Ok(reply) => encode_meta_reply(&reply),
+                    Err(err) => {
+                        counters.failures.fetch_add(1, Ordering::Relaxed);
+                        encode_failure(StatusCode::for_error(&err), &err.to_string())
                     }
                 }
-            },
-        };
-        if writer.write_all(&response).is_err() || writer.flush().is_err() {
-            return;
-        }
+            }
+        },
     }
-}
-
-fn read_frame(
-    reader: &mut BufReader<TcpStream>,
-    header: &[u8; HEADER_BYTES],
-    max_payload_bytes: usize,
-) -> Result<(u8, Vec<u8>), ObjectError> {
-    check_stamp(header[0])?;
-    let code = header[1];
-    let payload_len = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
-    // CHECKED BEFORE THE ALLOCATION, not after the read. The length is four bytes from a
-    // socket; without this the frame chooses how much memory this process asks for.
-    if payload_len > max_payload_bytes {
-        return Err(ObjectError::InvalidArgument(format!(
-            "a metaserver frame declares a {payload_len}-byte payload, past the \
-             {max_payload_bytes}-byte bound"
-        )));
-    }
-    let mut payload = vec![0u8; payload_len];
-    reader.read_exact(&mut payload).map_err(|err| {
-        ObjectError::Corruption(format!(
-            "a metaserver frame declared {payload_len} byte(s) and the connection ended \
-             first: {err}"
-        ))
-    })?;
-    Ok((code, payload))
 }
 
 /// Run one request against the metaserver.

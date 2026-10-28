@@ -20,7 +20,6 @@ impl ServerShutdown {
     }
 
     /// Wait between maintenance passes, waking immediately when shutdown begins.
-    #[cfg(feature = "meta-server")]
     pub(super) fn wait_for(&self, duration: std::time::Duration) -> bool {
         let guard = self.wait_lock.lock().unwrap_or_else(|e| e.into_inner());
         let _wait = self

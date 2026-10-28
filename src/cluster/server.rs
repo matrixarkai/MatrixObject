@@ -38,8 +38,7 @@
 //! [`ReplicaNodeServer::bind`] does not choose the address; the binary that calls it
 //! defaults to loopback.
 
-use std::io::{BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -47,8 +46,8 @@ use std::time::Duration;
 use super::shutdown::ServerShutdown;
 
 use super::replica_journal::ReplicaJournal;
-use crate::cluster::message::{check_stamp, encode_reply, ReplicaReply, ReplicaRequest};
-use crate::cluster::wire::{RequestCode, StatusCode, HEADER_BYTES, MAX_PAYLOAD_BYTES};
+use crate::cluster::message::{encode_reply, ReplicaReply, ReplicaRequest};
+use crate::cluster::wire::{RequestCode, StatusCode, MAX_PAYLOAD_BYTES};
 use crate::{MatrixReplicaService, ObjectError};
 
 #[cfg(feature = "meta-server")]
@@ -85,11 +84,11 @@ pub struct ReplicaNodeOptions {
     pub capacity_bytes: u64,
     /// Maximum page identities, including pages created by empty writes. Must be positive.
     pub max_pages: usize,
-    /// Connections handled at once.
+    /// Request workers; each has a companion that shares up to 128 connections.
     pub worker_threads: usize,
-    /// How long a connection may go without sending before it is dropped.
+    /// Deadline for receiving a complete frame, including initial idle time.
     pub read_timeout: Duration,
-    /// How long a write to a peer may block.
+    /// Deadline for sending a complete response.
     pub write_timeout: Duration,
 }
 
@@ -304,150 +303,77 @@ fn accept_loop(
     options: ReplicaNodeOptions,
     #[cfg(feature = "chunk-consensus")] consensus: Option<Arc<consensus::ChunkConsensus>>,
 ) {
-    while !stop.is_stopped() {
-        match listener.accept() {
-            Ok((stream, _peer)) => {
-                let _active = match stop.track(&stream) {
-                    Ok(Some(active)) => active,
-                    Ok(None) => return,
-                    Err(_) => continue,
-                };
-                if stream.set_nonblocking(false).is_err() {
-                    continue;
-                }
-                let _ = stream.set_read_timeout(Some(options.read_timeout));
-                let _ = stream.set_write_timeout(Some(options.write_timeout));
-                // TCP_NODELAY: a replica call is one small frame and the answer is wanted
-                // before the next one is sent, so Nagle has nothing to coalesce and only
-                // adds latency to every write in the fan-out.
-                let _ = stream.set_nodelay(true);
-                serve_connection(
-                    stream,
-                    &replica,
-                    &counters,
-                    &options,
-                    #[cfg(feature = "chunk-consensus")]
-                    consensus.as_deref(),
-                );
-            }
-            Err(_) => {
-                // Nonblocking accept lets idle workers observe shutdown. Back off on
-                // all accept errors so resource exhaustion cannot create a busy loop.
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
+    super::connections::accept_loop(
+        listener,
+        &counters.requests,
+        &counters.failures,
+        |code, payload| {
+            frame_response(
+                code,
+                payload,
+                &replica,
+                &counters,
+                &options,
+                #[cfg(feature = "chunk-consensus")]
+                consensus.as_deref(),
+            )
+        },
+        stop,
+        super::connections::Options {
+            max_payload_bytes: options.max_payload_bytes,
+            read_timeout: options.read_timeout,
+            write_timeout: options.write_timeout,
+        },
+    );
 }
-
-/// Serve one connection until the peer closes it or a frame cannot be read.
-///
-/// A connection is PERSISTENT: a coordinator opens one socket per replica and sends every
-/// request down it. That is what makes the established-socket count a usable statement about
-/// the cluster -- a connection per request would leave nothing to look at between calls.
-fn serve_connection(
-    stream: TcpStream,
+fn frame_response(
+    code: u8,
+    payload: &[u8],
     replica: &Arc<Mutex<NodeReplica>>,
     counters: &Arc<NodeCounters>,
     options: &ReplicaNodeOptions,
     #[cfg(feature = "chunk-consensus")] consensus: Option<&consensus::ChunkConsensus>,
-) {
-    let mut writer = match stream.try_clone() {
-        Ok(writer) => writer,
-        Err(_) => return,
-    };
-    let mut reader = BufReader::new(stream);
+) -> Vec<u8> {
     let encode_failure = |status, message: &str| {
         crate::cluster::message::encode_bounded_failure(status, message, options.max_payload_bytes)
     };
-    loop {
-        let mut header = [0u8; HEADER_BYTES];
-        if reader.read_exact(&mut header).is_err() {
-            // The peer closed, or went away without closing. Either way this connection is
-            // done and the node keeps serving the others.
-            return;
+    match RequestCode::from_u8(code) {
+        None => {
+            counters.failures.fetch_add(1, Ordering::Relaxed);
+            encode_failure(
+                StatusCode::UnknownRequest,
+                &format!("request code {code} is not one this replica implements"),
+            )
         }
-        counters.requests.fetch_add(1, Ordering::Relaxed);
-        let frame = match read_frame(&mut reader, &header, options.max_payload_bytes) {
-            Ok(frame) => frame,
+        Some(code) => match ReplicaRequest::decode(code, payload) {
             Err(err) => {
                 counters.failures.fetch_add(1, Ordering::Relaxed);
-                let _ = writer.write_all(&encode_failure(
-                    StatusCode::for_error(&err),
-                    &err.to_string(),
-                ));
-                let _ = writer.flush();
-                // A frame that could not be read leaves the stream at an unknown offset, so
-                // there is no honest way to look for the next header in it. The error is
-                // reported and the connection ends.
-                return;
+                encode_failure(StatusCode::for_error(&err), &err.to_string())
             }
-        };
-        let (code, payload) = frame;
-        let response = match RequestCode::from_u8(code) {
-            None => {
-                counters.failures.fetch_add(1, Ordering::Relaxed);
-                encode_failure(
-                    StatusCode::UnknownRequest,
-                    &format!("request code {code} is not one this replica implements"),
-                )
-            }
-            Some(code) => match ReplicaRequest::decode(code, &payload) {
-                Err(err) => {
-                    counters.failures.fetch_add(1, Ordering::Relaxed);
-                    encode_failure(StatusCode::for_error(&err), &err.to_string())
-                }
-                Ok(request) => {
-                    #[cfg(feature = "chunk-consensus")]
-                    let result = match consensus {
-                        Some(c) => c.request(request),
-                        None => apply(replica, request, options.max_payload_bytes),
-                    };
-                    #[cfg(not(feature = "chunk-consensus"))]
-                    let result = apply(replica, request, options.max_payload_bytes);
-                    match result.and_then(|reply| {
-                        crate::cluster::message::check_reply_size(
-                            reply.payload_len(),
-                            options.max_payload_bytes,
-                        )?;
-                        Ok(reply)
-                    }) {
-                        Ok(reply) => encode_reply(&reply),
-                        Err(err) => {
-                            counters.failures.fetch_add(1, Ordering::Relaxed);
-                            encode_failure(StatusCode::for_error(&err), &err.to_string())
-                        }
+            Ok(request) => {
+                #[cfg(feature = "chunk-consensus")]
+                let result = match consensus {
+                    Some(c) => c.request(request),
+                    None => apply(replica, request, options.max_payload_bytes),
+                };
+                #[cfg(not(feature = "chunk-consensus"))]
+                let result = apply(replica, request, options.max_payload_bytes);
+                match result.and_then(|reply| {
+                    crate::cluster::message::check_reply_size(
+                        reply.payload_len(),
+                        options.max_payload_bytes,
+                    )?;
+                    Ok(reply)
+                }) {
+                    Ok(reply) => encode_reply(&reply),
+                    Err(err) => {
+                        counters.failures.fetch_add(1, Ordering::Relaxed);
+                        encode_failure(StatusCode::for_error(&err), &err.to_string())
                     }
                 }
-            },
-        };
-        if writer.write_all(&response).is_err() || writer.flush().is_err() {
-            return;
-        }
+            }
+        },
     }
-}
-
-fn read_frame(
-    reader: &mut BufReader<TcpStream>,
-    header: &[u8; HEADER_BYTES],
-    max_payload_bytes: usize,
-) -> Result<(u8, Vec<u8>), ObjectError> {
-    check_stamp(header[0])?;
-    let code = header[1];
-    let payload_len = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
-    // CHECKED BEFORE THE ALLOCATION, not after the read. The length is four bytes from a
-    // socket; without this the frame chooses how much memory this process asks for.
-    if payload_len > max_payload_bytes {
-        return Err(ObjectError::InvalidArgument(format!(
-            "a replica frame declares a {payload_len}-byte payload, past the {max_payload_bytes}-byte bound"
-        )));
-    }
-    let mut payload = vec![0u8; payload_len];
-    reader.read_exact(&mut payload).map_err(|err| {
-        ObjectError::Corruption(format!(
-            "a replica frame declared {payload_len} byte(s) and the connection ended first: {err}"
-        ))
-    })?;
-    Ok((code, payload))
 }
 
 /// Run one request against the replica.
