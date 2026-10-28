@@ -45,15 +45,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         limit: usize,
         now_ms: u64,
     ) -> Result<BucketInventoryPage, ObjectError> {
-        self.store.list_buckets_with_metadata_read(
-            marker,
-            limit,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+        let (options, readiness) =
+            self.metadata_read_options_at_raft_position("list buckets linearizable", now_ms, 0)?;
+        let mut report = self
+            .store
+            .list_buckets_with_metadata_read(marker, limit, options)?;
+        report.readiness = readiness;
+        Ok(report)
     }
 
     pub fn bucket_versioning_enabled_linearizable(
@@ -110,18 +108,21 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<ObjectMetadataAudit, ObjectError> {
-        self.store.audit_object_metadata(
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "audit object metadata linearizable",
+            now_ms,
+            0,
+        )?;
+        let mut report = self.store.audit_object_metadata(
             bucket,
             prefix,
             marker,
             limit,
             max_payload_bytes,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+            options,
+        )?;
+        report.readiness = readiness;
+        Ok(report)
     }
 
     pub fn audit_object_metadata_from_meta_shard_route_fenced(

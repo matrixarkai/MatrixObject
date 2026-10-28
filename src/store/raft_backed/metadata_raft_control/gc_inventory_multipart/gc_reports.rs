@@ -63,6 +63,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<(GcReport, MetadataRaftReadiness), ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "object gc report with discard policy linearizable fenced",
+            now_ms,
+            0,
+        )?;
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "object gc report",
@@ -72,14 +77,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             .gc_report_with_discard_policy_and_metadata_read_fenced(
                 min_discard_bytes,
                 max_discard_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
+                options,
                 (!expected_page_route_control_checksum.is_empty())
                     .then_some(expected_page_route_control_checksum),
             )
+            .map(|(report, _)| (report, readiness))
     }
 
     pub fn object_gc_report_linearizable_proof_fenced(

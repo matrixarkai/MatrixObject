@@ -50700,6 +50700,7 @@ fn metadata_raft_reads_follow_applied_entries_when_metadata_does_not_change() {
     );
     assert_payload_batches_observe_applied_raft_position(&mut replicated, "object", true);
     assert_cache_admission_reads_observe_applied_raft_position(&mut replicated, "object", true);
+    assert_maintenance_reports_observe_applied_raft_position(&replicated, true);
 }
 
 #[test]
@@ -50743,6 +50744,7 @@ fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
     assert_metadata_queries_observe_applied_raft_position(&replicated, "object-0", false);
     assert_payload_batches_observe_applied_raft_position(&mut replicated, "object-0", false);
     assert_cache_admission_reads_observe_applied_raft_position(&mut replicated, "object-0", false);
+    assert_maintenance_reports_observe_applied_raft_position(&replicated, false);
 }
 
 #[test]
@@ -50790,6 +50792,7 @@ fn metadata_read_proofs_do_not_promote_mutation_counts_to_raft_positions() {
     assert_metadata_queries_observe_applied_raft_position(&replicated, "object-0", true);
     assert_payload_batches_observe_applied_raft_position(&mut replicated, "object-0", true);
     assert_cache_admission_reads_observe_applied_raft_position(&mut replicated, "object-0", true);
+    assert_maintenance_reports_observe_applied_raft_position(&replicated, true);
 }
 
 fn assert_object_reads_observe_applied_raft_position(
@@ -52153,6 +52156,96 @@ fn assert_cache_admission_reads_observe_applied_raft_position(
             .prewarm_object_range_cache_linearizable_fenced(
                 "bucket", key, 0, 1, 65536, 10, "invalid"
             )
+            .is_err());
+    }
+}
+
+fn assert_maintenance_reports_observe_applied_raft_position(
+    replicated: &RaftBackedObjectStore<InMemoryRustRaft>,
+    readable: bool,
+) {
+    let inventory = replicated.list_buckets_linearizable(None, 1, 10);
+    let audit = replicated.audit_object_metadata_linearizable("bucket", "", None, 1, 65536, 10);
+    let gc = replicated.object_gc_report_with_discard_policy_linearizable_fenced(1, 65536, 10, "");
+    let positions = [
+        inventory.as_ref().map(|x| &x.readiness),
+        audit.as_ref().map(|x| &x.readiness),
+        gc.as_ref().map(|x| &x.1),
+    ];
+    for result in positions {
+        if readable {
+            let readiness = result.unwrap();
+            assert_eq!(readiness.safe_read_fence, replicated.raft_commit_index());
+            assert_eq!(
+                readiness.applied_commit_index,
+                replicated.store().last_metadata_commit_index()
+            );
+        } else {
+            assert!(
+                matches!(result, Err(ObjectError::PreconditionFailed(message)) if message.contains("metadata control read index is not satisfied"))
+            );
+        }
+    }
+    if readable {
+        let inventory = inventory.unwrap();
+        assert_eq!(inventory.buckets, vec!["bucket"]);
+        let audit = audit.unwrap();
+        assert_eq!(audit.issue_count, 0);
+        let mut local_audit = replicated
+            .store()
+            .audit_object_metadata(
+                "bucket",
+                "",
+                None,
+                1,
+                65536,
+                MetadataReadOptions {
+                    min_read_index: replicated.store().last_metadata_commit_index(),
+                    now_ms: 10,
+                    ..MetadataReadOptions::default()
+                },
+            )
+            .unwrap();
+        local_audit.readiness = audit.readiness.clone();
+        assert_eq!(audit, local_audit);
+        if audit.has_more {
+            let next = replicated
+                .audit_object_metadata_linearizable(
+                    "bucket",
+                    "",
+                    audit.next_marker.as_deref(),
+                    1,
+                    65536,
+                    10,
+                )
+                .unwrap();
+            assert_ne!(audit.items, next.items);
+            assert_eq!(
+                next.readiness.safe_read_fence,
+                replicated.raft_commit_index()
+            );
+        }
+        let (report, _) = gc.unwrap();
+        assert_eq!(
+            report,
+            replicated
+                .store()
+                .gc_report_with_discard_policy_fenced(1, 65536, None)
+                .unwrap()
+        );
+        let expected = object_gc_report_checksum(&report);
+        replicated
+            .object_gc_report_with_discard_policy_linearizable_proof_fenced(
+                1, 65536, 10, "", &expected,
+            )
+            .unwrap();
+        assert!(replicated
+            .object_gc_report_with_discard_policy_linearizable_proof_fenced(
+                1, 65536, 10, "", "invalid"
+            )
+            .is_err());
+        assert!(replicated
+            .object_gc_report_with_discard_policy_linearizable_fenced(1, 65536, 10, "invalid")
             .is_err());
     }
 }
