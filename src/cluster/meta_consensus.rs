@@ -308,6 +308,7 @@ fn run(
     let mut tick = Instant::now();
     let mut pending: VecDeque<Pending> = VecDeque::new();
     let mut queued = VecDeque::new();
+    let mut pending_read: Option<(u64, Vec<Request>)> = None;
     let mut applied_term = 0;
     while !stop.is_stopped() {
         for _ in 0..32 {
@@ -342,9 +343,25 @@ fn run(
                 )));
             }
         }
+        if let Some((token, _)) = &pending_read {
+            match peer.poll_read(*token) {
+                Ok(false) => {}
+                result => {
+                    let (_, requests) = pending_read.take().unwrap();
+                    for request in requests {
+                        let reply = match &result {
+                            Ok(true) => apply_with_groups(service, request.request, limit, groups),
+                            Err(error) => Err(refused(error)),
+                            Ok(false) => unreachable!(),
+                        };
+                        let _ = request.reply.try_send(reply);
+                    }
+                }
+            }
+        }
         // No new batch is prepared until all earlier accepted outcomes apply or
         // leadership changes. A client timeout alone does not remove a proposal.
-        if pending.is_empty() {
+        if pending.is_empty() && pending_read.is_none() {
             while queued.len() < PROPOSALS_PER_BATCH {
                 match requests.try_recv() {
                     Ok(request) => queued.push_back(request),
@@ -356,12 +373,56 @@ fn run(
                     let _ = request.reply.try_send(Ok(MetaReply::NotLeader));
                 }
             } else {
-                propose_batch(peer, service, groups, limit, &mut queued, &mut pending)?;
+                if queued.front().is_some_and(|r| read_only(&r.request)) {
+                    let mut reads = Vec::new();
+                    while queued.front().is_some_and(|r| read_only(&r.request)) {
+                        let request = queued.pop_front().unwrap();
+                        if request.deadline <= Instant::now() {
+                            let _ = request.reply.try_send(Err(refused(
+                                "metadata request expired before read confirmation",
+                            )));
+                        } else {
+                            reads.push(request);
+                        }
+                    }
+                    if !reads.is_empty() {
+                        match peer.begin_read() {
+                            Ok(token) => pending_read = Some((token, reads)),
+                            Err(error) => {
+                                for request in reads {
+                                    let _ = request.reply.try_send(Err(refused(&error)));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // A later write must not pass reads already admitted to this queue.
+                    let mut writes = VecDeque::new();
+                    while queued.front().is_some_and(|r| !read_only(&r.request)) {
+                        writes.push_back(queued.pop_front().unwrap());
+                    }
+                    propose_batch(peer, service, groups, limit, &mut writes, &mut pending)?;
+                    writes.append(&mut queued);
+                    queued = writes;
+                }
             }
         }
         thread::sleep(Duration::from_millis(2));
     }
     Ok(())
+}
+fn read_only(request: &MetaRequest) -> bool {
+    match request {
+        MetaRequest::ListRootNodes
+        | MetaRequest::ReadChunkGroup { .. }
+        | MetaRequest::PlanObjectPlacement { .. }
+        | MetaRequest::ReadObjectRootPlacement { .. }
+        | MetaRequest::Ping => true,
+        MetaRequest::HeartbeatRootNode { .. }
+        | MetaRequest::HeartbeatChunkNode { .. }
+        | MetaRequest::ExpireRootNodeHeartbeats { .. }
+        | MetaRequest::CommitObjectPlacement { .. } => false,
+    }
 }
 fn apply_committed(
     service: &mut MatrixMetaService,

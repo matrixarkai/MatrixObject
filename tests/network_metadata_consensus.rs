@@ -844,3 +844,60 @@ fn invalid_chunk_catalog_startup_is_refused_before_serving() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn metadata_quorum_reads_leave_the_wal_unchanged_and_refuse_a_minority() {
+    let mut group = Group::new();
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let plan = client
+        .plan_object_placement("bucket", "readable", 1024, 2)
+        .unwrap();
+    let placement = CommittedPlacement {
+        bucket: plan.bucket,
+        key: plan.key,
+        length: plan.length,
+        node_ids: plan.node_ids,
+        version: 1,
+        update_time_ms: 1,
+    };
+    let saved = client
+        .commit_object_placement(placement, &plan.plan_checksum)
+        .unwrap();
+    let path = group
+        .root
+        .join(leader.to_string())
+        .join("metadata.peer.wal");
+    let before = std::fs::read(&path).unwrap();
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let mut client = group.client(leader);
+            let saved = &saved;
+            handles.push(scope.spawn(move || {
+                for _ in 0..16 {
+                    assert_eq!(
+                        client.object_placement("bucket", "readable").unwrap(),
+                        *saved
+                    );
+                    assert_eq!(client.list_placement_nodes().unwrap().len(), 3);
+                    client
+                        .plan_object_placement("bucket", "planned", 1024, 2)
+                        .unwrap();
+                    client.probe().into_result().unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    for i in 0..3 {
+        if i != leader {
+            group.kill(i);
+        }
+    }
+    assert!(client.object_placement("bucket", "readable").is_err());
+    assert!(group.client(leader).probe().into_result().is_err());
+}
