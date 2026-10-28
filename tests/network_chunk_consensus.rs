@@ -20,6 +20,7 @@ struct Group {
     peers: BTreeMap<u64, SocketAddr>,
     root: PathBuf,
     capacity: u64,
+    checkpoint_bytes: u64,
     group_id: u64,
     max_pages: u64,
     heartbeat_ms: &'static str,
@@ -65,6 +66,7 @@ impl Group {
             peers,
             root,
             capacity,
+            checkpoint_bytes: 0,
             group_id: 1,
             max_pages: 64,
             heartbeat_ms: "100",
@@ -109,6 +111,7 @@ impl Group {
         let group_id = self.group_id.to_string();
         let max_pages = self.max_pages.to_string();
         let capacity = self.capacity.to_string();
+        let checkpoint_bytes = self.checkpoint_bytes.to_string();
         let timeout = if self.capacity > 65536 { "5000" } else { "700" };
         let mut environment = vec![
             ("MATRIXOBJECT_REPLICA_ADDR", bind.as_str()),
@@ -119,6 +122,10 @@ impl Group {
             ("MATRIXOBJECT_CHUNK_RAFT_NODE_ID", id.as_str()),
             ("MATRIXOBJECT_CHUNK_RAFT_STATE_DIR", path.to_str().unwrap()),
             ("MATRIXOBJECT_CHUNK_RAFT_TIMEOUT_MS", timeout),
+            (
+                "MATRIXOBJECT_CHUNK_RAFT_CHECKPOINT_BYTES",
+                checkpoint_bytes.as_str(),
+            ),
         ];
         if let Some((metadata, _)) = &self.report {
             environment.extend([
@@ -284,6 +291,7 @@ fn chunk_peer_storage_lock_configuration_and_truncation_fail_closed() {
     let address = reserved.local_addr().unwrap();
     drop(reserved);
     let options = ChunkRaftOptions {
+        checkpoint_after_bytes: 0,
         node_id: 1,
         group_id: 8,
         peers: BTreeMap::from([(1, address)]),
@@ -327,6 +335,7 @@ fn slow_chunk_peer_packets_do_not_prevent_shutdown() {
     drop(socket);
     server
         .enable_consensus(ChunkRaftOptions {
+            checkpoint_after_bytes: 0,
             node_id: 1,
             group_id: 4,
             peers: BTreeMap::from([(1, address)]),
@@ -409,6 +418,7 @@ fn chunk_voter_catalog_rejects_aliases_and_invalid_addresses_before_storage() {
             ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
         assert!(server
             .enable_consensus(ChunkRaftOptions {
+                checkpoint_after_bytes: 0,
                 node_id: 1,
                 group_id: 1,
                 peers,
@@ -500,6 +510,7 @@ fn oversized_chunk_outcome_is_refused_without_poisoning_the_group() {
     drop(socket);
     server
         .enable_consensus(ChunkRaftOptions {
+            checkpoint_after_bytes: 0,
             node_id: 1,
             group_id: 9,
             peers: BTreeMap::from([(1, address)]),
@@ -753,6 +764,7 @@ mod coupled_groups {
         root: PathBuf,
         reservations: Vec<Option<(TcpListener, TcpListener)>>,
         multiple_groups: bool,
+        checkpoint_bytes: u64,
     }
     impl MetadataGroup {
         fn new(chunk: &Group) -> Self {
@@ -812,6 +824,7 @@ mod coupled_groups {
                 root,
                 reservations: sockets.into_iter().map(Some).collect(),
                 multiple_groups: chunks.len() > 1,
+                checkpoint_bytes: chunks[0].checkpoint_bytes,
             };
             for i in 0..3 {
                 std::fs::create_dir(group.root.join(i.to_string())).unwrap();
@@ -823,6 +836,7 @@ mod coupled_groups {
             let id = (i + 1).to_string();
             let state = self.root.join(i.to_string());
             let catalog = self.root.join("catalog.bin");
+            let checkpoint_bytes = self.checkpoint_bytes.to_string();
             drop(self.reservations[i].take());
             let node = processes::start(
                 env!("CARGO_BIN_EXE_metaserver"),
@@ -830,6 +844,10 @@ mod coupled_groups {
                     ("MATRIXOBJECT_METASERVER_ADDR", &self.api[i]),
                     ("MATRIXOBJECT_METASERVER_RAFT_PEERS", &self.peers),
                     ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", &id),
+                    (
+                        "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
+                        &checkpoint_bytes,
+                    ),
                     (
                         "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
                         state.to_str().unwrap(),
@@ -1188,6 +1206,7 @@ mod coupled_groups {
                 let mut g = Group::configured(64 * 1024 * 1024);
                 g.group_id = i as u64 + 1;
                 g.max_pages = 2048;
+                g.checkpoint_bytes = 16 * 1024;
                 g.heartbeat_ms = "1000";
                 g
             })
@@ -1217,6 +1236,20 @@ mod coupled_groups {
         }
         let leader = metadata.ready().endpoint().to_string();
         let leader = metadata.api.iter().position(|a| *a == leader).unwrap();
+        node_regime::checkpoints::wait_for_checkpoint(
+            &metadata
+                .root
+                .join(leader.to_string())
+                .join("metadata.peer.wal"),
+            2,
+        );
+        for group in &groups {
+            let leader = group.leader();
+            node_regime::checkpoints::wait_for_checkpoint(
+                &group.root.join(leader.to_string()).join("chunk.peer.wal"),
+                2,
+            );
+        }
         metadata.kill(leader);
         for group in &mut groups {
             let leader = group.leader();
@@ -1308,4 +1341,86 @@ fn chunk_quorum_reads_leave_the_wal_unchanged_and_refuse_a_minority() {
     }
     assert!(client.read_chunk(&page(0), 0, 15).is_err());
     assert!(group.client(leader).ping().is_err());
+}
+
+#[test]
+fn chunk_checkpoints_reclaim_history_transfer_large_state_and_recover_processes() {
+    let mut group = Group::configured(32 * 1024 * 1024);
+    group.checkpoint_bytes = 2 * 1024 * 1024;
+    for id in 0..3 {
+        group.start(id);
+    }
+    let leader = group.leader();
+    let lagging = (leader + 1) % 3;
+    let other = (leader + 2) % 3;
+    group.kill(lagging);
+    let mut client = group.client(leader);
+    let mut expected = Vec::new();
+    for id in 0..9u64 {
+        let bytes = vec![id as u8 + 1; 1024 * 1024];
+        client.write_chunk(page(id), 0, &bytes).unwrap();
+        expected.push(bytes);
+    }
+    for value in 20..36u8 {
+        expected[0].fill(value);
+        client.write_chunk(page(0), 0, &expected[0]).unwrap();
+    }
+    client.discard_chunk(&page(1), 0, 128).unwrap();
+    let heads: Vec<_> = (0..9)
+        .map(|id| client.head_chunk(&page(id)).unwrap())
+        .collect();
+    let wal = group.root.join(leader.to_string()).join("chunk.peer.wal");
+    node_regime::checkpoints::wait_for_checkpoint(&wal, 3);
+    assert!(
+        std::fs::metadata(&wal).unwrap().len() < 20 * 1024 * 1024,
+        "overwritten history was not reclaimed"
+    );
+    group.start(lagging);
+    node_regime::checkpoints::wait_for_checkpoint(
+        &group.root.join(lagging.to_string()).join("chunk.peer.wal"),
+        3,
+    );
+    // This write can commit only with the repaired voter after the other stops.
+    group.kill(other);
+    // Publishing a snapshot does not promise the old leader retains its term.
+    // Confirm a read quorum on the two remaining voters before issuing a write.
+    drop(client);
+    let active = group.leader();
+    let mut client = group.client(active);
+    client
+        .write_chunk(page(20), 0, b"after snapshot transfer")
+        .unwrap();
+    drop(client);
+    group.kill(leader);
+    group.kill(lagging);
+    for id in 0..3 {
+        group.start(id);
+    }
+    let recovered = group.leader();
+    let mut client = group.client(recovered);
+    for id in 0..9 {
+        let offset = if id == 1 { 128 } else { 0 };
+        assert_eq!(
+            client
+                .read_chunk(
+                    &page(id as u64),
+                    offset as u64,
+                    (expected[id].len() - offset) as u64
+                )
+                .unwrap()
+                .data,
+            expected[id][offset..]
+        );
+        assert_eq!(client.head_chunk(&page(id as u64)).unwrap(), heads[id]);
+    }
+    assert_eq!(
+        client.read_chunk(&page(20), 0, 23).unwrap().data,
+        b"after snapshot transfer"
+    );
+    // Recovered payload accounting still enforces the original capacity.
+    let too_large = vec![0; 1024 * 1024];
+    for id in 30..52 {
+        client.write_chunk(page(id), 0, &too_large).unwrap();
+    }
+    assert!(client.write_chunk(page(60), 0, &too_large).is_err());
 }

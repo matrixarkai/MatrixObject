@@ -23,6 +23,7 @@ struct Group {
     roster: Option<String>,
     catalog: Option<PathBuf>,
     heartbeat_ttl: Option<String>,
+    checkpoint_bytes: u64,
 }
 impl Group {
     fn new() -> Self {
@@ -38,6 +39,14 @@ impl Group {
         roster: Option<String>,
         heartbeat_ttl: Option<String>,
         catalog: Option<Vec<u8>>,
+    ) -> Self {
+        Self::with_catalog_checkpoints(roster, heartbeat_ttl, catalog, 0)
+    }
+    fn with_catalog_checkpoints(
+        roster: Option<String>,
+        heartbeat_ttl: Option<String>,
+        catalog: Option<Vec<u8>>,
+        checkpoint_bytes: u64,
     ) -> Self {
         let root = std::env::temp_dir().join(node_regime::run_token("metadata-peers"));
         std::fs::create_dir(&root).unwrap();
@@ -72,6 +81,7 @@ impl Group {
             roster,
             catalog,
             heartbeat_ttl,
+            checkpoint_bytes,
         };
         for i in 0..3 {
             std::fs::create_dir(group.root.join(i.to_string())).unwrap();
@@ -87,6 +97,7 @@ impl Group {
             .collect::<Vec<_>>()
             .join(",");
         let id = (i + 1).to_string();
+        let checkpoint_bytes = self.checkpoint_bytes.to_string();
         let path = self.root.join(i.to_string());
         let bind = self.api_addresses[i].to_string();
         let mut environment = vec![
@@ -98,6 +109,10 @@ impl Group {
                 path.to_str().unwrap(),
             ),
             ("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", "700"),
+            (
+                "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
+                checkpoint_bytes.as_str(),
+            ),
         ];
         let roster = self.roster.as_ref().map(|roster| {
             let mut entries: Vec<_> = roster.split(',').collect();
@@ -302,6 +317,7 @@ fn a_slow_peer_connection_does_not_prevent_shutdown() {
     let mut server = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
     server
         .enable_raft(MetaRaftOptions {
+            checkpoint_after_bytes: 0,
             node_id: 1,
             group_id: 1,
             peers: BTreeMap::from([(1, address)]),
@@ -379,6 +395,7 @@ fn peer_storage_refuses_missing_zeroed_or_reidentified_history() {
     let address = reserved.local_addr().unwrap();
     drop(reserved);
     let options = MetaRaftOptions {
+        checkpoint_after_bytes: 0,
         node_id: 1,
         group_id: 1,
         peers: BTreeMap::from([(1, address)]),
@@ -900,4 +917,103 @@ fn metadata_quorum_reads_leave_the_wal_unchanged_and_refuse_a_minority() {
     }
     assert!(client.object_placement("bucket", "readable").is_err());
     assert!(group.client(leader).probe().into_result().is_err());
+}
+
+#[test]
+fn metadata_checkpoints_restore_placements_roster_and_lagging_processes() {
+    let mut group = Group::with_catalog_checkpoints(None, None, None, 4096);
+    let leader = group.leader();
+    let lagging = (leader + 1) % 3;
+    let other = (leader + 2) % 3;
+    group.kill(lagging);
+    let mut client = group.client(leader);
+    let mut saved = Vec::new();
+    for id in 0..80u64 {
+        let plan = client
+            .plan_object_placement("bucket", &format!("checkpoint-{id}"), 1024, 2)
+            .unwrap();
+        let placement = CommittedPlacement {
+            bucket: plan.bucket,
+            key: plan.key,
+            length: plan.length,
+            node_ids: plan.node_ids,
+            version: 1,
+            update_time_ms: id + 10,
+        };
+        saved.push(
+            client
+                .commit_object_placement(placement, &plan.plan_checksum)
+                .unwrap(),
+        );
+    }
+    client
+        .heartbeat_placement_node("data-0", 12345, 1 << 30, true, true, 900)
+        .unwrap();
+    let roster = client.list_placement_nodes().unwrap();
+    node_regime::checkpoints::wait_for_checkpoint(
+        &group
+            .root
+            .join(leader.to_string())
+            .join("metadata.peer.wal"),
+        2,
+    );
+    group.start(lagging);
+    node_regime::checkpoints::wait_for_checkpoint(
+        &group
+            .root
+            .join(lagging.to_string())
+            .join("metadata.peer.wal"),
+        2,
+    );
+    group.kill(other);
+    // Publishing a snapshot does not promise the old leader retains its term.
+    // Confirm a read quorum on the two remaining voters before issuing a write.
+    drop(client);
+    let active = group.leader();
+    let mut client = group.client(active);
+    client
+        .heartbeat_placement_node("data-1", 777, 1 << 30, true, false, 901)
+        .unwrap();
+    let final_roster = client.list_placement_nodes().unwrap();
+    assert_ne!(final_roster, roster);
+    drop(client);
+    group.kill(leader);
+    group.kill(lagging);
+    for id in 0..3 {
+        group.start(id);
+    }
+    let recovered = group.leader();
+    let mut client = group.client(recovered);
+    for placement in saved {
+        assert_eq!(
+            client
+                .object_placement(&placement.bucket, &placement.key)
+                .unwrap(),
+            placement
+        );
+    }
+    assert_eq!(client.list_placement_nodes().unwrap(), final_roster);
+    // Persisted draining/offline nodes must remain ineligible after recovery.
+    assert!(client
+        .plan_object_placement("bucket", "after-recovery", 64, 2)
+        .is_err());
+    client
+        .heartbeat_placement_node("data-1", 777, 1 << 30, false, true, 902)
+        .unwrap();
+    let plan = client
+        .plan_object_placement("bucket", "after-recovery", 64, 2)
+        .unwrap();
+    client
+        .commit_object_placement(
+            CommittedPlacement {
+                bucket: plan.bucket,
+                key: plan.key,
+                length: plan.length,
+                node_ids: plan.node_ids,
+                version: 1,
+                update_time_ms: 902,
+            },
+            &plan.plan_checksum,
+        )
+        .unwrap();
 }

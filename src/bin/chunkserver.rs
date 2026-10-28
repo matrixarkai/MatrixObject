@@ -19,6 +19,7 @@
 //!
 //! | variable | default | meaning |
 //! |---|---|---|
+//! | `MATRIXOBJECT_CHUNK_RAFT_CHECKPOINT_BYTES` | `0` | opt-in WAL checkpoint interval; 1024..134217728 bytes when enabled |
 //! | `MATRIXOBJECT_REPLICA_ADDR` | `127.0.0.1:17300` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_CHUNK_NODE_ID` | *(unset)* | configured metadata roster ID; enables reports with the catalog |
 //! | `MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS` | *(unset)* | comma-separated metaserver API IP sockets, 1..7 |
@@ -124,6 +125,7 @@ fn main() {
             "MATRIXOBJECT_CHUNK_RAFT_STATE_DIR",
             "MATRIXOBJECT_CHUNK_RAFT_GROUP_ID",
             "MATRIXOBJECT_CHUNK_RAFT_TIMEOUT_MS",
+            "MATRIXOBJECT_CHUNK_RAFT_CHECKPOINT_BYTES",
         ]
         .iter()
         .any(|name| std::env::var_os(name).is_some())
@@ -189,6 +191,8 @@ fn main() {
                     .ok_or("missing Raft state directory")?
                     .into();
                 Ok(matrixobjectstore_rs::cluster::ChunkRaftOptions {
+                    checkpoint_after_bytes: env_usize("MATRIXOBJECT_CHUNK_RAFT_CHECKPOINT_BYTES", 0)
+                        as u64,
                     node_id,
                     group_id: env_usize("MATRIXOBJECT_CHUNK_RAFT_GROUP_ID", 1) as u64,
                     peers,

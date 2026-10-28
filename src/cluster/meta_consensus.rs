@@ -4,6 +4,7 @@
 use super::meta_message::{MetaReply, MetaRequest};
 use super::meta_server::apply_with_groups;
 use super::shutdown::ServerShutdown;
+use crate::cluster::consensus_checkpoint::{storage, Image, Policy};
 use crate::placement_outcome::PlacementOutcome;
 use crate::{MatrixMetaService, MetaSnapshot, ObjectError};
 use matrixraft::{
@@ -11,6 +12,7 @@ use matrixraft::{
     LogId, RaftError,
 };
 use prost::Message;
+use std::cell::{Cell, RefCell};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{File, OpenOptions},
@@ -38,6 +40,9 @@ pub struct MetaRaftOptions {
     pub peers: BTreeMap<u64, SocketAddr>,
     pub directory: PathBuf,
     pub request_timeout: Duration,
+    /// Reclaim this many newly persisted WAL bytes; zero disables capture.
+    /// Enable only after every voter supports application checkpoint restoration.
+    pub checkpoint_after_bytes: u64,
 }
 #[derive(Clone, PartialEq, Message)]
 struct Entry {
@@ -118,6 +123,8 @@ impl MetaConsensus {
         }
         let base = directory.join("metadata.peer.base");
         let wal = directory.join("metadata.peer.wal");
+        let checkpoint =
+            Policy::new(1, wal.clone(), options.checkpoint_after_bytes).map_err(invalid)?;
         if base.exists() != wal.exists() {
             return Err(invalid("incomplete metadata peer storage"));
         }
@@ -250,6 +257,7 @@ impl MetaConsensus {
                 outgoing,
                 &worker_stop,
                 limit,
+                checkpoint,
             ) {
                 worker_failed.store(true, Ordering::SeqCst);
                 eprintln!("metadata consensus stopped: {error}");
@@ -304,12 +312,13 @@ fn run(
     outgoing: BTreeMap<u64, SyncSender<Vec<u8>>>,
     stop: &ServerShutdown,
     limit: usize,
+    mut checkpoint: Policy,
 ) -> Result<(), RaftError> {
     let mut tick = Instant::now();
     let mut pending: VecDeque<Pending> = VecDeque::new();
     let mut queued = VecDeque::new();
     let mut pending_read: Option<(u64, Vec<Request>)> = None;
-    let mut applied_term = 0;
+    let applied_term = Cell::new(0);
     while !stop.is_stopped() {
         for _ in 0..32 {
             match packets.try_recv() {
@@ -323,11 +332,29 @@ fn run(
             peer.tick()?;
             tick = Instant::now();
         }
-        let output = peer.process_ready(|id, bytes| {
-            applied_term = id.term;
-            apply_committed(service, groups, limit, &mut pending, id, bytes)?;
-            Ok(())
-        })?;
+        let application = RefCell::new(&mut *service);
+        let output = peer.process_ready_with_snapshot(
+            |id, bytes| {
+                applied_term.set(id.term);
+                apply_committed(
+                    &mut application.borrow_mut(),
+                    groups,
+                    limit,
+                    &mut pending,
+                    id,
+                    bytes,
+                )?;
+                Ok(())
+            },
+            |id, bytes| {
+                let restored = restore_checkpoint(bytes, id.clone(), groups)?;
+                **application.borrow_mut() = restored;
+                applied_term.set(id.term);
+                checkpoint.restored(id.index);
+                Ok(())
+            },
+        )?;
+        drop(application);
         for packet in output {
             if let Some(tx) = outgoing.get(&packet.to) {
                 let _ = tx.try_send(packet.bytes);
@@ -362,13 +389,16 @@ fn run(
         // No new batch is prepared until all earlier accepted outcomes apply or
         // leadership changes. A client timeout alone does not remove a proposal.
         if pending.is_empty() && pending_read.is_none() {
+            checkpoint.maybe_checkpoint(peer, applied_term.get(), || {
+                Ok((service.export_snapshot().to_bytes()?, groups.to_bytes()?))
+            })?;
             while queued.len() < PROPOSALS_PER_BATCH {
                 match requests.try_recv() {
                     Ok(request) => queued.push_back(request),
                     Err(_) => break,
                 }
             }
-            if !peer.is_leader() || applied_term != peer.term() {
+            if !peer.is_leader() || applied_term.get() != peer.term() {
                 for request in queued.drain(..) {
                     let _ = request.reply.try_send(Ok(MetaReply::NotLeader));
                 }
@@ -410,6 +440,25 @@ fn run(
         thread::sleep(Duration::from_millis(2));
     }
     Ok(())
+}
+
+fn restore_checkpoint(
+    bytes: &[u8],
+    id: LogId,
+    groups: &super::ChunkGroupCatalog,
+) -> Result<MatrixMetaService, RaftError> {
+    let image = Image::decode_at(bytes, 1, id)?;
+    if image.catalog != groups.to_bytes().map_err(storage)? {
+        return Err(storage("metadata checkpoint group catalog mismatch"));
+    }
+    let snapshot = MetaSnapshot::from_bytes(&image.state).map_err(storage)?;
+    let mut service = MatrixMetaService::new();
+    service
+        .install_placement_roster(&snapshot)
+        .map_err(storage)?;
+    service.install_snapshot(snapshot).map_err(storage)?;
+    groups.validate_roster(&service).map_err(storage)?;
+    Ok(service)
 }
 fn read_only(request: &MetaRequest) -> bool {
     match request {
@@ -823,6 +872,23 @@ mod tests {
             .apply(service)
             .unwrap();
         assert_eq!(state(service), state(&candidate));
+    }
+
+    #[test]
+    fn application_checkpoint_restores_placement_health_and_checks_catalog() {
+        let (mut service, groups) = fixture(4, 30);
+        apply_with_groups(&mut service, heartbeat(), 16 * 1024 * 1024, &groups).unwrap();
+        let saved = state(&service);
+        let id = LogId {
+            index: 150,
+            term: 9,
+        };
+        let bytes =
+            Image::new(1, id.clone(), saved.0.clone(), groups.to_bytes().unwrap()).encode_to_vec();
+        let restored = restore_checkpoint(&bytes, id.clone(), &groups).unwrap();
+        assert_eq!(state(&restored), saved);
+        assert!(restore_checkpoint(&bytes, id, &ChunkGroupCatalog::default()).is_err());
+        assert_eq!(state(&service), saved);
     }
     #[test]
     fn preparation_restores_state_and_replays_identical_outcomes() {

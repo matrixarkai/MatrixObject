@@ -65,10 +65,10 @@ joins the consensus and network workers.
 
 This is an integration stage, not a production-readiness claim. Peer traffic is
 unauthenticated and unencrypted; use an isolated test network. Membership changes,
-snapshot transfer, WAL compaction, authenticated transport, and
-large-scale validation remain required. Each read currently appends a barrier and
-each mutation clones metadata to prepare its outcome; these costs must be addressed
-before scale claims. The underlying WAL stops writes at its 512 MiB bound.
+authenticated transport, file-backed snapshots for larger state, and
+large-scale validation remain required. Reads use quorum confirmation without
+appending entries. Mutations prepare changes against committed state and batch
+ordered proposals; these paths still require deployment-scale measurement. The underlying WAL stops writes at its 512 MiB bound.
 
 The process tests exercise three independent servers, leader termination, quorum
 loss, complete restart, binary outcome replay, storage identity, election no-op
@@ -150,5 +150,43 @@ metaserver leader loss, killed-chunk expiry, exclusion from new placement, and
 journal-backed chunk recovery. Additional tests cover wrong endpoints, draining,
 storage failure, binary request truncation, bounded shutdown, partial configuration,
 and a single-node expiry within a 1024-node roster. These are functional checks,
-not a large-scale throughput result. Full HTTP integration, authentication, membership changes, and log compaction
+not a large-scale throughput result. Full HTTP integration, authentication, membership changes, and file-backed snapshots for larger state
 remain separate work. Network chunk Raft is described in `chunk-consensus.md`.
+
+## Application checkpoint recovery
+
+After upgrading every voter, set `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES`
+to enable automatic capture, for example `33554432` (32 MiB of new WAL history).
+The default is `0`, which disables capture for a controlled rolling upgrade.
+Nonzero values must be between 1024 and 134217728 bytes. Library callers use
+`checkpoint_after_bytes` in their Raft options. The setting does not change group
+identity and may differ between voters; every voter must support restoration.
+
+Capture runs on the exclusive application worker after earlier proposals and
+reads settle. The canonical binary protobuf envelope in `proto/node_checkpoint.proto`
+binds service kind and exact applied Raft position to the validated binary service
+snapshot. Recovery restores that state before applying later protobuf outcomes.
+Metadata restoration rebuilds the placement roster and checks the immutable group
+catalog. Chunk restoration preserves page contents, discards and receipts, checks
+configured capacity/page limits, and reconstructs physical used-byte accounting.
+
+MatrixRaft publishes a synced replacement WAL atomically while retaining the
+uncommitted suffix. A lagging voter receives the checkpoint through bounded peer
+fragments; it persists and restores application state before acknowledging Raft
+progress. Small checkpoints use inline records; larger ones use segmented records.
+Keep the `.runtime.lock` sidecar together with the WAL. Do not downgrade a voter
+after checkpoints have been enabled: older runtimes refuse these records.
+
+The encoded application checkpoint is limited to 256 MiB and remains memory-backed.
+Capture and restoration can temporarily retain several copies and delay requests.
+If state exceeds the limit, the server reports that it is retaining WAL history
+and retries only after another configured interval. It does not discard data or
+truncate history to fit. The WAL still stops writes at 512 MiB; deployments with
+larger state require a file-backed snapshot API. This setting is not a substitute
+for that work or a claim of production readiness.
+
+Process tests exercise repeated compaction, catch-up after an offline interval,
+and total restart. Chunk tests transfer state larger than one peer frame and
+check subsequent writes, page state and capacity enforcement. Metadata tests
+check placements and health roster recovery. These are functional fault tests,
+not power-loss or multi-host throughput measurements.

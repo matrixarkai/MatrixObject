@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 //! One durable chunk voter with bounded TCP delivery and committed read barriers.
 use super::{apply_to_replica, NodeReplica};
+use crate::cluster::consensus_checkpoint::{storage, Image, Policy};
 use crate::cluster::message::{ChunkGroupIdentity, ReplicaReply, ReplicaRequest};
 use crate::cluster::shutdown::ServerShutdown;
 use crate::outcome::PageOutcome;
@@ -11,6 +12,7 @@ use matrixraft::{
     LogId, RaftError,
 };
 use prost::Message;
+use std::cell::{Cell, RefCell};
 use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
@@ -37,6 +39,9 @@ pub struct ChunkRaftOptions {
     pub peers: BTreeMap<u64, SocketAddr>,
     pub directory: PathBuf,
     pub request_timeout: Duration,
+    /// Reclaim this many newly persisted WAL bytes; zero disables capture.
+    /// Enable only after every voter supports application checkpoint restoration.
+    pub checkpoint_after_bytes: u64,
 }
 #[derive(Clone, PartialEq, Message)]
 struct Entry {
@@ -145,6 +150,8 @@ impl ChunkConsensus {
         };
         let base = directory.join("chunk.peer.base");
         let wal = directory.join("chunk.peer.wal");
+        let checkpoint =
+            Policy::new(2, wal.clone(), options.checkpoint_after_bytes).map_err(invalid)?;
         if base.exists() != wal.exists() {
             return Err(invalid("incomplete chunk peer storage"));
         }
@@ -279,6 +286,7 @@ impl ChunkConsensus {
                 outgoing,
                 &worker_stop,
                 limit,
+                checkpoint,
             ) {
                 if let Ok(mut node) = state.lock() {
                     node.failed = true;
@@ -341,11 +349,12 @@ fn run(
     outgoing: BTreeMap<u64, SyncSender<Vec<u8>>>,
     stop: &ServerShutdown,
     limit: usize,
+    mut checkpoint: Policy,
 ) -> Result<(), RaftError> {
     let mut tick = Instant::now();
     let mut pending: Option<Pending> = None;
     let mut pending_read: Option<(u64, Request)> = None;
-    let mut applied_term = 0;
+    let applied_term = Cell::new(0);
     while !stop.is_stopped() {
         for _ in 0..32 {
             match packets.try_recv() {
@@ -362,46 +371,58 @@ fn run(
         let mut node = state
             .lock()
             .map_err(|_| RaftError::Storage("chunk state poisoned".into()))?;
-        let output = peer.process_ready(|id, bytes| {
-            if !bytes.is_empty() {
-                let entry = Entry::decode(bytes).map_err(|e| RaftError::Storage(e.to_string()))?;
-                if entry.version != 1 || entry.encode_to_vec() != bytes {
-                    return Err(RaftError::Storage("invalid chunk consensus entry".into()));
-                }
-                if !entry.outcome.is_empty() {
-                    let outcome = PageOutcome::from_payload(&entry.outcome)
-                        .map_err(|e| RaftError::Storage(e.to_string()))?;
-                    let page = outcome
-                        .page_id()
-                        .map_err(|e| RaftError::Storage(e.to_string()))?;
-                    let before = node.service.page_physical_len(&page);
-                    let max_pages = node.max_pages;
-                    outcome
-                        .apply(&mut node.service, max_pages)
-                        .map_err(|e| RaftError::Storage(e.to_string()))?;
-                    node.used_bytes = node
-                        .used_bytes
-                        .checked_sub(before)
-                        .and_then(|n| n.checked_add(node.service.page_physical_len(&page)))
-                        .ok_or_else(|| {
-                            RaftError::Storage("chunk usage accounting overflow".into())
-                        })?;
-                }
-            }
-            applied_term = id.term;
-            if pending.as_ref().is_some_and(|p| p.id == id) {
-                let p = pending.take().unwrap();
-                let reply = match p.reply {
-                    Some(reply) => reply,
-                    None => {
-                        let max_pages = node.max_pages;
-                        checked_apply(&mut node.service, p.request.request, max_pages, limit)
+        let application = RefCell::new(&mut *node);
+        let output = peer.process_ready_with_snapshot(
+            |id, bytes| {
+                let mut node = application.borrow_mut();
+                if !bytes.is_empty() {
+                    let entry =
+                        Entry::decode(bytes).map_err(|e| RaftError::Storage(e.to_string()))?;
+                    if entry.version != 1 || entry.encode_to_vec() != bytes {
+                        return Err(RaftError::Storage("invalid chunk consensus entry".into()));
                     }
-                };
-                let _ = p.request.reply.try_send(reply);
-            }
-            Ok(())
-        })?;
+                    if !entry.outcome.is_empty() {
+                        let outcome = PageOutcome::from_payload(&entry.outcome)
+                            .map_err(|e| RaftError::Storage(e.to_string()))?;
+                        let page = outcome
+                            .page_id()
+                            .map_err(|e| RaftError::Storage(e.to_string()))?;
+                        let before = node.service.page_physical_len(&page);
+                        let max_pages = node.max_pages;
+                        outcome
+                            .apply(&mut node.service, max_pages)
+                            .map_err(|e| RaftError::Storage(e.to_string()))?;
+                        node.used_bytes = node
+                            .used_bytes
+                            .checked_sub(before)
+                            .and_then(|n| n.checked_add(node.service.page_physical_len(&page)))
+                            .ok_or_else(|| {
+                                RaftError::Storage("chunk usage accounting overflow".into())
+                            })?;
+                    }
+                }
+                applied_term.set(id.term);
+                if pending.as_ref().is_some_and(|p| p.id == id) {
+                    let p = pending.take().unwrap();
+                    let reply = match p.reply {
+                        Some(reply) => reply,
+                        None => {
+                            let max_pages = node.max_pages;
+                            checked_apply(&mut node.service, p.request.request, max_pages, limit)
+                        }
+                    };
+                    let _ = p.request.reply.try_send(reply);
+                }
+                Ok(())
+            },
+            |id, bytes| {
+                restore_checkpoint(&mut application.borrow_mut(), bytes, id.clone())?;
+                applied_term.set(id.term);
+                checkpoint.restored(id.index);
+                Ok(())
+            },
+        )?;
+        drop(application);
         for packet in output {
             if let Some(tx) = outgoing.get(&packet.to) {
                 let _ = tx.try_send(packet.bytes);
@@ -436,12 +457,15 @@ fn run(
         // A timed-out accepted proposal remains pending until applied or leadership changes.
         // Proposing a second outcome against the same old state would be invalid.
         if pending.is_none() && pending_read.is_none() {
+            checkpoint.maybe_checkpoint(peer, applied_term.get(), || {
+                Ok((node.service.export_snapshot().to_bytes()?, Vec::new()))
+            })?;
             if let Ok(request) = requests.try_recv() {
                 if request.deadline <= Instant::now() {
                     let _ = request
                         .reply
                         .try_send(Err(refused("chunk request expired before proposal")));
-                } else if !peer.is_leader() || applied_term != peer.term() {
+                } else if !peer.is_leader() || applied_term.get() != peer.term() {
                     let _ = request.reply.try_send(Ok(ReplicaReply::NotLeader));
                 } else {
                     if read_only(&request.request) {
@@ -475,6 +499,30 @@ fn run(
         drop(node);
         thread::sleep(Duration::from_millis(2));
     }
+    Ok(())
+}
+
+fn restore_checkpoint(node: &mut NodeReplica, bytes: &[u8], id: LogId) -> Result<(), RaftError> {
+    let image = Image::decode_at(bytes, 2, id)?;
+    if !image.catalog.is_empty() {
+        return Err(storage("chunk checkpoint contains a metadata catalog"));
+    }
+    let snapshot = crate::ReplicaServiceSnapshot::from_bytes(&image.state).map_err(storage)?;
+    if snapshot.capacity_bytes != node.service.capacity_bytes()
+        || snapshot.pages.len() > node.max_pages
+    {
+        return Err(storage(
+            "chunk checkpoint exceeds or changes configured limits",
+        ));
+    }
+    let mut service = MatrixReplicaService::new();
+    service.install_snapshot(snapshot).map_err(storage)?;
+    let used_bytes = service.physical_bytes();
+    if used_bytes > node.service.capacity_bytes() {
+        return Err(storage("chunk checkpoint exceeds configured byte capacity"));
+    }
+    node.service = service;
+    node.used_bytes = used_bytes;
     Ok(())
 }
 fn read_only(request: &ReplicaRequest) -> bool {
@@ -566,4 +614,72 @@ fn write_until(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> i
         bytes = &bytes[n..];
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    fn node(capacity: u64, max_pages: usize) -> NodeReplica {
+        let mut service = MatrixReplicaService::new();
+        service.set_capacity_bytes(capacity).unwrap();
+        NodeReplica {
+            service,
+            journal: None,
+            max_pages,
+            used_bytes: 0,
+            failed: false,
+        }
+    }
+    #[test]
+    fn checkpoint_restores_pages_discards_and_usage_without_changing_limits() {
+        let mut original = node(8192, 4);
+        for index in 0..2 {
+            let page = crate::PageId {
+                chunk_id: crate::ChunkId::new(1, 2).unwrap(),
+                page_index: index,
+            };
+            apply_to_replica(
+                &mut original.service,
+                ReplicaRequest::WriteChunk {
+                    page_id: page.clone(),
+                    offset: 128,
+                    data: vec![index as u8 + 1; 256],
+                },
+                4,
+            )
+            .unwrap();
+            apply_to_replica(
+                &mut original.service,
+                ReplicaRequest::DiscardChunk {
+                    page_id: page,
+                    offset: 0,
+                    length: 16,
+                },
+                4,
+            )
+            .unwrap();
+        }
+        let id = LogId { index: 17, term: 4 };
+        let snapshot = original.service.export_snapshot().to_bytes().unwrap();
+        let bytes = Image::new(2, id.clone(), snapshot.clone(), Vec::new()).encode_to_vec();
+        let mut restored = node(8192, 4);
+        restore_checkpoint(&mut restored, &bytes, id.clone()).unwrap();
+        assert_eq!(
+            restored.service.export_snapshot().to_bytes().unwrap(),
+            snapshot
+        );
+        assert_eq!(restored.used_bytes, 768);
+        for (capacity, pages) in [(4096, 4), (8192, 1)] {
+            let mut refused_node = node(capacity, pages);
+            let before = refused_node.service.export_snapshot().to_bytes().unwrap();
+            assert!(restore_checkpoint(&mut refused_node, &bytes, id.clone()).is_err());
+            assert_eq!(
+                refused_node.service.export_snapshot().to_bytes().unwrap(),
+                before
+            );
+            assert_eq!(refused_node.used_bytes, 0);
+        }
+        let unexpected = Image::new(2, id.clone(), snapshot, vec![1]).encode_to_vec();
+        assert!(restore_checkpoint(&mut restored, &unexpected, id).is_err());
+    }
 }

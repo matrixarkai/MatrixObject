@@ -170,23 +170,18 @@ impl ReplicaServiceSnapshot {
             let logical_length = cursor.read_u64()?;
             let write_sequence = cursor.read_u64()?;
             let checksum = cursor.read_string()?;
-            let data_len = cursor.read_count("chunk service snapshot payload length")?;
-            let data = std::sync::Arc::new(cursor.read_bytes(data_len)?.to_vec());
+            let data = std::sync::Arc::new(cursor.read_blob()?.to_vec());
             let ec_parity_fragment = if version >= 22 {
-                let parity_len = cursor.read_count("chunk service snapshot EC parity length")?;
-                std::sync::Arc::new(cursor.read_bytes(parity_len)?.to_vec())
+                std::sync::Arc::new(cursor.read_blob()?.to_vec())
             } else if version >= 6 {
                 // v6..21 carried a verbatim mirror of the payload ahead of the
                 // parity. Skip the mirror; the parity is all that is kept now.
                 let data_shard_count =
                     cursor.read_count("chunk service snapshot EC data shard count")?;
                 for _ in 0..data_shard_count {
-                    let shard_len =
-                        cursor.read_count("chunk service snapshot EC data shard length")?;
-                    let _ = cursor.read_bytes(shard_len)?;
+                    let _ = cursor.read_blob()?;
                 }
-                let parity_len = cursor.read_count("chunk service snapshot EC parity length")?;
-                std::sync::Arc::new(cursor.read_bytes(parity_len)?.to_vec())
+                std::sync::Arc::new(cursor.read_blob()?.to_vec())
             } else {
                 std::sync::Arc::new(chunk_ec_parity_from_data(&data))
             };

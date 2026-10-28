@@ -72,6 +72,13 @@ impl<'a> SnapshotByteCursor<'a> {
         Ok(value)
     }
 
+    pub(crate) fn read_blob(&mut self) -> Result<&'a [u8], ObjectError> {
+        let length = usize::try_from(self.read_u64()?).map_err(|_| {
+            ObjectError::Corruption("snapshot byte length exceeds platform bounds".into())
+        })?;
+        self.read_bytes(length)
+    }
+
     pub(crate) fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], ObjectError> {
         let end = self
             .cursor
@@ -85,5 +92,30 @@ impl<'a> SnapshotByteCursor<'a> {
         let out = &self.data[self.cursor..end];
         self.cursor = end;
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod snapshot_byte_cursor_tests {
+    use super::*;
+    #[test]
+    fn byte_lengths_use_available_input_while_item_counts_remain_bounded() {
+        let length = 1024 * 1024;
+        let mut bytes = (length as u64).to_le_bytes().to_vec();
+        bytes.extend(vec![7; length]);
+        let mut cursor = SnapshotByteCursor::new(&bytes);
+        let payload = cursor.read_blob().unwrap();
+        assert_eq!(payload.len(), length);
+        assert!(payload.iter().all(|b| *b == 7));
+        assert_eq!(cursor.position(), bytes.len());
+        let mut cursor = SnapshotByteCursor::new(&bytes);
+        assert!(cursor.read_count("items").is_err());
+    }
+    #[test]
+    fn byte_lengths_refuse_truncation_and_overflow_before_allocation() {
+        for length in [1u64, 1024 * 1024, u64::MAX] {
+            let bytes = length.to_le_bytes();
+            assert!(SnapshotByteCursor::new(&bytes).read_blob().is_err());
+        }
     }
 }
