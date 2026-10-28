@@ -4514,8 +4514,9 @@ fn chunk_service_batches_coalesce_reads_and_discards() {
     assert_eq!(batch_stats.read_stats.physical_chunk_read_count, 4);
     assert_eq!(batch_stats.read_stats.metadata_head_batch_requests, 2);
     assert_eq!(batch_stats.read_stats.metadata_physical_head_count, 4);
-    assert_eq!(batch_stats.read_stats.metadata_coalesced_head_count, 2);
-    assert_eq!(batch_stats.read_stats.metadata_cache_hits, 2);
+    // Page IDs were already deduplicated before the replica metadata lookup.
+    assert_eq!(batch_stats.read_stats.metadata_coalesced_head_count, 0);
+    assert_eq!(batch_stats.read_stats.metadata_cache_hits, 0);
     assert_eq!(batch_stats.read_stats.metadata_cache_misses, 4);
     assert_eq!(batch_stats.read_stats.quorum_verified_chunks, 2);
     assert!(matches!(
@@ -11649,7 +11650,7 @@ fn rust_distributed_readiness_fences_checksums() {
             .get("distributed_readiness_checksum"),
         Some(&readiness.control_checksum)
     );
-    assert_eq!(readiness.control_checksum_format, "MOSRSOBJECTREADY68");
+    assert_eq!(readiness.control_checksum_format, "MOSRSOBJECTREADY77");
     assert_eq!(
         readiness
             .to_control_fields("")
@@ -11677,6 +11678,21 @@ fn rust_distributed_readiness_fences_checksums() {
             Some("fnv1a64:0000000000000000"),
         ),
         Err(ObjectError::PreconditionFailed(_))
+    ));
+    assert!(matches!(
+        verify_objectstore_distributed_readiness_checksum(
+            &readiness,
+            None,
+            Some("unsupported-format"),
+            None
+        ),
+        Err(ObjectError::PreconditionFailed(_))
+    ));
+    let mut damaged = readiness.clone();
+    damaged.control_checksum = "fnv1a64:0000000000000000".to_string();
+    assert!(matches!(
+        verify_objectstore_distributed_readiness_checksum(&damaged, None, None, None),
+        Err(ObjectError::Corruption(_))
     ));
 }
 
@@ -46323,7 +46339,7 @@ fn a_storage_class_is_one_byte_and_its_wire_is_still_a_name() {
 
 #[test]
 fn every_guard_the_workflow_pins_by_name_exists() {
-    // CI runs thirty-odd guards as their own steps, each naming one test with `--exact`.
+    // CI runs named guards as separate steps, each selecting one test with `--exact`.
     // `cargo test <filter>` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so every step greps its
     // own output for `test result: ok. 1 passed` and fails with "the guard did not run"
     // otherwise. That is what caught two renames in this change -- but it caught them in CI,
@@ -46340,14 +46356,48 @@ fn every_guard_the_workflow_pins_by_name_exists() {
         .expect("the test harness should list its tests");
     assert!(output.status.success(), "listing compiled tests failed");
     let listing = String::from_utf8(output.stdout).unwrap();
-    let compiled: Vec<&str> = listing.lines().filter_map(|line| line.strip_suffix(": test")).collect();
-    assert!(compiled.len() >= 25, "the compiled test list must not be empty");
+    let compiled: Vec<&str> = listing
+        .lines()
+        .filter_map(|line| line.strip_suffix(": test"))
+        .collect();
+    assert!(
+        compiled.len() >= 25,
+        "the compiled test list must not be empty"
+    );
 
     // `tests::<name>` is how the workflow spells a filter. Taken from the workflow rather
     // than from a list kept here, so a step ADDED later is covered without anyone
     // remembering to add it twice.
     let mut pinned: Vec<&str> = Vec::new();
+    // Validate every available test in this harness. Optional tests absent from
+    // this build are checked by the all-feature invocation in CI.
+    let mut requested_features_enabled = true;
+    let mut unavailable = BTreeSet::new();
     for line in WORKFLOW.lines() {
+        if line.trim_start().starts_with("cargo test ") {
+            requested_features_enabled = true;
+        }
+        let mut words = line.split_whitespace();
+        while let Some(word) = words.next() {
+            if word == "--all-features" {
+                requested_features_enabled &= cfg!(all(
+                    feature = "matrix-raft",
+                    feature = "metadata-consensus",
+                    feature = "chunk-consensus"
+                ));
+            }
+            if word == "--features" {
+                for feature in words.next().expect("features need a value").split(',') {
+                    let enabled = match feature {
+                        "matrix-raft" => cfg!(feature = "matrix-raft"),
+                        "metadata-consensus" => cfg!(feature = "metadata-consensus"),
+                        "chunk-consensus" => cfg!(feature = "chunk-consensus"),
+                        _ => panic!("workflow guard must account for feature {feature}"),
+                    };
+                    requested_features_enabled &= enabled;
+                }
+            }
+        }
         let Some(at) = line.find("tests::") else {
             continue;
         };
@@ -46356,7 +46406,15 @@ fn every_guard_the_workflow_pins_by_name_exists() {
             .next()
             .unwrap_or("");
         if !name.is_empty() {
-            pinned.push(name);
+            if requested_features_enabled
+                || compiled
+                    .iter()
+                    .any(|test| test.ends_with(&format!("::{name}")))
+            {
+                pinned.push(name);
+            } else {
+                unavailable.insert(name);
+            }
         }
     }
     pinned.sort_unstable();
@@ -46371,7 +46429,11 @@ fn every_guard_the_workflow_pins_by_name_exists() {
     let missing: Vec<&str> = pinned
         .iter()
         .copied()
-        .filter(|name| !compiled.iter().any(|test| test.ends_with(&format!("::{name}"))))
+        .filter(|name| {
+            !compiled
+                .iter()
+                .any(|test| test.ends_with(&format!("::{name}")))
+        })
         .collect();
     assert!(
         missing.is_empty(),
@@ -46379,7 +46441,20 @@ fn every_guard_the_workflow_pins_by_name_exists() {
          rename them in the workflow too, or the step will pass nothing and report that it \
          ran no guard"
     );
-    println!("WORKFLOWPINS {} pinned guards, all present", pinned.len());
+    if cfg!(all(
+        feature = "metadata-consensus",
+        feature = "chunk-consensus"
+    )) {
+        assert!(
+            unavailable.is_empty(),
+            "all-feature validation must check every guard"
+        );
+    }
+    println!(
+        "WORKFLOWPINS {} enabled guards checked; {} need optional features",
+        pinned.len(),
+        unavailable.len()
+    );
 
     // AND THE SPELLING THE STEPS CHECK FOR IS THE ONE CARGO PRINTS. If that line ever
     // changed, every step would fail open -- the grep would never match and the step would
@@ -46387,7 +46462,10 @@ fn every_guard_the_workflow_pins_by_name_exists() {
     // the steps rely on a single test passing, so none of them may name a filter that
     // matches more than one test.
     for name in &pinned {
-        let matches = compiled.iter().filter(|test| test.ends_with(&format!("::{name}"))).count();
+        let matches = compiled
+            .iter()
+            .filter(|test| test.ends_with(&format!("::{name}")))
+            .count();
         assert_eq!(
             matches, 1,
             "a pinned guard must name exactly one test, and {name} names {matches}"
@@ -46669,19 +46747,18 @@ fn the_readme_describes_the_continuous_integration_it_has() {
         .lines()
         .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
         .count();
-    assert!(
-        recorded > 0,
-        "the baseline should list failures, and it parsed as empty"
-    );
-    assert!(
-        README.contains(&format!("the {recorded} recorded in")),
-        "the README should say {recorded} failures are recorded, which is what \
-         tools/known_failures.txt lists"
-    );
+    if recorded == 0 {
+        assert!(README.contains("There are no recorded library failures."));
+    } else {
+        assert!(
+            README.contains(&format!("the {recorded} recorded in")),
+            "the README should state the number of recorded failures"
+        );
+    }
 
     // 3. "CI does not run the whole library suite." Every `cargo test` in the workflow must
-    //    carry a `tests::` filter -- an unfiltered one would run the suite, and 21 of its
-    //    tests fail, so the step would be red on arrival. Continuations are joined first,
+    //    carry a named filter while CI claims to run only selected guards.
+    //    Continuations are joined first,
     //    because these commands are written across lines with a trailing backslash.
     assert!(
         README.contains("CI does not run the whole library suite"),
@@ -46801,12 +46878,8 @@ fn the_readme_describes_the_continuous_integration_it_has() {
 /// also creates one place where a term can be dropped for every call site at once, so it
 /// wants a guard.
 ///
-/// It is tested here, on the helper, because of what the production callers are: each has
-/// exactly ONE, the apply half of a prepared batch mutation, and every test that drives those
-/// paths is in `tools/known_failures.txt`. Measured rather than assumed -- deleting the bytes
-/// term from each helper and running the whole library suite left it at exactly its recorded
-/// baseline, 412 passing and the same 21 failing, both times. So there was no green path to
-/// hang this on, and a test of the path would have been a test of a path that already fails.
+/// Direct checks keep each folded counter independently observable, alongside
+/// the prepared-batch tests that exercise the production callers.
 #[test]
 fn the_folded_replica_counters_advance_every_term_they_fold() {
     let mut replica = MatrixReplicaService::new();
