@@ -8,14 +8,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         version: u64,
         now_ms: u64,
     ) -> Result<(ObjectData, MetadataRaftReadiness), ObjectError> {
-        self.store.get_object_version_with_metadata_read(
-            bucket,
-            key,
-            version,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        self.read_metadata_at_raft_position(
+            "get object version linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .get_object_version_with_metadata_read(bucket, key, version, options)
             },
         )
     }
@@ -28,18 +27,21 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(AdmittedObjectData, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .get_object_version_with_read_admission_and_metadata_read(
-                bucket,
-                key,
-                version,
-                max_payload_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-            )
+        self.read_metadata_at_raft_position(
+            "get object version with read admission linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .get_object_version_with_read_admission_and_metadata_read(
+                        bucket,
+                        key,
+                        version,
+                        max_payload_bytes,
+                        options,
+                    )
+            },
+        )
     }
 
     pub fn get_object_version_conditional_linearizable(
@@ -50,18 +52,21 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         preconditions: &ObjectReadPreconditions,
         now_ms: u64,
     ) -> Result<(ConditionalObjectData, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .get_object_version_conditional_with_metadata_read(
-                bucket,
-                key,
-                version,
-                preconditions,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-            )
+        self.read_metadata_at_raft_position(
+            "get object version conditional linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .get_object_version_conditional_with_metadata_read(
+                        bucket,
+                        key,
+                        version,
+                        preconditions,
+                        options,
+                    )
+            },
+        )
     }
 
     pub fn get_object_version_conditional_with_read_admission_linearizable(
@@ -73,19 +78,22 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         preconditions: &ObjectReadPreconditions,
         now_ms: u64,
     ) -> Result<(AdmittedConditionalObjectData, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .get_object_version_conditional_with_read_admission_and_metadata_read(
-                bucket,
-                key,
-                version,
-                max_payload_bytes,
-                preconditions,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-            )
+        self.read_metadata_at_raft_position(
+            "get object version conditional with read admission linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .get_object_version_conditional_with_read_admission_and_metadata_read(
+                        bucket,
+                        key,
+                        version,
+                        max_payload_bytes,
+                        preconditions,
+                        options,
+                    )
+            },
+        )
     }
 
     pub fn get_object_version_with_read_proof_linearizable(
@@ -256,5 +264,4 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
             expected_storage_admission_proof_checksum,
         )
     }
-
 }
