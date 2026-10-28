@@ -12,7 +12,7 @@ use matrixraft::{
 };
 use prost::Message;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -26,6 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 const PACKET_LIMIT: usize = 8 * 1024 * 1024;
+const PROPOSALS_PER_BATCH: usize = 8;
 const TICK: Duration = Duration::from_millis(100);
 const NETWORK_TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -305,7 +306,8 @@ fn run(
     limit: usize,
 ) -> Result<(), RaftError> {
     let mut tick = Instant::now();
-    let mut pending: Option<Pending> = None;
+    let mut pending: VecDeque<Pending> = VecDeque::new();
+    let mut queued = VecDeque::new();
     let mut applied_term = 0;
     while !stop.is_stopped() {
         for _ in 0..32 {
@@ -321,28 +323,8 @@ fn run(
             tick = Instant::now();
         }
         let output = peer.process_ready(|id, bytes| {
-            if !bytes.is_empty() {
-                let entry = Entry::decode(bytes).map_err(|e| RaftError::Storage(e.to_string()))?;
-                if entry.version != 1 || entry.encode_to_vec() != bytes {
-                    return Err(RaftError::Storage(
-                        "invalid metadata consensus entry".into(),
-                    ));
-                }
-                if !entry.outcome.is_empty() {
-                    PlacementOutcome::from_payload(&entry.outcome)
-                        .and_then(|o| o.apply(service))
-                        .map_err(|e| RaftError::Storage(e.to_string()))?;
-                }
-            }
             applied_term = id.term;
-            if pending.as_ref().is_some_and(|p| p.id == id) {
-                let p = pending.take().unwrap();
-                let reply = match p.reply {
-                    Some(reply) => reply,
-                    None => apply_with_groups(service, p.request.request, limit, groups),
-                };
-                let _ = p.request.reply.try_send(reply);
-            }
+            apply_committed(service, groups, limit, &mut pending, id, bytes)?;
             Ok(())
         })?;
         for packet in output {
@@ -351,47 +333,155 @@ fn run(
             }
         }
         if pending
-            .as_ref()
+            .front()
             .is_some_and(|p| !peer.is_leader() || p.id.term != peer.term())
         {
-            let p = pending.take().unwrap();
-            let _ = p.request.reply.try_send(Err(refused(
-                "metadata leadership changed; write outcome may be committed",
-            )));
+            for p in pending.drain(..) {
+                let _ = p.request.reply.try_send(Err(refused(
+                    "metadata leadership changed; write outcome may be committed",
+                )));
+            }
         }
-        // A timed-out accepted proposal remains pending until applied or leadership changes.
-        // Proposing a second outcome against the same old state would be invalid.
-        if pending.is_none() {
-            if let Ok(request) = requests.try_recv() {
-                if request.deadline <= Instant::now() {
-                    let _ = request
-                        .reply
-                        .try_send(Err(refused("metadata request expired before proposal")));
-                } else if !peer.is_leader() || applied_term != peer.term() {
-                    let _ = request.reply.try_send(Ok(MetaReply::NotLeader));
-                } else {
-                    let (outcome, reply) = match prepare(service, &request.request, limit, groups) {
-                        Ok((outcome, reply)) => (outcome, reply.map(Ok)),
-                        Err(error) => (Vec::new(), Some(Err(error))),
-                    };
-                    let payload = Entry {
-                        version: 1,
-                        outcome,
-                    }
-                    .encode_to_vec();
-                    match peer.propose(payload) {
-                        Ok(id) => pending = Some(Pending { id, request, reply }),
-                        Err(e) => {
-                            let _ = request.reply.try_send(Err(refused(e)));
-                        }
-                    }
+        // No new batch is prepared until all earlier accepted outcomes apply or
+        // leadership changes. A client timeout alone does not remove a proposal.
+        if pending.is_empty() {
+            while queued.len() < PROPOSALS_PER_BATCH {
+                match requests.try_recv() {
+                    Ok(request) => queued.push_back(request),
+                    Err(_) => break,
                 }
+            }
+            if !peer.is_leader() || applied_term != peer.term() {
+                for request in queued.drain(..) {
+                    let _ = request.reply.try_send(Ok(MetaReply::NotLeader));
+                }
+            } else {
+                propose_batch(peer, service, groups, limit, &mut queued, &mut pending)?;
             }
         }
         thread::sleep(Duration::from_millis(2));
     }
     Ok(())
 }
+fn apply_committed(
+    service: &mut MatrixMetaService,
+    groups: &super::ChunkGroupCatalog,
+    limit: usize,
+    pending: &mut VecDeque<Pending>,
+    id: LogId,
+    bytes: &[u8],
+) -> Result<(), RaftError> {
+    if !bytes.is_empty() {
+        let entry = Entry::decode(bytes).map_err(|e| RaftError::Storage(e.to_string()))?;
+        if entry.version != 1 || entry.encode_to_vec() != bytes {
+            return Err(RaftError::Storage(
+                "invalid metadata consensus entry".into(),
+            ));
+        }
+        if !entry.outcome.is_empty() {
+            PlacementOutcome::from_payload(&entry.outcome)
+                .and_then(|o| o.apply(service))
+                .map_err(|e| RaftError::Storage(e.to_string()))?;
+        }
+    }
+    if pending.front().is_some_and(|p| p.id == id) {
+        let p = pending.pop_front().unwrap();
+        let reply = match p.reply {
+            Some(reply) => reply,
+            None => apply_with_groups(service, p.request.request, limit, groups),
+        };
+        let _ = p.request.reply.try_send(reply);
+    }
+    Ok(())
+}
+
+fn propose_batch(
+    peer: &mut DurablePeer,
+    service: &mut MatrixMetaService,
+    groups: &super::ChunkGroupCatalog,
+    limit: usize,
+    queued: &mut VecDeque<Request>,
+    pending: &mut VecDeque<Pending>,
+) -> Result<(), RaftError> {
+    if queued.is_empty() {
+        return Ok(());
+    }
+    let mut nodes = BTreeSet::new();
+    let mut objects = BTreeSet::new();
+    for request in queued.iter() {
+        match &request.request {
+            MetaRequest::HeartbeatRootNode { node_id, .. }
+            | MetaRequest::HeartbeatChunkNode { node_id, .. } => {
+                nodes.insert(node_id.clone());
+            }
+            MetaRequest::ExpireRootNodeHeartbeats { .. } => {
+                // Earlier heartbeats in this batch can make an offline node expire.
+                nodes.extend(service.nodes.keys().cloned());
+            }
+            MetaRequest::CommitObjectPlacement { placement, .. } => {
+                let object = super::meta_message::object_id(&placement.bucket, &placement.key);
+                nodes.extend(placement.node_ids.iter().cloned());
+                if let Some(previous) = service.placements.get(&object) {
+                    nodes.extend(previous.node_ids.iter().cloned());
+                }
+                objects.insert(object);
+            }
+            _ => {}
+        }
+    }
+    let nodes = groups
+        .affected_nodes(nodes.into_iter().collect())
+        .into_iter()
+        .filter(|id| service.nodes.contains_key(id))
+        .collect();
+    let draft = PlacementDraft::with_records(service, nodes, objects.into_iter().collect());
+    let mut bytes = 0usize;
+    for _ in 0..PROPOSALS_PER_BATCH {
+        let Some(request) = queued.pop_front() else {
+            break;
+        };
+        if request.deadline <= Instant::now() {
+            let _ = request
+                .reply
+                .try_send(Err(refused("metadata request expired before proposal")));
+            continue;
+        }
+        let (outcome, reply) = match prepare(draft.service, &request.request, limit, groups) {
+            Ok((outcome, reply)) => (outcome, reply.map(Ok)),
+            Err(error) => (Vec::new(), Some(Err(error))),
+        };
+        let payload = Entry {
+            version: 1,
+            outcome: outcome.clone(),
+        }
+        .encode_to_vec();
+        if !pending.is_empty() && bytes.saturating_add(payload.len()) > PACKET_LIMIT / 2 {
+            queued.push_front(request);
+            break;
+        }
+        let length = payload.len();
+        match peer.propose(payload) {
+            Ok(id) => {
+                // Only this exclusive worker sees the projected prefix. The guard
+                // restores it before any Raft Ready processing or client reply.
+                if !outcome.is_empty() {
+                    PlacementOutcome::from_payload(&outcome)
+                        .and_then(|o| o.apply(draft.service))
+                        .map_err(|e| RaftError::Storage(e.to_string()))?;
+                }
+                pending.push_back(Pending { id, request, reply });
+                bytes += length;
+            }
+            Err(error) => {
+                let _ = request.reply.try_send(Err(refused(error)));
+                break;
+            }
+        }
+    }
+    drop(draft);
+    Ok(())
+}
+
 fn prepare(
     service: &mut MatrixMetaService,
     request: &MetaRequest,
@@ -437,7 +527,7 @@ fn prepare(
 struct PlacementDraft<'a> {
     service: &'a mut MatrixMetaService,
     nodes: Vec<crate::PlacementNode>,
-    object: Option<(crate::ObjectId, Option<crate::ObjectPlacement>)>,
+    objects: Vec<(crate::ObjectId, Option<crate::ObjectPlacement>)>,
     index: u64,
 }
 impl<'a> PlacementDraft<'a> {
@@ -446,16 +536,26 @@ impl<'a> PlacementDraft<'a> {
         nodes: Vec<String>,
         object: Option<crate::ObjectId>,
     ) -> Self {
+        Self::with_records(service, nodes, object.into_iter().collect())
+    }
+    fn with_records(
+        service: &'a mut MatrixMetaService,
+        nodes: Vec<String>,
+        objects: Vec<crate::ObjectId>,
+    ) -> Self {
         let nodes = nodes.iter().map(|id| service.nodes[id].clone()).collect();
-        let object = object.map(|id| {
-            let previous = service.placements.get(&id).cloned();
-            (id, previous)
-        });
+        let objects = objects
+            .into_iter()
+            .map(|id| {
+                let previous = service.placements.get(&id).cloned();
+                (id, previous)
+            })
+            .collect();
         let index = service.placement_commit_index;
         Self {
             service,
             nodes,
-            object,
+            objects,
             index,
         }
     }
@@ -465,7 +565,7 @@ impl Drop for PlacementDraft<'_> {
         for node in self.nodes.drain(..) {
             self.service.nodes.insert(node.node_id.clone(), node);
         }
-        if let Some((id, previous)) = self.object.take() {
+        for (id, previous) in self.objects.drain(..) {
             if let Some(previous) = previous {
                 self.service.placements.insert(id, previous);
             } else {
@@ -770,6 +870,237 @@ mod tests {
             "{error}"
         );
         assert_eq!(state(&service), saved);
+    }
+
+    struct PeerFiles(PathBuf);
+    impl Drop for PeerFiles {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn batch_peer() -> (PeerFiles, DurablePeer) {
+        let root = std::env::temp_dir().join(format!(
+            "metadata-batch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let files = PeerFiles(root);
+        let mut peer = DurablePeer::open(PeerOptions {
+            node_id: 1,
+            group_id: 19,
+            voters: vec![1],
+            wal_path: files.0.join("peer.wal"),
+        })
+        .unwrap();
+        for _ in 0..30 {
+            peer.tick().unwrap();
+            peer.process_ready(|_, _| Ok(())).unwrap();
+            if peer.is_leader() {
+                break;
+            }
+        }
+        assert!(peer.is_leader());
+        (files, peer)
+    }
+    fn queued(
+        request: MetaRequest,
+        deadline: Instant,
+    ) -> (Request, Receiver<Result<MetaReply, ObjectError>>) {
+        let (reply, rx) = mpsc::sync_channel(1);
+        (
+            Request {
+                request,
+                deadline,
+                reply,
+            },
+            rx,
+        )
+    }
+    #[test]
+    fn proposal_batch_preserves_ordered_outcomes_and_commit_only_replies() {
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(2, 1);
+        let first = placement(&service, "batch-object");
+        let mut second = first.clone();
+        if let MetaRequest::CommitObjectPlacement {
+            placement,
+            expected_plan_checksum,
+        } = &mut second
+        {
+            placement.version = 3;
+            placement.node_ids = vec!["group-0".into()];
+            *expected_plan_checksum = crate::placement_plan_checksum(&crate::PlacementPlan {
+                object_id: ObjectId::new(placement.bucket.clone(), placement.key.clone()),
+                length: placement.length,
+                node_ids: placement.node_ids.clone(),
+                skipped_draining: 0,
+                skipped_offline: 0,
+                skipped_capacity: 0,
+                plan_checksum: String::new(),
+            });
+        }
+        let mut another = heartbeat();
+        if let MetaRequest::HeartbeatChunkNode {
+            node_id,
+            expected_endpoint,
+            ..
+        } = &mut another
+        {
+            *node_id = "member-0-1".into();
+            *expected_endpoint = "127.0.0.1:10004".into();
+        }
+        let mut invalid = heartbeat();
+        if let MetaRequest::HeartbeatChunkNode { capacity_bytes, .. } = &mut invalid {
+            *capacity_bytes = 0;
+        }
+        let operations = vec![
+            heartbeat(),
+            another,
+            first,
+            second,
+            MetaRequest::ReadObjectRootPlacement {
+                bucket: "bucket".into(),
+                key: "batch-object".into(),
+            },
+            invalid,
+            MetaRequest::ExpireRootNodeHeartbeats {
+                ttl_ms: 1,
+                now_ms: 5,
+            },
+            MetaRequest::ListRootNodes,
+        ];
+        let mut expected = service.clone();
+        let replies: Vec<_> = operations
+            .iter()
+            .cloned()
+            .map(|r| apply_with_groups(&mut expected, r, 65536, &groups).map_err(|e| e.to_string()))
+            .collect();
+        let mut requests = VecDeque::new();
+        let mut receivers = Vec::new();
+        for operation in operations {
+            let (request, rx) = queued(operation, Instant::now() + Duration::from_secs(10));
+            requests.push_back(request);
+            receivers.push(rx);
+        }
+        let saved = state(&service);
+        let mut pending = VecDeque::new();
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            65536,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
+        assert_eq!(pending.len(), 8);
+        assert!(requests.is_empty());
+        assert_eq!(state(&service), saved);
+        assert!(receivers
+            .iter()
+            .all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
+        assert!(pending.is_empty());
+        for (rx, expected_reply) in receivers.into_iter().zip(replies) {
+            assert_eq!(
+                rx.try_recv().unwrap().map_err(|e| e.to_string()),
+                expected_reply
+            );
+        }
+        assert_eq!(state(&service), state(&expected));
+        drop(peer);
+        let mut reopened = DurablePeer::open(PeerOptions {
+            node_id: 1,
+            group_id: 19,
+            voters: vec![1],
+            wal_path: _files.0.join("peer.wal"),
+        })
+        .unwrap();
+        let (mut restored, _) = fixture(2, 1);
+        reopened
+            .process_ready(|id, bytes| {
+                apply_committed(&mut restored, &groups, 65536, &mut pending, id, bytes)
+            })
+            .unwrap();
+        assert_eq!(state(&restored), state(&expected));
+    }
+    #[test]
+    fn proposal_batches_bound_bytes_and_keep_deferred_requests() {
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(1, 0);
+        let (expired, expired_rx) = queued(MetaRequest::Ping, Instant::now());
+        let mut requests = VecDeque::from([expired]);
+        let mut receivers = Vec::new();
+        for prefix in ["a", "b"] {
+            let key = prefix.repeat(2 * 1024 * 1024);
+            let request = placement(&service, &key);
+            let (request, rx) = queued(request, Instant::now() + Duration::from_secs(30));
+            requests.push_back(request);
+            receivers.push(rx);
+        }
+        let saved = state(&service);
+        let mut pending = VecDeque::new();
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            8 * 1024 * 1024,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
+        assert!(expired_rx.try_recv().unwrap().is_err());
+        assert_eq!(pending.len(), 1);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(state(&service), saved);
+        assert!(receivers
+            .iter()
+            .all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| {
+            apply_committed(
+                &mut service,
+                &groups,
+                8 * 1024 * 1024,
+                &mut pending,
+                id,
+                bytes,
+            )
+        })
+        .unwrap();
+        assert!(receivers[0].try_recv().unwrap().is_ok());
+        assert_eq!(service.placements.len(), 1);
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            8 * 1024 * 1024,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
+        assert!(requests.is_empty());
+        assert_eq!(pending.len(), 1);
+        assert_eq!(service.placements.len(), 1);
+        peer.process_ready(|id, bytes| {
+            apply_committed(
+                &mut service,
+                &groups,
+                8 * 1024 * 1024,
+                &mut pending,
+                id,
+                bytes,
+            )
+        })
+        .unwrap();
+        assert!(receivers[1].try_recv().unwrap().is_ok());
+        assert_eq!(service.placements.len(), 2);
     }
     #[test]
     #[ignore = "bounded local preparation timing; run with --release and --nocapture"]
