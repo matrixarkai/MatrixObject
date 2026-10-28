@@ -50506,3 +50506,188 @@ fn lifecycle_transitions_keep_existing_placement_width_and_refuse_offline_nodes(
         );
     }
 }
+
+#[test]
+fn metadata_raft_reads_follow_applied_entries_when_metadata_does_not_change() {
+    let mut replicated = RaftBackedObjectStore::new(
+        InMemoryRustRaft::new(1).unwrap(),
+        MatrixObjectStore::new(test_options()).unwrap(),
+    );
+    replicated
+        .propose(ObjectCommand::PutObject {
+            bucket: "bucket".into(),
+            key: "object".into(),
+            data: b"value".to_vec(),
+            content_type: "text/plain".into(),
+            update_time_ms: 1,
+            options: PutOptions::default(),
+        })
+        .unwrap();
+    replicated
+        .propose_set_bucket_versioning("bucket", true)
+        .unwrap();
+    let metadata_index = replicated.store().last_metadata_commit_index();
+    let result = replicated
+        .propose_apply_bucket_lifecycle_transitions_report_with_read_proof_linearizable(10, 10)
+        .unwrap();
+    assert_eq!(result.value.total_actions(), 0);
+    assert_eq!(
+        replicated.store().last_metadata_commit_index(),
+        metadata_index
+    );
+    assert_eq!(
+        result.proof.requested_read_index,
+        replicated.raft_commit_index()
+    );
+    assert_eq!(
+        result.proof.consensus_read_index,
+        replicated.raft_commit_index()
+    );
+    assert_eq!(result.proof.metadata_commit_index, metadata_index);
+    for _ in 0..3 {
+        let empty = replicated
+            .propose_apply_bucket_lifecycle_transitions_report_with_read_proof_linearizable(10, 10)
+            .unwrap();
+        assert_eq!(empty.value.total_actions(), 0);
+        assert_eq!(
+            empty.proof.consensus_read_index,
+            replicated.raft_commit_index()
+        );
+        assert_eq!(empty.proof.metadata_commit_index, metadata_index);
+    }
+    let (object, object_readiness) = replicated
+        .get_object_linearizable("bucket", "object", 10)
+        .unwrap();
+    assert_eq!(object.data, b"value");
+    assert_eq!(
+        object_readiness.safe_read_fence,
+        replicated.raft_commit_index()
+    );
+    assert_eq!(object_readiness.applied_commit_index, metadata_index);
+    let (objects, listing_readiness) = replicated
+        .list_objects_linearizable("bucket", "", None, 10, 10)
+        .unwrap();
+    assert_eq!(objects.len(), 1);
+    assert_eq!(
+        listing_readiness.safe_read_fence,
+        replicated.raft_commit_index()
+    );
+    assert!(replicated
+        .get_object_linearizable_committed_at(
+            "bucket",
+            "object",
+            10,
+            replicated.raft_commit_index() + 1
+        )
+        .is_err());
+    assert!(
+        !replicated
+            .metadata_raft_readiness(replicated.raft_commit_index() + 1, 10)
+            .readable
+    );
+    let read = replicated
+        .bucket_versioning_enabled_with_read_proof_linearizable("bucket", 10)
+        .unwrap();
+    assert!(read.value);
+    assert_eq!(
+        read.proof.consensus_read_index,
+        replicated.raft_commit_index()
+    );
+    let bytes = replicated
+        .store()
+        .export_snapshot()
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+    let mut restored = MatrixObjectStore::new(test_options()).unwrap();
+    restored.install_snapshot_bytes(&bytes).unwrap();
+    let recovered = RaftBackedObjectStore::new(replicated.raft.clone(), restored.clone());
+    let (data, recovered_readiness) = recovered
+        .get_object_linearizable("bucket", "object", 10)
+        .unwrap();
+    assert_eq!(data.data, b"value");
+    assert_eq!(
+        recovered_readiness.safe_read_fence,
+        replicated.raft_commit_index()
+    );
+    assert_eq!(recovered_readiness.applied_commit_index, metadata_index);
+    let mut lagging_log = replicated.raft.clone();
+    lagging_log.commit_index -= 1;
+    let mismatched = RaftBackedObjectStore::new(lagging_log, restored);
+    assert!(!mismatched.metadata_raft_readiness(0, 10).readable);
+    assert!(mismatched
+        .get_object_linearizable("bucket", "object", 10)
+        .is_err());
+}
+
+#[test]
+fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    for n in 0..3 {
+        store
+            .put_object("bucket", &format!("object-{n}"), vec![1], "text/plain")
+            .unwrap();
+    }
+    assert!(store.last_metadata_commit_index() >= 3);
+    assert_eq!(store.last_applied_index(), 0);
+    let mut raft = InMemoryRustRaft::new(1).unwrap();
+    raft.append(ObjectCommand::SetBucketVersioning {
+        bucket: "bucket".into(),
+        enabled: true,
+    })
+    .unwrap();
+    let replicated = RaftBackedObjectStore::new(raft, store);
+    let readiness = replicated.metadata_raft_readiness(1, 10);
+    assert!(!readiness.readable);
+    assert!(!readiness.read_fence_covered);
+    assert_eq!(readiness.safe_read_fence, 0);
+    assert!(replicated
+        .bucket_versioning_enabled_with_read_proof_linearizable("bucket", 10)
+        .is_err());
+    assert!(replicated
+        .get_object_linearizable("bucket", "object-0", 10)
+        .is_err());
+    assert!(replicated
+        .list_objects_linearizable("bucket", "", None, 10, 10)
+        .is_err());
+}
+
+#[test]
+fn metadata_read_proofs_do_not_promote_mutation_counts_to_raft_positions() {
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    for n in 0..3 {
+        store
+            .put_object("bucket", &format!("object-{n}"), vec![1], "text/plain")
+            .unwrap();
+    }
+    let mut replicated = RaftBackedObjectStore::new(InMemoryRustRaft::new(1).unwrap(), store);
+    replicated
+        .propose_set_bucket_versioning("bucket", true)
+        .unwrap();
+    let committed = replicated.raft_commit_index();
+    let metadata = replicated.store().last_metadata_commit_index();
+    assert!(metadata > committed);
+    let local_identity = replicated.store().metadata_raft_readiness(committed, 10);
+    let readiness = replicated.metadata_raft_readiness(committed, 10);
+    assert!(readiness.readable);
+    assert!(readiness.read_fence_covered);
+    assert_eq!(readiness.safe_read_fence, committed);
+    assert_eq!(readiness.raft_log_commit_index, committed);
+    assert_eq!(readiness.applied_commit_index, metadata);
+    assert!(
+        !replicated
+            .metadata_raft_readiness(committed + 1, 10)
+            .readable
+    );
+    let proof = replicated
+        .bucket_versioning_enabled_with_read_proof_linearizable("bucket", 10)
+        .unwrap()
+        .proof;
+    assert_eq!(proof.consensus_read_index, committed);
+    assert_eq!(proof.metadata_commit_index, metadata);
+    assert_eq!(
+        readiness.metadata_control_proof_checksum,
+        local_identity.metadata_control_proof_checksum
+    );
+    assert_eq!(readiness.metadata_control_proof_bytes, local_identity.metadata_control_proof_bytes);
+}
