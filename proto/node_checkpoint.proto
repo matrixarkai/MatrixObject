@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+
+// Opaque application state is carried inside MatrixRaft's Snapshot data.
+// The outer WAL and transport also use binary protobuf records.
+message NodeCheckpoint {
+  uint32 version = 1; // 1
+  uint32 kind = 2; // 1 metadata, 2 chunk
+  uint64 index = 3; // exact applied Raft index
+  uint64 term = 4; // term of that applied entry
+  bytes state = 5; // validated binary MetaSnapshot or ReplicaServiceSnapshot
+  bytes catalog = 6; // canonical MOGC catalog for metadata; absent for chunks
+}

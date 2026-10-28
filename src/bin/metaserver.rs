@@ -20,6 +20,7 @@
 //!
 //! | variable | default | meaning |
 //! |---|---|---|
+//! | `MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES` | `0` | opt-in WAL checkpoint interval; 1024..134217728 bytes when enabled |
 //! | `MATRIXOBJECT_METASERVER_ADDR` | `127.0.0.1:17200` | address to bind; port `0` lets the kernel choose |
 //! | `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` | `0` | automatic expiry TTL, 1000..3600000 ms; zero disables |
 //! | `MATRIXOBJECT_METASERVER_THREADS` | `2` | connections served at once |
@@ -138,6 +139,7 @@ fn main() {
             "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
             "MATRIXOBJECT_METASERVER_RAFT_GROUP_ID",
             "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS",
+            "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
         ]
         .iter()
         .any(|name| std::env::var_os(name).is_some())
@@ -269,6 +271,10 @@ fn main() {
                     .ok_or("missing Raft state directory")?
                     .into();
                 Ok(matrixobjectstore_rs::cluster::MetaRaftOptions {
+                    checkpoint_after_bytes: env_usize(
+                        "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
+                        0,
+                    ) as u64,
                     node_id,
                     group_id: env_usize("MATRIXOBJECT_METASERVER_RAFT_GROUP_ID", 1) as u64,
                     peers,

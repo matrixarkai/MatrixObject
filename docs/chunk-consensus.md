@@ -58,15 +58,16 @@ frames are bounded at 8 MiB with 100 ms transfer deadlines. MatrixRaft currently
 limits individual proposals to 4 MiB and its WAL to 512 MiB. Oversized proposals
 are refused without changing committed page state. The candidate preparation
 currently clones replica state. Quorum-confirmed reads avoid additional log
-entries, but write history still needs snapshot compaction and large-scale
-measurement.
+entries. Write history can use the opt-in application checkpoint policy below;
+large-scale measurement remains required.
 
 The process tests cover three independent voters, acknowledged writes and
 discards, leader loss, refusal below quorum, restart of all processes, capacity
 refusal, storage guards, shutdown, and metadata reports. They are functional
 fault tests, not a large-scale throughput result. Metadata placement of Raft groups
 is described in `chunk-group-catalog.md`. The HTTP distributed backend,
-authentication, snapshots, log compaction, and membership changes remain unfinished.
+authentication, file-backed snapshots for larger state, and membership changes
+remain unfinished.
 
 ## Bounded leader routing
 
@@ -113,3 +114,41 @@ response. Single-endpoint clients must be replaced before another request.
 The read timeout bounds the entire response frame, including a fragmented header
 and payload; slow bytes do not reset that deadline. Fully decoded server refusals
 leave the connection usable. Malformed routing responses close the connection.
+
+## Application checkpoint recovery
+
+After upgrading every voter, set `MATRIXOBJECT_CHUNK_RAFT_CHECKPOINT_BYTES`
+to enable automatic capture, for example `33554432` (32 MiB of new WAL history).
+The default is `0`, which disables capture for a controlled rolling upgrade.
+Nonzero values must be between 1024 and 134217728 bytes. Library callers use
+`checkpoint_after_bytes` in their Raft options. The setting does not change group
+identity and may differ between voters; every voter must support restoration.
+
+Capture runs on the exclusive application worker after earlier proposals and
+reads settle. The canonical binary protobuf envelope in `proto/node_checkpoint.proto`
+binds service kind and exact applied Raft position to the validated binary service
+snapshot. Recovery restores that state before applying later protobuf outcomes.
+Metadata restoration rebuilds the placement roster and checks the immutable group
+catalog. Chunk restoration preserves page contents, discards and receipts, checks
+configured capacity/page limits, and reconstructs physical used-byte accounting.
+
+MatrixRaft publishes a synced replacement WAL atomically while retaining the
+uncommitted suffix. A lagging voter receives the checkpoint through bounded peer
+fragments; it persists and restores application state before acknowledging Raft
+progress. Small checkpoints use inline records; larger ones use segmented records.
+Keep the `.runtime.lock` sidecar together with the WAL. Do not downgrade a voter
+after checkpoints have been enabled: older runtimes refuse these records.
+
+The encoded application checkpoint is limited to 256 MiB and remains memory-backed.
+Capture and restoration can temporarily retain several copies and delay requests.
+If state exceeds the limit, the server reports that it is retaining WAL history
+and retries only after another configured interval. It does not discard data or
+truncate history to fit. The WAL still stops writes at 512 MiB; deployments with
+larger state require a file-backed snapshot API. This setting is not a substitute
+for that work or a claim of production readiness.
+
+Process tests exercise repeated compaction, catch-up after an offline interval,
+and total restart. Chunk tests transfer state larger than one peer frame and
+check subsequent writes, page state and capacity enforcement. Metadata tests
+check placements and health roster recovery. These are functional fault tests,
+not power-loss or multi-host throughput measurements.

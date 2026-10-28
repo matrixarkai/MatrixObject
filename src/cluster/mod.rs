@@ -190,9 +190,9 @@ pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
 #[cfg(feature = "replica-server")]
 mod replica_journal;
 
+mod connections;
 #[cfg(any(feature = "replica-server", feature = "meta-server"))]
 mod shutdown;
-mod connections;
 
 #[cfg(feature = "meta-server")]
 mod meta_snapshot_file;
@@ -211,3 +211,6 @@ pub use server::ChunkRaftOptions;
 mod chunk_groups;
 #[cfg(feature = "meta-server")]
 pub use chunk_groups::{ChunkGroupCatalog, ChunkGroupConfig};
+
+#[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
+mod consensus_checkpoint;

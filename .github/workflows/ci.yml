@@ -1511,6 +1511,43 @@ jobs:
           grep -q '^running 1 test$' /tmp/metadata-batches.log
           grep -q '^test result: ok. 1 passed' /tmp/metadata-batches.log
 
+      - name: checkpoint envelope binds kind position and canonical bytes
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib cluster::consensus_checkpoint::tests::checkpoint_envelope_binds_kind_position_and_canonical_bytes -- --exact | tee /tmp/node-checkpoint.log
+          grep -q '^running 1 test$' /tmp/node-checkpoint.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
+      - name: checkpoint policy bounds the configured interval
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib cluster::consensus_checkpoint::tests::checkpoint_policy_bounds_the_configured_interval -- --exact | tee /tmp/node-checkpoint.log
+          grep -q '^running 1 test$' /tmp/node-checkpoint.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
+      - name: application checkpoint restores placement health and checks catalog
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib cluster::meta_consensus::tests::application_checkpoint_restores_placement_health_and_checks_catalog -- --exact | tee /tmp/node-checkpoint.log
+          grep -q '^running 1 test$' /tmp/node-checkpoint.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
+      - name: byte lengths refuse truncation and overflow before allocation
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib metadata_protocol::snapshot_byte_cursor_tests::byte_lengths_refuse_truncation_and_overflow_before_allocation -- --exact | tee /tmp/node-checkpoint.log
+          grep -q '^running 1 test$' /tmp/node-checkpoint.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
+      - name: byte lengths use available input while item counts remain bounded
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --lib metadata_protocol::snapshot_byte_cursor_tests::byte_lengths_use_available_input_while_item_counts_remain_bounded -- --exact | tee /tmp/node-checkpoint.log
+          grep -q '^running 1 test$' /tmp/node-checkpoint.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
+      - name: metadata checkpoints restore placements roster and lagging processes
+        run: |
+          set -euo pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus metadata_checkpoints_restore_placements_roster_and_lagging_processes -- --exact | tee /tmp/node-checkpoint.log
+          grep -q '^running 1 test$' /tmp/node-checkpoint.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
+
   chunk-consensus:
     name: network chunk consensus
     runs-on: ubuntu-latest
@@ -1682,3 +1719,16 @@ jobs:
           cargo test --locked --features metadata-consensus,chunk-consensus --test network_chunk_consensus coupled_groups::concurrent_groups_preserve_placement_and_data_through_failover_and_restart -- --exact | tee /tmp/multiple-groups.log
           grep -q '^running 1 test$' /tmp/multiple-groups.log
           grep -q '^test result: ok. 1 passed' /tmp/multiple-groups.log
+
+      - name: checkpoint restores pages discards and usage without changing limits
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --lib cluster::server::consensus::checkpoint_tests::checkpoint_restores_pages_discards_and_usage_without_changing_limits -- --exact | tee /tmp/node-checkpoint.log
+          grep -q '^running 1 test$' /tmp/node-checkpoint.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
+      - name: chunk checkpoints reclaim history transfer large state and recover processes
+        run: |
+          set -euo pipefail
+          cargo test --locked --features chunk-consensus --test network_chunk_consensus chunk_checkpoints_reclaim_history_transfer_large_state_and_recover_processes -- --exact | tee /tmp/node-checkpoint.log
+          grep -q '^running 1 test$' /tmp/node-checkpoint.log
+          grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
