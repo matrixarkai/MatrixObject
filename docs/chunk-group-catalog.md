@@ -90,13 +90,18 @@ promises; rerun the command on the target deployment hardware.
 ## Multiple groups and connection sharing
 
 Metadata and chunk APIs share persistent sockets across bounded request workers.
-Each configured worker has one companion I/O thread and accepts up to 128 sockets.
+Each configured worker adds one I/O thread, one request executor, and space for
+128 sockets. All I/O threads submit to a shared bounded queue with 128 slots per
+configured worker. Any available executor can serve the next queued frame, so
+uneven connection assignment does not strand idle request workers.
 Idle sockets, incomplete frames, and clients that stop reading do not occupy the
 request worker. Each socket has at most one admitted frame awaiting its reply.
 Queued input and output buffers share a reservation budget of twice the maximum
-frame size per worker; encoding one response can temporarily use one additional
-frame. A full budget or request queue closes the connection. A mutation whose
-reply is lost must still be treated as uncertain.
+frame size per I/O thread. A queued request and its reply retain the originating
+I/O thread's budget even when another executor handles them. Each request executor
+can temporarily hold one additional encoded response frame. A full budget or
+request queue closes the connection. A mutation whose reply is lost must still
+be treated as uncertain.
 
 Read and write timeouts cover complete frames, not individual bytes. Chunk catalog
 clients retire connections idle for the smaller of five seconds and their response
@@ -135,6 +140,13 @@ in 27.08 seconds (9.1 and 9.5 operations per second). The full 403.74-second run
 verified all 1,280 objects after restarting all 51 processes. This is a single-host
 recovery measurement, not a production capacity rating. The larger test remains
 ignored by default and is not a CI check.
+
+With shared request dispatch, a subsequent local debug run completed the same
+write phases in 103.19 and 23.65 seconds (9.9 and 10.8 operations per second).
+The eight clients' first-phase stage totals ranged from 102.31 to 103.19 seconds.
+All 1,280 objects survived leader loss and full restart; total test time was
+405.89 seconds. This single run demonstrates balanced dispatch and recovery,
+not a statistically established throughput improvement or deployment rating.
 
 ## Bounded metadata proposal batches
 

@@ -10,7 +10,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
     mpsc::{self, Receiver, SyncSender, TryRecvError},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::Duration;
 pub(super) struct Options {
@@ -58,6 +58,24 @@ struct Job {
     payload: Vec<u8>,
     charge: Charge,
     reply: SyncSender<Option<Reply>>,
+    budget: Budget,
+}
+// All I/O loops submit to the same bounded executor queue. A persistent socket
+// stays with its I/O loop, but does not pin its requests to one executor.
+#[derive(Clone)]
+pub(super) struct Dispatch {
+    jobs: SyncSender<Job>,
+    receiver: Arc<Mutex<Receiver<Job>>>,
+}
+impl Dispatch {
+    pub(super) fn new(workers: usize) -> Self {
+        let (jobs, receiver) =
+            mpsc::sync_channel(CONNECTIONS_PER_WORKER.saturating_mul(workers.max(1)));
+        Self {
+            jobs,
+            receiver: Arc::new(Mutex::new(receiver)),
+        }
+    }
 }
 struct Connection {
     stream: TcpStream,
@@ -228,6 +246,7 @@ impl Connection {
                 .take()
                 .expect("complete frames hold a reservation"),
             reply,
+            budget: budget.clone(),
         };
         if jobs.try_send(job).is_err() {
             return false;
@@ -245,6 +264,7 @@ pub(super) fn accept_loop(
     mut respond: impl FnMut(u8, &[u8]) -> Vec<u8> + Send,
     stop: Arc<ServerShutdown>,
     options: Options,
+    dispatch: Dispatch,
 ) {
     let budget = Budget {
         used: Arc::new(AtomicUsize::new(0)),
@@ -253,24 +273,33 @@ pub(super) fn accept_loop(
             .saturating_add(HEADER_BYTES)
             .saturating_mul(2),
     };
-    let (jobs, rx) = mpsc::sync_channel::<Job>(CONNECTIONS_PER_WORKER);
+    let jobs = dispatch.jobs;
+    let rx = dispatch.receiver;
     std::thread::scope(|scope| {
-        let worker_budget = budget.clone();
         let worker_stop = Arc::clone(&stop);
-        scope.spawn(move || {
-            while let Ok(job) = rx.recv() {
+        scope.spawn(move || loop {
+            let job = {
+                let receiver = rx.lock().unwrap_or_else(|e| e.into_inner());
                 if worker_stop.is_stopped() {
                     break;
                 }
-                let output = respond(job.code, &job.payload);
-                drop(job.payload);
-                drop(job.charge);
-                let response = worker_budget.reserve(output.len()).map(|charge| Reply {
-                    bytes: output,
-                    charge,
-                });
-                let _ = job.reply.try_send(response);
+                match receiver.recv_timeout(Duration::from_millis(100)) {
+                    Ok(job) => job,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            };
+            if worker_stop.is_stopped() {
+                break;
             }
+            let output = respond(job.code, &job.payload);
+            drop(job.payload);
+            drop(job.charge);
+            let response = job.budget.reserve(output.len()).map(|charge| Reply {
+                bytes: output,
+                charge,
+            });
+            let _ = job.reply.try_send(response);
         });
         let mut connections: Vec<Connection> = Vec::new();
         while !stop.is_stopped() {
@@ -325,6 +354,81 @@ pub(super) fn accept_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn one_io_loop_can_use_idle_request_executors() {
+        let dispatch = Dispatch::new(2);
+        let stop = Arc::new(ServerShutdown::default());
+        let (entered, entered_rx) = mpsc::sync_channel(1);
+        let (release, release_rx) = mpsc::sync_channel(1);
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let mut handles = Vec::new();
+        let mut address = None;
+        for _ in 0..2 {
+            // Separate listeners deliberately keep every client on one I/O loop.
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            address.get_or_insert(listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let dispatch = dispatch.clone();
+            let stop = Arc::clone(&stop);
+            let entered = entered.clone();
+            let release_rx = Arc::clone(&release_rx);
+            handles.push(std::thread::spawn(move || {
+                accept_loop(
+                    listener,
+                    &AtomicU64::new(0),
+                    &AtomicU64::new(0),
+                    move |code, _| {
+                        if code == 1 {
+                            entered.send(()).unwrap();
+                            let _ = release_rx
+                                .lock()
+                                .unwrap()
+                                .recv_timeout(Duration::from_secs(5));
+                        }
+                        vec![code]
+                    },
+                    stop,
+                    Options {
+                        max_payload_bytes: 64,
+                        read_timeout: Duration::from_secs(5),
+                        write_timeout: Duration::from_secs(5),
+                    },
+                    dispatch,
+                );
+            }));
+        }
+        let mut first = TcpStream::connect(address.unwrap()).unwrap();
+        first
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        first
+            .write_all(&[super::super::wire::PROTOCOL_STAMP, 1, 0, 0, 0, 0])
+            .unwrap();
+        let admitted = entered_rx.recv_timeout(Duration::from_secs(2));
+        let mut second = TcpStream::connect(address.unwrap()).unwrap();
+        second
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        second
+            .write_all(&[super::super::wire::PROTOCOL_STAMP, 2, 0, 0, 0, 0])
+            .unwrap();
+        let mut reply = [0];
+        let second_result = second.read_exact(&mut reply);
+        // Always release and join, including on assertion failure.
+        release.send(()).unwrap();
+        let mut first_reply = [0];
+        let first_result = first.read_exact(&mut first_reply);
+        stop.stop();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        admitted.unwrap();
+        second_result
+            .expect("idle executor must serve a second connection while the first request blocks");
+        first_result.unwrap();
+        assert_eq!(reply, [2]);
+        assert_eq!(first_reply, [1]);
+    }
     #[test]
     fn frame_budget_bounds_queued_buffers_and_releases_on_disconnect() {
         let budget = Budget {
