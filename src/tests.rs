@@ -50699,6 +50699,7 @@ fn metadata_raft_reads_follow_applied_entries_when_metadata_does_not_change() {
         1000
     );
     assert_payload_batches_observe_applied_raft_position(&mut replicated, "object", true);
+    assert_cache_admission_reads_observe_applied_raft_position(&mut replicated, "object", true);
 }
 
 #[test]
@@ -50711,6 +50712,10 @@ fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
     }
     assert!(store.last_metadata_commit_index() >= 3);
     assert_eq!(store.last_applied_index(), 0);
+    store
+        .prewarm_object_range_cache("bucket", "object-0", 0, 1, 65536)
+        .unwrap();
+    assert!(store.read_cache_stats().entries > 0);
     let mut raft = InMemoryRustRaft::new(1).unwrap();
     raft.append(ObjectCommand::SetBucketVersioning {
         bucket: "bucket".into(),
@@ -50737,6 +50742,7 @@ fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
     assert_changefeed_reads_observe_applied_raft_position(&replicated, false);
     assert_metadata_queries_observe_applied_raft_position(&replicated, "object-0", false);
     assert_payload_batches_observe_applied_raft_position(&mut replicated, "object-0", false);
+    assert_cache_admission_reads_observe_applied_raft_position(&mut replicated, "object-0", false);
 }
 
 #[test]
@@ -50783,6 +50789,7 @@ fn metadata_read_proofs_do_not_promote_mutation_counts_to_raft_positions() {
     assert_changefeed_reads_observe_applied_raft_position(&replicated, true);
     assert_metadata_queries_observe_applied_raft_position(&replicated, "object-0", true);
     assert_payload_batches_observe_applied_raft_position(&mut replicated, "object-0", true);
+    assert_cache_admission_reads_observe_applied_raft_position(&mut replicated, "object-0", true);
 }
 
 fn assert_object_reads_observe_applied_raft_position(
@@ -51975,5 +51982,177 @@ fn assert_payload_batches_observe_applied_raft_position(
         let mut altered = admitted;
         altered.read_proof.consensus_read_index += 1;
         assert!(altered.verify_storage_admission_proof().is_err());
+    }
+}
+
+fn assert_cache_admission_reads_observe_applied_raft_position(
+    replicated: &mut RaftBackedObjectStore<InMemoryRustRaft>,
+    key: &str,
+    readable: bool,
+) {
+    if !readable {
+        assert!(replicated.store().read_cache_stats().entries > 0);
+    }
+    let version = replicated
+        .store()
+        .head_object("bucket", key)
+        .unwrap()
+        .version;
+    let requests = vec![ObjectCacheRangeRequest {
+        bucket: "bucket".into(),
+        key: key.into(),
+        offset: 0,
+        length: 1,
+        version: None,
+    }];
+    macro_rules! check {
+        ($call:expr) => {{
+            let before = replicated.store().read_cache_stats();
+            let result = $call;
+            if readable {
+                assert_eq!(result.unwrap(),(replicated.raft_commit_index(),replicated.store().last_metadata_commit_index()));
+            } else {
+                assert!(matches!(result, Err(ObjectError::PreconditionFailed(message)) if message.contains("metadata control read index is not satisfied")));
+                assert_eq!(replicated.store().read_cache_stats(),before);
+            }
+        }};
+    }
+    check!(replicated
+        .invalidate_object_range_cache_linearizable_fenced("bucket", key, 0, 1, 65536, 10, "")
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    check!(replicated
+        .invalidate_object_range_cache_routed_linearizable_fenced(
+            "bucket", key, 0, 1, 65536, None, false, 10, ""
+        )
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    check!(replicated
+        .invalidate_object_version_range_cache_linearizable_fenced(
+            "bucket", key, version, 0, 1, 65536, 10, ""
+        )
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    check!(replicated
+        .invalidate_object_version_range_cache_routed_linearizable_fenced(
+            "bucket", key, version, 0, 1, 65536, None, false, 10, ""
+        )
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    check!(replicated
+        .prewarm_object_range_cache_linearizable_fenced("bucket", key, 0, 1, 65536, 10, "")
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    check!(replicated
+        .prewarm_object_range_cache_routed_linearizable_fenced(
+            "bucket", key, 0, 1, 65536, None, false, 10, ""
+        )
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    check!(replicated
+        .prewarm_object_version_range_cache_linearizable_fenced(
+            "bucket", key, version, 0, 1, 65536, 10, ""
+        )
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    check!(replicated
+        .prewarm_object_version_range_cache_routed_linearizable_fenced(
+            "bucket", key, version, 0, 1, 65536, None, false, 10, ""
+        )
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    check!(replicated
+        .batch_invalidate_object_range_cache_linearizable_fenced(
+            requests.clone(),
+            10,
+            65536,
+            10,
+            ""
+        )
+        .map(|report| {
+            assert_eq!(
+                report.cache_batch_proof_checksum,
+                object_batch_cache_control_proof_checksum(
+                    "BatchInvalidateObjectRangeCache",
+                    &report
+                )
+            );
+            (
+                report.read_proof.consensus_read_index,
+                report.read_proof.metadata_commit_index,
+            )
+        }));
+    check!(replicated
+        .batch_invalidate_object_range_cache_routed_linearizable_fenced(
+            requests.clone(),
+            10,
+            65536,
+            None,
+            false,
+            10,
+            ""
+        )
+        .map(|report| {
+            assert_eq!(
+                report.cache_batch_proof_checksum,
+                object_batch_cache_control_proof_checksum(
+                    "BatchInvalidateObjectRangeCache",
+                    &report
+                )
+            );
+            (
+                report.read_proof.consensus_read_index,
+                report.read_proof.metadata_commit_index,
+            )
+        }));
+    check!(replicated
+        .batch_prewarm_object_range_cache_linearizable_fenced(requests.clone(), 10, 65536, 10, "")
+        .map(|report| {
+            assert_eq!(
+                report.cache_batch_proof_checksum,
+                object_batch_cache_control_proof_checksum("BatchPrewarmObjectRange", &report)
+            );
+            (
+                report.read_proof.consensus_read_index,
+                report.read_proof.metadata_commit_index,
+            )
+        }));
+    check!(replicated
+        .batch_prewarm_object_range_cache_routed_linearizable_fenced(
+            requests.clone(),
+            10,
+            65536,
+            None,
+            false,
+            10,
+            ""
+        )
+        .map(|report| {
+            assert_eq!(
+                report.cache_batch_proof_checksum,
+                object_batch_cache_control_proof_checksum("BatchPrewarmObjectRange", &report)
+            );
+            (
+                report.read_proof.consensus_read_index,
+                report.read_proof.metadata_commit_index,
+            )
+        }));
+    check!(replicated
+        .can_accept_object_delete_discard_linearizable_fenced("bucket", key, 65536, 10, "")
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    check!(replicated
+        .can_accept_object_range_read_bounded_linearizable_fenced(
+            "bucket", key, 0, 1, 65536, 0, 10, ""
+        )
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    check!(replicated
+        .can_accept_object_range_read_linearizable_fenced("bucket", key, 0, 1, 65536, 10, "")
+        .map(|(_, r)| (r.safe_read_fence, r.applied_commit_index)));
+    if readable {
+        replicated
+            .prewarm_object_range_cache_linearizable("bucket", key, 0, 1, 65536, 10)
+            .unwrap();
+        assert!(replicated.store().read_cache_stats().entries > 0);
+        let (stats, _) = replicated
+            .invalidate_object_range_cache_linearizable("bucket", key, 0, 1, 65536, 10)
+            .unwrap();
+        assert!(stats.invalidated_entries > 0);
+        assert!(replicated
+            .prewarm_object_range_cache_linearizable_fenced(
+                "bucket", key, 0, 1, 65536, 10, "invalid"
+            )
+            .is_err());
     }
 }

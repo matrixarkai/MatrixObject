@@ -25,22 +25,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<(CacheControlStats, MetadataRaftReadiness), ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "prewarm object range cache linearizable fenced",
+            now_ms,
+            0,
+        )?;
         self.ensure_page_route_control_ready(
             "object cache prewarm",
             expected_page_route_control_checksum.as_ref(),
         )?;
-        self.store.prewarm_object_range_cache_with_metadata_read(
-            bucket,
-            key,
-            offset,
-            length,
-            max_bytes,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
-            },
-        )
+        self.store
+            .prewarm_object_range_cache_with_metadata_read(
+                bucket, key, offset, length, max_bytes, options,
+            )
+            .map(|(stats, _)| (stats, readiness))
     }
 
     pub fn prewarm_object_range_cache_routed_linearizable_fenced(
@@ -55,6 +53,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<(CacheControlStats, MetadataRaftReadiness), ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "prewarm object range cache routed linearizable fenced",
+            now_ms,
+            0,
+        )?;
         self.ensure_page_route_control_ready(
             "routed object cache prewarm",
             expected_page_route_control_checksum.as_ref(),
@@ -68,12 +71,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 max_bytes,
                 target_replica_index,
                 include_disabled_replicas,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
+                options,
             )
+            .map(|(stats, _)| (stats, readiness))
     }
 
     pub fn prewarm_object_range_cache_with_read_proof_linearizable(
@@ -158,24 +158,20 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<(CacheControlStats, MetadataRaftReadiness), ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "prewarm object version range cache linearizable fenced",
+            now_ms,
+            0,
+        )?;
         self.ensure_page_route_control_ready(
             "object version cache prewarm",
             expected_page_route_control_checksum.as_ref(),
         )?;
         self.store
             .prewarm_object_version_range_cache_with_metadata_read(
-                bucket,
-                key,
-                version,
-                offset,
-                length,
-                max_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
+                bucket, key, version, offset, length, max_bytes, options,
             )
+            .map(|(stats, _)| (stats, readiness))
     }
 
     pub fn prewarm_object_version_range_cache_routed_linearizable_fenced(
@@ -191,6 +187,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<(CacheControlStats, MetadataRaftReadiness), ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "prewarm object version range cache routed linearizable fenced",
+            now_ms,
+            0,
+        )?;
         self.ensure_page_route_control_ready(
             "routed object version cache prewarm",
             expected_page_route_control_checksum.as_ref(),
@@ -205,12 +206,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 max_bytes,
                 target_replica_index,
                 include_disabled_replicas,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
+                options,
             )
+            .map(|(stats, _)| (stats, readiness))
     }
 
     pub fn prewarm_object_version_range_cache_with_read_proof_linearizable(

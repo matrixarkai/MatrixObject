@@ -12,6 +12,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<(ObjectRangeAdmission, MetadataRaftReadiness), ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "can accept object range read bounded linearizable fenced",
+            now_ms,
+            0,
+        )?;
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "bounded object range read admission",
@@ -25,13 +30,9 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 length,
                 max_payload_bytes,
                 max_chunk_read_count,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
+                options,
             )
-            .map(|(mut admission, readiness)| {
+            .map(|(mut admission, _)| {
                 admission.expected_route_control_checksum =
                     expected_page_route_control_checksum.to_string();
                 stamp_object_range_admission_proof("CanReadObjectRange", &mut admission);
@@ -278,5 +279,4 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         )?;
         Ok(proven_metadata_read(admission, &readiness))
     }
-
 }

@@ -25,6 +25,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectBatchCacheControlReport, ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "batch prewarm object range cache linearizable fenced",
+            now_ms,
+            0,
+        )?;
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "batch object cache prewarm",
@@ -35,13 +40,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 requests,
                 max_items,
                 max_prewarm_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
+                options,
             )
             .map(|mut report| {
+                report.read_proof = object_read_proof_from_readiness(&readiness);
                 report.expected_route_control_checksum =
                     expected_page_route_control_checksum.to_string();
                 stamp_object_batch_cache_control_proof("BatchPrewarmObjectRange", &mut report);
@@ -59,6 +61,11 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ObjectBatchCacheControlReport, ObjectError> {
+        let (options, readiness) = self.metadata_read_options_at_raft_position(
+            "batch prewarm object range cache routed linearizable fenced",
+            now_ms,
+            0,
+        )?;
         let expected_page_route_control_checksum = expected_page_route_control_checksum.as_ref();
         self.ensure_page_route_control_ready(
             "routed batch object cache prewarm",
@@ -71,13 +78,10 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 max_prewarm_bytes,
                 target_replica_index,
                 include_disabled_replicas,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
+                options,
             )
             .map(|mut report| {
+                report.read_proof = object_read_proof_from_readiness(&readiness);
                 report.expected_route_control_checksum =
                     expected_page_route_control_checksum.to_string();
                 stamp_object_batch_cache_control_proof("BatchPrewarmObjectRange", &mut report);
