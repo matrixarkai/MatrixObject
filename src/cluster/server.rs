@@ -238,8 +238,10 @@ impl ReplicaNodeServer {
     /// Accept and serve until the shutdown handle is used.
     pub fn serve(self) -> std::io::Result<()> {
         let worker_threads = self.options.worker_threads.max(1);
+        let dispatch = super::connections::Dispatch::new(worker_threads);
         let mut handles = Vec::with_capacity(worker_threads);
         for _ in 0..worker_threads {
+            let dispatch = dispatch.clone();
             let listener = self.listener.try_clone()?;
             let replica = Arc::clone(&self.replica);
             let counters = Arc::clone(&self.counters);
@@ -254,6 +256,7 @@ impl ReplicaNodeServer {
                     counters,
                     stop,
                     options,
+                    dispatch,
                     #[cfg(feature = "chunk-consensus")]
                     consensus,
                 );
@@ -301,6 +304,7 @@ fn accept_loop(
     counters: Arc<NodeCounters>,
     stop: Arc<ServerShutdown>,
     options: ReplicaNodeOptions,
+    dispatch: super::connections::Dispatch,
     #[cfg(feature = "chunk-consensus")] consensus: Option<Arc<consensus::ChunkConsensus>>,
 ) {
     super::connections::accept_loop(
@@ -324,6 +328,7 @@ fn accept_loop(
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
         },
+        dispatch,
     );
 }
 fn frame_response(

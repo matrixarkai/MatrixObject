@@ -491,15 +491,17 @@ impl MetaNodeServer {
     /// Accept and serve until the shutdown handle is used.
     pub fn serve(self) -> std::io::Result<()> {
         let worker_threads = self.options.worker_threads.max(1);
+        let dispatch = super::connections::Dispatch::new(worker_threads);
         let mut handles = Vec::with_capacity(worker_threads);
         for _ in 0..worker_threads {
+            let dispatch = dispatch.clone();
             let listener = self.listener.try_clone()?;
             let meta = Arc::clone(&self.meta);
             let counters = Arc::clone(&self.counters);
             let stop = Arc::clone(&self.stop);
             let options = self.options.clone();
             handles.push(std::thread::spawn(move || {
-                accept_loop(listener, meta, counters, stop, options);
+                accept_loop(listener, meta, counters, stop, options, dispatch);
             }));
         }
         if let Some(ttl_ms) = self.heartbeat_ttl_ms {
@@ -564,6 +566,7 @@ fn accept_loop(
     counters: Arc<MetaCounters>,
     stop: Arc<ServerShutdown>,
     options: MetaNodeOptions,
+    dispatch: super::connections::Dispatch,
 ) {
     super::connections::accept_loop(
         listener,
@@ -576,6 +579,7 @@ fn accept_loop(
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
         },
+        dispatch,
     );
 }
 

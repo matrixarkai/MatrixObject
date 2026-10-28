@@ -1273,6 +1273,12 @@ jobs:
           cargo test --locked --test node_connection_sharing chunk_catalog_reconnects_before_writing_after_idle_expiry -- --exact | tee /tmp/node-connections.log
           grep -q '^running 1 test$' /tmp/node-connections.log
           grep -q '^test result: ok. 1 passed' /tmp/node-connections.log
+      - name: one I/O loop uses idle request executors
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cluster::connections::tests::one_io_loop_can_use_idle_request_executors -- --exact | tee /tmp/shared-dispatch.log
+          grep -q '^running 1 test$' /tmp/shared-dispatch.log
+          grep -q '^test result: ok. 1 passed' /tmp/shared-dispatch.log
       - name: queued frame buffers stay bounded
         run: |
           set -euo pipefail
