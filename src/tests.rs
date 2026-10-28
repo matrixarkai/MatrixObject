@@ -50660,6 +50660,44 @@ fn metadata_raft_reads_follow_applied_entries_when_metadata_does_not_change() {
     assert_version_inventory_continuations_keep_consensus_proofs();
     assert_changefeed_reads_observe_applied_raft_position(&replicated, true);
     assert_multipart_reads_observe_applied_raft_position();
+    assert_metadata_queries_observe_applied_raft_position(&replicated, "object", true);
+    replicated
+        .propose_set_object_tags(
+            "bucket",
+            "object",
+            BTreeMap::from([("kind".into(), "test".into())]),
+            10,
+        )
+        .unwrap();
+    replicated
+        .propose_set_object_legal_hold("bucket", "object", true, 10)
+        .unwrap();
+    replicated
+        .propose_set_object_retention("bucket", "object", 1000, 10)
+        .unwrap();
+    assert_metadata_queries_observe_applied_raft_position(&replicated, "object", true);
+    assert_eq!(
+        replicated
+            .get_object_tags_linearizable("bucket", "object", 10)
+            .unwrap()
+            .0
+            .get("kind")
+            .map(String::as_str),
+        Some("test")
+    );
+    assert!(
+        replicated
+            .get_object_legal_hold_linearizable("bucket", "object", 10)
+            .unwrap()
+            .0
+    );
+    assert_eq!(
+        replicated
+            .get_object_retention_linearizable("bucket", "object", 10)
+            .unwrap()
+            .0,
+        1000
+    );
 }
 
 #[test]
@@ -50696,6 +50734,7 @@ fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
     assert_listing_reads_observe_applied_raft_position(&replicated, false);
     assert_inventory_reads_observe_applied_raft_position(&replicated, "object-0", false);
     assert_changefeed_reads_observe_applied_raft_position(&replicated, false);
+    assert_metadata_queries_observe_applied_raft_position(&replicated, "object-0", false);
 }
 
 #[test]
@@ -50740,6 +50779,7 @@ fn metadata_read_proofs_do_not_promote_mutation_counts_to_raft_positions() {
     assert_listing_reads_observe_applied_raft_position(&replicated, true);
     assert_inventory_reads_observe_applied_raft_position(&replicated, "object-0", true);
     assert_changefeed_reads_observe_applied_raft_position(&replicated, true);
+    assert_metadata_queries_observe_applied_raft_position(&replicated, "object-0", true);
 }
 
 fn assert_object_reads_observe_applied_raft_position(
@@ -51559,6 +51599,123 @@ fn assert_multipart_reads_observe_applied_raft_position() {
             assert_eq!(next.uploads.len(), 1);
             assert_ne!(page.uploads, next.uploads);
             assert_eq!(next.read_proof.consensus_read_index, committed);
+        }
+    }
+}
+
+fn assert_metadata_queries_observe_applied_raft_position(
+    replicated: &RaftBackedObjectStore<InMemoryRustRaft>,
+    key: &str,
+    readable: bool,
+) {
+    let metadata_key = meta_object_key(&ObjectId::new("bucket", key));
+    let expected = replicated.store().metadata_record(&metadata_key).unwrap();
+    let conditions = vec![MetadataReadCondition {
+        key: metadata_key.clone(),
+        expected_version: expected.version(),
+        require_present: true,
+        require_deleted: false,
+    }];
+    let results = [
+        replicated
+            .metadata_record_linearizable(&metadata_key, 10)
+            .map(|(record, r)| {
+                assert_eq!(record, expected);
+                r
+            }),
+        replicated
+            .metadata_records_batch_linearizable(vec![metadata_key.clone()], 65536, 10)
+            .map(|(batch, r)| {
+                assert_eq!(batch.records, vec![expected.clone()]);
+                r
+            }),
+        replicated
+            .scan_metadata_records_linearizable(&metadata_key, None, 1, 65536, 10)
+            .map(|(page, r)| {
+                assert_eq!(page.records, vec![expected.clone()]);
+                r
+            }),
+        replicated
+            .check_metadata_read_set_linearizable(conditions, 10)
+            .map(|(report, r)| {
+                assert_eq!(report.matched_records, 1);
+                r
+            }),
+        replicated
+            .get_object_tags_linearizable("bucket", key, 10)
+            .map(|(tags, r)| {
+                assert_eq!(
+                    tags,
+                    replicated.store().get_object_tags("bucket", key).unwrap()
+                );
+                r
+            }),
+        replicated
+            .get_object_legal_hold_linearizable("bucket", key, 10)
+            .map(|(hold, r)| {
+                assert_eq!(
+                    hold,
+                    replicated
+                        .store()
+                        .get_object_legal_hold("bucket", key)
+                        .unwrap()
+                );
+                r
+            }),
+        replicated
+            .get_object_retention_linearizable("bucket", key, 10)
+            .map(|(retention, r)| {
+                assert_eq!(
+                    retention,
+                    replicated
+                        .store()
+                        .get_object_retention("bucket", key)
+                        .unwrap()
+                );
+                r
+            }),
+    ];
+    for result in results {
+        if readable {
+            let readiness = result.unwrap();
+            assert_eq!(readiness.safe_read_fence, replicated.raft_commit_index());
+            assert_eq!(
+                readiness.applied_commit_index,
+                replicated.store().last_metadata_commit_index()
+            );
+        } else {
+            assert!(
+                matches!(result, Err(ObjectError::PreconditionFailed(message)) if message.contains("metadata control read index is not satisfied"))
+            );
+        }
+    }
+    if readable {
+        assert!(replicated
+            .check_metadata_read_set_linearizable(
+                vec![MetadataReadCondition {
+                    key: metadata_key,
+                    expected_version: expected.version() + 1,
+                    require_present: true,
+                    require_deleted: false
+                }],
+                10
+            )
+            .is_err());
+        let (first, r) = replicated
+            .scan_metadata_records_linearizable("object/bucket/", None, 1, 65536, 10)
+            .unwrap();
+        if first.has_more {
+            let (next, nr) = replicated
+                .scan_metadata_records_linearizable(
+                    "object/bucket/",
+                    first.next_key_marker.as_deref(),
+                    1,
+                    65536,
+                    10,
+                )
+                .unwrap();
+            assert_ne!(first.records, next.records);
+            assert_eq!(r.safe_read_fence, nr.safe_read_fence);
         }
     }
 }
