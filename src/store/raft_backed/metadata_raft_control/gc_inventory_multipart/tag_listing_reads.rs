@@ -10,16 +10,14 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         limit: usize,
         now_ms: u64,
     ) -> Result<(Vec<ObjectMetadata>, MetadataRaftReadiness), ObjectError> {
-        self.store.list_objects_by_tag_with_metadata_read(
-            bucket,
-            tag_key,
-            tag_value,
-            marker,
-            limit,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        self.read_metadata_at_raft_position(
+            "list objects by tag linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store.list_objects_by_tag_with_metadata_read(
+                    bucket, tag_key, tag_value, marker, limit, options,
+                )
             },
         )
     }
@@ -48,19 +46,25 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(ObjectTagPage, MetadataRaftReadiness), ObjectError> {
-        self.store.list_objects_by_tag_page_with_metadata_read(
-            bucket,
-            tag_key,
-            tag_value,
-            marker,
-            limit,
-            max_payload_bytes,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        let (mut page, readiness) = self.read_metadata_at_raft_position(
+            "list objects by tag page linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store.list_objects_by_tag_page_with_metadata_read(
+                    bucket,
+                    tag_key,
+                    tag_value,
+                    marker,
+                    limit,
+                    max_payload_bytes,
+                    options,
+                )
             },
-        )
+        )?;
+        page.read_proof = object_read_proof_from_readiness(&readiness);
+        stamp_object_tag_list_page_proof("ListObjectsByTag", &mut page, None)?;
+        Ok((page, readiness))
     }
 
     pub fn list_objects_by_tag_page_linearizable_list_page_proof_fenced(
@@ -74,21 +78,21 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         now_ms: u64,
         expected_object_list_page_proof_checksum: impl AsRef<str>,
     ) -> Result<(ObjectTagPage, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .list_objects_by_tag_page_with_metadata_read_list_page_proof_fenced(
-                bucket,
-                tag_key,
-                tag_value,
-                marker,
-                limit,
-                max_payload_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-                Some(expected_object_list_page_proof_checksum.as_ref()),
-            )
+        let (mut page, readiness) = self.list_objects_by_tag_page_linearizable(
+            bucket,
+            tag_key,
+            tag_value,
+            marker,
+            limit,
+            max_payload_bytes,
+            now_ms,
+        )?;
+        stamp_object_tag_list_page_proof(
+            "ListObjectsByTag",
+            &mut page,
+            Some(expected_object_list_page_proof_checksum.as_ref()),
+        )?;
+        Ok((page, readiness))
     }
 
     pub fn list_objects_by_tag_page_with_read_proof_linearizable(

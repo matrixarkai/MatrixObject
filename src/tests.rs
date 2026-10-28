@@ -50656,6 +50656,8 @@ fn metadata_raft_reads_follow_applied_entries_when_metadata_does_not_change() {
         )
         .is_err());
     assert_listing_reads_observe_applied_raft_position(&replicated, true);
+    assert_inventory_reads_observe_applied_raft_position(&replicated, "object", true);
+    assert_version_inventory_continuations_keep_consensus_proofs();
 }
 
 #[test]
@@ -50690,6 +50692,7 @@ fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
         .is_err());
     assert_object_reads_observe_applied_raft_position(&replicated, "object-0", false);
     assert_listing_reads_observe_applied_raft_position(&replicated, false);
+    assert_inventory_reads_observe_applied_raft_position(&replicated, "object-0", false);
 }
 
 #[test]
@@ -50732,6 +50735,7 @@ fn metadata_read_proofs_do_not_promote_mutation_counts_to_raft_positions() {
     assert_eq!(readiness.metadata_control_proof_bytes, local_identity.metadata_control_proof_bytes);
     assert_object_reads_observe_applied_raft_position(&replicated, "object-0", true);
     assert_listing_reads_observe_applied_raft_position(&replicated, true);
+    assert_inventory_reads_observe_applied_raft_position(&replicated, "object-0", true);
 }
 
 fn assert_object_reads_observe_applied_raft_position(
@@ -51100,4 +51104,211 @@ fn assert_listing_reads_observe_applied_raft_position(
             );
         }
     }
+}
+
+fn assert_inventory_reads_observe_applied_raft_position(
+    replicated: &RaftBackedObjectStore<InMemoryRustRaft>,
+    key: &str,
+    readable: bool,
+) {
+    macro_rules! check_page {
+        ($read:expr, $fenced:expr, $checksum:ident, $operation:literal) => {{
+            let result = $read;
+            if readable {
+                let (page, readiness) = result.unwrap();
+                assert_eq!(page.read_proof, object_read_proof_from_readiness(&readiness));
+                assert_eq!(page.read_proof.consensus_read_index, replicated.raft_commit_index());
+                assert_eq!(page.read_proof.metadata_commit_index, replicated.store().last_metadata_commit_index());
+                assert_eq!(page.object_list_page_proof_checksum, $checksum($operation, &page));
+                let read_fenced = $fenced;
+                let (fenced, fenced_readiness) = read_fenced(&page.object_list_page_proof_checksum).unwrap();
+                assert_eq!(fenced.read_proof, page.read_proof);
+                assert_eq!(fenced_readiness.safe_read_fence, readiness.safe_read_fence);
+                assert_eq!(fenced.expected_object_list_page_proof_checksum, page.object_list_page_proof_checksum);
+                assert_eq!(fenced.object_list_page_proof_checksum, $checksum($operation, &fenced));
+                assert!(read_fenced("invalid").is_err());
+            } else {
+                assert!(matches!(result, Err(ObjectError::PreconditionFailed(message))
+                    if message.contains("metadata control read index is not satisfied")));
+                assert!(matches!(($fenced)(""), Err(ObjectError::PreconditionFailed(message))
+                    if message.contains("metadata control read index is not satisfied")));
+            }
+        }};
+    }
+    check_page!(
+        replicated.list_object_versions_page_linearizable("bucket", key, None, 1, 65536, 10),
+        |checksum: &str| replicated.list_object_versions_page_linearizable_list_page_proof_fenced(
+            "bucket", key, None, 1, 65536, 10, checksum
+        ),
+        object_version_page_proof_checksum,
+        "ListObjectVersions"
+    );
+    check_page!(
+        replicated.list_bucket_object_versions_page_linearizable(
+            "bucket", "", None, None, None, 1, 65536, 10
+        ),
+        |checksum: &str| replicated
+            .list_bucket_object_versions_page_linearizable_list_page_proof_fenced(
+                "bucket", "", None, None, None, 1, 65536, 10, checksum
+            ),
+        bucket_object_version_page_proof_checksum,
+        "ListBucketObjectVersions"
+    );
+    check_page!(
+        replicated.list_object_inventory_linearizable("bucket", "", None, 1, 65536, 10),
+        |checksum: &str| replicated.list_object_inventory_linearizable_list_page_proof_fenced(
+            "bucket", "", None, 1, 65536, 10, checksum
+        ),
+        object_inventory_page_proof_checksum,
+        "ListObjectInventory"
+    );
+    check_page!(
+        replicated
+            .list_objects_by_tag_page_linearizable("bucket", "kind", "test", None, 1, 65536, 10),
+        |checksum: &str| replicated.list_objects_by_tag_page_linearizable_list_page_proof_fenced(
+            "bucket", "kind", "test", None, 1, 65536, 10, checksum
+        ),
+        object_tag_list_page_proof_checksum,
+        "ListObjectsByTag"
+    );
+    for result in [
+        replicated.list_object_versions_linearizable("bucket", key, 10),
+        replicated.list_objects_by_tag_linearizable("bucket", "kind", "test", None, 1, 10),
+    ] {
+        if readable {
+            assert_eq!(
+                result.unwrap().1.safe_read_fence,
+                replicated.raft_commit_index()
+            );
+        } else {
+            assert!(
+                matches!(result, Err(ObjectError::PreconditionFailed(message))
+                if message.contains("metadata control read index is not satisfied"))
+            );
+        }
+    }
+}
+
+fn assert_version_inventory_continuations_keep_consensus_proofs() {
+    let mut replicated = RaftBackedObjectStore::new(
+        InMemoryRustRaft::new(1).unwrap(),
+        MatrixObjectStore::new(test_options()).unwrap(),
+    );
+    replicated
+        .propose_set_bucket_versioning("bucket", true)
+        .unwrap();
+    for key in ["object", "other"] {
+        for time in 1..=3 {
+            replicated
+                .propose(ObjectCommand::PutObject {
+                    bucket: "bucket".into(),
+                    key: key.into(),
+                    data: vec![time as u8],
+                    content_type: "text/plain".into(),
+                    update_time_ms: time,
+                    options: PutOptions::default(),
+                })
+                .unwrap();
+        }
+        replicated
+            .propose_set_object_tags(
+                "bucket",
+                key,
+                BTreeMap::from([("kind".into(), "test".into())]),
+                4,
+            )
+            .unwrap();
+    }
+    replicated
+        .propose_apply_bucket_lifecycle_transitions_report_with_read_proof_linearizable(10, 10)
+        .unwrap();
+    assert_inventory_reads_observe_applied_raft_position(&replicated, "object", true);
+    let committed = replicated.raft_commit_index();
+    let expected_versions = replicated
+        .store()
+        .list_object_versions("bucket", "object")
+        .unwrap();
+    let mut marker = None;
+    let mut found = Vec::new();
+    for _ in 0..10 {
+        let (page, _) = replicated
+            .list_object_versions_page_linearizable("bucket", "object", marker, 1, 65536, 10)
+            .unwrap();
+        assert_eq!(page.read_proof.consensus_read_index, committed);
+        assert_eq!(
+            page.object_list_page_proof_checksum,
+            object_version_page_proof_checksum("ListObjectVersions", &page)
+        );
+        found.extend(page.versions);
+        if !page.has_more {
+            break;
+        }
+        assert_ne!(marker, page.next_version_marker);
+        marker = page.next_version_marker;
+    }
+    assert_eq!(found, expected_versions);
+    macro_rules! walk_keys {
+        ($method:ident, $checksum:ident, $count:ident, $operation:literal, $($argument:expr),*) => {{
+            let mut marker: Option<String> = None;
+            let mut count = 0;
+            for _ in 0..10 {
+                let (page, _) = replicated.$method("bucket", $($argument,)* marker.as_deref(), 1, 65536, 10).unwrap();
+                assert_eq!(page.read_proof.consensus_read_index, committed);
+                assert_eq!(page.object_list_page_proof_checksum, $checksum($operation, &page));
+                count += page.$count;
+                if !page.has_more { break; }
+                assert_ne!(marker, page.next_marker);
+                marker = page.next_marker;
+            }
+            assert_eq!(count, 2);
+        }};
+    }
+    walk_keys!(
+        list_objects_by_tag_page_linearizable,
+        object_tag_list_page_proof_checksum,
+        emitted_objects,
+        "ListObjectsByTag",
+        "kind",
+        "test"
+    );
+    walk_keys!(
+        list_object_inventory_linearizable,
+        object_inventory_page_proof_checksum,
+        listed_objects,
+        "ListObjectInventory",
+        ""
+    );
+    let mut key_marker: Option<String> = None;
+    let mut version_marker = None;
+    let mut count = 0;
+    for _ in 0..20 {
+        let (page, _) = replicated
+            .list_bucket_object_versions_page_linearizable(
+                "bucket",
+                "",
+                None,
+                key_marker.as_deref(),
+                version_marker,
+                1,
+                65536,
+                10,
+            )
+            .unwrap();
+        assert_eq!(page.read_proof.consensus_read_index, committed);
+        assert_eq!(
+            page.object_list_page_proof_checksum,
+            bucket_object_version_page_proof_checksum("ListBucketObjectVersions", &page)
+        );
+        count += page.versions.len();
+        if !page.has_more {
+            break;
+        }
+        assert_ne!(
+            (&key_marker, version_marker),
+            (&page.next_key_marker, page.next_version_marker)
+        );
+        key_marker = page.next_key_marker;
+        version_marker = page.next_version_marker;
+    }
+    assert_eq!(count, expected_versions.len() * 2);
 }
