@@ -268,7 +268,7 @@ dependencies = [
 [[package]]
 name = "matrixraft"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/matrixraft.git?rev=25002dc582da56aed67116adfe704ac23ec5a0b6#25002dc582da56aed67116adfe704ac23ec5a0b6"
+source = "git+https://github.com/matrixarkai/matrixraft.git?rev=f41a0325d32378e0aa9bc8f42f7bbf6e3d79ff86#f41a0325d32378e0aa9bc8f42f7bbf6e3d79ff86"
 dependencies = [
  "fs2",
  "prost",
@@ -276,6 +276,7 @@ dependencies = [
  "serde",
  "serde_json",
  "slog",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
