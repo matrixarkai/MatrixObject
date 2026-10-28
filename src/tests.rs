@@ -52526,3 +52526,78 @@ fn raft_backed_capacity_rebalance_reserves_batch_space() {
         }
     }
 }
+
+#[test]
+fn placement_uses_distinct_domains_before_reusing_a_domain() {
+    for (width, expected) in [
+        (1, vec!["a"]),
+        (2, vec!["a", "c"]),
+        (3, vec!["a", "c", "e"]),
+        (4, vec!["a", "c", "e", "b"]),
+        (5, vec!["a", "c", "e", "b", "d"]),
+    ] {
+        let mut store = MatrixObjectStore::new(test_options()).unwrap();
+        for (id, domain, capacity) in [
+            ("a", "rack-a", 100),
+            ("b", "rack-a", 100),
+            ("c", "rack-b", 80),
+            ("d", "rack-b", 80),
+            ("e", "rack-c", 60),
+        ] {
+            store
+                .register_placement_node(placement_node(id, domain, capacity))
+                .unwrap();
+        }
+        let plan = store
+            .plan_object_placement("bucket", "object", 10, width)
+            .unwrap();
+        assert_eq!(plan.node_ids, expected, "replica count {width}");
+        let placement = ObjectPlacement {
+            object_id: ObjectId::new("bucket", "object"),
+            version: 1,
+            length: 10,
+            node_ids: plan.node_ids.clone(),
+            update_time_ms: 2,
+        };
+        store
+            .commit_object_placement(placement, &plan.plan_checksum)
+            .unwrap();
+        let mut restored = MatrixObjectStore::new(test_options()).unwrap();
+        restored
+            .install_snapshot(store.export_snapshot().unwrap())
+            .unwrap();
+        assert_eq!(
+            restored
+                .object_placement("bucket", "object")
+                .unwrap()
+                .node_ids,
+            expected
+        );
+        for node in restored.placement_nodes() {
+            assert_eq!(
+                node.committed_bytes,
+                if expected.contains(&node.node_id.as_str()) {
+                    10
+                } else {
+                    0
+                }
+            );
+        }
+    }
+    let mut store = MatrixObjectStore::new(test_options()).unwrap();
+    for id in ["a", "b", "c"] {
+        store
+            .register_placement_node(placement_node(id, "one-rack", 100))
+            .unwrap();
+    }
+    assert_eq!(
+        store
+            .plan_object_placement("bucket", "one-rack", 10, 3)
+            .unwrap()
+            .node_ids,
+        vec!["a", "b", "c"]
+    );
+    assert!(store
+        .plan_object_placement("bucket", "too-wide", 10, 4)
+        .is_err());
+}
