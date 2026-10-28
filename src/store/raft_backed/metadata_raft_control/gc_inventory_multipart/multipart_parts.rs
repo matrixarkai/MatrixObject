@@ -8,14 +8,13 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         limit: usize,
         now_ms: u64,
     ) -> Result<(Vec<MultipartPart>, MetadataRaftReadiness), ObjectError> {
-        self.store.list_multipart_parts_with_metadata_read(
-            upload_id,
-            marker,
-            limit,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        self.read_metadata_at_raft_position(
+            "list multipart parts linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .list_multipart_parts_with_metadata_read(upload_id, marker, limit, options)
             },
         )
     }
@@ -52,17 +51,22 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(MultipartPartPage, MetadataRaftReadiness), ObjectError> {
-        self.store.list_multipart_parts_page_with_metadata_read(
-            upload_id,
-            marker,
-            limit,
-            max_payload_bytes,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        let (mut page, readiness) = self.read_metadata_at_raft_position(
+            "list multipart parts page linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store.list_multipart_parts_page_with_metadata_read(
+                    upload_id,
+                    marker,
+                    limit,
+                    max_payload_bytes,
+                    options,
+                )
             },
-        )
+        )?;
+        page.read_proof = object_read_proof_from_readiness(&readiness);
+        Ok((page, readiness))
     }
 
     pub fn list_multipart_parts_page_from_meta_shard(

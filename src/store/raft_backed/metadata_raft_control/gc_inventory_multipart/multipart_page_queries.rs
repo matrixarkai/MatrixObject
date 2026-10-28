@@ -53,21 +53,26 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_payload_bytes: u64,
         now_ms: u64,
     ) -> Result<(MultipartUploadPage, MetadataRaftReadiness), ObjectError> {
-        self.store
-            .list_multipart_uploads_hierarchy_page_by_key_with_metadata_read(
-                bucket,
-                prefix,
-                delimiter,
-                key_marker,
-                upload_id_marker,
-                limit,
-                max_payload_bytes,
-                MetadataReadOptions {
-                    min_read_index: self.raft.commit_index(),
-                    now_ms,
-                    ..MetadataReadOptions::default()
-                },
-            )
+        let (mut page, readiness) = self.read_metadata_at_raft_position(
+            "list multipart uploads hierarchy page by key linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store
+                    .list_multipart_uploads_hierarchy_page_by_key_with_metadata_read(
+                        bucket,
+                        prefix,
+                        delimiter,
+                        key_marker,
+                        upload_id_marker,
+                        limit,
+                        max_payload_bytes,
+                        options,
+                    )
+            },
+        )?;
+        page.read_proof = object_read_proof_from_readiness(&readiness);
+        Ok((page, readiness))
     }
 
     pub fn list_multipart_uploads_page_from_meta_shard(

@@ -20,16 +20,19 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         limit: usize,
         now_ms: u64,
     ) -> Result<(Vec<MultipartUpload>, MetadataRaftReadiness), ObjectError> {
-        self.store.list_multipart_uploads_by_key_with_metadata_read(
-            bucket,
-            prefix,
-            key_marker,
-            upload_id_marker,
-            limit,
-            MetadataReadOptions {
-                min_read_index: self.raft.commit_index(),
-                now_ms,
-                ..MetadataReadOptions::default()
+        self.read_metadata_at_raft_position(
+            "list multipart uploads by key linearizable",
+            now_ms,
+            0,
+            |options| {
+                self.store.list_multipart_uploads_by_key_with_metadata_read(
+                    bucket,
+                    prefix,
+                    key_marker,
+                    upload_id_marker,
+                    limit,
+                    options,
+                )
             },
         )
     }
