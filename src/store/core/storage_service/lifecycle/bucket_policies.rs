@@ -98,12 +98,11 @@ impl MatrixObjectStore {
                 {
                     let target = policy.transition_storage_class.clone().unwrap();
                     if current.storage_class != target {
-                        match self.apply_transition_object_with_placement(
+                        match self.apply_lifecycle_transition(
                             object_id.bucket.to_string(),
                             object_id.key.to_string(),
                             target,
                             now_ms,
-                            self.options.replica_count,
                             Some(current.etag().to_string()),
                         ) {
                             Ok(_) => {

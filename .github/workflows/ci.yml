@@ -1286,6 +1286,37 @@ jobs:
           grep -q '^running 1 test$' /tmp/node-connections.log
           grep -q '^test result: ok. 1 passed' /tmp/node-connections.log
 
+      - name: bucket lifecycle policies filter transition and expire bounded
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::bucket_lifecycle_policies_filter_transition_and_expire_bounded -- --exact | tee /tmp/lifecycle.log
+          grep -q '^running 1 test$' /tmp/lifecycle.log
+          grep -q '^test result: ok. 1 passed' /tmp/lifecycle.log
+      - name: bucket lifecycle transitions only preserve expirable versions
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::bucket_lifecycle_transitions_only_preserve_expirable_versions -- --exact | tee /tmp/lifecycle.log
+          grep -q '^running 1 test$' /tmp/lifecycle.log
+          grep -q '^test result: ok. 1 passed' /tmp/lifecycle.log
+      - name: raft backed store replays lifecycle policy application
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::raft_backed_store_replays_lifecycle_policy_application -- --exact | tee /tmp/lifecycle.log
+          grep -q '^running 1 test$' /tmp/lifecycle.log
+          grep -q '^test result: ok. 1 passed' /tmp/lifecycle.log
+      - name: raft backed store replays lifecycle transition only application
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::raft_backed_store_replays_lifecycle_transition_only_application -- --exact | tee /tmp/lifecycle.log
+          grep -q '^running 1 test$' /tmp/lifecycle.log
+          grep -q '^test result: ok. 1 passed' /tmp/lifecycle.log
+      - name: lifecycle transitions keep existing placement width and refuse offline nodes
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::lifecycle_transitions_keep_existing_placement_width_and_refuse_offline_nodes -- --exact | tee /tmp/lifecycle.log
+          grep -q '^running 1 test$' /tmp/lifecycle.log
+          grep -q '^test result: ok. 1 passed' /tmp/lifecycle.log
+
   metadata-consensus:
     name: network metadata consensus
     runs-on: ubuntu-latest
