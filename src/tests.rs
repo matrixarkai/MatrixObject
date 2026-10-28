@@ -14769,6 +14769,27 @@ fn raft_backed_store_runs_integrity_fenced_metaserver_maintenance() {
             100,
         )
         .unwrap();
+    // Starting the transaction invalidates the earlier cached route. Populate
+    // it again while the session is live so maintenance must evict it later.
+    assert_eq!(replicated.store().metadata_route_cache_status().entries, 0);
+    let (routes, _) = replicated
+        .batch_resolve_metadata_routes_linearizable_fenced(&route_keys, 4096, 105, None, None, None)
+        .unwrap();
+    assert_eq!(routes.route_cache_entries, 1);
+    assert_eq!(
+        replicated
+            .store()
+            .metadata_route_cache_status_at(105)
+            .fresh_entries,
+        1
+    );
+    assert_eq!(
+        replicated
+            .store()
+            .metadata_route_cache_status_at(200)
+            .stale_entries,
+        1
+    );
     let plan = replicated
         .plan_metadata_integrity_linearizable(200, "object/integrity-maint/", 8)
         .unwrap();
@@ -19110,7 +19131,7 @@ fn raft_backed_store_replays_direct_page_batch_allocations() {
     assert_eq!(readiness.release_allocation_receipt_count, 0);
     assert_eq!(
         readiness.page_state_fingerprint_format,
-        "MOSRSBLOCK-FINGERPRINT12"
+        "MOSRSBLOCK-FINGERPRINT17"
     );
     assert_eq!(
         receipt_read.value.receipts[0].idempotency_key,
@@ -19753,12 +19774,14 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     assert!(matches!(
-        replicated.propose_prepared_replica_service_mode_linearizable_fenced(mode.clone(), Some("")),
+        replicated
+            .propose_prepared_replica_service_mode_linearizable_fenced(mode.clone(), Some("")),
         Err(ObjectError::PreconditionFailed(_))
     ));
     let mut unfenced_mode = mode.clone();
     unfenced_mode.expected_route_control_checksum.clear();
-    unfenced_mode.raft_entry_checksum = prepared_replica_service_mode_config_checksum(&unfenced_mode);
+    unfenced_mode.raft_entry_checksum =
+        prepared_replica_service_mode_config_checksum(&unfenced_mode);
     assert!(matches!(
         replicated
             .store()
@@ -19767,7 +19790,10 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
         Err(ObjectError::PreconditionFailed(_))
     ));
     let mode_receipt = replicated
-        .propose_prepared_replica_service_mode_linearizable_fenced(mode, Some(&proof.state_checksum))
+        .propose_prepared_replica_service_mode_linearizable_fenced(
+            mode,
+            Some(&proof.state_checksum),
+        )
         .unwrap();
     assert_eq!(
         mode_receipt.content_type,
@@ -19819,7 +19845,14 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
         .unwrap();
     assert_eq!(trim_receipt.content_type, "chunkserver/prepared-trim-flow");
     assert_eq!(trim_receipt.version, 7);
-    assert_eq!(trim_receipt.length, 21);
+    assert_eq!(trim_receipt.length, test_options().replica_count as u64);
+    assert!(replicated
+        .store()
+        .chunk_service
+        .replicas
+        .iter()
+        .all(|replica| replica.trim_flow_rate_bytes_per_sec() == 7
+            && replica.trim_flow_burst_bytes() == 21));
 
     let qos = ReplicaMutationQosConfig {
         window_ms: 1_000,
@@ -19882,7 +19915,7 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
         "chunkserver/prepared-mutation-qos-config"
     );
     assert_eq!(qos_receipt.version, 8);
-    assert_eq!(qos_receipt.length, 12_288);
+    assert_eq!(qos_receipt.length, test_options().replica_count as u64);
 
     let proof = replicated.store().chunk_service.route_control_proof();
     let proven_cache = replicated
@@ -19977,7 +20010,16 @@ fn raft_backed_store_gates_prepared_chunk_control_configs() {
         vec![false, true, true]
     );
     assert_eq!(follower.draining_chunk_replicas(), vec![0]);
-    assert_eq!(follower.chunk_replica_mutation_qos_configs()[0], qos);
+    assert!(follower
+        .chunk_replica_mutation_qos_configs()
+        .iter()
+        .all(|config| config == &qos));
+    assert!(follower
+        .chunk_service
+        .replicas
+        .iter()
+        .all(|replica| replica.trim_flow_rate_bytes_per_sec() == 7
+            && replica.trim_flow_burst_bytes() == 21));
     assert_eq!(follower.chunk_read_cache_max_bytes_per_replica(), 32);
 }
 
@@ -31535,7 +31577,7 @@ fn raft_backed_store_fences_metaserver_control_prepares() {
     let store = MatrixObjectStore::new(test_options()).unwrap();
     let mut replicated = RaftBackedObjectStore::new(raft, store);
     let proof = replicated.store().metadata_control_proof_at(100);
-    assert_eq!(proof.state_format, "MOSRSMETA-CONTROL11");
+    assert_eq!(proof.state_format, "MOSRSMETA-CONTROL12");
     assert!(!proof.state_checksum.is_empty());
 
     assert!(matches!(
@@ -32319,7 +32361,7 @@ fn raft_backed_store_proves_metaserver_shard_migration_plans() {
         .unwrap_err();
     assert!(stale_err
         .to_string()
-        .contains("metadata shard migration plan read index is not satisfied"));
+        .contains("metadata shard migration plan metadata control read index is not satisfied"));
 
     let raft = InMemoryRustRaft::new(2).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();

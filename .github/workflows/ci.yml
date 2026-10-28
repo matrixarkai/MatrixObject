@@ -1317,6 +1317,37 @@ jobs:
           grep -q '^running 1 test$' /tmp/lifecycle.log
           grep -q '^test result: ok. 1 passed' /tmp/lifecycle.log
 
+      - name: raft backed store fences metaserver control prepares
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::raft_backed_store_fences_metaserver_control_prepares -- --exact | tee /tmp/control-maintenance.log
+          grep -q '^running 1 test$' /tmp/control-maintenance.log
+          grep -q '^test result: ok. 1 passed' /tmp/control-maintenance.log
+      - name: raft backed store replays direct page batch allocations
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::raft_backed_store_replays_direct_page_batch_allocations -- --exact | tee /tmp/control-maintenance.log
+          grep -q '^running 1 test$' /tmp/control-maintenance.log
+          grep -q '^test result: ok. 1 passed' /tmp/control-maintenance.log
+      - name: raft backed store proves metaserver shard migration plans
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::raft_backed_store_proves_metaserver_shard_migration_plans -- --exact | tee /tmp/control-maintenance.log
+          grep -q '^running 1 test$' /tmp/control-maintenance.log
+          grep -q '^test result: ok. 1 passed' /tmp/control-maintenance.log
+      - name: raft backed store gates prepared chunk control configs
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::raft_backed_store_gates_prepared_chunk_control_configs -- --exact | tee /tmp/control-maintenance.log
+          grep -q '^running 1 test$' /tmp/control-maintenance.log
+          grep -q '^test result: ok. 1 passed' /tmp/control-maintenance.log
+      - name: raft backed store runs integrity fenced metaserver maintenance
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::raft_backed_store_runs_integrity_fenced_metaserver_maintenance -- --exact | tee /tmp/control-maintenance.log
+          grep -q '^running 1 test$' /tmp/control-maintenance.log
+          grep -q '^test result: ok. 1 passed' /tmp/control-maintenance.log
+
       - name: capacity rebalance reserves destination space across the batch
         run: |
           set -euo pipefail
