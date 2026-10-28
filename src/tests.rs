@@ -50619,6 +50619,43 @@ fn metadata_raft_reads_follow_applied_entries_when_metadata_does_not_change() {
         .get_object_linearizable("bucket", "object", 10)
         .is_err());
     assert_object_reads_observe_applied_raft_position(&replicated, "object", true);
+    assert_listing_reads_observe_applied_raft_position(&replicated, true);
+    // A no-op advances the consensus proof even when the listed objects do not change.
+    let (page_before, _) = replicated
+        .list_objects_page_linearizable("bucket", "", None, 1, 65536, 10)
+        .unwrap();
+    let batch_before = replicated
+        .head_objects_batch_with_read_proof_linearizable(
+            vec![ObjectId::new("bucket", "object")],
+            10,
+            65536,
+            10,
+        )
+        .unwrap();
+    replicated
+        .propose_apply_bucket_lifecycle_transitions_report_with_read_proof_linearizable(10, 10)
+        .unwrap();
+    assert!(replicated
+        .list_objects_page_linearizable_list_page_proof_fenced(
+            "bucket",
+            "",
+            None,
+            1,
+            65536,
+            10,
+            &page_before.object_list_page_proof_checksum
+        )
+        .is_err());
+    assert!(replicated
+        .head_objects_batch_with_read_proof_linearizable_fenced(
+            vec![ObjectId::new("bucket", "object")],
+            10,
+            65536,
+            10,
+            &batch_before.batch.metadata_batch_read_proof_checksum
+        )
+        .is_err());
+    assert_listing_reads_observe_applied_raft_position(&replicated, true);
 }
 
 #[test]
@@ -50652,6 +50689,7 @@ fn metadata_mutation_count_cannot_prove_an_unapplied_raft_entry() {
         .list_objects_linearizable("bucket", "", None, 10, 10)
         .is_err());
     assert_object_reads_observe_applied_raft_position(&replicated, "object-0", false);
+    assert_listing_reads_observe_applied_raft_position(&replicated, false);
 }
 
 #[test]
@@ -50693,6 +50731,7 @@ fn metadata_read_proofs_do_not_promote_mutation_counts_to_raft_positions() {
     );
     assert_eq!(readiness.metadata_control_proof_bytes, local_identity.metadata_control_proof_bytes);
     assert_object_reads_observe_applied_raft_position(&replicated, "object-0", true);
+    assert_listing_reads_observe_applied_raft_position(&replicated, true);
 }
 
 fn assert_object_reads_observe_applied_raft_position(
@@ -50883,6 +50922,181 @@ fn assert_object_reads_observe_applied_raft_position(
                 matches!(result, Err(ObjectError::PreconditionFailed(message))
                 if message.contains("metadata control read index is not satisfied")),
                 "{operation} must refuse the unapplied Raft position"
+            );
+        }
+    }
+}
+
+fn assert_listing_reads_observe_applied_raft_position(
+    replicated: &RaftBackedObjectStore<InMemoryRustRaft>,
+    readable: bool,
+) {
+    let objects = vec![
+        ObjectId::new("bucket", "object"),
+        ObjectId::new("bucket", "object-0"),
+    ];
+    let requests: Vec<_> = objects
+        .iter()
+        .map(|object| ConditionalObjectMetadataRequest {
+            bucket: object.bucket.to_string(),
+            key: object.key.to_string(),
+            version: None,
+            preconditions: ObjectReadPreconditions::default(),
+        })
+        .collect();
+    let batch =
+        replicated.head_objects_batch_with_read_proof_linearizable(objects.clone(), 10, 65536, 10);
+    let conditional = replicated.head_objects_conditional_batch_with_read_proof_linearizable(
+        requests.clone(),
+        10,
+        65536,
+        10,
+    );
+    if readable {
+        let batch = batch.unwrap();
+        let conditional = conditional.unwrap();
+        assert_eq!(
+            batch.proof.consensus_read_index,
+            replicated.raft_commit_index()
+        );
+        assert_eq!(
+            conditional.proof.consensus_read_index,
+            replicated.raft_commit_index()
+        );
+        assert_eq!(batch.batch.found_objects, 1);
+        assert_eq!(conditional.batch.found_objects, 1);
+        assert_eq!(
+            batch.batch.metadata_batch_read_proof_checksum,
+            object_metadata_batch_read_proof_checksum(
+                "HeadObjectsBatch",
+                &batch.batch,
+                &batch.proof
+            )
+        );
+        assert_eq!(
+            conditional.batch.metadata_batch_read_proof_checksum,
+            conditional_object_metadata_batch_read_proof_checksum(
+                "HeadObjectsConditionalBatch",
+                &conditional.batch,
+                &conditional.proof
+            )
+        );
+        replicated
+            .head_objects_batch_with_read_proof_linearizable_fenced(
+                objects.clone(),
+                10,
+                65536,
+                10,
+                &batch.batch.metadata_batch_read_proof_checksum,
+            )
+            .unwrap();
+        replicated
+            .head_objects_conditional_batch_with_read_proof_linearizable_fenced(
+                requests.clone(),
+                10,
+                65536,
+                10,
+                &conditional.batch.metadata_batch_read_proof_checksum,
+            )
+            .unwrap();
+        assert!(replicated
+            .head_objects_batch_with_read_proof_linearizable_fenced(
+                objects, 10, 65536, 10, "invalid"
+            )
+            .is_err());
+        assert!(replicated
+            .head_objects_conditional_batch_with_read_proof_linearizable_fenced(
+                requests, 10, 65536, 10, "invalid"
+            )
+            .is_err());
+    } else {
+        for result in [batch.map(|_| ()), conditional.map(|_| ())] {
+            assert!(
+                matches!(result, Err(ObjectError::PreconditionFailed(message)) if message.contains("metadata control read index is not satisfied"))
+            );
+        }
+    }
+    let committed = replicated.raft_commit_index();
+    for delimiter in [None, Some("/")] {
+        let result = replicated.list_objects_hierarchy_page_linearizable_committed_at(
+            "bucket", "", delimiter, None, 1, 65536, 10, committed,
+        );
+        if !readable {
+            assert!(
+                matches!(result, Err(ObjectError::PreconditionFailed(message))
+                if message.contains("metadata control read index is not satisfied"))
+            );
+            assert!(replicated
+                .list_objects_page_linearizable("bucket", "", None, 1, 65536, 10)
+                .is_err());
+            continue;
+        }
+        let (page, readiness) = result.unwrap();
+        assert_eq!(
+            page.read_proof,
+            object_read_proof_from_readiness(&readiness)
+        );
+        assert_eq!(page.read_proof.consensus_read_index, committed);
+        assert_eq!(
+            page.read_proof.metadata_commit_index,
+            replicated.store().last_metadata_commit_index()
+        );
+        assert_eq!(
+            page.object_list_page_proof_checksum,
+            object_list_page_proof_checksum("ListObjects", &page)
+        );
+        let (plain, _) = replicated
+            .list_objects_hierarchy_page_linearizable("bucket", "", delimiter, None, 1, 65536, 10)
+            .unwrap();
+        assert_eq!(plain, page);
+        let checksum = &page.object_list_page_proof_checksum;
+        let (fenced, _) = replicated
+            .list_objects_hierarchy_page_linearizable_list_page_proof_fenced(
+                "bucket", "", delimiter, None, 1, 65536, 10, checksum,
+            )
+            .unwrap();
+        assert_eq!(&fenced.expected_object_list_page_proof_checksum, checksum);
+        assert_eq!(&fenced.object_list_page_proof_checksum, checksum);
+        let (committed_page, _) = replicated
+            .list_objects_hierarchy_page_linearizable_list_page_proof_fenced_committed_at(
+                "bucket", "", delimiter, None, 1, 65536, 10, committed, checksum,
+            )
+            .unwrap();
+        assert_eq!(committed_page, fenced);
+        assert!(replicated
+            .list_objects_hierarchy_page_linearizable_list_page_proof_fenced(
+                "bucket", "", delimiter, None, 1, 65536, 10, "invalid"
+            )
+            .is_err());
+        assert!(replicated
+            .list_objects_hierarchy_page_linearizable_committed_at(
+                "bucket",
+                "",
+                delimiter,
+                None,
+                1,
+                65536,
+                10,
+                committed + 1
+            )
+            .is_err());
+        if page.has_more {
+            let (next, _) = replicated
+                .list_objects_hierarchy_page_linearizable(
+                    "bucket",
+                    "",
+                    delimiter,
+                    page.next_marker.as_deref(),
+                    1,
+                    65536,
+                    10,
+                )
+                .unwrap();
+            assert_ne!(page.objects, next.objects);
+            assert_eq!(next.read_proof.consensus_read_index, committed);
+            assert_eq!(
+                next.object_list_page_proof_checksum,
+                object_list_page_proof_checksum("ListObjects", &next)
             );
         }
     }
