@@ -20,6 +20,9 @@ struct Group {
     peers: BTreeMap<u64, SocketAddr>,
     root: PathBuf,
     capacity: u64,
+    group_id: u64,
+    max_pages: u64,
+    heartbeat_ms: &'static str,
     api_addresses: Vec<SocketAddr>,
     reservations: Vec<Option<(TcpListener, TcpListener)>>,
     report: Option<(String, Vec<SocketAddr>)>,
@@ -62,6 +65,9 @@ impl Group {
             peers,
             root,
             capacity,
+            group_id: 1,
+            max_pages: 64,
+            heartbeat_ms: "100",
             api_addresses,
             reservations: reserved.into_iter().map(Some).collect(),
             report: None,
@@ -70,6 +76,20 @@ impl Group {
             std::fs::create_dir(g.root.join(i.to_string())).unwrap();
         }
         g
+    }
+    fn placement_id(&self) -> String {
+        if self.group_id == 1 {
+            "group-a".into()
+        } else {
+            format!("group-{}", self.group_id)
+        }
+    }
+    fn member_id(&self, i: usize) -> String {
+        if self.group_id == 1 {
+            format!("chunk-{i}")
+        } else {
+            format!("chunk-{}-{i}", self.group_id)
+        }
     }
     fn start(&mut self, i: usize) {
         let peers = self
@@ -85,13 +105,16 @@ impl Group {
             .as_ref()
             .map(|(_, a)| a[i].to_string())
             .unwrap_or_else(|| self.api_addresses[i].to_string());
-        let node_id = format!("chunk-{i}");
+        let node_id = self.member_id(i);
+        let group_id = self.group_id.to_string();
+        let max_pages = self.max_pages.to_string();
         let capacity = self.capacity.to_string();
         let timeout = if self.capacity > 65536 { "5000" } else { "700" };
         let mut environment = vec![
             ("MATRIXOBJECT_REPLICA_ADDR", bind.as_str()),
             ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", capacity.as_str()),
-            ("MATRIXOBJECT_REPLICA_MAX_PAGES", "64"),
+            ("MATRIXOBJECT_REPLICA_MAX_PAGES", max_pages.as_str()),
+            ("MATRIXOBJECT_CHUNK_RAFT_GROUP_ID", group_id.as_str()),
             ("MATRIXOBJECT_CHUNK_RAFT_PEERS", peers.as_str()),
             ("MATRIXOBJECT_CHUNK_RAFT_NODE_ID", id.as_str()),
             ("MATRIXOBJECT_CHUNK_RAFT_STATE_DIR", path.to_str().unwrap()),
@@ -101,7 +124,7 @@ impl Group {
             environment.extend([
                 ("MATRIXOBJECT_CHUNK_NODE_ID", node_id.as_str()),
                 ("MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS", metadata.as_str()),
-                ("MATRIXOBJECT_CHUNK_HEARTBEAT_MS", "100"),
+                ("MATRIXOBJECT_CHUNK_HEARTBEAT_MS", self.heartbeat_ms),
             ]);
         }
         drop(self.reservations[i].take());
@@ -151,8 +174,28 @@ impl Group {
 }
 impl Drop for Group {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            diagnostics(&mut self.nodes, &format!("chunk-group-{}", self.group_id));
+        }
         self.nodes.clear();
         let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+fn diagnostics(nodes: &mut [Option<NodeProcess>], label: &str) {
+    use std::io::Read;
+    for (i, node) in nodes.iter_mut().enumerate() {
+        if let Some(node) = node {
+            let _ = node.child.kill();
+            if processes::reap_within(&mut node.child, Duration::from_secs(3)).is_some() {
+                if let Some(stderr) = node.child.stderr.take() {
+                    let mut text = String::new();
+                    let _ = stderr.take(4096).read_to_string(&mut text);
+                    if !text.is_empty() {
+                        eprintln!("{label} voter={i} endpoint={} {text}", node.endpoint);
+                    }
+                }
+            }
+        }
     }
 }
 fn page(i: u64) -> PageId {
@@ -620,6 +663,7 @@ fn metadata_catalog_routes_chunk_group_through_leader_loss() {
             node_id: 1,
             capacity_bytes: 65536,
             max_pages: 64,
+
             voters: group.peers.keys().copied().collect(),
             peer_endpoints: group.peers.values().map(ToString::to_string).collect(),
         }),
@@ -708,10 +752,14 @@ mod coupled_groups {
         peers: String,
         root: PathBuf,
         reservations: Vec<Option<(TcpListener, TcpListener)>>,
+        multiple_groups: bool,
     }
     impl MetadataGroup {
         fn new(chunk: &Group) -> Self {
-            let root = chunk.root.join("metadata");
+            Self::for_groups(std::slice::from_ref(chunk))
+        }
+        fn for_groups(chunks: &[Group]) -> Self {
+            let root = chunks[0].root.join("metadata");
             std::fs::create_dir(&root).unwrap();
             let sockets: Vec<_> = (0..3)
                 .map(|_| {
@@ -731,25 +779,30 @@ mod coupled_groups {
                 .map(|(i, (_, p))| format!("{}@{}", i + 1, p.local_addr().unwrap()))
                 .collect::<Vec<_>>()
                 .join(",");
-            let catalog = ChunkGroupCatalog::new(vec![ChunkGroupConfig {
-                placement_id: "group-a".into(),
-                failure_domain: "rack-a".into(),
-                identity: Some(ChunkGroupIdentity {
-                    version: 1,
-                    group_id: 1,
-                    node_id: 1,
-                    capacity_bytes: chunk.capacity,
-                    max_pages: 64,
-                    voters: chunk.peers.keys().copied().collect(),
-                    peer_endpoints: chunk.peers.values().map(ToString::to_string).collect(),
-                }),
-                api_endpoints: chunk
-                    .api_addresses
+            let catalog = ChunkGroupCatalog::new(
+                chunks
                     .iter()
-                    .map(ToString::to_string)
+                    .map(|chunk| ChunkGroupConfig {
+                        placement_id: chunk.placement_id(),
+                        failure_domain: format!("rack-{}", chunk.group_id),
+                        identity: Some(ChunkGroupIdentity {
+                            version: 1,
+                            group_id: chunk.group_id,
+                            node_id: 1,
+                            capacity_bytes: chunk.capacity,
+                            max_pages: chunk.max_pages,
+                            voters: chunk.peers.keys().copied().collect(),
+                            peer_endpoints: chunk.peers.values().map(ToString::to_string).collect(),
+                        }),
+                        api_endpoints: chunk
+                            .api_addresses
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect(),
+                        member_ids: (0..3).map(|i| chunk.member_id(i)).collect(),
+                    })
                     .collect(),
-                member_ids: (0..3).map(|i| format!("chunk-{i}")).collect(),
-            }])
+            )
             .unwrap();
             std::fs::write(root.join("catalog.bin"), catalog.to_bytes().unwrap()).unwrap();
             let mut group = Self {
@@ -758,6 +811,7 @@ mod coupled_groups {
                 peers,
                 root,
                 reservations: sockets.into_iter().map(Some).collect(),
+                multiple_groups: chunks.len() > 1,
             };
             for i in 0..3 {
                 std::fs::create_dir(group.root.join(i.to_string())).unwrap();
@@ -780,12 +834,22 @@ mod coupled_groups {
                         "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
                         state.to_str().unwrap(),
                     ),
-                    ("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", "700"),
+                    (
+                        "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS",
+                        if self.multiple_groups { "5000" } else { "700" },
+                    ),
                     (
                         "MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE",
                         catalog.to_str().unwrap(),
                     ),
-                    ("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", "1500"),
+                    (
+                        "MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS",
+                        if self.multiple_groups {
+                            "10000"
+                        } else {
+                            "1500"
+                        },
+                    ),
                 ],
             );
             assert_eq!(node.endpoint, self.api[i]);
@@ -821,6 +885,9 @@ mod coupled_groups {
     }
     impl Drop for MetadataGroup {
         fn drop(&mut self) {
+            if std::thread::panicking() {
+                diagnostics(&mut self.nodes, "metadata");
+            }
             self.nodes.clear();
         }
     }
@@ -952,5 +1019,249 @@ mod coupled_groups {
             }
         }
         assert!(client.object_placement("bucket", "object-0").is_err());
+    }
+    fn load_data(n: u64) -> Vec<u8> {
+        let mut bytes: Vec<u8> = (0..1024)
+            .map(|i| (n.wrapping_mul(31).wrapping_add(i) % 251) as u8)
+            .collect();
+        bytes[..8].copy_from_slice(&n.to_be_bytes());
+        bytes
+    }
+    fn load_options() -> MetaClientOptions {
+        MetaClientOptions {
+            connect_timeout: Duration::from_secs(1),
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(5),
+            ..Default::default()
+        }
+    }
+    fn chunk_options() -> ReplicaClientOptions {
+        ReplicaClientOptions {
+            connect_timeout: Duration::from_secs(1),
+            read_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(5),
+            ..Default::default()
+        }
+    }
+    fn load_batch(
+        api: &[String],
+        start: u64,
+        end: u64,
+        workers: usize,
+    ) -> Vec<(u64, CommittedPlacement)> {
+        let begin = Instant::now();
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|worker| {
+                    scope.spawn(move || {
+                        let mut meta =
+                            RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
+                        let mut clients = BTreeMap::new();
+                        let mut saved = Vec::new();
+                        let mut latencies = Vec::new();
+                        for n in ((start + worker as u64)..end).step_by(workers) {
+                            assert!(
+                                begin.elapsed() < Duration::from_secs(180),
+                                "bounded workload exceeded deadline after {} writes in worker {worker}", saved.len()
+                            );
+                            let started = Instant::now();
+                            let plan = meta
+                                .plan_object_placement("load", &format!("object-{n}"), 1024, 1)
+                                .unwrap();
+                            assert_eq!(plan.node_ids.len(), 1);
+                            let group = plan.node_ids[0].clone();
+                            let chunk = clients.entry(group.clone()).or_insert_with(|| {
+                                meta.connect_chunk_group(&group, &chunk_options()).unwrap()
+                            });
+                            // No mutation retry: a failure after admission remains uncertain.
+                            chunk.write_chunk(page(n), 0, &load_data(n)).unwrap();
+                            let placement = meta
+                                .commit_object_placement(
+                                    CommittedPlacement {
+                                        bucket: plan.bucket,
+                                        key: plan.key,
+                                        length: 1024,
+                                        node_ids: plan.node_ids,
+                                        version: 1,
+                                        update_time_ms: n + 1,
+                                    },
+                                    &plan.plan_checksum,
+                                )
+                                .unwrap();
+                            saved.push((n, placement));
+                            latencies.push(started.elapsed().as_micros());
+                        }
+                        (saved, latencies)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let elapsed = begin.elapsed();
+        let mut saved = Vec::new();
+        let mut latencies = Vec::new();
+        for (records, timings) in results {
+            saved.extend(records);
+            latencies.extend(timings);
+        }
+        saved.sort_by_key(|(n, _)| *n);
+        latencies.sort_unstable();
+        assert_eq!(saved.len() as u64, end - start);
+        println!("MULTIGROUP writes={} workers={} elapsed_ms={} operations_per_second={:.1} p50_us={} p95_us={} p99_us={}", saved.len(), workers, elapsed.as_millis(), saved.len() as f64 / elapsed.as_secs_f64(), latencies[latencies.len()/2], latencies[latencies.len()*95/100], latencies[latencies.len()*99/100]);
+        saved
+    }
+    fn group_usage(api: &[String], groups: &[Group], saved: &[(u64, CommittedPlacement)]) {
+        let mut meta = RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
+        let expected: BTreeMap<_, _> = groups
+            .iter()
+            .map(|g| {
+                let id = g.placement_id();
+                let bytes = saved
+                    .iter()
+                    .filter(|(_, p)| p.node_ids == [id.clone()])
+                    .count() as u64
+                    * 1024;
+                (id, bytes)
+            })
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let nodes = meta.list_placement_nodes().unwrap();
+            assert_eq!(nodes.len(), groups.len() * 4);
+            if groups.iter().all(|g| {
+                let id = g.placement_id();
+                let node = nodes.iter().find(|n| n.node_id == id).unwrap();
+                node.online
+                    && node.data_eligible
+                    && node.used_bytes == expected[&id]
+                    && node.committed_bytes == expected[&id]
+                    && node.capacity_bytes == g.capacity
+            }) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "multi-group accounting did not converge: {nodes:?}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    fn verify_load(api: &[String], saved: &[(u64, CommittedPlacement)]) {
+        let mut meta = RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
+        let mut clients = BTreeMap::new();
+        for (n, placement) in saved {
+            assert_eq!(
+                meta.object_placement(&placement.bucket, &placement.key)
+                    .unwrap(),
+                *placement
+            );
+            let id = &placement.node_ids[0];
+            let chunk = clients
+                .entry(id.clone())
+                .or_insert_with(|| meta.connect_chunk_group(id, &chunk_options()).unwrap());
+            assert_eq!(
+                chunk.read_chunk(&page(*n), 0, 1024).unwrap().data,
+                load_data(*n)
+            );
+            assert_eq!(chunk.head_chunk(&page(*n)).unwrap().write_sequence, 1);
+        }
+    }
+    fn multiple_group_load(group_count: usize, writes: u64, workers: usize) {
+        assert!((2..=16).contains(&group_count));
+        assert!(writes > 0 && writes <= 1024);
+        let mut groups: Vec<_> = (0..group_count)
+            .map(|i| {
+                let mut g = Group::configured(64 * 1024 * 1024);
+                g.group_id = i as u64 + 1;
+                g.max_pages = 2048;
+                g.heartbeat_ms = "1000";
+                g
+            })
+            .collect();
+        // Every API and peer socket stays reserved until its process starts.
+        let mut metadata = MetadataGroup::for_groups(&groups);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for i in 0..3 {
+                group.start(i);
+            }
+        }
+        metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        group_usage(&metadata.api, &groups, &[]);
+        let mut saved = load_batch(&metadata.api, 0, writes, workers);
+        group_usage(&metadata.api, &groups, &saved);
+        for group in &groups {
+            assert!(
+                saved
+                    .iter()
+                    .any(|(_, p)| p.node_ids == [group.placement_id()]),
+                "every group must carry data"
+            );
+        }
+        let leader = metadata.ready().endpoint().to_string();
+        let leader = metadata.api.iter().position(|a| *a == leader).unwrap();
+        metadata.kill(leader);
+        for group in &mut groups {
+            let leader = group.leader();
+            group.kill(leader);
+        }
+        metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        verify_load(&metadata.api, &saved);
+        saved.extend(load_batch(
+            &metadata.api,
+            writes,
+            writes + writes / 4,
+            workers,
+        ));
+        group_usage(&metadata.api, &groups, &saved);
+        for group in &mut groups {
+            for i in 0..3 {
+                if group.nodes[i].is_some() {
+                    group.kill(i);
+                }
+            }
+        }
+        for i in 0..3 {
+            if metadata.nodes[i].is_some() {
+                metadata.kill(i);
+            }
+        }
+        for i in 0..3 {
+            metadata.start(i);
+        }
+        for group in &mut groups {
+            for i in 0..3 {
+                group.start(i);
+            }
+        }
+        metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        group_usage(&metadata.api, &groups, &saved);
+        verify_load(&metadata.api, &saved);
+        println!(
+            "MULTIGROUP verified groups={group_count} processes={} recovered_objects={}",
+            group_count * 3 + 3,
+            saved.len()
+        );
+    }
+    #[test]
+    fn concurrent_groups_preserve_placement_and_data_through_failover_and_restart() {
+        multiple_group_load(3, 96, 6);
+    }
+    #[test]
+    #[ignore = "bounded 51-process local load and recovery measurement"]
+    fn sixteen_groups_preserve_concurrent_writes_through_recovery() {
+        multiple_group_load(16, 1024, 8);
     }
 }
