@@ -1,6 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixObjectStore {
+    // Lifecycle follows the object's existing storage route. A local object has
+    // no placement to migrate; a placed object must keep placement validation.
+    fn apply_lifecycle_transition(
+        &mut self,
+        bucket: String,
+        key: String,
+        storage_class: String,
+        update_time_ms: u64,
+        if_match_etag: Option<String>,
+    ) -> Result<ObjectMetadata, ObjectError> {
+        match self
+            .meta_service
+            .object_placement(&ObjectId::new(&bucket, &key))
+        {
+            Ok(placement) => self.apply_transition_object_with_placement(
+                bucket,
+                key,
+                storage_class,
+                update_time_ms,
+                placement.node_ids.len(),
+                if_match_etag,
+            ),
+            Err(ObjectError::NotFound(_)) => self.apply_transition_object(
+                bucket,
+                key,
+                storage_class,
+                update_time_ms,
+                if_match_etag,
+            ),
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) fn apply_bucket_lifecycle_transitions_at(
         &mut self,
         max_actions: usize,
@@ -52,12 +85,11 @@ impl MatrixObjectStore {
                 {
                     continue;
                 }
-                match self.apply_transition_object_with_placement(
+                match self.apply_lifecycle_transition(
                     object_id.bucket.to_string(),
                     object_id.key.to_string(),
                     target.clone(),
                     now_ms,
-                    self.options.replica_count,
                     Some(current.etag().to_string()),
                 ) {
                     Ok(_) => {

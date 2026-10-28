@@ -27012,7 +27012,7 @@ fn raft_backed_store_replays_lifecycle_policy_application() {
         .unwrap_err();
     assert!(stale_err
         .to_string()
-        .contains("bucket lifecycle apply report read index is not satisfied"));
+        .contains("bucket lifecycle apply report metadata control read index is not satisfied"));
 
     let raft = InMemoryRustRaft::new(1).unwrap();
     let store = MatrixObjectStore::new(test_options()).unwrap();
@@ -27071,18 +27071,16 @@ fn raft_backed_store_replays_lifecycle_policy_application() {
             u64::MAX / 2,
         )
         .unwrap();
-    assert_eq!(
-        proven_applied.proof.requested_read_index,
-        before_apply_commit
-    );
-    assert_eq!(
-        proven_applied.proof.consensus_read_index,
-        before_apply_commit
-    );
+    let after_commit = replicated.raft_commit_index();
+    assert_eq!(after_commit, before_apply_commit + 1);
+    assert_eq!(proven_applied.proof.requested_read_index, after_commit);
+    assert!(proven_applied.proof.consensus_read_index >= after_commit);
     assert_eq!(
         proven_applied.proof.metadata_commit_index,
-        before_apply_commit
+        replicated.store().last_metadata_commit_index()
     );
+    assert_eq!(proven_applied.proof.read_fence_read_index_lag, 0);
+    assert_eq!(proven_applied.proof.read_fence_applied_lag, 0);
     let applied = proven_applied.value;
     assert_eq!(applied.transitioned_current_objects, 1);
     assert_eq!(applied.expired_noncurrent_versions, 1);
@@ -27160,18 +27158,16 @@ fn raft_backed_store_replays_lifecycle_transition_only_application() {
             u64::MAX / 2,
         )
         .unwrap();
-    assert_eq!(
-        proven_result.proof.requested_read_index,
-        before_transition_commit
-    );
-    assert_eq!(
-        proven_result.proof.consensus_read_index,
-        before_transition_commit
-    );
+    let after_commit = replicated.raft_commit_index();
+    assert_eq!(after_commit, before_transition_commit + 1);
+    assert_eq!(proven_result.proof.requested_read_index, after_commit);
+    assert!(proven_result.proof.consensus_read_index >= after_commit);
     assert_eq!(
         proven_result.proof.metadata_commit_index,
-        before_transition_commit
+        replicated.store().last_metadata_commit_index()
     );
+    assert_eq!(proven_result.proof.read_fence_read_index_lag, 0);
+    assert_eq!(proven_result.proof.read_fence_applied_lag, 0);
     let result = proven_result.value;
     assert_eq!(result.transitioned_current_objects, 1);
     assert_eq!(result.expired_noncurrent_versions, 0);
@@ -50381,6 +50377,132 @@ fn prepared_migration_proofs_share_purpose_and_reject_changed_state() {
         assert_eq!(
             follower.get_object("bucket", "object").unwrap().data,
             b"data"
+        );
+    }
+}
+
+#[test]
+fn lifecycle_transitions_keep_existing_placement_width_and_refuse_offline_nodes() {
+    for transitions_only in [false, true] {
+        let mut store = MatrixObjectStore::new(test_options()).unwrap();
+        for (id, domain) in [("chunk-a", "rack-a"), ("chunk-b", "rack-b")] {
+            store
+                .register_placement_node(placement_node(id, domain, 1024))
+                .unwrap();
+        }
+        let (before, placement) = store
+            .put_object_with_root_placement(
+                "bucket",
+                "placed",
+                b"data".to_vec(),
+                "text/plain",
+                2,
+                PutOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(placement.node_ids.len(), 2);
+        assert_eq!(store.options.replica_count, 3);
+        store
+            .put_object("bucket", "local", b"local".to_vec(), "text/plain")
+            .unwrap();
+        store
+            .configure_bucket_lifecycle(
+                "bucket",
+                BucketLifecyclePolicy {
+                    transition_after_ms: 1,
+                    transition_storage_class: Some("ARCHIVE".into()),
+                    ..BucketLifecyclePolicy::default()
+                },
+            )
+            .unwrap();
+        for id in ["chunk-a", "chunk-b"] {
+            store
+                .heartbeat_placement_node(id, 0, 1024, false, false, 2)
+                .unwrap();
+        }
+        let now = u64::MAX / 2;
+        let first = if transitions_only {
+            store.apply_bucket_lifecycle_transitions_at(10, now)
+        } else {
+            store.apply_bucket_lifecycle_policies_at(10, now)
+        }
+        .unwrap();
+        assert_eq!(first.transitioned_current_objects, 1);
+        assert_eq!(
+            store.head_object("bucket", "local").unwrap().storage_class,
+            "ARCHIVE"
+        );
+        assert_eq!(store.head_object("bucket", "placed").unwrap(), before);
+        assert_eq!(
+            store
+                .meta_service
+                .object_placement(&before.object_id)
+                .unwrap(),
+            placement
+        );
+        for id in ["chunk-a", "chunk-b"] {
+            store
+                .heartbeat_placement_node(id, 0, 1024, false, true, 3)
+                .unwrap();
+        }
+        let second = if transitions_only {
+            store.apply_bucket_lifecycle_transitions_at(10, now + 1)
+        } else {
+            store.apply_bucket_lifecycle_policies_at(10, now + 1)
+        }
+        .unwrap();
+        assert_eq!(second.transitioned_current_objects, 1);
+        assert_eq!(
+            store.head_object("bucket", "placed").unwrap().storage_class,
+            "ARCHIVE"
+        );
+        assert!(matches!(
+            store.get_object("bucket", "placed"),
+            Err(ObjectError::PreconditionFailed(_))
+        ));
+        let transitioned = store.head_object("bucket", "placed").unwrap();
+        let mut readable = store.clone();
+        readable.restore_object("bucket", "placed", 60_000).unwrap();
+        assert_eq!(
+            readable.get_object("bucket", "placed").unwrap().data,
+            b"data"
+        );
+        assert_eq!(
+            store
+                .meta_service
+                .object_placement(&before.object_id)
+                .unwrap()
+                .node_ids
+                .len(),
+            2
+        );
+        assert!(matches!(
+            store
+                .meta_service
+                .object_placement(&ObjectId::new("bucket", "local")),
+            Err(ObjectError::NotFound(_))
+        ));
+        let snapshot = store.export_snapshot().unwrap().to_bytes().unwrap();
+        let mut restored = MatrixObjectStore::new(test_options()).unwrap();
+        restored.install_snapshot_bytes(&snapshot).unwrap();
+        let recovered = restored.head_object("bucket", "placed").unwrap();
+        assert_eq!(recovered.storage_class, transitioned.storage_class);
+        assert_eq!(recovered.version, transitioned.version);
+        assert_eq!(recovered.extents, transitioned.extents);
+        assert_eq!(recovered.etag(), transitioned.etag());
+        restored.restore_object("bucket", "placed", 60_000).unwrap();
+        assert_eq!(
+            restored.get_object("bucket", "placed").unwrap().data,
+            b"data"
+        );
+        assert_eq!(
+            restored
+                .meta_service
+                .object_placement(&before.object_id)
+                .unwrap()
+                .node_ids
+                .len(),
+            2
         );
     }
 }
