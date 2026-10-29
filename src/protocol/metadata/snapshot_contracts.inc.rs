@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetaSnapshot {
+    pub object_manifests: crate::object_manifest::ManifestCatalog,
     pub records: BTreeMap<SharedText, MetadataRecord>,
     pub leases: BTreeMap<String, MetadataLease>,
     pub lease_receipts: BTreeMap<String, MetadataLeaseReceipt>,

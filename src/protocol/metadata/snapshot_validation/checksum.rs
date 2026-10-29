@@ -173,6 +173,13 @@ impl MetaSnapshot {
             },
         )
         .unwrap();
+        if !self.object_manifests.is_empty() {
+            let bytes = self.object_manifests.to_bytes().expect("valid manifest catalog");
+            append_string(&mut material, "MOSRSMANIFEST1");
+            append_u64(&mut material, bytes.len() as u64);
+            digest = fnv1a64_resumed(digest, &material);
+            digest = fnv1a64_resumed(digest, &bytes);
+        }
         let mut checksum = String::with_capacity(24);
         append_etag_of_digest(&mut checksum, digest);
         checksum

@@ -144,3 +144,62 @@ impl MetaSnapshotFile {
 fn invalid(error: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object_manifest::{ManifestOutcome, ObjectManifest};
+
+    #[test]
+    fn local_metadata_restart_preserves_manifest_generations() {
+        let directory = std::env::temp_dir().join(format!(
+            "metadata-manifests-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let mut service = MatrixMetaService::new();
+        let (storage, recovered) = MetaSnapshotFile::open(&directory, &mut service).unwrap();
+        assert!(!recovered);
+        let one = ObjectManifest {
+            format_version: 1,
+            bucket: "bucket".into(),
+            key: "object".into(),
+            generation: 1,
+            length: 0,
+            extents: vec![],
+            deleted: false,
+        };
+        let create = ManifestOutcome::decide(None, one.clone()).unwrap();
+        service.object_manifests.apply(&create).unwrap();
+        let mut deleted = one.clone();
+        deleted.generation = 2;
+        deleted.deleted = true;
+        service
+            .object_manifests
+            .apply(&ManifestOutcome::decide(Some(one), deleted.clone()).unwrap())
+            .unwrap();
+        storage.persist(&service, &Default::default()).unwrap();
+        drop(storage);
+        let mut reopened = MatrixMetaService::new();
+        let (storage, recovered) = MetaSnapshotFile::open(&directory, &mut reopened).unwrap();
+        assert!(recovered);
+        assert_eq!(reopened.object_manifests, service.object_manifests);
+        assert!(reopened.object_manifests.apply(&create).is_err());
+        assert_eq!(
+            reopened.object_manifests.get(&deleted.object_id()),
+            Some(&deleted)
+        );
+        drop(storage);
+    }
+}

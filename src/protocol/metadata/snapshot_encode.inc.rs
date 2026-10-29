@@ -24,7 +24,7 @@ impl MetaSnapshot {
                 emit(bytes)
             };
             let mut out = Vec::with_capacity(1024);
-            append_string(&mut out, "MOSRSMETA18");
+            append_string(&mut out, if self.object_manifests.is_empty() { "MOSRSMETA18" } else { "MOSRSMETA19" });
             append_u64(&mut out, self.next_commit_index);
             append_u64(&mut out, self.next_change_sequence);
             append_u64(&mut out, self.compacted_tombstone_count);
@@ -194,6 +194,14 @@ impl MetaSnapshot {
                 true,
                 &mut emit_body,
             )?;
+            if !self.object_manifests.is_empty() {
+                // Catalog mutation enforces its checkpoint bound.
+                let bytes = self.object_manifests.to_bytes().expect("valid manifest catalog");
+                append_u64(&mut out, bytes.len() as u64);
+                emit_body(&out)?;
+                out.clear();
+                emit_body(&bytes)?;
+            }
             append_string(&mut out, &self.checksum);
             emit_body(&out)?;
         }
@@ -297,6 +305,11 @@ impl MetaSnapshot {
                         .saturating_add(metadata_transaction_receipt_encoded_size(receipt))
                 });
         FIXED_HEADER_BYTES
+            .saturating_add(if self.object_manifests.is_empty() {
+                0
+            } else {
+                8 + self.object_manifests.encoded_size()
+            })
             .saturating_add(record_bytes)
             .saturating_add(lease_bytes)
             .saturating_add(coordinator_session_bytes)

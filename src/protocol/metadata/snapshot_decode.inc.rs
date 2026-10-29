@@ -29,7 +29,7 @@ impl MetaSnapshot {
         let version = magic
             .strip_prefix("MOSRSMETA")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=18).contains(version))
+            .filter(|version| (1..=19).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("metadata snapshot byte magic mismatch".to_string())
             })?;
@@ -38,8 +38,8 @@ impl MetaSnapshot {
                 "metadata snapshot byte magic mismatch".to_string(),
             ));
         }
-        if cursor.stream.is_some() && version != 18 {
-            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18".into()));
+        if cursor.stream.is_some() && !(18..=19).contains(&version) {
+            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 or 19".into()));
         }
         let has_transaction_read_versions = version >= 2;
         let has_tombstone_compaction_counters = version >= 3;
@@ -333,6 +333,14 @@ impl MetaSnapshot {
                 },
             )
         };
+        let object_manifests = if version >= 19 {
+            let bytes = cursor.read_owned_blob(64 * 1024 * 1024 + 12)?;
+            let catalog = crate::object_manifest::ManifestCatalog::from_bytes(&bytes)?;
+            if catalog.is_empty() {
+                return Err(ObjectError::Corruption("version 19 metadata snapshot has no manifests".into()));
+            }
+            catalog
+        } else { Default::default() };
         let checksum = cursor.read_string()?;
         let envelope_digest = cursor.prefix_digest();
         let envelope_checksum = cursor.read_string()?;
@@ -347,6 +355,7 @@ impl MetaSnapshot {
             ));
         }
         let mut snapshot = Self {
+            object_manifests,
             records,
             leases,
             lease_receipts,

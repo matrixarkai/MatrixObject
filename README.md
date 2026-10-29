@@ -38,11 +38,11 @@ itself is load-bearing rather than cosmetic:
 
 | still named the old way | why it stays |
 |---|---|
-| **148 durable format constants** (36 contain `BLOCK`, 3 `SEGMENT`) | they are hashed into proofs, so changing the text changes every checksum computed from it |
+| **151 durable format constants** (36 contain `BLOCK`, 3 `SEGMENT`) | they are hashed into proofs, so changing the text changes every checksum computed from it |
 | **154 control-field and report keys** | they are observable output -- someone's dashboard reads them |
 
 Both are a versioned migration rather than a rename, and
-`every_durable_format_constant_is_accounted_for` pins all 148 by name in both
+`every_durable_format_constant_is_accounted_for` pins all 151 by name in both
 directions: a renamed constant fails it, and so does a new one. The second count
 is distinct lower-case literals containing `block` or `segment`; counted another
 way it differs, which is why the definition is here and not only the figure.

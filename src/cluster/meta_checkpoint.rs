@@ -242,6 +242,19 @@ mod tests {
                 MetadataRecord::new(key, text.clone(), 1, 10, false),
             );
         }
+        let manifest = crate::object_manifest::ObjectManifest {
+            format_version: 1,
+            bucket: "bucket".into(),
+            key: "checkpoint-object".into(),
+            generation: 1,
+            length: 0,
+            extents: vec![],
+            deleted: false,
+        };
+        snapshot
+            .object_manifests
+            .apply(&crate::object_manifest::ManifestOutcome::decide(None, manifest).unwrap())
+            .unwrap();
         snapshot.checksum = snapshot.checksum_material_hash();
         snapshot
     }
