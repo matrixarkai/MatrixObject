@@ -389,3 +389,32 @@ The servers run production request and Raft workers with real TCP peer transport
 on one host. Metadata request pools use 16 workers explicitly; product defaults
 are unchanged. Empty objects isolate metadata recovery and do not test chunk
 payload transfer. This is a recovery guard, not a throughput or multi-host result.
+
+## Default maximum object recovery
+
+The CI test
+`coupled_groups::maximum_default_object_survives_group_failover_and_total_restart`
+writes one 64 MiB object through `write_object` with the default object and page
+limits. Nine processes provide three metadata voters and two three-voter data
+groups. The test uses sixteen metadata request executors, 128 MiB capacity and
+128 pages per data voter, one-second heartbeats and 16 MiB chunk checkpoint
+intervals. Each data group holds 32 of the object's 64 one-MiB pages.
+
+The reader verifies the complete payload and manifest before faults, after every
+group leader and the metadata leader are stopped, and after all processes restart.
+A fresh publication after leader loss must also survive restart. A one-byte-over-limit
+write is refused before staging or publication, and a read limited below the
+object's length is refused. Chunk checkpoints must have been created before the
+leader failures; recovery may combine checkpoint state and retained outcomes.
+
+The initial local debug run wrote the 67,108,864-byte object in 27.03 seconds and
+completed the scenario in 48.17 seconds. This is a functional boundary check on
+one host, not sustained large-object bandwidth, a whole-operation deadline,
+or multi-host failure isolation.
+
+A separate 51-process run on commit
+`974817c5e174e8275ceed577cb34d4ca4a9a1a12` verified all 1,280 one-KiB objects after
+leader loss and total restart in 163.60 seconds. Its initial 1,024 writes took
+96.07 seconds, post-failover 256 writes took 20.12 seconds, and verified reads took
+12.18 and 25.45 seconds. These observations follow the nonblocking peer-receive
+change but are not a controlled performance comparison.
