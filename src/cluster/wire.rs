@@ -79,6 +79,7 @@ pub enum RequestCode {
     GroupIdentity = 7,
     /// Write only when the page sequence matches a canonical protobuf condition.
     WriteChunkIfSequence = 8,
+    DiscardChunkIfSequence = 9,
 }
 
 impl RequestCode {
@@ -97,6 +98,7 @@ impl RequestCode {
             6 => Some(RequestCode::PageInventory),
             7 => Some(RequestCode::GroupIdentity),
             8 => Some(RequestCode::WriteChunkIfSequence),
+            9 => Some(RequestCode::DiscardChunkIfSequence),
             _ => None,
         }
     }

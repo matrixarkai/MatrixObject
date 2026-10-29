@@ -30,6 +30,23 @@ pub(super) struct ChunkWrite {
     #[prost(bytes = "vec", tag = "7")]
     pub data: Vec<u8>,
 }
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkDiscard {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint64, tag = "2")]
+    pub volume: u64,
+    #[prost(uint64, tag = "3")]
+    pub chunk: u64,
+    #[prost(uint64, tag = "4")]
+    pub page: u64,
+    #[prost(uint64, tag = "5")]
+    pub offset: u64,
+    #[prost(uint64, tag = "6")]
+    pub expected_sequence: u64,
+    #[prost(uint64, tag = "7")]
+    pub length: u64,
+}
 #[cfg(feature = "meta-server")]
 #[derive(Clone, PartialEq, Message)]
 pub(super) struct Placement {
@@ -90,6 +107,43 @@ mod tests {
     use super::*;
     use crate::cluster::{ReplicaRequest, RequestCode};
     use crate::{ChunkId, PageId};
+    #[test]
+    fn conditional_discard_requests_require_canonical_bounded_protobuf() {
+        let request = ReplicaRequest::DiscardChunkIfSequence {
+            page_id: PageId {
+                chunk_id: ChunkId::new(1, 2).unwrap(),
+                page_index: 3,
+            },
+            offset: 4,
+            length: 6,
+            expected_sequence: 5,
+        };
+        let bytes = request.encode_payload();
+        assert_eq!(
+            RequestCode::from_u8(9),
+            Some(RequestCode::DiscardChunkIfSequence)
+        );
+        assert_eq!(
+            ReplicaRequest::decode(request.code(), &bytes).unwrap(),
+            request
+        );
+        for suffix in [[0x78, 1], [0x08, 1]] {
+            let mut invalid = bytes.clone();
+            invalid.extend(suffix);
+            assert!(ReplicaRequest::decode(request.code(), &invalid).is_err());
+        }
+        for (version, sequence) in [(0, 5), (2, 5), (1, 0)] {
+            let mut value: ChunkDiscard = decode(&bytes).unwrap();
+            value.version = version;
+            value.expected_sequence = sequence;
+            assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
+        }
+        assert!(ReplicaRequest::decode(request.code(), &[0; 97]).is_err());
+        let mut truncated = bytes.clone();
+        truncated.pop();
+        assert!(ReplicaRequest::decode(request.code(), &truncated).is_err());
+    }
+
     #[test]
     fn conditional_node_requests_are_canonical_binary_protobuf() {
         let request = ReplicaRequest::WriteChunkIfSequence {

@@ -343,6 +343,30 @@ impl RemoteReplicaClient {
         }
     }
 
+    /// Discard only at the expected existing page sequence. Uncertain replies are not retried.
+    pub fn discard_chunk_if_sequence(
+        &mut self,
+        page_id: &PageId,
+        offset: u64,
+        length: u64,
+        expected_sequence: u64,
+    ) -> Result<(), ObjectError> {
+        if expected_sequence == 0 || expected_sequence == u64::MAX {
+            return Err(ObjectError::PreconditionFailed(
+                "conditional discard requires a nonexhausted existing sequence".into(),
+            ));
+        }
+        match self.call(ReplicaRequest::DiscardChunkIfSequence {
+            page_id: page_id.clone(),
+            offset,
+            length,
+            expected_sequence,
+        })? {
+            ReplicaReply::Applied => Ok(()),
+            other => Err(unexpected_reply("a conditional chunk discard", &other)),
+        }
+    }
+
     pub fn discard_chunk(
         &mut self,
         page_id: &PageId,

@@ -418,6 +418,7 @@ fn apply(
         match &request {
             ReplicaRequest::WriteChunk { page_id, .. }
             | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+            | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
             | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
             _ => None,
         }
@@ -438,6 +439,7 @@ fn apply(
     let changed_page = match &request {
         ReplicaRequest::WriteChunk { page_id, .. }
         | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+        | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
         | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
         _ => None,
     };
@@ -537,7 +539,11 @@ pub(super) fn apply_to_replica(
             expected_sequence,
         } => {
             let matches = match guard.head_chunk(&page_id) {
-                Ok(head) => expected_sequence != 0 && head.write_sequence == expected_sequence,
+                Ok(head) => {
+                    expected_sequence != 0
+                        && expected_sequence != u64::MAX
+                        && head.write_sequence == expected_sequence
+                }
                 Err(ObjectError::NotFound(_)) => expected_sequence == 0,
                 Err(error) => return Err(error),
             };
@@ -552,6 +558,30 @@ pub(super) fn apply_to_replica(
                     page_id,
                     offset,
                     data,
+                },
+                max_pages,
+            )
+        }
+        ReplicaRequest::DiscardChunkIfSequence {
+            page_id,
+            offset,
+            length,
+            expected_sequence,
+        } => {
+            if expected_sequence == 0
+                || expected_sequence == u64::MAX
+                || guard.head_chunk(&page_id)?.write_sequence != expected_sequence
+            {
+                return Err(ObjectError::PreconditionFailed(
+                    "page sequence changed or exhausted".into(),
+                ));
+            }
+            apply_to_replica(
+                guard,
+                ReplicaRequest::DiscardChunk {
+                    page_id,
+                    offset,
+                    length,
                 },
                 max_pages,
             )
@@ -583,6 +613,40 @@ pub(super) fn apply_to_replica(
 mod journal_failure_tests {
     use super::*;
     use crate::{ChunkId, PageId};
+    #[test]
+    fn conditional_mutations_refuse_exhausted_page_sequences() {
+        let mut service = MatrixReplicaService::new();
+        let page = PageId {
+            chunk_id: ChunkId::new(1, 2).unwrap(),
+            page_index: 0,
+        };
+        service.write_chunk(page.clone(), 0, b"original").unwrap();
+        let mut state = service.read_chunk_state(&page).unwrap();
+        state.write_sequence = u64::MAX;
+        service.install_chunk_state(page.clone(), state).unwrap();
+        let before = service.head_chunk(&page).unwrap();
+        for request in [
+            ReplicaRequest::WriteChunkIfSequence {
+                page_id: page.clone(),
+                offset: 0,
+                data: b"changed!".to_vec(),
+                expected_sequence: u64::MAX,
+            },
+            ReplicaRequest::DiscardChunkIfSequence {
+                page_id: page.clone(),
+                offset: 0,
+                length: 1,
+                expected_sequence: u64::MAX,
+            },
+        ] {
+            assert!(matches!(
+                apply_to_replica(&mut service, request, 64),
+                Err(ObjectError::PreconditionFailed(_))
+            ));
+            assert_eq!(service.head_chunk(&page).unwrap(), before);
+        }
+        assert_eq!(service.read_chunk(&page, 0, 8).unwrap().data, b"original");
+    }
 
     #[test]
     fn failed_persistence_blocks_acknowledgment_and_all_later_requests() {

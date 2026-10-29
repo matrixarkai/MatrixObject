@@ -137,6 +137,37 @@ impl RemoteReplicaSet {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, ObjectError> {
+        let (expected, observed) = self.mutation_state(page_id)?;
+        let sequence = expected.as_ref().map_or(0, |head| head.write_sequence);
+        let mut acknowledged = 0usize;
+        let mut first_error: Option<ObjectError> = None;
+        for (replica, observed) in self.replicas.iter_mut().zip(observed) {
+            if !observed {
+                continue;
+            }
+            match replica.write_chunk_if_sequence(page_id.clone(), offset, data, sequence) {
+                Ok(()) => acknowledged += 1,
+                Err(err) if first_error.is_none() => first_error = Some(err),
+                Err(_) => {}
+            }
+        }
+        if acknowledged < self.write_quorum {
+            return Err(first_error.unwrap_or_else(|| {
+                ObjectError::Corruption(format!(
+                    "a page write was acknowledged by {acknowledged} of {} replica(s), \
+                             short of a write quorum of {}",
+                    self.replicas.len(),
+                    self.write_quorum
+                ))
+            }));
+        }
+        Ok(acknowledged)
+    }
+
+    fn mutation_state(
+        &mut self,
+        page_id: &PageId,
+    ) -> Result<(Option<ReplicaHead>, Vec<bool>), ObjectError> {
         // Establish the state being extended before any mutation is sent. A
         // returning or divergent replica cannot contribute a fresh write vote.
         let observed: Vec<_> = self
@@ -174,30 +205,11 @@ impl RemoteReplicaSet {
                 "matching page state cannot satisfy write quorum".into(),
             ));
         }
-        let sequence = expected.as_ref().map_or(0, |head| head.write_sequence);
-        let mut acknowledged = 0usize;
-        let mut first_error: Option<ObjectError> = None;
-        for (replica, observed) in self.replicas.iter_mut().zip(observed) {
-            if observed.as_ref() != Some(&expected) {
-                continue;
-            }
-            match replica.write_chunk_if_sequence(page_id.clone(), offset, data, sequence) {
-                Ok(()) => acknowledged += 1,
-                Err(err) if first_error.is_none() => first_error = Some(err),
-                Err(_) => {}
-            }
-        }
-        if acknowledged < self.write_quorum {
-            return Err(first_error.unwrap_or_else(|| {
-                ObjectError::Corruption(format!(
-                    "a page write was acknowledged by {acknowledged} of {} replica(s), \
-                             short of a write quorum of {}",
-                    self.replicas.len(),
-                    self.write_quorum
-                ))
-            }));
-        }
-        Ok(acknowledged)
+        let matching = observed
+            .iter()
+            .map(|head| head.as_ref() == Some(&expected))
+            .collect();
+        Ok((expected, matching))
     }
 
     /// Read a byte range of `page_id`, taking a majority over the replicas that answer.
@@ -294,17 +306,23 @@ impl RemoteReplicaSet {
         crate::cluster::placement::vote_heads(answered, read_quorum)
     }
 
-    /// Discard a byte range on every replica, requiring a write quorum.
+    /// Conditionally discard on replicas matching a quorum-agreed existing page.
     pub fn discard_chunk(
         &mut self,
         page_id: &PageId,
         offset: u64,
         length: u64,
     ) -> Result<usize, ObjectError> {
+        let (expected, observed) = self.mutation_state(page_id)?;
+        let expected =
+            expected.ok_or_else(|| ObjectError::NotFound("no quorum page to discard".into()))?;
         let mut acknowledged = 0usize;
         let mut first_error: Option<ObjectError> = None;
-        for replica in self.replicas.iter_mut() {
-            match replica.discard_chunk(page_id, offset, length) {
+        for (replica, observed) in self.replicas.iter_mut().zip(observed) {
+            if !observed {
+                continue;
+            }
+            match replica.discard_chunk_if_sequence(page_id, offset, length, expected.write_sequence) {
                 Ok(()) => acknowledged += 1,
                 Err(err) if first_error.is_none() => first_error = Some(err),
                 Err(_) => {}
@@ -314,7 +332,7 @@ impl RemoteReplicaSet {
             return Err(first_error.unwrap_or_else(|| {
                 ObjectError::Corruption(format!(
                     "a page discard was acknowledged by {acknowledged} of {} replica(s), \
-                     short of a write quorum of {}",
+                         short of a write quorum of {}",
                     self.replicas.len(),
                     self.write_quorum
                 ))

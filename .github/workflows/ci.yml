@@ -243,6 +243,30 @@ jobs:
           cargo test --locked --all-features --test replica_restart_recovery star_writes_exclude_divergent_page_state_and_require_a_matching_quorum -- --exact --nocapture | tee /tmp/star-write-fence.log
           grep -q 'test result: ok. 1 passed' /tmp/star-write-fence.log
 
+      - name: conditional discard requests require canonical bounded protobuf
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::conditional_requests::tests::conditional_discard_requests_require_canonical_bounded_protobuf -- --exact --nocapture | tee /tmp/conditional-discard.log
+          grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
+
+      - name: conditional mutations refuse exhausted page sequences
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::server::journal_failure_tests::conditional_mutations_refuse_exhausted_page_sequences -- --exact --nocapture | tee /tmp/conditional-discard.log
+          grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
+
+      - name: conditional discards survive journal recovery and refuse stale sequences
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery conditional_discards_survive_journal_recovery_and_refuse_stale_sequences -- --exact --nocapture | tee /tmp/conditional-discard.log
+          grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
+
+      - name: conditional discards replicate and recover without accepting stale sequences
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus conditional_discards_replicate_and_recover_without_accepting_stale_sequences -- --exact --nocapture | tee /tmp/conditional-discard.log
+          grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail
