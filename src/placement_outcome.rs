@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 //! Binary outcomes for the metaserver placement API.
+use crate::object_manifest::{ManifestOutcome, ObjectManifest};
 use crate::{MatrixMetaService, ObjectError, ObjectId, ObjectPlacement, PlacementNode};
 use prost::Message;
 use std::collections::BTreeSet;
@@ -101,9 +102,205 @@ pub struct PlacementOutcome {
     pub nodes: Vec<NodeChange>,
     #[prost(message, repeated, tag = "5")]
     pub placements: Vec<PlacementChange>,
+    #[prost(message, optional, tag = "6")]
+    pub manifest: Option<ManifestOutcome>,
 }
 fn invalid(s: &str) -> ObjectError {
     ObjectError::Corruption(s.to_string())
+}
+
+fn manifest_groups(manifest: &ObjectManifest) -> Vec<String> {
+    manifest
+        .extents
+        .iter()
+        .map(|e| e.group.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bool {
+    placement.id() == manifest.object_id()
+        && placement.version == manifest.generation
+        && placement.length == manifest.length
+        && placement.node_ids == manifest_groups(manifest)
+}
+impl PlacementOutcome {
+    fn validate_manifest_binding(&self) -> Result<(), ObjectError> {
+        match (self.version, &self.manifest) {
+            (1, None) => Ok(()),
+            (2, Some(manifest)) => {
+                manifest.validate()?;
+                if self.placements.len() != 1 {
+                    return Err(invalid("manifest publication needs one placement change"));
+                }
+                let change = &self.placements[0];
+                let after = manifest.after.as_ref().unwrap();
+                if !change
+                    .after
+                    .as_ref()
+                    .is_some_and(|p| matches_manifest(p, after))
+                    || match (&change.before, &manifest.before) {
+                        (None, None) => false,
+                        (Some(p), Some(m)) => !matches_manifest(p, m),
+                        _ => true,
+                    }
+                {
+                    return Err(invalid("manifest publication placement binding mismatch"));
+                }
+                Ok(())
+            }
+            _ => Err(invalid("unsupported placement outcome version or manifest")),
+        }
+    }
+
+    /// Decide one atomic placement and manifest transition without changing service state.
+    /// The caller must verify configured group identities and durable data extents before
+    /// proposing this outcome; structural validation alone cannot establish either fact.
+    pub fn publish_manifest(
+        service: &MatrixMetaService,
+        manifest: ManifestOutcome,
+        update_time_ms: u64,
+    ) -> Result<Self, ObjectError> {
+        manifest.validate()?;
+        let after = manifest.after.as_ref().unwrap();
+        let before = service
+            .placements
+            .get(&after.object_id())
+            .map(PlacementValue::from_value);
+        let placement = PlacementValue {
+            bucket: after.bucket.clone(),
+            key: after.key.clone(),
+            version: after.generation,
+            length: after.length,
+            node_ids: manifest_groups(after),
+            update_time_ms,
+        };
+        let ids: BTreeSet<_> = before
+            .iter()
+            .flat_map(|p| p.node_ids.iter())
+            .chain(placement.node_ids.iter())
+            .cloned()
+            .collect();
+        let mut nodes = Vec::new();
+        for id in ids {
+            let current = service
+                .nodes
+                .get(&id)
+                .ok_or_else(|| invalid("manifest group is missing"))?;
+            let prior = NodeUsage::from_node(current);
+            let mut next = prior.clone();
+            let released = before
+                .as_ref()
+                .filter(|p| p.node_ids.contains(&id))
+                .map_or(0, |p| p.length);
+            let added = if placement.node_ids.contains(&id) {
+                placement.length
+            } else {
+                0
+            };
+            next.committed_bytes = prior
+                .committed_bytes
+                .checked_sub(released)
+                .and_then(|v| v.checked_add(added))
+                .ok_or_else(|| invalid("manifest capacity accounting overflow"))?;
+            if next != prior {
+                nodes.push(NodeChange {
+                    before: Some(prior),
+                    after: Some(next),
+                });
+            }
+        }
+        let outcome = Self {
+            version: 2,
+            before_index: service.placement_commit_index,
+            after_index: service
+                .placement_commit_index
+                .checked_add(1)
+                .ok_or_else(|| invalid("placement index exhausted"))?,
+            nodes,
+            placements: vec![PlacementChange {
+                before,
+                after: Some(placement),
+            }],
+            manifest: Some(manifest),
+        };
+        outcome.validate_manifest_binding()?;
+        outcome.validate_publication(service, true)?;
+        outcome.to_payload()?;
+        Ok(outcome)
+    }
+
+    fn validate_publication(
+        &self,
+        service: &MatrixMetaService,
+        admit: bool,
+    ) -> Result<(), ObjectError> {
+        let manifest = self.manifest.as_ref().unwrap();
+        let after = manifest.after.as_ref().unwrap();
+        if service.object_manifests.get(&after.object_id()) != manifest.before.as_ref() {
+            return Err(invalid("manifest publication prior state mismatch"));
+        }
+        service.object_manifests.check_outcome(manifest)?;
+        let change = &self.placements[0];
+        if service
+            .placements
+            .get(&after.object_id())
+            .map(PlacementValue::from_value)
+            != change.before
+        {
+            return Err(invalid("manifest publication prior placement mismatch"));
+        }
+        let placement = change.after.as_ref().unwrap();
+        let ids: BTreeSet<_> = change
+            .before
+            .iter()
+            .flat_map(|p| p.node_ids.iter())
+            .chain(placement.node_ids.iter())
+            .cloned()
+            .collect();
+        let mut expected = Vec::new();
+        for id in ids {
+            let node = service
+                .nodes
+                .get(&id)
+                .ok_or_else(|| invalid("manifest group is missing"))?;
+            let before = NodeUsage::from_node(node);
+            let mut after = before.clone();
+            let released = change
+                .before
+                .as_ref()
+                .filter(|p| p.node_ids.contains(&id))
+                .map_or(0, |p| p.length);
+            let added = if placement.node_ids.contains(&id) {
+                placement.length
+            } else {
+                0
+            };
+            after.committed_bytes = before
+                .committed_bytes
+                .checked_sub(released)
+                .and_then(|v| v.checked_add(added))
+                .ok_or_else(|| invalid("manifest capacity accounting overflow"))?;
+            if admit
+                && placement.node_ids.contains(&id)
+                && (!MatrixMetaService::node_accepts_new_placement(node)
+                    || after.committed_bytes
+                        > MatrixMetaService::node_effective_capacity_bytes(node))
+            {
+                return Err(invalid("manifest group is not writable or lacks capacity"));
+            }
+            if before != after {
+                expected.push(NodeChange {
+                    before: Some(before),
+                    after: Some(after),
+                });
+            }
+        }
+        if self.nodes != expected {
+            return Err(invalid("manifest publication capacity changes mismatch"));
+        }
+        Ok(())
+    }
 }
 impl PlacementOutcome {
     /// Capture only records the operation can change, before executing it once.
@@ -146,6 +343,7 @@ impl PlacementOutcome {
             after_index: service.placement_commit_index,
             nodes: changes,
             placements,
+            manifest: None,
         })
     }
     pub fn finish(mut self, service: &MatrixMetaService) -> Result<Self, ObjectError> {
@@ -182,6 +380,7 @@ impl PlacementOutcome {
         Ok(self)
     }
     pub fn to_payload(&self) -> Result<Vec<u8>, ObjectError> {
+        self.validate_manifest_binding()?;
         if self.encoded_len() > LIMIT - 12 {
             return Err(invalid("placement outcome exceeds size limit"));
         }
@@ -201,18 +400,19 @@ impl PlacementOutcome {
         }
         let outcome = Self::decode(&bytes[4..end])
             .map_err(|_| invalid("invalid placement outcome protobuf"))?;
-        if outcome.version != 1 || outcome.to_payload()? != bytes {
+        if outcome.to_payload()? != bytes {
             return Err(invalid("unsupported placement outcome encoding"));
         }
         Ok(outcome)
     }
     pub fn apply(&self, service: &mut MatrixMetaService) -> Result<(), ObjectError> {
-        if self.version != 1
-            || self.before_index != service.placement_commit_index
+        self.validate_manifest_binding()?;
+        if self.before_index != service.placement_commit_index
             || !(self.before_index.checked_add(1) == Some(self.after_index)
                 || (self.after_index == self.before_index
                     && self.nodes.is_empty()
-                    && self.placements.is_empty()))
+                    && self.placements.is_empty()
+                    && self.manifest.is_none()))
         {
             return Err(invalid("placement outcome index mismatch"));
         }
@@ -246,7 +446,8 @@ impl PlacementOutcome {
                 .as_ref()
                 .ok_or_else(|| invalid("placement outcome lacks resulting placement"))?;
             let id = after.id();
-            if !objects.insert(id.clone())
+            if (service.object_manifests.get(&id).is_some() && self.manifest.is_none())
+                || !objects.insert(id.clone())
                 || service.placements.get(&id).map(PlacementValue::from_value) != change.before
                 || change.before.as_ref().is_some_and(|v| v.id() != id)
                 || after
@@ -256,6 +457,11 @@ impl PlacementOutcome {
             {
                 return Err(invalid("placement outcome object state mismatch"));
             }
+        }
+        if let Some(manifest) = &self.manifest {
+            self.validate_publication(service, false)?;
+            // Catalog capacity and expected-state checks happen before any other writes.
+            service.object_manifests.apply(manifest)?;
         }
         // All checks precede mutation; replay never invokes placement planning or heartbeat expiry.
         for change in &self.nodes {

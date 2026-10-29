@@ -138,7 +138,7 @@ impl ManifestOutcome {
         value.validate()?;
         Ok(value)
     }
-    fn validate(&self) -> Result<(), ObjectError> {
+    pub(crate) fn validate(&self) -> Result<(), ObjectError> {
         if self.format_version != 1 {
             return Err(invalid("manifest outcome version mismatch"));
         }
@@ -213,13 +213,16 @@ impl ManifestCatalog {
         self.objects.get(id)
     }
     /// Compare before touching state. An identical already-applied outcome is a no-op.
-    pub fn apply(&mut self, outcome: &ManifestOutcome) -> Result<bool, ObjectError> {
+    pub(crate) fn check_outcome(
+        &self,
+        outcome: &ManifestOutcome,
+    ) -> Result<Option<usize>, ObjectError> {
         outcome.validate()?;
         let after = outcome.after.as_ref().unwrap();
         let id = after.object_id();
         let current = self.objects.get(&id);
         if current == Some(after) {
-            return Ok(false);
+            return Ok(None);
         }
         if current != outcome.before.as_ref() {
             return Err(ObjectError::PreconditionFailed(
@@ -235,7 +238,14 @@ impl ManifestCatalog {
                 "manifest publication exceeds checkpoint size bound",
             ));
         }
-        self.objects.insert(id, after.clone());
+        Ok(Some(body_bytes))
+    }
+    pub fn apply(&mut self, outcome: &ManifestOutcome) -> Result<bool, ObjectError> {
+        let Some(body_bytes) = self.check_outcome(outcome)? else {
+            return Ok(false);
+        };
+        let after = outcome.after.as_ref().unwrap();
+        self.objects.insert(after.object_id(), after.clone());
         self.body_bytes = body_bytes;
         Ok(true)
     }

@@ -102,6 +102,7 @@ mod tests {
             after_index: base + 1,
             nodes: vec![],
             placements: vec![],
+            manifest: None,
         };
         let second = PlacementOutcome {
             before_index: base + 1,
@@ -130,6 +131,29 @@ mod tests {
             std::fs::write(&path, &bytes).unwrap();
             assert!(PlacementJournal::open(&path, &mut MatrixMetaService::new(), true).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn manifest_journal_recovers_atomic_publication_and_torn_suffixes() {
+        let (base, create, replace) = crate::tests::manifest_publication_fixture();
+        let first = PlacementJournal::record(&create).unwrap();
+        let second = PlacementJournal::record(&replace).unwrap();
+        let path = std::env::temp_dir().join(format!("manifest-journal-{}", std::process::id()));
+        let mut expected = base.clone();
+        create.apply(&mut expected).unwrap();
+        for cut in 0..second.len() {
+            std::fs::write(&path, [first.as_slice(), &second[..cut]].concat()).unwrap();
+            let mut recovered = base.clone();
+            let mut journal = PlacementJournal::open(&path, &mut recovered, true).unwrap();
+            assert_eq!(recovered.export_snapshot(), expected.export_snapshot());
+            journal.append(&replace).unwrap();
+            drop(journal);
+            let mut recovered = base.clone();
+            drop(PlacementJournal::open(&path, &mut recovered, true).unwrap());
+            let mut complete = expected.clone();
+            replace.apply(&mut complete).unwrap();
+            assert_eq!(recovered.export_snapshot(), complete.export_snapshot());
         }
         std::fs::remove_file(path).unwrap();
     }

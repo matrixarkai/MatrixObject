@@ -135,6 +135,30 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::deferred_metadata_sealing_preserves_captured_roster_and_placements -- --exact --nocapture | tee /tmp/deferred-sealing.log
           grep -q 'test result: ok. 1 passed' /tmp/deferred-sealing.log
 
+      - name: manifest publication moves capacity and preserves deleted generations atomically
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib tests::manifest_publication_moves_capacity_and_preserves_deleted_generations_atomically -- --exact --nocapture | tee /tmp/manifest-publication.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-publication.log
+
+      - name: malformed manifest publications leave all metadata unchanged
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib tests::malformed_manifest_publications_leave_all_metadata_unchanged -- --exact --nocapture | tee /tmp/manifest-publication.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-publication.log
+
+      - name: manifest journal recovers atomic publication and torn suffixes
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::placement_journal::tests::manifest_journal_recovers_atomic_publication_and_torn_suffixes -- --exact --nocapture | tee /tmp/manifest-publication.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-publication.log
+
+      - name: manifest outcomes recover from raft checkpoint and committed suffix
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::manifest_outcomes_recover_from_raft_checkpoint_and_committed_suffix -- --exact --nocapture | tee /tmp/manifest-publication.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-publication.log
+
       - name: metadata manifest snapshots preserve generations and refresh caches
         run: |
           set -o pipefail

@@ -92,6 +92,11 @@ impl MatrixMetaService {
         placement: ObjectPlacement,
         expected_plan_checksum: &str,
     ) -> Result<ObjectPlacement, ObjectError> {
+        if self.object_manifests.get(&placement.object_id).is_some() {
+            return Err(ObjectError::PreconditionFailed(
+                "manifest-backed objects require atomic publication".into(),
+            ));
+        }
         let plan = PlacementPlan {
             object_id: placement.object_id.clone(),
             length: placement.length,
@@ -155,6 +160,11 @@ impl MatrixMetaService {
         &mut self,
         object_id: &ObjectId,
     ) -> Result<ObjectPlacement, ObjectError> {
+        if self.object_manifests.get(object_id).is_some() {
+            return Err(ObjectError::PreconditionFailed(
+                "manifest-backed objects require atomic publication".into(),
+            ));
+        }
         let placement = self
             .placements
             .remove(object_id)
