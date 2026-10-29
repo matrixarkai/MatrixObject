@@ -250,3 +250,25 @@ occupy about `r * n` bytes. Vote-table nodes, socket buffers and decoding overhe
 are additional. This is not a streaming read or a bound on total process memory.
 The allocation-retention guard also verifies that equal checksum strings cannot
 hide differing payload bytes.
+
+## State-fenced star writes
+
+`RemoteReplicaSet::write_chunk` first reads every member's page head. It requires
+a read quorum that agrees on the complete head, or a read quorum reporting an
+absent page. At least a write quorum must match that selected state before any
+mutation is sent. Only those matching members receive a conditional write using
+the observed sequence, with zero requiring an absent page. A concurrent sequence
+change is refused by the serving node. Equal sequences alone cannot admit members
+whose lengths, checksums or discarded ranges differ.
+
+This adds a head round trip to each member per star write. All serving replicas
+must support conditional write request code 8; an older server's refusal does not
+fall back to an unconditional write. An uncertain mutation is not retried, and
+partial application can still occur if a member fails after preflight. Callers
+must resolve uncertain results before issuing another operation.
+
+The check prevents an already divergent member from counting toward a fresh write
+acknowledgment. It does not repair that member, reconnect failed sockets, establish
+cross-client linearizability, authenticate replies or change the separate discard
+operation. Remote repair and safe replica rejoining remain unfinished. Raft-group
+writes continue through their leader and do not use this star fan-out.

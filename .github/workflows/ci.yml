@@ -237,6 +237,12 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus coupled_groups::maximum_default_object_survives_group_failover_and_total_restart -- --exact --nocapture | tee /tmp/maximum-object.log
           grep -q 'test result: ok. 1 passed' /tmp/maximum-object.log
 
+      - name: star writes exclude divergent page state before mutation
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery star_writes_exclude_divergent_page_state_and_require_a_matching_quorum -- --exact --nocapture | tee /tmp/star-write-fence.log
+          grep -q 'test result: ok. 1 passed' /tmp/star-write-fence.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail

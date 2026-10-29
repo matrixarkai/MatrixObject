@@ -227,3 +227,51 @@ fn conditional_chunk_writes_persist_and_refuse_stale_sequences() {
     c.write_chunk_if_sequence(page(8), 0, b"final", 2).unwrap();
     assert_eq!(c.read_chunk(&page(8), 0, 5).unwrap().data, b"final");
 }
+
+#[test]
+fn star_writes_exclude_divergent_page_state_and_require_a_matching_quorum() {
+    use matrixobjectstore_rs::cluster::RemoteReplicaSet;
+    let dir = JournalDir::new();
+    let nodes: Vec<_> = (0..3)
+        .map(|i| start(&dir.0.join(format!("fenced-{i}.log"))))
+        .collect();
+    let endpoints: Vec<_> = nodes.iter().map(|node| node.endpoint.clone()).collect();
+    // Equal sequence numbers are insufficient: the first replica contains different bytes.
+    for (i, node) in nodes.iter().enumerate() {
+        client(node)
+            .write_chunk(page(1), 0, if i == 0 { b"wrong" } else { b"right" })
+            .unwrap();
+    }
+    let rejected_before = client(&nodes[0]).head_chunk(&page(1)).unwrap();
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    assert_eq!(set.write_chunk(&page(1), 0, b"R").unwrap(), 2);
+    assert_eq!(
+        client(&nodes[0]).head_chunk(&page(1)).unwrap(),
+        rejected_before
+    );
+    assert_eq!(
+        client(&nodes[0]).read_chunk(&page(1), 0, 5).unwrap().data,
+        b"wrong"
+    );
+    assert_eq!(set.read_chunk(&page(1), 0, 5).unwrap().data, b"Right");
+    // A stricter writer must refuse before changing even the matching replicas.
+    let before: Vec<_> = nodes
+        .iter()
+        .map(|node| client(node).head_chunk(&page(1)).unwrap())
+        .collect();
+    let mut strict =
+        RemoteReplicaSet::connect(&endpoints, 3, 2, &ReplicaClientOptions::default()).unwrap();
+    assert!(strict.write_chunk(&page(1), 0, b"bad").is_err());
+    for (node, expected) in nodes.iter().zip(before) {
+        assert_eq!(client(node).head_chunk(&page(1)).unwrap(), expected);
+    }
+    // A missing-page quorum may create a page without overwriting a minority's existing page.
+    client(&nodes[0]).write_chunk(page(2), 0, b"keep").unwrap();
+    assert_eq!(set.write_chunk(&page(2), 0, b"new").unwrap(), 2);
+    assert_eq!(
+        client(&nodes[0]).read_chunk(&page(2), 0, 4).unwrap().data,
+        b"keep"
+    );
+    assert_eq!(set.read_chunk(&page(2), 0, 3).unwrap().data, b"new");
+}
