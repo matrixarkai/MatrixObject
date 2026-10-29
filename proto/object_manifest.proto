@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+// Canonical protobuf bodies in MOMF/MOMO/MOMC envelopes. Each envelope ends in
+// an eight-byte little-endian FNV-1a checksum of its magic and protobuf body.
+message ObjectExtent {
+  string group = 1;
+  uint64 volume_id = 2;
+  uint64 chunk_id = 3;
+  uint64 page_index = 4;
+  uint64 object_offset = 5;
+  uint64 page_offset = 6;
+  uint64 length = 7;
+  uint64 write_sequence = 8;
+  fixed64 data_checksum = 9;
+}
+message ObjectManifest {
+  uint32 format_version = 1;
+  string bucket = 2;
+  string key = 3;
+  uint64 generation = 4;
+  uint64 length = 5;
+  repeated ObjectExtent extents = 6;
+  bool deleted = 7;
+}
+message ManifestOutcome {
+  uint32 format_version = 1;
+  optional ObjectManifest before = 2;
+  optional ObjectManifest after = 3;
+}
+message ManifestCatalogImage {
+  uint32 format_version = 1;
+  repeated ObjectManifest objects = 2;
+}
