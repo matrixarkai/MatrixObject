@@ -125,8 +125,9 @@ Nonzero values must be between 1024 and 134217728 bytes. Library callers use
 identity and may differ between voters; every voter must support restoration.
 
 Capture runs on the exclusive application worker after earlier proposals and
-reads settle. The canonical binary protobuf envelope in `proto/node_checkpoint.proto`
-binds service kind and exact applied Raft position to the validated binary service
+reads settle. The canonical binary protobuf formats in `proto/node_checkpoint.proto` and
+`proto/chunk_checkpoint.proto`
+bind service kind and exact applied Raft position to the validated binary service
 snapshot. Recovery restores that state before applying later protobuf outcomes.
 Metadata restoration rebuilds the placement roster and checks the immutable group
 catalog. Chunk restoration preserves page contents, discards and receipts, checks
@@ -146,14 +147,30 @@ directory, and `.runtime.lock` sidecar together while the node is stopped; the
 WAL alone no longer contains the snapshot. Missing or damaged payloads refuse
 recovery. Retired payload files are removed after active transfers release them.
 
-The encoded application checkpoint is still limited to 256 MiB. Service snapshot
-capture and decoding still allocate complete bodies and can delay requests;
-file-backed transfer does not make application serialization memory bounded.
-If state exceeds the limit, the server reports that it is retaining WAL history
-and retries only after another configured interval. It does not discard data or
-truncate history to fit. The WAL still stops writes at 512 MiB. Larger application
-state requires streaming service serialization and restoration; this integration
-does not establish production readiness.
+Chunk checkpoints now use the version-2 binary protobuf page stream in
+`proto/chunk_checkpoint.proto`. Capture borrows immutable page payloads and
+redundancy bytes instead of copying the complete dataset into a serialization
+buffer. Checksum scans also read the payloads directly. Recovery allocates each
+page once, validates the complete service checksum, and only then installs state.
+Receipts, settings, counters, discard ranges and compression accounting are kept;
+fragment digests are rebuilt from validated data as in the earlier snapshot codec.
+The older version-1 application envelope remains readable.
+
+On a 64-bit host the checkpoint file may be up to 16 GiB. Each page payload and
+metadata record remains limited to 256 MiB, and configured capacity and page
+count limits are checked during restore. Metadata records, page descriptors and
+receipts still occupy memory; the application itself still keeps resident page
+data. Atomic installation temporarily retains the old and recovered service states.
+Capture, validation and file I/O are synchronous and can delay requests.
+If an image exceeds a format bound, the server retains WAL history and retries
+after another configured interval. The WAL still stops writes at 512 MiB.
+
+Upgrade every chunk voter before enabling the new capture format. A voter with
+only the version-1 application decoder cannot restore version-2 checkpoints even
+if its MatrixRaft runtime supports file-backed payloads. Metadata voters still
+use the version-1 envelope with a 256 MiB application limit; their service codec
+has not yet been converted to a stream. These limits and the in-memory storage
+model remain constraints on deployment size.
 
 Process tests exercise repeated compaction, catch-up after an offline interval,
 and total restart. Chunk tests transfer state larger than one peer frame and
@@ -176,3 +193,13 @@ or the metaserver. An uncertain reply is not automatically retried. Read the
 current state and resolve the operation before issuing another mutation.
 Upgrade each serving node before using this verb; older nodes refuse code 8.
 See `metadata-consensus.md` for conditional placement commits.
+
+To exercise recovery beyond the old application limit on one host:
+
+```sh
+cargo test --locked --release --all-features --test network_chunk_consensus chunk_streamed_checkpoints_recover_large_process_state -- --exact --ignored --nocapture
+```
+
+This uses three processes and 272 MiB of page data, forces a checkpoint larger
+than 256 MiB, catches up an offline voter, commits with that voter, and verifies
+every page after a total restart. It is not a multi-host throughput measurement.

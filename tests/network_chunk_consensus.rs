@@ -1610,3 +1610,72 @@ fn chunk_checkpoints_reclaim_history_transfer_large_state_and_recover_processes(
     }
     assert!(client.write_chunk(page(60), 0, &too_large).is_err());
 }
+
+#[test]
+#[ignore = "272 MiB three-process recovery; run explicitly in release mode"]
+fn chunk_streamed_checkpoints_recover_large_process_state() {
+    let mut group = Group::configured(300 * 1024 * 1024);
+    group.max_pages = 300;
+    group.checkpoint_bytes = 128 * 1024 * 1024;
+    for i in 0..3 {
+        group.start(i);
+    }
+    let leader = group.leader();
+    let lagging = (leader + 1) % 3;
+    let other = (leader + 2) % 3;
+    group.kill(lagging);
+    let mut client = group.client(leader);
+    for index in 0..272u64 {
+        client
+            .write_chunk(page(index), 0, &vec![(index % 251) as u8; 1024 * 1024])
+            .unwrap();
+    }
+    let payload_dir = group
+        .root
+        .join(leader.to_string())
+        .join("chunk.peer.wal.payloads");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let largest = std::fs::read_dir(&payload_dir)
+            .unwrap()
+            .map(|e| e.unwrap().metadata().unwrap().len())
+            .max()
+            .unwrap_or(0);
+        if largest > 256 * 1024 * 1024 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no checkpoint larger than 256 MiB was published"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    group.start(lagging);
+    node_regime::checkpoints::wait_for_checkpoint(
+        &group.root.join(lagging.to_string()).join("chunk.peer.wal"),
+        4,
+    );
+    group.kill(other);
+    drop(client);
+    let active = group.leader();
+    let mut client = group.client(active);
+    client
+        .write_chunk(page(280), 0, b"after large transfer")
+        .unwrap();
+    drop(client);
+    group.kill(leader);
+    group.kill(lagging);
+    for i in 0..3 {
+        group.start(i);
+    }
+    let recovered = group.leader();
+    let mut client = group.client(recovered);
+    for index in 0..272u64 {
+        let response = client.read_chunk(&page(index), 0, 1024 * 1024).unwrap();
+        assert_eq!(response.data, vec![(index % 251) as u8; 1024 * 1024]);
+    }
+    assert_eq!(
+        client.read_chunk(&page(280), 0, 20).unwrap().data,
+        b"after large transfer"
+    );
+}

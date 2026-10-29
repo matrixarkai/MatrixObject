@@ -2,7 +2,8 @@
 // Copyright 2026 MatrixArkAI
 impl ReplicaServiceSnapshot {
     fn checksum_material_hash(&self) -> String {
-        let mut material = Vec::with_capacity(self.encoded_size_hint());
+        let mut material = Vec::with_capacity(1024);
+        let mut digest = FNV1A64_OFFSET_BASIS;
         append_u64(&mut material, self.accepting_writes as u64);
         append_u64(&mut material, self.draining as u64);
         append_u64(&mut material, self.frozen as u64);
@@ -55,9 +56,13 @@ impl ReplicaServiceSnapshot {
             append_u64(&mut material, state.write_sequence);
             append_string(&mut material, &state.checksum());
             append_u64(&mut material, state.data.len() as u64);
-            material.extend_from_slice(&state.data);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
+            digest = fnv1a64_resumed(digest, &state.data);
             append_u64(&mut material, state.fragment_bytes().len() as u64);
-            material.extend_from_slice(state.fragment_bytes());
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
+            digest = fnv1a64_resumed(digest, state.fragment_bytes());
             append_u64(&mut material, state.discarded_ranges.len() as u64);
             for range in &state.discarded_ranges {
                 append_range(&mut material, range);
@@ -107,12 +112,15 @@ impl ReplicaServiceSnapshot {
             append_string(&mut material, idempotency_key);
             append_chunk_repair_receipt(&mut material, receipt);
         }
-        etag(&material)
+        digest = fnv1a64_resumed(digest, &material);
+        let mut checksum = String::with_capacity(24);
+        append_etag_of_digest(&mut checksum, digest);
+        checksum
     }
 
     /// Computes the checksum an unsealed snapshot is missing, so `validate`
     /// accepts it. Paired with the `export_snapshot_unsealed` constructors,
-    /// which skip this because it copies every payload byte before hashing.
+    /// which skip the full payload scan until the snapshot is installed.
     pub fn seal_checksum(&mut self) {
         self.checksum = self.checksum_material_hash();
     }

@@ -81,11 +81,47 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
-      - name: Checkpoint readers preserve canonical protobuf and reject malformed input
+      - name: checkpoint envelope binds kind position and canonical bytes
         run: |
           set -o pipefail
-          cargo test --locked --all-features --lib cluster::consensus_checkpoint::tests -- --nocapture | tee /tmp/checkpoint-readers.log
-          grep -q 'test result: ok. 4 passed' /tmp/checkpoint-readers.log
+          cargo test --locked --all-features --lib cluster::consensus_checkpoint::tests::checkpoint_envelope_binds_kind_position_and_canonical_bytes -- --exact --nocapture | tee /tmp/checkpoint-readers.log
+          grep -q 'test result: ok. 1 passed' /tmp/checkpoint-readers.log
+
+      - name: checkpoint policy bounds the configured interval
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::consensus_checkpoint::tests::checkpoint_policy_bounds_the_configured_interval -- --exact --nocapture | tee /tmp/checkpoint-readers.log
+          grep -q 'test result: ok. 1 passed' /tmp/checkpoint-readers.log
+
+      - name: checkpoint readers preserve protobuf bytes and short reads
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::consensus_checkpoint::tests::checkpoint_readers_preserve_protobuf_bytes_and_short_reads -- --exact --nocapture | tee /tmp/checkpoint-readers.log
+          grep -q 'test result: ok. 1 passed' /tmp/checkpoint-readers.log
+
+      - name: checkpoint reader refuses malformed lengths and noncanonical fields
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::consensus_checkpoint::tests::checkpoint_reader_refuses_malformed_lengths_and_noncanonical_fields -- --exact --nocapture | tee /tmp/checkpoint-readers.log
+          grep -q 'test result: ok. 1 passed' /tmp/checkpoint-readers.log
+
+      - name: streamed checkpoint preserves complete state and legacy bytes
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::chunk_checkpoint::tests::streamed_checkpoint_preserves_complete_state_and_legacy_bytes -- --exact --nocapture | tee /tmp/checkpoint-readers.log
+          grep -q 'test result: ok. 1 passed' /tmp/checkpoint-readers.log
+
+      - name: streamed checkpoint refuses damage truncation identity and limits
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::chunk_checkpoint::tests::streamed_checkpoint_refuses_damage_truncation_identity_and_limits -- --exact --nocapture | tee /tmp/checkpoint-readers.log
+          grep -q 'test result: ok. 1 passed' /tmp/checkpoint-readers.log
+
+      - name: streamed checkpoint recovers more than 256 mib
+        run: |
+          set -o pipefail
+          cargo test --locked --release --all-features --lib cluster::chunk_checkpoint::tests::streamed_checkpoint_recovers_more_than_256_mib -- --exact --ignored --nocapture | tee /tmp/checkpoint-readers.log
+          grep -q 'test result: ok. 1 passed' /tmp/checkpoint-readers.log
 
       - name: Metadata identity is bounded canonical and complete
         run: |
@@ -1912,3 +1948,9 @@ jobs:
           cargo test --locked --features chunk-consensus --test network_chunk_consensus chunk_checkpoints_reclaim_history_transfer_large_state_and_recover_processes -- --exact | tee /tmp/node-checkpoint.log
           grep -q '^running 1 test$' /tmp/node-checkpoint.log
           grep -q '^test result: ok. 1 passed' /tmp/node-checkpoint.log
+      - name: chunk streamed checkpoints recover large process state
+        run: |
+          set -euo pipefail
+          cargo test --locked --release --all-features --test network_chunk_consensus chunk_streamed_checkpoints_recover_large_process_state -- --exact --ignored --nocapture | tee /tmp/chunk-stream-large.log
+          grep -q '^running 1 test$' /tmp/chunk-stream-large.log
+          grep -q '^test result: ok. 1 passed' /tmp/chunk-stream-large.log

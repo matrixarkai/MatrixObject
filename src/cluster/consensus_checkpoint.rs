@@ -7,8 +7,10 @@ use matrixraft::{
     LogId, RaftError,
 };
 use prost::Message;
+#[cfg(any(feature = "metadata-consensus", test))]
+use std::io::Cursor;
 use std::{
-    io::{self, Cursor, Read},
+    io::{self, Read},
     path::PathBuf,
 };
 
@@ -42,6 +44,7 @@ impl Image {
         }
     }
     /// Emits the canonical protobuf envelope without copying either body.
+    #[cfg(any(feature = "metadata-consensus", test))]
     fn into_reader(mut self) -> impl Read {
         let state = std::mem::take(&mut self.state);
         let catalog = std::mem::take(&mut self.catalog);
@@ -102,12 +105,12 @@ impl Image {
         Self::read_at(&mut Cursor::new(bytes), bytes.len() as u64, kind, id)
     }
 }
-fn byte(reader: &mut dyn Read) -> Result<u8, RaftError> {
+pub(super) fn byte(reader: &mut dyn Read) -> Result<u8, RaftError> {
     let mut value = [0];
     reader.read_exact(&mut value).map_err(storage)?;
     Ok(value[0])
 }
-fn varint(reader: &mut dyn Read) -> Result<u64, RaftError> {
+pub(super) fn varint(reader: &mut dyn Read) -> Result<u64, RaftError> {
     let mut value = 0;
     for shift in (0..70).step_by(7) {
         let next = byte(reader)?;
@@ -171,21 +174,16 @@ impl Policy {
         // next applied advance rather than treating its total size as new space.
         self.baseline = 0;
     }
+    #[cfg(feature = "metadata-consensus")]
     pub(super) fn maybe_checkpoint(
         &mut self,
         peer: &mut DurablePeer,
         term: u64,
         capture: impl FnOnce() -> Result<(Vec<u8>, Vec<u8>), ObjectError>,
     ) -> Result<(), RaftError> {
-        let index = peer.applied_index();
-        if self.interval == 0 || index <= self.observed || index <= self.checkpoint {
+        let Some((index, size)) = self.due(peer)? else {
             return Ok(());
-        }
-        self.observed = index;
-        let size = std::fs::metadata(&self.wal).map_err(storage)?.len();
-        if size.saturating_sub(self.baseline) < self.interval {
-            return Ok(());
-        }
+        };
         let (state, catalog) = capture().map_err(storage)?;
         let image = Image::new(self.kind, LogId { index, term }, state, catalog);
         if image.encoded_len() > MAX_CHECKPOINT_BYTES {
@@ -199,6 +197,42 @@ impl Policy {
         }
         let length = image.encoded_len() as u64;
         peer.checkpoint_from_reader(&mut image.into_reader(), length)?;
+        self.checkpoint = index;
+        self.baseline = std::fs::metadata(&self.wal).map_err(storage)?.len();
+        Ok(())
+    }
+    fn due(&mut self, peer: &DurablePeer) -> Result<Option<(u64, u64)>, RaftError> {
+        let index = peer.applied_index();
+        if self.interval == 0 || index <= self.observed || index <= self.checkpoint {
+            return Ok(None);
+        }
+        self.observed = index;
+        let size = std::fs::metadata(&self.wal).map_err(storage)?.len();
+        if size.saturating_sub(self.baseline) < self.interval {
+            return Ok(None);
+        }
+        Ok(Some((index, size)))
+    }
+    #[cfg(feature = "chunk-consensus")]
+    pub(super) fn maybe_checkpoint_stream(
+        &mut self,
+        peer: &mut DurablePeer,
+        term: u64,
+        capture: impl FnOnce(LogId) -> Result<Option<super::chunk_checkpoint::Stream>, RaftError>,
+    ) -> Result<(), RaftError> {
+        if self.kind != 2 {
+            return Err(storage("stream checkpoint policy kind mismatch"));
+        }
+        let Some((index, size)) = self.due(peer)? else {
+            return Ok(());
+        };
+        let Some(mut stream) = capture(LogId { index, term })? else {
+            self.baseline = size;
+            eprintln!("chunk checkpoint exceeds supported size; retaining WAL history");
+            return Ok(());
+        };
+        let length = stream.length;
+        peer.checkpoint_from_reader(&mut stream, length)?;
         self.checkpoint = index;
         self.baseline = std::fs::metadata(&self.wal).map_err(storage)?.len();
         Ok(())

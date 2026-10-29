@@ -219,3 +219,6 @@ pub use chunk_groups::{ChunkGroupCatalog, ChunkGroupConfig};
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod consensus_checkpoint;
+
+#[cfg(feature = "chunk-consensus")]
+mod chunk_checkpoint;
