@@ -335,7 +335,8 @@ fn run(
 ) -> Result<(), RaftError> {
     let mut tick = Instant::now();
     let mut pending: Option<Pending> = None;
-    let mut pending_read: Option<(u64, Request)> = None;
+    let mut pending_read: Option<(u64, Vec<Request>)> = None;
+    let mut deferred = None;
     let applied_term = Cell::new(0);
     while !stop.is_stopped() {
         for _ in 0..32 {
@@ -431,16 +432,18 @@ fn run(
             match peer.poll_read(*token) {
                 Ok(false) => {}
                 result => {
-                    let (_, request) = pending_read.take().unwrap();
-                    let reply = match result {
-                        Ok(true) => {
-                            let max_pages = node.max_pages;
-                            checked_apply(&mut node.service, request.request, max_pages, limit)
-                        }
-                        Err(error) => Err(refused(error)),
-                        Ok(false) => unreachable!(),
-                    };
-                    let _ = request.reply.try_send(reply);
+                    let (_, batch) = pending_read.take().unwrap();
+                    for request in batch {
+                        let reply = match &result {
+                            Ok(true) => {
+                                let max_pages = node.max_pages;
+                                checked_apply(&mut node.service, request.request, max_pages, limit)
+                            }
+                            Err(error) => Err(refused(error)),
+                            Ok(false) => unreachable!(),
+                        };
+                        let _ = request.reply.try_send(reply);
+                    }
                 }
             }
         }
@@ -459,7 +462,7 @@ fn run(
                     })
                 })
             })?;
-            if let Ok(request) = requests.try_recv() {
+            if let Some(request) = deferred.take().or_else(|| requests.try_recv().ok()) {
                 if request.deadline <= Instant::now() {
                     let _ = request
                         .reply
@@ -468,10 +471,13 @@ fn run(
                     let _ = request.reply.try_send(Ok(ReplicaReply::NotLeader));
                 } else {
                     if read_only(&request.request) {
+                        let batch = read_batch(request, &requests, &mut deferred, Instant::now());
                         match peer.begin_read() {
-                            Ok(token) => pending_read = Some((token, request)),
+                            Ok(token) => pending_read = Some((token, batch)),
                             Err(error) => {
-                                let _ = request.reply.try_send(Err(refused(error)));
+                                for request in batch {
+                                    let _ = request.reply.try_send(Err(refused(&error)));
+                                }
                             }
                         }
                     } else {
@@ -499,6 +505,36 @@ fn run(
         thread::sleep(Duration::from_millis(2));
     }
     Ok(())
+}
+
+// Admission ends before begin_read: later arrivals cannot reuse this confirmation.
+// Keep at most one deferred mutation so reads never pass a queued write.
+fn read_batch(
+    first: Request,
+    incoming: &Receiver<Request>,
+    deferred: &mut Option<Request>,
+    now: Instant,
+) -> Vec<Request> {
+    debug_assert!(read_only(&first.request));
+    debug_assert!(deferred.is_none());
+    let mut batch = vec![first];
+    for _ in 1..32 {
+        let Ok(request) = incoming.try_recv() else {
+            break;
+        };
+        if !read_only(&request.request) {
+            *deferred = Some(request);
+            break;
+        }
+        if request.deadline <= now {
+            let _ = request.reply.try_send(Err(refused(
+                "chunk request expired before read confirmation",
+            )));
+        } else {
+            batch.push(request);
+        }
+    }
+    batch
 }
 
 #[cfg(test)]
@@ -689,5 +725,61 @@ mod checkpoint_tests {
         let mut restored = node(8192, 4);
         let unexpected = Image::new(2, id.clone(), snapshot, vec![1]).encode_to_vec();
         assert!(restore_checkpoint(&mut restored, &unexpected, id).is_err());
+    }
+}
+
+#[cfg(test)]
+mod read_batch_tests {
+    use super::*;
+
+    #[test]
+    fn chunk_read_batches_bound_admission_preserve_write_order_and_expire_requests() {
+        let now = Instant::now();
+        let make = |request, deadline| {
+            let (reply, response) = mpsc::sync_channel(1);
+            (
+                Request {
+                    request,
+                    reply,
+                    deadline,
+                },
+                response,
+            )
+        };
+        let live = now + Duration::from_secs(5);
+        let (tx, rx) = mpsc::sync_channel(64);
+        let (expired, response) = make(ReplicaRequest::Ping, now);
+        tx.send(expired).unwrap();
+        tx.send(make(ReplicaRequest::Ping, live).0).unwrap();
+        let mutation = ReplicaRequest::WriteChunk {
+            page_id: crate::PageId {
+                chunk_id: crate::ChunkId::new(1, 1).unwrap(),
+                page_index: 0,
+            },
+            offset: 0,
+            data: vec![7],
+        };
+        tx.send(make(mutation.clone(), live).0).unwrap();
+        tx.send(make(ReplicaRequest::Ping, live).0).unwrap();
+        let mut deferred = None;
+        let batch = read_batch(make(ReplicaRequest::Ping, live).0, &rx, &mut deferred, now);
+        assert_eq!(batch.len(), 2);
+        assert!(response.try_recv().unwrap().is_err());
+        assert_eq!(deferred.take().unwrap().request, mutation);
+        assert!(matches!(
+            rx.try_recv().unwrap().request,
+            ReplicaRequest::Ping
+        ));
+        assert!(rx.try_recv().is_err());
+        for _ in 0..40 {
+            tx.send(make(ReplicaRequest::Ping, live).0).unwrap();
+        }
+        let batch = read_batch(make(ReplicaRequest::Ping, live).0, &rx, &mut deferred, now);
+        assert_eq!(batch.len(), 32);
+        assert!(deferred.is_none());
+        // An arrival after admission stays queued for a later confirmation.
+        tx.send(make(ReplicaRequest::Ping, live).0).unwrap();
+        assert_eq!(rx.try_iter().count(), 10);
+        assert_eq!(batch.len(), 32);
     }
 }

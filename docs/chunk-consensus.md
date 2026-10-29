@@ -349,3 +349,27 @@ cargo test --release --locked --all-features --test network_chunk_consensus chun
 
 This verifies Raft checkpoint recovery on one host. It does not implement
 repair for star replicas, establish multihost throughput, or measure peak memory.
+
+## Bounded chunk read confirmation batches
+
+A chunk Raft leader can confirm up to 32 already queued read-only requests
+with one quorum read barrier. Admission ends before the barrier starts. Reads
+arriving afterward remain queued for a later confirmation; a pending barrier is
+never reused as a cached leadership lease. Application state is read only after
+that barrier's index has applied locally. Leadership loss refuses every request
+in the affected batch.
+
+Admission stops at the first mutation and retains it as one deferred request.
+The next operation consumes that mutation before later reads, preserving queue
+order. Additional read requests whose deadlines have already expired are refused
+before confirmation. The existing bounded request channel remains unchanged;
+the runtime holds at most 32 reads plus one deferred mutation outside it.
+No mutations are batched by this change, and accepted writes still wait for
+application or leadership change even if a caller times out.
+
+The admission guard checks the batch limit, expiration, late-arrival exclusion
+and mutation ordering. The process guard runs eight concurrent clients reading
+bytes, heads and page counts, verifies the WAL is unchanged, then confirms a
+subsequent write and refusal of reads after quorum loss. Batching reduces the
+number of confirmations when reads arrive together; it does not remove page
+readback from object publication or establish a measured throughput improvement.
