@@ -2383,6 +2383,30 @@ fn chunk_quorum_reads_leave_the_wal_unchanged_and_refuse_a_minority() {
     assert!(group.client(leader).ping().is_err());
 }
 
+fn create_checkpoint_page(group: &Group, client: &mut RemoteReplicaClient, index: u64, data: &[u8]) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        // Conditional creation and readback resolve an uncertain response
+        // even when checkpoint installation changes the current leader.
+        match client.write_chunk_if_sequence(page(index), 0, data, 0) {
+            Ok(()) => break,
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "page {index} did not settle: {error}"
+                );
+                eprintln!("resolving uncertain page {index} creation: {error}");
+                *client = group.client(group.leader());
+                if let Ok(read) = client.read_chunk(&page(index), 0, data.len() as u64) {
+                    assert_eq!(read.write_sequence, 1);
+                    assert_eq!(read.data, data);
+                    break;
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn chunk_checkpoints_reclaim_history_transfer_large_state_and_recover_processes() {
     let mut group = Group::configured(32 * 1024 * 1024);
@@ -2427,9 +2451,7 @@ fn chunk_checkpoints_reclaim_history_transfer_large_state_and_recover_processes(
     drop(client);
     let active = group.leader();
     let mut client = group.client(active);
-    client
-        .write_chunk(page(20), 0, b"after snapshot transfer")
-        .unwrap();
+    create_checkpoint_page(&group, &mut client, 20, b"after snapshot transfer");
     drop(client);
     group.kill(leader);
     group.kill(lagging);
@@ -2479,31 +2501,8 @@ fn chunk_streamed_checkpoints_recover_large_process_state() {
     let other = (leader + 2) % 3;
     group.kill(lagging);
     let mut client = group.client(leader);
-    fn create(group: &Group, client: &mut RemoteReplicaClient, index: u64, data: &[u8]) {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            // Conditional creation and readback resolve an uncertain response
-            // even when checkpoint installation changes the current leader.
-            match client.write_chunk_if_sequence(page(index), 0, data, 0) {
-                Ok(()) => break,
-                Err(error) => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "page {index} did not settle: {error}"
-                    );
-                    eprintln!("resolving uncertain page {index} creation: {error}");
-                    *client = group.client(group.leader());
-                    if let Ok(read) = client.read_chunk(&page(index), 0, data.len() as u64) {
-                        assert_eq!(read.write_sequence, 1);
-                        assert_eq!(read.data, data);
-                        break;
-                    }
-                }
-            }
-        }
-    }
     for index in 0..272u64 {
-        create(
+        create_checkpoint_page(
             &group,
             &mut client,
             index,
@@ -2539,7 +2538,7 @@ fn chunk_streamed_checkpoints_recover_large_process_state() {
     drop(client);
     let active = group.leader();
     let mut client = group.client(active);
-    create(&group, &mut client, 280, b"after large transfer");
+    create_checkpoint_page(&group, &mut client, 280, b"after large transfer");
     drop(client);
     group.kill(leader);
     group.kill(lagging);

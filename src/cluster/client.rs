@@ -199,7 +199,23 @@ impl RemoteReplicaClient {
             ));
         }
         let mut client = Self::connect_catalog(endpoints, options)?;
-        let identity = client.chunk_group_identity()?;
+        let catalog = client.catalog.as_ref().unwrap().0.clone();
+        let identity = loop {
+            match client.chunk_group_identity() {
+                Ok(identity) => break identity,
+                Err(error) if !client.connection_usable => {
+                    // No application request has been sent on this connection.
+                    // Try only the remaining catalog endpoints, never replay a write.
+                    let next = catalog.iter().position(|e| e == client.endpoint()).unwrap() + 1;
+                    if next == catalog.len() {
+                        return Err(error);
+                    }
+                    client = Self::connect_catalog(&catalog[next..], options)?;
+                    client.catalog = Some((catalog.clone(), options.clone()));
+                }
+                Err(error) => return Err(error),
+            }
+        };
         if identity.group_id != group_id {
             return Err(ObjectError::PreconditionFailed(
                 "chunk group ID does not match catalog".into(),
@@ -413,7 +429,14 @@ impl RemoteReplicaClient {
                 match Self::connect(endpoint, &options) {
                     Ok(mut next) => {
                         if let Some(expected) = &self.group_identity {
-                            let actual = next.chunk_group_identity()?;
+                            let actual = match next.chunk_group_identity() {
+                                Ok(identity) => identity,
+                                Err(error) if !next.connection_usable => {
+                                    last = error;
+                                    continue;
+                                }
+                                Err(error) => return Err(error),
+                            };
                             if !expected.same_group(&actual) {
                                 return Err(ObjectError::PreconditionFailed(
                                     "chunk voter configuration does not match catalog".into(),
