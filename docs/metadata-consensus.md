@@ -183,20 +183,28 @@ Metadata restoration rebuilds the placement roster and checks the immutable grou
 catalog. Chunk restoration preserves page contents, discards and receipts, checks
 configured capacity/page limits, and reconstructs physical used-byte accounting.
 
-MatrixRaft publishes a synced replacement WAL atomically while retaining the
-uncommitted suffix. A lagging voter receives the checkpoint through bounded peer
-fragments; it persists and restores application state before acknowledging Raft
-progress. Small checkpoints use inline records; larger ones use segmented records.
-Keep the `.runtime.lock` sidecar together with the WAL. Do not downgrade a voter
-after checkpoints have been enabled: older runtimes refuse these records.
+MatrixRaft captures the envelope into a synced payload file and atomically
+publishes a version-4 WAL manifest while retaining the uncommitted suffix.
+A lagging voter receives bounded version-3 peer fragments; it persists and
+restores application state before acknowledging Raft progress. Capture reads
+the envelope header and service bodies without assembling another complete
+protobuf buffer. Restoration checks identity and canonical field ordering before
+allocating each body. Existing inline and segmented checkpoints remain readable.
 
-The encoded application checkpoint is limited to 256 MiB and remains memory-backed.
-Capture and restoration can temporarily retain several copies and delay requests.
+Upgrade every voter to this runtime before enabling capture. Older runtimes
+refuse the new WAL and packet versions. Back up the WAL, its `.payloads`
+directory, and `.runtime.lock` sidecar together while the node is stopped; the
+WAL alone no longer contains the snapshot. Missing or damaged payloads refuse
+recovery. Retired payload files are removed after active transfers release them.
+
+The encoded application checkpoint is still limited to 256 MiB. Service snapshot
+capture and decoding still allocate complete bodies and can delay requests;
+file-backed transfer does not make application serialization memory bounded.
 If state exceeds the limit, the server reports that it is retaining WAL history
 and retries only after another configured interval. It does not discard data or
-truncate history to fit. The WAL still stops writes at 512 MiB; deployments with
-larger state require a file-backed snapshot API. This setting is not a substitute
-for that work or a claim of production readiness.
+truncate history to fit. The WAL still stops writes at 512 MiB. Larger application
+state requires streaming service serialization and restoration; this integration
+does not establish production readiness.
 
 Process tests exercise repeated compaction, catch-up after an offline interval,
 and total restart. Chunk tests transfer state larger than one peer frame and

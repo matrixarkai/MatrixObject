@@ -64,4 +64,4 @@ metadata-consensus = ["meta-server", "matrix-raft", "matrixraft/peer-runtime"]
 prost = "0.11.9"
 fs2 = { version = "0.4.3", optional = true }
 raft = { version = "0.7", optional = true, default-features = false, features = ["prost-codec"] }
-matrixraft = { git = "https://github.com/matrixarkai/matrixraft.git", rev = "2cab64e63271d6eb4385f17b172dc667227017cb", optional = true }
+matrixraft = { git = "https://github.com/matrixarkai/matrixraft.git", rev = "0676f9f6b433d41ab13e92d025b6944e8c965c0c", optional = true }

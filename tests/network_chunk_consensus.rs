@@ -1556,7 +1556,7 @@ fn chunk_checkpoints_reclaim_history_transfer_large_state_and_recover_processes(
         .map(|id| client.head_chunk(&page(id)).unwrap())
         .collect();
     let wal = group.root.join(leader.to_string()).join("chunk.peer.wal");
-    node_regime::checkpoints::wait_for_checkpoint(&wal, 3);
+    node_regime::checkpoints::wait_for_checkpoint(&wal, 4);
     assert!(
         std::fs::metadata(&wal).unwrap().len() < 20 * 1024 * 1024,
         "overwritten history was not reclaimed"
@@ -1564,7 +1564,7 @@ fn chunk_checkpoints_reclaim_history_transfer_large_state_and_recover_processes(
     group.start(lagging);
     node_regime::checkpoints::wait_for_checkpoint(
         &group.root.join(lagging.to_string()).join("chunk.peer.wal"),
-        3,
+        4,
     );
     // This write can commit only with the repaired voter after the other stops.
     group.kill(other);

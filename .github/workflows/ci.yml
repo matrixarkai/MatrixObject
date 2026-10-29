@@ -81,6 +81,12 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Checkpoint readers preserve canonical protobuf and reject malformed input
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::consensus_checkpoint::tests -- --nocapture | tee /tmp/checkpoint-readers.log
+          grep -q 'test result: ok. 4 passed' /tmp/checkpoint-readers.log
+
       - name: Metadata identity is bounded canonical and complete
         run: |
           set -o pipefail
