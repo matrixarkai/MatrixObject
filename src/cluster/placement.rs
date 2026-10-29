@@ -418,28 +418,7 @@ impl InProcessReplicaSet {
                 answered.len()
             )));
         }
-        let mut votes: BTreeMap<String, (usize, ReplicaHead)> = BTreeMap::new();
-        for head in answered {
-            let entry = votes
-                .entry(head.state_checksum.clone())
-                .or_insert((0, head));
-            entry.0 += 1;
-        }
-        let (winning_count, winning_head) = votes
-            .into_values()
-            .max_by_key(|(count, _)| *count)
-            .ok_or_else(|| {
-                ObjectError::Corruption(
-                    "a page head reached quorum with no answers to vote over".to_string(),
-                )
-            })?;
-        if winning_count < read_quorum {
-            return Err(ObjectError::Corruption(format!(
-                "the largest group of replicas agreeing on this page's state was \
-                 {winning_count}, short of a read quorum of {read_quorum}"
-            )));
-        }
-        Ok(winning_head)
+        vote_heads(answered, read_quorum)
     }
 }
 
@@ -508,4 +487,40 @@ impl ReplicaFanout {
             ReplicaFanout::Remote(set) => set.discard_chunk(page_id, offset, length),
         }
     }
+}
+
+// A digest is one field of the reply, not proof that the other fields agree.
+pub(super) fn vote_heads(
+    answered: Vec<ReplicaHead>,
+    read_quorum: usize,
+) -> Result<ReplicaHead, ObjectError> {
+    let mut votes = BTreeMap::new();
+    for head in answered {
+        let key = (
+            head.logical_length,
+            head.write_sequence,
+            head.checksum.clone(),
+            head.state_checksum.clone(),
+            head.discarded_ranges
+                .iter()
+                .map(|range| (range.offset, range.length))
+                .collect::<Vec<_>>(),
+        );
+        let entry = votes.entry(key).or_insert((0usize, head));
+        entry.0 += 1;
+    }
+    let (winning_count, winning_head) = votes
+        .into_values()
+        .max_by_key(|(count, _)| *count)
+        .ok_or_else(|| {
+            ObjectError::Corruption(
+                "a page head reached quorum with no answers to vote over".into(),
+            )
+        })?;
+    if winning_count < read_quorum {
+        return Err(ObjectError::Corruption(format!(
+            "the largest group of replicas agreeing on this page's complete head was {winning_count}, short of a read quorum of {read_quorum}"
+        )));
+    }
+    Ok(winning_head)
 }

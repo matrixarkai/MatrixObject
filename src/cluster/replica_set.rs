@@ -295,28 +295,7 @@ impl RemoteReplicaSet {
                 answered.len()
             )));
         }
-        let mut votes: BTreeMap<String, (usize, ReplicaHead)> = BTreeMap::new();
-        for head in answered {
-            let entry = votes
-                .entry(head.state_checksum.clone())
-                .or_insert((0, head));
-            entry.0 += 1;
-        }
-        let (winning_count, winning_head) = votes
-            .into_values()
-            .max_by_key(|(count, _)| *count)
-            .ok_or_else(|| {
-                ObjectError::Corruption(
-                    "a page head reached quorum with no answers to vote over".to_string(),
-                )
-            })?;
-        if winning_count < read_quorum {
-            return Err(ObjectError::Corruption(format!(
-                "the largest group of replicas agreeing on this page's state was \
-                 {winning_count}, short of a read quorum of {read_quorum}"
-            )));
-        }
-        Ok(winning_head)
+        crate::cluster::placement::vote_heads(answered, read_quorum)
     }
 
     /// Discard a byte range on every replica, requiring a write quorum.
