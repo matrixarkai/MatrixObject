@@ -346,3 +346,29 @@ storage, network throughput, distributed checkpoint transfer, peak memory, or
 production behavior at that cardinality. Safe tombstone reclamation and larger
 catalogs require further work; the current limits are not a production-scale
 certification.
+
+## Large-catalog Raft checkpoint recovery
+
+The CI test
+`cluster::meta_checkpoint::tests::full_manifest_catalog_transfers_between_raft_voters_and_recovers_later_publication`
+extends the durable-peer checkpoint harness with 100,000 empty-object manifests
+and their paired placements. A deterministic fixture command initializes the
+catalog on a quorum while the third voter is isolated. The leader checkpoints
+that state, then proposes a real binary publication outcome that tombstones one
+object. The lagging voter must install the streamed checkpoint and apply the later
+publication in order.
+
+The harness drops the first file-transfer packet and duplicates subsequent file
+packets. All voters must reach matching validated metadata checksums, retain all
+100,000 entries, and observe the new tombstone generation. It then closes and
+reopens every durable peer and repeats those checks from disk recovery. The
+observed checkpoint was 13,700,618 bytes; receiver installation and peer restart
+exercised three snapshot restores. The five enabled metadata-checkpoint tests,
+including the original record-based transfer scenario, passed together in 28.31
+seconds on the local debug build.
+
+This uses the production Raft peer packet codec, durable storage, streamed
+checkpoint capture/restore and binary publication application. Packets are driven
+by an in-process test loop, and bulk catalog population uses a fixture command.
+It does not measure TCP server admission, live-client throughput, independent-host
+failure isolation, or production memory use at 100,000 objects.
