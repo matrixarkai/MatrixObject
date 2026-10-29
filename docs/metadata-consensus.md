@@ -197,14 +197,28 @@ directory, and `.runtime.lock` sidecar together while the node is stopped; the
 WAL alone no longer contains the snapshot. Missing or damaged payloads refuse
 recovery. Retired payload files are removed after active transfers release them.
 
-The encoded application checkpoint is still limited to 256 MiB. Service snapshot
-capture and decoding still allocate complete bodies and can delay requests;
-file-backed transfer does not make application serialization memory bounded.
-If state exceeds the limit, the server reports that it is retaining WAL history
-and retries only after another configured interval. It does not discard data or
-truncate history to fit. The WAL still stops writes at 512 MiB. Larger metadata
-state requires streaming service serialization and restoration; this integration
-does not establish production readiness.
+Metadata capture now uses the version-2 binary protobuf envelope documented in
+`proto/metadata_checkpoint.proto`, carrying service encoding 18 and explicit
+roster shape 33. Existing version-1 images remain readable. The file limit is
+16 GiB on a 64-bit host; existing per-string and collection decoder limits remain.
+Capture counts encoded bytes, streams through the decoder to check recoverability,
+then streams the checked state into the durable payload. Unsupported state retains
+WAL history and retries after another configured interval; the WAL still stops
+writes at 512 MiB.
+
+Transport buffers use 64 KiB pieces and a one-slot channel. Encoding uses scratch
+space per record, while application maps remain resident. Snapshot export clones
+state; validation temporarily holds source and decoded maps. Capture and validation
+are synchronous and can delay requests. This is not a constant-memory application
+store or a production-readiness claim.
+
+If capture is enabled, disable it on every voter before a rolling upgrade. Upgrade
+all voters to support version 2 before re-enabling capture. Older application
+readers cannot restore these images; do not downgrade after version-2 capture.
+
+The explicit release test `metadata_stream_recovers_more_than_256_mib` recovers
+272 MiB of text records after a durable single-peer restart. It does not establish
+large-state multi-host recovery or throughput.
 
 Process tests exercise repeated compaction, catch-up after an offline interval,
 and total restart. Chunk tests transfer state larger than one peer frame and

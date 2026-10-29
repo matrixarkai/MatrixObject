@@ -81,6 +81,30 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: metadata checkpoint stream preserves state and old envelopes
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_checkpoint::tests::metadata_checkpoint_stream_preserves_state_and_old_envelopes -- --exact --nocapture | tee /tmp/meta-stream.log
+          grep -q 'test result: ok. 1 passed' /tmp/meta-stream.log
+
+      - name: metadata checkpoint stream refuses invalid headers and damage
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_checkpoint::tests::metadata_checkpoint_stream_refuses_invalid_headers_and_damage -- --exact --nocapture | tee /tmp/meta-stream.log
+          grep -q 'test result: ok. 1 passed' /tmp/meta-stream.log
+
+      - name: dropping metadata capture unblocks its producer
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_checkpoint::tests::dropping_metadata_capture_unblocks_its_producer -- --exact --nocapture | tee /tmp/meta-stream.log
+          grep -q 'test result: ok. 1 passed' /tmp/meta-stream.log
+
+      - name: metadata stream recovers more than 256 mib
+        run: |
+          set -o pipefail
+          cargo test --locked --release --all-features --lib cluster::meta_checkpoint::tests::metadata_stream_recovers_more_than_256_mib -- --exact --ignored --nocapture | tee /tmp/meta-stream.log
+          grep -q 'test result: ok. 1 passed' /tmp/meta-stream.log
+
       - name: checkpoint envelope binds kind position and canonical bytes
         run: |
           set -o pipefail

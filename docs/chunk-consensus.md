@@ -165,12 +165,11 @@ Capture, validation and file I/O are synchronous and can delay requests.
 If an image exceeds a format bound, the server retains WAL history and retries
 after another configured interval. The WAL still stops writes at 512 MiB.
 
-Upgrade every chunk voter before enabling the new capture format. A voter with
+Disable capture on every voter before a rolling upgrade, then upgrade every
+chunk voter before re-enabling capture. Do not downgrade after version-2 capture. A voter with
 only the version-1 application decoder cannot restore version-2 checkpoints even
-if its MatrixRaft runtime supports file-backed payloads. Metadata voters still
-use the version-1 envelope with a 256 MiB application limit; their service codec
-has not yet been converted to a stream. These limits and the in-memory storage
-model remain constraints on deployment size.
+if its MatrixRaft runtime supports file-backed payloads. Metadata voters use a separate version-2 stream; see
+[metadata recovery](metadata-consensus.md#application-checkpoint-recovery).
 
 Process tests exercise repeated compaction, catch-up after an offline interval,
 and total restart. Chunk tests transfer state larger than one peer frame and

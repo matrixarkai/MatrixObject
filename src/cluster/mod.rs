@@ -153,13 +153,13 @@ pub mod directory;
 #[cfg(feature = "meta-server")]
 pub mod meta_client;
 #[cfg(feature = "meta-server")]
+mod meta_identity;
+#[cfg(feature = "meta-server")]
 pub mod meta_message;
 #[cfg(feature = "meta-server")]
 pub mod meta_server;
 #[cfg(feature = "meta-server")]
 pub mod meta_wire;
-#[cfg(feature = "meta-server")]
-mod meta_identity;
 #[cfg(feature = "meta-server")]
 pub use meta_identity::MetaGroupIdentity;
 
@@ -222,3 +222,6 @@ mod consensus_checkpoint;
 
 #[cfg(feature = "chunk-consensus")]
 mod chunk_checkpoint;
+
+#[cfg(feature = "metadata-consensus")]
+mod meta_checkpoint;
