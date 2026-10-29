@@ -687,6 +687,7 @@ mod checkpoint_tests {
         NodeReplica {
             service,
             journal: None,
+            journal_checkpoint_after_bytes: 0,
             max_pages,
             used_bytes: 0,
             failed: false,

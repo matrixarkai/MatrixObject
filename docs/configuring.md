@@ -104,3 +104,47 @@ This is a property of what the rollback snapshot carries rather than of
 receipts themselves, and it is tracked as an issue rather than accepted as the
 design.
 
+
+
+## Standalone journal checkpoints
+
+On Unix, a chunk process using `MATRIXOBJECT_REPLICA_JOURNAL` can enable
+`MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES` with an interval from 1,024 through
+536,870,912 bytes. It is disabled when absent. It requires standalone journal
+storage and cannot be combined with Raft storage or an in-memory process.
+
+After syncing the outcome that crosses the interval, the node captures a complete
+service image and streams it to `<journal>.pending`. It syncs that candidate,
+atomically replaces the journal, then syncs the parent directory before replying.
+The stable `<journal>.lock` stays locked across replacement. Only outcome bytes
+after the last checkpoint count toward the next interval. An interrupted candidate
+is ignored on recovery and overwritten by the next checkpoint. Keep the journal
+and its lock file together; the lock file also records initialization so a missing
+or empty initialized journal is refused. Do not delete that file during operation.
+
+The `MOSJ` envelope contains a version, stream length and checksums, followed by
+the version-2 binary protobuf stream in `proto/chunk_checkpoint.proto`. Its index
+and term fields are fixed at one for a standalone image; they do not denote Raft
+membership. Complete page data, discarded ranges, sequences, receipts and counters
+are preserved. Later mutations remain binary page outcomes. The stream supports
+pages through 256 MiB and complete images through 16 GiB without constructing one
+contiguous image buffer. Recovery checks configured capacity and page-count limits;
+the capacity must match the saved image. Legacy journals remain readable.
+
+Upgrade every process that may open a journal before enabling checkpoints. Older
+binaries cannot read the checkpoint envelope and do not participate in the stable
+lock. Checkpoint creation is Unix-only; recovery uses the shared image decoder.
+Checkpointing is synchronous under the replica lock, so it can delay reads, writes
+and health reports. Budget disk space for the current journal plus one pending
+image. A write may be durable even when checkpoint failure loses its reply: the
+node stops serving after such failure and the caller must treat the write as
+uncertain. A restart recovers the synced outcome. This does not repair missed
+writes on another star replica or detect removal of an entire valid journal suffix.
+
+The regular guards exercise three-node star restart, later writes, disk failure,
+locks, corruption and incomplete candidates. Run the larger checks separately:
+
+```sh
+cargo test --release --locked --all-features --lib cluster::replica_journal::checkpoint_tests::standalone_journal_streams_large_pages_and_more_than_256_mib -- --exact --ignored --nocapture
+cargo test --release --locked --all-features --test replica_restart_recovery interrupted_journal_checkpoint_preserves_synced_outcomes_and_reclaims_on_retry -- --exact --ignored --nocapture
+```
