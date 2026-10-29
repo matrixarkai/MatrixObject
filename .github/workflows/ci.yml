@@ -207,6 +207,12 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_checkpoint::tests::full_manifest_catalog_transfers_between_raft_voters_and_recovers_later_publication -- --exact --nocapture | tee /tmp/catalog-transfer.log
           grep -q 'test result: ok. 1 passed' /tmp/catalog-transfer.log
 
+      - name: full catalog survives live metadata server recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_server::catalog_recovery_tests::full_catalog_tcp_servers_checkpoint_rejoin_and_restart -- --exact --nocapture | tee /tmp/catalog-server.log
+          grep -q 'test result: ok. 1 passed' /tmp/catalog-server.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail

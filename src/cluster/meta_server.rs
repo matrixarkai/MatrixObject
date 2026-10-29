@@ -1270,3 +1270,7 @@ mod chunk_group_tests {
         .is_err());
     }
 }
+
+#[cfg(all(test, feature = "metadata-consensus"))]
+#[path = "meta_catalog_recovery_tests.rs"]
+mod catalog_recovery_tests;
