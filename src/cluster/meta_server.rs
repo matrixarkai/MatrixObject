@@ -668,6 +668,7 @@ fn apply(
             | MetaRequest::HeartbeatChunkNode { .. }
             | MetaRequest::ExpireRootNodeHeartbeats { .. }
             | MetaRequest::CommitObjectPlacement { .. }
+            | MetaRequest::CommitObjectPlacementIfCurrent { .. }
     );
     guard.groups.check_request(&request)?;
     let outcome = if mutating && guard.storage.is_some() {
@@ -681,7 +682,8 @@ fn apply(
             MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } => {
                 (expired_node_ids(&guard.service, *ttl_ms, *now_ms)?, None)
             }
-            MetaRequest::CommitObjectPlacement { placement, .. } => {
+            MetaRequest::CommitObjectPlacement { placement, .. }
+            | MetaRequest::CommitObjectPlacementIfCurrent { placement, .. } => {
                 let object =
                     crate::cluster::meta_message::object_id(&placement.bucket, &placement.key);
                 let mut nodes = placement.node_ids.clone();
@@ -885,6 +887,50 @@ pub(super) fn apply_to_meta(
                 width,
             )?;
             Ok(MetaReply::Plan(PlacementAssignment::from_plan(&plan)))
+        }
+        MetaRequest::CommitObjectPlacementIfCurrent {
+            placement,
+            expected,
+            expected_plan_checksum,
+        } => {
+            if placement.version == 0
+                || placement.node_ids.is_empty()
+                || placement
+                    .node_ids
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != placement.node_ids.len()
+                || expected.as_ref().is_some_and(|old| {
+                    old.bucket != placement.bucket
+                        || old.key != placement.key
+                        || old.version >= placement.version
+                })
+            {
+                return Err(ObjectError::InvalidArgument(
+                    "invalid conditional placement identity or version".into(),
+                ));
+            }
+            let current = guard
+                .placements
+                .get(&crate::cluster::meta_message::object_id(
+                    &placement.bucket,
+                    &placement.key,
+                ))
+                .map(CommittedPlacement::from_placement);
+            if current != expected {
+                return Err(ObjectError::PreconditionFailed(
+                    "object placement changed".into(),
+                ));
+            }
+            apply_to_meta(
+                guard,
+                MetaRequest::CommitObjectPlacement {
+                    placement,
+                    expected_plan_checksum,
+                },
+                max_payload_bytes,
+            )
         }
         MetaRequest::CommitObjectPlacement {
             placement,

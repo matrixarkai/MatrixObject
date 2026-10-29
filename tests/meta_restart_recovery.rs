@@ -318,3 +318,58 @@ fn expiry_journal_only_carries_changed_nodes_and_skips_empty_passes() {
         1
     );
 }
+
+#[test]
+fn conditional_placement_commits_persist_and_refuse_stale_records() {
+    let dir = StateDir::new();
+    let node = start(&dir.0, "3");
+    let mut c = client(&node);
+    let plan = c
+        .plan_object_placement("conditional", "key", 10, 1)
+        .unwrap();
+    let first = CommittedPlacement {
+        bucket: plan.bucket,
+        key: plan.key,
+        length: 10,
+        node_ids: plan.node_ids,
+        version: 1,
+        update_time_ms: 1,
+    };
+    c.commit_object_placement_if_current(first.clone(), None, &plan.plan_checksum)
+        .unwrap();
+    let bytes = std::fs::read(dir.0.join("metadata.outcomes")).unwrap();
+    let mut next = first.clone();
+    next.version = 2;
+    next.update_time_ms = 2;
+    assert!(c
+        .commit_object_placement_if_current(next.clone(), None, &plan.plan_checksum)
+        .is_err());
+    assert_eq!(
+        std::fs::read(dir.0.join("metadata.outcomes")).unwrap(),
+        bytes
+    );
+    c.commit_object_placement_if_current(next.clone(), Some(first.clone()), &plan.plan_checksum)
+        .unwrap();
+    drop(c);
+    drop(node);
+    let node = start(&dir.0, "0");
+    let mut c = client(&node);
+    assert_eq!(c.object_placement("conditional", "key").unwrap(), next);
+    let mut last = next.clone();
+    last.version = 3;
+    last.update_time_ms = 3;
+    assert!(c
+        .commit_object_placement_if_current(last.clone(), Some(first), &plan.plan_checksum)
+        .is_err());
+    c.commit_object_placement_if_current(last.clone(), Some(next), &plan.plan_checksum)
+        .unwrap();
+    assert_eq!(c.object_placement("conditional", "key").unwrap(), last);
+    assert_eq!(
+        c.list_placement_nodes()
+            .unwrap()
+            .iter()
+            .map(|n| n.committed_bytes)
+            .sum::<u64>(),
+        10
+    );
+}

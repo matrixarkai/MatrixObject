@@ -304,6 +304,24 @@ impl RemoteMetaClient {
         }
     }
 
+    /// Commit only if the complete current record matches, or is absent for None.
+    /// This condition is independent of any data-node update.
+    pub fn commit_object_placement_if_current(
+        &mut self,
+        placement: CommittedPlacement,
+        expected: Option<CommittedPlacement>,
+        expected_plan_checksum: &str,
+    ) -> Result<CommittedPlacement, ObjectError> {
+        match self.call(MetaRequest::CommitObjectPlacementIfCurrent {
+            placement,
+            expected,
+            expected_plan_checksum: expected_plan_checksum.into(),
+        })? {
+            MetaReply::Placement(placement) => Ok(placement),
+            other => Err(unexpected_reply("a conditional placement commit", &other)),
+        }
+    }
+
     pub fn commit_object_placement(
         &mut self,
         placement: CommittedPlacement,

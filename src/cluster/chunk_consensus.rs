@@ -532,7 +532,9 @@ fn read_only(request: &ReplicaRequest) -> bool {
         | ReplicaRequest::PageInventory { .. }
         | ReplicaRequest::Ping
         | ReplicaRequest::GroupIdentity => true,
-        ReplicaRequest::WriteChunk { .. } | ReplicaRequest::DiscardChunk { .. } => false,
+        ReplicaRequest::WriteChunk { .. }
+        | ReplicaRequest::WriteChunkIfSequence { .. }
+        | ReplicaRequest::DiscardChunk { .. } => false,
     }
 }
 fn checked_apply(
@@ -559,6 +561,7 @@ fn prepare(
 ) -> Result<(Vec<u8>, Option<ReplicaReply>), ObjectError> {
     let page = match request {
         ReplicaRequest::WriteChunk { page_id, .. }
+        | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
         | ReplicaRequest::DiscardChunk { page_id, .. } => page_id,
         _ => return Ok((Vec::new(), None)),
     };

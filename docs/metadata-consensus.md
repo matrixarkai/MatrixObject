@@ -190,3 +190,25 @@ and total restart. Chunk tests transfer state larger than one peer frame and
 check subsequent writes, page state and capacity enforcement. Metadata tests
 check placements and health roster recovery. These are functional fault tests,
 not power-loss or multi-host throughput measurements.
+
+## Conditional placement updates
+
+`RemoteMetaClient::commit_object_placement_if_current` sends canonical binary
+protobuf request code 73. Pass `None` to require an absent placement, or supply the
+complete placement record last read. The current record must match every field,
+including its node list, length and update time. The proposed record keeps the
+same object identity, uses a newer positive version, and must still satisfy the
+normal plan-checksum and capacity checks. A stale condition changes neither the
+placement nor its committed-byte accounting.
+
+Standalone persistence and Raft use the existing binary protobuf outcomes.
+Within a consensus batch, later conditions see earlier admitted updates. Only
+one of two competing updates against the same prior record can succeed. A lost
+reply is still uncertain and is not automatically replayed on another catalog
+endpoint. Read current state before resolving that uncertainty.
+
+This conditional commit is independent of data writes. It does not create a
+transaction across metadata and chunk groups; callers must coordinate publication
+and retain data needed by an unresolved operation. Upgrade all serving metadata
+nodes before using code 73. The payload schemas for both conditional operations
+are in `proto/conditional_requests.proto`.

@@ -77,6 +77,8 @@ pub enum RequestCode {
     PageInventory = 6,
     /// Describe the immutable Raft voter configuration. Empty payload.
     GroupIdentity = 7,
+    /// Write only when the page sequence matches a canonical protobuf condition.
+    WriteChunkIfSequence = 8,
 }
 
 impl RequestCode {
@@ -94,6 +96,7 @@ impl RequestCode {
             5 => Some(RequestCode::Ping),
             6 => Some(RequestCode::PageInventory),
             7 => Some(RequestCode::GroupIdentity),
+            8 => Some(RequestCode::WriteChunkIfSequence),
             _ => None,
         }
     }

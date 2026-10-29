@@ -87,6 +87,12 @@ impl ChunkGroupIdentity {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {
+    WriteChunkIfSequence {
+        page_id: PageId,
+        offset: u64,
+        data: Vec<u8>,
+        expected_sequence: u64,
+    },
     WriteChunk {
         page_id: PageId,
         offset: u64,
@@ -117,6 +123,7 @@ impl ReplicaRequest {
     pub fn code(&self) -> RequestCode {
         match self {
             ReplicaRequest::WriteChunk { .. } => RequestCode::WriteChunk,
+            ReplicaRequest::WriteChunkIfSequence { .. } => RequestCode::WriteChunkIfSequence,
             ReplicaRequest::ReadChunk { .. } => RequestCode::ReadChunk,
             ReplicaRequest::HeadChunk { .. } => RequestCode::HeadChunk,
             ReplicaRequest::DiscardChunk { .. } => RequestCode::DiscardChunk,
@@ -130,6 +137,23 @@ impl ReplicaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            ReplicaRequest::WriteChunkIfSequence {
+                page_id,
+                offset,
+                data,
+                expected_sequence,
+            } => {
+                return super::conditional_requests::ChunkWrite {
+                    version: 1,
+                    volume: page_id.chunk_id.volume_id(),
+                    chunk: page_id.chunk_id.id(),
+                    page: page_id.page_index,
+                    offset: *offset,
+                    data: data.clone(),
+                    expected_sequence: *expected_sequence,
+                }
+                .encode_to_vec();
+            }
             ReplicaRequest::WriteChunk {
                 page_id,
                 offset,
@@ -173,8 +197,27 @@ impl ReplicaRequest {
     /// the wrong place -- a page address read one field short still parses into a valid
     /// `PageId`, naming a page nobody asked about.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::WriteChunkIfSequence {
+            let value: super::conditional_requests::ChunkWrite =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 {
+                return Err(ObjectError::Corruption(
+                    "unsupported conditional write version".into(),
+                ));
+            }
+            return Ok(Self::WriteChunkIfSequence {
+                page_id: PageId {
+                    chunk_id: ChunkId::new(value.volume, value.chunk)?,
+                    page_index: value.page,
+                },
+                offset: value.offset,
+                data: value.data,
+                expected_sequence: value.expected_sequence,
+            });
+        }
         let mut cursor = Cursor::new(payload);
         let request = match code {
+            RequestCode::WriteChunkIfSequence => unreachable!(),
             RequestCode::WriteChunk => {
                 let page_id = take_page_id(&mut cursor)?;
                 let offset = cursor.take_u64()?;
@@ -331,7 +374,9 @@ impl ReplicaReply {
         let mut cursor = Cursor::new(payload);
         let reply = match code {
             RequestCode::GroupIdentity => unreachable!(),
-            RequestCode::WriteChunk | RequestCode::DiscardChunk => ReplicaReply::Applied,
+            RequestCode::WriteChunk
+            | RequestCode::WriteChunkIfSequence
+            | RequestCode::DiscardChunk => ReplicaReply::Applied,
             RequestCode::ReadChunk => {
                 let write_sequence = cursor.take_u64()?;
                 let checksum = cursor.take_str()?;

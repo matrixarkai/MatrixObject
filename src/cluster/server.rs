@@ -417,6 +417,7 @@ fn apply(
     let page = if guard.journal.is_some() {
         match &request {
             ReplicaRequest::WriteChunk { page_id, .. }
+            | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
             | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
             _ => None,
         }
@@ -436,6 +437,7 @@ fn apply(
     let max_pages = guard.max_pages;
     let changed_page = match &request {
         ReplicaRequest::WriteChunk { page_id, .. }
+        | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
         | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
         _ => None,
     };
@@ -527,6 +529,32 @@ pub(super) fn apply_to_replica(
         )),
         ReplicaRequest::HeadChunk { page_id } => {
             Ok(ReplicaReply::Head(guard.head_chunk(&page_id)?))
+        }
+        ReplicaRequest::WriteChunkIfSequence {
+            page_id,
+            offset,
+            data,
+            expected_sequence,
+        } => {
+            let matches = match guard.head_chunk(&page_id) {
+                Ok(head) => expected_sequence != 0 && head.write_sequence == expected_sequence,
+                Err(ObjectError::NotFound(_)) => expected_sequence == 0,
+                Err(error) => return Err(error),
+            };
+            if !matches {
+                return Err(ObjectError::PreconditionFailed(
+                    "page sequence changed".into(),
+                ));
+            }
+            apply_to_replica(
+                guard,
+                ReplicaRequest::WriteChunk {
+                    page_id,
+                    offset,
+                    data,
+                },
+                max_pages,
+            )
         }
         ReplicaRequest::DiscardChunk {
             page_id,

@@ -266,6 +266,26 @@ impl RemoteReplicaClient {
         })
     }
 
+    /// Atomically require the current page sequence, or absence when it is zero.
+    /// An uncertain response must not be automatically replayed.
+    pub fn write_chunk_if_sequence(
+        &mut self,
+        page_id: PageId,
+        offset: u64,
+        data: &[u8],
+        expected_sequence: u64,
+    ) -> Result<(), ObjectError> {
+        match self.call(ReplicaRequest::WriteChunkIfSequence {
+            page_id,
+            offset,
+            data: data.to_vec(),
+            expected_sequence,
+        })? {
+            ReplicaReply::Applied => Ok(()),
+            other => Err(unexpected_reply("a conditional chunk write", &other)),
+        }
+    }
+
     pub fn write_chunk(
         &mut self,
         page_id: PageId,
