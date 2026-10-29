@@ -315,7 +315,7 @@ impl RemoteMetaClient {
         match self.call(MetaRequest::ReadChunkGroup {
             placement_id: placement_id.into(),
         })? {
-            MetaReply::ChunkGroup(group) => Ok(group),
+            MetaReply::ChunkGroup(group) if group.placement_id == placement_id => Ok(group),
             _ => Err(ObjectError::Corruption("missing chunk group reply".into())),
         }
     }

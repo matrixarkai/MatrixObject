@@ -153,6 +153,18 @@ jobs:
           cargo test --locked --all-features --lib cluster::object_client::tests::lost_publication_replies_are_confirmed_by_exact_readback_without_replay -- --exact --nocapture | tee /tmp/object-writer.log
           grep -q 'test result: ok. 1 passed' /tmp/object-writer.log
 
+      - name: chunk group reply must name the requested placement
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test object_writer_connections chunk_group_reply_must_name_the_requested_placement -- --exact | tee /tmp/object-connections.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
+
+      - name: writer reuses preflight connection and only looks up each group once
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test object_writer_connections writer_reuses_preflight_connection_and_only_looks_up_each_group_once -- --exact | tee /tmp/object-connections.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail
