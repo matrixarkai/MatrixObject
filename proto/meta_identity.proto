@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject.metadata;
+// Response to metadata request code 74. Request payload is empty.
+message MetaGroupIdentity {
+  uint32 version = 1;
+  uint64 group_id = 2;
+  uint64 node_id = 3;
+  repeated uint64 voters = 4;
+  repeated string peer_endpoints = 5;
+  uint64 bootstrap_id = 6;
+}

@@ -212,3 +212,25 @@ transaction across metadata and chunk groups; callers must coordinate publicatio
 and retain data needed by an unresolved operation. Upgrade all serving metadata
 nodes before using code 73. The payload schemas for both conditional operations
 are in `proto/conditional_requests.proto`.
+
+## Verified metadata catalogs
+
+Use `RemoteMetaClient::connect_verified_raft_catalog` with a trusted
+`MetaGroupIdentity` to check the first connection and every redirected or
+reconnected connection. The identity includes the configured group ID, sorted
+voter IDs, corresponding peer addresses, and the effective Raft ID derived from
+the persisted bootstrap image. `connect_raft_catalog` checks a supplied numeric
+group ID and then pins the first voter's complete identity; it cannot establish
+that the first endpoint is the intended deployment when IDs are reused.
+
+`metadata_group_identity` reads request code 74 directly from the connected voter.
+Its canonical binary protobuf schema is `proto/meta_identity.proto`. Followers
+can answer without a voting majority. This describes configuration, not current
+leadership, readiness, or authentication. Standalone nodes refuse the request.
+The older `connect_catalog` API remains unverified for existing callers; use the
+verified constructor when configuring a distributed deployment. Upgrade all
+metadata voters before enabling verified clients.
+
+A changed configuration stops the call before its data request is sent. A lost
+mutation reply remains uncertain and is not replayed. Identity checks do not
+make separate metadata clusters interchangeable or authorize changing membership.

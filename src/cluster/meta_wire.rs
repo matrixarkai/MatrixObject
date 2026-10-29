@@ -77,6 +77,8 @@ pub enum MetaRequestCode {
     ReadChunkGroup = 72,
     /// Commit only if the current placement equals the supplied expected record.
     CommitObjectPlacementIfCurrent = 73,
+    /// Read immutable Raft voter configuration without a read barrier.
+    GroupIdentity = 74,
 }
 
 impl MetaRequestCode {
@@ -97,6 +99,7 @@ impl MetaRequestCode {
             71 => Some(MetaRequestCode::HeartbeatChunkNode),
             72 => Some(MetaRequestCode::ReadChunkGroup),
             73 => Some(MetaRequestCode::CommitObjectPlacementIfCurrent),
+            74 => Some(MetaRequestCode::GroupIdentity),
             _ => None,
         }
     }
@@ -114,6 +117,7 @@ impl MetaRequestCode {
             MetaRequestCode::HeartbeatChunkNode,
             MetaRequestCode::ReadChunkGroup,
             MetaRequestCode::CommitObjectPlacementIfCurrent,
+            MetaRequestCode::GroupIdentity,
         ]
     }
 }

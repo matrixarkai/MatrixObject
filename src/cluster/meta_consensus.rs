@@ -63,6 +63,7 @@ struct Pending {
 }
 pub(super) struct MetaConsensus {
     pub(super) node_count: usize,
+    identity: super::MetaGroupIdentity,
     requests: SyncSender<Request>,
     timeout: Duration,
     stop: Arc<ServerShutdown>,
@@ -160,6 +161,15 @@ impl MetaConsensus {
         let mut identity = bytes.clone();
         identity.extend_from_slice(&options.group_id.to_be_bytes());
         let group_id = hash(&identity).max(1);
+        let group_identity = super::MetaGroupIdentity {
+            version: 1,
+            group_id: options.group_id,
+            node_id: options.node_id,
+            voters: options.peers.keys().copied().collect(),
+            peer_endpoints: options.peers.values().map(ToString::to_string).collect(),
+            bootstrap_id: group_id,
+        };
+        group_identity.validate().map_err(invalid)?;
         let mut peer = DurablePeer::open(PeerOptions {
             node_id: options.node_id,
             group_id,
@@ -265,6 +275,7 @@ impl MetaConsensus {
             }
         }));
         Ok(Self {
+            identity: group_identity,
             node_count,
             requests,
             timeout: options.request_timeout,
@@ -277,6 +288,12 @@ impl MetaConsensus {
         self.failed.load(Ordering::SeqCst)
     }
     pub(super) fn request(&self, request: MetaRequest) -> Result<MetaReply, ObjectError> {
+        if matches!(request, MetaRequest::GroupIdentity) {
+            if self.is_failed() || self.stop.is_stopped() {
+                return Err(refused("metadata consensus stopped"));
+            }
+            return Ok(MetaReply::GroupIdentity(self.identity.clone()));
+        }
         let (reply, rx) = mpsc::sync_channel(1);
         let deadline = Instant::now() + self.timeout;
         self.requests
@@ -466,6 +483,7 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::ReadChunkGroup { .. }
         | MetaRequest::PlanObjectPlacement { .. }
         | MetaRequest::ReadObjectRootPlacement { .. }
+        | MetaRequest::GroupIdentity
         | MetaRequest::Ping => true,
         MetaRequest::HeartbeatRootNode { .. }
         | MetaRequest::HeartbeatChunkNode { .. }
