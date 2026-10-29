@@ -1836,6 +1836,145 @@ mod coupled_groups {
         );
     }
 
+    #[test]
+    fn maximum_default_object_survives_group_failover_and_total_restart() {
+        use matrixobjectstore_rs::cluster::{ObjectWriteFailure, ObjectWriteOptions};
+        let mut groups: Vec<_> = (1..=2)
+            .map(|id| {
+                let mut group = Group::configured(128 * 1024 * 1024);
+                group.group_id = id;
+                group.max_pages = 128;
+                group.checkpoint_bytes = 16 * 1024 * 1024;
+                group.heartbeat_ms = "1000";
+                group
+            })
+            .collect();
+        let mut metadata = MetadataGroup::for_groups_with_threads(&groups, 16);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for id in 0..3 {
+                group.start(id);
+            }
+        }
+        let mut meta = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        group_usage(&metadata.api, &groups, &[]);
+        let options = ObjectWriteOptions {
+            target_groups: 2,
+            replica: chunk_options(),
+            ..Default::default()
+        };
+        assert_eq!(options.max_object_bytes, 64 * 1024 * 1024);
+        let data: Vec<u8> = (0..options.max_object_bytes)
+            .map(|i| ((i * 31 + i / 1024) % 251) as u8)
+            .collect();
+        let started = Instant::now();
+        let manifest = meta
+            .write_object("large", "object", None, &data, &options)
+            .unwrap();
+        assert_eq!(manifest.extents.len(), 64);
+        assert_eq!(manifest.length, data.len() as u64);
+        for group in &groups {
+            assert_eq!(
+                manifest
+                    .extents
+                    .iter()
+                    .filter(|e| e.group == group.placement_id())
+                    .count(),
+                32
+            );
+        }
+        assert!(manifest
+            .extents
+            .iter()
+            .all(|e| e.length == 1024 * 1024 && e.write_sequence == 1));
+        println!(
+            "LARGE_OBJECT write_bytes={} elapsed_ms={}",
+            data.len(),
+            started.elapsed().as_millis()
+        );
+        let verify = |meta: &mut RemoteMetaClient| {
+            let (actual, bytes) = meta
+                .read_object("large", "object", data.len(), &chunk_options())
+                .unwrap();
+            assert_eq!(actual, manifest);
+            assert!(bytes == data, "large object payload differs");
+        };
+        verify(&mut meta);
+        assert!(meta
+            .read_object("large", "object", data.len() - 1, &chunk_options())
+            .is_err());
+        let mut oversized = data.clone();
+        oversized.push(0);
+        assert!(matches!(
+            meta.write_object("large", "too-large", None, &oversized, &options),
+            Err(ObjectWriteFailure::BeforePublication { staged: None, .. })
+        ));
+        drop(oversized);
+        assert!(matches!(
+            meta.read_manifest("large", "too-large"),
+            Err(matrixobjectstore_rs::ObjectError::NotFound(_))
+        ));
+        for group in &groups {
+            let leader = group.leader();
+            node_regime::checkpoints::wait_for_checkpoint(
+                &group.root.join(leader.to_string()).join("chunk.peer.wal"),
+                2,
+            );
+        }
+        let leader = metadata
+            .api
+            .iter()
+            .position(|a| a == meta.endpoint())
+            .unwrap();
+        metadata.kill(leader);
+        for group in &mut groups {
+            group.kill(group.leader());
+        }
+        meta = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        verify(&mut meta);
+        // Quorums that survived leader loss must still accept fresh publication.
+        let later = meta
+            .write_object("large", "later", None, b"after leader loss", &options)
+            .unwrap();
+        for group in &mut groups {
+            for id in 0..3 {
+                if group.nodes[id].is_some() {
+                    group.kill(id);
+                }
+            }
+        }
+        for id in 0..3 {
+            if metadata.nodes[id].is_some() {
+                metadata.kill(id);
+            }
+        }
+        for id in 0..3 {
+            metadata.start(id);
+            for group in &mut groups {
+                group.start(id);
+            }
+        }
+        meta = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        verify(&mut meta);
+        let (actual, bytes) = meta
+            .read_object("large", "later", 64, &chunk_options())
+            .unwrap();
+        assert_eq!(actual, later);
+        assert_eq!(bytes, b"after leader loss");
+        println!(
+            "LARGE_OBJECT recovered_bytes={} processes=9 groups=2",
+            data.len()
+        );
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn suspended_leaders_rejoin_without_serving_stale_objects() {
