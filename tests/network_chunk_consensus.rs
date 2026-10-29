@@ -2108,6 +2108,125 @@ mod coupled_groups {
             assert_eq!(chunk.head_chunk(&page(*n)).unwrap().write_sequence, 1);
         }
     }
+    #[test]
+    fn unavailable_data_group_is_isolated_and_recovers_without_losing_objects() {
+        let mut groups: Vec<_> = (0..3)
+            .map(|index| {
+                let mut group = Group::configured(64 * 1024 * 1024);
+                group.group_id = index + 1;
+                group.max_pages = 2048;
+                group.checkpoint_bytes = 16 * 1024;
+                group.heartbeat_ms = "1000";
+                group
+            })
+            .collect();
+        let metadata = MetadataGroup::for_groups_with_threads(&groups, 16);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for id in 0..3 {
+                group.start(id);
+            }
+            group.leader();
+        }
+        metadata.ready();
+        group_usage(&metadata.api, &groups, &[]);
+        let mut saved = load_batch(&metadata.api, 0, 48, 4, true);
+        group_usage(&metadata.api, &groups, &saved);
+        for group in &groups {
+            assert!(saved
+                .iter()
+                .any(|(_, p)| p.node_ids == [group.placement_id()]));
+        }
+        let unavailable = groups[0].placement_id();
+        let isolated = saved
+            .iter()
+            .find(|(_, p)| p.node_ids == [unavailable.clone()])
+            .unwrap()
+            .0;
+        let mut meta = metadata.ready();
+        let original = meta
+            .read_manifest("load", &format!("object-{isolated}"))
+            .unwrap();
+        groups[0].kill(0);
+        groups[0].kill(1);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let nodes = meta.list_placement_nodes().unwrap();
+            let down = nodes.iter().find(|n| n.node_id == unavailable).unwrap();
+            if !down.online {
+                for group in &groups[1..] {
+                    assert!(
+                        nodes
+                            .iter()
+                            .find(|n| n.node_id == group.placement_id())
+                            .unwrap()
+                            .online
+                    );
+                }
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "minority group remained eligible: {nodes:?}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        // Metadata remains readable, but one surviving data voter cannot serve
+        // an object from this group or acknowledge a replacement page.
+        let short = ReplicaClientOptions {
+            connect_timeout: Duration::from_millis(200),
+            read_timeout: Duration::from_millis(500),
+            write_timeout: Duration::from_millis(500),
+            ..Default::default()
+        };
+        assert!(meta
+            .read_object("load", &format!("object-{isolated}"), 1024, &short)
+            .is_err());
+        assert_eq!(
+            meta.read_manifest("load", &format!("object-{isolated}"))
+                .unwrap(),
+            original
+        );
+        let mut minority = meta.connect_chunk_group(&unavailable, &short).unwrap();
+        let extent = &original.extents[0];
+        let existing_page = matrixobjectstore_rs::PageId {
+            chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id)
+                .unwrap(),
+            page_index: extent.page_index,
+        };
+        // Even if this timed-out request finishes after quorum restoration, the
+        // expected-zero condition cannot overwrite an already published page.
+        assert!(minority
+            .write_chunk_if_sequence(existing_page, 0, b"uncommitted", 0)
+            .is_err());
+        let available: Vec<_> = saved
+            .iter()
+            .filter(|(_, p)| p.node_ids != [unavailable.clone()])
+            .cloned()
+            .collect();
+        assert!(!available.is_empty());
+        verify_load(&metadata.api, &available, true);
+        let newer = load_batch(&metadata.api, 48, 72, 4, true);
+        assert!(newer
+            .iter()
+            .all(|(_, p)| p.node_ids != [unavailable.clone()]));
+        verify_load(&metadata.api, &newer, true);
+        saved.extend(newer);
+        // Restore only one voter first: the restored quorum must catch up and
+        // make original objects readable while the third voter remains stopped.
+        groups[0].start(0);
+        groups[0].leader();
+        group_usage(&metadata.api, &groups, &saved);
+        verify_load(&metadata.api, &saved, true);
+        groups[0].start(1);
+        group_usage(&metadata.api, &groups, &saved);
+        assert_eq!(
+            meta.read_manifest("load", &format!("object-{isolated}"))
+                .unwrap(),
+            original
+        );
+    }
+
     fn multiple_group_load(group_count: usize, writes: u64, workers: usize, objects: bool) {
         assert!((2..=16).contains(&group_count));
         assert!(writes > 0 && writes <= 1024);
