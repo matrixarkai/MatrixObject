@@ -267,6 +267,12 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus conditional_discards_replicate_and_recover_without_accepting_stale_sequences -- --exact --nocapture | tee /tmp/conditional-discard.log
           grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
 
+      - name: chunk read batches bound admission preserve write order and expire requests
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::server::consensus::read_batch_tests::chunk_read_batches_bound_admission_preserve_write_order_and_expire_requests -- --exact --nocapture | tee /tmp/chunk-read-batch.log
+          grep -q 'test result: ok. 1 passed' /tmp/chunk-read-batch.log
+
       - name: star set reconnects only for a later operation after uncertain write
         run: |
           set -o pipefail

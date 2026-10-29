@@ -2731,14 +2731,26 @@ fn chunk_quorum_reads_leave_the_wal_unchanged_and_refuse_a_minority() {
     let head = client.head_chunk(&page(0)).unwrap();
     let path = group.root.join(leader.to_string()).join("chunk.peer.wal");
     let before = std::fs::read(&path).unwrap();
-    for _ in 0..32 {
-        assert_eq!(
-            client.read_chunk(&page(0), 0, 15).unwrap().data,
-            b"committed bytes"
-        );
-        assert_eq!(client.head_chunk(&page(0)).unwrap(), head);
-        assert_eq!(client.ping().unwrap(), 1);
-    }
+    std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let mut reader = group.client(leader);
+            let expected = head.clone();
+            workers.push(scope.spawn(move || {
+                for _ in 0..8 {
+                    assert_eq!(
+                        reader.read_chunk(&page(0), 0, 15).unwrap().data,
+                        b"committed bytes"
+                    );
+                    assert_eq!(reader.head_chunk(&page(0)).unwrap(), expected);
+                    assert_eq!(reader.ping().unwrap(), 1);
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    });
     assert_eq!(std::fs::read(&path).unwrap(), before);
     // A write following confirmed reads still becomes visible through consensus.
     client.write_chunk(page(0), 0, b"updated bytes!!").unwrap();
