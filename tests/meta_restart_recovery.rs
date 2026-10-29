@@ -421,3 +421,45 @@ fn binary_manifest_publication_survives_local_process_restart() {
     .unwrap();
     assert_eq!(c.read_manifest("bucket", "empty").unwrap(), recreated);
 }
+
+#[test]
+fn object_page_allocations_survive_local_journal_restart() {
+    let memory = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
+    let endpoint = memory.local_addr().unwrap().to_string();
+    let stop = memory.shutdown_handle();
+    let worker = std::thread::spawn(move || memory.serve().unwrap());
+    let mut connection =
+        RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    assert!(matches!(
+        connection.allocate_object_pages(1),
+        Err(matrixobjectstore_rs::ObjectError::PreconditionFailed(_))
+    ));
+    drop(connection);
+    stop.stop();
+    worker.join().unwrap();
+    let dir = StateDir::new();
+    let node = start(&dir.0, "0");
+    let mut c = client(&node);
+    let mut last = 0;
+    for _ in 0..16 {
+        let allocation = c.allocate_object_pages(4096).unwrap();
+        assert!(allocation.allocation_id > last);
+        last = allocation.allocation_id;
+    }
+    let journal = std::fs::read(dir.0.join("metadata.outcomes")).unwrap();
+    assert!(journal.starts_with(b"MOMJ"));
+    assert!(
+        journal.len() < 2048,
+        "allocations must not serialize the catalog"
+    );
+    drop(c);
+    drop(node);
+    let node = start(&dir.0, "0");
+    assert!(
+        client(&node)
+            .allocate_object_pages(1)
+            .unwrap()
+            .allocation_id
+            > last
+    );
+}

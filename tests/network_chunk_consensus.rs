@@ -1499,6 +1499,163 @@ mod coupled_groups {
         assert!(meta.read_manifest("manifests", "object").is_err());
     }
 
+    #[test]
+    fn allocated_pages_span_data_groups_and_stay_unique_after_metadata_recovery() {
+        use matrixobjectstore_rs::object_manifest::{
+            ManifestOutcome, ObjectExtent, ObjectManifest,
+        };
+        let mut groups: Vec<_> = (1..=2)
+            .map(|id| {
+                let mut group = Group::configured(1024 * 1024);
+                group.group_id = id;
+                group.checkpoint_bytes = 1024;
+                group
+            })
+            .collect();
+        let mut metadata = MetadataGroup::for_groups(&groups);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for id in 0..3 {
+                group.start(id);
+            }
+        }
+        let mut meta = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        group_usage(&metadata.api, &groups, &[]);
+        let allocation = meta.allocate_object_pages(2).unwrap();
+        let mut extents = Vec::new();
+        for (index, group) in groups.iter().enumerate() {
+            let page = allocation.page(index as u32).unwrap();
+            let bytes = vec![index as u8 + 1; 4];
+            let mut data = meta
+                .connect_chunk_group(&group.placement_id(), &chunk_options())
+                .unwrap();
+            data.write_chunk_if_sequence(page.clone(), 0, &bytes, 0)
+                .unwrap();
+            assert!(data
+                .write_chunk_if_sequence(page.clone(), 0, b"late", 0)
+                .is_err());
+            assert_eq!(data.read_chunk(&page, 0, 4).unwrap().data, bytes);
+            extents.push(ObjectExtent {
+                group: group.placement_id(),
+                volume_id: page.chunk_id.volume_id(),
+                chunk_id: page.chunk_id.id(),
+                page_index: page.page_index,
+                object_offset: index as u64 * 4,
+                page_offset: 0,
+                length: 4,
+                write_sequence: 1,
+                data_checksum: bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
+                    (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
+                }),
+            });
+        }
+        let manifest = ObjectManifest {
+            format_version: 1,
+            bucket: "allocated".into(),
+            key: "object".into(),
+            generation: 1,
+            length: 8,
+            extents,
+            deleted: false,
+        };
+        meta.publish_manifest(ManifestOutcome::decide(None, manifest.clone()).unwrap(), 10)
+            .unwrap();
+        assert_eq!(
+            meta.read_object("allocated", "object", 8, &chunk_options())
+                .unwrap(),
+            (manifest.clone(), vec![1, 1, 1, 1, 2, 2, 2, 2])
+        );
+        // Independent clients race allocations through the same committed sequence.
+        let mut threads = Vec::new();
+        for _ in 0..4 {
+            let endpoints = metadata.api.clone();
+            threads.push(std::thread::spawn(move || {
+                let mut client =
+                    RemoteMetaClient::connect_catalog(&endpoints, &MetaClientOptions::default())
+                        .unwrap();
+                (0..8)
+                    .map(|_| client.allocate_object_pages(2).unwrap().allocation_id)
+                    .collect::<Vec<_>>()
+            }));
+        }
+        let ids: std::collections::BTreeSet<_> = threads
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 32);
+        assert!(ids.iter().all(|id| *id > allocation.allocation_id));
+        let mut last = *ids.last().unwrap();
+        let leader = metadata
+            .api
+            .iter()
+            .position(|a| a == meta.endpoint())
+            .unwrap();
+        node_regime::checkpoints::wait_for_checkpoint(
+            &metadata
+                .root
+                .join(leader.to_string())
+                .join("metadata.peer.wal"),
+            2,
+        );
+        metadata.kill(leader);
+        for group in &mut groups {
+            group.kill(group.leader());
+        }
+        meta = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        let next = meta.allocate_object_pages(2).unwrap();
+        assert!(next.allocation_id > last);
+        last = next.allocation_id;
+        assert_eq!(
+            meta.read_object("allocated", "object", 8, &chunk_options())
+                .unwrap()
+                .1,
+            vec![1, 1, 1, 1, 2, 2, 2, 2]
+        );
+        for id in 0..3 {
+            if metadata.nodes[id].is_some() {
+                metadata.kill(id);
+            }
+            for group in &mut groups {
+                if group.nodes[id].is_some() {
+                    group.kill(id);
+                }
+            }
+        }
+        for id in 0..3 {
+            metadata.start(id);
+            for group in &mut groups {
+                group.start(id);
+            }
+        }
+        meta = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        assert!(meta.allocate_object_pages(2).unwrap().allocation_id > last);
+        assert_eq!(
+            meta.read_object("allocated", "object", 8, &chunk_options())
+                .unwrap(),
+            (manifest, vec![1, 1, 1, 1, 2, 2, 2, 2])
+        );
+        let leader = metadata
+            .api
+            .iter()
+            .position(|a| a == meta.endpoint())
+            .unwrap();
+        for id in 0..3 {
+            if id != leader {
+                metadata.kill(id);
+            }
+        }
+        assert!(meta.allocate_object_pages(1).is_err());
+    }
+
     fn load_data(n: u64) -> Vec<u8> {
         let mut bytes: Vec<u8> = (0..1024)
             .map(|i| (n.wrapping_mul(31).wrapping_add(i) % 251) as u8)

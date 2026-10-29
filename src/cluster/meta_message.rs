@@ -206,6 +206,9 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
+    AllocateObjectPages {
+        page_count: u32,
+    },
     ReadManifest {
         bucket: String,
         key: String,
@@ -264,6 +267,7 @@ pub enum MetaRequest {
 impl MetaRequest {
     pub fn code(&self) -> MetaRequestCode {
         match self {
+            MetaRequest::AllocateObjectPages { .. } => MetaRequestCode::AllocateObjectPages,
             MetaRequest::ReadManifest { .. } => MetaRequestCode::ReadManifest,
             MetaRequest::PublishManifest { .. } => MetaRequestCode::PublishManifest,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
@@ -287,6 +291,13 @@ impl MetaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            MetaRequest::AllocateObjectPages { page_count } => {
+                return super::conditional_requests::AllocateObjectPages {
+                    version: 1,
+                    page_count: *page_count,
+                }
+                .encode_to_vec();
+            }
             MetaRequest::ReadManifest { bucket, key } => {
                 return super::conditional_requests::ManifestRead {
                     version: 1,
@@ -388,6 +399,23 @@ impl MetaRequest {
     /// every field this reader did take came out of the wrong place -- a node id read one
     /// field short still parses into a valid string, naming a node nobody asked about.
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == MetaRequestCode::AllocateObjectPages {
+            if payload.len() > 32 {
+                return Err(ObjectError::Corruption(
+                    "allocation request exceeds bound".into(),
+                ));
+            }
+            let value: super::conditional_requests::AllocateObjectPages =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 || !(1..=4096).contains(&value.page_count) {
+                return Err(ObjectError::InvalidArgument(
+                    "invalid allocation request".into(),
+                ));
+            }
+            return Ok(Self::AllocateObjectPages {
+                page_count: value.page_count,
+            });
+        }
         if code == MetaRequestCode::ReadManifest {
             if payload.len() > 8192 {
                 return Err(ObjectError::Corruption(
@@ -452,7 +480,8 @@ impl MetaRequest {
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
-            MetaRequestCode::ReadManifest
+            MetaRequestCode::AllocateObjectPages
+            | MetaRequestCode::ReadManifest
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::CommitObjectPlacementIfCurrent => unreachable!(),
             MetaRequestCode::ReadChunkGroup => MetaRequest::ReadChunkGroup {
@@ -510,6 +539,7 @@ impl MetaRequest {
 /// Reply contents, including a pre-admission leader-routing response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
+    ObjectPages(crate::object_manifest::ObjectPageAllocation),
     Manifest(crate::object_manifest::ObjectManifest),
     GroupIdentity(super::MetaGroupIdentity),
     ChunkGroup(super::ChunkGroupConfig),
@@ -556,6 +586,7 @@ impl MetaReply {
                     &node.failure_domain,
                 ))
             }),
+            Self::ObjectPages(value) => value.encoded_len(),
             Self::Manifest(value) => value.encoded_len(),
             Self::Expired { .. } => 8,
             Self::Plan(plan) => 52usize
@@ -571,6 +602,7 @@ impl MetaReply {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            MetaReply::ObjectPages(value) => return value.encode_to_vec(),
             MetaReply::Manifest(value) => return value.encode_to_vec(),
             MetaReply::NotLeader => {}
             MetaReply::GroupIdentity(identity) => return identity.encode_to_vec(),
@@ -616,6 +648,17 @@ impl MetaReply {
     /// shape is read from the reply itself can be read as the wrong shape. The caller knows
     /// what it asked.
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == MetaRequestCode::AllocateObjectPages {
+            if payload.len() > 32 {
+                return Err(ObjectError::Corruption(
+                    "allocation reply exceeds bound".into(),
+                ));
+            }
+            let value: crate::object_manifest::ObjectPageAllocation =
+                super::conditional_requests::decode(payload)?;
+            value.validate()?;
+            return Ok(Self::ObjectPages(value));
+        }
         if matches!(
             code,
             MetaRequestCode::ReadManifest | MetaRequestCode::PublishManifest
@@ -661,7 +704,8 @@ impl MetaReply {
         }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
-            MetaRequestCode::ReadManifest
+            MetaRequestCode::AllocateObjectPages
+            | MetaRequestCode::ReadManifest
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::ReadChunkGroup
             | MetaRequestCode::GroupIdentity => unreachable!(),

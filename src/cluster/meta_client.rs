@@ -398,6 +398,25 @@ impl RemoteMetaClient {
         }
     }
 
+    /// Allocate a fresh page namespace. An uncertain response burns a namespace;
+    /// never infer its ID from a later metadata index or reuse an older allocation.
+    pub fn allocate_object_pages(
+        &mut self,
+        page_count: u32,
+    ) -> Result<crate::object_manifest::ObjectPageAllocation, ObjectError> {
+        if !(1..=4096).contains(&page_count) {
+            return Err(ObjectError::InvalidArgument(
+                "invalid object page count".into(),
+            ));
+        }
+        match self.call(MetaRequest::AllocateObjectPages { page_count })? {
+            MetaReply::ObjectPages(value) if value.page_count == page_count => Ok(value),
+            _ => Err(ObjectError::Corruption(
+                "unexpected object allocation reply".into(),
+            )),
+        }
+    }
+
     pub fn read_manifest(
         &mut self,
         bucket: &str,

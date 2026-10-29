@@ -109,3 +109,32 @@ extent response and transport buffers. This API reads a complete object, not a
 stream or range; it does not enable HTTP routing or reclaim old pages. A concurrent
 manifest update does not change the captured generation. Overwriting one of its
 pages causes sequence validation to fail even when the replacement bytes match.
+
+## Allocating pages before publication
+
+`RemoteMetaClient::allocate_object_pages(count)` commits a namespace for 1..4096
+pages. `allocation.page(index)` maps its 64-bit ID to a volume/chunk pair and checks
+the page index. Concurrent allocations in one retained metadata history have
+distinct IDs. The ID comes from the next committed metadata sequence, so heartbeats
+and other mutations may advance it between allocations; callers must not assume
+consecutive IDs. The small version-1 placement outcome advances that sequence
+without copying node records or the object catalog. Existing snapshots preserve it.
+Raft replies after committed apply; local nodes sync the outcome journal before
+replying and refuse allocation without durable storage. Exhaustion is an error.
+Requests and replies are bounded canonical binary protobuf (request code 77).
+
+Allocate once for a new object generation, then write each page using
+`write_chunk_if_sequence(page, 0, bytes, 0)` through a verified data group. The zero
+condition requires absence, so an old manually addressed page cannot be overwritten
+by a new allocation. Confirm data writes and publish the manifest only afterwards.
+A lost allocation reply leaves an unused namespace: request another allocation,
+never guess the lost ID from metadata status. Allocation does not reserve capacity,
+create data pages, or publish an object. It does not automatically replay an
+uncertain request, garbage-collect unused IDs, or reclaim abandoned data writes.
+
+Uniqueness belongs to one authoritative metadata history. Do not reset or clone
+that history while retaining its data groups; recovering both planes must preserve
+their committed state. Raw page writes are still available and can mutate existing
+pages, so writers must honor immutable-page ownership. A read detects a changed
+sequence but cannot prevent a raw writer from modifying the page. Automated write
+orchestration, access control and safe reclamation remain separate work.

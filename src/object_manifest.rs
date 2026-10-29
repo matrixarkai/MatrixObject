@@ -8,6 +8,43 @@ const MAX_MANIFEST: usize = 1024 * 1024;
 const MAX_SNAPSHOT: usize = 64 * 1024 * 1024;
 const MAX_OBJECTS: usize = 100_000;
 
+/// A committed namespace for one writer's immutable object pages.
+/// Allocation IDs are unique within one metadata history, including recovery.
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct ObjectPageAllocation {
+    #[prost(uint32, tag = "1")]
+    pub format_version: u32,
+    #[prost(uint64, tag = "2")]
+    pub allocation_id: u64,
+    #[prost(uint32, tag = "3")]
+    pub page_count: u32,
+}
+impl ObjectPageAllocation {
+    pub fn validate(&self) -> Result<(), ObjectError> {
+        if self.format_version != 1
+            || self.allocation_id == 0
+            || !(1..=4096).contains(&self.page_count)
+        {
+            return Err(ObjectError::InvalidArgument(
+                "invalid object page allocation".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub fn page(&self, index: u32) -> Result<crate::PageId, ObjectError> {
+        self.validate()?;
+        if index >= self.page_count {
+            return Err(ObjectError::InvalidArgument(
+                "object page index exceeds allocation".into(),
+            ));
+        }
+        Ok(crate::PageId {
+            chunk_id: ChunkId::new(self.allocation_id >> 32, self.allocation_id & 0xffff_ffff)?,
+            page_index: u64::from(index),
+        })
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Message)]
 pub struct ObjectExtent {
     #[prost(string, tag = "1")]
