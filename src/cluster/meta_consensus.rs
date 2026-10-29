@@ -512,7 +512,8 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::ReadObjectRootPlacement { .. }
         | MetaRequest::GroupIdentity
         | MetaRequest::Ping => true,
-        MetaRequest::PublishManifest { .. }
+        MetaRequest::AllocateObjectPages { .. }
+        | MetaRequest::PublishManifest { .. }
         | MetaRequest::HeartbeatRootNode { .. }
         | MetaRequest::HeartbeatChunkNode { .. }
         | MetaRequest::ExpireRootNodeHeartbeats { .. }
@@ -654,6 +655,10 @@ fn prepare(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
     groups.check_request(request)?;
+    if let MetaRequest::AllocateObjectPages { page_count } = request {
+        let (decided, reply) = super::meta_server::decide_allocation(service, *page_count, limit)?;
+        return Ok((decided.to_payload()?, Some(reply)));
+    }
     if let MetaRequest::PublishManifest {
         outcome,
         update_time_ms,
@@ -1522,5 +1527,95 @@ mod tests {
             Some(&second)
         );
         assert_eq!(service.nodes["group-0"].committed_bytes, 4);
+    }
+    #[test]
+    fn object_allocations_commit_unique_namespaces_and_restore_speculative_batches() {
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(1, 0);
+        let saved = state(&service);
+        let base = service.placement_commit_index;
+        for count in [0, 4097] {
+            assert!(prepare(
+                &mut service,
+                &MetaRequest::AllocateObjectPages { page_count: count },
+                65536,
+                &groups
+            )
+            .is_err());
+            assert_eq!(state(&service), saved);
+        }
+        assert!(prepare(
+            &mut service,
+            &MetaRequest::AllocateObjectPages { page_count: 1 },
+            1,
+            &groups
+        )
+        .is_err());
+        assert_eq!(state(&service), saved);
+        let mut pending = VecDeque::new();
+        let mut requests = VecDeque::new();
+        let mut receivers = Vec::new();
+        for count in [1, 4096, 2] {
+            let (request, receiver) = queued(
+                MetaRequest::AllocateObjectPages { page_count: count },
+                Instant::now() + Duration::from_secs(10),
+            );
+            requests.push_back(request);
+            receivers.push(receiver);
+        }
+        // A caller disconnecting before apply must not make an accepted ID reusable.
+        let (request, lost_reply) = queued(
+            MetaRequest::AllocateObjectPages { page_count: 1 },
+            Instant::now() + Duration::from_secs(10),
+        );
+        requests.push_back(request);
+        drop(lost_reply);
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            65536,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
+        assert_eq!(state(&service), saved);
+        assert!(receivers
+            .iter()
+            .all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
+        for (index, rx) in receivers.into_iter().enumerate() {
+            let MetaReply::ObjectPages(allocation) = rx.try_recv().unwrap().unwrap() else {
+                panic!("allocation reply missing");
+            };
+            assert_eq!(allocation.allocation_id, base + index as u64 + 1);
+        }
+        assert_eq!(service.placement_commit_index, base + 4);
+        let snapshot = service.export_snapshot();
+        let mut restored = restore_snapshot(snapshot, &groups).unwrap();
+        let (_, reply) = prepare(
+            &mut restored,
+            &MetaRequest::AllocateObjectPages { page_count: 1 },
+            65536,
+            &groups,
+        )
+        .unwrap();
+        let Some(MetaReply::ObjectPages(allocation)) = reply else {
+            panic!("allocation reply missing");
+        };
+        assert_eq!(allocation.allocation_id, base + 5);
+        restored.placement_commit_index = u64::MAX;
+        let saved = state(&restored);
+        assert!(prepare(
+            &mut restored,
+            &MetaRequest::AllocateObjectPages { page_count: 1 },
+            65536,
+            &groups
+        )
+        .is_err());
+        assert_eq!(state(&restored), saved);
     }
 }

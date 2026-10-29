@@ -135,6 +135,30 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::deferred_metadata_sealing_preserves_captured_roster_and_placements -- --exact --nocapture | tee /tmp/deferred-sealing.log
           grep -q 'test result: ok. 1 passed' /tmp/deferred-sealing.log
 
+      - name: object allocations require canonical bounded protobuf and page indexes
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::conditional_requests::allocation_tests::object_allocations_require_canonical_bounded_protobuf_and_page_indexes -- --exact --nocapture | tee /tmp/object-allocation.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-allocation.log
+
+      - name: object allocations commit unique namespaces and restore speculative batches
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::object_allocations_commit_unique_namespaces_and_restore_speculative_batches -- --exact --nocapture | tee /tmp/object-allocation.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-allocation.log
+
+      - name: object page allocations survive local journal restart
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test meta_restart_recovery object_page_allocations_survive_local_journal_restart -- --exact --nocapture | tee /tmp/object-allocation.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-allocation.log
+
+      - name: allocated pages span data groups and stay unique after metadata recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::allocated_pages_span_data_groups_and_stay_unique_after_metadata_recovery -- --exact --nocapture | tee /tmp/object-allocation.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-allocation.log
+
       - name: manifest requests and replies require canonical bounded protobuf
         run: |
           set -o pipefail

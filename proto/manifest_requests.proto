@@ -15,3 +15,9 @@ message ManifestPublish {
   matrixobject.ManifestOutcome outcome = 2;
   uint64 update_time_ms = 3;
 }
+
+// Metadata request code 77. Reply: matrixobject.ObjectPageAllocation.
+message AllocateObjectPages {
+  uint32 version = 1; // 1
+  uint32 page_count = 2; // 1..4096
+}

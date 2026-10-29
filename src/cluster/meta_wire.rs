@@ -81,6 +81,7 @@ pub enum MetaRequestCode {
     GroupIdentity = 74,
     ReadManifest = 75,
     PublishManifest = 76,
+    AllocateObjectPages = 77,
 }
 
 impl MetaRequestCode {
@@ -104,6 +105,7 @@ impl MetaRequestCode {
             74 => Some(MetaRequestCode::GroupIdentity),
             75 => Some(MetaRequestCode::ReadManifest),
             76 => Some(MetaRequestCode::PublishManifest),
+            77 => Some(MetaRequestCode::AllocateObjectPages),
             _ => None,
         }
     }
@@ -124,6 +126,7 @@ impl MetaRequestCode {
             MetaRequestCode::GroupIdentity,
             MetaRequestCode::ReadManifest,
             MetaRequestCode::PublishManifest,
+            MetaRequestCode::AllocateObjectPages,
         ]
     }
 }

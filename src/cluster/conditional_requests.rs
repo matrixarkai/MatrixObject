@@ -254,3 +254,77 @@ mod manifest_tests {
         .is_err());
     }
 }
+
+#[cfg(feature = "meta-server")]
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct AllocateObjectPages {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint32, tag = "2")]
+    pub page_count: u32,
+}
+
+#[cfg(all(test, feature = "meta-server"))]
+mod allocation_tests {
+    use super::*;
+    use crate::cluster::meta_wire::MetaRequestCode;
+    use crate::cluster::{MetaReply, MetaRequest};
+    use crate::object_manifest::ObjectPageAllocation;
+    #[test]
+    fn object_allocations_require_canonical_bounded_protobuf_and_page_indexes() {
+        let code = MetaRequestCode::AllocateObjectPages;
+        for count in [1, 4096] {
+            let request = MetaRequest::AllocateObjectPages { page_count: count };
+            let bytes = request.encode_payload();
+            assert_eq!(MetaRequest::decode(code, &bytes).unwrap(), request);
+            let mut duplicate = bytes.clone();
+            duplicate.extend([8, 1]);
+            assert!(MetaRequest::decode(code, &duplicate).is_err());
+            for cut in 0..bytes.len() {
+                assert!(MetaRequest::decode(code, &bytes[..cut]).is_err());
+            }
+            for id in [1, u32::MAX as u64, (u32::MAX as u64) + 1, u64::MAX] {
+                let allocation = ObjectPageAllocation {
+                    format_version: 1,
+                    allocation_id: id,
+                    page_count: count,
+                };
+                let page = allocation.page(count - 1).unwrap();
+                assert_eq!((page.chunk_id.volume_id() << 32) | page.chunk_id.id(), id);
+                assert_eq!(page.page_index, u64::from(count - 1));
+                assert!(allocation.page(count).is_err());
+                let reply = MetaReply::ObjectPages(allocation);
+                let bytes = reply.encode_payload();
+                assert_eq!(bytes.len(), reply.payload_len());
+                assert_eq!(MetaReply::decode(code, &bytes).unwrap(), reply);
+                for cut in 0..bytes.len() {
+                    assert!(MetaReply::decode(code, &bytes[..cut]).is_err());
+                }
+                let mut unknown = bytes;
+                unknown.extend([0xa0, 6, 1]);
+                assert!(MetaReply::decode(code, &unknown).is_err());
+            }
+        }
+        for count in [0, 4097, u32::MAX] {
+            assert!(MetaRequest::decode(
+                code,
+                &MetaRequest::AllocateObjectPages { page_count: count }.encode_payload()
+            )
+            .is_err());
+        }
+        assert!(MetaRequest::decode(code, &[0; 33]).is_err());
+        assert!(MetaReply::decode(code, &[0; 33]).is_err());
+        for (version, id) in [(0, 1), (2, 1), (1, 0)] {
+            assert!(MetaReply::decode(
+                code,
+                &ObjectPageAllocation {
+                    format_version: version,
+                    allocation_id: id,
+                    page_count: 1
+                }
+                .encode_to_vec()
+            )
+            .is_err());
+        }
+    }
+}

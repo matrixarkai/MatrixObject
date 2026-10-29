@@ -657,28 +657,46 @@ fn apply(
         drop(guard);
         return consensus.request(request);
     }
-    if let MetaRequest::PublishManifest {
-        outcome,
-        update_time_ms,
-    } = &request
-    {
-        guard.groups.check_request(&request)?;
-        let (decided, reply) = decide_manifest(
-            &guard.service,
-            outcome.clone(),
-            *update_time_ms,
-            max_payload_bytes,
-        )?;
+    let decision = match &request {
+        MetaRequest::AllocateObjectPages { page_count } => {
+            if guard.storage.is_none() {
+                return Err(ObjectError::PreconditionFailed(
+                    "object allocation requires durable metadata storage".into(),
+                ));
+            }
+            Some(decide_allocation(
+                &guard.service,
+                *page_count,
+                max_payload_bytes,
+            )?)
+        }
+        MetaRequest::PublishManifest {
+            outcome,
+            update_time_ms,
+        } => {
+            guard.groups.check_request(&request)?;
+            Some(decide_manifest(
+                &guard.service,
+                outcome.clone(),
+                *update_time_ms,
+                max_payload_bytes,
+            )?)
+        }
+        _ => None,
+    };
+    if let Some((decided, reply)) = decision {
         if guard.storage.is_some() {
             // Preflight the local snapshot bound before persisting an outcome.
-            let mut preview = guard.service.clone();
-            decided.apply(&mut preview)?;
-            if super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len()
-                > 64 * 1024 * 1024
-            {
-                return Err(ObjectError::InvalidArgument(
-                    "metadata snapshot exceeds 64 MiB".into(),
-                ));
+            if decided.manifest.is_some() {
+                let mut preview = guard.service.clone();
+                decided.apply(&mut preview)?;
+                if super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len()
+                    > 64 * 1024 * 1024
+                {
+                    return Err(ObjectError::InvalidArgument(
+                        "metadata snapshot exceeds 64 MiB".into(),
+                    ));
+                }
             }
             if !guard.recovered {
                 guard.persist()?;
@@ -786,6 +804,37 @@ pub(super) fn expired_node_ids(
         .collect())
 }
 
+pub(super) fn decide_allocation(
+    service: &MatrixMetaService,
+    page_count: u32,
+    limit: usize,
+) -> Result<(crate::placement_outcome::PlacementOutcome, MetaReply), ObjectError> {
+    let allocation_id = service
+        .placement_commit_index
+        .checked_add(1)
+        .ok_or_else(|| {
+            ObjectError::PreconditionFailed("object allocation sequence exhausted".into())
+        })?;
+    let allocation = crate::object_manifest::ObjectPageAllocation {
+        format_version: 1,
+        allocation_id,
+        page_count,
+    };
+    allocation.validate()?;
+    let reply = MetaReply::ObjectPages(allocation);
+    crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
+    let outcome = crate::placement_outcome::PlacementOutcome {
+        version: 1,
+        before_index: service.placement_commit_index,
+        after_index: allocation_id,
+        nodes: vec![],
+        placements: vec![],
+        manifest: None,
+    };
+    outcome.to_payload()?;
+    Ok((outcome, reply))
+}
+
 pub(super) fn decide_manifest(
     service: &MatrixMetaService,
     outcome: crate::object_manifest::ManifestOutcome,
@@ -809,6 +858,11 @@ pub(super) fn apply_with_groups(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
+    if let MetaRequest::AllocateObjectPages { page_count } = &request {
+        let (decided, reply) = decide_allocation(service, *page_count, limit)?;
+        decided.apply(service)?;
+        return Ok(reply);
+    }
     if let MetaRequest::PublishManifest {
         outcome,
         update_time_ms,
@@ -849,6 +903,9 @@ pub(super) fn apply_to_meta(
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     match request {
+        MetaRequest::AllocateObjectPages { .. } => Err(ObjectError::InvalidArgument(
+            "allocation requires durable dispatch".into(),
+        )),
         MetaRequest::PublishManifest { .. } => Err(ObjectError::InvalidArgument(
             "publication requires a chunk catalog".into(),
         )),
