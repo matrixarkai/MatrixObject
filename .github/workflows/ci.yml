@@ -441,6 +441,9 @@ jobs:
           cargo test --locked --test distinct_replica_peers mapped_ipv6_and_ipv4_cannot_supply_multiple_votes -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
           grep -q '^running 1 test$' /tmp/node-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
+          cargo test --locked --test distinct_replica_peers head_quorum_requires_every_returned_field_to_agree -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
+          grep -q 'test result: ok. 1 passed' /tmp/node-guard.log
+
           cargo test --locked --test distinct_replica_peers distinct_processes_can_still_form_a_quorum -- --exact --test-threads=1 2>&1 | tee /tmp/node-guard.log
           grep -q '^running 1 test$' /tmp/node-guard.log
           grep -q '^test result: ok. 1 passed' /tmp/node-guard.log
