@@ -14,6 +14,8 @@ use matrixraft::{
     LogId, RaftError,
 };
 use prost::Message;
+use crate::cluster::consensus_inbox::{ConsensusChannels, ConsensusInbox};
+use crate::cluster::socket_readiness::Notify;
 use std::cell::{Cell, RefCell};
 use std::{
     collections::BTreeMap,
@@ -73,6 +75,7 @@ struct Pending {
 pub(super) struct ChunkConsensus {
     identity: ChunkGroupIdentity,
     requests: SyncSender<Request>,
+    wake: Option<Notify>,
     timeout: Duration,
     stop: Arc<ServerShutdown>,
     failed: Arc<AtomicBool>,
@@ -211,12 +214,20 @@ impl ChunkConsensus {
         }
         let listener = TcpListener::bind(options.peers[&options.node_id])?;
         listener.set_nonblocking(true)?;
-        let (requests, rx) = mpsc::sync_channel(32);
+        let (requests, rx) = ConsensusInbox::new(&stop);
+        let wake = rx.notifier();
+        let inbound_wake = wake.clone();
         let (incoming, packets) = mpsc::sync_channel(8);
         let mut handles = Vec::new();
         let inbound_stop = Arc::clone(&stop);
         handles.push(thread::spawn(move || {
-            crate::cluster::peer_receiver::receive(listener, incoming, &inbound_stop, NETWORK_TIMEOUT);
+            crate::cluster::peer_receiver::receive(
+                listener,
+                incoming,
+                &inbound_stop,
+                NETWORK_TIMEOUT,
+                inbound_wake,
+            );
         }));
         let mut outgoing = BTreeMap::new();
         for (id, address) in options
@@ -263,9 +274,11 @@ impl ChunkConsensus {
             if let Err(error) = run(
                 &mut peer,
                 &state,
-                rx,
-                packets,
-                outgoing,
+                ConsensusChannels {
+                    requests: rx,
+                    packets,
+                    outgoing,
+                },
                 &worker_stop,
                 limit,
                 checkpoint,
@@ -281,6 +294,7 @@ impl ChunkConsensus {
         Ok(Self {
             identity: group_identity,
             requests,
+            wake,
             timeout: options.request_timeout,
             stop,
             failed,
@@ -306,6 +320,9 @@ impl ChunkConsensus {
                 deadline,
             })
             .map_err(|_| refused("chunk consensus unavailable or request queue full"))?;
+        if let Some(wake) = &self.wake {
+            wake.notify();
+        }
         rx.recv_timeout(self.timeout)
             .map_err(|_| refused("chunk consensus deadline; write outcome may be committed"))?
     }
@@ -326,19 +343,23 @@ impl Drop for ChunkConsensus {
 fn run(
     peer: &mut DurablePeer,
     state: &Arc<Mutex<NodeReplica>>,
-    requests: Receiver<Request>,
-    packets: Receiver<Vec<u8>>,
-    outgoing: BTreeMap<u64, SyncSender<Vec<u8>>>,
+    channels: ConsensusChannels<Request>,
     stop: &ServerShutdown,
     limit: usize,
     mut checkpoint: Policy,
 ) -> Result<(), RaftError> {
+    let ConsensusChannels {
+        requests,
+        packets,
+        outgoing,
+    } = channels;
     let mut tick = Instant::now();
     let mut pending: Option<Pending> = None;
     let mut pending_read: Option<(u64, Vec<Request>)> = None;
     let mut deferred = None;
     let applied_term = Cell::new(0);
     while !stop.is_stopped() {
+        let mut admitted = false;
         for _ in 0..32 {
             match packets.try_recv() {
                 Ok(bytes) => {
@@ -463,6 +484,7 @@ fn run(
                 })
             })?;
             if let Some(request) = deferred.take().or_else(|| requests.try_recv().ok()) {
+                admitted = true;
                 if request.deadline <= Instant::now() {
                     let _ = request
                         .reply
@@ -471,7 +493,8 @@ fn run(
                     let _ = request.reply.try_send(Ok(ReplicaReply::NotLeader));
                 } else {
                     if read_only(&request.request) {
-                        let batch = read_batch(request, &requests, &mut deferred, Instant::now());
+                        let batch =
+                            read_batch(request, requests.receiver(), &mut deferred, Instant::now());
                         match peer.begin_read() {
                             Ok(token) => pending_read = Some((token, batch)),
                             Err(error) => {
@@ -502,7 +525,11 @@ fn run(
             }
         }
         drop(node);
-        thread::sleep(Duration::from_millis(2));
+        // Process newly proposed local work before sleeping. Peer packets and
+        // requests signal the inbox; the next Raft tick bounds all idle waits.
+        if !admitted {
+            requests.wait(stop, TICK.saturating_sub(tick.elapsed()));
+        }
     }
     Ok(())
 }

@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use super::shutdown::ServerShutdown;
-use super::socket_readiness::SocketReadiness;
+use super::socket_readiness::{Notify, SocketReadiness};
 use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::SyncSender;
@@ -62,6 +62,7 @@ pub(super) fn receive(
     incoming: SyncSender<Vec<u8>>,
     stop: &ServerShutdown,
     timeout: Duration,
+    wake: Option<Notify>,
 ) {
     let mut frames: Vec<Frame> = Vec::new();
     let mut reserved = 0;
@@ -104,8 +105,10 @@ pub(super) fn receive(
                 result => {
                     let frame = frames.swap_remove(index);
                     reserved -= frame.body.len();
-                    if matches!(result, Ok(true)) {
-                        let _ = incoming.try_send(frame.body);
+                    if matches!(result, Ok(true)) && incoming.try_send(frame.body).is_ok() {
+                        if let Some(wake) = &wake {
+                            wake.notify();
+                        }
                     }
                     progressed = true;
                 }
@@ -263,9 +266,18 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let stop = Arc::new(ServerShutdown::default());
         let worker_stop = Arc::clone(&stop);
+        let activity = SocketReadiness::new(&stop).unwrap();
+        let wake = activity.notifier();
         let (tx, rx) = mpsc::sync_channel(8);
-        let worker =
-            std::thread::spawn(move || receive(listener, tx, &worker_stop, Duration::from_secs(2)));
+        let worker = std::thread::spawn(move || {
+            receive(
+                listener,
+                tx,
+                &worker_stop,
+                Duration::from_secs(2),
+                Some(wake),
+            )
+        });
         let result = std::panic::catch_unwind(|| {
             let mut slow = TcpStream::connect(address).unwrap();
             slow.write_all(&[0, 0]).unwrap();
@@ -275,6 +287,21 @@ mod tests {
             let mut valid = TcpStream::connect(address).unwrap();
             valid.write_all(&5u32.to_be_bytes()).unwrap();
             valid.write_all(b"ready").unwrap();
+            #[cfg(unix)]
+            {
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while !activity.wait(
+                    None,
+                    std::iter::empty::<(&TcpStream, bool)>(),
+                    Duration::from_millis(50),
+                    &stop,
+                ) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "packet did not signal consensus activity"
+                    );
+                }
+            }
             assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), b"ready");
             // Zero, oversized and truncated frames must never become peer packets.
             for length in [0, PACKET_LIMIT as u32 + 1, 10] {

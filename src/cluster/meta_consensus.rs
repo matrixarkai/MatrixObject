@@ -14,6 +14,8 @@ use matrixraft::{
     LogId, RaftError,
 };
 use prost::Message;
+use crate::cluster::consensus_inbox::{ConsensusChannels, ConsensusInbox};
+use crate::cluster::socket_readiness::Notify;
 use std::cell::{Cell, RefCell};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -69,6 +71,7 @@ pub(super) struct MetaConsensus {
     groups: Arc<super::ChunkGroupCatalog>,
     reply_limit: usize,
     requests: SyncSender<Request>,
+    wake: Option<Notify>,
     timeout: Duration,
     stop: Arc<ServerShutdown>,
     failed: Arc<AtomicBool>,
@@ -193,12 +196,20 @@ impl MetaConsensus {
         }
         let listener = TcpListener::bind(options.peers[&options.node_id])?;
         listener.set_nonblocking(true)?;
-        let (requests, rx) = mpsc::sync_channel(32);
+        let (requests, rx) = ConsensusInbox::new(&stop);
+        let wake = rx.notifier();
+        let inbound_wake = wake.clone();
         let (incoming, packets) = mpsc::sync_channel(8);
         let mut handles = Vec::new();
         let inbound_stop = Arc::clone(&stop);
         handles.push(thread::spawn(move || {
-            crate::cluster::peer_receiver::receive(listener, incoming, &inbound_stop, NETWORK_TIMEOUT);
+            crate::cluster::peer_receiver::receive(
+                listener,
+                incoming,
+                &inbound_stop,
+                NETWORK_TIMEOUT,
+                inbound_wake,
+            );
         }));
         let mut outgoing = BTreeMap::new();
         for (id, address) in options
@@ -249,9 +260,11 @@ impl MetaConsensus {
                 &mut peer,
                 &mut service,
                 &worker_groups,
-                rx,
-                packets,
-                outgoing,
+                ConsensusChannels {
+                    requests: rx,
+                    packets,
+                    outgoing,
+                },
                 &worker_stop,
                 limit,
                 checkpoint,
@@ -267,6 +280,7 @@ impl MetaConsensus {
             reply_limit: limit,
             node_count,
             requests,
+            wake,
             timeout: options.request_timeout,
             stop,
             failed,
@@ -309,6 +323,9 @@ impl MetaConsensus {
                 deadline,
             })
             .map_err(|_| refused("metadata consensus unavailable or request queue full"))?;
+        if let Some(wake) = &self.wake {
+            wake.notify();
+        }
         rx.recv_timeout(self.timeout)
             .map_err(|_| refused("metadata consensus deadline; write outcome may be committed"))?
     }
@@ -330,19 +347,23 @@ fn run(
     peer: &mut DurablePeer,
     service: &mut MatrixMetaService,
     groups: &super::ChunkGroupCatalog,
-    requests: Receiver<Request>,
-    packets: Receiver<Vec<u8>>,
-    outgoing: BTreeMap<u64, SyncSender<Vec<u8>>>,
+    channels: ConsensusChannels<Request>,
     stop: &ServerShutdown,
     limit: usize,
     mut checkpoint: Policy,
 ) -> Result<(), RaftError> {
+    let ConsensusChannels {
+        requests,
+        packets,
+        outgoing,
+    } = channels;
     let mut tick = Instant::now();
     let mut pending: VecDeque<Pending> = VecDeque::new();
     let mut queued = VecDeque::new();
     let mut pending_read: Option<(u64, Vec<Request>)> = None;
     let applied_term = Cell::new(0);
     while !stop.is_stopped() {
+        let mut admitted = false;
         for _ in 0..32 {
             match packets.try_recv() {
                 Ok(bytes) => {
@@ -437,6 +458,7 @@ fn run(
                     Err(_) => break,
                 }
             }
+            admitted = !queued.is_empty();
             if !peer.is_leader() || applied_term.get() != peer.term() {
                 for request in queued.drain(..) {
                     let _ = request.reply.try_send(Ok(MetaReply::NotLeader));
@@ -476,7 +498,11 @@ fn run(
                 }
             }
         }
-        thread::sleep(Duration::from_millis(2));
+        // Process newly proposed local work before sleeping. Peer packets and
+        // requests signal the inbox; the next Raft tick bounds all idle waits.
+        if !admitted {
+            requests.wait(stop, TICK.saturating_sub(tick.elapsed()));
+        }
     }
     Ok(())
 }
@@ -898,6 +924,7 @@ mod tests {
             groups: Arc::new(groups),
             reply_limit: 4096,
             requests,
+            wake: None,
             timeout: Duration::from_millis(1),
             stop: Arc::new(ServerShutdown::default()),
             failed: Arc::new(AtomicBool::new(false)),
