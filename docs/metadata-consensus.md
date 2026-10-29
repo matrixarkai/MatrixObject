@@ -202,7 +202,7 @@ capture and decoding still allocate complete bodies and can delay requests;
 file-backed transfer does not make application serialization memory bounded.
 If state exceeds the limit, the server reports that it is retaining WAL history
 and retries only after another configured interval. It does not discard data or
-truncate history to fit. The WAL still stops writes at 512 MiB. Larger application
+truncate history to fit. The WAL still stops writes at 512 MiB. Larger metadata
 state requires streaming service serialization and restoration; this integration
 does not establish production readiness.
 

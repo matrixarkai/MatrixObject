@@ -2,7 +2,8 @@
 // Copyright 2026 MatrixArkAI
 impl ReplicaServiceSnapshot {
     fn legacy_checksum_material_hash(&self) -> String {
-        let mut material = Vec::with_capacity(self.legacy_checksum_material_size_hint());
+        let mut material = Vec::with_capacity(1024);
+        let mut digest = FNV1A64_OFFSET_BASIS;
         append_u64(&mut material, self.pages.len() as u64);
         for (page_id, state) in &self.pages {
             append_chunk_id(&mut material, &page_id.chunk_id);
@@ -11,23 +12,18 @@ impl ReplicaServiceSnapshot {
             append_u64(&mut material, state.write_sequence);
             append_string(&mut material, &state.checksum());
             append_u64(&mut material, state.data.len() as u64);
-            material.extend_from_slice(&state.data);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
+            digest = fnv1a64_resumed(digest, &state.data);
             append_u64(&mut material, state.discarded_ranges.len() as u64);
             for range in &state.discarded_ranges {
                 append_range(&mut material, range);
             }
         }
-        etag(&material)
+        digest = fnv1a64_resumed(digest, &material);
+        let mut checksum = String::with_capacity(24);
+        append_etag_of_digest(&mut checksum, digest);
+        checksum
     }
 
-    fn legacy_checksum_material_size_hint(&self) -> usize {
-        const U64: usize = std::mem::size_of::<u64>();
-        self.pages.values().fold(U64, |total, state| {
-            total
-                .saturating_add(U64 * 5)
-                .saturating_add(encoded_string_len(&state.checksum()))
-                .saturating_add(state.data.len())
-                .saturating_add(U64 * 2 * state.discarded_ranges.len())
-        })
-    }
 }

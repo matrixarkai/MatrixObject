@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+// Version 2. Fields occur once in the shown order, except ordered pages.
+// Each page explicitly emits both byte fields, including zero-length fields.
+// Readers decode headers canonically and consume payload fields directly.
+message ChunkCheckpointStream {
+  uint32 version = 1;
+  ChunkCheckpointHeader header = 2;
+  repeated ChunkCheckpointPage pages = 3;
+}
+message ChunkCheckpointHeader {
+  uint32 kind = 1;
+  uint64 index = 2;
+  uint64 term = 3;
+  bytes metadata = 4; // v22 service snapshot with no pages or compression counts
+  string checksum = 5; // complete service snapshot checksum
+  uint64 compressed_count = 6;
+  uint64 compression_saved = 7;
+  uint64 pages = 8;
+}
+message ChunkCheckpointPage {
+  ChunkCheckpointPageHeader header = 1;
+  bytes data = 2;
+  bytes redundancy = 3;
+}
+message ChunkCheckpointPageHeader {
+  uint64 volume = 1;
+  uint64 chunk = 2;
+  uint64 page = 3;
+  uint64 logical_length = 4;
+  uint64 sequence = 5;
+  fixed64 checksum = 6;
+  repeated ChunkCheckpointRange discarded = 7;
+}
+message ChunkCheckpointRange { uint64 offset = 1; uint64 length = 2; }

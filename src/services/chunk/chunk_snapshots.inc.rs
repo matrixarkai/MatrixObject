@@ -166,8 +166,8 @@ impl MatrixReplicaService {
 
     /// Builds the snapshot without computing its checksum.
     ///
-    /// `checksum_material_hash` copies every chunk payload into one buffer
-    /// before hashing it, so it costs O(resident bytes) per call. Callers that
+    /// `checksum_material_hash` scans every chunk payload without copying it,
+    /// so it costs O(resident bytes) per call. Callers that
     /// only keep the snapshot in memory -- the mutation-batch rollback copy --
     /// take this and call `seal_checksum` on the rare path that installs it.
     pub fn export_snapshot_unsealed(&self) -> ReplicaServiceSnapshot {

@@ -2,7 +2,9 @@
 // Copyright 2026 MatrixArkAI
 //! One durable chunk voter with bounded TCP delivery and committed read barriers.
 use super::{apply_to_replica, NodeReplica};
-use crate::cluster::consensus_checkpoint::{storage, Image, Policy};
+#[cfg(test)]
+use crate::cluster::consensus_checkpoint::Image;
+use crate::cluster::consensus_checkpoint::{storage, Policy};
 use crate::cluster::message::{ChunkGroupIdentity, ReplicaReply, ReplicaRequest};
 use crate::cluster::shutdown::ServerShutdown;
 use crate::outcome::PageOutcome;
@@ -416,8 +418,15 @@ fn run(
                 Ok(())
             },
             |id, reader, length| {
-                let image = Image::read_at(reader, length, 2, id.clone())?;
-                restore_image(&mut application.borrow_mut(), image)?;
+                let mut node = application.borrow_mut();
+                let snapshot = crate::cluster::chunk_checkpoint::restore(
+                    reader,
+                    length,
+                    id.clone(),
+                    node.service.capacity_bytes(),
+                    node.max_pages,
+                )?;
+                restore_snapshot(&mut node, snapshot)?;
                 applied_term.set(id.term);
                 checkpoint.restored(id.index);
                 Ok(())
@@ -458,8 +467,8 @@ fn run(
         // A timed-out accepted proposal remains pending until applied or leadership changes.
         // Proposing a second outcome against the same old state would be invalid.
         if pending.is_none() && pending_read.is_none() {
-            checkpoint.maybe_checkpoint(peer, applied_term.get(), || {
-                Ok((node.service.export_snapshot().to_bytes()?, Vec::new()))
+            checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
+                crate::cluster::chunk_checkpoint::capture(node.service.export_snapshot(), id)
             })?;
             if let Ok(request) = requests.try_recv() {
                 if request.deadline <= Instant::now() {
@@ -505,13 +514,19 @@ fn run(
 
 #[cfg(test)]
 fn restore_checkpoint(node: &mut NodeReplica, bytes: &[u8], id: LogId) -> Result<(), RaftError> {
-    restore_image(node, Image::decode_at(bytes, 2, id)?)
+    let snapshot = crate::cluster::chunk_checkpoint::restore(
+        &mut std::io::Cursor::new(bytes),
+        bytes.len() as u64,
+        id,
+        node.service.capacity_bytes(),
+        node.max_pages,
+    )?;
+    restore_snapshot(node, snapshot)
 }
-fn restore_image(node: &mut NodeReplica, image: Image) -> Result<(), RaftError> {
-    if !image.catalog.is_empty() {
-        return Err(storage("chunk checkpoint contains a metadata catalog"));
-    }
-    let snapshot = crate::ReplicaServiceSnapshot::from_bytes(&image.state).map_err(storage)?;
+fn restore_snapshot(
+    node: &mut NodeReplica,
+    snapshot: crate::ReplicaServiceSnapshot,
+) -> Result<(), RaftError> {
     if snapshot.capacity_bytes != node.service.capacity_bytes()
         || snapshot.pages.len() > node.max_pages
     {
@@ -669,23 +684,32 @@ mod checkpoint_tests {
         let id = LogId { index: 17, term: 4 };
         let snapshot = original.service.export_snapshot().to_bytes().unwrap();
         let bytes = Image::new(2, id.clone(), snapshot.clone(), Vec::new()).encode_to_vec();
-        let mut restored = node(8192, 4);
-        restore_checkpoint(&mut restored, &bytes, id.clone()).unwrap();
-        assert_eq!(
-            restored.service.export_snapshot().to_bytes().unwrap(),
-            snapshot
-        );
-        assert_eq!(restored.used_bytes, 768);
-        for (capacity, pages) in [(4096, 4), (8192, 1)] {
-            let mut refused_node = node(capacity, pages);
-            let before = refused_node.service.export_snapshot().to_bytes().unwrap();
-            assert!(restore_checkpoint(&mut refused_node, &bytes, id.clone()).is_err());
+        let mut streamed = Vec::new();
+        crate::cluster::chunk_checkpoint::capture(original.service.export_snapshot(), id.clone())
+            .unwrap()
+            .unwrap()
+            .read_to_end(&mut streamed)
+            .unwrap();
+        for bytes in [&bytes, &streamed] {
+            let mut restored = node(8192, 4);
+            restore_checkpoint(&mut restored, bytes, id.clone()).unwrap();
             assert_eq!(
-                refused_node.service.export_snapshot().to_bytes().unwrap(),
-                before
+                restored.service.export_snapshot().to_bytes().unwrap(),
+                snapshot
             );
-            assert_eq!(refused_node.used_bytes, 0);
+            assert_eq!(restored.used_bytes, 768);
+            for (capacity, pages) in [(4096, 4), (8192, 1)] {
+                let mut refused_node = node(capacity, pages);
+                let before = refused_node.service.export_snapshot().to_bytes().unwrap();
+                assert!(restore_checkpoint(&mut refused_node, bytes, id.clone()).is_err());
+                assert_eq!(
+                    refused_node.service.export_snapshot().to_bytes().unwrap(),
+                    before
+                );
+                assert_eq!(refused_node.used_bytes, 0);
+            }
         }
+        let mut restored = node(8192, 4);
         let unexpected = Image::new(2, id.clone(), snapshot, vec![1]).encode_to_vec();
         assert!(restore_checkpoint(&mut restored, &unexpected, id).is_err());
     }
