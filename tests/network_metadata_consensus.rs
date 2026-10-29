@@ -790,6 +790,13 @@ fn metadata_raft_recovers_chunk_catalog_and_group_health() {
     let mut group = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
     let leader = group.leader();
     let mut client = group.client(leader);
+    // Followers serve the same immutable bootstrap catalog without routing.
+    for id in 0..3 {
+        assert_eq!(
+            group.client(id).read_chunk_group("group-a").unwrap(),
+            config
+        );
+    }
     assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
     for id in ["member-a", "member-b"] {
         client
@@ -834,6 +841,32 @@ fn metadata_raft_recovers_chunk_catalog_and_group_health() {
                 .starts_with(b"MOGB")
         );
     }
+    // A minority can describe configured groups, but cannot expose mutable
+    // health, plan placement, read a manifest, or allocate fresh page namespaces.
+    for id in 0..3 {
+        if id != current {
+            group.kill(id);
+        }
+    }
+    assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
+    assert!(matches!(
+        client.read_chunk_group("missing"),
+        Err(matrixobjectstore_rs::ObjectError::NotFound(_))
+    ));
+    assert!(client.list_placement_nodes().is_err());
+    assert!(group
+        .client(current)
+        .plan_object_placement("bucket", "key", 100, 1)
+        .is_err());
+    let error = group
+        .client(current)
+        .read_manifest("bucket", "key")
+        .unwrap_err();
+    assert!(
+        !matches!(error, matrixobjectstore_rs::ObjectError::NotFound(_)),
+        "a minority must not answer from its mutable manifest catalog"
+    );
+    assert!(group.client(current).allocate_object_pages(1).is_err());
 }
 
 #[test]

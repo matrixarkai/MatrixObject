@@ -171,6 +171,12 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus coupled_groups::unavailable_data_group_is_isolated_and_recovers_without_losing_objects -- --exact --nocapture | tee /tmp/group-isolation.log
           grep -q 'test result: ok. 1 passed' /tmp/group-isolation.log
 
+      - name: bootstrap catalog reads obey limits and failure state without queueing
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::bootstrap_catalog_reads_bypass_queue_but_obey_limits_and_failure_state -- --exact | tee /tmp/bootstrap-read.log
+          grep -q 'test result: ok. 1 passed' /tmp/bootstrap-read.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail

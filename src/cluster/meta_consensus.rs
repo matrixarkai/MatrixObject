@@ -66,6 +66,8 @@ struct Pending {
 pub(super) struct MetaConsensus {
     pub(super) node_count: usize,
     identity: super::MetaGroupIdentity,
+    groups: Arc<super::ChunkGroupCatalog>,
+    reply_limit: usize,
     requests: SyncSender<Request>,
     timeout: Duration,
     stop: Arc<ServerShutdown>,
@@ -254,6 +256,8 @@ impl MetaConsensus {
                 }
             }));
         }
+        let groups = Arc::new(groups);
+        let worker_groups = Arc::clone(&groups);
         let node_count = service.nodes.len();
         let failed = Arc::new(AtomicBool::new(false));
         let worker_failed = Arc::clone(&failed);
@@ -263,7 +267,7 @@ impl MetaConsensus {
             if let Err(error) = run(
                 &mut peer,
                 &mut service,
-                &groups,
+                &worker_groups,
                 rx,
                 packets,
                 outgoing,
@@ -278,6 +282,8 @@ impl MetaConsensus {
         }));
         Ok(Self {
             identity: group_identity,
+            groups,
+            reply_limit: limit,
             node_count,
             requests,
             timeout: options.request_timeout,
@@ -290,11 +296,28 @@ impl MetaConsensus {
         self.failed.load(Ordering::SeqCst)
     }
     pub(super) fn request(&self, request: MetaRequest) -> Result<MetaReply, ObjectError> {
-        if matches!(request, MetaRequest::GroupIdentity) {
+        if matches!(
+            request,
+            MetaRequest::GroupIdentity | MetaRequest::ReadChunkGroup { .. }
+        ) {
             if self.is_failed() || self.stop.is_stopped() {
                 return Err(refused("metadata consensus stopped"));
             }
-            return Ok(MetaReply::GroupIdentity(self.identity.clone()));
+            // Both values come from the retained bootstrap image. The catalog
+            // is immutable and included in the voting group's bootstrap identity;
+            // serving it locally does not expose mutable placement or health.
+            let reply = match request {
+                MetaRequest::GroupIdentity => MetaReply::GroupIdentity(self.identity.clone()),
+                MetaRequest::ReadChunkGroup { placement_id } => self
+                    .groups
+                    .get(&placement_id)
+                    .cloned()
+                    .map(MetaReply::ChunkGroup)
+                    .ok_or_else(|| ObjectError::NotFound("chunk group missing".into()))?,
+                _ => unreachable!(),
+            };
+            super::message::check_reply_size(reply.payload_len(), self.reply_limit)?;
+            return Ok(reply);
         }
         let (reply, rx) = mpsc::sync_channel(1);
         let deadline = Instant::now() + self.timeout;
@@ -888,6 +911,54 @@ mod tests {
         service.placement_commit_index = (service.nodes.len() + objects) as u64;
         groups.validate_roster(&service).unwrap();
         (service, groups)
+    }
+
+    #[test]
+    fn bootstrap_catalog_reads_bypass_queue_but_obey_limits_and_failure_state() {
+        let (_, groups) = fixture(1, 0);
+        let expected = groups.get("group-0").unwrap().clone();
+        let (requests, receiver) = mpsc::sync_channel(1);
+        let mut consensus = MetaConsensus {
+            node_count: 4,
+            identity: super::super::MetaGroupIdentity {
+                version: 1,
+                group_id: 1,
+                node_id: 1,
+                voters: vec![1],
+                peer_endpoints: vec!["127.0.0.1:9999".into()],
+                bootstrap_id: 1,
+            },
+            groups: Arc::new(groups),
+            reply_limit: 4096,
+            requests,
+            timeout: Duration::from_millis(1),
+            stop: Arc::new(ServerShutdown::default()),
+            failed: Arc::new(AtomicBool::new(false)),
+            handles: Mutex::new(vec![]),
+        };
+        let request = MetaRequest::ReadChunkGroup {
+            placement_id: "group-0".into(),
+        };
+        assert_eq!(
+            consensus.request(request.clone()).unwrap(),
+            MetaReply::ChunkGroup(expected)
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        consensus.reply_limit = 1;
+        assert!(consensus.request(request.clone()).is_err());
+        consensus.reply_limit = 4096;
+        consensus.failed.store(true, Ordering::SeqCst);
+        assert!(consensus.request(request.clone()).is_err());
+        consensus.failed.store(false, Ordering::SeqCst);
+        consensus.stop.stop();
+        assert!(consensus.request(request).is_err());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
     }
 
     fn heartbeat() -> MetaRequest {
