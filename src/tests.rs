@@ -49988,7 +49988,7 @@ fn the_node_decoder_accepts_the_page_tier_shape_before_the_encoder_writes_it() {
         "the encoder no longer stamps the shape whose field the decoder reads"
     );
     assert!(
-        ENCODER.contains("append_u64(out, node.serves_page_tier as u64)"),
+        ENCODER.contains("append_u64(&mut out, node.serves_page_tier as u64)"),
         "the encoder stamps shape 33 but does not write the field it promises"
     );
     // AND THE OLD SHAPE IS STILL ACCEPTED. Narrowing this range is what would make every

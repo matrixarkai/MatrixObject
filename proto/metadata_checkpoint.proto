@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject;
+// Ordered fields, version 2. State is consumed directly from a reader.
+message MetadataCheckpointStream {
+  uint32 version = 1;
+  MetadataCheckpointHeader header = 2;
+  bytes state = 3; // MOSRSMETA18, with the roster shape specified below
+}
+message MetadataCheckpointHeader {
+  uint32 kind = 1; // 1
+  uint64 index = 2;
+  uint64 term = 3;
+  bytes catalog = 4; // canonical immutable MOGC group catalog
+  uint64 roster_shape = 5; // 33, including the explicit page-tier field
+}

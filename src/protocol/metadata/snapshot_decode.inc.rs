@@ -12,7 +12,19 @@ impl MetaSnapshot {
     }
 
     fn decode_with_roster_shape(data: &[u8], roster_shape: u64) -> Result<Self, ObjectError> {
-        let mut cursor = SnapshotByteCursor::new(data);
+        Self::decode_cursor(SnapshotByteCursor::new(data), roster_shape)
+    }
+
+    #[cfg(any(feature = "metadata-consensus", test))]
+    pub(crate) const STREAM_ROSTER_SHAPE: u64 = 33;
+
+    #[cfg(any(feature = "metadata-consensus", test))]
+    pub(crate) fn read_from(reader: &mut dyn std::io::Read, length: u64) -> Result<Self, ObjectError> {
+        let length = usize::try_from(length).map_err(|_| ObjectError::Corruption("metadata snapshot exceeds platform bounds".into()))?;
+        Self::decode_cursor(SnapshotByteCursor::from_reader(reader, length), Self::STREAM_ROSTER_SHAPE)
+    }
+
+    fn decode_cursor(mut cursor: SnapshotByteCursor<'_>, roster_shape: u64) -> Result<Self, ObjectError> {
         let magic = cursor.read_string()?;
         let version = magic
             .strip_prefix("MOSRSMETA")
@@ -25,6 +37,9 @@ impl MetaSnapshot {
             return Err(ObjectError::Corruption(
                 "metadata snapshot byte magic mismatch".to_string(),
             ));
+        }
+        if cursor.stream.is_some() && version != 18 {
+            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18".into()));
         }
         let has_transaction_read_versions = version >= 2;
         let has_tombstone_compaction_counters = version >= 3;
@@ -319,14 +334,14 @@ impl MetaSnapshot {
             )
         };
         let checksum = cursor.read_string()?;
-        let checksum_end = cursor.position();
+        let envelope_digest = cursor.prefix_digest();
         let envelope_checksum = cursor.read_string()?;
-        if cursor.position() != data.len() {
+        if cursor.position() != cursor.length {
             return Err(ObjectError::Corruption(
                 "metadata snapshot byte payload has trailing data".to_string(),
             ));
         }
-        if !etag_matches(&data[..checksum_end], &envelope_checksum) {
+        if parse_etag_digest(&envelope_checksum) != Some(envelope_digest) {
             return Err(ObjectError::Corruption(
                 "metadata snapshot byte envelope checksum mismatch".to_string(),
             ));
@@ -387,5 +402,29 @@ impl MetaSnapshot {
         }
         snapshot.validate()?;
         Ok(snapshot)
+    }
+}
+
+#[cfg(test)]
+mod metadata_stream_decode_tests {
+    use super::*;
+    #[test]
+    fn metadata_reader_matches_bytes_and_checks_truncation() {
+        let snapshot = crate::MatrixMetaService::new().export_snapshot();
+        let bytes = snapshot.to_bytes().unwrap();
+        struct Short<'a>(&'a [u8]);
+        impl std::io::Read for Short<'_> {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                let n = out.len().min(3).min(self.0.len());
+                out[..n].copy_from_slice(&self.0[..n]); self.0 = &self.0[n..]; Ok(n)
+            }
+        }
+        assert_eq!(MetaSnapshot::read_from(&mut Short(&bytes), bytes.len() as u64).unwrap(), snapshot);
+        for cut in [0, 1, bytes.len()/2, bytes.len()-1] {
+            assert!(MetaSnapshot::read_from(&mut Short(&bytes[..cut]), bytes.len() as u64).is_err());
+        }
+        let mut bad = bytes.clone(); let last = bad.len()-1; bad[last] ^= 1;
+        assert!(MetaSnapshot::read_from(&mut Short(&bad), bad.len() as u64).is_err());
+        assert!(MetaSnapshot::read_from(&mut Short(&bytes), bytes.len() as u64 + 1).is_err());
     }
 }

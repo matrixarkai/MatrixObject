@@ -70,9 +70,8 @@ impl PlacementSnapshot {
                 .saturating_add(encoded_string_len(&health.route_cache.session_checksum))
         }
         fn placement_page_health_size(health: &NodePageHealth) -> usize {
-            U64.saturating_mul(37).saturating_add(encoded_string_len(
-                &health.route_control_checksum,
-            ))
+            U64.saturating_mul(37)
+                .saturating_add(encoded_string_len(&health.route_control_checksum))
         }
         fn placement_chunk_health_size(health: &NodeChunkHealth) -> usize {
             U64.saturating_mul(15)
@@ -97,23 +96,15 @@ impl PlacementSnapshot {
             object_id_size(object_id)
                 .saturating_add(object_id_size(&placement.object_id))
                 .saturating_add(U64 * 4)
-                .saturating_add(
-                    placement
-                        .node_ids
-                        .iter()
-                        .fold(0usize, |total, node_id| {
-                            total.saturating_add(encoded_string_len(node_id))
-                        }),
-                )
+                .saturating_add(placement.node_ids.iter().fold(0usize, |total, node_id| {
+                    total.saturating_add(encoded_string_len(node_id))
+                }))
         }
         fn leader_lease_payload_size(lease: &PlacementLeaderLease) -> usize {
             encoded_string_len(&lease.leader_node_id).saturating_add(U64 * 4)
         }
         fn leader_lease_size(lease: Option<&PlacementLeaderLease>) -> usize {
-            U64.saturating_add(
-                lease.map(leader_lease_payload_size)
-                    .unwrap_or_default(),
-            )
+            U64.saturating_add(lease.map(leader_lease_payload_size).unwrap_or_default())
         }
         fn leader_lease_receipt_size(
             idempotency_key: &str,
@@ -140,12 +131,12 @@ impl PlacementSnapshot {
         let node_bytes = self.nodes.iter().fold(0usize, |total, (node_id, node)| {
             total.saturating_add(node_size(node_id, node))
         });
-        let placement_bytes = self
-            .placements
-            .iter()
-            .fold(0usize, |total, (object_id, placement)| {
-                total.saturating_add(placement_size(object_id, placement))
-            });
+        let placement_bytes =
+            self.placements
+                .iter()
+                .fold(0usize, |total, (object_id, placement)| {
+                    total.saturating_add(placement_size(object_id, placement))
+                });
         let receipt_bytes =
             self.leader_lease_receipts
                 .iter()
@@ -192,71 +183,109 @@ pub(crate) fn append_placement_roster(
     coordinator_config: &MetadataCoordinatorConfig,
     with_receipt_proof: bool,
 ) {
-    append_u64(out, nodes.len() as u64);
+    visit_placement_roster(
+        nodes,
+        placements,
+        leader_lease,
+        leader_lease_receipts,
+        coordinator_config,
+        with_receipt_proof,
+        &mut |bytes| {
+            out.extend_from_slice(bytes);
+            Ok::<(), std::convert::Infallible>(())
+        },
+    )
+    .unwrap();
+}
+
+pub(crate) fn visit_placement_roster<E>(
+    nodes: &BTreeMap<String, PlacementNode>,
+    placements: &BTreeMap<ObjectId, ObjectPlacement>,
+    leader_lease: &Option<PlacementLeaderLease>,
+    leader_lease_receipts: &BTreeMap<String, PlacementLeaderLeaseReceipt>,
+    coordinator_config: &MetadataCoordinatorConfig,
+    with_receipt_proof: bool,
+    emit: &mut impl FnMut(&[u8]) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut out = Vec::with_capacity(1024);
+    append_u64(&mut out, nodes.len() as u64);
     for (node_id, node) in nodes {
-        append_string(out, node_id);
-        append_string(out, &node.node_id);
-        append_string(out, &node.endpoint);
-        append_string(out, &node.service_kind);
-        append_string(out, &node.failure_domain);
-        append_u64(out, node.metadata_eligible as u64);
-        append_u64(out, node.data_eligible as u64);
-        append_u64(out, node.gateway_eligible as u64);
-        append_u64(out, node.metadata_value_bytes);
-        append_u64(out, node.capacity_bytes);
-        append_u64(out, node.used_bytes);
-        append_u64(out, node.committed_bytes);
-        append_u64(out, node.draining as u64);
-        append_u64(out, node.online as u64);
-        append_u64(out, node.last_heartbeat_ms);
-        append_u64(out, node.page_allocator_shard_index);
-        append_u64(out, node.page_allocator_shard_count);
+        append_string(&mut out, node_id);
+        append_string(&mut out, &node.node_id);
+        append_string(&mut out, &node.endpoint);
+        append_string(&mut out, &node.service_kind);
+        append_string(&mut out, &node.failure_domain);
+        append_u64(&mut out, node.metadata_eligible as u64);
+        append_u64(&mut out, node.data_eligible as u64);
+        append_u64(&mut out, node.gateway_eligible as u64);
+        append_u64(&mut out, node.metadata_value_bytes);
+        append_u64(&mut out, node.capacity_bytes);
+        append_u64(&mut out, node.used_bytes);
+        append_u64(&mut out, node.committed_bytes);
+        append_u64(&mut out, node.draining as u64);
+        append_u64(&mut out, node.online as u64);
+        append_u64(&mut out, node.last_heartbeat_ms);
+        append_u64(&mut out, node.page_allocator_shard_index);
+        append_u64(&mut out, node.page_allocator_shard_count);
         // AT THE POSITION THE DECODER ALREADY READS IT. The reader learned this shape in
         // the change before this one, so a checksum written here is verifiable by a build
         // that shipped before it.
-        append_u64(out, node.serves_page_tier as u64);
-        append_placement_meta_health(out, &node.meta_health);
-        append_placement_page_health(out, &node.page_health);
-        append_placement_chunk_health(out, &node.chunk_health, true, true, true);
+        append_u64(&mut out, node.serves_page_tier as u64);
+        append_placement_meta_health(&mut out, &node.meta_health);
+        append_placement_page_health(&mut out, &node.page_health);
+        append_placement_chunk_health(&mut out, &node.chunk_health, true, true, true);
+        emit(&out)?;
+        out.clear();
     }
-    append_u64(out, placements.len() as u64);
+    append_u64(&mut out, placements.len() as u64);
     for (object_id, placement) in placements {
-        append_object_id(out, object_id);
-        append_object_id(out, &placement.object_id);
-        append_u64(out, placement.version);
-        append_u64(out, placement.length);
-        append_u64(out, placement.update_time_ms);
-        append_u64(out, placement.node_ids.len() as u64);
+        append_object_id(&mut out, object_id);
+        append_object_id(&mut out, &placement.object_id);
+        append_u64(&mut out, placement.version);
+        append_u64(&mut out, placement.length);
+        append_u64(&mut out, placement.update_time_ms);
+        append_u64(&mut out, placement.node_ids.len() as u64);
         for node_id in &placement.node_ids {
-            append_string(out, node_id);
+            append_string(&mut out, node_id);
+            emit(&out)?;
+            out.clear();
         }
+        emit(&out)?;
+        out.clear();
     }
     if let Some(lease) = leader_lease {
-        append_u64(out, 1);
-        append_string(out, &lease.leader_node_id);
-        append_u64(out, lease.epoch);
-        append_u64(out, lease.acquire_time_ms);
-        append_u64(out, lease.expire_time_ms);
-        append_u64(out, lease.ttl_ms);
+        append_u64(&mut out, 1);
+        append_string(&mut out, &lease.leader_node_id);
+        append_u64(&mut out, lease.epoch);
+        append_u64(&mut out, lease.acquire_time_ms);
+        append_u64(&mut out, lease.expire_time_ms);
+        append_u64(&mut out, lease.ttl_ms);
     } else {
-        append_u64(out, 0);
+        append_u64(&mut out, 0);
+        emit(&out)?;
+        out.clear();
     }
-    append_u64(out, leader_lease_receipts.len() as u64);
+    append_u64(&mut out, leader_lease_receipts.len() as u64);
     for (idempotency_key, receipt) in leader_lease_receipts {
-        append_string(out, idempotency_key);
-        append_string(out, &receipt.idempotency_key);
-        append_string(out, &receipt.operation);
-        append_string(out, &receipt.request_checksum);
-        append_string(out, &receipt.lease.leader_node_id);
-        append_u64(out, receipt.lease.epoch);
-        append_u64(out, receipt.lease.acquire_time_ms);
-        append_u64(out, receipt.lease.expire_time_ms);
-        append_u64(out, receipt.lease.ttl_ms);
+        append_string(&mut out, idempotency_key);
+        append_string(&mut out, &receipt.idempotency_key);
+        append_string(&mut out, &receipt.operation);
+        append_string(&mut out, &receipt.request_checksum);
+        append_string(&mut out, &receipt.lease.leader_node_id);
+        append_u64(&mut out, receipt.lease.epoch);
+        append_u64(&mut out, receipt.lease.acquire_time_ms);
+        append_u64(&mut out, receipt.lease.expire_time_ms);
+        append_u64(&mut out, receipt.lease.ttl_ms);
         if with_receipt_proof {
-            append_u64(out, receipt.commit_index);
-            append_u64(out, receipt.update_time_ms);
-            append_string(out, &receipt.receipt_proof_checksum);
+            append_u64(&mut out, receipt.commit_index);
+            append_u64(&mut out, receipt.update_time_ms);
+            append_string(&mut out, &receipt.receipt_proof_checksum);
+            emit(&out)?;
+            out.clear();
         }
+        emit(&out)?;
+        out.clear();
     }
-    append_metadata_coordinator_config(out, coordinator_config);
+    append_metadata_coordinator_config(&mut out, coordinator_config);
+    emit(&out)
 }

@@ -3,11 +3,23 @@
 pub(crate) struct SnapshotByteCursor<'a> {
     data: &'a [u8],
     cursor: usize,
+    stream: Option<&'a mut dyn std::io::Read>,
+    length: usize,
+    digest: u64,
 }
 
 impl<'a> SnapshotByteCursor<'a> {
     pub(crate) fn new(data: &'a [u8]) -> Self {
-        Self { data, cursor: 0 }
+        Self { data, cursor: 0, stream: None, length: data.len(), digest: FNV1A64_OFFSET_BASIS }
+    }
+
+    #[cfg(any(feature = "metadata-consensus", test))]
+    pub(crate) fn from_reader(reader: &'a mut dyn std::io::Read, length: usize) -> Self {
+        Self { data: &[], cursor: 0, stream: Some(reader), length, digest: FNV1A64_OFFSET_BASIS }
+    }
+
+    pub(crate) fn prefix_digest(&self) -> u64 {
+        if self.stream.is_some() { self.digest } else { fnv1a64(&self.data[..self.cursor]) }
     }
 
     pub(crate) fn position(&self) -> usize {
@@ -18,13 +30,18 @@ impl<'a> SnapshotByteCursor<'a> {
         let end = self.cursor.checked_add(8).ok_or_else(|| {
             ObjectError::Corruption("metadata snapshot cursor overflow".to_string())
         })?;
-        if end > self.data.len() {
+        if end > self.length {
             return Err(ObjectError::Corruption(
                 "metadata snapshot integer is truncated".to_string(),
             ));
         }
         let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&self.data[self.cursor..end]);
+        if let Some(reader) = self.stream.as_mut() {
+            reader.read_exact(&mut bytes).map_err(|e| ObjectError::Corruption(format!("metadata snapshot read failed: {e}")))?;
+            self.digest = fnv1a64_resumed(self.digest, &bytes);
+        } else {
+            bytes.copy_from_slice(&self.data[self.cursor..end]);
+        }
         self.cursor = end;
         Ok(u64::from_le_bytes(bytes))
     }
@@ -58,10 +75,19 @@ impl<'a> SnapshotByteCursor<'a> {
         let end = self.cursor.checked_add(len).ok_or_else(|| {
             ObjectError::Corruption("metadata snapshot cursor overflow".to_string())
         })?;
-        if end > self.data.len() {
+        if end > self.length {
             return Err(ObjectError::Corruption(
                 "metadata snapshot string is truncated".to_string(),
             ));
+        }
+        if let Some(reader) = self.stream.as_mut() {
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(len).map_err(|e| ObjectError::Corruption(format!("metadata snapshot allocation failed: {e}")))?;
+            bytes.resize(len, 0);
+            reader.read_exact(&mut bytes).map_err(|e| ObjectError::Corruption(format!("metadata snapshot read failed: {e}")))?;
+            self.digest = fnv1a64_resumed(self.digest, &bytes);
+            self.cursor = end;
+            return String::from_utf8(bytes).map_err(|_| ObjectError::Corruption("metadata snapshot string is not utf8".into()));
         }
         let value = std::str::from_utf8(&self.data[self.cursor..end])
             .map_err(|_| {
@@ -80,11 +106,14 @@ impl<'a> SnapshotByteCursor<'a> {
     }
 
     pub(crate) fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], ObjectError> {
+        if self.stream.is_some() {
+            return Err(ObjectError::Corruption("borrowed byte reads require a slice cursor".into()));
+        }
         let end = self
             .cursor
             .checked_add(len)
             .ok_or_else(|| ObjectError::Corruption("snapshot byte cursor overflow".to_string()))?;
-        if end > self.data.len() {
+        if end > self.length {
             return Err(ObjectError::Corruption(
                 "snapshot byte payload is truncated".to_string(),
             ));

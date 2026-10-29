@@ -4,7 +4,9 @@
 use super::meta_message::{MetaReply, MetaRequest};
 use super::meta_server::apply_with_groups;
 use super::shutdown::ServerShutdown;
-use crate::cluster::consensus_checkpoint::{storage, Image, Policy};
+#[cfg(test)]
+use crate::cluster::consensus_checkpoint::Image;
+use crate::cluster::consensus_checkpoint::{storage, Policy};
 use crate::placement_outcome::PlacementOutcome;
 use crate::{MatrixMetaService, MetaSnapshot, ObjectError};
 use matrixraft::{
@@ -364,8 +366,13 @@ fn run(
                 Ok(())
             },
             |id, reader, length| {
-                let image = Image::read_at(reader, length, 1, id.clone())?;
-                let restored = restore_image(image, groups)?;
+                let snapshot = super::meta_checkpoint::restore(
+                    reader,
+                    length,
+                    id.clone(),
+                    &groups.to_bytes().map_err(storage)?,
+                )?;
+                let restored = restore_snapshot(snapshot, groups)?;
                 **application.borrow_mut() = restored;
                 applied_term.set(id.term);
                 checkpoint.restored(id.index);
@@ -407,8 +414,18 @@ fn run(
         // No new batch is prepared until all earlier accepted outcomes apply or
         // leadership changes. A client timeout alone does not remove a proposal.
         if pending.is_empty() && pending_read.is_none() {
-            checkpoint.maybe_checkpoint(peer, applied_term.get(), || {
-                Ok((service.export_snapshot().to_bytes()?, groups.to_bytes()?))
+            checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
+                super::meta_checkpoint::capture(
+                    service.export_snapshot(),
+                    groups.to_bytes().map_err(storage)?,
+                    id,
+                )
+                .map(|stream| {
+                    stream.map(|s| {
+                        let length = s.length;
+                        (s, length)
+                    })
+                })
             })?;
             while queued.len() < PROPOSALS_PER_BATCH {
                 match requests.try_recv() {
@@ -466,16 +483,18 @@ fn restore_checkpoint(
     id: LogId,
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MatrixMetaService, RaftError> {
-    restore_image(Image::decode_at(bytes, 1, id)?, groups)
+    let snapshot = super::meta_checkpoint::restore(
+        &mut std::io::Cursor::new(bytes),
+        bytes.len() as u64,
+        id,
+        &groups.to_bytes().map_err(storage)?,
+    )?;
+    restore_snapshot(snapshot, groups)
 }
-fn restore_image(
-    image: Image,
+fn restore_snapshot(
+    snapshot: MetaSnapshot,
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MatrixMetaService, RaftError> {
-    if image.catalog != groups.to_bytes().map_err(storage)? {
-        return Err(storage("metadata checkpoint group catalog mismatch"));
-    }
-    let snapshot = MetaSnapshot::from_bytes(&image.state).map_err(storage)?;
     let mut service = MatrixMetaService::new();
     service
         .install_placement_roster(&snapshot)
@@ -913,8 +932,23 @@ mod tests {
         };
         let bytes =
             Image::new(1, id.clone(), saved.0.clone(), groups.to_bytes().unwrap()).encode_to_vec();
-        let restored = restore_checkpoint(&bytes, id.clone(), &groups).unwrap();
-        assert_eq!(state(&restored), saved);
+        let mut streamed = Vec::new();
+        crate::cluster::meta_checkpoint::capture(
+            service.export_snapshot(),
+            groups.to_bytes().unwrap(),
+            id.clone(),
+        )
+        .unwrap()
+        .unwrap()
+        .read_to_end(&mut streamed)
+        .unwrap();
+        for encoded in [&bytes, &streamed] {
+            let restored = restore_checkpoint(encoded, id.clone(), &groups).unwrap();
+            assert_eq!(state(&restored), saved);
+            assert!(
+                restore_checkpoint(encoded, id.clone(), &ChunkGroupCatalog::default()).is_err()
+            );
+        }
         assert!(restore_checkpoint(&bytes, id, &ChunkGroupCatalog::default()).is_err());
         assert_eq!(state(&service), saved);
     }

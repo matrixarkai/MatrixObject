@@ -2,7 +2,8 @@
 // Copyright 2026 MatrixArkAI
 impl MetaSnapshot {
     pub(crate) fn checksum_material_hash(&self) -> String {
-        let mut material = Vec::with_capacity(self.encoded_size_hint());
+        let mut material = Vec::with_capacity(1024);
+        let mut digest = FNV1A64_OFFSET_BASIS;
         append_u64(&mut material, self.next_commit_index);
         append_u64(&mut material, self.next_change_sequence);
         append_u64(&mut material, self.compacted_tombstone_count);
@@ -23,6 +24,8 @@ impl MetaSnapshot {
         for (idempotency_key, receipt) in &self.coordinator_config_receipts {
             append_string(&mut material, idempotency_key);
             append_metadata_coordinator_config_receipt(&mut material, receipt);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         for (key, record) in &self.records {
             append_string(&mut material, key);
@@ -30,6 +33,8 @@ impl MetaSnapshot {
             append_u64(&mut material, record.version());
             append_u64(&mut material, record.update_time_ms);
             append_u64(&mut material, record.deleted() as u64);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         for (namespace, lease) in &self.leases {
             append_string(&mut material, namespace);
@@ -37,11 +42,15 @@ impl MetaSnapshot {
             append_u64(&mut material, lease.epoch);
             append_u64(&mut material, lease.expire_time_ms);
             append_u64(&mut material, lease.ttl_ms);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         append_u64(&mut material, self.lease_receipts.len() as u64);
         for (idempotency_key, receipt) in &self.lease_receipts {
             append_string(&mut material, idempotency_key);
             append_metadata_lease_receipt(&mut material, receipt);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         for (session_id, session) in &self.coordinator_sessions {
             append_string(&mut material, session_id);
@@ -52,6 +61,8 @@ impl MetaSnapshot {
             append_u64(&mut material, session.last_renew_ms);
             append_u64(&mut material, session.expire_time_ms);
             append_u64(&mut material, session.ttl_ms);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         append_u64(
             &mut material,
@@ -60,6 +71,8 @@ impl MetaSnapshot {
         for (idempotency_key, receipt) in &self.coordinator_session_receipts {
             append_string(&mut material, idempotency_key);
             append_coordinator_session_receipt(&mut material, receipt);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         for (shard_id, shard) in &self.shards {
             append_string(&mut material, shard_id);
@@ -68,16 +81,22 @@ impl MetaSnapshot {
             append_string(&mut material, &shard.owner_node_id);
             append_u64(&mut material, shard.epoch);
             append_u64(&mut material, shard.draining as u64);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         append_u64(&mut material, self.shard_receipts.len() as u64);
         for (idempotency_key, receipt) in &self.shard_receipts {
             append_string(&mut material, idempotency_key);
             append_metadata_shard_receipt(&mut material, receipt);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         append_u64(&mut material, self.batch_request_receipts.len() as u64);
         for (idempotency_key, receipt) in &self.batch_request_receipts {
             append_string(&mut material, idempotency_key);
             append_metadata_batch_receipt(&mut material, receipt);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         for (transaction_id, transaction) in &self.transactions {
             append_string(&mut material, transaction_id);
@@ -93,16 +112,24 @@ impl MetaSnapshot {
                 append_string(&mut material, &mutation.record_value.as_text());
                 append_u64(&mut material, mutation.expected_version);
                 append_u64(&mut material, mutation.delete as u64);
+                digest = fnv1a64_resumed(digest, &material);
+                material.clear();
             }
             for (key, version) in &transaction.read_versions {
                 append_string(&mut material, key);
                 append_u64(&mut material, *version);
+                digest = fnv1a64_resumed(digest, &material);
+                material.clear();
             }
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         append_u64(&mut material, self.transaction_receipts.len() as u64);
         for (idempotency_key, receipt) in &self.transaction_receipts {
             append_string(&mut material, idempotency_key);
             append_metadata_transaction_receipt(&mut material, receipt);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         for (checkpoint_key, checkpoint) in &self.change_checkpoints {
             append_string(&mut material, checkpoint_key);
@@ -113,6 +140,8 @@ impl MetaSnapshot {
             append_u64(&mut material, checkpoint.update_time_ms);
             append_string(&mut material, &checkpoint.owner);
             append_string(&mut material, &checkpoint.note);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         append_u64(&mut material, self.changes.len() as u64);
         for change in &self.changes {
@@ -122,20 +151,30 @@ impl MetaSnapshot {
             append_u64(&mut material, change.version);
             append_u64(&mut material, change.deleted as u64);
             append_u64(&mut material, change.update_time_ms);
+            digest = fnv1a64_resumed(digest, &material);
+            material.clear();
         }
         // THE ROSTER IS CHECKSUM MATERIAL. Two durable fields that no checksum covered have
         // already been found in this codebase once; durable state that nothing covers is
         // state a flipped bit can change without anything noticing.
         append_u64(&mut material, self.placement_commit_index);
-        append_placement_roster(
-            &mut material,
+        digest = fnv1a64_resumed(digest, &material);
+        material.clear();
+        visit_placement_roster(
             &self.placement_nodes,
             &self.placements,
             &self.placement_leader_lease,
             &self.placement_leader_lease_receipts,
             &self.placement_coordinator_config,
             true,
-        );
-        etag(&material)
+            &mut |bytes| {
+                digest = fnv1a64_resumed(digest, bytes);
+                Ok::<(), std::convert::Infallible>(())
+            },
+        )
+        .unwrap();
+        let mut checksum = String::with_capacity(24);
+        append_etag_of_digest(&mut checksum, digest);
+        checksum
     }
 }
