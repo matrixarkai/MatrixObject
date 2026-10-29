@@ -603,6 +603,13 @@ fn configured_placement_writes_real_chunk_processes_and_recovers_after_failover(
 #[cfg(feature = "replica-server")]
 #[test]
 fn chunk_processes_report_usage_follow_leaders_and_expire_without_manual_heartbeats() {
+    run_chunk_health(false);
+}
+#[test]
+fn verified_chunk_heartbeats_follow_metadata_failover_and_chunk_restart() {
+    run_chunk_health(true);
+}
+fn run_chunk_health(verified: bool) {
     use matrixobjectstore_rs::cluster::{RemoteReplicaClient, ReplicaClientOptions};
     use matrixobjectstore_rs::{ChunkId, PageId};
     struct Chunks {
@@ -661,18 +668,32 @@ fn chunk_processes_report_usage_follow_leaders_and_expire_without_manual_heartbe
         root,
     };
     drop(reserved);
+    let identity_file = chunks.root.join("metadata.identity");
+    if verified {
+        use prost::Message;
+        let identity = group
+            .client(initial_leader)
+            .metadata_group_identity()
+            .unwrap();
+        std::fs::write(&identity_file, identity.encode_to_vec()).unwrap();
+    }
     let start = |i: usize, path: &std::path::Path| {
-        processes::start(
-            env!("CARGO_BIN_EXE_chunkserver"),
-            &[
-                ("MATRIXOBJECT_REPLICA_ADDR", &endpoints[i]),
-                ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
-                ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "8192"),
-                ("MATRIXOBJECT_CHUNK_NODE_ID", &format!("auto-{i}")),
-                ("MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS", &metadata),
-                ("MATRIXOBJECT_CHUNK_HEARTBEAT_MS", "100"),
-            ],
-        )
+        let node_id = format!("auto-{i}");
+        let mut environment: Vec<(&str, &str)> = vec![
+            ("MATRIXOBJECT_REPLICA_ADDR", &endpoints[i]),
+            ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
+            ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "8192"),
+            ("MATRIXOBJECT_CHUNK_NODE_ID", node_id.as_str()),
+            ("MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS", &metadata),
+            ("MATRIXOBJECT_CHUNK_HEARTBEAT_MS", "100"),
+        ];
+        if verified {
+            environment.push((
+                "MATRIXOBJECT_CHUNK_METADATA_IDENTITY_FILE",
+                identity_file.to_str().unwrap(),
+            ));
+        }
+        processes::start(env!("CARGO_BIN_EXE_chunkserver"), &environment)
     };
     for i in 0..3 {
         chunks
@@ -1142,4 +1163,109 @@ fn verified_metadata_catalog_refuses_foreign_groups_and_survives_recovery() {
     // Identity remains inspectable without claiming quorum health.
     assert!(expected.same_group(&group.client(remaining).metadata_group_identity().unwrap()));
     assert!(group.client(remaining).probe().into_result().is_err());
+}
+
+#[test]
+fn chunk_heartbeat_identity_files_refuse_invalid_data_and_foreign_metadata() {
+    use prost::Message;
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = reserved.local_addr().unwrap().to_string();
+    let roster = format!("guarded@{address}@rack");
+    let intended = Group::with_roster(Some(roster.clone()));
+    let foreign = Group::with_roster(Some(roster));
+    let leader = intended.leader();
+    let foreign_leader = foreign.leader();
+    let identity = intended.client(leader).metadata_group_identity().unwrap();
+    let path = intended.root.join("metadata.identity");
+    let bytes = identity.encode_to_vec();
+    let endpoints = foreign.api_addresses[foreign_leader].to_string();
+    // Bad files must stop startup, not silently select an unverified catalog.
+    for bad in [
+        Vec::new(),
+        vec![0],
+        vec![0; 4097],
+        bytes[..bytes.len() - 1].to_vec(),
+    ] {
+        std::fs::write(&path, bad).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_chunkserver"))
+            .env("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0")
+            .env("MATRIXOBJECT_CHUNK_NODE_ID", "guarded")
+            .env("MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS", &endpoints)
+            .env("MATRIXOBJECT_CHUNK_METADATA_IDENTITY_FILE", &path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let status = processes::reap_within(&mut child, Duration::from_secs(3));
+        if status.is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("invalid identity did not stop startup");
+        }
+        assert_eq!(status.unwrap(), 2);
+    }
+    std::fs::write(&path, bytes).unwrap();
+    let before = foreign
+        .client(foreign_leader)
+        .list_placement_nodes()
+        .unwrap();
+    drop(reserved);
+    let start = |metadata: &str| {
+        processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", &address),
+                ("MATRIXOBJECT_CHUNK_NODE_ID", "guarded"),
+                ("MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS", metadata),
+                (
+                    "MATRIXOBJECT_CHUNK_METADATA_IDENTITY_FILE",
+                    path.to_str().unwrap(),
+                ),
+                ("MATRIXOBJECT_CHUNK_HEARTBEAT_MS", "100"),
+                ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "8192"),
+            ],
+        )
+    };
+    let mut chunk = start(&endpoints);
+    let stderr = chunk.child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut line = String::new();
+        BufReader::new(stderr).read_line(&mut line).unwrap();
+        let _ = tx.send(line);
+    });
+    let report = rx.recv_timeout(Duration::from_secs(5));
+    let _ = chunk.child.kill();
+    let _ = processes::reap_within(&mut chunk.child, Duration::from_secs(3));
+    reader.join().unwrap();
+    assert!(report
+        .unwrap()
+        .contains("initial metadata configuration does not match catalog"));
+    assert_eq!(
+        foreign
+            .client(foreign_leader)
+            .list_placement_nodes()
+            .unwrap(),
+        before
+    );
+    drop(chunk);
+    let _chunk = start(&intended.api_addresses[leader].to_string());
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let nodes = intended.client(leader).list_placement_nodes().unwrap();
+        if nodes[0].online && nodes[0].last_heartbeat_ms > 0 && nodes[0].capacity_bytes == 8192 {
+            break;
+        }
+        assert!(Instant::now() < until, "trusted heartbeat never arrived");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(
+        foreign
+            .client(foreign_leader)
+            .list_placement_nodes()
+            .unwrap(),
+        before
+    );
 }

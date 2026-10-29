@@ -119,6 +119,19 @@ The binary heartbeat request uses code 71; older servers refuse it as unknown.
 It does not change the existing heartbeat request or durable protobuf format.
 
 `MATRIXOBJECT_CHUNK_HEARTBEAT_MS` defaults to 1000 and accepts 100..60000 ms.
+For a Raft control plane, set `MATRIXOBJECT_CHUNK_METADATA_IDENTITY_FILE` to a
+trusted canonical binary protobuf `MetaGroupIdentity` file (schema:
+`proto/meta_identity.proto`). Each heartbeat connection and leader redirect is
+checked against this configuration before sending a report. The file is read
+once at startup with a 4096-byte limit; missing, malformed, oversized, or invalid
+files stop startup. A different live metadata cluster is refused, with no fallback
+to unverified reporting. Restart the chunk process to load a deliberately changed
+identity. Without this option the existing unverified catalog behavior remains.
+Embedding callers set `ReplicaHeartbeatOptions::expected_metadata_identity` to
+`Some(identity)` for the same check, or `None` for the existing behavior. The
+identity must come from trusted deployment configuration; fetching it from an
+unverified endpoint does not establish that the endpoint is the intended cluster.
+
 Reports carry the actual configured capacity and current page payload bytes,
 including zero-filled space. The byte count is initialized once after recovery
 and updated from the changed page on each mutation; reporting never scans all
