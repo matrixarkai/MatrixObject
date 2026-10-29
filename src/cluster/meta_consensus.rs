@@ -545,6 +545,7 @@ fn read_only(request: &MetaRequest) -> bool {
         MetaRequest::AllocateObjectPages { .. }
         | MetaRequest::PublishManifest { .. }
         | MetaRequest::HeartbeatRootNode { .. }
+        | MetaRequest::ReportChunkNode { .. }
         | MetaRequest::HeartbeatChunkNode { .. }
         | MetaRequest::ExpireRootNodeHeartbeats { .. }
         | MetaRequest::CommitObjectPlacement { .. }
@@ -606,6 +607,7 @@ fn propose_batch(
             }
 
             MetaRequest::HeartbeatRootNode { node_id, .. }
+            | MetaRequest::ReportChunkNode { node_id, .. }
             | MetaRequest::HeartbeatChunkNode { node_id, .. } => {
                 nodes.insert(node_id.clone());
             }
@@ -684,6 +686,12 @@ fn prepare(
     limit: usize,
     groups: &super::ChunkGroupCatalog,
 ) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
+    let stamped = if matches!(request, MetaRequest::ReportChunkNode { .. }) {
+        Some(super::health_report::stamp(request.clone())?)
+    } else {
+        None
+    };
+    let request = stamped.as_ref().unwrap_or(request);
     groups.check_request(request)?;
     if let MetaRequest::AllocateObjectPages { page_count } = request {
         let (decided, reply) = super::meta_server::decide_allocation(service, *page_count, limit)?;
@@ -953,6 +961,59 @@ mod tests {
             receiver.try_recv(),
             Err(mpsc::TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn received_health_preparation_restores_state_and_replays_decided_time() {
+        let (mut service, groups) = fixture(1, 0);
+        let before = state(&service);
+        let request = MetaRequest::ReportChunkNode {
+            node_id: "member-0-0".into(),
+            expected_endpoint: "127.0.0.1:10003".into(),
+            used_bytes: 256,
+            capacity_bytes: 1 << 30,
+            online: true,
+        };
+        let earliest = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let (payload, reply) = prepare(&mut service, &request, 65536, &groups).unwrap();
+        let latest = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert_eq!(state(&service), before);
+        let Some(MetaReply::PlacementNode(node)) = reply else {
+            panic!("missing health reply")
+        };
+        assert!((earliest..=latest).contains(&node.last_heartbeat_ms));
+        let mut recovered = service.clone();
+        PlacementOutcome::from_payload(&payload)
+            .unwrap()
+            .apply(&mut recovered)
+            .unwrap();
+        assert_eq!(
+            recovered.nodes["member-0-0"].last_heartbeat_ms,
+            node.last_heartbeat_ms
+        );
+        assert_eq!(recovered.nodes["member-0-0"].used_bytes, 256);
+        assert!(apply_with_groups(&mut service, request.clone(), 65536, &groups).is_err());
+        assert_eq!(state(&service), before);
+        let mut invalid = request.clone();
+        if let MetaRequest::ReportChunkNode {
+            expected_endpoint, ..
+        } = &mut invalid
+        {
+            *expected_endpoint = "127.0.0.1:1".into();
+        }
+        assert!(prepare(&mut service, &invalid, 65536, &groups).is_err());
+        assert_eq!(state(&service), before);
+        if let MetaRequest::ReportChunkNode { capacity_bytes, .. } = &mut invalid {
+            *capacity_bytes = 512;
+        }
+        assert!(prepare(&mut service, &invalid, 65536, &groups).is_err());
+        assert_eq!(state(&service), before);
     }
 
     fn heartbeat() -> MetaRequest {

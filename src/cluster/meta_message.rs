@@ -223,6 +223,13 @@ pub enum MetaRequest {
         expected: Option<CommittedPlacement>,
         expected_plan_checksum: String,
     },
+    ReportChunkNode {
+        node_id: String,
+        expected_endpoint: String,
+        used_bytes: u64,
+        capacity_bytes: u64,
+        online: bool,
+    },
     HeartbeatChunkNode {
         node_id: String,
         expected_endpoint: String,
@@ -272,6 +279,7 @@ impl MetaRequest {
             MetaRequest::PublishManifest { .. } => MetaRequestCode::PublishManifest,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
+            MetaRequest::ReportChunkNode { .. } => MetaRequestCode::ReportChunkNode,
             MetaRequest::HeartbeatChunkNode { .. } => MetaRequestCode::HeartbeatChunkNode,
             MetaRequest::ExpireRootNodeHeartbeats { .. } => {
                 MetaRequestCode::ExpireRootNodeHeartbeats
@@ -328,6 +336,23 @@ impl MetaRequest {
                     placement: Some(placement.into()),
                     expected: expected.as_ref().map(Into::into),
                     plan_checksum: expected_plan_checksum.clone(),
+                }
+                .encode_to_vec();
+            }
+            MetaRequest::ReportChunkNode {
+                node_id,
+                expected_endpoint,
+                used_bytes,
+                capacity_bytes,
+                online,
+            } => {
+                return super::health_report::HealthReport {
+                    version: 1,
+                    node_id: node_id.clone(),
+                    expected_endpoint: expected_endpoint.clone(),
+                    used_bytes: *used_bytes,
+                    capacity_bytes: *capacity_bytes,
+                    online: *online,
                 }
                 .encode_to_vec();
             }
@@ -399,6 +424,9 @@ impl MetaRequest {
     /// every field this reader did take came out of the wrong place -- a node id read one
     /// field short still parses into a valid string, naming a node nobody asked about.
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == MetaRequestCode::ReportChunkNode {
+            return super::health_report::decode(payload);
+        }
         if code == MetaRequestCode::AllocateObjectPages {
             if payload.len() > 32 {
                 return Err(ObjectError::Corruption(
@@ -480,7 +508,8 @@ impl MetaRequest {
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
-            MetaRequestCode::AllocateObjectPages
+            MetaRequestCode::ReportChunkNode
+            | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::CommitObjectPlacementIfCurrent => unreachable!(),
@@ -709,7 +738,9 @@ impl MetaReply {
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::ReadChunkGroup
             | MetaRequestCode::GroupIdentity => unreachable!(),
-            MetaRequestCode::HeartbeatRootNode | MetaRequestCode::HeartbeatChunkNode => {
+            MetaRequestCode::ReportChunkNode
+            | MetaRequestCode::HeartbeatRootNode
+            | MetaRequestCode::HeartbeatChunkNode => {
                 MetaReply::PlacementNode(take_node(&mut cursor)?)
             }
             MetaRequestCode::ListRootNodes => {

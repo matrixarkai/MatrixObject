@@ -267,6 +267,30 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus conditional_discards_replicate_and_recover_without_accepting_stale_sequences -- --exact --nocapture | tee /tmp/conditional-discard.log
           grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
 
+      - name: health reports validate canonical protobuf and decided time
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::health_report::tests::health_reports_are_bounded_canonical_and_stamped_only_when_decided -- --exact --nocapture | tee /tmp/health-report.log
+          grep -q 'test result: ok. 1 passed' /tmp/health-report.log
+
+      - name: received health preparation restores state and replays time
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::received_health_preparation_restores_state_and_replays_decided_time -- --exact --nocapture | tee /tmp/health-report.log
+          grep -q 'test result: ok. 1 passed' /tmp/health-report.log
+
+      - name: received health local journal preserves time
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_server::chunk_group_tests::received_health_local_journal_keeps_timestamp_after_restart -- --exact --nocapture | tee /tmp/health-report.log
+          grep -q 'test result: ok. 1 passed' /tmp/health-report.log
+
+      - name: received chunk health survives failover restart and expiry
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus received_chunk_health_keeps_decided_time_through_failover_restart_and_expiry -- --exact --nocapture | tee /tmp/health-process.log
+          grep -q 'test result: ok. 1 passed' /tmp/health-process.log
+
       - name: consensus inbox bounds admission and wakes for work ticks and shutdown
         run: |
           set -o pipefail
