@@ -372,3 +372,20 @@ checkpoint capture/restore and binary publication application. Packets are drive
 by an in-process test loop, and bulk catalog population uses a fixture command.
 It does not measure TCP server admission, live-client throughput, independent-host
 failure isolation, or production memory use at 100,000 objects.
+
+## Full-catalog live metadata servers
+
+`cluster::meta_server::catalog_recovery_tests::full_catalog_tcp_servers_checkpoint_rejoin_and_restart`
+starts three TCP metadata servers from identical preseeded 100,000-entry catalogs.
+The seed is installed inside the test before Raft starts; no production seeding
+API is added. With one follower stopped, clients publish 64 tombstones over TCP.
+The surviving voters must compact a file-backed checkpoint beyond the stopped
+voter's initial log position. The stopped server reopens its retained storage,
+and the other follower is stopped so the recovered voter is required for quorum.
+A client then recreates one object and all servers restart from retained storage.
+Selected changed and unchanged manifests must retain their expected generations.
+
+The servers run production request and Raft workers with real TCP peer transport
+on one host. Metadata request pools use 16 workers explicitly; product defaults
+are unchanged. Empty objects isolate metadata recovery and do not test chunk
+payload transfer. This is a recovery guard, not a throughput or multi-host result.
