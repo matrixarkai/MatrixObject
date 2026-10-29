@@ -536,6 +536,130 @@ mod tests {
         assert_eq!(ManifestCatalog::from_bytes(&snapshot).unwrap(), catalog);
     }
     #[test]
+    fn full_manifest_catalog_replays_and_recovers_without_losing_capacity_fences() {
+        use crate::placement_outcome::PlacementOutcome;
+        use crate::{MatrixMetaService, MetaSnapshot};
+        fn value(index: usize, generation: u64, deleted: bool) -> ObjectManifest {
+            ObjectManifest {
+                format_version: 1,
+                bucket: "capacity".into(),
+                key: format!("object-{index:06}"),
+                generation,
+                length: 0,
+                extents: vec![],
+                deleted,
+            }
+        }
+        fn publish(
+            left: &mut MatrixMetaService,
+            right: &mut MatrixMetaService,
+            outcome: ManifestOutcome,
+        ) {
+            let decided = PlacementOutcome::publish_manifest(left, outcome, 0).unwrap();
+            let bytes = decided.to_payload().unwrap();
+            decided.apply(left).unwrap();
+            PlacementOutcome::from_payload(&bytes)
+                .unwrap()
+                .apply(right)
+                .unwrap();
+        }
+        let began = std::time::Instant::now();
+        let mut service = MatrixMetaService::new();
+        let mut replayed = MatrixMetaService::new();
+        for index in 0..MAX_OBJECTS {
+            publish(
+                &mut service,
+                &mut replayed,
+                ManifestOutcome::decide(None, value(index, 1, false)).unwrap(),
+            );
+        }
+        assert_eq!(service.object_manifests.len(), MAX_OBJECTS);
+        assert_eq!(service.placements.len(), MAX_OBJECTS);
+        let extra = value(MAX_OBJECTS, 1, false);
+        let overflow = ManifestOutcome::decide(None, extra.clone()).unwrap();
+        assert!(PlacementOutcome::publish_manifest(&service, overflow.clone(), 0).is_err());
+        // A structurally valid decoded outcome must enforce the same limit during
+        // replay, before changing either the catalog or its paired placement.
+        let mut unchecked =
+            PlacementOutcome::publish_manifest(&MatrixMetaService::new(), overflow.clone(), 0)
+                .unwrap();
+        unchecked.before_index = service.placement_commit_index;
+        unchecked.after_index = unchecked.before_index + 1;
+        let unchecked = PlacementOutcome::from_payload(&unchecked.to_payload().unwrap()).unwrap();
+        let before = service.export_snapshot();
+        assert!(unchecked.apply(&mut service).is_err());
+        // Keep failures bounded instead of printing 100,000 complete entries.
+        assert!(
+            service.export_snapshot() == before,
+            "rejected replay changed metadata"
+        );
+        drop(before);
+        assert!(
+            service.export_snapshot() == replayed.export_snapshot(),
+            "binary replay diverged at capacity"
+        );
+        assert!(service.object_manifests.get(&extra.object_id()).is_none());
+        assert!(!service.placements.contains_key(&extra.object_id()));
+        for index in [0, MAX_OBJECTS / 2, MAX_OBJECTS - 1] {
+            publish(
+                &mut service,
+                &mut replayed,
+                ManifestOutcome::decide(Some(value(index, 1, false)), value(index, 2, true))
+                    .unwrap(),
+            );
+        }
+        assert_eq!(service.object_manifests.len(), MAX_OBJECTS);
+        assert!(PlacementOutcome::publish_manifest(&service, overflow.clone(), 0).is_err());
+        let snapshot = service.export_snapshot();
+        assert!(
+            snapshot == replayed.export_snapshot(),
+            "tombstone replay diverged at capacity"
+        );
+        let bytes = snapshot.to_bytes().unwrap();
+        let streamed = MetaSnapshot::read_from(&mut bytes.as_slice(), bytes.len() as u64).unwrap();
+        assert!(streamed == snapshot, "streamed snapshot changed metadata");
+        assert!(
+            MetaSnapshot::from_bytes(&bytes).unwrap() == snapshot,
+            "decoded snapshot changed metadata"
+        );
+        let mut restored = MatrixMetaService::new();
+        restored.install_placement_roster(&streamed).unwrap();
+        restored.install_snapshot(streamed).unwrap();
+        assert!(
+            restored.export_snapshot() == snapshot,
+            "installed snapshot changed metadata"
+        );
+        assert!(PlacementOutcome::publish_manifest(&restored, overflow, 0).is_err());
+        for index in [0, MAX_OBJECTS / 2, MAX_OBJECTS - 1] {
+            // Deletion keeps the slot and generation fence even across recovery.
+            assert!(PlacementOutcome::publish_manifest(
+                &restored,
+                ManifestOutcome::decide(None, value(index, 1, false)).unwrap(),
+                0
+            )
+            .is_err());
+            publish(
+                &mut restored,
+                &mut replayed,
+                ManifestOutcome::decide(Some(value(index, 2, true)), value(index, 3, false))
+                    .unwrap(),
+            );
+        }
+        assert_eq!(restored.object_manifests.len(), MAX_OBJECTS);
+        assert_eq!(restored.placements.len(), MAX_OBJECTS);
+        assert!(
+            restored.export_snapshot() == replayed.export_snapshot(),
+            "recreation after recovery diverged"
+        );
+        println!(
+            "MANIFEST_CAPACITY objects={} snapshot_bytes={} elapsed_ms={}",
+            MAX_OBJECTS,
+            bytes.len(),
+            began.elapsed().as_millis()
+        );
+    }
+
+    #[test]
     fn metadata_manifest_snapshot_preserves_tombstones_and_invalidates_cached_exports() {
         use crate::{MatrixMetaService, MetaSnapshot};
         let mut service = MatrixMetaService::new();

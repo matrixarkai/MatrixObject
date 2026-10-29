@@ -195,6 +195,12 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus coupled_groups::suspended_leaders_rejoin_without_serving_stale_objects -- --exact --nocapture | tee /tmp/suspended-leaders.log
           grep -q 'test result: ok. 1 passed' /tmp/suspended-leaders.log
 
+      - name: full manifest catalog preserves replay and recovery capacity fences
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib object_manifest::tests::full_manifest_catalog_replays_and_recovers_without_losing_capacity_fences -- --exact --nocapture | tee /tmp/manifest-cardinality.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-cardinality.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail
