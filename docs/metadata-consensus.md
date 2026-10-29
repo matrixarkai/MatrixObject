@@ -269,3 +269,17 @@ metadata voters before enabling verified clients.
 A changed configuration stops the call before its data request is sent. A lost
 mutation reply remains uncertain and is not replayed. Identity checks do not
 make separate metadata clusters interchangeable or authorize changing membership.
+
+## Large metadata transfer validation
+
+`metadata_group_stream_transfers_more_than_256_mib` runs three durable MatrixRaft
+peers with a 272 MiB metadata fixture. It isolates one voter, captures the leader,
+drops a file-transfer packet, duplicates subsequent file packets, and verifies
+catch-up plus a later mutation. It then reopens all three peers and validates
+metadata checksums and restored state. The 9 MiB companion runs without an ignored
+test flag. CI selects both tests explicitly.
+
+These tests generate deterministic fixture mutations directly in their harness;
+they exercise the production checkpoint codec, peer packets, storage and replay,
+but not the metadata request API, separate processes, or multi-host networking.
+Existing process tests cover placement and health operations on smaller state.
