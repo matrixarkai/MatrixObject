@@ -219,3 +219,19 @@ chunk compression statistics run on the worker. Final WAL replacement and sync,
 and incoming snapshot restoration still
 run synchronously. This change does not promise a bound on request latency or
 constant memory; later writes can also fill the WAL before capture completes.
+
+## Peer receive scheduling
+
+The peer listener handles up to 16 incomplete connections concurrently. Each
+connection retains the existing four-byte length header and one packet, bounded
+at 8 MiB. Incomplete payload buffers total at most 16 MiB per listener; a frame
+that cannot fit is dropped. The completed-packet queue remains bounded at eight
+entries and drops packets when full, leaving retransmission to Raft.
+
+A nonblocking sweep reads at most 64 KiB from each active connection. Partial
+headers and stalled payloads therefore do not hold up other active peer sockets.
+The original 100 ms absolute frame deadline remains in effect. Expiry, malformed
+lengths, EOF and shutdown release the connection and its incomplete buffer.
+Connections waiting in the operating-system accept backlog are admitted when a
+slot becomes available. This is bounded receive scheduling, not authenticated
+admission or protection against a sustained connection flood.

@@ -213,6 +213,18 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_server::catalog_recovery_tests::full_catalog_tcp_servers_checkpoint_rejoin_and_restart -- --exact --nocapture | tee /tmp/catalog-server.log
           grep -q 'test result: ok. 1 passed' /tmp/catalog-server.log
 
+      - name: slow peer frames do not block healthy packets or shutdown
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::peer_receiver::tests::slow_peer_frames_do_not_block_healthy_packets_or_shutdown -- --exact --nocapture | tee /tmp/peer-receiver.log
+          grep -q 'test result: ok. 1 passed' /tmp/peer-receiver.log
+
+      - name: incomplete peer frames obey total buffer and absolute deadline limits
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::peer_receiver::tests::incomplete_peer_frames_obey_total_buffer_and_absolute_deadline_limits -- --exact --nocapture | tee /tmp/peer-receiver.log
+          grep -q 'test result: ok. 1 passed' /tmp/peer-receiver.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail

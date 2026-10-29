@@ -198,26 +198,7 @@ impl MetaConsensus {
         let mut handles = Vec::new();
         let inbound_stop = Arc::clone(&stop);
         handles.push(thread::spawn(move || {
-            while !inbound_stop.is_stopped() {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let deadline = Instant::now() + NETWORK_TIMEOUT;
-                        let mut header = [0; 4];
-                        if read_until(&mut stream, &mut header, deadline).is_err() {
-                            continue;
-                        }
-                        let len = u32::from_be_bytes(header) as usize;
-                        if len == 0 || len > PACKET_LIMIT {
-                            continue;
-                        }
-                        let mut bytes = vec![0; len];
-                        if read_until(&mut stream, &mut bytes, deadline).is_ok() {
-                            let _ = incoming.try_send(bytes);
-                        }
-                    }
-                    Err(_) => thread::sleep(Duration::from_millis(5)),
-                }
-            }
+            crate::cluster::peer_receiver::receive(listener, incoming, &inbound_stop, NETWORK_TIMEOUT);
         }));
         let mut outgoing = BTreeMap::new();
         for (id, address) in options
@@ -794,20 +775,6 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
         .checked_duration_since(Instant::now())
         .filter(|d| !d.is_zero())
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "peer packet deadline"))
-}
-fn read_until(stream: &mut TcpStream, mut bytes: &mut [u8], deadline: Instant) -> io::Result<()> {
-    while !bytes.is_empty() {
-        stream.set_read_timeout(Some(remaining(deadline)?))?;
-        let n = stream.read(bytes)?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "incomplete peer packet",
-            ));
-        }
-        bytes = &mut bytes[n..];
-    }
-    Ok(())
 }
 fn write_until(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
     while !bytes.is_empty() {
