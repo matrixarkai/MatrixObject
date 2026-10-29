@@ -135,6 +135,30 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::deferred_metadata_sealing_preserves_captured_roster_and_placements -- --exact --nocapture | tee /tmp/deferred-sealing.log
           grep -q 'test result: ok. 1 passed' /tmp/deferred-sealing.log
 
+      - name: object write preflight bounds work and checks expected generation
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::object_client::tests::object_write_preflight_bounds_work_and_checks_expected_generation -- --exact --nocapture | tee /tmp/object-writer.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-writer.log
+
+      - name: lost publication replies are confirmed by exact readback without replay
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::object_client::tests::lost_publication_replies_are_confirmed_by_exact_readback_without_replay -- --exact --nocapture | tee /tmp/object-writer.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-writer.log
+
+      - name: object writer publishes verified pages across groups and recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::object_writer_publishes_verified_pages_across_groups_and_recovery -- --exact --nocapture | tee /tmp/object-writer.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-writer.log
+
+      - name: object writer data refusal never publishes partial objects
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::object_writer_data_refusal_never_publishes_partial_objects -- --exact --nocapture | tee /tmp/object-writer.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-writer.log
+
       - name: object allocations require canonical bounded protobuf and page indexes
         run: |
           set -o pipefail

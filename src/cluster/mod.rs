@@ -225,3 +225,8 @@ mod chunk_checkpoint;
 
 #[cfg(feature = "metadata-consensus")]
 mod meta_checkpoint;
+
+#[cfg(all(feature = "meta-server", feature = "replica-server"))]
+mod object_client;
+#[cfg(all(feature = "meta-server", feature = "replica-server"))]
+pub use object_client::{ObjectWriteFailure, ObjectWriteOptions};
