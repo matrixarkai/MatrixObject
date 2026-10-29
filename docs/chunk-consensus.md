@@ -235,3 +235,18 @@ lengths, EOF and shutdown release the connection and its incomplete buffer.
 Connections waiting in the operating-system accept backlog are admitted when a
 slot becomes available. This is bounded receive scheduling, not authenticated
 admission or protection against a sustained connection flood.
+
+## Star-replica quorum read memory
+
+`RemoteReplicaSet::read_chunk` still polls every configured replica and requires
+exact agreement on write sequence, checksum and returned bytes. After collecting
+replies, voting moves each payload into its vote key instead of cloning it.
+Matching duplicates are dropped, and the winning payload is moved into the result.
+This removes additional payload copies during voting without replacing byte
+comparison with digest comparison or changing the quorum threshold.
+
+For `r` successful replies containing `n` bytes each, the collected payloads still
+occupy about `r * n` bytes. Vote-table nodes, socket buffers and decoding overhead
+are additional. This is not a streaming read or a bound on total process memory.
+The allocation-retention guard also verifies that equal checksum strings cannot
+hide differing payload bytes.

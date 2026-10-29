@@ -217,54 +217,7 @@ impl RemoteReplicaSet {
                     .unwrap_or_else(|| "none recorded".to_string())
             )));
         }
-        // The vote is over the three things a replica can disagree about: how many writes it
-        // has seen, the checksum it keeps for the page, and the bytes it just handed back.
-        // The bytes are in the key rather than trusted to follow from the checksum, because
-        // two replicas agreeing on a checksum while returning different bytes is exactly the
-        // case a vote exists to catch.
-        //
-        // WHAT THIS COSTS, SAID RATHER THAN HIDDEN: the key holds a COPY of the payload, so a
-        // quorum read of an `n`-byte range over `r` replicas holds about `2rn` bytes at its
-        // peak -- the answers plus the vote keys -- against `rn` for a vote over a digest. At
-        // a 1 MiB page and three replicas that is roughly 6 MiB transient instead of 3 MiB.
-        // The in-process path votes over `(write_sequence, checksum, etag)` and pays the
-        // smaller figure. This one is deliberately the stricter comparison while the
-        // arrangement is new: a digest collision here would hand back bytes a quorum never
-        // agreed on, and the first thing worth being sure of about a remote replica is that
-        // what arrived is what the others have. Replacing the payload in this key with a
-        // digest is a change worth making once that is established, and it is a change to
-        // this line.
-        let mut votes: BTreeMap<(u64, String, Vec<u8>), usize> = BTreeMap::new();
-        for read in &answered {
-            let key = (
-                read.write_sequence,
-                read.checksum.clone(),
-                read.data.clone(),
-            );
-            *votes.entry(key).or_insert(0) += 1;
-        }
-        let (winning_key, winning_count) = votes
-            .into_iter()
-            .max_by_key(|(_, count)| *count)
-            .ok_or_else(|| {
-                ObjectError::Corruption(
-                    "a page read reached quorum with no answers to vote over".to_string(),
-                )
-            })?;
-        if winning_count < read_quorum {
-            return Err(ObjectError::Corruption(format!(
-                "a page read got {} answer(s) from {replica_count} replica(s) and the \
-                 largest group agreeing was {winning_count}, short of a read quorum of \
-                 {read_quorum}: the replicas hold divergent copies of this page",
-                answered.len()
-            )));
-        }
-        let (write_sequence, checksum, data) = winning_key;
-        Ok(ReplicaReadResult {
-            data,
-            write_sequence,
-            checksum,
-        })
+        vote_reads(answered, replica_count, read_quorum)
     }
 
     /// Read a page's metadata from a read quorum, voting on the whole head.
@@ -345,5 +298,80 @@ impl RemoteReplicaSet {
             .iter()
             .map(|replica| replica.endpoint().to_string())
             .collect()
+    }
+}
+
+// Keep exact sequence/checksum/byte voting while moving each received payload
+// into the vote table. No second payload allocation is needed for a vote.
+fn vote_reads(
+    answered: Vec<ReplicaReadResult>,
+    replica_count: usize,
+    read_quorum: usize,
+) -> Result<ReplicaReadResult, ObjectError> {
+    let answered_count = answered.len();
+    let mut votes: BTreeMap<(u64, String, Vec<u8>), usize> = BTreeMap::new();
+    for read in answered {
+        let key = (read.write_sequence, read.checksum, read.data);
+        *votes.entry(key).or_insert(0) += 1;
+    }
+    let (winning_key, winning_count) = votes
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .ok_or_else(|| {
+            ObjectError::Corruption(
+                "a page read reached quorum with no answers to vote over".to_string(),
+            )
+        })?;
+    if winning_count < read_quorum {
+        return Err(ObjectError::Corruption(format!(
+            "a page read got {} answer(s) from {replica_count} replica(s) and the \
+                 largest group agreeing was {winning_count}, short of a read quorum of \
+                 {read_quorum}: the replicas hold divergent copies of this page",
+            answered_count
+        )));
+    }
+    let (write_sequence, checksum, data) = winning_key;
+    Ok(ReplicaReadResult {
+        data,
+        write_sequence,
+        checksum,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quorum_vote_returns_received_payload_and_rejects_conflicting_bytes() {
+        let reply = |data: Vec<u8>| ReplicaReadResult {
+            data,
+            write_sequence: 7,
+            checksum: "same-checksum".into(),
+        };
+        let first = reply(vec![3; 1024 * 1024]);
+        let second = first.clone();
+        let original = first.data.as_ptr();
+        let other = second.data.as_ptr();
+        let mut conflicting = first.clone();
+        conflicting.data[0] = 4;
+        let result = vote_reads(vec![conflicting, first, second], 3, 2).unwrap();
+        assert!(
+            result.data.as_ptr() == original || result.data.as_ptr() == other,
+            "the winning bytes must retain a received allocation"
+        );
+        assert_eq!(result.data, vec![3; 1024 * 1024]);
+        assert_eq!(result.write_sequence, 7);
+        assert_eq!(result.checksum, "same-checksum");
+        assert!(matches!(
+            vote_reads(vec![reply(vec![1]), reply(vec![2])], 2, 2),
+            Err(ObjectError::Corruption(_))
+        ));
+        let mut newer = reply(vec![1]);
+        newer.write_sequence = 8;
+        assert!(vote_reads(vec![reply(vec![1]), newer], 2, 2).is_err());
+        let mut changed = reply(vec![1]);
+        changed.checksum.push('x');
+        assert!(vote_reads(vec![reply(vec![1]), changed], 2, 2).is_err());
     }
 }
