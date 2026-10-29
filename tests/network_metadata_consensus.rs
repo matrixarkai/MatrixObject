@@ -1017,3 +1017,129 @@ fn metadata_checkpoints_restore_placements_roster_and_lagging_processes() {
         )
         .unwrap();
 }
+
+#[test]
+fn verified_metadata_catalog_refuses_foreign_groups_and_survives_recovery() {
+    use matrixobjectstore_rs::ObjectError;
+    let mut group = Group::new();
+    let other = Group::new();
+    let leader = group.leader();
+    let foreign_leader = other.leader();
+    let follower = (leader + 1) % 3;
+    let expected = group.client(leader).metadata_group_identity().unwrap();
+    for i in 0..3 {
+        let identity = group.client(i).metadata_group_identity().unwrap();
+        assert_eq!(identity.node_id, i as u64 + 1);
+        assert!(expected.same_group(&identity));
+    }
+    let foreign = other
+        .client(foreign_leader)
+        .metadata_group_identity()
+        .unwrap();
+    assert_eq!(expected.group_id, foreign.group_id);
+    assert!(!expected.same_group(&foreign));
+    let opts = MetaClientOptions {
+        read_timeout: Duration::from_secs(2),
+        write_timeout: Duration::from_secs(2),
+        ..Default::default()
+    };
+    let mixed = vec![
+        group.api_addresses[follower].to_string(),
+        other.api_addresses[foreign_leader].to_string(),
+    ];
+    let mut client =
+        RemoteMetaClient::connect_verified_raft_catalog(&mixed, &expected, &opts).unwrap();
+    // The first follower refuses admission; the foreign leader must never receive this mutation.
+    let before = other.client(foreign_leader).probe().into_result().unwrap();
+    let plan = group
+        .client(leader)
+        .plan_object_placement("bucket", "isolated", 4, 1)
+        .unwrap();
+    let placement = CommittedPlacement {
+        bucket: "bucket".into(),
+        key: "isolated".into(),
+        version: 1,
+        length: 4,
+        node_ids: plan.node_ids,
+        update_time_ms: 1,
+    };
+    assert!(matches!(
+        client.commit_object_placement_if_current(placement.clone(), None, &plan.plan_checksum),
+        Err(ObjectError::PreconditionFailed(_))
+    ));
+    assert_eq!(
+        other.client(foreign_leader).probe().into_result().unwrap(),
+        before
+    );
+    assert!(matches!(
+        other
+            .client(foreign_leader)
+            .object_placement("bucket", "isolated"),
+        Err(ObjectError::NotFound(_))
+    ));
+    assert!(RemoteMetaClient::connect_verified_raft_catalog(
+        &[other.api_addresses[foreign_leader].to_string()],
+        &expected,
+        &opts
+    )
+    .is_err());
+    let mut wrong = expected.clone();
+    wrong.bootstrap_id ^= 1;
+    if wrong.bootstrap_id == 0 {
+        wrong.bootstrap_id = 2;
+    }
+    assert!(RemoteMetaClient::connect_verified_raft_catalog(
+        &[group.api_addresses[leader].to_string()],
+        &wrong,
+        &opts
+    )
+    .is_err());
+    assert!(RemoteMetaClient::connect_raft_catalog(
+        &[group.api_addresses[leader].to_string()],
+        expected.group_id + 1,
+        &opts
+    )
+    .is_err());
+    let catalog: Vec<_> = (0..3)
+        .map(|i| group.api_addresses[(follower + i) % 3].to_string())
+        .collect();
+    let mut client =
+        RemoteMetaClient::connect_verified_raft_catalog(&catalog, &expected, &opts).unwrap();
+    assert_eq!(
+        client
+            .commit_object_placement_if_current(placement.clone(), None, &plan.plan_checksum)
+            .unwrap(),
+        placement
+    );
+    group.kill(leader);
+    group.leader();
+    assert_eq!(
+        client.object_placement("bucket", "isolated").unwrap(),
+        placement
+    );
+    for i in 0..3 {
+        if group.nodes[i].is_some() {
+            group.kill(i);
+        }
+    }
+    for i in 0..3 {
+        group.start(i);
+    }
+    group.leader();
+    let mut client =
+        RemoteMetaClient::connect_verified_raft_catalog(&catalog, &expected, &opts).unwrap();
+    assert_eq!(
+        client.object_placement("bucket", "isolated").unwrap(),
+        placement
+    );
+    assert!(expected.same_group(&client.metadata_group_identity().unwrap()));
+    let remaining = group.leader();
+    for i in 0..3 {
+        if i != remaining {
+            group.kill(i);
+        }
+    }
+    // Identity remains inspectable without claiming quorum health.
+    assert!(expected.same_group(&group.client(remaining).metadata_group_identity().unwrap()));
+    assert!(group.client(remaining).probe().into_result().is_err());
+}

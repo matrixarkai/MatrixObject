@@ -206,6 +206,7 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
+    GroupIdentity,
     CommitObjectPlacementIfCurrent {
         placement: CommittedPlacement,
         expected: Option<CommittedPlacement>,
@@ -255,6 +256,7 @@ pub enum MetaRequest {
 impl MetaRequest {
     pub fn code(&self) -> MetaRequestCode {
         match self {
+            MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
             MetaRequest::HeartbeatChunkNode { .. } => MetaRequestCode::HeartbeatChunkNode,
             MetaRequest::ExpireRootNodeHeartbeats { .. } => {
@@ -275,6 +277,7 @@ impl MetaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
                 placement,
                 expected,
@@ -417,6 +420,7 @@ impl MetaRequest {
                 key: cursor.take_str()?,
             },
             MetaRequestCode::Ping => MetaRequest::Ping,
+            MetaRequestCode::GroupIdentity => MetaRequest::GroupIdentity,
         };
         if cursor.remaining() != 0 {
             return Err(ObjectError::Corruption(format!(
@@ -432,6 +436,7 @@ impl MetaRequest {
 /// Reply contents, including a pre-admission leader-routing response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
+    GroupIdentity(super::MetaGroupIdentity),
     ChunkGroup(super::ChunkGroupConfig),
     /// A routing response: this request was not proposed or applied.
     NotLeader,
@@ -460,6 +465,7 @@ impl MetaReply {
         };
         match self {
             Self::NotLeader => 0,
+            Self::GroupIdentity(identity) => identity.encoded_len(),
             Self::ChunkGroup(group) => group.encoded_len(),
             Self::PlacementNode(node) => node_payload_len(
                 &node.node_id,
@@ -490,6 +496,7 @@ impl MetaReply {
         let mut out = Vec::new();
         match self {
             MetaReply::NotLeader => {}
+            MetaReply::GroupIdentity(identity) => return identity.encode_to_vec(),
             MetaReply::ChunkGroup(group) => return group.encode_to_vec(),
             MetaReply::PlacementNode(node) => put_node(&mut out, node),
             MetaReply::RootNodes(nodes) => {
@@ -532,6 +539,16 @@ impl MetaReply {
     /// shape is read from the reply itself can be read as the wrong shape. The caller knows
     /// what it asked.
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == MetaRequestCode::GroupIdentity {
+            if payload.len() > 4096 {
+                return Err(ObjectError::Corruption(
+                    "metadata identity exceeds size bound".into(),
+                ));
+            }
+            let identity: super::MetaGroupIdentity = super::conditional_requests::decode(payload)?;
+            identity.validate()?;
+            return Ok(Self::GroupIdentity(identity));
+        }
         if code == MetaRequestCode::ReadChunkGroup {
             if payload.len() > 4096 {
                 return Err(ObjectError::Corruption(
@@ -552,7 +569,7 @@ impl MetaReply {
         }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
-            MetaRequestCode::ReadChunkGroup => unreachable!(),
+            MetaRequestCode::ReadChunkGroup | MetaRequestCode::GroupIdentity => unreachable!(),
             MetaRequestCode::HeartbeatRootNode | MetaRequestCode::HeartbeatChunkNode => {
                 MetaReply::PlacementNode(take_node(&mut cursor)?)
             }

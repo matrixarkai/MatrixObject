@@ -888,6 +888,9 @@ pub(super) fn apply_to_meta(
             )?;
             Ok(MetaReply::Plan(PlacementAssignment::from_plan(&plan)))
         }
+        MetaRequest::GroupIdentity => Err(ObjectError::InvalidArgument(
+            "metadata node has no Raft group".into(),
+        )),
         MetaRequest::CommitObjectPlacementIfCurrent {
             placement,
             expected,

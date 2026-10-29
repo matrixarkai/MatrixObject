@@ -158,6 +158,10 @@ pub mod meta_message;
 pub mod meta_server;
 #[cfg(feature = "meta-server")]
 pub mod meta_wire;
+#[cfg(feature = "meta-server")]
+mod meta_identity;
+#[cfg(feature = "meta-server")]
+pub use meta_identity::MetaGroupIdentity;
 
 pub use message::{ChunkGroupIdentity, ReplicaReply, ReplicaRequest};
 pub use wire::{RequestCode, StatusCode, MAX_PAYLOAD_BYTES, PROTOCOL_STAMP};
