@@ -99,6 +99,7 @@ pub struct RemoteMetaClient {
     writer: TcpStream,
     max_payload_bytes: usize,
     live: bool,
+    group_identity: Option<super::MetaGroupIdentity>,
     read_timeout: Duration,
     write_timeout: Duration,
     catalog: Option<(Vec<String>, MetaClientOptions)>,
@@ -132,6 +133,7 @@ impl RemoteMetaClient {
             writer,
             max_payload_bytes: options.max_payload_bytes,
             live: true,
+            group_identity: None,
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
             catalog: None,
@@ -162,6 +164,52 @@ impl RemoteMetaClient {
             }
         }
         Err(last.unwrap())
+    }
+
+    /// Connect to a Raft catalog and pin the first voter's complete configuration.
+    /// The numeric group ID must match; every new connection is checked before use.
+    pub fn connect_raft_catalog(
+        endpoints: &[String],
+        group_id: u64,
+        options: &MetaClientOptions,
+    ) -> Result<Self, ObjectError> {
+        if group_id == 0 {
+            return Err(ObjectError::InvalidArgument(
+                "metadata group ID must be nonzero".into(),
+            ));
+        }
+        let mut client = Self::connect_catalog(endpoints, options)?;
+        let identity = client.metadata_group_identity()?;
+        if identity.group_id != group_id {
+            return Err(ObjectError::PreconditionFailed(
+                "metadata group ID does not match catalog".into(),
+            ));
+        }
+        client.group_identity = Some(identity);
+        Ok(client)
+    }
+    /// Check even the first connection against a previously trusted configuration.
+    /// This prevents configuration mistakes; it is not transport authentication.
+    pub fn connect_verified_raft_catalog(
+        endpoints: &[String],
+        expected: &super::MetaGroupIdentity,
+        options: &MetaClientOptions,
+    ) -> Result<Self, ObjectError> {
+        expected.validate()?;
+        let client = Self::connect_raft_catalog(endpoints, expected.group_id, options)?;
+        if !expected.same_group(client.group_identity.as_ref().unwrap()) {
+            return Err(ObjectError::PreconditionFailed(
+                "initial metadata configuration does not match catalog".into(),
+            ));
+        }
+        Ok(client)
+    }
+    /// Describe this voter without leader routing or a read barrier.
+    pub fn metadata_group_identity(&mut self) -> Result<super::MetaGroupIdentity, ObjectError> {
+        match self.call_one(&MetaRequest::GroupIdentity).into_result()? {
+            MetaReply::GroupIdentity(identity) => Ok(identity),
+            other => Err(unexpected_reply("a metadata group identity", &other)),
+        }
     }
 
     /// The currently selected metadata API endpoint.
@@ -378,6 +426,24 @@ impl RemoteMetaClient {
             if !self.live || self.endpoint != *endpoint {
                 match Self::connect(endpoint, &options) {
                     Ok(mut next) => {
+                        if let Some(expected) = &self.group_identity {
+                            match next.call_one(&MetaRequest::GroupIdentity) {
+                                MetaCallOutcome::Answered(MetaReply::GroupIdentity(actual))
+                                    if expected.same_group(&actual) =>
+                                {
+                                    next.group_identity = Some(expected.clone())
+                                }
+                                MetaCallOutcome::Answered(_) => {
+                                    return MetaCallOutcome::Refused(
+                                        ObjectError::PreconditionFailed(
+                                            "metadata voter configuration does not match catalog"
+                                                .into(),
+                                        ),
+                                    )
+                                }
+                                outcome => return outcome,
+                            }
+                        }
                         next.catalog = Some((endpoints.clone(), options.clone()));
                         *self = next;
                     }
