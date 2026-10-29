@@ -267,6 +267,12 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus conditional_discards_replicate_and_recover_without_accepting_stale_sequences -- --exact --nocapture | tee /tmp/conditional-discard.log
           grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
 
+      - name: consensus inbox bounds admission and wakes for work ticks and shutdown
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::consensus_inbox::tests::consensus_inbox_bounds_admission_and_wakes_for_work_ticks_and_shutdown -- --exact --nocapture | tee /tmp/consensus-inbox.log
+          grep -q 'test result: ok. 1 passed' /tmp/consensus-inbox.log
+
       - name: peer readiness bounds waits and ignores listener when full
         run: |
           set -o pipefail

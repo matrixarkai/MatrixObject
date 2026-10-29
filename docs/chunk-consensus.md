@@ -395,7 +395,7 @@ library version is introduced.
 
 The readiness guard covers idle waiting, listener activity, completion signals,
 notification saturation and shutdown. Connection-sharing and fragmented-frame
-tests continue to exercise the same production loop. Consensus workers retain their existing wait behavior.
+tests continue to exercise the same production loop. Consensus workers use activity signals as described below.
 
 A local October 29, 2026 release run of the 51-process complete-object workload
 passed with this readiness path. It retained the same 16 data groups, three
@@ -455,3 +455,34 @@ threads and measured 1.32 CPU core equivalents and 39,437 context switches per
 second. The preceding API-only readiness sample measured 2.66 cores and 80,667
 switches per second. These are single local observations, not randomized or
 statistical comparisons, sustained production targets, or multihost evidence.
+
+## Consensus activity waits
+
+On Unix, both metadata and chunk consensus loops receive wakeup signals after
+successful request admission and after a peer packet enters the bounded incoming
+queue. A signal queued before the loop starts waiting remains readable, avoiding
+a lost wakeup between checking a queue and sleeping. The loop immediately runs
+another pass after admitting local work so a new proposal or read barrier is
+processed without waiting for unrelated network traffic.
+
+When there is no newly admitted local work, the loop waits until activity,
+shutdown or its next 100 ms Raft tick. The shared readiness wait caps any single
+sleep at 50 ms, which also bounds checks for background checkpoint completion.
+A busy loop still checks elapsed tick time on every pass. The 32-request and
+eight-packet channel capacities are unchanged, as are ordered application,
+quorum read confirmation and handling of accepted operations after caller timeout.
+Non-Unix builds and wake-socket creation failures retain waits of at most 2 ms.
+
+The inbox guard checks admission bounds, signals queued before waiting, timeout
+wakeup, a later producer and shutdown. The peer-receiver guard also verifies that
+an admitted packet signals consensus activity before its consumer reads it.
+
+The local 51-process release workload with activity-driven consensus waits
+verified all 1,280 objects through leader failures and full restart in 52.22
+seconds. Initial writes took 31.979 seconds (32.0 objects/second), with
+p50/p95/p99 of 263.138/366.777/410.745 ms. Post-failover writes took 8.639 seconds
+(29.6 objects/second), with p50/p95/p99 of 262.763/493.307/510.662 ms. Verified
+reads took 1.167 seconds after leader failures and 2.039 seconds after full restart.
+The preceding peer-readiness run above took 87.11 seconds overall, with 21.7 and
+20.1 writes/second. These are single local observations for the same workload,
+not statistical comparisons, production targets or multihost qualification.
