@@ -189,6 +189,12 @@ jobs:
           cargo test --locked --all-features --test metadata_catalog_routing failed_metadata_identity_exchange_can_try_another_voter_before_mutation -- --exact | tee /tmp/identity-fallback.log
           grep -q 'test result: ok. 1 passed' /tmp/identity-fallback.log
 
+      - name: suspended leaders rejoin without serving stale objects
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::suspended_leaders_rejoin_without_serving_stale_objects -- --exact --nocapture | tee /tmp/suspended-leaders.log
+          grep -q 'test result: ok. 1 passed' /tmp/suspended-leaders.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail

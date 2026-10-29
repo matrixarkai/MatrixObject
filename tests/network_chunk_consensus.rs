@@ -1836,6 +1836,239 @@ mod coupled_groups {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn suspended_leaders_rejoin_without_serving_stale_objects() {
+        use matrixobjectstore_rs::cluster::ObjectWriteOptions;
+        fn signal(node: &NodeProcess, value: &str) {
+            assert!(std::process::Command::new("kill")
+                .args([value, &node.pid.to_string()])
+                .status()
+                .unwrap()
+                .success());
+        }
+        fn suspend(node: NodeProcess) -> NodeProcess {
+            signal(&node, "-STOP");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let status = std::fs::read_to_string(format!("/proc/{}/status", node.pid)).unwrap();
+                if status
+                    .lines()
+                    .any(|line| line.starts_with("State:") && line.contains("T (stopped)"))
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "child did not suspend");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            node
+        }
+        let mut groups: Vec<_> = (1..=2)
+            .map(|id| {
+                let mut group = Group::configured(1024 * 1024);
+                group.group_id = id;
+                group.checkpoint_bytes = 1024;
+                group
+            })
+            .collect();
+        let mut metadata = MetadataGroup::for_groups_with_threads(&groups, 16);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for id in 0..3 {
+                group.start(id);
+            }
+            group.leader();
+        }
+        let mut meta = metadata.ready();
+        group_usage(&metadata.api, &groups, &[]);
+        let options = ObjectWriteOptions {
+            page_bytes: 4,
+            target_groups: 2,
+            replica: ReplicaClientOptions {
+                read_timeout: Duration::from_secs(2),
+                ..chunk_options()
+            },
+            ..Default::default()
+        };
+        let first = meta
+            .write_object("suspended", "object", None, b"abcdefgh", &options)
+            .unwrap();
+        let old_meta = metadata
+            .api
+            .iter()
+            .position(|e| e == meta.endpoint())
+            .unwrap();
+        let old_data: Vec<_> = groups.iter().map(Group::leader).collect();
+        let suspended_meta = suspend(metadata.nodes[old_meta].take().unwrap());
+        let suspended_data: Vec<_> = groups
+            .iter_mut()
+            .zip(&old_data)
+            .map(|(group, id)| suspend(group.nodes[*id].take().unwrap()))
+            .collect();
+        let quick_meta = MetaClientOptions {
+            read_timeout: Duration::from_millis(200),
+            ..load_options()
+        };
+        let quick_data = ReplicaClientOptions {
+            read_timeout: Duration::from_millis(200),
+            ..chunk_options()
+        };
+        assert!(
+            RemoteMetaClient::connect(&metadata.api[old_meta], &quick_meta)
+                .unwrap()
+                .read_manifest("suspended", "object")
+                .is_err()
+        );
+        for (group, id) in groups.iter().zip(&old_data) {
+            assert!(RemoteReplicaClient::connect(
+                &group.api_addresses[*id].to_string(),
+                &quick_data
+            )
+            .unwrap()
+            .ping()
+            .is_err());
+            group.leader();
+        }
+        meta = metadata.ready();
+        let second = meta
+            .write_object(
+                "suspended",
+                "object",
+                Some(first.clone()),
+                b"ijklmnop",
+                &options,
+            )
+            .unwrap();
+        assert_eq!(
+            meta.read_object("suspended", "object", 8, &options.replica)
+                .unwrap(),
+            (second.clone(), b"ijklmnop".to_vec())
+        );
+        // These requests can remain queued in the suspended voters' sockets.
+        // Their replies time out, so they are uncertain rather than retried.
+        // Once resumed, stale conditions must not overwrite the newer state.
+        let mut stale = first.clone();
+        stale.generation += 1;
+        let stale_outcome =
+            matrixobjectstore_rs::object_manifest::ManifestOutcome::decide(Some(first), stale)
+                .unwrap();
+        assert!(
+            RemoteMetaClient::connect(&metadata.api[old_meta], &quick_meta)
+                .unwrap()
+                .publish_manifest(stale_outcome, 0)
+                .is_err()
+        );
+        for (group, id) in groups.iter().zip(&old_data) {
+            let extent = second
+                .extents
+                .iter()
+                .find(|e| e.group == group.placement_id())
+                .unwrap();
+            let page_id = matrixobjectstore_rs::PageId {
+                chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id)
+                    .unwrap(),
+                page_index: extent.page_index,
+            };
+            assert!(RemoteReplicaClient::connect(
+                &group.api_addresses[*id].to_string(),
+                &quick_data
+            )
+            .unwrap()
+            .write_chunk_if_sequence(page_id, 0, b"zzzz", 0)
+            .is_err());
+        }
+        signal(&suspended_meta, "-CONT");
+        metadata.nodes[old_meta] = Some(suspended_meta);
+        for ((group, id), node) in groups.iter_mut().zip(&old_data).zip(suspended_data) {
+            signal(&node, "-CONT");
+            group.nodes[*id] = Some(node);
+        }
+        // A resumed voter may refuse while catching up. Any successful quorum
+        // read must reflect the write acknowledged while that voter was frozen.
+        for _ in 0..8 {
+            let mut old = RemoteMetaClient::connect(&metadata.api[old_meta], &quick_meta).unwrap();
+            match old.read_manifest("suspended", "object") {
+                Ok(value) => assert_eq!(value, second),
+                Err(matrixobjectstore_rs::ObjectError::NotFound(_)) => {
+                    panic!("resumed metadata returned stale absence")
+                }
+                Err(_) => {}
+            }
+            for (group, id) in groups.iter().zip(&old_data) {
+                let extent = second
+                    .extents
+                    .iter()
+                    .find(|e| e.group == group.placement_id())
+                    .unwrap();
+                let page_id = matrixobjectstore_rs::PageId {
+                    chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id)
+                        .unwrap(),
+                    page_index: extent.page_index,
+                };
+                let mut old = RemoteReplicaClient::connect(
+                    &group.api_addresses[*id].to_string(),
+                    &quick_data,
+                )
+                .unwrap();
+                match old.read_chunk(&page_id, 0, extent.length) {
+                    Ok(read) => {
+                        assert_eq!(read.write_sequence, 1);
+                        assert_eq!(
+                            read.data,
+                            b"ijklmnop"[extent.object_offset as usize
+                                ..(extent.object_offset + extent.length) as usize]
+                        );
+                    }
+                    Err(matrixobjectstore_rs::ObjectError::NotFound(_)) => {
+                        panic!("resumed data voter returned stale absence")
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        // Remove another voter so progress now requires each resumed process.
+        metadata.kill((old_meta + 1) % 3);
+        for (group, id) in groups.iter_mut().zip(&old_data) {
+            group.kill((*id + 1) % 3);
+            group.leader();
+        }
+        meta = metadata.ready();
+        assert_eq!(
+            meta.read_object("suspended", "object", 8, &options.replica)
+                .unwrap(),
+            (second.clone(), b"ijklmnop".to_vec())
+        );
+        let third = meta
+            .write_object("suspended", "object", Some(second), b"qrstuvwx", &options)
+            .unwrap();
+        for id in 0..3 {
+            if metadata.nodes[id].is_some() {
+                metadata.kill(id);
+            }
+            for group in &mut groups {
+                if group.nodes[id].is_some() {
+                    group.kill(id);
+                }
+            }
+        }
+        for id in 0..3 {
+            metadata.start(id);
+            for group in &mut groups {
+                group.start(id);
+            }
+        }
+        for group in &groups {
+            group.leader();
+        }
+        assert_eq!(
+            metadata
+                .ready()
+                .read_object("suspended", "object", 8, &options.replica)
+                .unwrap(),
+            (third, b"qrstuvwx".to_vec())
+        );
+    }
+
     #[test]
     fn object_writer_data_refusal_never_publishes_partial_objects() {
         use matrixobjectstore_rs::cluster::{ObjectWriteFailure, ObjectWriteOptions};
