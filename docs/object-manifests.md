@@ -295,3 +295,26 @@ conflicts with the expected configuration stops the attempt. After an applicatio
 mutation is sent, an uncertain result still stops automatic routing. The socket
 tests cover initial and redirected discovery failure, exhaustion, identity and
 unsupported-request refusal, and the existing no-replay behavior.
+
+## Suspended leaders and late requests
+
+The Linux process test
+`coupled_groups::suspended_leaders_rejoin_without_serving_stale_objects` uses nine
+processes: three metadata voters and two three-voter data groups. It publishes an
+object across both data groups, sends SIGSTOP to each current leader, and confirms
+the children are stopped through `/proc`. The processes retain their sockets and
+in-memory state. Reads sent directly to the suspended leaders must time out, while
+the remaining quorums publish and read a replacement object.
+
+After that replacement is acknowledged, the test sends a publication with the old
+expected manifest and expected-zero writes for already-created replacement pages
+to the still-suspended leaders. These calls time out and are treated as uncertain.
+The test resumes the leaders with SIGCONT and checks that any successful direct
+reads return the newer state, never stale payloads or absence. It then removes a
+different voter from each group so progress requires the resumed voters, publishes
+another generation, and verifies that generation after a full restart.
+
+Child ownership is retained during suspension, so normal completion and assertion
+failure both clean up the processes. This test covers process pauses, surviving
+sockets, late conditional requests and rejoining voters on one Linux host. It does
+not establish asymmetric network-partition behavior or independent-host isolation.
