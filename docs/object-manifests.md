@@ -318,3 +318,31 @@ Child ownership is retained during suspension, so normal completion and assertio
 failure both clean up the processes. This test covers process pauses, surviving
 sockets, late conditional requests and rejoining voters on one Linux host. It does
 not establish asymmetric network-partition behavior or independent-host isolation.
+
+## Catalog cardinality and recovery
+
+The manifest catalog admits at most 100,000 distinct object keys and a 64 MiB
+encoded catalog body. Both limits apply; large keys or extent lists can reach the
+byte limit first. Tombstones retain their slots and generation fences, so deleting
+an object does not free capacity for a different key. Replacing or recreating an
+existing key is still allowed at the count limit when its expected state matches
+and the resulting encoded catalog stays within the byte limit.
+
+The CI test
+`object_manifest::tests::full_manifest_catalog_replays_and_recovers_without_losing_capacity_fences`
+creates 100,000 empty objects with short keys and paired placement records through
+publication outcomes. It applies each canonical binary outcome to a second state
+machine and compares the states. It checks both admission and decoded-outcome
+replay reject an extra object without mutation, then deletes selected objects at
+the beginning, middle and end of the catalog. Snapshot encoding, byte decoding,
+stream decoding and installation preserve those tombstones and all placements.
+Recreation after recovery requires the retained generation and keeps the catalog
+at 100,000 keys.
+
+An October 29, 2026 debug run produced a 13,700,603-byte metadata snapshot and
+completed in 19.86 seconds on the local WSL host. This is a bounded in-process
+metadata correctness check with empty objects. It does not measure data-node
+storage, network throughput, distributed checkpoint transfer, peak memory, or
+production behavior at that cardinality. Safe tombstone reclamation and larger
+catalogs require further work; the current limits are not a production-scale
+certification.
