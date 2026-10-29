@@ -546,3 +546,244 @@ fn interrupted_journal_checkpoint_preserves_synced_outcomes_and_reclaims_on_retr
     );
     println!("killed checkpoint at {incomplete} bytes; recovered 64 pages; journal {history_bytes} -> checkpoint {checkpoint_bytes} bytes");
 }
+
+
+#[test]
+fn staged_page_install_is_fenced_atomic_and_durable() {
+    use matrixobjectstore_rs::cluster::state_install::StateInstall;
+    let dir = JournalDir::new();
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    let mut source = matrixobjectstore_rs::MatrixReplicaService::new();
+    source.write_chunk(page(0), 0, &vec![17; 17000]).unwrap();
+    source.discard_chunk(&page(0), 3000, 4000).unwrap();
+    let state = source.read_chunk_state(&page(0)).unwrap();
+    let head = source.head_chunk(&page(0)).unwrap();
+    let begin = StateInstall::begin(
+        "partial".into(),
+        &page(0),
+        None,
+        &head,
+        state.data.len() as u64,
+    );
+    c.stage_chunk_state(begin.clone()).unwrap();
+    assert!(c.head_chunk(&page(0)).is_err());
+    assert!(c.stage_chunk_state(begin.clone()).is_err());
+    let mut part = StateInstall::command(2, "partial".into());
+    part.data = state.data[..100].to_vec();
+    c.stage_chunk_state(part.clone()).unwrap();
+    assert!(c.stage_chunk_state(part).is_err());
+    assert!(c
+        .stage_chunk_state(StateInstall::command(4, "other".into()))
+        .is_err());
+    drop(c);
+    drop(node);
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    assert!(c.head_chunk(&page(0)).is_err());
+    assert!(c
+        .stage_chunk_state(StateInstall::command(3, "partial".into()))
+        .is_err());
+    c.install_chunk_state(&page(0), &state, None, "complete")
+        .unwrap();
+    assert_eq!(c.head_chunk(&page(0)).unwrap(), head);
+    assert_eq!(c.read_chunk_state(&page(0)).unwrap().data, state.data);
+    assert!(c.read_chunk(&page(0), 3000, 1).is_err());
+    drop(c);
+    drop(node);
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    assert_eq!(c.head_chunk(&page(0)).unwrap(), head);
+    let begin = StateInstall::begin(
+        "racing".into(),
+        &page(0),
+        Some(&head.state_checksum),
+        &head,
+        state.data.len() as u64,
+    );
+    c.stage_chunk_state(begin).unwrap();
+    let mut data = StateInstall::command(2, "racing".into());
+    data.data = state.data.as_ref().clone();
+    c.stage_chunk_state(data).unwrap();
+    c.write_chunk(page(0), 16000, b"new").unwrap();
+    assert!(c
+        .stage_chunk_state(StateInstall::command(3, "racing".into()))
+        .is_err());
+    let changed = c.head_chunk(&page(0)).unwrap();
+    assert_eq!(changed.write_sequence, 3);
+    assert_eq!(c.read_chunk(&page(0), 16000, 3).unwrap().data, b"new");
+    // Even with the current destination checksum, an older source cannot replace it.
+    assert!(c
+        .install_chunk_state(&page(0), &state, Some(&changed.state_checksum), "old")
+        .is_err());
+    let mut source = matrixobjectstore_rs::MatrixReplicaService::new();
+    source.write_chunk(page(1), 0, b"valid").unwrap();
+    let h = source.head_chunk(&page(1)).unwrap();
+    c.stage_chunk_state(StateInstall::begin("corrupt".into(), &page(1), None, &h, 5))
+        .unwrap();
+    let mut data = StateInstall::command(2, "corrupt".into());
+    data.data = b"wrong".to_vec();
+    c.stage_chunk_state(data).unwrap();
+    assert!(c
+        .stage_chunk_state(StateInstall::command(3, "corrupt".into()))
+        .is_err());
+    assert!(c.head_chunk(&page(1)).is_err());
+    drop(c);
+    drop(node);
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    assert_eq!(c.head_chunk(&page(0)).unwrap(), changed);
+    assert!(c.head_chunk(&page(1)).is_err());
+}
+
+
+
+#[test]
+fn staged_install_disk_failure_fences_node_and_keeps_old_checkpoint() {
+    let dir = JournalDir::new();
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    c.write_chunk(page(0), 0, b"old").unwrap();
+    let old = c.head_chunk(&page(0)).unwrap();
+    let mut source = matrixobjectstore_rs::MatrixReplicaService::new();
+    source.write_chunk(page(0), 0, b"old").unwrap();
+    source.write_chunk(page(0), 0, b"new").unwrap();
+    let state = source.read_chunk_state(&page(0)).unwrap();
+    let pending = dir.0.join("replica.log.pending");
+    std::fs::create_dir(&pending).unwrap();
+    assert!(c
+        .install_chunk_state(&page(0), &state, Some(&old.state_checksum), "disk-failure")
+        .is_err());
+    assert!(c.head_chunk(&page(0)).is_err());
+    assert!(c.write_chunk(page(0), 0, b"unsafe").is_err());
+    drop(c);
+    drop(node);
+    std::fs::remove_dir(pending).unwrap();
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    assert_eq!(c.head_chunk(&page(0)).unwrap(), old);
+    assert_eq!(c.read_chunk(&page(0), 0, 3).unwrap().data, b"old");
+}
+
+#[test]
+#[ignore = "256 MiB staged installation and journal recovery; run explicitly in release mode"]
+fn staged_install_recovers_a_full_256_mib_page() {
+    let dir = JournalDir::new();
+    let start_large = || {
+        processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", dir.file().to_str().unwrap()),
+                ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "314572800"),
+            ],
+        )
+    };
+    let node = start_large();
+    let mut c = RemoteReplicaClient::connect(
+        &node.endpoint,
+        &ReplicaClientOptions {
+            read_timeout: std::time::Duration::from_secs(60),
+            write_timeout: std::time::Duration::from_secs(60),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut source = matrixobjectstore_rs::MatrixReplicaService::new();
+    source
+        .write_chunk(page(0), 0, &vec![31; 256 * 1024 * 1024])
+        .unwrap();
+    source.discard_chunk(&page(0), 1024 * 1024 - 3, 9).unwrap();
+    let state = source.read_chunk_state(&page(0)).unwrap();
+    let expected = source.head_chunk(&page(0)).unwrap();
+    c.install_chunk_state(&page(0), &state, None, "large")
+        .unwrap();
+    assert_eq!(c.head_chunk(&page(0)).unwrap(), expected);
+    drop(c);
+    drop(node);
+    let node = start_large();
+    let mut c = client(&node);
+    assert_eq!(c.head_chunk(&page(0)).unwrap(), expected);
+    let recovered = c.read_chunk_state(&page(0)).unwrap();
+    assert_eq!(recovered.data.len(), 256 * 1024 * 1024);
+    assert!(recovered.data.iter().all(|b| *b == 31));
+    assert_eq!(recovered.discarded_ranges, state.discarded_ranges);
+    println!(
+        "installed and recovered {} bytes through bounded frames",
+        recovered.data.len()
+    );
+}
+
+
+#[test]
+fn staged_install_rechecks_capacity_and_releases_aborted_buffers() {
+    use matrixobjectstore_rs::cluster::state_install::StateInstall;
+    let node = processes::start(
+        env!("CARGO_BIN_EXE_chunkserver"),
+        &[
+            ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+            ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "8"),
+            ("MATRIXOBJECT_REPLICA_MAX_PAGES", "2"),
+        ],
+    );
+    let mut c = client(&node);
+    let mut source = matrixobjectstore_rs::MatrixReplicaService::new();
+    source.write_chunk(page(0), 0, b"123456").unwrap();
+    let head = source.head_chunk(&page(0)).unwrap();
+    c.stage_chunk_state(StateInstall::begin(
+        "capacity".into(),
+        &page(0),
+        None,
+        &head,
+        6,
+    ))
+    .unwrap();
+    let mut data = StateInstall::command(2, "capacity".into());
+    data.data = b"123456".to_vec();
+    c.stage_chunk_state(data).unwrap();
+    c.write_chunk(page(1), 0, b"live").unwrap();
+    assert!(c
+        .stage_chunk_state(StateInstall::command(3, "capacity".into()))
+        .is_err());
+    assert!(c.head_chunk(&page(0)).is_err());
+    assert_eq!(c.read_chunk(&page(1), 0, 4).unwrap().data, b"live");
+    assert!(c
+        .stage_chunk_state(StateInstall::begin(
+            "too-big".into(),
+            &page(0),
+            None,
+            &head,
+            6
+        ))
+        .is_err());
+    let mut source = matrixobjectstore_rs::MatrixReplicaService::new();
+    source.write_chunk(page(0), 0, b"fits").unwrap();
+    let head = source.head_chunk(&page(0)).unwrap();
+    c.stage_chunk_state(StateInstall::begin(
+        "abort".into(),
+        &page(0),
+        None,
+        &head,
+        4,
+    ))
+    .unwrap();
+    c.stage_chunk_state(StateInstall::command(4, "abort".into()))
+        .unwrap();
+    c.install_chunk_state(
+        &page(0),
+        &source.read_chunk_state(&page(0)).unwrap(),
+        None,
+        "fits",
+    )
+    .unwrap();
+    assert_eq!(c.read_chunk(&page(0), 0, 4).unwrap().data, b"fits");
+    assert!(c
+        .stage_chunk_state(StateInstall::begin(
+            "page-limit".into(),
+            &page(2),
+            None,
+            &head,
+            4
+        ))
+        .is_err());
+}

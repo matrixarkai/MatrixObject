@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject.cluster;
+message InstallRange { uint64 offset = 1; uint64 length = 2; }
+message InstallHead {
+  uint64 logical_length = 1;
+  uint64 write_sequence = 2;
+  string checksum = 3;
+  string state_checksum = 4;
+  repeated InstallRange discarded_ranges = 5;
+  uint64 data_length = 6;
+}
+// Code 11, standalone only. Canonical bytes; empty success response.
+// 1 begin, 2 append, 3 commit, 4 abort. Tokens are caller-unique, <=128 bytes.
+// Begin carries identity, expected checksum (empty means absent), and head.
+// Append carries token, exact next offset and 1..1048576 bytes.
+// Commit/abort carry only version, operation and token.
+message StateInstall {
+  uint32 version = 1;
+  uint32 operation = 2;
+  string token = 3;
+  uint64 volume = 4;
+  uint64 chunk = 5;
+  uint64 page = 6;
+  string expected_checksum = 7;
+  InstallHead head = 8;
+  uint64 offset = 9;
+  bytes data = 10;
+}

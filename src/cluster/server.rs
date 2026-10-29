@@ -66,6 +66,7 @@ struct NodeReplica {
     service: MatrixReplicaService,
     journal: Option<ReplicaJournal>,
     journal_checkpoint_after_bytes: u64,
+    staged: Option<super::state_install::StagedState>,
     max_pages: usize,
     used_bytes: u64,
     failed: bool,
@@ -199,6 +200,7 @@ impl ReplicaNodeServer {
                 service,
                 journal,
                 journal_checkpoint_after_bytes: 0,
+                staged: None,
                 max_pages: options.max_pages,
                 failed: false,
             })),
@@ -432,6 +434,12 @@ fn apply(
             "replica journal failed; restart and recover before serving requests".to_string(),
         ));
     }
+    if guard.staged.as_ref().is_some_and(|stage| stage.expired()) {
+        guard.staged = None;
+    }
+    if let ReplicaRequest::StateInstall(request) = request {
+        return apply_state_install(&mut guard, request);
+    }
     if let ReplicaRequest::ReadChunkStateRange { length, .. } = &request {
         let size = usize::try_from(*length)
             .unwrap_or(usize::MAX)
@@ -549,12 +557,125 @@ fn apply(
     Ok(reply)
 }
 
+fn check_install_destination(
+    node: &NodeReplica,
+    page: &crate::PageId,
+    expected: &str,
+    source_sequence: u64,
+) -> Result<(), ObjectError> {
+    match node.service.head_chunk(page) {
+        Ok(head) if head.state_checksum == expected && head.write_sequence <= source_sequence => {
+            Ok(())
+        }
+        Err(ObjectError::NotFound(_)) if expected.is_empty() => Ok(()),
+        Ok(_) | Err(ObjectError::NotFound(_)) => Err(ObjectError::PreconditionFailed(
+            "install destination changed or is newer than source".into(),
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+fn apply_state_install(
+    node: &mut NodeReplica,
+    request: super::state_install::StateInstall,
+) -> Result<ReplicaReply, ObjectError> {
+    request.validate()?;
+    match request.operation {
+        1 => {
+            if node.staged.is_some() {
+                return Err(ObjectError::PreconditionFailed(
+                    "one page install is already staged".into(),
+                ));
+            }
+            #[cfg(not(unix))]
+            if node.journal.is_some() {
+                return Err(ObjectError::PreconditionFailed(
+                    "durable page installation requires Unix checkpoint replacement".into(),
+                ));
+            }
+            let page = request.page_id()?;
+            let head = request.head.as_ref().unwrap();
+            check_install_destination(
+                node,
+                &page,
+                &request.expected_checksum,
+                head.write_sequence,
+            )?;
+            if node.service.page_count() >= node.max_pages
+                && node.service.page_write_sequence(&page).is_none()
+            {
+                return Err(ObjectError::PreconditionFailed(
+                    "install exceeds page limit".into(),
+                ));
+            }
+            let used = node
+                .used_bytes
+                .checked_sub(node.service.page_physical_len(&page))
+                .and_then(|n| n.checked_add(head.data_length));
+            if used.map_or(true, |n| n > node.service.capacity_bytes()) {
+                return Err(ObjectError::PreconditionFailed(
+                    "install exceeds byte capacity".into(),
+                ));
+            }
+            node.staged = Some(super::state_install::StagedState::new(request)?);
+        }
+        2 => {
+            node.staged
+                .as_mut()
+                .ok_or_else(|| ObjectError::PreconditionFailed("no page install is staged".into()))?
+                .append(&request)?;
+        }
+        3 | 4 => {
+            let stage = node.staged.as_ref().ok_or_else(|| {
+                ObjectError::PreconditionFailed("no page install is staged".into())
+            })?;
+            if stage.begin.token != request.token {
+                return Err(ObjectError::PreconditionFailed(
+                    "install token differs from staged operation".into(),
+                ));
+            }
+            let stage = node.staged.take().unwrap();
+            if request.operation == 4 {
+                return Ok(ReplicaReply::Applied);
+            }
+            let (page, state, expected) = stage.finish()?;
+            check_install_destination(node, &page, &expected, state.write_sequence)?;
+            if node.service.page_count() >= node.max_pages
+                && node.service.page_write_sequence(&page).is_none()
+            {
+                return Err(ObjectError::PreconditionFailed(
+                    "install exceeds page limit".into(),
+                ));
+            }
+            let mut candidate = node.service.clone();
+            candidate.install_chunk_state(page, state)?;
+            // A complete checkpoint can exceed the bounded normal outcome record.
+            // Publish the candidate in memory only after durable replacement succeeds.
+            if let Some(journal) = node.journal.as_mut() {
+                if let Err(error) = journal.checkpoint(&candidate) {
+                    node.failed = true;
+                    return Err(ObjectError::Corruption(format!(
+                        "install persistence failed; restart required: {error}"
+                    )));
+                }
+            }
+            node.used_bytes = candidate.physical_bytes();
+            node.service = candidate;
+        }
+        _ => unreachable!(),
+    }
+    Ok(ReplicaReply::Applied)
+}
+
 pub(super) fn apply_to_replica(
     guard: &mut MatrixReplicaService,
     request: ReplicaRequest,
     max_pages: usize,
 ) -> Result<ReplicaReply, ObjectError> {
     match request {
+        ReplicaRequest::StateInstall(_) => Err(ObjectError::PreconditionFailed(
+            "state installation requires a standalone node".into(),
+        )),
         ReplicaRequest::ReadChunkStateRange {
             page_id,
             expected_state_checksum,
@@ -726,6 +847,7 @@ mod journal_failure_tests {
             service: MatrixReplicaService::new(),
             journal: Some(ReplicaJournal::read_only_for_test(&path)),
             journal_checkpoint_after_bytes: 0,
+            staged: None,
             max_pages: 65_536,
             failed: false,
         }));

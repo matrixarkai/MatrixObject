@@ -604,7 +604,8 @@ fn read_only(request: &ReplicaRequest) -> bool {
         | ReplicaRequest::PageInventory { .. }
         | ReplicaRequest::Ping
         | ReplicaRequest::GroupIdentity => true,
-        ReplicaRequest::WriteChunk { .. }
+        ReplicaRequest::StateInstall(_)
+        | ReplicaRequest::WriteChunk { .. }
         | ReplicaRequest::WriteChunkIfSequence { .. }
         | ReplicaRequest::DiscardChunk { .. }
         | ReplicaRequest::DiscardChunkIfSequence { .. } => false,
@@ -638,6 +639,11 @@ fn prepare(
     max_pages: usize,
     limit: usize,
 ) -> Result<(Vec<u8>, Option<ReplicaReply>), ObjectError> {
+    if matches!(request, ReplicaRequest::StateInstall(_)) {
+        return Err(ObjectError::PreconditionFailed(
+            "standalone state installation is unavailable on Raft nodes".into(),
+        ));
+    }
     let page = match request {
         ReplicaRequest::WriteChunk { page_id, .. }
         | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
@@ -695,6 +701,7 @@ mod checkpoint_tests {
             service,
             journal: None,
             journal_checkpoint_after_bytes: 0,
+            staged: None,
             max_pages,
             used_bytes: 0,
             failed: false,

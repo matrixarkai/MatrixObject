@@ -309,6 +309,30 @@ jobs:
           cargo test --locked --all-features --test replica_state_transfer star_state_transfer_requires_valid_bytes_from_a_read_quorum -- --exact | tee /tmp/state-transfer.log
           grep -q 'test result: ok. 1 passed' /tmp/state-transfer.log
 
+      - name: staged install codec limits offsets and expiry
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::state_install::tests::staged_install_codec_limits_offsets_and_expiry -- --exact | tee /tmp/staged-install.log
+          grep -q 'test result: ok. 1 passed' /tmp/staged-install.log
+
+      - name: staged page install is fenced atomic and durable
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery staged_page_install_is_fenced_atomic_and_durable -- --exact | tee /tmp/staged-install.log
+          grep -q 'test result: ok. 1 passed' /tmp/staged-install.log
+
+      - name: staged install disk failure fences node and keeps old checkpoint
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery staged_install_disk_failure_fences_node_and_keeps_old_checkpoint -- --exact | tee /tmp/staged-install.log
+          grep -q 'test result: ok. 1 passed' /tmp/staged-install.log
+
+      - name: staged install rechecks capacity and releases aborted buffers
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery staged_install_rechecks_capacity_and_releases_aborted_buffers -- --exact | tee /tmp/staged-install.log
+          grep -q 'test result: ok. 1 passed' /tmp/staged-install.log
+
       - name: health reports validate canonical protobuf and decided time
         run: |
           set -o pipefail
