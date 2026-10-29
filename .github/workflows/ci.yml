@@ -267,6 +267,18 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus conditional_discards_replicate_and_recover_without_accepting_stale_sequences -- --exact --nocapture | tee /tmp/conditional-discard.log
           grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
 
+      - name: star set reconnects only for a later operation after uncertain write
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test chunk_catalog_routing star_set_reconnects_only_for_a_later_operation_after_uncertain_write -- --exact --nocapture | tee /tmp/star-reconnect.log
+          grep -q 'test result: ok. 1 passed' /tmp/star-reconnect.log
+
+      - name: star set reconnects recovered members but excludes missed writes
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery star_set_reconnects_recovered_members_but_excludes_missed_writes -- --exact --nocapture | tee /tmp/star-reconnect.log
+          grep -q 'test result: ok. 1 passed' /tmp/star-reconnect.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail

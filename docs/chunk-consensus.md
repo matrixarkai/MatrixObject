@@ -268,8 +268,8 @@ partial application can still occur if a member fails after preflight. Callers
 must resolve uncertain results before issuing another operation.
 
 The check prevents an already divergent member from counting toward a fresh write
-acknowledgment. It does not repair that member, reconnect failed sockets, establish
-cross-client linearizability, authenticate replies. Remote repair and safe replica rejoining remain unfinished. Raft-group
+acknowledgment. It does not repair that member, establish
+cross-client linearizability, authenticate replies. Repair of missed writes remains unfinished. Raft-group
 writes continue through their leader and do not use this star fan-out.
 
 ## Conditional discards
@@ -300,4 +300,28 @@ existing unconditional behavior.
 The tests cover divergent-member exclusion, refusal before mutation when a
 matching write quorum is unavailable, journal recovery, Raft leader loss, total
 restart, stale conditions and sequence exhaustion. This does not add cross-client
-transactions, repair or automatic rejoining.
+transactions, repair or whole-replica catch-up.
+
+## Reconnecting star members between operations
+
+`RemoteReplicaSet` retains the configured client options and the initial resolved
+socket address of each member. Before a later read, head, ping, write or discard,
+it attempts one reconnect for connections already marked unusable by a transport
+or framing error. Healthy connections are retained. Reconnection uses the pinned
+IP socket rather than resolving the caller's hostname again; endpoint labels and
+membership order remain unchanged. Each attempt uses `connect_timeout`, so an
+unreachable member can add that delay to an operation.
+
+An operation that discovers a broken connection does not reconnect and resend its
+request. A later explicit operation can reconnect. A lost write or discard reply
+remains uncertain and is never replayed by this mechanism. Successfully pinging a
+restarted member proves connectivity only. Writes and discards still select a
+matching page-state quorum before mutation: recovered matching pages can contribute
+again, while pages missing intervening writes remain excluded. Reads still require
+a matching quorum. No data is copied to bring stale members up to date, and no
+whole-node readiness or failure-domain claim follows from a successful reconnect.
+
+Process tests restart journal-backed members at the same address both with and
+without missed quorum writes. Socket tests drop a write reply and require the next
+connection to carry only the caller's later ping. Standalone clients outside a
+replica set retain their existing closed-connection behavior.

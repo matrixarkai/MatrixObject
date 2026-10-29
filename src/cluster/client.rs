@@ -78,6 +78,7 @@ impl Default for ReplicaClientOptions {
 #[derive(Debug)]
 pub struct RemoteReplicaClient {
     endpoint: String,
+    peer: SocketAddr,
     reader: BufReader<TcpStream>,
     writer: TcpStream,
     max_payload_bytes: usize,
@@ -115,6 +116,7 @@ impl RemoteReplicaClient {
             .map_err(|err| transport_error(endpoint, "duplicating the socket", &err.to_string()))?;
         Ok(Self {
             endpoint: endpoint.to_string(),
+            peer: address,
             reader: BufReader::new(stream),
             writer,
             max_payload_bytes: options.max_payload_bytes,
@@ -125,6 +127,26 @@ impl RemoteReplicaClient {
             catalog: None,
             group_identity: None,
         })
+    }
+
+    // Star membership stays bound to its initially resolved socket. This runs
+    // only before a later operation, never as a retry of the failed request.
+    pub(super) fn reconnect_standalone_if_failed(
+        &mut self,
+        options: &ReplicaClientOptions,
+    ) -> Result<(), ObjectError> {
+        if self.connection_usable {
+            return Ok(());
+        }
+        if self.catalog.is_some() || self.group_identity.is_some() {
+            return Err(ObjectError::InvalidArgument(
+                "standalone reconnect cannot replace a verified catalog".into(),
+            ));
+        }
+        let mut next = Self::connect(&self.peer.to_string(), options)?;
+        next.endpoint = self.endpoint.clone();
+        *self = next;
+        Ok(())
     }
 
     /// Connect to a fixed catalog of one through seven chunk API IP sockets.
