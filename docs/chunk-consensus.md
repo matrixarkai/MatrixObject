@@ -373,3 +373,51 @@ bytes, heads and page counts, verifies the WAL is unchanged, then confirms a
 subsequent write and refusal of reads after quorum loss. Batching reduces the
 number of confirmations when reads arrive together; it does not remove page
 readback from object publication or establish a measured throughput improvement.
+
+## API socket readiness
+
+On Unix, metadata and chunk API I/O workers wait for socket readiness instead
+of waking every millisecond when idle. A nonblocking local socket pair wakes
+an I/O worker when an executor queues its reply, and shutdown signals each live
+worker through the same mechanism. Readable client sockets, writable queued
+responses and listener activity also wake the worker. While a request is in
+execution, its client socket is excluded from readiness polling to avoid spinning
+on a disconnected client.
+
+Each wait is bounded by the nearest connection deadline and at most 50 ms.
+Connection counts, request/response memory budgets, request executors and frame
+deadlines retain their existing limits. A full worker does not poll the listener
+until it has room for another connection. Notification writes are nonblocking;
+a full notification socket is already readable. Failure to create the wakeup
+socket pair uses the earlier one-millisecond loop, as do non-Unix builds.
+The existing locked libc version supplies the Unix poll interface; no new
+library version is introduced.
+
+The readiness guard covers idle waiting, listener activity, completion signals,
+notification saturation and shutdown. Connection-sharing and fragmented-frame
+tests continue to exercise the same production loop. Raft peer receivers and
+consensus workers retain their existing wait behavior.
+
+A local October 29, 2026 release run of the 51-process complete-object workload
+passed with this readiness path. It retained the same 16 data groups, three
+metadata voters, eight clients and four 256-byte pages per one-KiB object as the
+preceding run on `15262ea499c3ad162516c044b0c018e537f625b5`.
+
+| Observation | Preceding polling run | Socket-readiness run |
+|---|---:|---:|
+| Initial 1,024 writes | 76.177 s / 13.4 objects per second | 61.303 s / 16.7 objects per second |
+| Post-failover 256 writes | 17.898 s / 14.3 objects per second | 14.735 s / 17.4 objects per second |
+| Initial write p50 / p95 / p99 | 622.217 / 866.056 / 990.861 ms | 493.545 / 701.542 / 764.310 ms |
+| Post-failover write p50 / p95 / p99 | 557.602 / 796.297 / 843.047 ms | 460.356 / 756.156 / 875.186 ms |
+| Reads after full restart, 1,280 objects | 16.651 s | 13.544 s |
+| Complete recovery scenario | 130.54 s | 107.17 s |
+| Server CPU core equivalents during a roughly 10 s sample | 7.54 | 2.66 |
+| Server context switches per second during that sample | 286,302 | 80,667 |
+
+Both runs verified every object after leader failures and full restart. The
+samples covered the same 51 live server processes and 786 threads on one
+16-logical-CPU WSL2 host. CPU is the change in process user/system ticks divided
+by elapsed time; context switches sum the per-thread counters. These short
+samples and single workload runs are observations, not statistical performance
+guarantees, peak resource measurements or multihost qualification. The result
+supports reducing polling overhead; substantial production-scale work remains.
