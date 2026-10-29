@@ -415,15 +415,14 @@ fn run(
         // leadership changes. A client timeout alone does not remove a proposal.
         if pending.is_empty() && pending_read.is_none() {
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
-                super::meta_checkpoint::capture(
-                    service.export_snapshot(),
-                    groups.to_bytes().map_err(storage)?,
-                    id,
-                )
-                .map(|stream| {
-                    stream.map(|s| {
-                        let length = s.length;
-                        (s, length)
+                let snapshot = service.export_snapshot();
+                let catalog = groups.to_bytes().map_err(storage)?;
+                Ok(move || {
+                    super::meta_checkpoint::capture(snapshot, catalog, id).map(|stream| {
+                        stream.map(|s| {
+                            let length = s.length;
+                            (s, length)
+                        })
                     })
                 })
             })?;

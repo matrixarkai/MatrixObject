@@ -468,14 +468,15 @@ fn run(
         // Proposing a second outcome against the same old state would be invalid.
         if pending.is_none() && pending_read.is_none() {
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
-                crate::cluster::chunk_checkpoint::capture(node.service.export_snapshot(), id).map(
-                    |stream| {
+                let snapshot = node.service.export_snapshot();
+                Ok(move || {
+                    crate::cluster::chunk_checkpoint::capture(snapshot, id).map(|stream| {
                         stream.map(|s| {
                             let length = s.length;
                             (s, length)
                         })
-                    },
-                )
+                    })
+                })
             })?;
             if let Ok(request) = requests.try_recv() {
                 if request.deadline <= Instant::now() {

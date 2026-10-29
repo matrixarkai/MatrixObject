@@ -161,7 +161,7 @@ metadata record remains limited to 256 MiB, and configured capacity and page
 count limits are checked during restore. Metadata records, page descriptors and
 receipts still occupy memory; the application itself still keeps resident page
 data. Atomic installation temporarily retains the old and recovered service states.
-Capture, validation and file I/O are synchronous and can delay requests.
+Snapshot export and final WAL publication remain synchronous and can delay requests.
 If an image exceeds a format bound, the server retains WAL history and retries
 after another configured interval. The WAL still stops writes at 512 MiB.
 
@@ -202,3 +202,19 @@ cargo test --locked --release --all-features --test network_chunk_consensus chun
 This uses three processes and 272 MiB of page data, forces a checkpoint larger
 than 256 MiB, catches up an offline voter, commits with that voter, and verifies
 every page after a total restart. It is not a multi-host throughput measurement.
+
+## Background checkpoint capture
+
+Each node keeps at most one capture worker. At a settled applied position it
+exports an immutable snapshot, then moves serialization, capture validation and
+payload file sync to that worker. Peer traffic and later writes continue while
+capture runs. The completed payload is published at its original applied
+position, retaining every later log entry for recovery. A newer received
+checkpoint can supersede the worker result without replacing newer state.
+
+Over-limit snapshots keep WAL history. Worker failures stop the node rather than
+silently treating a failed capture as durable. Orderly shutdown joins the worker
+and discards an unpublished payload. Snapshot export (including its own checksum
+work), final WAL replacement and sync, and incoming snapshot restoration still
+run synchronously. This change does not promise a bound on request latency or
+constant memory; later writes can also fill the WAL before capture completes.
