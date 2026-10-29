@@ -168,3 +168,85 @@ fn response_timeout_covers_the_entire_frame_not_each_byte() {
     assert!(start.elapsed() < Duration::from_millis(350));
     handle.join().unwrap();
 }
+
+fn identity() -> matrixobjectstore_rs::cluster::MetaGroupIdentity {
+    matrixobjectstore_rs::cluster::MetaGroupIdentity {
+        version: 1,
+        group_id: 42,
+        node_id: 1,
+        voters: vec![1, 2],
+        peer_endpoints: vec!["127.0.0.1:18001".into(), "127.0.0.1:18002".into()],
+        bootstrap_id: 99,
+    }
+}
+fn identity_server(answer: MetaReply) -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        assert_eq!(
+            receive(&mut stream),
+            MetaRequest::GroupIdentity.code() as u8
+        );
+        stream
+            .write_all(&encode_meta_reply(&MetaReply::GroupIdentity(identity())))
+            .unwrap();
+        assert_eq!(receive(&mut stream), mutation().code() as u8);
+        stream.write_all(&encode_meta_reply(&answer)).unwrap();
+    });
+    (address, worker)
+}
+#[test]
+fn failed_metadata_identity_exchange_can_try_another_voter_before_mutation() {
+    for redirected in [false, true] {
+        let (failed, failed_worker) = server(None);
+        let (healthy, healthy_worker) = identity_server(MetaReply::Expired { offline_count: 7 });
+        let mut endpoints = vec![failed, healthy.clone()];
+        let first = if redirected {
+            let (endpoint, worker) = identity_server(MetaReply::NotLeader);
+            endpoints.insert(0, endpoint);
+            Some(worker)
+        } else {
+            None
+        };
+        let mut client =
+            RemoteMetaClient::connect_verified_raft_catalog(&endpoints, &identity(), &options())
+                .unwrap();
+        assert_eq!(
+            client.try_call(mutation()).into_result().unwrap(),
+            MetaReply::Expired { offline_count: 7 }
+        );
+        assert_eq!(client.endpoint(), healthy);
+        assert_eq!(
+            failed_worker.join().unwrap(),
+            MetaRequest::GroupIdentity.code() as u8
+        );
+        healthy_worker.join().unwrap();
+        if let Some(worker) = first {
+            worker.join().unwrap();
+        }
+    }
+    let mut wrong = identity();
+    wrong.bootstrap_id += 1;
+    for response in [
+        encode_meta_reply(&MetaReply::GroupIdentity(wrong)),
+        encode_failure(StatusCode::UnknownRequest, "unsupported identity"),
+    ] {
+        let (first, worker) = server(Some(response));
+        let unused = TcpListener::bind("127.0.0.1:0").unwrap();
+        unused.set_nonblocking(true).unwrap();
+        assert!(RemoteMetaClient::connect_verified_raft_catalog(
+            &[first, unused.local_addr().unwrap().to_string()],
+            &identity(),
+            &options()
+        )
+        .is_err());
+        worker.join().unwrap();
+        assert!(matches!(unused.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+    }
+    let (first, one) = server(None);
+    let (second, two) = server(None);
+    assert!(RemoteMetaClient::connect_raft_catalog(&[first, second], 42, &options()).is_err());
+    assert_eq!(one.join().unwrap(), MetaRequest::GroupIdentity.code() as u8);
+    assert_eq!(two.join().unwrap(), MetaRequest::GroupIdentity.code() as u8);
+}

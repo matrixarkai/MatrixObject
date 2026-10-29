@@ -177,6 +177,18 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::bootstrap_catalog_reads_bypass_queue_but_obey_limits_and_failure_state -- --exact | tee /tmp/bootstrap-read.log
           grep -q 'test result: ok. 1 passed' /tmp/bootstrap-read.log
 
+      - name: failed chunk identity exchange can try another voter before writing
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test chunk_catalog_routing failed_chunk_identity_exchange_can_try_another_voter_before_writing -- --exact | tee /tmp/identity-fallback.log
+          grep -q 'test result: ok. 1 passed' /tmp/identity-fallback.log
+
+      - name: failed metadata identity exchange can try another voter before mutation
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test metadata_catalog_routing failed_metadata_identity_exchange_can_try_another_voter_before_mutation -- --exact | tee /tmp/identity-fallback.log
+          grep -q 'test result: ok. 1 passed' /tmp/identity-fallback.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail

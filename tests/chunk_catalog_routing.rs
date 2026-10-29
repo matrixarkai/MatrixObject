@@ -340,3 +340,55 @@ fn chunk_group_protobuf_rejects_invalid_or_noncanonical_configuration() {
         assert!(ReplicaReply::decode(RequestCode::GroupIdentity, &malformed).is_err());
     }
 }
+
+#[test]
+fn failed_chunk_identity_exchange_can_try_another_voter_before_writing() {
+    for redirected in [false, true] {
+        let (failed, failed_worker) = server(None);
+        let (healthy, healthy_worker) = identity_server(identity(2), Some(ReplicaReply::Applied));
+        let mut endpoints = vec![failed, healthy.clone()];
+        let first = if redirected {
+            let (endpoint, worker) = identity_server(identity(1), Some(ReplicaReply::NotLeader));
+            endpoints.insert(0, endpoint);
+            Some(worker)
+        } else {
+            None
+        };
+        let mut client = RemoteReplicaClient::connect_verified_raft_catalog(
+            &endpoints,
+            &identity(1),
+            &options(),
+        )
+        .unwrap();
+        client.write_chunk(page(), 0, b"data").unwrap();
+        assert_eq!(client.endpoint(), healthy);
+        assert_eq!(failed_worker.join().unwrap(), 7);
+        healthy_worker.join().unwrap();
+        if let Some(worker) = first {
+            worker.join().unwrap();
+        }
+    }
+    let mut wrong = identity(1);
+    wrong.capacity_bytes += 1;
+    for response in [
+        encode_reply(&ReplicaReply::GroupIdentity(wrong)),
+        encode_failure(StatusCode::UnknownRequest, "unsupported identity"),
+    ] {
+        let (first, worker) = server(Some(response));
+        let unused = TcpListener::bind("127.0.0.1:0").unwrap();
+        unused.set_nonblocking(true).unwrap();
+        assert!(RemoteReplicaClient::connect_verified_raft_catalog(
+            &[first, unused.local_addr().unwrap().to_string()],
+            &identity(1),
+            &options()
+        )
+        .is_err());
+        worker.join().unwrap();
+        assert!(matches!(unused.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+    }
+    let (first, one) = server(None);
+    let (second, two) = server(None);
+    assert!(RemoteReplicaClient::connect_raft_catalog(&[first, second], 42, &options()).is_err());
+    assert_eq!(one.join().unwrap(), 7);
+    assert_eq!(two.join().unwrap(), 7);
+}

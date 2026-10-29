@@ -227,6 +227,13 @@ fewer group lookups and connection attempts; throughput still needs controlled
 measurements on deployment hardware. The initial phase also approached its
 180-second bound, so this host/profile has limited demonstrated load margin.
 
+With local bootstrap-catalog reads, another run passed in 242.42 seconds. Initial
+writes took 138.74 seconds (7.4 objects/second, median 1.065 seconds, p95 1.649
+seconds), post-failover writes took 33.68 seconds, and verified reads took 22.48
+and 37.81 seconds. This is faster than the preceding sample but slower than the
+first sample; these runs do not isolate code changes from host variability. All
+1280 objects passed recovery checks with the original phase limits.
+
 The same object workload with the default two metadata executors hit the unchanged
 180-second write-phase bound after 777 completed writes, before recovery checks.
 Each executor waits for its Raft result, so two executors limit how many requests
@@ -272,3 +279,19 @@ Changing the catalog dynamically would require a new consistency design; this
 local read path must not be reused for mutable configuration. The process test
 covers follower reads, retained bootstrap after restart, and minority refusal of
 health, placement, manifest and page-allocation requests.
+
+## Connection failures during identity discovery
+
+Metadata and data Raft catalog clients can try the remaining endpoints when an
+identity exchange leaves its connection unusable. This applies both to initial
+discovery and to a new connection during routing. The application request has not
+yet been sent on that connection, so this does not replay a possibly committed
+mutation. Each catalog pass remains bounded by its endpoint count and configured
+connection/read/write timeouts.
+
+Every replacement connection must still return the required complete identity.
+A decoded server refusal, unsupported identity request, or valid identity that
+conflicts with the expected configuration stops the attempt. After an application
+mutation is sent, an uncertain result still stops automatic routing. The socket
+tests cover initial and redirected discovery failure, exhaustion, identity and
+unsupported-request refusal, and the existing no-replay behavior.
