@@ -350,7 +350,7 @@ fn run(
             tick = Instant::now();
         }
         let application = RefCell::new(&mut *service);
-        let output = peer.process_ready_with_snapshot(
+        let output = peer.process_ready_with_snapshot_reader(
             |id, bytes| {
                 applied_term.set(id.term);
                 apply_committed(
@@ -363,8 +363,9 @@ fn run(
                 )?;
                 Ok(())
             },
-            |id, bytes| {
-                let restored = restore_checkpoint(bytes, id.clone(), groups)?;
+            |id, reader, length| {
+                let image = Image::read_at(reader, length, 1, id.clone())?;
+                let restored = restore_image(image, groups)?;
                 **application.borrow_mut() = restored;
                 applied_term.set(id.term);
                 checkpoint.restored(id.index);
@@ -459,12 +460,18 @@ fn run(
     Ok(())
 }
 
+#[cfg(test)]
 fn restore_checkpoint(
     bytes: &[u8],
     id: LogId,
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MatrixMetaService, RaftError> {
-    let image = Image::decode_at(bytes, 1, id)?;
+    restore_image(Image::decode_at(bytes, 1, id)?, groups)
+}
+fn restore_image(
+    image: Image,
+    groups: &super::ChunkGroupCatalog,
+) -> Result<MatrixMetaService, RaftError> {
     if image.catalog != groups.to_bytes().map_err(storage)? {
         return Err(storage("metadata checkpoint group catalog mismatch"));
     }

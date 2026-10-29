@@ -372,7 +372,7 @@ fn run(
             .lock()
             .map_err(|_| RaftError::Storage("chunk state poisoned".into()))?;
         let application = RefCell::new(&mut *node);
-        let output = peer.process_ready_with_snapshot(
+        let output = peer.process_ready_with_snapshot_reader(
             |id, bytes| {
                 let mut node = application.borrow_mut();
                 if !bytes.is_empty() {
@@ -415,8 +415,9 @@ fn run(
                 }
                 Ok(())
             },
-            |id, bytes| {
-                restore_checkpoint(&mut application.borrow_mut(), bytes, id.clone())?;
+            |id, reader, length| {
+                let image = Image::read_at(reader, length, 2, id.clone())?;
+                restore_image(&mut application.borrow_mut(), image)?;
                 applied_term.set(id.term);
                 checkpoint.restored(id.index);
                 Ok(())
@@ -502,8 +503,11 @@ fn run(
     Ok(())
 }
 
+#[cfg(test)]
 fn restore_checkpoint(node: &mut NodeReplica, bytes: &[u8], id: LogId) -> Result<(), RaftError> {
-    let image = Image::decode_at(bytes, 2, id)?;
+    restore_image(node, Image::decode_at(bytes, 2, id)?)
+}
+fn restore_image(node: &mut NodeReplica, image: Image) -> Result<(), RaftError> {
     if !image.catalog.is_empty() {
         return Err(storage("chunk checkpoint contains a metadata catalog"));
     }

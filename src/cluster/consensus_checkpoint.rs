@@ -7,7 +7,10 @@ use matrixraft::{
     LogId, RaftError,
 };
 use prost::Message;
-use std::path::PathBuf;
+use std::{
+    io::{self, Cursor, Read},
+    path::PathBuf,
+};
 
 #[derive(Clone, PartialEq, Message)]
 pub(super) struct Image {
@@ -38,26 +41,104 @@ impl Image {
             catalog,
         }
     }
-    pub(super) fn decode_at(bytes: &[u8], kind: u32, id: LogId) -> Result<Self, RaftError> {
-        if bytes.len() > MAX_CHECKPOINT_BYTES {
+    /// Emits the canonical protobuf envelope without copying either body.
+    fn into_reader(mut self) -> impl Read {
+        let state = std::mem::take(&mut self.state);
+        let catalog = std::mem::take(&mut self.catalog);
+        let mut prefix = self.encode_to_vec();
+        prefix.push(42);
+        prost::encoding::encode_varint(state.len() as u64, &mut prefix);
+        let mut suffix = Vec::new();
+        if !catalog.is_empty() {
+            suffix.push(50);
+            prost::encoding::encode_varint(catalog.len() as u64, &mut suffix);
+        }
+        Cursor::new(prefix)
+            .chain(Cursor::new(state))
+            .chain(Cursor::new(suffix))
+            .chain(Cursor::new(catalog))
+    }
+
+    pub(super) fn read_at(
+        reader: &mut dyn Read,
+        length: u64,
+        kind: u32,
+        id: LogId,
+    ) -> Result<Self, RaftError> {
+        if length > MAX_CHECKPOINT_BYTES as u64 {
             return Err(storage("application checkpoint exceeds size bound"));
         }
-        let image = Self::decode(bytes).map_err(storage)?;
-        if image.version != 1
-            || image.kind != kind
-            || image.index != id.index
-            || image.term != id.term
-            || image.index == 0
-            || image.term == 0
-            || image.state.is_empty()
-            || image.encode_to_vec() != bytes
-        {
-            return Err(storage(
-                "application checkpoint identity or encoding mismatch",
-            ));
+        let mut reader = reader.take(length);
+        // The schema is canonical: every identity field is present, ordered and
+        // minimally encoded. Validate it before allocating application bodies.
+        for (tag, value) in [(8, 1), (16, kind as u64), (24, id.index), (32, id.term)] {
+            if byte(&mut reader)? != tag || varint(&mut reader)? != value || value == 0 {
+                return Err(storage(
+                    "application checkpoint identity or encoding mismatch",
+                ));
+            }
         }
-        Ok(image)
+        let state = body(&mut reader, 42)?;
+        if state.is_empty() {
+            return Err(storage("application checkpoint state is empty"));
+        }
+        let catalog = if reader.limit() != 0 {
+            let bytes = body(&mut reader, 50)?;
+            if bytes.is_empty() {
+                return Err(storage("application checkpoint catalog is not canonical"));
+            }
+            bytes
+        } else {
+            Vec::new()
+        };
+        if reader.limit() != 0 {
+            return Err(storage("application checkpoint has trailing fields"));
+        }
+        Ok(Self::new(kind, id, state, catalog))
     }
+
+    #[cfg(test)]
+    pub(super) fn decode_at(bytes: &[u8], kind: u32, id: LogId) -> Result<Self, RaftError> {
+        Self::read_at(&mut Cursor::new(bytes), bytes.len() as u64, kind, id)
+    }
+}
+fn byte(reader: &mut dyn Read) -> Result<u8, RaftError> {
+    let mut value = [0];
+    reader.read_exact(&mut value).map_err(storage)?;
+    Ok(value[0])
+}
+fn varint(reader: &mut dyn Read) -> Result<u64, RaftError> {
+    let mut value = 0;
+    for shift in (0..70).step_by(7) {
+        let next = byte(reader)?;
+        if shift == 63 && next > 1 {
+            return Err(storage("application checkpoint integer overflow"));
+        }
+        value |= u64::from(next & 127) << shift;
+        if next < 128 {
+            if shift != 0 && next == 0 {
+                return Err(storage("application checkpoint integer is not canonical"));
+            }
+            return Ok(value);
+        }
+    }
+    Err(storage("application checkpoint integer overflow"))
+}
+fn body(reader: &mut io::Take<&mut dyn Read>, tag: u8) -> Result<Vec<u8>, RaftError> {
+    if byte(reader)? != tag {
+        return Err(storage("application checkpoint field order mismatch"));
+    }
+    let length = varint(reader)?;
+    if length > reader.limit() {
+        return Err(storage(
+            "application checkpoint field exceeds remaining bytes",
+        ));
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length as usize).map_err(storage)?;
+    bytes.resize(length as usize, 0);
+    reader.read_exact(&mut bytes).map_err(storage)?;
+    Ok(bytes)
 }
 pub(super) struct Policy {
     kind: u32,
@@ -116,7 +197,8 @@ impl Policy {
                 self.kind,image.encoded_len(),MAX_CHECKPOINT_BYTES);
             return Ok(());
         }
-        peer.checkpoint(image.encode_to_vec())?;
+        let length = image.encoded_len() as u64;
+        peer.checkpoint_from_reader(&mut image.into_reader(), length)?;
         self.checkpoint = index;
         self.baseline = std::fs::metadata(&self.wal).map_err(storage)?.len();
         Ok(())
@@ -153,6 +235,74 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn checkpoint_readers_preserve_protobuf_bytes_and_short_reads() {
+        struct Short<R>(R);
+        impl<R: Read> Read for Short<R> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                let len = out.len().min(3);
+                self.0.read(&mut out[..len])
+            }
+        }
+        for kind in [1, 2] {
+            for catalog in [vec![], vec![7; 300]] {
+                let id = LogId {
+                    index: 300,
+                    term: 128,
+                };
+                let image = Image::new(kind, id.clone(), vec![9; 65537], catalog);
+                let canonical = image.encode_to_vec();
+                let mut encoded = Vec::new();
+                image
+                    .clone()
+                    .into_reader()
+                    .read_to_end(&mut encoded)
+                    .unwrap();
+                assert_eq!(encoded, canonical);
+                let mut input = Short(Cursor::new(&canonical));
+                assert_eq!(
+                    Image::read_at(&mut input, canonical.len() as u64, kind, id).unwrap(),
+                    image
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_reader_refuses_malformed_lengths_and_noncanonical_fields() {
+        let id = LogId { index: 9, term: 3 };
+        let good = Image::new(1, id.clone(), vec![1, 2, 3], vec![4]).encode_to_vec();
+        for offset in 0..good.len() {
+            for value in 0..=255 {
+                let mut bytes = good.clone();
+                bytes[offset] = value;
+                if let Ok(image) = Image::decode_at(&bytes, 1, id.clone()) {
+                    assert_eq!(image.encode_to_vec(), bytes);
+                    assert_eq!(image.index, 9);
+                    assert_eq!(image.term, 3);
+                    assert!(!image.state.is_empty());
+                }
+            }
+        }
+        let mut overlong = good.clone();
+        overlong.splice(1..2, [0x81, 0]);
+        assert!(Image::decode_at(&overlong, 1, id.clone()).is_err());
+        let mut overflow = good.clone();
+        overflow.splice(9..10, [0xff; 10]);
+        assert!(Image::decode_at(&overflow, 1, id.clone()).is_err());
+        for length in [0, good.len() as u64 - 1, good.len() as u64 + 1, u64::MAX] {
+            assert!(Image::read_at(&mut Cursor::new(&good), length, 1, id.clone()).is_err());
+        }
+        let mut empty_catalog = Image::new(1, id.clone(), vec![1], vec![]).encode_to_vec();
+        empty_catalog.extend([50, 0]);
+        assert!(Image::decode_at(&empty_catalog, 1, id.clone()).is_err());
+        let mut joined = good.clone();
+        joined.extend(b"next record");
+        let mut reader = Cursor::new(joined);
+        Image::read_at(&mut reader, good.len() as u64, 1, id).unwrap();
+        assert_eq!(reader.position(), good.len() as u64);
+    }
+
     #[test]
     fn checkpoint_policy_bounds_the_configured_interval() {
         for value in [0, 1024, 128 * 1024 * 1024] {

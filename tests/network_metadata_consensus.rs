@@ -976,7 +976,7 @@ fn metadata_checkpoints_restore_placements_roster_and_lagging_processes() {
             .root
             .join(leader.to_string())
             .join("metadata.peer.wal"),
-        2,
+        4,
     );
     group.start(lagging);
     node_regime::checkpoints::wait_for_checkpoint(
@@ -984,7 +984,7 @@ fn metadata_checkpoints_restore_placements_roster_and_lagging_processes() {
             .root
             .join(lagging.to_string())
             .join("metadata.peer.wal"),
-        2,
+        4,
     );
     group.kill(other);
     // Publishing a snapshot does not promise the old leader retains its term.
