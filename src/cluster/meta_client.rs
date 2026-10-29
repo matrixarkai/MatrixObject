@@ -398,6 +398,37 @@ impl RemoteMetaClient {
         }
     }
 
+    pub fn read_manifest(
+        &mut self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<crate::object_manifest::ObjectManifest, ObjectError> {
+        match self.call(MetaRequest::ReadManifest {
+            bucket: bucket.into(),
+            key: key.into(),
+        })? {
+            MetaReply::Manifest(value) if value.bucket == bucket && value.key == key => Ok(value),
+            _ => Err(ObjectError::Corruption("unexpected manifest reply".into())),
+        }
+    }
+    /// Publish only after immutable extent writes are confirmed durable. An uncertain
+    /// response must be resolved by reading the manifest, not replaying the mutation.
+    pub fn publish_manifest(
+        &mut self,
+        outcome: crate::object_manifest::ManifestOutcome,
+        update_time_ms: u64,
+    ) -> Result<crate::object_manifest::ObjectManifest, ObjectError> {
+        outcome.validate()?;
+        let expected = outcome.after.clone().unwrap();
+        match self.call(MetaRequest::PublishManifest {
+            outcome,
+            update_time_ms,
+        })? {
+            MetaReply::Manifest(value) if value == expected => Ok(value),
+            _ => Err(ObjectError::Corruption("unexpected manifest reply".into())),
+        }
+    }
+
     fn call(&mut self, request: MetaRequest) -> Result<MetaReply, ObjectError> {
         self.try_call(request).into_result()
     }
@@ -417,6 +448,7 @@ impl RemoteMetaClient {
             MetaRequest::Ping
                 | MetaRequest::ListRootNodes
                 | MetaRequest::PlanObjectPlacement { .. }
+                | MetaRequest::ReadManifest { .. }
                 | MetaRequest::ReadObjectRootPlacement { .. }
                 | MetaRequest::ReadChunkGroup { .. }
         );

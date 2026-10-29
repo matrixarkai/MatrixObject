@@ -373,3 +373,51 @@ fn conditional_placement_commits_persist_and_refuse_stale_records() {
         10
     );
 }
+
+#[test]
+fn binary_manifest_publication_survives_local_process_restart() {
+    use matrixobjectstore_rs::object_manifest::{ManifestOutcome, ObjectManifest};
+    let dir = StateDir::new();
+    let node = start(&dir.0, "3");
+    let mut c = client(&node);
+    let first = ObjectManifest {
+        format_version: 1,
+        bucket: "bucket".into(),
+        key: "empty".into(),
+        generation: 1,
+        length: 0,
+        extents: vec![],
+        deleted: false,
+    };
+    assert_eq!(
+        c.publish_manifest(ManifestOutcome::decide(None, first.clone()).unwrap(), 1)
+            .unwrap(),
+        first
+    );
+    assert_eq!(c.read_manifest("bucket", "empty").unwrap(), first);
+    let mut deleted = first.clone();
+    deleted.generation = 2;
+    deleted.deleted = true;
+    c.publish_manifest(
+        ManifestOutcome::decide(Some(first.clone()), deleted.clone()).unwrap(),
+        2,
+    )
+    .unwrap();
+    drop(c);
+    drop(node);
+    let node = start(&dir.0, "5");
+    let mut c = client(&node);
+    assert_eq!(c.read_manifest("bucket", "empty").unwrap(), deleted);
+    assert!(c
+        .publish_manifest(ManifestOutcome::decide(None, first).unwrap(), 3)
+        .is_err());
+    let mut recreated = deleted.clone();
+    recreated.generation = 3;
+    recreated.deleted = false;
+    c.publish_manifest(
+        ManifestOutcome::decide(Some(deleted), recreated.clone()).unwrap(),
+        3,
+    )
+    .unwrap();
+    assert_eq!(c.read_manifest("bucket", "empty").unwrap(), recreated);
+}

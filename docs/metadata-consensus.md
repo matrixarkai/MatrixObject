@@ -306,5 +306,7 @@ Empty catalogs retain snapshot version 18; populated catalogs use version 19
 with a checksummed binary protobuf catalog. Checkpoint restore installs the
 catalog, preserving object generations and deletion tombstones. All readers must
 understand version 19 before it is written. Version-2 placement outcomes now bind manifest and placement changes atomically
-and replay through the journal and Raft apply paths. Network publication requests,
-verified data extent admission and distributed HTTP routing remain integration work.
+and replay through the journal and Raft apply paths. Manifest reads and conditional publication are available over binary protobuf
+requests. Publication validates configured group names; callers still own durable
+extent verification and immutable writes. Distributed HTTP routing remains work
+in progress.

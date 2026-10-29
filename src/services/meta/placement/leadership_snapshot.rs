@@ -312,13 +312,14 @@ impl MatrixMetaService {
     ///
     /// It validates with the same shared rules either way.
     pub fn install_placement_roster(&mut self, snapshot: &MetaSnapshot) -> Result<(), ObjectError> {
-        validate_placement_roster(
+        validate_placement_roster_with_manifests(
             &snapshot.placement_nodes,
             &snapshot.placements,
             &snapshot.placement_leader_lease,
             &snapshot.placement_leader_lease_receipts,
             &snapshot.placement_coordinator_config,
             snapshot.placement_commit_index,
+            Some(&snapshot.object_manifests),
         )?;
         self.invalidate_snapshot_export_cache();
         self.nodes = snapshot.placement_nodes.clone();

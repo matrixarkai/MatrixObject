@@ -197,6 +197,16 @@ struct CatalogImage {
     objects: Vec<ObjectManifest>,
 }
 impl ManifestCatalog {
+    #[cfg(feature = "metadata-consensus")]
+    pub(crate) fn restore_entry(&mut self, id: ObjectId, previous: Option<ObjectManifest>) {
+        if let Some(current) = self.objects.remove(&id) {
+            self.body_bytes -= entry_size(&current);
+        }
+        if let Some(previous) = previous {
+            self.body_bytes += entry_size(&previous);
+            self.objects.insert(id, previous);
+        }
+    }
     pub(crate) fn encoded_size(&self) -> usize {
         self.body_bytes + 2 + 12
     }

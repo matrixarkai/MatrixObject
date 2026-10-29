@@ -52671,6 +52671,13 @@ fn manifest_publication_moves_capacity_and_preserves_deleted_generations_atomica
     assert_eq!(service.nodes["group-b"].committed_bytes, 0);
     assert_eq!(service.object_manifests.get(&deleted.object_id()), Some(&deleted));
     let snapshot = service.export_snapshot();
+    let bytes = snapshot.to_bytes().unwrap();
+    assert_eq!(MetaSnapshot::from_bytes(&bytes).unwrap(), snapshot);
+    let mut unbound = snapshot.clone();
+    unbound.object_manifests = Default::default();
+    unbound.checksum = unbound.checksum_material_hash();
+    assert!(unbound.validate().is_err());
+
     assert!(create.apply(&mut service).is_err());
     assert!(service.release_object_placement(&deleted.object_id()).is_err());
     assert_eq!(service.export_snapshot(), snapshot);

@@ -79,6 +79,8 @@ pub enum MetaRequestCode {
     CommitObjectPlacementIfCurrent = 73,
     /// Read immutable Raft voter configuration without a read barrier.
     GroupIdentity = 74,
+    ReadManifest = 75,
+    PublishManifest = 76,
 }
 
 impl MetaRequestCode {
@@ -100,6 +102,8 @@ impl MetaRequestCode {
             72 => Some(MetaRequestCode::ReadChunkGroup),
             73 => Some(MetaRequestCode::CommitObjectPlacementIfCurrent),
             74 => Some(MetaRequestCode::GroupIdentity),
+            75 => Some(MetaRequestCode::ReadManifest),
+            76 => Some(MetaRequestCode::PublishManifest),
             _ => None,
         }
     }
@@ -118,6 +122,8 @@ impl MetaRequestCode {
             MetaRequestCode::ReadChunkGroup,
             MetaRequestCode::CommitObjectPlacementIfCurrent,
             MetaRequestCode::GroupIdentity,
+            MetaRequestCode::ReadManifest,
+            MetaRequestCode::PublishManifest,
         ]
     }
 }

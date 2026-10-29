@@ -206,6 +206,14 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
+    ReadManifest {
+        bucket: String,
+        key: String,
+    },
+    PublishManifest {
+        outcome: crate::object_manifest::ManifestOutcome,
+        update_time_ms: u64,
+    },
     GroupIdentity,
     CommitObjectPlacementIfCurrent {
         placement: CommittedPlacement,
@@ -256,6 +264,8 @@ pub enum MetaRequest {
 impl MetaRequest {
     pub fn code(&self) -> MetaRequestCode {
         match self {
+            MetaRequest::ReadManifest { .. } => MetaRequestCode::ReadManifest,
+            MetaRequest::PublishManifest { .. } => MetaRequestCode::PublishManifest,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
             MetaRequest::HeartbeatChunkNode { .. } => MetaRequestCode::HeartbeatChunkNode,
@@ -277,6 +287,25 @@ impl MetaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            MetaRequest::ReadManifest { bucket, key } => {
+                return super::conditional_requests::ManifestRead {
+                    version: 1,
+                    bucket: bucket.clone(),
+                    key: key.clone(),
+                }
+                .encode_to_vec();
+            }
+            MetaRequest::PublishManifest {
+                outcome,
+                update_time_ms,
+            } => {
+                return super::conditional_requests::ManifestPublish {
+                    version: 1,
+                    outcome: Some(outcome.clone()),
+                    update_time_ms: *update_time_ms,
+                }
+                .encode_to_vec();
+            }
             MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
                 placement,
@@ -359,6 +388,49 @@ impl MetaRequest {
     /// every field this reader did take came out of the wrong place -- a node id read one
     /// field short still parses into a valid string, naming a node nobody asked about.
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == MetaRequestCode::ReadManifest {
+            if payload.len() > 8192 {
+                return Err(ObjectError::Corruption(
+                    "manifest read exceeds bound".into(),
+                ));
+            }
+            let value: super::conditional_requests::ManifestRead =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 {
+                return Err(ObjectError::Corruption(
+                    "manifest read version mismatch".into(),
+                ));
+            }
+            crate::validate_bucket(&value.bucket)?;
+            crate::validate_key(&value.key)?;
+            return Ok(Self::ReadManifest {
+                bucket: value.bucket,
+                key: value.key,
+            });
+        }
+        if code == MetaRequestCode::PublishManifest {
+            if payload.len() > 2 * 1024 * 1024 + 256 {
+                return Err(ObjectError::Corruption(
+                    "manifest publication exceeds bound".into(),
+                ));
+            }
+            let value: super::conditional_requests::ManifestPublish =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 {
+                return Err(ObjectError::Corruption(
+                    "manifest publication version mismatch".into(),
+                ));
+            }
+            let outcome = value
+                .outcome
+                .ok_or_else(|| ObjectError::Corruption("manifest outcome missing".into()))?;
+            outcome.validate()?;
+            return Ok(Self::PublishManifest {
+                outcome,
+                update_time_ms: value.update_time_ms,
+            });
+        }
+
         if code == MetaRequestCode::CommitObjectPlacementIfCurrent {
             let value: super::conditional_requests::PlacementCommit =
                 super::conditional_requests::decode(payload)?;
@@ -380,7 +452,9 @@ impl MetaRequest {
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
-            MetaRequestCode::CommitObjectPlacementIfCurrent => unreachable!(),
+            MetaRequestCode::ReadManifest
+            | MetaRequestCode::PublishManifest
+            | MetaRequestCode::CommitObjectPlacementIfCurrent => unreachable!(),
             MetaRequestCode::ReadChunkGroup => MetaRequest::ReadChunkGroup {
                 placement_id: cursor.take_str()?,
             },
@@ -436,6 +510,7 @@ impl MetaRequest {
 /// Reply contents, including a pre-admission leader-routing response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
+    Manifest(crate::object_manifest::ObjectManifest),
     GroupIdentity(super::MetaGroupIdentity),
     ChunkGroup(super::ChunkGroupConfig),
     /// A routing response: this request was not proposed or applied.
@@ -481,6 +556,7 @@ impl MetaReply {
                     &node.failure_domain,
                 ))
             }),
+            Self::Manifest(value) => value.encoded_len(),
             Self::Expired { .. } => 8,
             Self::Plan(plan) => 52usize
                 .saturating_add(plan.bucket.len())
@@ -495,6 +571,7 @@ impl MetaReply {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            MetaReply::Manifest(value) => return value.encode_to_vec(),
             MetaReply::NotLeader => {}
             MetaReply::GroupIdentity(identity) => return identity.encode_to_vec(),
             MetaReply::ChunkGroup(group) => return group.encode_to_vec(),
@@ -539,6 +616,21 @@ impl MetaReply {
     /// shape is read from the reply itself can be read as the wrong shape. The caller knows
     /// what it asked.
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if matches!(
+            code,
+            MetaRequestCode::ReadManifest | MetaRequestCode::PublishManifest
+        ) {
+            if payload.len() > 1024 * 1024 {
+                return Err(ObjectError::Corruption(
+                    "manifest reply exceeds bound".into(),
+                ));
+            }
+            let value: crate::object_manifest::ObjectManifest =
+                super::conditional_requests::decode(payload)?;
+            value.validate()?;
+            return Ok(Self::Manifest(value));
+        }
+
         if code == MetaRequestCode::GroupIdentity {
             if payload.len() > 4096 {
                 return Err(ObjectError::Corruption(
@@ -569,7 +661,10 @@ impl MetaReply {
         }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
-            MetaRequestCode::ReadChunkGroup | MetaRequestCode::GroupIdentity => unreachable!(),
+            MetaRequestCode::ReadManifest
+            | MetaRequestCode::PublishManifest
+            | MetaRequestCode::ReadChunkGroup
+            | MetaRequestCode::GroupIdentity => unreachable!(),
             MetaRequestCode::HeartbeatRootNode | MetaRequestCode::HeartbeatChunkNode => {
                 MetaReply::PlacementNode(take_node(&mut cursor)?)
             }

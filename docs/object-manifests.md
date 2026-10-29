@@ -5,7 +5,8 @@ and immutable chunk extents. `proto/object_manifest.proto` documents its fields.
 The catalog is carried in metadata service snapshots, local metadata snapshot
 files and streamed Raft checkpoints. Atomic binary publication outcomes can be
 decided and replayed through the placement journal and Raft application path.
-The network request API and HTTP routing do not yet expose publication.
+The metadata request API exposes reads and conditional publication. HTTP routing
+does not yet use this API.
 
 Each manifest identifies a bucket, key and consecutive generation. Extents cover
 the object contiguously, identify a configured chunk group and page, and state the
@@ -29,8 +30,8 @@ unordered catalog images, overlapping extents, invalid page extents and skipped
 generations are rejected. These limits are explicit initial format limits rather
 than a large-scale capacity claim.
 
-Network integration must validate configured group identities and data durability,
-then persist and replicate the decided outcome before acknowledging. Manifests
+Publication validates configured group names and commits the decided outcome
+before acknowledging. The caller must verify group identities and data durability. Manifests
 and placements are captured together at one applied position. Writers must store
 immutable
 new data extents before publishing visibility, resolve uncertain publication by
@@ -69,7 +70,29 @@ owns log replay position. Version-1 outcomes remain readable but cannot overwrit
 a manifest-backed placement. The ordinary placement commit/release methods also
 refuse such objects, requiring atomic publication instead.
 
-This is the decided-outcome and recovery layer. No network publication verb or
-distributed HTTP data path is enabled yet. Callers must verify configured group
-identities and immutable data extent durability before proposing a publication.
+The metadata client exposes this outcome layer over the network. A distributed
+HTTP data path is not enabled yet. Callers must verify group identities and
+immutable data extent durability before proposing a publication.
 Older readers reject version-2 outcomes; upgrade readers before writing them.
+
+
+`RemoteMetaClient::read_manifest` returns live values and deletion tombstones;
+an absent object returns NotFound. `publish_manifest` accepts the complete
+expected and resulting values through `ManifestOutcome`, and returns the committed
+manifest. Requests and replies use bounded canonical binary protobuf
+(`proto/manifest_requests.proto`), rejecting unknown fields and malformed values.
+The reply is checked against the requested object or resulting manifest.
+
+Raft reads use the quorum read barrier. Publication is acknowledged only after
+committed apply. Speculative batches save and restore only affected manifest
+entries along with placement and node records, including catalog size accounting.
+Local durable nodes preflight the complete snapshot bound, sync the outcome
+journal, and then apply it. That local preflight clones and serializes state;
+it is not a constant-cost operation and is not used by the Raft path.
+
+Catalog routing may retry an explicitly unadmitted NotLeader response. It never
+automatically replays an uncertain publication; read the manifest to resolve
+the result. Unknown chunk-group names are rejected before proposal. The metadata
+node does not read extent payloads or prove their durability or immutability.
+Clients must finish immutable data writes first, verify group identity and read
+sequence/checksum, and preserve old extents until readers no longer need them.

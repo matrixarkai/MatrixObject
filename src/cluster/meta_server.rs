@@ -657,6 +657,44 @@ fn apply(
         drop(guard);
         return consensus.request(request);
     }
+    if let MetaRequest::PublishManifest {
+        outcome,
+        update_time_ms,
+    } = &request
+    {
+        guard.groups.check_request(&request)?;
+        let (decided, reply) = decide_manifest(
+            &guard.service,
+            outcome.clone(),
+            *update_time_ms,
+            max_payload_bytes,
+        )?;
+        if guard.storage.is_some() {
+            // Preflight the local snapshot bound before persisting an outcome.
+            let mut preview = guard.service.clone();
+            decided.apply(&mut preview)?;
+            if super::chunk_groups::encode_bootstrap(&preview, &guard.groups)?.len()
+                > 64 * 1024 * 1024
+            {
+                return Err(ObjectError::InvalidArgument(
+                    "metadata snapshot exceeds 64 MiB".into(),
+                ));
+            }
+            if !guard.recovered {
+                guard.persist()?;
+                guard.recovered = true;
+            }
+            if let Err(error) = guard.storage.as_mut().unwrap().append_outcome(&decided) {
+                guard.failed = true;
+                return Err(ObjectError::Corruption(error.to_string()));
+            }
+        }
+        if let Err(error) = decided.apply(&mut guard.service) {
+            guard.failed = true;
+            return Err(error);
+        }
+        return Ok(reply);
+    }
     if let MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } = &request {
         if expired_node_ids(&guard.service, *ttl_ms, *now_ms)?.is_empty() {
             return Ok(MetaReply::Expired { offline_count: 0 });
@@ -748,6 +786,22 @@ pub(super) fn expired_node_ids(
         .collect())
 }
 
+pub(super) fn decide_manifest(
+    service: &MatrixMetaService,
+    outcome: crate::object_manifest::ManifestOutcome,
+    update_time_ms: u64,
+    limit: usize,
+) -> Result<(crate::placement_outcome::PlacementOutcome, MetaReply), ObjectError> {
+    let decided = crate::placement_outcome::PlacementOutcome::publish_manifest(
+        service,
+        outcome,
+        update_time_ms,
+    )?;
+    let reply = MetaReply::Manifest(decided.manifest.as_ref().unwrap().after.clone().unwrap());
+    crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
+    Ok((decided, reply))
+}
+
 pub(super) fn apply_with_groups(
     service: &mut MatrixMetaService,
     request: MetaRequest,
@@ -755,6 +809,16 @@ pub(super) fn apply_with_groups(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
+    if let MetaRequest::PublishManifest {
+        outcome,
+        update_time_ms,
+    } = &request
+    {
+        let (decided, reply) = decide_manifest(service, outcome.clone(), *update_time_ms, limit)?;
+        decided.apply(service)?;
+        return Ok(reply);
+    }
+
     if let MetaRequest::ReadChunkGroup { placement_id } = &request {
         let reply = groups
             .get(placement_id)
@@ -785,6 +849,22 @@ pub(super) fn apply_to_meta(
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     match request {
+        MetaRequest::PublishManifest { .. } => Err(ObjectError::InvalidArgument(
+            "publication requires a chunk catalog".into(),
+        )),
+        MetaRequest::ReadManifest { bucket, key } => {
+            crate::validate_bucket(&bucket)?;
+            crate::validate_key(&key)?;
+            let value = guard
+                .object_manifests
+                .get(&super::meta_message::object_id(&bucket, &key))
+                .cloned()
+                .ok_or_else(|| ObjectError::NotFound("object manifest missing".into()))?;
+            let reply = MetaReply::Manifest(value);
+            crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;
+            Ok(reply)
+        }
+
         MetaRequest::ReadChunkGroup { .. } => {
             Err(ObjectError::NotFound("chunk group missing".into()))
         }

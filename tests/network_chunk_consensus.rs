@@ -1244,6 +1244,175 @@ mod coupled_groups {
         health(&mut meta, true, 4, 4);
     }
 
+    #[test]
+    fn binary_manifests_bind_immutable_data_through_failover_and_restart() {
+        use matrixobjectstore_rs::object_manifest::{
+            ManifestOutcome, ObjectExtent, ObjectManifest,
+        };
+        fn checksum(bytes: &[u8]) -> u64 {
+            bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
+                (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
+            })
+        }
+        let mut chunks = Group::configured(65536);
+        chunks.checkpoint_bytes = 1024;
+        let mut metadata = MetadataGroup::new(&chunks);
+        chunks.report = Some((metadata.api.join(","), chunks.api_addresses.clone()));
+        for id in 0..3 {
+            chunks.start(id);
+        }
+        let mut meta = metadata.ready();
+        chunks.leader();
+        health(&mut meta, true, 0, 0);
+        let mut data = meta
+            .connect_chunk_group("group-a", &chunk_options())
+            .unwrap();
+        let mut current = None;
+        for generation in 1..=16 {
+            let bytes = vec![generation as u8; 4];
+            data.write_chunk_if_sequence(page(800 + generation), 0, &bytes, 0)
+                .unwrap();
+            let manifest = ObjectManifest {
+                format_version: 1,
+                bucket: "manifests".into(),
+                key: "object".into(),
+                generation,
+                length: 4,
+                deleted: false,
+                extents: vec![ObjectExtent {
+                    group: "group-a".into(),
+                    volume_id: 3,
+                    chunk_id: 7,
+                    page_index: 800 + generation,
+                    object_offset: 0,
+                    page_offset: 0,
+                    length: 4,
+                    write_sequence: 1,
+                    data_checksum: checksum(&bytes),
+                }],
+            };
+            let outcome = ManifestOutcome::decide(current.clone(), manifest.clone()).unwrap();
+            if generation == 1 {
+                let mut wrong = manifest.clone();
+                wrong.extents[0].group = "unknown-group".into();
+                assert!(meta
+                    .publish_manifest(ManifestOutcome::decide(None, wrong).unwrap(), 1)
+                    .is_err());
+            }
+            assert_eq!(
+                meta.publish_manifest(outcome, generation).unwrap(),
+                manifest
+            );
+            current = Some(manifest);
+        }
+        let current = current.unwrap();
+        assert_eq!(meta.read_manifest("manifests", "object").unwrap(), current);
+        health(&mut meta, true, 64, 4);
+        let meta_leader = metadata
+            .api
+            .iter()
+            .position(|a| a == meta.endpoint())
+            .unwrap();
+        node_regime::checkpoints::wait_for_checkpoint(
+            &metadata
+                .root
+                .join(meta_leader.to_string())
+                .join("metadata.peer.wal"),
+            2,
+        );
+        metadata.kill(meta_leader);
+        chunks.kill(chunks.leader());
+        meta = metadata.ready();
+        chunks.leader();
+        assert_eq!(meta.read_manifest("manifests", "object").unwrap(), current);
+        for id in 0..3 {
+            if chunks.nodes[id].is_some() {
+                chunks.kill(id);
+            }
+            if metadata.nodes[id].is_some() {
+                metadata.kill(id);
+            }
+        }
+        for id in 0..3 {
+            metadata.start(id);
+            chunks.start(id);
+        }
+        meta = metadata.ready();
+        chunks.leader();
+        data = meta
+            .connect_chunk_group("group-a", &chunk_options())
+            .unwrap();
+        let restored = meta.read_manifest("manifests", "object").unwrap();
+        assert_eq!(restored, current);
+        for generation in 1..=16 {
+            let read = data.read_chunk(&page(800 + generation), 0, 4).unwrap();
+            assert_eq!(read.data, vec![generation as u8; 4]);
+            assert_eq!(
+                data.head_chunk(&page(800 + generation))
+                    .unwrap()
+                    .write_sequence,
+                1
+            );
+        }
+        assert_eq!(
+            checksum(&data.read_chunk(&page(816), 0, 4).unwrap().data),
+            restored.extents[0].data_checksum
+        );
+        let mut deleted = restored.clone();
+        deleted.generation += 1;
+        deleted.length = 0;
+        deleted.extents.clear();
+        deleted.deleted = true;
+        meta.publish_manifest(
+            ManifestOutcome::decide(Some(restored.clone()), deleted.clone()).unwrap(),
+            30,
+        )
+        .unwrap();
+        assert_eq!(meta.read_manifest("manifests", "object").unwrap(), deleted);
+        assert!(meta
+            .publish_manifest(
+                ManifestOutcome::decide(Some(restored), deleted.clone()).unwrap(),
+                30
+            )
+            .is_err());
+        // Exercise empty manifests alongside the deletion before another restart.
+        for generation in 1..=16 {
+            let empty = ObjectManifest {
+                format_version: 1,
+                bucket: "empty".into(),
+                key: format!("key-{generation}"),
+                generation: 1,
+                length: 0,
+                extents: vec![],
+                deleted: false,
+            };
+            meta.publish_manifest(
+                ManifestOutcome::decide(None, empty).unwrap(),
+                40 + generation,
+            )
+            .unwrap();
+        }
+        for id in 0..3 {
+            metadata.kill(id);
+        }
+        for id in 0..3 {
+            metadata.start(id);
+        }
+        meta = metadata.ready();
+        assert_eq!(meta.read_manifest("manifests", "object").unwrap(), deleted);
+        let leader = metadata
+            .api
+            .iter()
+            .position(|a| a == meta.endpoint())
+            .unwrap();
+        for id in 0..3 {
+            if id != leader {
+                metadata.kill(id);
+            }
+        }
+        assert!(meta.read_manifest("manifests", "object").is_err());
+    }
+
     fn load_data(n: u64) -> Vec<u8> {
         let mut bytes: Vec<u8> = (0..1024)
             .map(|i| (n.wrapping_mul(31).wrapping_add(i) % 251) as u8)
