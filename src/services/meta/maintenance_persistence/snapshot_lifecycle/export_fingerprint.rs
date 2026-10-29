@@ -20,7 +20,15 @@ fn metadata_fingerprint_reserve_hint(service: &MatrixMetaService) -> usize {
 
 impl MatrixMetaService {
     pub fn export_snapshot(&self) -> MetaSnapshot {
-        let mut snapshot = MetaSnapshot {
+        let mut snapshot = self.export_snapshot_unsealed();
+        snapshot.checksum = snapshot.checksum_material_hash();
+        snapshot
+    }
+
+    /// Copy the captured state without scanning its checksum material. The
+    /// background checkpoint worker seals this private snapshot before encoding.
+    pub(crate) fn export_snapshot_unsealed(&self) -> MetaSnapshot {
+        MetaSnapshot {
             // The collection is ordered by each record's own key; the snapshot states the
             // key once in front of each record, so it rebuilds the pairs.
             records: self
@@ -64,9 +72,7 @@ impl MatrixMetaService {
             qos_config: self.qos_config.clone(),
             qos_state: self.qos_state.clone(),
             checksum: String::new(),
-        };
-        snapshot.checksum = snapshot.checksum_material_hash();
-        snapshot
+        }
     }
 
     pub fn metadata_state_fingerprint(&self) -> String {

@@ -31,10 +31,7 @@ impl ReplicaServiceSnapshot {
         append_u64(&mut material, self.trim_flow_throttled_ops);
         append_u64(&mut material, self.trim_flow_throttled_bytes);
         append_u64(&mut material, self.partial_reclaim_failures);
-        append_string(
-            &mut material,
-            &self.last_partial_reclaim_failure_status,
-        );
+        append_string(&mut material, &self.last_partial_reclaim_failure_status);
         append_u64(&mut material, self.physical_write_count);
         append_u64(&mut material, self.physical_write_bytes);
         append_u64(&mut material, self.physical_discard_ranges);
@@ -118,11 +115,19 @@ impl ReplicaServiceSnapshot {
         checksum
     }
 
+    /// Complete the statistics and checksum after an immutable checkpoint copy
+    /// has moved off the consensus loop.
+    pub(crate) fn seal_for_checkpoint(&mut self) {
+        let (count, saved) = chunk_map_compression_stats(&self.pages);
+        self.compressed_chunk_count = count;
+        self.compression_saved_bytes = saved;
+        self.seal_checksum();
+    }
+
     /// Computes the checksum an unsealed snapshot is missing, so `validate`
     /// accepts it. Paired with the `export_snapshot_unsealed` constructors,
     /// which skip the full payload scan until the snapshot is installed.
     pub fn seal_checksum(&mut self) {
         self.checksum = self.checksum_material_hash();
     }
-
 }

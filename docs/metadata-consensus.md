@@ -295,7 +295,8 @@ checkpoint can supersede the worker result without replacing newer state.
 
 Over-limit snapshots keep WAL history. Worker failures stop the node rather than
 silently treating a failed capture as durable. Orderly shutdown joins the worker
-and discards an unpublished payload. Snapshot export (including its own checksum
-work), final WAL replacement and sync, and incoming snapshot restoration still
+and discards an unpublished payload. Snapshot export copies collections on the consensus loop; checksum sealing and
+chunk compression statistics run on the worker. Final WAL replacement and sync,
+and incoming snapshot restoration still
 run synchronously. This change does not promise a bound on request latency or
 constant memory; later writes can also fill the WAL before capture completes.
