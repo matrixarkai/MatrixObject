@@ -411,6 +411,66 @@ impl RemoteMetaClient {
             _ => Err(ObjectError::Corruption("unexpected manifest reply".into())),
         }
     }
+    /// Read one committed object generation through its configured data groups.
+    /// The complete result is bounded by `max_bytes`; no bytes are returned until
+    /// every extent matches its committed sequence, length and FNV-1a checksum.
+    /// Writers must retain immutable pages while readers can still use them.
+    #[cfg(feature = "replica-server")]
+    pub fn read_object(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        max_bytes: usize,
+        options: &super::ReplicaClientOptions,
+    ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
+        let manifest = self.read_manifest(bucket, key)?;
+        manifest.validate()?;
+        if manifest.deleted {
+            return Err(ObjectError::NotFound("object is deleted".into()));
+        }
+        let length = usize::try_from(manifest.length)
+            .ok()
+            .filter(|length| *length <= max_bytes)
+            .ok_or_else(|| ObjectError::PreconditionFailed("object exceeds read limit".into()))?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|_| {
+            ObjectError::PreconditionFailed("object read allocation refused".into())
+        })?;
+        // Keep just one verified connection, bounding open sockets even for objects
+        // spread across thousands of groups. Adjacent extents reuse the connection.
+        let mut connection: Option<(String, super::RemoteReplicaClient)> = None;
+        for extent in &manifest.extents {
+            if connection.as_ref().map(|(group, _)| group) != Some(&extent.group) {
+                connection = Some((
+                    extent.group.clone(),
+                    self.connect_chunk_group(&extent.group, options)?,
+                ));
+            }
+            let page = crate::PageId {
+                chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)?,
+                page_index: extent.page_index,
+            };
+            let read = connection.as_mut().unwrap().1.read_chunk(
+                &page,
+                extent.page_offset,
+                extent.length,
+            )?;
+            let checksum = read.data.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+            if read.write_sequence != extent.write_sequence
+                || read.data.len() as u64 != extent.length
+                || checksum != extent.data_checksum
+            {
+                return Err(ObjectError::Corruption(
+                    "object extent does not match manifest".into(),
+                ));
+            }
+            bytes.extend_from_slice(&read.data);
+        }
+        Ok((manifest, bytes))
+    }
+
     /// Publish only after immutable extent writes are confirmed durable. An uncertain
     /// response must be resolved by reading the manifest, not replaying the mutation.
     pub fn publish_manifest(

@@ -96,3 +96,16 @@ the result. Unknown chunk-group names are rejected before proposal. The metadata
 node does not read extent payloads or prove their durability or immutability.
 Clients must finish immutable data writes first, verify group identity and read
 sequence/checksum, and preserve old extents until readers no longer need them.
+
+`RemoteMetaClient::read_object` fetches one committed manifest and assembles its
+extents using verified data-group connections. It returns the manifest with the
+bytes only after every extent matches its exact length, write sequence and FNV-1a
+data checksum. A deleted or absent object returns NotFound; a live empty object
+returns an empty buffer. The caller supplies a maximum object byte count, checked
+before allocating or connecting to data nodes. Allocation failure returns an error.
+The client retains at most one data-group connection, reusing it for adjacent
+extents in the same group. Memory includes the bounded complete output plus one
+extent response and transport buffers. This API reads a complete object, not a
+stream or range; it does not enable HTTP routing or reclaim old pages. A concurrent
+manifest update does not change the captured generation. Overwriting one of its
+pages causes sequence validation to fail even when the replacement bytes match.

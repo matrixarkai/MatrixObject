@@ -1249,6 +1249,7 @@ mod coupled_groups {
         use matrixobjectstore_rs::object_manifest::{
             ManifestOutcome, ObjectExtent, ObjectManifest,
         };
+        use matrixobjectstore_rs::ObjectError;
         fn checksum(bytes: &[u8]) -> u64 {
             bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
                 (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
@@ -1306,8 +1307,60 @@ mod coupled_groups {
             current = Some(manifest);
         }
         let current = current.unwrap();
+        assert_eq!(
+            meta.read_object("manifests", "object", 4, &chunk_options())
+                .unwrap(),
+            (current.clone(), vec![16; 4])
+        );
+        assert!(matches!(
+            meta.read_object("manifests", "object", 3, &chunk_options()),
+            Err(ObjectError::PreconditionFailed(_))
+        ));
+        // Verify assembly with page offsets and multiple extents, including a late
+        // invalid extent: a failed read must never expose a successful prefix.
+        let mut composite = current.clone();
+        composite.key = "composite".into();
+        composite.generation = 1;
+        composite.length = 4;
+        composite.extents[0].page_offset = 1;
+        composite.extents[0].length = 2;
+        composite.extents[0].data_checksum = checksum(&[16; 2]);
+        let mut second = composite.extents[0].clone();
+        second.page_index = 815;
+        second.object_offset = 2;
+        second.data_checksum = checksum(&[15; 2]);
+        composite.extents.push(second);
+        meta.publish_manifest(
+            ManifestOutcome::decide(None, composite.clone()).unwrap(),
+            20,
+        )
+        .unwrap();
+        assert_eq!(
+            meta.read_object("manifests", "composite", 4, &chunk_options())
+                .unwrap()
+                .1,
+            vec![16, 16, 15, 15]
+        );
+        let mut invalid = composite.clone();
+        invalid.key = "invalid-checksum".into();
+        invalid.extents[1].data_checksum ^= 1;
+        meta.publish_manifest(ManifestOutcome::decide(None, invalid).unwrap(), 21)
+            .unwrap();
+        assert!(matches!(
+            meta.read_object("manifests", "invalid-checksum", 4, &chunk_options()),
+            Err(ObjectError::Corruption(_))
+        ));
+        let mut invalid = composite;
+        invalid.key = "invalid-sequence".into();
+        invalid.extents[1].write_sequence += 1;
+        meta.publish_manifest(ManifestOutcome::decide(None, invalid).unwrap(), 22)
+            .unwrap();
+        assert!(matches!(
+            meta.read_object("manifests", "invalid-sequence", 4, &chunk_options()),
+            Err(ObjectError::Corruption(_))
+        ));
         assert_eq!(meta.read_manifest("manifests", "object").unwrap(), current);
-        health(&mut meta, true, 64, 4);
+        health(&mut meta, true, 64, 16);
         let meta_leader = metadata
             .api
             .iter()
@@ -1325,6 +1378,11 @@ mod coupled_groups {
         meta = metadata.ready();
         chunks.leader();
         assert_eq!(meta.read_manifest("manifests", "object").unwrap(), current);
+        assert_eq!(
+            meta.read_object("manifests", "object", 4, &chunk_options())
+                .unwrap(),
+            (current.clone(), vec![16; 4])
+        );
         for id in 0..3 {
             if chunks.nodes[id].is_some() {
                 chunks.kill(id);
@@ -1344,6 +1402,11 @@ mod coupled_groups {
             .unwrap();
         let restored = meta.read_manifest("manifests", "object").unwrap();
         assert_eq!(restored, current);
+        assert_eq!(
+            meta.read_object("manifests", "object", 4, &chunk_options())
+                .unwrap(),
+            (current.clone(), vec![16; 4])
+        );
         for generation in 1..=16 {
             let read = data.read_chunk(&page(800 + generation), 0, 4).unwrap();
             assert_eq!(read.data, vec![generation as u8; 4]);
@@ -1358,6 +1421,12 @@ mod coupled_groups {
             checksum(&data.read_chunk(&page(816), 0, 4).unwrap().data),
             restored.extents[0].data_checksum
         );
+        data.write_chunk_if_sequence(page(815), 0, &[15; 4], 1)
+            .unwrap();
+        assert!(matches!(
+            meta.read_object("manifests", "composite", 4, &chunk_options()),
+            Err(ObjectError::Corruption(_))
+        ));
         let mut deleted = restored.clone();
         deleted.generation += 1;
         deleted.length = 0;
@@ -1369,6 +1438,10 @@ mod coupled_groups {
         )
         .unwrap();
         assert_eq!(meta.read_manifest("manifests", "object").unwrap(), deleted);
+        assert!(matches!(
+            meta.read_object("manifests", "object", 4, &chunk_options()),
+            Err(ObjectError::NotFound(_))
+        ));
         assert!(meta
             .publish_manifest(
                 ManifestOutcome::decide(Some(restored), deleted.clone()).unwrap(),
@@ -1400,6 +1473,19 @@ mod coupled_groups {
         }
         meta = metadata.ready();
         assert_eq!(meta.read_manifest("manifests", "object").unwrap(), deleted);
+        assert!(matches!(
+            meta.read_object("manifests", "object", 4, &chunk_options()),
+            Err(ObjectError::NotFound(_))
+        ));
+        assert!(meta
+            .read_object("empty", "key-1", 0, &chunk_options())
+            .unwrap()
+            .1
+            .is_empty());
+        assert!(matches!(
+            meta.read_object("empty", "missing", 0, &chunk_options()),
+            Err(ObjectError::NotFound(_))
+        ));
         let leader = metadata
             .api
             .iter()
