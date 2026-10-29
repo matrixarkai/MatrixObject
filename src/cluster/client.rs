@@ -356,6 +356,107 @@ impl RemoteReplicaClient {
         }
     }
 
+    /// Read bounded raw bytes at a complete page-state checksum, including discarded bytes.
+    pub fn read_chunk_state_range(
+        &mut self,
+        page_id: &PageId,
+        expected_state_checksum: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<super::state_transfer::ChunkStateRange, ObjectError> {
+        super::state_transfer::validate_request(expected_state_checksum, offset, length)?;
+        match self.call(ReplicaRequest::ReadChunkStateRange {
+            page_id: page_id.clone(),
+            expected_state_checksum: expected_state_checksum.into(),
+            offset,
+            length,
+        })? {
+            ReplicaReply::StateRange(value) => {
+                if value.offset != offset
+                    || value.state_checksum != expected_state_checksum
+                    || value.data.len() as u64
+                        != length.min(value.data_length.saturating_sub(offset))
+                {
+                    return Err(ObjectError::Corruption(
+                        "page state range differs from request".into(),
+                    ));
+                }
+                Ok(value)
+            }
+            other => Err(unexpected_reply("a page state range", &other)),
+        }
+    }
+
+    /// Assemble one validated page state through bounded, checksum-fenced ranges.
+    /// Derived redundancy is omitted and may be rebuilt when installing the state.
+    /// Concurrent page changes refuse the transfer rather than mixing versions.
+    pub fn read_chunk_state(&mut self, page_id: &PageId) -> Result<crate::PageState, ObjectError> {
+        let head = self.head_chunk(page_id)?;
+        self.read_chunk_state_at(page_id, &head)
+    }
+
+    pub(super) fn read_chunk_state_at(
+        &mut self,
+        page_id: &PageId,
+        head: &ReplicaHead,
+    ) -> Result<crate::PageState, ObjectError> {
+        let length = self
+            .max_payload_bytes
+            .saturating_sub(super::state_transfer::RANGE_OVERHEAD)
+            .min(super::state_transfer::MAX_STATE_RANGE_BYTES) as u64;
+        if length == 0 {
+            return Err(ObjectError::InvalidArgument(
+                "frame limit cannot hold a state range".into(),
+            ));
+        }
+        let mut data = Vec::new();
+        let mut total = None;
+        loop {
+            let value = self.read_chunk_state_range(
+                page_id,
+                &head.state_checksum,
+                data.len() as u64,
+                length,
+            )?;
+            if let Some(total) = total {
+                if total != value.data_length {
+                    return Err(ObjectError::Corruption(
+                        "page state length changed during transfer".into(),
+                    ));
+                }
+            } else {
+                data.try_reserve_exact(value.data_length as usize)
+                    .map_err(|_| {
+                        ObjectError::PreconditionFailed("cannot reserve page state buffer".into())
+                    })?;
+                total = Some(value.data_length);
+            }
+            data.extend_from_slice(&value.data);
+            if data.len() as u64 == value.data_length {
+                break;
+            }
+        }
+        let state = crate::PageState {
+            logical_length: head.logical_length,
+            write_sequence: head.write_sequence,
+            checksum_fnv1a64: crate::fnv1a64(&data),
+            data: std::sync::Arc::new(data),
+            ec_parity_fragment: None,
+            ec_fragment_digests: None,
+            discarded_ranges: head.discarded_ranges.clone(),
+        };
+        crate::validate_chunk_state(&state)?;
+        if state.checksum() != head.checksum
+            || crate::chunk_state_handoff_checksum(page_id, &state, &state.checksum())
+                != head.state_checksum
+        {
+            return Err(ObjectError::Corruption(
+                "transferred page state checksum mismatch".into(),
+            ));
+        }
+        Ok(state)
+    }
+
     pub fn head_chunk(&mut self, page_id: &PageId) -> Result<ReplicaHead, ObjectError> {
         match self.call(ReplicaRequest::HeadChunk {
             page_id: page_id.clone(),
@@ -465,6 +566,7 @@ impl RemoteReplicaClient {
             request,
             ReplicaRequest::Ping
                 | ReplicaRequest::ReadChunk { .. }
+                | ReplicaRequest::ReadChunkStateRange { .. }
                 | ReplicaRequest::HeadChunk { .. }
                 | ReplicaRequest::PageInventory { .. }
         );

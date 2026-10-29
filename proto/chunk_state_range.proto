@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject.cluster;
+// Code 10. Canonical request <=512 bytes, response <=1 MiB + 256 bytes.
+message ChunkStateRangeRequest {
+  uint32 version = 1;
+  uint64 volume = 2;
+  uint64 chunk = 3;
+  uint64 page = 4;
+  string state_checksum = 5;
+  uint64 offset = 6;
+  uint64 length = 7;
+}
+message ChunkStateRangeReply {
+  uint32 version = 1;
+  uint64 offset = 2;
+  uint64 data_length = 3;
+  bytes data = 4;
+  string state_checksum = 5;
+}

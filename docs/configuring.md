@@ -148,3 +148,32 @@ locks, corruption and incomplete candidates. Run the larger checks separately:
 cargo test --release --locked --all-features --lib cluster::replica_journal::checkpoint_tests::standalone_journal_streams_large_pages_and_more_than_256_mib -- --exact --ignored --nocapture
 cargo test --release --locked --all-features --test replica_restart_recovery interrupted_journal_checkpoint_preserves_synced_outcomes_and_reclaims_on_retry -- --exact --ignored --nocapture
 ```
+
+
+## Bounded page-state reads
+
+Updated chunk clients can read complete page state with `read_chunk_state`.
+Request code 10 uses the canonical binary protobuf schema in
+`proto/chunk_state_range.proto`. Each response contains at most 1 MiB of raw
+page bytes; pages are bounded to 256 MiB. Every range must match the complete
+head checksum selected before transfer. Concurrent writes or discards cause
+refusal instead of combining page versions. The client checks the assembled
+payload checksum, logical length, sequence and discarded ranges. Raw state
+includes bytes covered by logical discards; ordinary reads still refuse those
+ranges. Derived redundancy is omitted and can be rebuilt during installation.
+
+A star client requires validated, identical bytes from a read quorum and checks
+the head quorum again before returning. It retains at most two assembled page
+payloads, in addition to frame buffers and metadata. Raft nodes confirm read
+leadership for these requests without adding journal records. Catalog clients
+can route reads after leader loss; minority nodes refuse them.
+
+Upgrade serving chunk nodes before using the new operation. There is no legacy
+fallback or automatic restart of a changed transfer. This is a read operation,
+not a remote installation or missed-write repair API. Checksums detect accidental
+corruption; they do not authenticate peers. Maximum-page validation is available
+with:
+
+```sh
+cargo test --release --locked --all-features --test replica_state_transfer page_state_transfer_reads_a_full_256_mib_page -- --exact --ignored --nocapture
+```

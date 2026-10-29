@@ -291,6 +291,24 @@ jobs:
           cargo test --locked --all-features --test replica_restart_recovery failed_journal_checkpoint_fences_serving_and_recovers_the_durable_outcome -- --exact --nocapture | tee /tmp/journal-process.log
           grep -q 'test result: ok. 1 passed' /tmp/journal-process.log
 
+      - name: page state ranges are canonical bounded and refuse changed state
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::state_transfer::tests::page_state_ranges_are_canonical_bounded_and_refuse_changed_state -- --exact | tee /tmp/state-transfer.log
+          grep -q 'test result: ok. 1 passed' /tmp/state-transfer.log
+
+      - name: page state transfer preserves discarded ranges and refuses stale chunks
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_state_transfer page_state_transfer_preserves_discarded_ranges_and_refuses_stale_chunks -- --exact | tee /tmp/state-transfer.log
+          grep -q 'test result: ok. 1 passed' /tmp/state-transfer.log
+
+      - name: star state transfer requires valid bytes from a read quorum
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_state_transfer star_state_transfer_requires_valid_bytes_from_a_read_quorum -- --exact | tee /tmp/state-transfer.log
+          grep -q 'test result: ok. 1 passed' /tmp/state-transfer.log
+
       - name: health reports validate canonical protobuf and decided time
         run: |
           set -o pipefail

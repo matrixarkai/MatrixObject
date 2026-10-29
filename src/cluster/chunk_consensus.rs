@@ -599,6 +599,7 @@ fn restore_snapshot(
 fn read_only(request: &ReplicaRequest) -> bool {
     match request {
         ReplicaRequest::ReadChunk { .. }
+        | ReplicaRequest::ReadChunkStateRange { .. }
         | ReplicaRequest::HeadChunk { .. }
         | ReplicaRequest::PageInventory { .. }
         | ReplicaRequest::Ping
@@ -615,6 +616,12 @@ fn checked_apply(
     max_pages: usize,
     limit: usize,
 ) -> Result<ReplicaReply, ObjectError> {
+    if let ReplicaRequest::ReadChunkStateRange { length, .. } = &request {
+        let size = usize::try_from(*length)
+            .unwrap_or(usize::MAX)
+            .saturating_add(crate::cluster::state_transfer::RANGE_OVERHEAD);
+        crate::cluster::message::check_reply_size(size, limit)?;
+    }
     if let ReplicaRequest::ReadChunk { length, .. } = &request {
         let size = usize::try_from(*length)
             .unwrap_or(usize::MAX)

@@ -611,6 +611,7 @@ fn chunk_catalog_finds_the_leader_and_moves_reads_after_process_loss() {
     group.kill(first);
     let next = group.leader();
     assert_ne!(next, first);
+    assert_eq!(client.read_chunk_state(&page(0)).unwrap().data.as_slice(), b"routed");
     assert_eq!(client.read_chunk(&page(0), 0, 6).unwrap().data, b"routed");
     assert_eq!(
         client.endpoint(),
@@ -2751,6 +2752,9 @@ fn chunk_quorum_reads_leave_the_wal_unchanged_and_refuse_a_minority() {
             worker.join().unwrap();
         }
     });
+    let transferred = client.read_chunk_state(&page(0)).unwrap();
+    assert_eq!(transferred.data.as_slice(), b"committed bytes");
+    assert_eq!(transferred.write_sequence, head.write_sequence);
     assert_eq!(std::fs::read(&path).unwrap(), before);
     // A write following confirmed reads still becomes visible through consensus.
     client.write_chunk(page(0), 0, b"updated bytes!!").unwrap();
@@ -2758,12 +2762,15 @@ fn chunk_quorum_reads_leave_the_wal_unchanged_and_refuse_a_minority() {
         client.read_chunk(&page(0), 0, 15).unwrap().data,
         b"updated bytes!!"
     );
+    let updated = client.head_chunk(&page(0)).unwrap();
+    assert!(client.read_chunk_state_range(&page(0), &head.state_checksum, 0, 15).is_err());
     for i in 0..3 {
         if i != leader {
             group.kill(i);
         }
     }
     assert!(client.read_chunk(&page(0), 0, 15).is_err());
+    assert!(group.client(leader).read_chunk_state_range(&page(0), &updated.state_checksum, 0, 15).is_err());
     assert!(group.client(leader).ping().is_err());
 }
 
