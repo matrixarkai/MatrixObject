@@ -231,6 +231,7 @@ fn main() {
         "MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS",
         "MATRIXOBJECT_CHUNK_ADVERTISE_ADDR",
         "MATRIXOBJECT_CHUNK_HEARTBEAT_MS",
+        "MATRIXOBJECT_CHUNK_METADATA_IDENTITY_FILE",
     ];
     if heartbeat_names
         .iter()
@@ -266,7 +267,36 @@ fn main() {
                     Err(std::env::VarError::NotPresent) => bound,
                     Err(_) => return Err("advertised address is not UTF-8".into()),
                 };
+                let expected_metadata_identity =
+                    match std::env::var("MATRIXOBJECT_CHUNK_METADATA_IDENTITY_FILE") {
+                        Ok(path) => {
+                            use std::io::Read;
+                            if path.trim().is_empty() {
+                                return Err("metadata identity path is empty".into());
+                            }
+                            let file = std::fs::File::open(&path)
+                                .map_err(|e| format!("opening metadata identity: {e}"))?;
+                            let mut bytes = Vec::new();
+                            file.take(4097)
+                                .read_to_end(&mut bytes)
+                                .map_err(|e| format!("reading metadata identity: {e}"))?;
+                            match matrixobjectstore_rs::cluster::MetaReply::decode(
+                                matrixobjectstore_rs::cluster::MetaRequestCode::GroupIdentity,
+                                &bytes,
+                            )
+                            .map_err(|e| e.to_string())?
+                            {
+                                matrixobjectstore_rs::cluster::MetaReply::GroupIdentity(
+                                    identity,
+                                ) => Some(identity),
+                                _ => return Err("invalid metadata identity reply".into()),
+                            }
+                        }
+                        Err(std::env::VarError::NotPresent) => None,
+                        Err(_) => return Err("metadata identity path is not UTF-8".into()),
+                    };
                 Ok(matrixobjectstore_rs::cluster::ReplicaHeartbeatOptions {
+                    expected_metadata_identity,
                     node_id,
                     advertised_endpoint,
                     metadata_endpoints,

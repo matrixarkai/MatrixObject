@@ -87,6 +87,18 @@ jobs:
           cargo test --locked --lib cluster::meta_identity::tests::metadata_identity_is_bounded_canonical_and_complete -- --exact | tee /tmp/meta-identity-codec.log
           grep -q 'test result: ok. 1 passed' /tmp/meta-identity-codec.log
 
+      - name: verified chunk heartbeats follow metadata failover and chunk restart
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus verified_chunk_heartbeats_follow_metadata_failover_and_chunk_restart -- --exact | tee /tmp/verified-heartbeats.log
+          grep -q 'test result: ok. 1 passed' /tmp/verified-heartbeats.log
+
+      - name: chunk heartbeat identity files refuse invalid data and foreign metadata
+        run: |
+          set -o pipefail
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus chunk_heartbeat_identity_files_refuse_invalid_data_and_foreign_metadata -- --exact | tee /tmp/verified-heartbeats.log
+          grep -q 'test result: ok. 1 passed' /tmp/verified-heartbeats.log
+
       - name: Verified metadata catalogs refuse foreign groups and recover
         run: |
           set -o pipefail

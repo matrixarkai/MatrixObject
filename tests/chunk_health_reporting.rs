@@ -69,6 +69,7 @@ fn health_worker_shutdown_is_bounded_and_invalid_configuration_is_refused() {
     let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let mut server = ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
     let options = ReplicaHeartbeatOptions {
+        expected_metadata_identity: None,
         node_id: "chunk-1".into(),
         advertised_endpoint: server.local_addr().unwrap(),
         metadata_endpoints: vec![silent.local_addr().unwrap()],
@@ -84,6 +85,9 @@ fn health_worker_shutdown_is_bounded_and_invalid_configuration_is_refused() {
     assert!(server.enable_heartbeats(invalid).is_err());
     let mut invalid = options.clone();
     invalid.advertised_endpoint.set_port(0);
+    assert!(server.enable_heartbeats(invalid).is_err());
+    let mut invalid = options.clone();
+    invalid.expected_metadata_identity = Some(Default::default());
     assert!(server.enable_heartbeats(invalid).is_err());
     server.enable_heartbeats(options).unwrap();
     let stop = server.shutdown_handle();
@@ -118,6 +122,7 @@ fn health_worker_shutdown_is_bounded_and_invalid_configuration_is_refused() {
     .unwrap();
     chunk
         .enable_heartbeats(ReplicaHeartbeatOptions {
+            expected_metadata_identity: None,
             node_id: "sleeping".into(),
             advertised_endpoint: address,
             metadata_endpoints: vec![metadata],

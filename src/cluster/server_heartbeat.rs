@@ -15,6 +15,8 @@ pub struct ReplicaHeartbeatOptions {
     pub advertised_endpoint: SocketAddr,
     pub metadata_endpoints: Vec<SocketAddr>,
     pub interval: Duration,
+    /// Pin metadata membership and bootstrap identity on every report connection.
+    pub expected_metadata_identity: Option<crate::cluster::MetaGroupIdentity>,
 }
 
 impl ReplicaHeartbeatOptions {
@@ -32,6 +34,9 @@ impl ReplicaHeartbeatOptions {
             return Err(invalid(
                 "heartbeats require 1..7 metadata endpoints and a 100..60000 ms interval".into(),
             ));
+        }
+        if let Some(identity) = &self.expected_metadata_identity {
+            identity.validate().map_err(|e| invalid(e.to_string()))?;
         }
         let roster = self
             .metadata_endpoints
@@ -73,7 +78,14 @@ pub(super) fn run(
         let result = (|| -> Result<(), crate::ObjectError> {
             // The client is dropped after each report so idle chunk processes never
             // retain the metadata server's connection workers between intervals.
-            let mut client = RemoteMetaClient::connect_catalog(&endpoints, &client_options)?;
+            let mut client = match &options.expected_metadata_identity {
+                Some(identity) => RemoteMetaClient::connect_verified_raft_catalog(
+                    &endpoints,
+                    identity,
+                    &client_options,
+                )?,
+                None => RemoteMetaClient::connect_catalog(&endpoints, &client_options)?,
+            };
             let (used, capacity, online) = {
                 let state = replica.lock().map_err(|_| {
                     crate::ObjectError::Corruption("replica health lock poisoned".into())
@@ -155,6 +167,7 @@ mod tests {
         .unwrap();
         chunk
             .enable_heartbeats(ReplicaHeartbeatOptions {
+                expected_metadata_identity: None,
                 node_id: "chunk-1".into(),
                 advertised_endpoint: endpoint,
                 metadata_endpoints: vec![metadata],
