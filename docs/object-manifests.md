@@ -138,3 +138,41 @@ their committed state. Raw page writes are still available and can mutate existi
 pages, so writers must honor immutable-page ownership. A read detects a changed
 sequence but cannot prevent a raw writer from modifying the page. Automated write
 orchestration, access control and safe reclamation remain separate work.
+
+## Writing complete objects
+
+`RemoteMetaClient::write_object(bucket, key, expected, data, options)` joins the
+steps above. `expected` is the exact current manifest, including a tombstone when
+recreating an object, or None for absence. Preflight validates names, generation,
+size, page count and options, then checks the current manifest before writing.
+Placement selects up to `target_groups` configured groups, capped by page count.
+The client verifies every group, allocates fresh pages, and distributes contiguous
+extents across those groups. Each page is written with expected sequence zero,
+then read back to check sequence one and exact bytes. Only then does the client
+submit the conditional publication. Empty objects need no data pages.
+
+`ObjectWriteOptions` defaults to a 64 MiB object limit, 1 MiB pages and one data
+group. Pages must be 1..1048576 bytes, with no more than 4096 per object. The caller
+supplies the modification time. The input is borrowed; temporary payload memory
+is proportional to one page plus transport buffers and bounded manifest state.
+Connections have their configured per-call timeouts; there is no whole-operation
+timeout. Placement currently reserves the complete object length on every target
+group, even when extents are spread across groups.
+
+`ObjectWriteFailure::BeforePublication` means no publication request was sent.
+Its optional staged manifest identifies candidate pages, some of which may be
+unwritten or unverified; it is diagnostic state, not authorization to publish it.
+A data error never triggers an automatic write retry or publication. Failed writes
+may leave data behind, which the client does not reclaim. An early manifest check
+reduces wasted writes but does not replace the final publication condition.
+
+After a publication error, the client reads the manifest and returns success only
+when the exact attempted result is visible. Otherwise it returns
+`PublicationUnconfirmed` with the complete attempted outcome. It never replays
+publication automatically. Reconnect and read metadata to investigate this state;
+a different value may mean the attempted generation was superseded, so it does not
+prove that publication never committed. Catalog clients can reconnect for this
+read; a failed single-endpoint connection needs replacement by the caller.
+
+The helper does not enforce page immutability against raw writers, reclaim old or
+abandoned pages, add authentication, or enable the HTTP server's distributed path.

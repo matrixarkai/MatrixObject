@@ -1656,6 +1656,221 @@ mod coupled_groups {
         assert!(meta.allocate_object_pages(1).is_err());
     }
 
+    #[test]
+    fn object_writer_publishes_verified_pages_across_groups_and_recovery() {
+        use matrixobjectstore_rs::cluster::{ObjectWriteFailure, ObjectWriteOptions};
+        let mut groups: Vec<_> = (1..=2)
+            .map(|id| {
+                let mut group = Group::configured(1024 * 1024);
+                group.group_id = id;
+                group.checkpoint_bytes = 1024;
+                group
+            })
+            .collect();
+        let mut metadata = MetadataGroup::for_groups(&groups);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for id in 0..3 {
+                group.start(id);
+            }
+        }
+        let mut meta = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        group_usage(&metadata.api, &groups, &[]);
+        let options = ObjectWriteOptions {
+            page_bytes: 4,
+            target_groups: 2,
+            replica: chunk_options(),
+            ..Default::default()
+        };
+        let first = meta
+            .write_object("written", "object", None, b"abcdefghijklmnopq", &options)
+            .unwrap();
+        assert_eq!(first.extents.len(), 5);
+        assert_ne!(first.extents[0].group, first.extents[1].group);
+        assert_eq!(
+            meta.read_object("written", "object", 100, &chunk_options())
+                .unwrap(),
+            (first.clone(), b"abcdefghijklmnopq".to_vec())
+        );
+        let second = meta
+            .write_object(
+                "written",
+                "object",
+                Some(first.clone()),
+                b"new bytes",
+                &options,
+            )
+            .unwrap();
+        assert_eq!(second.generation, 2);
+        assert!(matches!(
+            meta.write_object("written", "object", Some(first.clone()), b"stale", &options),
+            Err(ObjectWriteFailure::BeforePublication { staged: None, .. })
+        ));
+        // Old generations stay readable from their retained pages.
+        let old = &first.extents[0];
+        let mut data = meta
+            .connect_chunk_group(&old.group, &chunk_options())
+            .unwrap();
+        let page = matrixobjectstore_rs::PageId {
+            chunk_id: matrixobjectstore_rs::ChunkId::new(old.volume_id, old.chunk_id).unwrap(),
+            page_index: old.page_index,
+        };
+        assert_eq!(data.read_chunk(&page, 0, old.length).unwrap().data, b"abcd");
+        let empty = meta
+            .write_object("written", "empty", None, b"", &options)
+            .unwrap();
+        assert!(empty.extents.is_empty());
+        let mut deleted = second.clone();
+        deleted.generation += 1;
+        deleted.deleted = true;
+        deleted.length = 0;
+        deleted.extents.clear();
+        meta.publish_manifest(
+            matrixobjectstore_rs::object_manifest::ManifestOutcome::decide(
+                Some(second),
+                deleted.clone(),
+            )
+            .unwrap(),
+            30,
+        )
+        .unwrap();
+        assert!(matches!(
+            meta.write_object("written", "object", None, b"old absent writer", &options),
+            Err(ObjectWriteFailure::BeforePublication { .. })
+        ));
+        let recreated = meta
+            .write_object("written", "object", Some(deleted), b"recreated", &options)
+            .unwrap();
+        assert_eq!(recreated.generation, 4);
+        let leader = metadata
+            .api
+            .iter()
+            .position(|a| a == meta.endpoint())
+            .unwrap();
+        metadata.kill(leader);
+        for group in &mut groups {
+            group.kill(group.leader());
+        }
+        meta = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        let updated = meta
+            .write_object(
+                "written",
+                "object",
+                Some(recreated),
+                b"after failover",
+                &options,
+            )
+            .unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut racers = Vec::new();
+        for payload in [b"racer-a".to_vec(), b"racer-b".to_vec()] {
+            let endpoints = metadata.api.clone();
+            let expected = updated.clone();
+            let options = options.clone();
+            let barrier = barrier.clone();
+            racers.push(std::thread::spawn(move || {
+                let mut client =
+                    RemoteMetaClient::connect_catalog(&endpoints, &MetaClientOptions::default())
+                        .unwrap();
+                barrier.wait();
+                let result =
+                    client.write_object("written", "object", Some(expected), &payload, &options);
+                (result, payload)
+            }));
+        }
+        let mut winners = Vec::new();
+        for racer in racers {
+            let (result, payload) = racer.join().unwrap();
+            match result {
+                Ok(manifest) => winners.push((manifest, payload)),
+                Err(
+                    ObjectWriteFailure::BeforePublication { .. }
+                    | ObjectWriteFailure::PublicationUnconfirmed { .. },
+                ) => {}
+            }
+        }
+        assert_eq!(winners.len(), 1);
+        let winning = winners.pop().unwrap();
+
+        for id in 0..3 {
+            if metadata.nodes[id].is_some() {
+                metadata.kill(id);
+            }
+            for group in &mut groups {
+                if group.nodes[id].is_some() {
+                    group.kill(id);
+                }
+            }
+        }
+        for id in 0..3 {
+            metadata.start(id);
+            for group in &mut groups {
+                group.start(id);
+            }
+        }
+        meta = metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        assert_eq!(
+            meta.read_object("written", "object", 100, &chunk_options())
+                .unwrap(),
+            winning
+        );
+    }
+
+    #[test]
+    fn object_writer_data_refusal_never_publishes_partial_objects() {
+        use matrixobjectstore_rs::cluster::{ObjectWriteFailure, ObjectWriteOptions};
+        let mut chunks = Group::configured(65536);
+        chunks.max_pages = 1;
+        let metadata = MetadataGroup::new(&chunks);
+        chunks.report = Some((metadata.api.join(","), chunks.api_addresses.clone()));
+        for id in 0..3 {
+            chunks.start(id);
+        }
+        let mut meta = metadata.ready();
+        chunks.leader();
+        health(&mut meta, true, 0, 0);
+        let options = ObjectWriteOptions {
+            page_bytes: 4,
+            replica: chunk_options(),
+            ..Default::default()
+        };
+        let error = meta
+            .write_object("written", "partial", None, b"abcdefgh", &options)
+            .unwrap_err();
+        let ObjectWriteFailure::BeforePublication {
+            staged: Some(manifest),
+            ..
+        } = error
+        else {
+            panic!("partial write must remain unpublished");
+        };
+        assert_eq!(manifest.extents.len(), 2);
+        assert!(matches!(
+            meta.read_manifest("written", "partial"),
+            Err(matrixobjectstore_rs::ObjectError::NotFound(_))
+        ));
+        let mut data = meta
+            .connect_chunk_group("group-a", &chunk_options())
+            .unwrap();
+        assert_eq!(data.ping().unwrap(), 1);
+        let extent = &manifest.extents[0];
+        let page = matrixobjectstore_rs::PageId {
+            chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id)
+                .unwrap(),
+            page_index: extent.page_index,
+        };
+        assert_eq!(data.read_chunk(&page, 0, 4).unwrap().data, b"abcd");
+    }
+
     fn load_data(n: u64) -> Vec<u8> {
         let mut bytes: Vec<u8> = (0..1024)
             .map(|i| (n.wrapping_mul(31).wrapping_add(i) % 251) as u8)
