@@ -72,27 +72,44 @@ fn typed_not_leader_can_route_an_unadmitted_mutation() {
 }
 #[test]
 fn uncertain_mutations_are_never_sent_to_another_node() {
-    for response in [
-        None,
-        Some(encode_failure(
-            StatusCode::InvalidArgument,
-            "leadership changed; outcome may be committed",
-        )),
+    let placement = matrixobjectstore_rs::cluster::CommittedPlacement {
+        bucket: "bucket".into(),
+        key: "key".into(),
+        version: 1,
+        length: 4,
+        node_ids: vec!["node".into()],
+        update_time_ms: 1,
+    };
+    for request in [
+        mutation(),
+        MetaRequest::CommitObjectPlacementIfCurrent {
+            placement,
+            expected: None,
+            expected_plan_checksum: "checksum".into(),
+        },
     ] {
-        let (first, handle) = server(response);
-        let (follower, redirect) = server(Some(encode_meta_reply(&MetaReply::NotLeader)));
-        let unused = TcpListener::bind("127.0.0.1:0").unwrap();
-        unused.set_nonblocking(true).unwrap();
-        let second = unused.local_addr().unwrap().to_string();
-        let mut client =
-            RemoteMetaClient::connect_catalog(&[follower, first, second], &options()).unwrap();
-        assert!(client.try_call(mutation()).into_result().is_err());
-        assert_eq!(handle.join().unwrap(), mutation().code() as u8);
-        assert_eq!(redirect.join().unwrap(), mutation().code() as u8);
-        assert!(
-            matches!(unused.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
-            "uncertain mutation was retried"
-        );
+        for response in [
+            None,
+            Some(encode_failure(
+                StatusCode::InvalidArgument,
+                "leadership changed; outcome may be committed",
+            )),
+        ] {
+            let (first, handle) = server(response);
+            let (follower, redirect) = server(Some(encode_meta_reply(&MetaReply::NotLeader)));
+            let unused = TcpListener::bind("127.0.0.1:0").unwrap();
+            unused.set_nonblocking(true).unwrap();
+            let second = unused.local_addr().unwrap().to_string();
+            let mut client =
+                RemoteMetaClient::connect_catalog(&[follower, first, second], &options()).unwrap();
+            assert!(client.try_call(request.clone()).into_result().is_err());
+            assert_eq!(handle.join().unwrap(), request.code() as u8);
+            assert_eq!(redirect.join().unwrap(), request.code() as u8);
+            assert!(
+                matches!(unused.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "uncertain mutation was retried"
+            );
+        }
     }
 }
 #[test]

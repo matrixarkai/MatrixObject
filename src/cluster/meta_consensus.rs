@@ -470,7 +470,8 @@ fn read_only(request: &MetaRequest) -> bool {
         MetaRequest::HeartbeatRootNode { .. }
         | MetaRequest::HeartbeatChunkNode { .. }
         | MetaRequest::ExpireRootNodeHeartbeats { .. }
-        | MetaRequest::CommitObjectPlacement { .. } => false,
+        | MetaRequest::CommitObjectPlacement { .. }
+        | MetaRequest::CommitObjectPlacementIfCurrent { .. } => false,
     }
 }
 fn apply_committed(
@@ -528,7 +529,8 @@ fn propose_batch(
                 // Earlier heartbeats in this batch can make an offline node expire.
                 nodes.extend(service.nodes.keys().cloned());
             }
-            MetaRequest::CommitObjectPlacement { placement, .. } => {
+            MetaRequest::CommitObjectPlacement { placement, .. }
+            | MetaRequest::CommitObjectPlacementIfCurrent { placement, .. } => {
                 let object = super::meta_message::object_id(&placement.bucket, &placement.key);
                 nodes.extend(placement.node_ids.iter().cloned());
                 if let Some(previous) = service.placements.get(&object) {
@@ -610,7 +612,8 @@ fn prepare(
             }
             (nodes, None)
         }
-        MetaRequest::CommitObjectPlacement { placement, .. } => {
+        MetaRequest::CommitObjectPlacement { placement, .. }
+        | MetaRequest::CommitObjectPlacementIfCurrent { placement, .. } => {
             let object = super::meta_message::object_id(&placement.bucket, &placement.key);
             let mut nodes = placement.node_ids.clone();
             if let Some(previous) = service.placements.get(&object) {

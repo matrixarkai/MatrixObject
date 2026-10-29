@@ -53,7 +53,7 @@ fn server(response: Option<Vec<u8>>) -> (String, JoinHandle<u8>) {
 }
 #[test]
 fn chunk_catalog_routes_only_typed_unadmitted_mutations() {
-    for discard in [false, true] {
+    for operation in 0..3 {
         let unavailable = TcpListener::bind("127.0.0.1:0").unwrap();
         let absent = unavailable.local_addr().unwrap().to_string();
         drop(unavailable);
@@ -62,8 +62,12 @@ fn chunk_catalog_routes_only_typed_unadmitted_mutations() {
         let mut client =
             RemoteReplicaClient::connect_catalog(&[absent, follower, leader.clone()], &options())
                 .unwrap();
-        if discard {
+        if operation == 0 {
             client.discard_chunk(&page(), 0, 1).unwrap();
+        } else if operation == 1 {
+            client
+                .write_chunk_if_sequence(page(), 0, b"data", 1)
+                .unwrap();
         } else {
             client.write_chunk(page(), 0, b"data").unwrap();
         }
@@ -87,7 +91,7 @@ fn chunk_catalog_never_replays_uncertain_or_refused_mutations() {
         )),
         Some(malformed),
     ] {
-        for discard in [false, true] {
+        for operation in 0..3 {
             let (follower, redirect) = server(Some(encode_reply(&ReplicaReply::NotLeader)));
             let (first, handle) = server(response.clone());
             let unused = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -97,8 +101,10 @@ fn chunk_catalog_never_replays_uncertain_or_refused_mutations() {
                 &options(),
             )
             .unwrap();
-            let result = if discard {
+            let result = if operation == 0 {
                 client.discard_chunk(&page(), 0, 1)
+            } else if operation == 1 {
+                client.write_chunk_if_sequence(page(), 0, b"data", 1)
             } else {
                 client.write_chunk(page(), 0, b"data")
             };

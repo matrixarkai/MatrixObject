@@ -133,6 +133,7 @@
 // to read past the end of a payload; `message` holds `check_stamp`, `encode_failure` and
 // `decode_failure` beside the replica messages. A build with only the control plane needs
 // those five items and would otherwise need a second copy of them.
+mod conditional_requests;
 pub mod message;
 pub mod wire;
 

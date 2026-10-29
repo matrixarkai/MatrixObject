@@ -75,6 +75,8 @@ pub enum MetaRequestCode {
     HeartbeatChunkNode = 71,
     /// Read one persisted chunk-group catalog entry.
     ReadChunkGroup = 72,
+    /// Commit only if the current placement equals the supplied expected record.
+    CommitObjectPlacementIfCurrent = 73,
 }
 
 impl MetaRequestCode {
@@ -94,6 +96,7 @@ impl MetaRequestCode {
             70 => Some(MetaRequestCode::Ping),
             71 => Some(MetaRequestCode::HeartbeatChunkNode),
             72 => Some(MetaRequestCode::ReadChunkGroup),
+            73 => Some(MetaRequestCode::CommitObjectPlacementIfCurrent),
             _ => None,
         }
     }
@@ -110,6 +113,7 @@ impl MetaRequestCode {
             MetaRequestCode::Ping,
             MetaRequestCode::HeartbeatChunkNode,
             MetaRequestCode::ReadChunkGroup,
+            MetaRequestCode::CommitObjectPlacementIfCurrent,
         ]
     }
 }

@@ -152,3 +152,19 @@ and total restart. Chunk tests transfer state larger than one peer frame and
 check subsequent writes, page state and capacity enforcement. Metadata tests
 check placements and health roster recovery. These are functional fault tests,
 not power-loss or multi-host throughput measurements.
+
+## Conditional data updates
+
+`RemoteReplicaClient::write_chunk_if_sequence` sends canonical binary protobuf
+request code 8. A zero expected sequence requires an absent page; a positive value
+must equal the current page write sequence. The check and write run on the same
+exclusive application state. Consensus preparation checks the projected state of
+earlier admitted updates; the committed binary outcome contains the result.
+A stale condition returns a precondition failure without changing page data.
+
+This works for standalone journal-backed nodes and Raft groups. It is a condition
+on one page in one replica or group, not a transaction spanning star-write peers
+or the metaserver. An uncertain reply is not automatically retried. Read the
+current state and resolve the operation before issuing another mutation.
+Upgrade each serving node before using this verb; older nodes refuse code 8.
+See `metadata-consensus.md` for conditional placement commits.

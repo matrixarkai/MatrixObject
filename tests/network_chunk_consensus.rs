@@ -1038,6 +1038,192 @@ mod coupled_groups {
         }
         assert!(client.object_placement("bucket", "object-0").is_err());
     }
+    #[test]
+    fn conditional_data_and_metadata_updates_survive_conflicts_failover_and_restart() {
+        let mut chunks = Group::configured(65536);
+        chunks.checkpoint_bytes = 1024;
+        let mut metadata = MetadataGroup::new(&chunks);
+        chunks.report = Some((metadata.api.join(","), chunks.api_addresses.clone()));
+        for id in 0..3 {
+            chunks.start(id);
+        }
+        let mut meta = metadata.ready();
+        chunks.leader();
+        health(&mut meta, true, 0, 0);
+        let mut data = meta
+            .connect_chunk_group("group-a", &chunk_options())
+            .unwrap();
+        data.write_chunk_if_sequence(page(700), 0, b"init", 0)
+            .unwrap();
+        assert!(data
+            .write_chunk_if_sequence(page(700), 0, b"oops", 0)
+            .is_err());
+        assert_eq!(data.head_chunk(&page(700)).unwrap().write_sequence, 1);
+        let plan = meta
+            .plan_object_placement("conditional", "object", 4, 1)
+            .unwrap();
+        let first = CommittedPlacement {
+            bucket: plan.bucket,
+            key: plan.key,
+            length: 4,
+            node_ids: plan.node_ids,
+            version: 1,
+            update_time_ms: 1,
+        };
+        meta.commit_object_placement_if_current(first.clone(), None, &plan.plan_checksum)
+            .unwrap();
+        assert!(meta
+            .commit_object_placement_if_current(first.clone(), None, &plan.plan_checksum)
+            .is_err());
+        let barrier = std::sync::Barrier::new(2);
+        let leader = chunks.leader();
+        let clients = vec![chunks.client(leader), chunks.client(leader)];
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = clients
+                .into_iter()
+                .enumerate()
+                .map(|(id, mut client)| {
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        (
+                            id as u8 + 2,
+                            client.write_chunk_if_sequence(page(700), 0, &[id as u8 + 2; 4], 1),
+                        )
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|(_, r)| r.is_ok()).count(), 1);
+        let winner = results.iter().find(|(_, r)| r.is_ok()).unwrap().0;
+        assert_eq!(
+            data.read_chunk(&page(700), 0, 4).unwrap().data,
+            vec![winner; 4]
+        );
+        assert_eq!(data.head_chunk(&page(700)).unwrap().write_sequence, 2);
+        let clients = vec![metadata.ready(), metadata.ready()];
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = clients
+                .into_iter()
+                .enumerate()
+                .map(|(id, mut client)| {
+                    let barrier = &barrier;
+                    let expected = first.clone();
+                    let checksum = plan.plan_checksum.clone();
+                    scope.spawn(move || {
+                        let mut next = expected.clone();
+                        next.version = 2;
+                        next.update_time_ms = id as u64 + 2;
+                        barrier.wait();
+                        client.commit_object_placement_if_current(next, Some(expected), &checksum)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        let mut current = results.into_iter().find_map(Result::ok).unwrap();
+        assert_eq!(
+            meta.object_placement("conditional", "object").unwrap(),
+            current
+        );
+        // Compare the entire record, including fields other than its version.
+        let mut wrong = current.clone();
+        wrong.length += 1;
+        let mut next = current.clone();
+        next.version = 3;
+        assert!(meta
+            .commit_object_placement_if_current(next.clone(), Some(wrong), &plan.plan_checksum)
+            .is_err());
+        let metadata_leader = metadata
+            .api
+            .iter()
+            .position(|a| a == meta.endpoint())
+            .unwrap();
+        metadata.kill(metadata_leader);
+        let chunk_leader = chunks.leader();
+        chunks.kill(chunk_leader);
+        meta = metadata.ready();
+        chunks.leader();
+        data = meta
+            .connect_chunk_group("group-a", &chunk_options())
+            .unwrap();
+        assert_eq!(
+            data.read_chunk(&page(700), 0, 4).unwrap().data,
+            vec![winner; 4]
+        );
+        assert!(data
+            .write_chunk_if_sequence(page(700), 0, b"late", 1)
+            .is_err());
+        assert!(meta
+            .commit_object_placement_if_current(next.clone(), Some(first), &plan.plan_checksum)
+            .is_err());
+        for version in 3..=20 {
+            data.write_chunk_if_sequence(page(700), 0, &[version as u8; 4], version - 1)
+                .unwrap();
+            next = current.clone();
+            next.version = version;
+            next.update_time_ms = version + 10;
+            current = meta
+                .commit_object_placement_if_current(next, Some(current), &plan.plan_checksum)
+                .unwrap();
+        }
+        health(&mut meta, true, 4, 4);
+        let meta_leader = metadata
+            .api
+            .iter()
+            .position(|a| a == meta.endpoint())
+            .unwrap();
+        node_regime::checkpoints::wait_for_checkpoint(
+            &metadata
+                .root
+                .join(meta_leader.to_string())
+                .join("metadata.peer.wal"),
+            2,
+        );
+        node_regime::checkpoints::wait_for_checkpoint(
+            &chunks
+                .root
+                .join(chunks.leader().to_string())
+                .join("chunk.peer.wal"),
+            2,
+        );
+        for id in 0..3 {
+            if chunks.nodes[id].is_some() {
+                chunks.kill(id);
+            }
+            if metadata.nodes[id].is_some() {
+                metadata.kill(id);
+            }
+        }
+        for id in 0..3 {
+            metadata.start(id);
+            chunks.start(id);
+        }
+        meta = metadata.ready();
+        chunks.leader();
+        data = meta
+            .connect_chunk_group("group-a", &chunk_options())
+            .unwrap();
+        assert_eq!(
+            meta.object_placement("conditional", "object").unwrap(),
+            current
+        );
+        assert_eq!(data.read_chunk(&page(700), 0, 4).unwrap().data, vec![20; 4]);
+        assert_eq!(data.head_chunk(&page(700)).unwrap().write_sequence, 20);
+        assert!(data
+            .write_chunk_if_sequence(page(700), 0, b"late", 19)
+            .is_err());
+        health(&mut meta, true, 4, 4);
+    }
+
     fn load_data(n: u64) -> Vec<u8> {
         let mut bytes: Vec<u8> = (0..1024)
             .map(|i| (n.wrapping_mul(31).wrapping_add(i) % 251) as u8)

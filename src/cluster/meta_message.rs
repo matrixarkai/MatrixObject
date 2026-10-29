@@ -206,6 +206,11 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
+    CommitObjectPlacementIfCurrent {
+        placement: CommittedPlacement,
+        expected: Option<CommittedPlacement>,
+        expected_plan_checksum: String,
+    },
     HeartbeatChunkNode {
         node_id: String,
         expected_endpoint: String,
@@ -259,6 +264,9 @@ impl MetaRequest {
             MetaRequest::ReadChunkGroup { .. } => MetaRequestCode::ReadChunkGroup,
             MetaRequest::PlanObjectPlacement { .. } => MetaRequestCode::PlanObjectPlacement,
             MetaRequest::CommitObjectPlacement { .. } => MetaRequestCode::CommitObjectPlacement,
+            MetaRequest::CommitObjectPlacementIfCurrent { .. } => {
+                MetaRequestCode::CommitObjectPlacementIfCurrent
+            }
             MetaRequest::ReadObjectRootPlacement { .. } => MetaRequestCode::ReadObjectRootPlacement,
             MetaRequest::Ping => MetaRequestCode::Ping,
         }
@@ -267,6 +275,19 @@ impl MetaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            MetaRequest::CommitObjectPlacementIfCurrent {
+                placement,
+                expected,
+                expected_plan_checksum,
+            } => {
+                return super::conditional_requests::PlacementCommit {
+                    version: 1,
+                    placement: Some(placement.into()),
+                    expected: expected.as_ref().map(Into::into),
+                    plan_checksum: expected_plan_checksum.clone(),
+                }
+                .encode_to_vec();
+            }
             MetaRequest::ReadChunkGroup { placement_id } => put_str(&mut out, placement_id),
             MetaRequest::HeartbeatChunkNode {
                 node_id,
@@ -335,8 +356,28 @@ impl MetaRequest {
     /// every field this reader did take came out of the wrong place -- a node id read one
     /// field short still parses into a valid string, naming a node nobody asked about.
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == MetaRequestCode::CommitObjectPlacementIfCurrent {
+            let value: super::conditional_requests::PlacementCommit =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 {
+                return Err(ObjectError::Corruption(
+                    "unsupported conditional placement version".into(),
+                ));
+            }
+            return Ok(Self::CommitObjectPlacementIfCurrent {
+                placement: value
+                    .placement
+                    .ok_or_else(|| {
+                        ObjectError::Corruption("conditional placement is missing".into())
+                    })?
+                    .into(),
+                expected: value.expected.map(Into::into),
+                expected_plan_checksum: value.plan_checksum,
+            });
+        }
         let mut cursor = Cursor::new(payload);
         let request = match code {
+            MetaRequestCode::CommitObjectPlacementIfCurrent => unreachable!(),
             MetaRequestCode::ReadChunkGroup => MetaRequest::ReadChunkGroup {
                 placement_id: cursor.take_str()?,
             },
@@ -565,7 +606,9 @@ impl MetaReply {
                     plan_checksum: cursor.take_str()?,
                 })
             }
-            MetaRequestCode::CommitObjectPlacement | MetaRequestCode::ReadObjectRootPlacement => {
+            MetaRequestCode::CommitObjectPlacement
+            | MetaRequestCode::CommitObjectPlacementIfCurrent
+            | MetaRequestCode::ReadObjectRootPlacement => {
                 MetaReply::Placement(take_placement(&mut cursor)?)
             }
             MetaRequestCode::Ping => MetaReply::Pong {

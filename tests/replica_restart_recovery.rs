@@ -204,3 +204,26 @@ fn recovery_enforces_storage_limits_without_changing_the_journal() {
     // Shutdown also releases the journal lock while the client is still alive.
     drop(ReplicaNodeServer::bind_with_journal("127.0.0.1:0", ReplicaNodeOptions::default(), &dir.file()).unwrap());
 }
+
+#[test]
+fn conditional_chunk_writes_persist_and_refuse_stale_sequences() {
+    let dir = JournalDir::new();
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    assert!(c.write_chunk_if_sequence(page(8), 0, b"lost", 1).is_err());
+    assert!(c.head_chunk(&page(8)).is_err());
+    c.write_chunk_if_sequence(page(8), 0, b"first", 0).unwrap();
+    let before = std::fs::read(dir.file()).unwrap();
+    assert!(c.write_chunk_if_sequence(page(8), 0, b"wrong", 0).is_err());
+    assert_eq!(std::fs::read(dir.file()).unwrap(), before);
+    c.write_chunk_if_sequence(page(8), 0, b"later", 1).unwrap();
+    drop(c);
+    drop(node);
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    assert_eq!(c.read_chunk(&page(8), 0, 5).unwrap().data, b"later");
+    assert_eq!(c.head_chunk(&page(8)).unwrap().write_sequence, 2);
+    assert!(c.write_chunk_if_sequence(page(8), 0, b"stale", 1).is_err());
+    c.write_chunk_if_sequence(page(8), 0, b"final", 2).unwrap();
+    assert_eq!(c.read_chunk(&page(8), 0, 5).unwrap().data, b"final");
+}
