@@ -57,7 +57,7 @@ copy between nodes, or independently replace these files in a live group.
 
 The worker prepares bounded mutation batches and retains accepted proposals until
 they commit or leadership changes, even if callers time out. Consecutive admitted
-reads share one quorum confirmation; later writes cannot pass that read group.
+reads of mutable state share one quorum confirmation; later writes cannot pass that read group.
 Only one read confirmation is outstanding, and caller timeouts do not discard it. Requests and packet
 queues are bounded; network delivery has a total deadline. Packet loss is handled
 by Raft retransmission. Storage or application failure stops the server. Shutdown
@@ -66,8 +66,10 @@ joins the consensus and network workers.
 This is an integration stage, not a production-readiness claim. Peer traffic is
 unauthenticated and unencrypted; use an isolated test network. Membership changes,
 authenticated transport, file-backed snapshots for larger state, and
-large-scale validation remain required. Reads use quorum confirmation without
-appending entries. Mutations prepare changes against committed state and batch
+large-scale validation remain required. Mutable-state reads use quorum confirmation
+without appending entries. Group identity and the immutable bootstrap data-group
+catalog are served locally by running voters; this does not report current health
+or establish quorum. Mutations prepare changes against committed state and batch
 ordered proposals; these paths still require deployment-scale measurement. The underlying WAL stops writes at its 512 MiB bound.
 
 The process tests exercise three independent servers, leader termination, quorum

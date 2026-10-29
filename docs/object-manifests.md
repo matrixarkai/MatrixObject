@@ -254,3 +254,21 @@ and capacity accounting. It then starts the final voter. This is process-stop
 isolation on one host; asymmetric network partitions and independent host loss
 remain separate deployment tests. Heartbeat expiry is an availability signal,
 not an authorization or data-integrity boundary.
+
+## Bootstrap catalog reads
+
+In Raft mode, `ReadChunkGroup` is served locally by any running metadata voter,
+including a follower or a voter without quorum. Its result describes only fixed
+configuration: the catalog is recovered from the retained bootstrap image and is
+included in the metadata group's bootstrap identity. The request does not read
+current health, placement, manifests or allocation state. Missing groups return
+NotFound; failed or stopped consensus refuses these requests, and response size
+limits still apply. The API and consensus worker share the immutable catalog.
+
+Configuration availability does not establish that a data group is healthy or
+that a write can succeed. Mutable metadata reads and writes still require a
+quorum, and clients still verify data-group identity when opening connections.
+Changing the catalog dynamically would require a new consistency design; this
+local read path must not be reused for mutable configuration. The process test
+covers follower reads, retained bootstrap after restart, and minority refusal of
+health, placement, manifest and page-allocation requests.

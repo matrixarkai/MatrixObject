@@ -156,7 +156,7 @@ each mutation against the preceding staged outcomes, then restores the committed
 state before processing Raft readiness. Only the affected nodes and object
 placements are saved; an expiry pass also saves the roster it may change.
 
-Every mutation retains its own version-1 binary entry and log ID. Read-only calls
+Every mutation retains its own version-1 binary entry and log ID. Mutable-state reads
 use a shared quorum confirmation for consecutive admitted reads rather than log
 entries. Mutation batches stop before the next queued read; later writes wait
 until those reads complete. Older logged read barriers remain replayable. Raft can persist and replicate the queued entries
@@ -185,3 +185,10 @@ seconds. Its write phases took 114.55 and 19.14 seconds, so this single run does
 establish a throughput improvement. Read-generated WAL records are removed;
 heartbeat updates, expiry, writes and elections still need durable history, and
 snapshot compaction remains unfinished.
+
+The immutable bootstrap catalog is an exception to queued reads: `ReadChunkGroup`
+returns fixed configuration from any running metadata voter without a Raft read
+barrier. The retained bootstrap and checkpoints bind this catalog to the group.
+This reply does not establish quorum or current data-group health; placement,
+health and object-state reads still require quorum confirmation. Failed or stopped
+metadata consensus refuses local configuration reads too.
