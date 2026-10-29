@@ -123,7 +123,9 @@ impl RemoteReplicaSet {
         Ok(pairs)
     }
 
-    /// Write `data` at `offset` in `page_id` on every replica, and require a write quorum.
+    /// Extend a quorum-agreed page state on matching replicas and require a write quorum.
+    /// A conditional sequence check refuses concurrent changes after the head read.
+    /// Divergent or unreachable replicas receive no mutation; this does not repair them.
     ///
     /// Returns how many replicas acknowledged, which is always at least `write_quorum` when
     /// this returns `Ok`. The count is returned rather than discarded because "3 of 3" and
@@ -135,10 +137,51 @@ impl RemoteReplicaSet {
         offset: u64,
         data: &[u8],
     ) -> Result<usize, ObjectError> {
+        // Establish the state being extended before any mutation is sent. A
+        // returning or divergent replica cannot contribute a fresh write vote.
+        let observed: Vec<_> = self
+            .replicas
+            .iter_mut()
+            .map(|replica| match replica.head_chunk(page_id) {
+                Ok(head) => Some(Some(head)),
+                Err(ObjectError::NotFound(_)) => Some(None),
+                Err(_) => None,
+            })
+            .collect();
+        let absent = observed
+            .iter()
+            .filter(|head| matches!(head, Some(None)))
+            .count();
+        let expected = if absent >= self.read_quorum {
+            None
+        } else {
+            let heads = observed
+                .iter()
+                .filter_map(|head| head.as_ref().and_then(|value| value.clone()))
+                .collect();
+            Some(crate::cluster::placement::vote_heads(
+                heads,
+                self.read_quorum,
+            )?)
+        };
+        if observed
+            .iter()
+            .filter(|head| head.as_ref() == Some(&expected))
+            .count()
+            < self.write_quorum
+        {
+            return Err(ObjectError::PreconditionFailed(
+                "matching page state cannot satisfy write quorum".into(),
+            ));
+        }
+        let sequence = expected.as_ref().map_or(0, |head| head.write_sequence);
         let mut acknowledged = 0usize;
         let mut first_error: Option<ObjectError> = None;
-        for replica in self.replicas.iter_mut() {
-            match replica.write_chunk(page_id.clone(), offset, data) {
+        for (replica, observed) in self.replicas.iter_mut().zip(observed) {
+            if observed.as_ref() != Some(&expected) {
+                continue;
+            }
+            match replica.write_chunk_if_sequence(page_id.clone(), offset, data, sequence) {
                 Ok(()) => acknowledged += 1,
                 Err(err) if first_error.is_none() => first_error = Some(err),
                 Err(_) => {}
@@ -148,7 +191,7 @@ impl RemoteReplicaSet {
             return Err(first_error.unwrap_or_else(|| {
                 ObjectError::Corruption(format!(
                     "a page write was acknowledged by {acknowledged} of {} replica(s), \
-                     short of a write quorum of {}",
+                             short of a write quorum of {}",
                     self.replicas.len(),
                     self.write_quorum
                 ))
