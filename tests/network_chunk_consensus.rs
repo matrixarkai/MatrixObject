@@ -1625,13 +1625,12 @@ fn chunk_streamed_checkpoints_recover_large_process_state() {
     let other = (leader + 2) % 3;
     group.kill(lagging);
     let mut client = group.client(leader);
-    for index in 0..272u64 {
-        let data = vec![(index % 251) as u8; 1024 * 1024];
+    fn create(group: &Group, client: &mut RemoteReplicaClient, index: u64, data: &[u8]) {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
-            // Creation is conditional on absence: an ambiguous reply cannot
-            // cause a second mutation when this attempt is retried.
-            match client.write_chunk_if_sequence(page(index), 0, &data, 0) {
+            // Conditional creation and readback resolve an uncertain response
+            // even when checkpoint installation changes the current leader.
+            match client.write_chunk_if_sequence(page(index), 0, data, 0) {
                 Ok(()) => break,
                 Err(error) => {
                     assert!(
@@ -1639,8 +1638,7 @@ fn chunk_streamed_checkpoints_recover_large_process_state() {
                         "page {index} did not settle: {error}"
                     );
                     eprintln!("resolving uncertain page {index} creation: {error}");
-                    drop(client);
-                    client = group.client(group.leader());
+                    *client = group.client(group.leader());
                     if let Ok(read) = client.read_chunk(&page(index), 0, data.len() as u64) {
                         assert_eq!(read.write_sequence, 1);
                         assert_eq!(read.data, data);
@@ -1649,6 +1647,14 @@ fn chunk_streamed_checkpoints_recover_large_process_state() {
                 }
             }
         }
+    }
+    for index in 0..272u64 {
+        create(
+            &group,
+            &mut client,
+            index,
+            &vec![(index % 251) as u8; 1024 * 1024],
+        );
     }
     let payload_dir = group
         .root
@@ -1679,9 +1685,7 @@ fn chunk_streamed_checkpoints_recover_large_process_state() {
     drop(client);
     let active = group.leader();
     let mut client = group.client(active);
-    client
-        .write_chunk(page(280), 0, b"after large transfer")
-        .unwrap();
+    create(&group, &mut client, 280, b"after large transfer");
     drop(client);
     group.kill(leader);
     group.kill(lagging);
@@ -1695,6 +1699,7 @@ fn chunk_streamed_checkpoints_recover_large_process_state() {
         assert_eq!(response.write_sequence, 1);
         assert_eq!(response.data, vec![(index % 251) as u8; 1024 * 1024]);
     }
+    assert_eq!(client.head_chunk(&page(280)).unwrap().write_sequence, 1);
     assert_eq!(
         client.read_chunk(&page(280), 0, 20).unwrap().data,
         b"after large transfer"

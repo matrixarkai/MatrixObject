@@ -117,6 +117,12 @@ jobs:
           cargo test --locked --release --all-features --lib cluster::meta_checkpoint::tests::metadata_stream_recovers_more_than_256_mib -- --exact --ignored --nocapture | tee /tmp/meta-stream.log
           grep -q 'test result: ok. 1 passed' /tmp/meta-stream.log
 
+      - name: background capture keeps both node policies writable and recovers suffix
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::consensus_checkpoint::tests::background_capture_keeps_both_node_policies_writable_and_recovers_suffix -- --exact --nocapture | tee /tmp/background-capture.log
+          grep -q 'test result: ok. 1 passed' /tmp/background-capture.log
+
       - name: checkpoint envelope binds kind position and canonical bytes
         run: |
           set -o pipefail

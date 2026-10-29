@@ -208,7 +208,7 @@ writes at 512 MiB.
 
 Transport buffers use 64 KiB pieces and a one-slot channel. Encoding uses scratch
 space per record, while application maps remain resident. Snapshot export clones
-state; validation temporarily holds source and decoded maps. Capture and validation
+state; validation temporarily holds source and decoded maps. Snapshot export and final WAL publication
 are synchronous and can delay requests. This is not a constant-memory application
 store or a production-readiness claim.
 
@@ -283,3 +283,19 @@ These tests generate deterministic fixture mutations directly in their harness;
 they exercise the production checkpoint codec, peer packets, storage and replay,
 but not the metadata request API, separate processes, or multi-host networking.
 Existing process tests cover placement and health operations on smaller state.
+
+## Background checkpoint capture
+
+Each node keeps at most one capture worker. At a settled applied position it
+exports an immutable snapshot, then moves serialization, capture validation and
+payload file sync to that worker. Peer traffic and later writes continue while
+capture runs. The completed payload is published at its original applied
+position, retaining every later log entry for recovery. A newer received
+checkpoint can supersede the worker result without replacing newer state.
+
+Over-limit snapshots keep WAL history. Worker failures stop the node rather than
+silently treating a failed capture as durable. Orderly shutdown joins the worker
+and discards an unpublished payload. Snapshot export (including its own checksum
+work), final WAL replacement and sync, and incoming snapshot restoration still
+run synchronously. This change does not promise a bound on request latency or
+constant memory; later writes can also fill the WAL before capture completes.

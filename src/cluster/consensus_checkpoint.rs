@@ -143,7 +143,11 @@ fn body(reader: &mut io::Take<&mut dyn Read>, tag: u8) -> Result<Vec<u8>, RaftEr
     reader.read_exact(&mut bytes).map_err(storage)?;
     Ok(bytes)
 }
+type CaptureWorker = std::thread::JoinHandle<
+    Result<Option<matrixraft::peer_runtime::PreparedCheckpoint>, RaftError>,
+>;
 pub(super) struct Policy {
+    worker: Option<(CaptureWorker, u64)>,
     kind: u32,
     wal: PathBuf,
     interval: u64,
@@ -159,6 +163,7 @@ impl Policy {
             ));
         }
         Ok(Self {
+            worker: None,
             kind,
             wal,
             interval,
@@ -186,33 +191,183 @@ impl Policy {
         }
         Ok(Some((index, size)))
     }
-    pub(super) fn maybe_checkpoint_stream<R: Read>(
+    pub(super) fn maybe_checkpoint_stream<R, F>(
         &mut self,
         peer: &mut DurablePeer,
         term: u64,
-        capture: impl FnOnce(LogId) -> Result<Option<(R, u64)>, RaftError>,
-    ) -> Result<(), RaftError> {
+        snapshot: impl FnOnce(LogId) -> Result<F, RaftError>,
+    ) -> Result<(), RaftError>
+    where
+        R: Read,
+        F: FnOnce() -> Result<Option<(R, u64)>, RaftError> + Send + 'static,
+    {
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|(worker, _)| worker.is_finished())
+        {
+            let (worker, size) = self.worker.take().unwrap();
+            match worker
+                .join()
+                .map_err(|_| storage("checkpoint worker panicked"))??
+            {
+                Some(prepared) => {
+                    let index = prepared.position().index;
+                    if peer.install_checkpoint(&prepared)? {
+                        self.checkpoint = index;
+                        // Retained writes accumulated during capture must count
+                        // toward the next interval rather than disappearing into
+                        // the baseline of the compacted WAL.
+                        self.baseline = 0;
+                    }
+                }
+                None => {
+                    self.baseline = size;
+                    eprintln!("application checkpoint exceeds supported size; retaining WAL history (kind={})", self.kind);
+                }
+            }
+        }
+        if self.worker.is_some() {
+            return Ok(());
+        }
         let Some((index, size)) = self.due(peer)? else {
             return Ok(());
         };
-        let Some((mut stream, length)) = capture(LogId { index, term })? else {
-            self.baseline = size;
-            eprintln!(
-                "application checkpoint exceeds supported size; retaining WAL history (kind={})",
-                self.kind
-            );
-            return Ok(());
-        };
-        peer.checkpoint_from_reader(&mut stream, length)?;
-        self.checkpoint = index;
-        self.baseline = std::fs::metadata(&self.wal).map_err(storage)?.len();
+        let ticket = peer.prepare_checkpoint()?;
+        if ticket.position() != (LogId { index, term }) {
+            return Err(storage("checkpoint capture position mismatch"));
+        }
+        // Export an immutable snapshot on the application thread. Encoding,
+        // validation, checksum scans and payload sync run on one worker.
+        let capture = snapshot(ticket.position())?;
+        let worker = std::thread::Builder::new()
+            .name("node-checkpoint".into())
+            .spawn(move || {
+                let Some((mut reader, length)) = capture()? else {
+                    return Ok(None);
+                };
+                ticket.capture(&mut reader, length).map(Some)
+            })
+            .map_err(storage)?;
+        self.worker = Some((worker, size));
         Ok(())
+    }
+}
+impl Drop for Policy {
+    fn drop(&mut self) {
+        // Finish before releasing storage ownership; an unpublished result
+        // removes its payload when the joined result is dropped.
+        if let Some((worker, _)) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_capture_keeps_both_node_policies_writable_and_recovers_suffix() {
+        use matrixraft::peer_runtime::PeerOptions;
+        use std::{
+            cell::Cell,
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
+        type TestCapture = fn() -> Result<Option<(Cursor<Vec<u8>>, u64)>, RaftError>;
+        for kind in [1, 2] {
+            let root = std::env::temp_dir().join(format!(
+                "node-capture-{}-{}-{kind}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            struct Cleanup(PathBuf);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
+            let _cleanup = Cleanup(root.clone());
+            let options = PeerOptions {
+                group_id: 7,
+                node_id: 1,
+                voters: vec![1],
+                wal_path: root.join("peer.wal"),
+            };
+            let mut peer = DurablePeer::open(options.clone()).unwrap();
+            peer.campaign().unwrap();
+            peer.process_ready(|_, _| Ok(())).unwrap();
+            peer.propose(vec![7; 2048]).unwrap();
+            peer.process_ready(|_, _| Ok(())).unwrap();
+            let mut policy = Policy::new(kind, options.wal_path.clone(), 1024).unwrap();
+            let (started_tx, started_rx) = mpsc::channel();
+            let (resume_tx, resume_rx) = mpsc::channel();
+            let term = peer.term();
+            policy
+                .maybe_checkpoint_stream(&mut peer, term, move |id| {
+                    Ok(move || {
+                        started_tx.send(()).unwrap();
+                        resume_rx.recv().unwrap();
+                        let bytes = Image::new(kind, id, vec![7], vec![]).encode_to_vec();
+                        let length = bytes.len() as u64;
+                        Ok(Some((Cursor::new(bytes), length)))
+                    })
+                })
+                .unwrap();
+            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            peer.propose(vec![9]).unwrap();
+            peer.process_ready(|_, bytes| {
+                assert_eq!(bytes, [9]);
+                Ok(())
+            })
+            .unwrap();
+            let later = peer.applied_index();
+            policy
+                .maybe_checkpoint_stream(&mut peer, term, |_| -> Result<TestCapture, RaftError> {
+                    panic!("second worker started")
+                })
+                .unwrap();
+            resume_tx.send(()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !policy.worker.as_ref().unwrap().0.is_finished() {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            policy
+                .maybe_checkpoint_stream(&mut peer, term, |_| -> Result<TestCapture, RaftError> {
+                    panic!("unnecessary capture")
+                })
+                .unwrap();
+            assert!(policy.worker.is_none());
+            assert!(policy.checkpoint < later);
+            drop(policy);
+            drop(peer);
+            let mut peer = DurablePeer::open(options).unwrap();
+            let value = Cell::new(0);
+            peer.process_ready_with_snapshot_reader(
+                |_, bytes| {
+                    if !bytes.is_empty() {
+                        assert_eq!(value.get(), 7);
+                        value.set(bytes[0]);
+                    }
+                    Ok(())
+                },
+                |id, reader, length| {
+                    let image = Image::read_at(reader, length, kind, id)?;
+                    value.set(image.state[0]);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(value.get(), 9);
+            assert_eq!(peer.applied_index(), later);
+        }
+    }
     #[test]
     fn checkpoint_envelope_binds_kind_position_and_canonical_bytes() {
         let image = Image {
