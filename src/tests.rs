@@ -52603,3 +52603,123 @@ fn placement_uses_distinct_domains_before_reusing_a_domain() {
         .plan_object_placement("bucket", "too-wide", 10, 4)
         .is_err());
 }
+
+pub(crate) fn manifest_publication_fixture() -> (
+    MatrixMetaService, crate::placement_outcome::PlacementOutcome, crate::placement_outcome::PlacementOutcome
+) {
+    use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest};
+    use crate::placement_outcome::PlacementOutcome;
+    let mut service = MatrixMetaService::new();
+    for name in ["group-a", "group-b"] {
+        let mut node = placement_node(name, name, 1000);
+        node.meta_health.control_proof.coordinator_backend = "embedded-raft".into();
+        node.chunk_health.accepting_writes = true;
+        node.chunk_health.raft_writable = true;
+        service.register_node(node).unwrap();
+    }
+    let one = ObjectManifest {
+        format_version: 1, bucket: "bucket".into(), key: "object".into(),
+        generation: 1, length: 4, deleted: false,
+        extents: vec![ObjectExtent {
+            group: "group-a".into(), volume_id: 1, chunk_id: 1, page_index: 0,
+            object_offset: 0, page_offset: 0, length: 4, write_sequence: 1, data_checksum: 42,
+        }],
+    };
+    let create = PlacementOutcome::publish_manifest(
+        &service, ManifestOutcome::decide(None, one.clone()).unwrap(), 10
+    ).unwrap();
+    let mut working = service.clone();
+    create.apply(&mut working).unwrap();
+    let mut two = one.clone();
+    two.generation = 2;
+    two.length = 8;
+    two.extents[0].length = 8;
+    two.extents[0].group = "group-b".into();
+    let replace = PlacementOutcome::publish_manifest(
+        &working, ManifestOutcome::decide(Some(one), two).unwrap(), 20
+    ).unwrap();
+    (service, create, replace)
+}
+
+#[test]
+fn manifest_publication_moves_capacity_and_preserves_deleted_generations_atomically() {
+    use crate::object_manifest::ManifestOutcome;
+    use crate::placement_outcome::PlacementOutcome;
+    let (mut service, create, replace) = manifest_publication_fixture();
+    // Admission is decided once; replay does not rerun mutable health policy.
+    service.nodes.get_mut("group-a").unwrap().chunk_health.accepting_writes = false;
+    let initial = service.export_snapshot();
+    let encoded = create.to_payload().unwrap();
+    assert_eq!(service.export_snapshot(), initial);
+    PlacementOutcome::from_payload(&encoded).unwrap().apply(&mut service).unwrap();
+    assert_eq!(service.nodes["group-a"].committed_bytes, 4);
+    replace.apply(&mut service).unwrap();
+    assert_eq!(service.nodes["group-a"].committed_bytes, 0);
+    assert_eq!(service.nodes["group-b"].committed_bytes, 8);
+    let two = replace.manifest.as_ref().unwrap().after.clone().unwrap();
+    let mut deleted = two.clone();
+    deleted.generation = 3;
+    deleted.deleted = true;
+    deleted.length = 0;
+    deleted.extents.clear();
+    // Deletion releases capacity even while the old group is offline.
+    service.nodes.get_mut("group-b").unwrap().online = false;
+    let deletion = PlacementOutcome::publish_manifest(
+        &service, ManifestOutcome::decide(Some(two.clone()), deleted.clone()).unwrap(), 30
+    ).unwrap();
+    deletion.apply(&mut service).unwrap();
+    assert_eq!(service.nodes["group-b"].committed_bytes, 0);
+    assert_eq!(service.object_manifests.get(&deleted.object_id()), Some(&deleted));
+    let snapshot = service.export_snapshot();
+    assert!(create.apply(&mut service).is_err());
+    assert!(service.release_object_placement(&deleted.object_id()).is_err());
+    assert_eq!(service.export_snapshot(), snapshot);
+    service.nodes.get_mut("group-b").unwrap().online = true;
+    let mut recreated = two;
+    recreated.generation = 4;
+    PlacementOutcome::publish_manifest(
+        &service, ManifestOutcome::decide(Some(deleted), recreated.clone()).unwrap(), 40
+    ).unwrap().apply(&mut service).unwrap();
+    assert_eq!(service.object_manifests.get(&recreated.object_id()), Some(&recreated));
+    assert_eq!(service.nodes["group-b"].committed_bytes, 8);
+    assert_eq!(service.placements[&recreated.object_id()].version, 4);
+}
+
+#[test]
+fn malformed_manifest_publications_leave_all_metadata_unchanged() {
+    use crate::placement_outcome::PlacementOutcome;
+    let (mut service, create, replace) = manifest_publication_fixture();
+    let saved = service.export_snapshot();
+    let mut invalid = Vec::new();
+    let mut bad = create.clone(); bad.nodes[0].after.as_mut().unwrap().committed_bytes += 1; invalid.push(bad);
+    let mut bad = create.clone(); bad.nodes.clear(); invalid.push(bad);
+    let mut bad = create.clone(); bad.placements[0].after.as_mut().unwrap().length += 1; invalid.push(bad);
+    let mut bad = create.clone(); bad.manifest.as_mut().unwrap().after.as_mut().unwrap().generation = 2; invalid.push(bad);
+    let mut bad = create.clone(); bad.version = 1; invalid.push(bad);
+    let mut bad = create.clone(); bad.before_index += 1; invalid.push(bad);
+    invalid.push(replace.clone());
+    for bad in invalid {
+        assert!(bad.apply(&mut service).is_err());
+        assert_eq!(service.export_snapshot(), saved);
+    }
+    for offset in 0..create.to_payload().unwrap().len() {
+        let mut bytes = create.to_payload().unwrap();
+        bytes[offset] ^= 1;
+        assert!(PlacementOutcome::from_payload(&bytes).is_err());
+    }
+    create.apply(&mut service).unwrap();
+    let saved = service.export_snapshot();
+    let mut legacy = replace.clone(); legacy.version = 1; legacy.manifest = None;
+    assert!(legacy.apply(&mut service).is_err());
+    let next = replace.placements[0].after.as_ref().unwrap();
+    let plan = service.plan_object_placement(ObjectId::new(&next.bucket, &next.key), next.length, 1).unwrap();
+    assert!(service.commit_object_placement(ObjectPlacement {
+        object_id: ObjectId::new(&next.bucket, &next.key), version: 2, length: next.length,
+        node_ids: plan.node_ids, update_time_ms: 20
+    }, &plan.plan_checksum).is_err());
+    assert_eq!(service.export_snapshot(), saved);
+    service.nodes.get_mut("group-b").unwrap().capacity_bytes = 1;
+    let saved = service.export_snapshot();
+    assert!(PlacementOutcome::publish_manifest(&service, replace.manifest.unwrap(), 20).is_err());
+    assert_eq!(service.export_snapshot(), saved);
+}

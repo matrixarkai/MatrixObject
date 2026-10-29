@@ -1356,4 +1356,81 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn manifest_outcomes_recover_from_raft_checkpoint_and_committed_suffix() {
+        use std::cell::RefCell;
+        let (files, mut peer) = batch_peer();
+        let (mut service, create, replace) = crate::tests::manifest_publication_fixture();
+        let groups = super::super::ChunkGroupCatalog::default();
+        let mut pending = VecDeque::new();
+        let encode = |outcome: &PlacementOutcome| {
+            Entry {
+                version: 1,
+                outcome: outcome.to_payload().unwrap(),
+            }
+            .encode_to_vec()
+        };
+        peer.propose(encode(&create)).unwrap();
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
+        let id = LogId {
+            index: peer.applied_index(),
+            term: peer.term(),
+        };
+        let mut stream = super::super::meta_checkpoint::capture(
+            service.export_snapshot(),
+            groups.to_bytes().unwrap(),
+            id,
+        )
+        .unwrap()
+        .unwrap();
+        let length = stream.length;
+        peer.checkpoint_from_reader(&mut stream, length).unwrap();
+        drop(stream);
+        peer.propose(encode(&replace)).unwrap();
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
+        let expected = service.export_snapshot();
+        drop(peer);
+        let mut peer = DurablePeer::open(PeerOptions {
+            node_id: 1,
+            group_id: 19,
+            voters: vec![1],
+            wal_path: files.0.join("peer.wal"),
+        })
+        .unwrap();
+        let recovered = RefCell::new(MatrixMetaService::new());
+        let mut installed = false;
+        peer.process_ready_with_snapshot_reader(
+            |id, bytes| {
+                apply_committed(
+                    &mut recovered.borrow_mut(),
+                    &groups,
+                    65536,
+                    &mut pending,
+                    id,
+                    bytes,
+                )
+            },
+            |id, reader, length| {
+                let snapshot = super::super::meta_checkpoint::restore(
+                    reader,
+                    length,
+                    id,
+                    &groups.to_bytes().map_err(storage)?,
+                )?;
+                *recovered.borrow_mut() = restore_snapshot(snapshot, &groups)?;
+                installed = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(installed);
+        assert_eq!(recovered.borrow().export_snapshot(), expected);
+        drop(peer);
+    }
 }
