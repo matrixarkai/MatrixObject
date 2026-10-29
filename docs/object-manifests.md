@@ -218,12 +218,39 @@ median 0.942 seconds, p95 1.426 seconds); the post-failover writes took 28.29 se
 32.46 seconds after the full restart. These are local functional-load measurements,
 not production throughput or multi-host scaling results.
 
+A subsequent run with operation-scoped group-configuration reuse passed in
+302.78 seconds. Initial writes took 171.50 seconds (6.0 objects/second, median
+1.323 seconds, p95 2.130 seconds), post-failover writes took 35.16 seconds, and
+verified reads took 30.68 and 54.48 seconds. This sample was slower than the earlier
+run and does not demonstrate a throughput improvement. The protocol test proves
+fewer group lookups and connection attempts; throughput still needs controlled
+measurements on deployment hardware. The initial phase also approached its
+180-second bound, so this host/profile has limited demonstrated load margin.
+
 The same object workload with the default two metadata executors hit the unchanged
 180-second write-phase bound after 777 completed writes, before recovery checks.
 Each executor waits for its Raft result, so two executors limit how many requests
 can reach the existing batcher while 48 chunk processes report health. Sixteen
 executors passed this workload. Size `MATRIXOBJECT_METASERVER_THREADS` for the
 request and heartbeat load, then measure on the deployment hardware; the product
-default remains two. Repeated metadata lookups and per-page readback also cost
-round trips. This check does not certify large catalog cardinality, large-object
+default remains two. Per-page readback and the remaining metadata operations
+still cost round trips. This check does not certify large catalog cardinality, large-object
 bandwidth, sustained soak behavior, authentication, or multi-host fault isolation.
+
+## Isolating an unavailable data group
+
+The twelve-process test
+`coupled_groups::unavailable_data_group_is_isolated_and_recovers_without_losing_objects`
+starts three data groups and one metadata group, then removes two voters from one
+data group. After heartbeat expiry, metadata must mark that group offline while
+the other two stay online. Existing manifests remain readable; payload reads from
+the minority must fail. A conditional write against an existing page must fail
+without changing that page, including if its request finishes after recovery.
+
+The test verifies objects on the healthy groups and publishes 24 more objects,
+all placed outside the offline group. Restoring just one stopped voter must
+restore quorum, health and all 72 object payloads with their original manifests
+and capacity accounting. It then starts the final voter. This is process-stop
+isolation on one host; asymmetric network partitions and independent host loss
+remain separate deployment tests. Heartbeat expiry is an availability signal,
+not an authorization or data-integrity boundary.
