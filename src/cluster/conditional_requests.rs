@@ -175,3 +175,82 @@ mod tests {
         }
     }
 }
+
+#[cfg(feature = "meta-server")]
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ManifestRead {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(string, tag = "2")]
+    pub bucket: String,
+    #[prost(string, tag = "3")]
+    pub key: String,
+}
+#[cfg(feature = "meta-server")]
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ManifestPublish {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(message, optional, tag = "2")]
+    pub outcome: Option<crate::object_manifest::ManifestOutcome>,
+    #[prost(uint64, tag = "3")]
+    pub update_time_ms: u64,
+}
+
+#[cfg(all(test, feature = "meta-server"))]
+mod manifest_tests {
+    use super::*;
+    use crate::cluster::meta_wire::MetaRequestCode;
+    use crate::cluster::{MetaReply, MetaRequest};
+    #[test]
+    fn manifest_requests_and_replies_require_canonical_bounded_protobuf() {
+        let (_, create, _) = crate::tests::manifest_publication_fixture();
+        let outcome = create.manifest.unwrap();
+        let value = outcome.after.clone().unwrap();
+        let requests = [
+            MetaRequest::ReadManifest {
+                bucket: value.bucket.clone(),
+                key: value.key.clone(),
+            },
+            MetaRequest::PublishManifest {
+                outcome,
+                update_time_ms: 42,
+            },
+        ];
+        for request in requests {
+            let bytes = request.encode_payload();
+            assert_eq!(
+                MetaRequest::decode(request.code(), &bytes).unwrap(),
+                request
+            );
+            let mut unknown = bytes.clone();
+            unknown.extend([0xa0, 0x06, 1]);
+            assert!(MetaRequest::decode(request.code(), &unknown).is_err());
+            assert!(MetaRequest::decode(request.code(), &bytes[..bytes.len() - 1]).is_err());
+        }
+        let reply = MetaReply::Manifest(value);
+        let bytes = reply.encode_payload();
+        assert_eq!(reply.payload_len(), bytes.len());
+        for code in [
+            MetaRequestCode::ReadManifest,
+            MetaRequestCode::PublishManifest,
+        ] {
+            assert_eq!(MetaReply::decode(code, &bytes).unwrap(), reply);
+            let mut unknown = bytes.clone();
+            unknown.extend([0xa0, 0x06, 1]);
+            assert!(MetaReply::decode(code, &unknown).is_err());
+            assert!(MetaReply::decode(code, &vec![0; 1024 * 1024 + 1]).is_err());
+        }
+        assert!(MetaRequest::decode(MetaRequestCode::ReadManifest, &vec![0; 8193]).is_err());
+        assert!(MetaRequest::decode(
+            MetaRequestCode::PublishManifest,
+            &ManifestPublish {
+                version: 1,
+                outcome: None,
+                update_time_ms: 1
+            }
+            .encode_to_vec()
+        )
+        .is_err());
+    }
+}

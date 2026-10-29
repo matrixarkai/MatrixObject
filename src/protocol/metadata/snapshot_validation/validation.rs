@@ -34,13 +34,14 @@ impl MetaSnapshot {
         validate_metadata_qos_config(&self.qos_config)?;
         validate_metadata_coordinator_config(&self.coordinator_config)?;
         // THE SAME THIRTEEN RULES THE PLACEMENT SNAPSHOT APPLIES, called rather than restated.
-        validate_placement_roster(
+        validate_placement_roster_with_manifests(
             &self.placement_nodes,
             &self.placements,
             &self.placement_leader_lease,
             &self.placement_leader_lease_receipts,
             &self.placement_coordinator_config,
             self.placement_commit_index,
+            Some(&self.object_manifests),
         )?;
         if self.checksum != self.checksum_material_hash() {
             return Err(ObjectError::Corruption(

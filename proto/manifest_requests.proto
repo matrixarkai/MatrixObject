@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject.request.v1;
+import "object_manifest.proto";
+// Metadata request codes 75 and 76. Existing node framing bounds the payload.
+// Successful replies are canonical matrixobject.ObjectManifest messages.
+message ManifestRead {
+  uint32 version = 1; // 1
+  string bucket = 2;
+  string key = 3;
+}
+message ManifestPublish {
+  uint32 version = 1; // 1
+  matrixobject.ManifestOutcome outcome = 2;
+  uint64 update_time_ms = 3;
+}

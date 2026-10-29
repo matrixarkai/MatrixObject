@@ -156,6 +156,16 @@ impl ChunkGroupCatalog {
     }
     pub(super) fn check_request(&self, request: &MetaRequest) -> Result<(), ObjectError> {
         match request {
+            MetaRequest::PublishManifest { outcome, .. } => {
+                outcome.validate()?;
+                for manifest in outcome.before.iter().chain(outcome.after.iter()) {
+                    for extent in &manifest.extents {
+                        if !self.groups.contains_key(&extent.group) {
+                            return Err(invalid("manifest names an unconfigured chunk group"));
+                        }
+                    }
+                }
+            }
             MetaRequest::HeartbeatRootNode {
                 node_id,
                 capacity_bytes,

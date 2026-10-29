@@ -95,6 +95,19 @@ pub(crate) fn validate_placement_roster(
     coordinator_config: &MetadataCoordinatorConfig,
     next_commit_index: u64,
 ) -> Result<(), ObjectError> {
+    validate_placement_roster_with_manifests(nodes, placements, leader_lease,
+        leader_lease_receipts, coordinator_config, next_commit_index, None)
+}
+
+pub(crate) fn validate_placement_roster_with_manifests(
+    nodes: &BTreeMap<String, PlacementNode>,
+    placements: &BTreeMap<ObjectId, ObjectPlacement>,
+    leader_lease: &Option<PlacementLeaderLease>,
+    leader_lease_receipts: &BTreeMap<String, PlacementLeaderLeaseReceipt>,
+    coordinator_config: &MetadataCoordinatorConfig,
+    next_commit_index: u64,
+    manifests: Option<&crate::object_manifest::ManifestCatalog>,
+) -> Result<(), ObjectError> {
     if next_commit_index == 0 {
         return Err(ObjectError::Corruption(
             "root snapshot next commit index is invalid".to_string(),
@@ -115,7 +128,10 @@ pub(crate) fn validate_placement_roster(
     }
     let mut committed: BTreeMap<String, u64> = BTreeMap::new();
     for (object_id, placement) in placements {
-        if placement.object_id != *object_id || placement.node_ids.is_empty() {
+        let empty_manifest = manifests.and_then(|catalog| catalog.get(object_id))
+            .is_some_and(|manifest| manifest.length == 0
+                && placement.length == 0 && manifest.generation == placement.version);
+        if placement.object_id != *object_id || (placement.node_ids.is_empty() && !empty_manifest) {
             return Err(ObjectError::Corruption(
                 "root snapshot placement is invalid".to_string(),
             ));

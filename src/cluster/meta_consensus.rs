@@ -505,13 +505,15 @@ fn restore_snapshot(
 }
 fn read_only(request: &MetaRequest) -> bool {
     match request {
-        MetaRequest::ListRootNodes
+        MetaRequest::ReadManifest { .. }
+        | MetaRequest::ListRootNodes
         | MetaRequest::ReadChunkGroup { .. }
         | MetaRequest::PlanObjectPlacement { .. }
         | MetaRequest::ReadObjectRootPlacement { .. }
         | MetaRequest::GroupIdentity
         | MetaRequest::Ping => true,
-        MetaRequest::HeartbeatRootNode { .. }
+        MetaRequest::PublishManifest { .. }
+        | MetaRequest::HeartbeatRootNode { .. }
         | MetaRequest::HeartbeatChunkNode { .. }
         | MetaRequest::ExpireRootNodeHeartbeats { .. }
         | MetaRequest::CommitObjectPlacement { .. }
@@ -565,6 +567,13 @@ fn propose_batch(
     let mut objects = BTreeSet::new();
     for request in queued.iter() {
         match &request.request {
+            MetaRequest::PublishManifest { outcome, .. } => {
+                for manifest in outcome.before.iter().chain(outcome.after.iter()) {
+                    nodes.extend(manifest.extents.iter().map(|e| e.group.clone()));
+                    objects.insert(manifest.object_id());
+                }
+            }
+
             MetaRequest::HeartbeatRootNode { node_id, .. }
             | MetaRequest::HeartbeatChunkNode { node_id, .. } => {
                 nodes.insert(node_id.clone());
@@ -645,6 +654,16 @@ fn prepare(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
     groups.check_request(request)?;
+    if let MetaRequest::PublishManifest {
+        outcome,
+        update_time_ms,
+    } = request
+    {
+        let (decided, reply) =
+            super::meta_server::decide_manifest(service, outcome.clone(), *update_time_ms, limit)?;
+        return Ok((decided.to_payload()?, Some(reply)));
+    }
+
     let (nodes, object) = match request {
         MetaRequest::HeartbeatRootNode { node_id, .. }
         | MetaRequest::HeartbeatChunkNode { node_id, .. } => (vec![node_id.clone()], None),
@@ -684,7 +703,11 @@ fn prepare(
 struct PlacementDraft<'a> {
     service: &'a mut MatrixMetaService,
     nodes: Vec<crate::PlacementNode>,
-    objects: Vec<(crate::ObjectId, Option<crate::ObjectPlacement>)>,
+    objects: Vec<(
+        crate::ObjectId,
+        Option<crate::ObjectPlacement>,
+        Option<crate::object_manifest::ObjectManifest>,
+    )>,
     index: u64,
 }
 impl<'a> PlacementDraft<'a> {
@@ -705,7 +728,8 @@ impl<'a> PlacementDraft<'a> {
             .into_iter()
             .map(|id| {
                 let previous = service.placements.get(&id).cloned();
-                (id, previous)
+                let manifest = service.object_manifests.get(&id).cloned();
+                (id, previous, manifest)
             })
             .collect();
         let index = service.placement_commit_index;
@@ -722,7 +746,10 @@ impl Drop for PlacementDraft<'_> {
         for node in self.nodes.drain(..) {
             self.service.nodes.insert(node.node_id.clone(), node);
         }
-        for (id, previous) in self.objects.drain(..) {
+        for (id, previous, manifest) in self.objects.drain(..) {
+            self.service
+                .object_manifests
+                .restore_entry(id.clone(), manifest);
             if let Some(previous) = previous {
                 self.service.placements.insert(id, previous);
             } else {
@@ -1432,5 +1459,68 @@ mod tests {
         assert!(installed);
         assert_eq!(recovered.borrow().export_snapshot(), expected);
         drop(peer);
+    }
+    #[test]
+    fn manifest_batch_preparation_restores_catalog_and_commits_in_order() {
+        use crate::object_manifest::ManifestOutcome;
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(1, 0);
+        let (_, create, _) = crate::tests::manifest_publication_fixture();
+        let mut first = create.manifest.unwrap().after.unwrap();
+        first.extents[0].group = "group-0".into();
+        let mut second = first.clone();
+        second.generation = 2;
+        second.extents[0].page_index = 1;
+        let create = MetaRequest::PublishManifest {
+            outcome: ManifestOutcome::decide(None, first.clone()).unwrap(),
+            update_time_ms: 10,
+        };
+        let replace = MetaRequest::PublishManifest {
+            outcome: ManifestOutcome::decide(Some(first), second.clone()).unwrap(),
+            update_time_ms: 20,
+        };
+        let saved = state(&service);
+        assert!(prepare(&mut service, &create, 1, &groups).is_err());
+        assert_eq!(state(&service), saved);
+        let (_, reply) = prepare(&mut service, &create, 65536, &groups).unwrap();
+        assert!(matches!(reply, Some(MetaReply::Manifest(_))));
+        assert_eq!(state(&service), saved);
+        assert!(prepare(&mut service, &create, 65536, &Default::default()).is_err());
+        let mut pending = VecDeque::new();
+        let mut requests = VecDeque::new();
+        let mut receivers = Vec::new();
+        for request in [create.clone(), replace, create] {
+            let (request, rx) = queued(request, Instant::now() + Duration::from_secs(10));
+            requests.push_back(request);
+            receivers.push(rx);
+        }
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            65536,
+            &mut requests,
+            &mut pending,
+        )
+        .unwrap();
+        assert_eq!(state(&service), saved);
+        assert!(receivers
+            .iter()
+            .all(|rx| matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty))));
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
+        assert!(receivers[0].try_recv().unwrap().is_ok());
+        assert_eq!(
+            receivers[1].try_recv().unwrap().unwrap(),
+            MetaReply::Manifest(second.clone())
+        );
+        assert!(receivers[2].try_recv().unwrap().is_err());
+        assert_eq!(
+            service.object_manifests.get(&second.object_id()),
+            Some(&second)
+        );
+        assert_eq!(service.nodes["group-0"].committed_bytes, 4);
     }
 }
