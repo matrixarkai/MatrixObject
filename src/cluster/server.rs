@@ -432,6 +432,12 @@ fn apply(
             "replica journal failed; restart and recover before serving requests".to_string(),
         ));
     }
+    if let ReplicaRequest::ReadChunkStateRange { length, .. } = &request {
+        let size = usize::try_from(*length)
+            .unwrap_or(usize::MAX)
+            .saturating_add(crate::cluster::state_transfer::RANGE_OVERHEAD);
+        crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
+    }
     if let ReplicaRequest::ReadChunk { length, .. } = &request {
         // Include sequence, checksum, and lengths before copying any page bytes.
         let size = usize::try_from(*length)
@@ -549,6 +555,19 @@ pub(super) fn apply_to_replica(
     max_pages: usize,
 ) -> Result<ReplicaReply, ObjectError> {
     match request {
+        ReplicaRequest::ReadChunkStateRange {
+            page_id,
+            expected_state_checksum,
+            offset,
+            length,
+        } => super::state_transfer::read_range(
+            guard,
+            &page_id,
+            &expected_state_checksum,
+            offset,
+            length,
+        )
+        .map(ReplicaReply::StateRange),
         ReplicaRequest::GroupIdentity => Err(ObjectError::PreconditionFailed(
             "standalone replica has no Raft group identity".into(),
         )),

@@ -285,6 +285,43 @@ impl RemoteReplicaSet {
         vote_reads(answered, replica_count, read_quorum)
     }
 
+    /// Read complete page bytes and discard metadata from a matching read quorum.
+    /// Each source is checksum-fenced; exact bytes must also agree. At most two
+    /// assembled payloads are retained, independent of the replica count.
+    pub fn read_chunk_state(&mut self, page_id: &PageId) -> Result<crate::PageState, ObjectError> {
+        let expected = self.head_chunk(page_id)?;
+        let mut candidate: Option<crate::PageState> = None;
+        let mut agreeing = 0;
+        for replica in &mut self.replicas {
+            if let Ok(state) = replica.read_chunk_state_at(page_id, &expected) {
+                if let Some(candidate) = &candidate {
+                    if candidate.data != state.data {
+                        return Err(ObjectError::Corruption(
+                            "page state bytes disagree despite matching heads".into(),
+                        ));
+                    }
+                } else {
+                    candidate = Some(state);
+                }
+                agreeing += 1;
+                if agreeing == self.read_quorum {
+                    break;
+                }
+            }
+        }
+        if agreeing < self.read_quorum {
+            return Err(ObjectError::PreconditionFailed(
+                "complete page state did not reach read quorum".into(),
+            ));
+        }
+        if self.head_chunk(page_id)? != expected {
+            return Err(ObjectError::PreconditionFailed(
+                "page quorum changed during state transfer".into(),
+            ));
+        }
+        candidate.ok_or_else(|| ObjectError::Corruption("page state quorum has no payload".into()))
+    }
+
     /// Read a page's metadata from a read quorum, voting on the whole head.
     pub fn head_chunk(&mut self, page_id: &PageId) -> Result<ReplicaHead, ObjectError> {
         self.reconnect_failed();

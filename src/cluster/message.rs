@@ -87,6 +87,12 @@ impl ChunkGroupIdentity {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {
+    ReadChunkStateRange {
+        page_id: PageId,
+        expected_state_checksum: String,
+        offset: u64,
+        length: u64,
+    },
     DiscardChunkIfSequence {
         page_id: PageId,
         offset: u64,
@@ -128,6 +134,7 @@ pub enum ReplicaRequest {
 impl ReplicaRequest {
     pub fn code(&self) -> RequestCode {
         match self {
+            ReplicaRequest::ReadChunkStateRange { .. } => RequestCode::ReadChunkStateRange,
             ReplicaRequest::DiscardChunkIfSequence { .. } => RequestCode::DiscardChunkIfSequence,
             ReplicaRequest::WriteChunk { .. } => RequestCode::WriteChunk,
             ReplicaRequest::WriteChunkIfSequence { .. } => RequestCode::WriteChunkIfSequence,
@@ -144,6 +151,23 @@ impl ReplicaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            ReplicaRequest::ReadChunkStateRange {
+                page_id,
+                expected_state_checksum,
+                offset,
+                length,
+            } => {
+                return super::state_transfer::StateRangeRequest {
+                    version: 1,
+                    volume: page_id.chunk_id.volume_id(),
+                    chunk: page_id.chunk_id.id(),
+                    page: page_id.page_index,
+                    state_checksum: expected_state_checksum.clone(),
+                    offset: *offset,
+                    length: *length,
+                }
+                .encode_to_vec();
+            }
             ReplicaRequest::DiscardChunkIfSequence {
                 page_id,
                 offset,
@@ -221,6 +245,34 @@ impl ReplicaRequest {
     /// the wrong place -- a page address read one field short still parses into a valid
     /// `PageId`, naming a page nobody asked about.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::ReadChunkStateRange {
+            if payload.len() > 512 {
+                return Err(ObjectError::Corruption(
+                    "page state range request exceeds bound".into(),
+                ));
+            }
+            let value: super::state_transfer::StateRangeRequest =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 {
+                return Err(ObjectError::Corruption(
+                    "unsupported page state range version".into(),
+                ));
+            }
+            super::state_transfer::validate_request(
+                &value.state_checksum,
+                value.offset,
+                value.length,
+            )?;
+            return Ok(Self::ReadChunkStateRange {
+                page_id: PageId {
+                    chunk_id: ChunkId::new(value.volume, value.chunk)?,
+                    page_index: value.page,
+                },
+                expected_state_checksum: value.state_checksum,
+                offset: value.offset,
+                length: value.length,
+            });
+        }
         if code == RequestCode::DiscardChunkIfSequence {
             if payload.len() > 96 {
                 return Err(ObjectError::Corruption(
@@ -265,7 +317,10 @@ impl ReplicaRequest {
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
-            RequestCode::WriteChunkIfSequence | RequestCode::DiscardChunkIfSequence => unreachable!(),
+            RequestCode::ReadChunkStateRange => unreachable!(),
+            RequestCode::WriteChunkIfSequence | RequestCode::DiscardChunkIfSequence => {
+                unreachable!()
+            }
             RequestCode::WriteChunk => {
                 let page_id = take_page_id(&mut cursor)?;
                 let offset = cursor.take_u64()?;
@@ -330,6 +385,7 @@ impl ReplicaRequest {
 /// A decoded reply, including a typed pre-admission refusal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaReply {
+    StateRange(super::state_transfer::ChunkStateRange),
     /// This voter did not admit the request; a catalog may try another voter.
     NotLeader,
     /// A write or a discard was applied. Nothing to carry back.
@@ -347,6 +403,7 @@ pub enum ReplicaReply {
 impl ReplicaReply {
     pub(crate) fn payload_len(&self) -> usize {
         match self {
+            Self::StateRange(value) => value.encoded_len(),
             Self::Applied | Self::NotLeader => 0,
             Self::GroupIdentity(identity) => identity.encoded_len(),
             Self::Read(read) => 16usize
@@ -366,6 +423,7 @@ impl ReplicaReply {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            ReplicaReply::StateRange(value) => return value.encode_to_vec(),
             ReplicaReply::Applied | ReplicaReply::NotLeader => {}
             ReplicaReply::GroupIdentity(identity) => return identity.encode_to_vec(),
             ReplicaReply::Read(read) => {
@@ -403,6 +461,10 @@ impl ReplicaReply {
     /// whose shape is read from the reply itself can be read as the wrong shape. The caller
     /// knows what it asked.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::ReadChunkStateRange {
+            return super::state_transfer::ChunkStateRange::decode_payload(payload)
+                .map(Self::StateRange);
+        }
         if code == RequestCode::GroupIdentity {
             if payload.len() > 2048 {
                 return Err(ObjectError::Corruption(
@@ -421,6 +483,7 @@ impl ReplicaReply {
         }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
+            RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::GroupIdentity => unreachable!(),
             RequestCode::WriteChunk
             | RequestCode::WriteChunkIfSequence

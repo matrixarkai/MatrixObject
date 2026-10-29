@@ -80,6 +80,8 @@ pub enum RequestCode {
     /// Write only when the page sequence matches a canonical protobuf condition.
     WriteChunkIfSequence = 8,
     DiscardChunkIfSequence = 9,
+    /// Read a bounded raw page range only at the supplied state checksum.
+    ReadChunkStateRange = 10,
 }
 
 impl RequestCode {
@@ -99,6 +101,7 @@ impl RequestCode {
             7 => Some(RequestCode::GroupIdentity),
             8 => Some(RequestCode::WriteChunkIfSequence),
             9 => Some(RequestCode::DiscardChunkIfSequence),
+            10 => Some(RequestCode::ReadChunkStateRange),
             _ => None,
         }
     }
