@@ -269,6 +269,35 @@ must resolve uncertain results before issuing another operation.
 
 The check prevents an already divergent member from counting toward a fresh write
 acknowledgment. It does not repair that member, reconnect failed sockets, establish
-cross-client linearizability, authenticate replies or change the separate discard
-operation. Remote repair and safe replica rejoining remain unfinished. Raft-group
+cross-client linearizability, authenticate replies. Remote repair and safe replica rejoining remain unfinished. Raft-group
 writes continue through their leader and do not use this star fan-out.
+
+## Conditional discards
+
+`RemoteReplicaClient::discard_chunk_if_sequence` uses request code 9 with the
+canonical binary protobuf `ChunkDiscard` in `proto/conditional_requests.proto`.
+Its payload is bounded at 96 bytes. The page must exist at the expected positive,
+nonexhausted write sequence. Sequence zero and `u64::MAX` are refused. Conditional
+writes also refuse an existing page at `u64::MAX`, since a saturated counter could
+otherwise leave a stale condition valid after mutation.
+
+The condition and discard execute on the same exclusive application state.
+Standalone nodes sync binary page outcomes to their journal; Raft voters prepare
+and apply the same outcome representation. Recovery restores the decided discard
+and sequence instead of evaluating the original condition again. Malformed,
+noncanonical, unknown-version and oversized request payloads are refused.
+
+`RemoteReplicaSet::discard_chunk` now uses the same complete-head preflight as
+star writes and sends conditional discards only to matching members. It requires
+an existing page quorum, including for zero-length requests. A write quorum must
+match before mutation begins. A sequence change after preflight is refused by the
+serving node. A member failing after admission can still leave partial application;
+a lost response is not automatically retried. Upgrade all serving members before
+using this star-discard path: older servers refuse code 9, without fallback to
+unconditional deletion. Direct `discard_chunk` on a single client retains its
+existing unconditional behavior.
+
+The tests cover divergent-member exclusion, refusal before mutation when a
+matching write quorum is unavailable, journal recovery, Raft leader loss, total
+restart, stale conditions and sequence exhaustion. This does not add cross-client
+transactions, repair or automatic rejoining.

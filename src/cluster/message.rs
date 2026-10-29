@@ -87,6 +87,12 @@ impl ChunkGroupIdentity {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {
+    DiscardChunkIfSequence {
+        page_id: PageId,
+        offset: u64,
+        length: u64,
+        expected_sequence: u64,
+    },
     WriteChunkIfSequence {
         page_id: PageId,
         offset: u64,
@@ -122,6 +128,7 @@ pub enum ReplicaRequest {
 impl ReplicaRequest {
     pub fn code(&self) -> RequestCode {
         match self {
+            ReplicaRequest::DiscardChunkIfSequence { .. } => RequestCode::DiscardChunkIfSequence,
             ReplicaRequest::WriteChunk { .. } => RequestCode::WriteChunk,
             ReplicaRequest::WriteChunkIfSequence { .. } => RequestCode::WriteChunkIfSequence,
             ReplicaRequest::ReadChunk { .. } => RequestCode::ReadChunk,
@@ -137,6 +144,23 @@ impl ReplicaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            ReplicaRequest::DiscardChunkIfSequence {
+                page_id,
+                offset,
+                length,
+                expected_sequence,
+            } => {
+                return super::conditional_requests::ChunkDiscard {
+                    version: 1,
+                    volume: page_id.chunk_id.volume_id(),
+                    chunk: page_id.chunk_id.id(),
+                    page: page_id.page_index,
+                    offset: *offset,
+                    length: *length,
+                    expected_sequence: *expected_sequence,
+                }
+                .encode_to_vec();
+            }
             ReplicaRequest::WriteChunkIfSequence {
                 page_id,
                 offset,
@@ -197,6 +221,30 @@ impl ReplicaRequest {
     /// the wrong place -- a page address read one field short still parses into a valid
     /// `PageId`, naming a page nobody asked about.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::DiscardChunkIfSequence {
+            if payload.len() > 96 {
+                return Err(ObjectError::Corruption(
+                    "conditional discard exceeds size bound".into(),
+                ));
+            }
+            let value: super::conditional_requests::ChunkDiscard =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 || value.expected_sequence == 0 {
+                return Err(ObjectError::Corruption(
+                    "invalid conditional discard version or sequence".into(),
+                ));
+            }
+            return Ok(Self::DiscardChunkIfSequence {
+                page_id: PageId {
+                    chunk_id: ChunkId::new(value.volume, value.chunk)?,
+                    page_index: value.page,
+                },
+                offset: value.offset,
+                length: value.length,
+                expected_sequence: value.expected_sequence,
+            });
+        }
+
         if code == RequestCode::WriteChunkIfSequence {
             let value: super::conditional_requests::ChunkWrite =
                 super::conditional_requests::decode(payload)?;
@@ -217,7 +265,7 @@ impl ReplicaRequest {
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
-            RequestCode::WriteChunkIfSequence => unreachable!(),
+            RequestCode::WriteChunkIfSequence | RequestCode::DiscardChunkIfSequence => unreachable!(),
             RequestCode::WriteChunk => {
                 let page_id = take_page_id(&mut cursor)?;
                 let offset = cursor.take_u64()?;
@@ -271,7 +319,7 @@ impl ReplicaRequest {
         if cursor.remaining() != 0 {
             return Err(ObjectError::Corruption(format!(
                 "a replica request of kind {code:?} left {} byte(s) unread, so the sender \
-                 laid its fields out differently from this reader",
+                     laid its fields out differently from this reader",
                 cursor.remaining()
             )));
         }
@@ -376,7 +424,8 @@ impl ReplicaReply {
             RequestCode::GroupIdentity => unreachable!(),
             RequestCode::WriteChunk
             | RequestCode::WriteChunkIfSequence
-            | RequestCode::DiscardChunk => ReplicaReply::Applied,
+            | RequestCode::DiscardChunk
+            | RequestCode::DiscardChunkIfSequence => ReplicaReply::Applied,
             RequestCode::ReadChunk => {
                 let write_sequence = cursor.take_u64()?;
                 let checksum = cursor.take_str()?;
@@ -401,7 +450,7 @@ impl ReplicaReply {
                 if floor > cursor.remaining() {
                     return Err(ObjectError::Corruption(format!(
                         "a replica head claims {range_count} discarded range(s), which need \
-                         {floor} byte(s), with only {} left in the frame",
+                             {floor} byte(s), with only {} left in the frame",
                         cursor.remaining()
                     )));
                 }

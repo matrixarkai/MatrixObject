@@ -274,4 +274,44 @@ fn star_writes_exclude_divergent_page_state_and_require_a_matching_quorum() {
         b"keep"
     );
     assert_eq!(set.read_chunk(&page(2), 0, 3).unwrap().data, b"new");
+    assert!(strict.discard_chunk(&page(1), 1, 1).is_err());
+    assert_eq!(set.discard_chunk(&page(1), 1, 1).unwrap(), 2);
+    assert_eq!(
+        client(&nodes[0]).head_chunk(&page(1)).unwrap(),
+        rejected_before
+    );
+    assert!(set.read_chunk(&page(1), 1, 1).is_err());
+    assert_eq!(
+        client(&nodes[0]).read_chunk(&page(1), 0, 5).unwrap().data,
+        b"wrong"
+    );
+}
+
+#[test]
+fn conditional_discards_survive_journal_recovery_and_refuse_stale_sequences() {
+    let dir = JournalDir::new();
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    c.write_chunk(page(9), 0, b"abcdefgh").unwrap();
+    c.discard_chunk_if_sequence(&page(9), 2, 3, 1).unwrap();
+    let expected = c.head_chunk(&page(9)).unwrap();
+    assert_eq!(expected.write_sequence, 2);
+    let before = std::fs::metadata(dir.file()).unwrap().len();
+    for sequence in [0, 1, u64::MAX] {
+        assert!(c
+            .discard_chunk_if_sequence(&page(9), 0, 2, sequence)
+            .is_err());
+    }
+    assert_eq!(std::fs::metadata(dir.file()).unwrap().len(), before);
+    assert_eq!(c.head_chunk(&page(9)).unwrap(), expected);
+    drop(c);
+    drop(node);
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    assert_eq!(c.head_chunk(&page(9)).unwrap(), expected);
+    assert!(c.read_chunk(&page(9), 2, 3).is_err());
+    assert_eq!(c.read_chunk(&page(9), 5, 3).unwrap().data, b"fgh");
+    c.write_chunk_if_sequence(page(9), 2, b"CDE", 2).unwrap();
+    assert!(c.discard_chunk_if_sequence(&page(9), 0, 1, 2).is_err());
+    assert_eq!(c.read_chunk(&page(9), 0, 8).unwrap().data, b"abCDEfgh");
 }

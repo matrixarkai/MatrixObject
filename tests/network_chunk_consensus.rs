@@ -2930,3 +2930,42 @@ fn chunk_streamed_checkpoints_recover_large_process_state() {
         b"after large transfer"
     );
 }
+
+#[test]
+fn conditional_discards_replicate_and_recover_without_accepting_stale_sequences() {
+    let mut group = Group::configured(65536);
+    group.checkpoint_bytes = 1024;
+    for id in 0..3 {
+        group.start(id);
+    }
+    let mut c = group.client(group.leader());
+    c.write_chunk_if_sequence(page(90), 0, b"abcdefgh", 0)
+        .unwrap();
+    c.discard_chunk_if_sequence(&page(90), 2, 3, 1).unwrap();
+    let expected = c.head_chunk(&page(90)).unwrap();
+    assert_eq!(expected.write_sequence, 2);
+    assert!(c.discard_chunk_if_sequence(&page(90), 0, 1, 1).is_err());
+    assert_eq!(c.head_chunk(&page(90)).unwrap(), expected);
+    let leader = group.leader();
+    group.kill(leader);
+    let mut c = group.client(group.leader());
+    assert_eq!(c.head_chunk(&page(90)).unwrap(), expected);
+    assert!(c.read_chunk(&page(90), 2, 3).is_err());
+    c.discard_chunk_if_sequence(&page(90), 5, 1, 2).unwrap();
+    let recovered = c.head_chunk(&page(90)).unwrap();
+    for id in 0..3 {
+        if group.nodes[id].is_some() {
+            group.kill(id);
+        }
+    }
+    for id in 0..3 {
+        group.start(id);
+    }
+    let mut c = group.client(group.leader());
+    assert_eq!(c.head_chunk(&page(90)).unwrap(), recovered);
+    assert!(c.discard_chunk_if_sequence(&page(90), 0, 1, 2).is_err());
+    assert_eq!(c.read_chunk(&page(90), 0, 2).unwrap().data, b"ab");
+    assert!(c.read_chunk(&page(90), 5, 1).is_err());
+    c.write_chunk_if_sequence(page(90), 2, b"CDEF", 3).unwrap();
+    assert_eq!(c.read_chunk(&page(90), 0, 8).unwrap().data, b"abCDEFgh");
+}
