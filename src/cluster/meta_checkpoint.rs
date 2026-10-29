@@ -368,4 +368,168 @@ mod tests {
         drop(peer);
         drop(cleanup);
     }
+    // Test commands construct deterministic metadata fixtures. Peer packets,
+    // checkpoint capture, restore, durable storage and replay are production paths.
+    fn exercise_metadata_group(record_count: usize) {
+        use matrixraft::peer_runtime::{DurablePeer, PeerOptions};
+        use std::{cell::RefCell, collections::BTreeMap};
+        let root = std::env::temp_dir().join(format!(
+            "metadata-group-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let options = |node_id| PeerOptions {
+            group_id: 72,
+            node_id,
+            voters: vec![1, 2, 3],
+            wal_path: root.join(format!("{node_id}.wal")),
+        };
+        let mut peers: BTreeMap<_, _> = (1..=3)
+            .map(|id| (id, DurablePeer::open(options(id)).unwrap()))
+            .collect();
+        let mut states: BTreeMap<u64, MetaSnapshot> = BTreeMap::new();
+        let mut dropped = false;
+        let mut restores = 0usize;
+        let mut drive = |peers: &mut BTreeMap<u64, DurablePeer>,
+                         states: &mut BTreeMap<u64, MetaSnapshot>,
+                         isolate: Option<u64>| {
+            for _ in 0..4000 {
+                let mut packets = Vec::new();
+                for (node, peer) in peers.iter_mut() {
+                    let state = RefCell::new(states.remove(node).unwrap_or_else(|| fixture(0, 0)));
+                    packets.extend(
+                        peer.process_ready_with_snapshot_reader(
+                            |_, bytes| {
+                                if bytes == [1] {
+                                    *state.borrow_mut() = fixture(record_count, 1024 * 1024);
+                                } else if bytes == [2] {
+                                    let mut s = state.borrow_mut();
+                                    assert_eq!(s.records.len(), record_count);
+                                    s.records.insert(
+                                        "after-checkpoint".into(),
+                                        MetadataRecord::new(
+                                            "after-checkpoint".into(),
+                                            "committed-after-transfer".into(),
+                                            1,
+                                            20,
+                                            false,
+                                        ),
+                                    );
+                                    s.checksum = s.checksum_material_hash();
+                                } else {
+                                    assert!(bytes.is_empty());
+                                }
+                                Ok(())
+                            },
+                            |id, reader, size| {
+                                *state.borrow_mut() = restore(reader, size, id, &[1, 2])?;
+                                restores += 1;
+                                Ok(())
+                            },
+                        )
+                        .unwrap()
+                        .into_iter()
+                        .filter(|p| Some(*node) != isolate && Some(p.to) != isolate),
+                    );
+                    states.insert(*node, state.into_inner());
+                }
+                if packets.is_empty() {
+                    return;
+                }
+                for packet in packets {
+                    assert!(packet.bytes.len() < 2 * 1024 * 1024);
+                    // Canonical version-3 packets carry file payload fragments.
+                    let file_packet = packet.bytes.starts_with(&[8, 3]);
+                    if file_packet && !dropped {
+                        dropped = true;
+                        continue;
+                    }
+                    if file_packet {
+                        peers
+                            .get_mut(&packet.to)
+                            .unwrap()
+                            .step(&packet.bytes)
+                            .unwrap();
+                    }
+                    peers
+                        .get_mut(&packet.to)
+                        .unwrap()
+                        .step(&packet.bytes)
+                        .unwrap();
+                }
+            }
+            panic!("metadata checkpoint transfer did not settle");
+        };
+        peers.get_mut(&1).unwrap().campaign().unwrap();
+        drive(&mut peers, &mut states, None);
+        peers.get_mut(&1).unwrap().propose(vec![1]).unwrap();
+        drive(&mut peers, &mut states, Some(3));
+        assert_eq!(states[&1].records.len(), record_count);
+        assert!(states[&3].records.is_empty());
+        let peer = peers.get_mut(&1).unwrap();
+        let id = LogId {
+            index: peer.applied_index(),
+            term: peer.term(),
+        };
+        let mut stream = capture(states[&1].clone(), vec![1, 2], id)
+            .unwrap()
+            .unwrap();
+        let length = stream.length;
+        assert!(length > record_count as u64 * 1024 * 1024);
+        peer.checkpoint_from_reader(&mut stream, length).unwrap();
+        drop(stream);
+        peers.get_mut(&1).unwrap().propose(vec![2]).unwrap();
+        drive(&mut peers, &mut states, None);
+        for _ in 0..80 {
+            if states[&3].records.contains_key("after-checkpoint") {
+                break;
+            }
+            for peer in peers.values_mut() {
+                peer.tick().unwrap();
+            }
+            drive(&mut peers, &mut states, None);
+        }
+        let expected = states[&1].checksum.clone();
+        for state in states.values() {
+            assert_eq!(state.records.len(), record_count + 1);
+            assert_eq!(state.checksum, expected);
+            state.validate().unwrap();
+        }
+        drop(peers);
+        states.clear();
+        let mut peers = (1..=3)
+            .map(|id| (id, DurablePeer::open(options(id)).unwrap()))
+            .collect();
+        drive(&mut peers, &mut states, None);
+        for state in states.values() {
+            assert_eq!(state.checksum, expected);
+            state.validate().unwrap();
+        }
+        assert!(dropped, "file transfer was not exercised");
+        assert!(
+            restores >= 3,
+            "expected receiver install and restart recovery"
+        );
+        println!("metadata group recovered {length} checkpoint bytes and a later mutation; restores={restores}");
+    }
+    #[test]
+    fn metadata_group_stream_retries_transfer_and_recovers_later_mutations() {
+        exercise_metadata_group(9);
+    }
+    #[test]
+    #[ignore = "272 MiB three-peer metadata checkpoint transfer and restart"]
+    fn metadata_group_stream_transfers_more_than_256_mib() {
+        exercise_metadata_group(272);
+    }
 }
