@@ -395,8 +395,7 @@ library version is introduced.
 
 The readiness guard covers idle waiting, listener activity, completion signals,
 notification saturation and shutdown. Connection-sharing and fragmented-frame
-tests continue to exercise the same production loop. Raft peer receivers and
-consensus workers retain their existing wait behavior.
+tests continue to exercise the same production loop. Consensus workers retain their existing wait behavior.
 
 A local October 29, 2026 release run of the 51-process complete-object workload
 passed with this readiness path. It retained the same 16 data groups, three
@@ -421,3 +420,38 @@ by elapsed time; context switches sum the per-thread counters. These short
 samples and single workload runs are observations, not statistical performance
 guarantees, peak resource measurements or multihost qualification. The result
 supports reducing polling overhead; substantial production-scale work remains.
+
+## Peer socket readiness
+
+Unix metadata and chunk Raft receivers now use the same bounded readiness wait
+and shutdown notification mechanism as the API workers. When no frame made
+progress, the receiver waits for readable peer sockets, listener activity when
+there is a free slot, the earliest frame deadline, or shutdown. It does not watch
+the listener while all sixteen frame slots are occupied, so a queued connection
+cannot cause a busy loop. Non-Unix builds and wake-socket creation failures retain
+a one-millisecond wait.
+
+The packet protocol and resource bounds are unchanged: one frame per connection,
+an 8 MiB individual packet limit, a 16 MiB incomplete-buffer budget, a 64 KiB
+read allowance per connection per sweep, and the configured absolute frame
+deadline. Completed packets still enter the existing bounded queue without
+blocking; Raft remains responsible for retransmission after dropped packets.
+
+The readiness guard fills all frame slots, queues another connection, checks
+that waiting reaches its timeout, then verifies a shorter frame deadline, readable
+peer data and shutdown notification. Existing guards still check malformed and
+fragmented packets, total-buffer admission and shutdown with slow peers.
+
+The subsequent local 51-process release run with peer readiness verified all
+1,280 objects through leader failures and full restart in 87.11 seconds. Initial
+1,024 writes took 47.133 seconds (21.7 objects/second), with p50/p95/p99 latencies
+of 377.869/545.580/608.317 ms. The 256 writes after failover took 12.735 seconds
+(20.1 objects/second), with p50/p95/p99 of 405.769/600.267/675.074 ms. Verified
+reads took 8.628 seconds after leader failures and 10.129 seconds after full
+restart. The workload and host were the same as the API-readiness run above.
+
+A roughly ten-second sample covered all 51 stable server processes with 786
+threads and measured 1.32 CPU core equivalents and 39,437 context switches per
+second. The preceding API-only readiness sample measured 2.66 cores and 80,667
+switches per second. These are single local observations, not randomized or
+statistical comparisons, sustained production targets, or multihost evidence.

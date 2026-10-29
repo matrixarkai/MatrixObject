@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use super::shutdown::ServerShutdown;
+use super::socket_readiness::SocketReadiness;
 use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::SyncSender;
@@ -64,6 +65,7 @@ pub(super) fn receive(
 ) {
     let mut frames: Vec<Frame> = Vec::new();
     let mut reserved = 0;
+    let readiness = SocketReadiness::new(stop).ok();
     while !stop.is_stopped() {
         for _ in frames.len()..CONNECTION_LIMIT {
             match listener.accept() {
@@ -110,9 +112,36 @@ pub(super) fn receive(
             }
         }
         if !progressed {
-            std::thread::sleep(Duration::from_millis(1));
+            match &readiness {
+                Some(waiter) => {
+                    wait_for_frames(waiter, &listener, &frames, stop);
+                }
+                None => {
+                    stop.wait_for(Duration::from_millis(1));
+                }
+            }
         }
     }
+}
+
+fn wait_for_frames(
+    waiter: &SocketReadiness,
+    listener: &TcpListener,
+    frames: &[Frame],
+    stop: &ServerShutdown,
+) -> bool {
+    let now = Instant::now();
+    let timeout = frames
+        .iter()
+        .map(|f| f.deadline.saturating_duration_since(now))
+        .min()
+        .unwrap_or(Duration::from_millis(50));
+    waiter.wait(
+        (frames.len() < CONNECTION_LIMIT).then_some(listener),
+        frames.iter().map(|f| (&f.stream, false)),
+        timeout,
+        stop,
+    )
 }
 
 #[cfg(test)]
@@ -120,6 +149,56 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::{mpsc, Arc};
+
+    #[cfg(unix)]
+    #[test]
+    fn peer_readiness_bounds_waits_and_ignores_listener_when_full() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(ServerShutdown::default());
+        let waiter = SocketReadiness::new(&stop).unwrap();
+        let mut clients = Vec::new();
+        let mut frames = Vec::new();
+        for _ in 0..CONNECTION_LIMIT {
+            clients.push(TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nonblocking(true).unwrap();
+            frames.push(Frame {
+                stream,
+                deadline: Instant::now() + Duration::from_secs(5),
+                header: [0; 4],
+                header_read: 0,
+                body: Vec::new(),
+                body_read: 0,
+            });
+        }
+        let _queued = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        // A queued connection must not wake a receiver with no free frame slot.
+        let start = Instant::now();
+        assert!(!wait_for_frames(&waiter, &listener, &frames, &stop));
+        assert!(start.elapsed() >= Duration::from_millis(20));
+        frames[0].deadline = Instant::now() + Duration::from_millis(5);
+        assert!(!wait_for_frames(&waiter, &listener, &frames, &stop));
+        assert_eq!(
+            frames[0].advance(&mut 0).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        clients[1].write_all(&[0, 0, 0, 2, b'o', b'k']).unwrap();
+        assert!(wait_for_frames(&waiter, &listener, &frames, &stop));
+        let mut reserved = 0;
+        assert!(frames[1].advance(&mut reserved).unwrap());
+        assert_eq!(frames[1].body, b"ok");
+        for frame in &mut frames {
+            frame.deadline = Instant::now() + Duration::from_secs(5);
+        }
+        let shutdown = Arc::clone(&stop);
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            shutdown.stop();
+        });
+        assert!(wait_for_frames(&waiter, &listener, &frames, &stop));
+        worker.join().unwrap();
+    }
 
     #[test]
     fn incomplete_peer_frames_obey_total_buffer_and_absolute_deadline_limits() {
