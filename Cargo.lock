@@ -260,6 +260,7 @@ name = "matrixobjectstore-rs"
 version = "0.1.0"
 dependencies = [
  "fs2",
+ "libc",
  "matrixraft",
  "prost",
  "raft 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",

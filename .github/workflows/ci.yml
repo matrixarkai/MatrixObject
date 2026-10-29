@@ -267,6 +267,12 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus conditional_discards_replicate_and_recover_without_accepting_stale_sequences -- --exact --nocapture | tee /tmp/conditional-discard.log
           grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
 
+      - name: api readiness waits when idle and wakes for sockets completion and shutdown
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::connections::readiness::tests::api_readiness_waits_when_idle_and_wakes_for_sockets_completion_and_shutdown -- --exact --nocapture | tee /tmp/api-readiness.log
+          grep -q 'test result: ok. 1 passed' /tmp/api-readiness.log
+
       - name: chunk read batches bound admission preserve write order and expire requests
         run: |
           set -o pipefail

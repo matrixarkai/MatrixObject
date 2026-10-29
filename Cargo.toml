@@ -46,7 +46,7 @@ s3 = ["http-server"]
 # On by default rather than opt-in because the thing it makes possible -- surviving the loss
 # of one replica process -- is what the replication factor this store already pays for is
 # supposed to buy. A flag standing between a user and that is a barrier in front of the point.
-replica-server = ["dep:fs2"]
+replica-server = ["dep:fs2", "dep:libc"]
 # The control plane in another process (`src/cluster`'s metaserver half, and the `metaserver`
 # binary).
 #
@@ -55,7 +55,7 @@ replica-server = ["dep:fs2"]
 # binds a port: an empty `metaserver_catalog_endpoints` is the in-process control plane this
 # store has always had, so a build with this feature on behaves exactly as it did before
 # something names an endpoint.
-meta-server = ["dep:fs2"]
+meta-server = ["dep:fs2", "dep:libc"]
 matrix-raft = ["dep:matrixraft"]
 chunk-consensus = ["replica-server", "matrix-raft", "matrixraft/peer-runtime"]
 metadata-consensus = ["meta-server", "matrix-raft", "matrixraft/peer-runtime"]
@@ -65,3 +65,6 @@ prost = "0.11.9"
 fs2 = { version = "0.4.3", optional = true }
 raft = { version = "0.7", optional = true, default-features = false, features = ["prost-codec"] }
 matrixraft = { git = "https://github.com/matrixarkai/matrixraft.git", rev = "fed60792062087a1a3605d34cdf70f3871c8f3bc", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }

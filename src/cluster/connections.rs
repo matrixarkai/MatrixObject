@@ -21,6 +21,9 @@ pub(super) struct Options {
 use crate::cluster::shutdown::ActiveConnection;
 use std::{io::ErrorKind, time::Instant};
 
+#[path = "connections_readiness.rs"]
+mod readiness;
+
 const CONNECTIONS_PER_WORKER: usize = 128;
 #[derive(Clone)]
 struct Budget {
@@ -59,6 +62,7 @@ struct Job {
     charge: Charge,
     reply: SyncSender<Option<Reply>>,
     budget: Budget,
+    wake: Option<readiness::Notify>,
 }
 // All I/O loops submit to the same bounded executor queue. A persistent socket
 // stays with its I/O loop, but does not pin its requests to one executor.
@@ -78,6 +82,7 @@ impl Dispatch {
     }
 }
 struct Connection {
+    wake: Option<readiness::Notify>,
     stream: TcpStream,
     _active: ActiveConnection,
     header: [u8; HEADER_BYTES],
@@ -97,8 +102,14 @@ fn deadline(timeout: Duration) -> Instant {
         .unwrap_or_else(Instant::now)
 }
 impl Connection {
-    fn new(stream: TcpStream, active: ActiveConnection, options: &Options) -> Self {
+    fn new(
+        stream: TcpStream,
+        active: ActiveConnection,
+        options: &Options,
+        wake: Option<&readiness::Notify>,
+    ) -> Self {
         Self {
+            wake: wake.cloned(),
             stream,
             _active: active,
             header: [0; HEADER_BYTES],
@@ -247,6 +258,7 @@ impl Connection {
                 .expect("complete frames hold a reservation"),
             reply,
             budget: budget.clone(),
+            wake: self.wake.clone(),
         };
         if jobs.try_send(job).is_err() {
             return false;
@@ -273,6 +285,8 @@ pub(super) fn accept_loop(
             .saturating_add(HEADER_BYTES)
             .saturating_mul(2),
     };
+    let readiness = readiness::Waiter::new(&stop).ok();
+    let wake = readiness.as_ref().map(|waiter| waiter.notifier());
     let jobs = dispatch.jobs;
     let rx = dispatch.receiver;
     std::thread::scope(|scope| {
@@ -300,6 +314,9 @@ pub(super) fn accept_loop(
                 charge,
             });
             let _ = job.reply.try_send(response);
+            if let Some(wake) = job.wake {
+                wake.notify();
+            }
         });
         let mut connections: Vec<Connection> = Vec::new();
         while !stop.is_stopped() {
@@ -321,7 +338,7 @@ pub(super) fn accept_loop(
                             Ok(None) => break,
                             Err(_) => continue,
                         };
-                        connections.push(Connection::new(stream, active, &options));
+                        connections.push(Connection::new(stream, active, &options, wake.as_ref()));
                     }
                     Err(_) => break,
                 }
@@ -343,7 +360,14 @@ pub(super) fn accept_loop(
                 }
             }
             if !progressed {
-                stop.wait_for(Duration::from_millis(1));
+                match &readiness {
+                    Some(waiter) => {
+                        waiter.wait(&listener, &connections, &stop);
+                    }
+                    None => {
+                        stop.wait_for(Duration::from_millis(1));
+                    }
+                }
             }
         }
         drop(connections);
