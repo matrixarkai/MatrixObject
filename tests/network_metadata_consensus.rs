@@ -1302,3 +1302,83 @@ fn chunk_heartbeat_identity_files_refuse_invalid_data_and_foreign_metadata() {
         before
     );
 }
+
+
+#[test]
+fn received_chunk_health_keeps_decided_time_through_failover_restart_and_expiry() {
+    let mut group = Group::with_roster(Some("chunk-1@127.0.0.1:9100@rack".into()));
+    let first = group.leader();
+    let mut endpoints: Vec<_> = (0..3)
+        .filter(|i| *i != first)
+        .map(|i| group.nodes[i].as_ref().unwrap().endpoint.clone())
+        .collect();
+    endpoints.push(group.nodes[first].as_ref().unwrap().endpoint.clone());
+    let mut client = RemoteMetaClient::connect_catalog(
+        &endpoints,
+        &MetaClientOptions {
+            read_timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let clock = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    };
+    let earliest = clock();
+    let first_report = client
+        .report_chunk_node("chunk-1", "127.0.0.1:9100", 17, 1 << 28, true)
+        .unwrap();
+    assert!((earliest..=clock()).contains(&first_report.last_heartbeat_ms));
+    assert_eq!(
+        client.endpoint(),
+        group.nodes[first].as_ref().unwrap().endpoint
+    );
+    assert_eq!(first_report.used_bytes, 17);
+    assert!(client
+        .report_chunk_node("chunk-1", "127.0.0.1:9101", 18, 1 << 28, true)
+        .is_err());
+    assert_eq!(
+        client.list_placement_nodes().unwrap(),
+        vec![first_report.clone()]
+    );
+    group.kill(first);
+    let second = group.leader();
+    assert_ne!(first, second);
+    assert_eq!(client.list_placement_nodes().unwrap(), vec![first_report]);
+    let second_report = client
+        .report_chunk_node("chunk-1", "127.0.0.1:9100", 19, 1 << 28, true)
+        .unwrap();
+    drop(client);
+    for i in 0..3 {
+        if group.nodes[i].is_some() {
+            group.kill(i);
+        }
+    }
+    for i in 0..3 {
+        group.start(i);
+    }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    assert_eq!(
+        client.list_placement_nodes().unwrap(),
+        vec![second_report.clone()]
+    );
+    assert_eq!(
+        client
+            .expire_placement_node_heartbeats(1000, second_report.last_heartbeat_ms + 1001)
+            .unwrap(),
+        1
+    );
+    let expired = client.list_placement_nodes().unwrap().remove(0);
+    assert!(!expired.online);
+    assert_eq!(expired.last_heartbeat_ms, second_report.last_heartbeat_ms);
+    assert_eq!(expired.used_bytes, 19);
+    let revived = client
+        .report_chunk_node("chunk-1", "127.0.0.1:9100", 20, 1 << 28, true)
+        .unwrap();
+    assert!(revived.online);
+    assert!(revived.last_heartbeat_ms >= second_report.last_heartbeat_ms);
+}

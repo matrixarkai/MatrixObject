@@ -260,6 +260,28 @@ impl RemoteMetaClient {
         self.try_call(MetaRequest::Ping)
     }
 
+    /// Report health with a timestamp assigned by the metadata leader.
+    /// Requires metadata voters supporting request code 78; no legacy fallback.
+    pub fn report_chunk_node(
+        &mut self,
+        node_id: &str,
+        expected_endpoint: &str,
+        used_bytes: u64,
+        capacity_bytes: u64,
+        online: bool,
+    ) -> Result<PlacementNodeSummary, ObjectError> {
+        match self.call(MetaRequest::ReportChunkNode {
+            node_id: node_id.into(),
+            expected_endpoint: expected_endpoint.into(),
+            used_bytes,
+            capacity_bytes,
+            online,
+        })? {
+            MetaReply::PlacementNode(node) => Ok(node),
+            other => Err(unexpected_reply("a chunk health report", &other)),
+        }
+    }
+
     /// Report one chunk's health only while its endpoint matches metadata membership.
     pub fn heartbeat_chunk_node(
         &mut self,

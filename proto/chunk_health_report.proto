@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject.cluster;
+
+// Request code 78. Canonical encoding, at most 1024 bytes. The metadata leader
+// supplies the timestamp when preparing the durable placement outcome.
+message ChunkHealthReport {
+  uint32 version = 1;
+  string node_id = 2;
+  string expected_endpoint = 3;
+  uint64 used_bytes = 4;
+  uint64 capacity_bytes = 5;
+  bool online = 6;
+}

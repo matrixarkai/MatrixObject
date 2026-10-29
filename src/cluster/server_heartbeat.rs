@@ -5,7 +5,7 @@ use crate::cluster::{DataNodeSeed, MetaClientOptions, RemoteMetaClient};
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 /// Automatic reports for one chunk process. Metadata membership must already exist.
@@ -99,25 +99,12 @@ pub(super) fn run(
             if stop.is_stopped() {
                 return Ok(());
             }
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| {
-                    crate::ObjectError::PreconditionFailed("system clock precedes the epoch".into())
-                })?
-                .as_millis()
-                .try_into()
-                .map_err(|_| {
-                    crate::ObjectError::PreconditionFailed(
-                        "system clock exceeds heartbeat range".into(),
-                    )
-                })?;
-            client.heartbeat_chunk_node(
+            client.report_chunk_node(
                 &options.node_id,
                 &advertised,
                 used,
                 capacity,
                 online,
-                now,
             )?;
             if let Some(position) = endpoints
                 .iter()

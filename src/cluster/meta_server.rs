@@ -657,6 +657,7 @@ fn apply(
         drop(guard);
         return consensus.request(request);
     }
+    let request = super::health_report::stamp(request)?;
     let decision = match &request {
         MetaRequest::AllocateObjectPages { page_count } => {
             if guard.storage.is_none() {
@@ -925,6 +926,9 @@ pub(super) fn apply_to_meta(
         MetaRequest::ReadChunkGroup { .. } => {
             Err(ObjectError::NotFound("chunk group missing".into()))
         }
+        MetaRequest::ReportChunkNode { .. } => Err(ObjectError::PreconditionFailed(
+            "chunk health report requires a decided timestamp".into(),
+        )),
         MetaRequest::HeartbeatChunkNode {
             node_id,
             expected_endpoint,
@@ -1105,6 +1109,60 @@ pub(super) fn apply_to_meta(
 
 #[cfg(test)]
 mod chunk_group_tests {
+    #[test]
+    fn received_health_local_journal_keeps_timestamp_after_restart() {
+        use super::{apply, MetaReply, MetaRequest};
+        use crate::cluster::{DataNodeSeed, MetaNodeOptions, MetaNodeServer};
+        let directory = std::env::temp_dir().join(format!(
+            "health-clock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let server = MetaNodeServer::bind_with_snapshot(
+            "127.0.0.1:0",
+            MetaNodeOptions::default(),
+            &directory,
+        )
+        .unwrap();
+        server
+            .seed_data_roster(
+                &DataNodeSeed::parse_roster("chunk-1@127.0.0.1:9100@rack").unwrap(),
+                1024,
+            )
+            .unwrap();
+        let request = MetaRequest::ReportChunkNode {
+            node_id: "chunk-1".into(),
+            expected_endpoint: "127.0.0.1:9100".into(),
+            used_bytes: 17,
+            capacity_bytes: 1024,
+            online: true,
+        };
+        let MetaReply::PlacementNode(reported) = apply(&server.meta, request, 65536).unwrap()
+        else {
+            panic!("missing report")
+        };
+        assert!(reported.last_heartbeat_ms > 0);
+        drop(server);
+        let recovered = MetaNodeServer::bind_with_snapshot(
+            "127.0.0.1:0",
+            MetaNodeOptions::default(),
+            &directory,
+        )
+        .unwrap();
+        let MetaReply::RootNodes(nodes) =
+            apply(&recovered.meta, MetaRequest::ListRootNodes, 65536).unwrap()
+        else {
+            panic!("missing roster")
+        };
+        assert_eq!(nodes, vec![reported]);
+        drop(recovered);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     use super::*;
     use crate::cluster::{chunk_groups::tests::config, ChunkGroupCatalog};
     #[test]

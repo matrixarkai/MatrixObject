@@ -134,6 +134,8 @@
 // `decode_failure` beside the replica messages. A build with only the control plane needs
 // those five items and would otherwise need a second copy of them.
 mod conditional_requests;
+#[cfg(feature = "meta-server")]
+mod health_report;
 pub mod message;
 pub mod wire;
 

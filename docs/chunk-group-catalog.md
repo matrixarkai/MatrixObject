@@ -192,3 +192,34 @@ barrier. The retained bootstrap and checkpoints bind this catalog to the group.
 This reply does not establish quorum or current data-group health; placement,
 health and object-state reads still require quorum confirmation. Failed or stopped
 metadata consensus refuses local configuration reads too.
+
+
+## Health reports and clocks
+
+Automatic chunk heartbeats use request code 78 (`ReportChunkNode`), a canonical
+binary protobuf message bounded to 1,024 bytes. The report carries node ID,
+expected endpoint, used bytes, capacity and online status. It carries no client
+timestamp. The metadata leader supplies its current time while preparing the
+placement outcome; local durable metadata uses the same path. Followers route
+the request before a timestamp is chosen. Replication and recovery apply that
+decided timestamp from the binary outcome, without reading a clock again.
+
+This removes data-node clock skew from automatic health expiry. Metadata hosts
+still need synchronized clocks: leadership changes and expiry use their wall
+clocks, and reports older than the stored timestamp remain refused. The existing
+timestamped heartbeat API remains available for explicit callers, including its
+stale-report checks. Neither API authenticates the sender; endpoint matching
+checks configured membership only.
+
+Upgrade all metadata voters before upgrading automatic chunk reporters. Older
+metadata binaries reject code 78; new chunk reporters log the failure and retry
+on their normal interval, without falling back to client-clock timestamps.
+Persisted reports use the existing placement outcome format. Reports continue
+to preserve operator draining state, validate capacity and endpoint membership,
+and update logical group health in the same outcome.
+
+Tests cover canonical encoding, bounds, undecided-report refusal, preparation
+rollback, local durable restart, follower routing, metadata leader loss, full
+metadata restart and expiry of the recovered timestamp. The automatic heartbeat
+process tests exercise usage updates, identity verification and stopped-node
+expiry through this operation.

@@ -82,6 +82,8 @@ pub enum MetaRequestCode {
     ReadManifest = 75,
     PublishManifest = 76,
     AllocateObjectPages = 77,
+    /// Report chunk health using the receiving metadata leader's clock.
+    ReportChunkNode = 78,
 }
 
 impl MetaRequestCode {
@@ -106,6 +108,7 @@ impl MetaRequestCode {
             75 => Some(MetaRequestCode::ReadManifest),
             76 => Some(MetaRequestCode::PublishManifest),
             77 => Some(MetaRequestCode::AllocateObjectPages),
+            78 => Some(MetaRequestCode::ReportChunkNode),
             _ => None,
         }
     }
@@ -127,6 +130,7 @@ impl MetaRequestCode {
             MetaRequestCode::ReadManifest,
             MetaRequestCode::PublishManifest,
             MetaRequestCode::AllocateObjectPages,
+            MetaRequestCode::ReportChunkNode,
         ]
     }
 }
