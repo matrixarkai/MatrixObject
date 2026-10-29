@@ -34253,6 +34253,8 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSMETA-FINGERPRINT1",
         "MOSRSMETA-INTEGRITY1",
         "MOSRSMETA18",
+        "MOSRSMETA19",
+        "MOSRSMANIFEST1",
         "MOSRSMODULESTATUS32",
         "MOSRSOBJECTREADY77",
         "MOSRSROOT",
@@ -34414,7 +34416,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        149,
+        151,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
@@ -35792,7 +35794,7 @@ fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_
     }
 
     assert!(
-        !magic_rejected("MOSRSMETA18"),
+        !magic_rejected("MOSRSMETA19"),
         "the version this build writes must not be refused by its own decoder"
     );
     assert!(
@@ -35801,7 +35803,7 @@ fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_
          snapshot written before it unreadable"
     );
     assert!(
-        magic_rejected("MOSRSMETA19"),
+        magic_rejected("MOSRSMETA20"),
         "a version after this one must be refused, or a field this build does not know would be \
          read as one of its own"
     );

@@ -12,6 +12,7 @@ impl MatrixMetaService {
             .into_values()
             .map(KeyedRecord::new)
             .collect();
+        self.object_manifests = snapshot.object_manifests;
         self.leases = snapshot.leases;
         self.lease_receipts = snapshot.lease_receipts;
         self.coordinator_config = snapshot.coordinator_config;

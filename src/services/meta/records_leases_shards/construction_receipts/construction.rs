@@ -3,6 +3,7 @@
 impl MatrixMetaService {
     pub fn new() -> Self {
         Self {
+            object_manifests: Default::default(),
             nodes: BTreeMap::new(),
             placements: BTreeMap::new(),
             leader_lease: None,

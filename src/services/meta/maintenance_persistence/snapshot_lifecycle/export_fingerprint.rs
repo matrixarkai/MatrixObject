@@ -29,6 +29,7 @@ impl MatrixMetaService {
     /// background checkpoint worker seals this private snapshot before encoding.
     pub(crate) fn export_snapshot_unsealed(&self) -> MetaSnapshot {
         MetaSnapshot {
+            object_manifests: self.object_manifests.clone(),
             // The collection is ordered by each record's own key; the snapshot states the
             // key once in front of each record, so it rebuilds the pairs.
             records: self
@@ -214,6 +215,15 @@ impl MatrixMetaService {
             append_u64(&mut material, change.version);
             append_u64(&mut material, change.deleted as u64);
             append_u64(&mut material, change.update_time_ms);
+        }
+        if !self.object_manifests.is_empty() {
+            append_string(&mut material, "MOSRSMANIFEST1");
+            let bytes = self.object_manifests.to_bytes().expect("valid manifest catalog");
+            append_u64(&mut material, bytes.len() as u64);
+            let digest = fnv1a64_resumed(FNV1A64_OFFSET_BASIS, &material);
+            let mut checksum = String::with_capacity(24);
+            append_etag_of_digest(&mut checksum, fnv1a64_resumed(digest, &bytes));
+            return checksum;
         }
         etag(&material)
     }

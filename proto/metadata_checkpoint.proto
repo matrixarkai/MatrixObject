@@ -6,7 +6,7 @@ package matrixobject;
 message MetadataCheckpointStream {
   uint32 version = 1;
   MetadataCheckpointHeader header = 2;
-  bytes state = 3; // MOSRSMETA18, with the roster shape specified below
+  bytes state = 3; // MOSRSMETA18 (empty catalog) or MOSRSMETA19, roster shape below
 }
 message MetadataCheckpointHeader {
   uint32 kind = 1; // 1

@@ -197,6 +197,17 @@ struct CatalogImage {
     objects: Vec<ObjectManifest>,
 }
 impl ManifestCatalog {
+    pub(crate) fn encoded_size(&self) -> usize {
+        self.body_bytes + 2 + 12
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.objects.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.objects.len()
+    }
+
     /// Includes tombstones so a recreation must name the deleted generation.
     pub fn get(&self, id: &ObjectId) -> Option<&ObjectManifest> {
         self.objects.get(id)
@@ -466,5 +477,76 @@ mod tests {
         assert!(snapshot.len() <= MAX_SNAPSHOT + 12);
         // Restoring the largest accepted state must remain possible.
         assert_eq!(ManifestCatalog::from_bytes(&snapshot).unwrap(), catalog);
+    }
+    #[test]
+    fn metadata_manifest_snapshot_preserves_tombstones_and_invalidates_cached_exports() {
+        use crate::{MatrixMetaService, MetaSnapshot};
+        let mut service = MatrixMetaService::new();
+        service.next_commit_index = 2;
+        let empty = service.export_snapshot();
+        let old = empty.to_bytes().unwrap();
+        assert_eq!(&old[8..19], b"MOSRSMETA18");
+        assert_eq!(MetaSnapshot::from_bytes(&old).unwrap(), empty);
+        let cached = service.export_snapshot_chunk(0, 32).unwrap();
+        assert!(!cached.eof);
+        let fingerprint = service.metadata_state_fingerprint();
+        let create = ManifestOutcome::decide(None, manifest(1)).unwrap();
+        service.object_manifests.apply(&create).unwrap();
+        assert_ne!(service.metadata_state_fingerprint(), fingerprint);
+        let next = service.export_snapshot_chunk(0, 32).unwrap();
+        assert_ne!(next.full_checksum, cached.full_checksum);
+        let live = service.export_snapshot();
+        let live_bytes = live.to_bytes().unwrap();
+        assert_eq!(MetaSnapshot::from_bytes(&live_bytes).unwrap(), live);
+        assert_eq!(
+            MetaSnapshot::read_from(&mut live_bytes.as_slice(), live_bytes.len() as u64).unwrap(),
+            live
+        );
+        let mut stale_checksum = empty;
+        stale_checksum.object_manifests = live.object_manifests.clone();
+        assert!(stale_checksum.validate().is_err());
+        let mut deleted = manifest(2);
+        deleted.deleted = true;
+        deleted.length = 0;
+        deleted.extents.clear();
+        service
+            .object_manifests
+            .apply(&ManifestOutcome::decide(Some(manifest(1)), deleted.clone()).unwrap())
+            .unwrap();
+        let snapshot = service.export_snapshot();
+        let bytes = snapshot.to_bytes().unwrap();
+        assert_eq!(&bytes[8..19], b"MOSRSMETA19");
+        assert_eq!(MetaSnapshot::from_bytes(&bytes).unwrap(), snapshot);
+        assert_eq!(
+            MetaSnapshot::read_from(&mut bytes.as_slice(), bytes.len() as u64).unwrap(),
+            snapshot
+        );
+        for cut in [0, 18, bytes.len() / 2, bytes.len() - 1] {
+            assert!(MetaSnapshot::from_bytes(&bytes[..cut]).is_err());
+            assert!(MetaSnapshot::read_from(&mut &bytes[..cut], bytes.len() as u64).is_err());
+        }
+        let mut damaged = bytes.clone();
+        let offset = damaged.windows(4).position(|w| w == b"MOMC").unwrap();
+        let mut oversized = bytes.clone();
+        oversized[offset - 8..offset].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(MetaSnapshot::from_bytes(&oversized).is_err());
+        assert!(
+            MetaSnapshot::read_from(&mut oversized.as_slice(), oversized.len() as u64).is_err()
+        );
+        damaged[offset + 4] ^= 1;
+        assert!(MetaSnapshot::from_bytes(&damaged).is_err());
+        assert!(MetaSnapshot::read_from(&mut damaged.as_slice(), damaged.len() as u64).is_err());
+        let mut restored = MatrixMetaService::new();
+        restored.install_snapshot(snapshot).unwrap();
+        assert_eq!(restored.object_manifests, service.object_manifests);
+        assert!(restored.object_manifests.apply(&create).is_err());
+        restored
+            .object_manifests
+            .apply(&ManifestOutcome::decide(Some(deleted), manifest(3)).unwrap())
+            .unwrap();
+        assert_eq!(
+            restored.object_manifests.get(&manifest(3).object_id()),
+            Some(&manifest(3))
+        );
     }
 }

@@ -300,3 +300,11 @@ chunk compression statistics run on the worker. Final WAL replacement and sync,
 and incoming snapshot restoration still
 run synchronously. This change does not promise a bound on request latency or
 constant memory; later writes can also fill the WAL before capture completes.
+
+Object manifests are now included in the captured metadata service state.
+Empty catalogs retain snapshot version 18; populated catalogs use version 19
+with a checksummed binary protobuf catalog. Checkpoint restore installs the
+catalog, preserving object generations and deletion tombstones. All readers must
+understand version 19 before it is written. This checkpoint support does not
+expose manifest publication over the network or make placement and manifest
+updates atomic; those commands remain separate integration work.

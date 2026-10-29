@@ -20,6 +20,7 @@ pub(crate) struct PlacementSnapshotExportCache {
 
 #[derive(Clone, Debug)]
 pub struct MatrixMetaService {
+    pub(crate) object_manifests: crate::object_manifest::ManifestCatalog,
     // Placement state, folded in from the service that used to own it. Each
     // name differs from its metadata counterpart on purpose: they count and
     // cache different things, and sharing a name would fuse them.

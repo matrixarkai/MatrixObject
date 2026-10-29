@@ -2,8 +2,9 @@
 
 The `object_manifest` module defines a binary protobuf catalog for object names
 and immutable chunk extents. `proto/object_manifest.proto` documents its fields.
-This is a library component; metaserver persistence, replicated publication and
-HTTP routing do not yet use it. It does not make the HTTP server distributed.
+The catalog is carried in metadata service snapshots, local metadata snapshot
+files and streamed Raft checkpoints. Replicated publication and HTTP routing do
+not yet use it. It does not make the HTTP server distributed.
 
 Each manifest identifies a bucket, key and consecutive generation. Extents cover
 the object contiguously, identify a configured chunk group and page, and state the
@@ -35,3 +36,17 @@ reading the manifest, and never reclaim old extents while readers can still use
 them. Recovery must replay catalog outcomes after the matching checkpoint before
 serving reads. These are required integration steps, not implemented guarantees
 of the current HTTP path.
+
+Metadata snapshots with no manifests keep the version-18 encoding and checksum.
+A nonempty catalog uses version 19 and stores the canonical binary catalog after
+the placement roster. Both the service checksum and snapshot envelope cover it.
+The snapshot export cache stamp also includes the catalog. Installation restores
+the catalog together with metadata, including deletion generations.
+
+Upgrade readers before writing version-19 snapshots: older readers reject them.
+Local metadata snapshot files retain their 64 MiB total limit, including the
+catalog and all other metadata; a catalog near its own limit may not fit that
+local envelope. Streamed Raft checkpoints retain their separate total limit.
+The catalog is serialized as one bounded blob, so streaming does not eliminate
+its temporary encoding allocation. Snapshot support does not yet provide an
+atomic placement-and-manifest publication command or validate data-node durability.

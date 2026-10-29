@@ -105,6 +105,24 @@ impl<'a> SnapshotByteCursor<'a> {
         self.read_bytes(length)
     }
 
+    pub(crate) fn read_owned_blob(&mut self, maximum: usize) -> Result<Vec<u8>, ObjectError> {
+        let length = usize::try_from(self.read_u64()?).map_err(|_| ObjectError::Corruption("snapshot blob exceeds platform bound".into()))?;
+        if length > maximum || length > self.length.saturating_sub(self.cursor) {
+            return Err(ObjectError::Corruption("snapshot blob exceeds size or remaining bytes".into()));
+        }
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|e| ObjectError::Corruption(format!("snapshot blob allocation failed: {e}")))?;
+        bytes.resize(length, 0);
+        if let Some(reader) = self.stream.as_mut() {
+            reader.read_exact(&mut bytes).map_err(|e| ObjectError::Corruption(format!("snapshot blob read failed: {e}")))?;
+            self.digest = fnv1a64_resumed(self.digest, &bytes);
+        } else {
+            bytes.copy_from_slice(&self.data[self.cursor..self.cursor + length]);
+        }
+        self.cursor += length;
+        Ok(bytes)
+    }
+
     pub(crate) fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], ObjectError> {
         if self.stream.is_some() {
             return Err(ObjectError::Corruption("borrowed byte reads require a slice cursor".into()));
