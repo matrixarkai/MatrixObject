@@ -225,6 +225,12 @@ jobs:
           cargo test --locked --all-features --lib cluster::peer_receiver::tests::incomplete_peer_frames_obey_total_buffer_and_absolute_deadline_limits -- --exact --nocapture | tee /tmp/peer-receiver.log
           grep -q 'test result: ok. 1 passed' /tmp/peer-receiver.log
 
+      - name: quorum reads retain received payloads and reject disagreement
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::replica_set::tests::quorum_vote_returns_received_payload_and_rejects_conflicting_bytes -- --exact --nocapture | tee /tmp/quorum-payload.log
+          grep -q 'test result: ok. 1 passed' /tmp/quorum-payload.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail
