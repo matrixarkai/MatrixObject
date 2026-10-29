@@ -383,7 +383,7 @@ mod tests {
     }
     // Test commands construct deterministic metadata fixtures. Peer packets,
     // checkpoint capture, restore, durable storage and replay are production paths.
-    fn exercise_metadata_group(record_count: usize) {
+    fn exercise_metadata_group(record_count: usize, manifest_count: usize) {
         use matrixraft::peer_runtime::{DurablePeer, PeerOptions};
         use std::{cell::RefCell, collections::BTreeMap};
         let root = std::env::temp_dir().join(format!(
@@ -411,6 +411,66 @@ mod tests {
         let mut peers: BTreeMap<_, _> = (1..=3)
             .map(|id| (id, DurablePeer::open(options(id)).unwrap()))
             .collect();
+        let (large_snapshot, later_command) = if manifest_count > 0 {
+            use crate::object_manifest::{ManifestOutcome, ObjectManifest};
+            use crate::placement_outcome::PlacementOutcome;
+            let mut service = crate::MatrixMetaService::new();
+            for index in 0..manifest_count {
+                let value = ObjectManifest {
+                    format_version: 1,
+                    bucket: "capacity".into(),
+                    key: format!("object-{index:06}"),
+                    generation: 1,
+                    length: 0,
+                    extents: vec![],
+                    deleted: false,
+                };
+                PlacementOutcome::publish_manifest(
+                    &service,
+                    ManifestOutcome::decide(None, value).unwrap(),
+                    0,
+                )
+                .unwrap()
+                .apply(&mut service)
+                .unwrap();
+            }
+            let snapshot = service.export_snapshot();
+            let before = service
+                .object_manifests
+                .get(&crate::ObjectId::new("capacity", "object-000000"))
+                .unwrap()
+                .clone();
+            let mut after = before.clone();
+            after.generation = 2;
+            after.deleted = true;
+            let command = PlacementOutcome::publish_manifest(
+                &service,
+                ManifestOutcome::decide(Some(before), after).unwrap(),
+                1,
+            )
+            .unwrap()
+            .to_payload()
+            .unwrap();
+            (snapshot, command)
+        } else {
+            (fixture(record_count, 1024 * 1024), vec![2])
+        };
+        let expected_manifests = large_snapshot.object_manifests.len();
+        let initial_snapshot = if manifest_count > 0 {
+            crate::MatrixMetaService::new().export_snapshot()
+        } else {
+            fixture(0, 0)
+        };
+        let updated = |state: &MetaSnapshot| {
+            if manifest_count > 0 {
+                state
+                    .object_manifests
+                    .get(&crate::ObjectId::new("capacity", "object-000000"))
+                    .is_some_and(|m| m.generation == 2 && m.deleted)
+            } else {
+                state.records.contains_key("after-checkpoint")
+            }
+        };
         let mut states: BTreeMap<u64, MetaSnapshot> = BTreeMap::new();
         let mut dropped = false;
         let mut restores = 0usize;
@@ -420,12 +480,25 @@ mod tests {
             for _ in 0..4000 {
                 let mut packets = Vec::new();
                 for (node, peer) in peers.iter_mut() {
-                    let state = RefCell::new(states.remove(node).unwrap_or_else(|| fixture(0, 0)));
+                    let state = RefCell::new(
+                        states
+                            .remove(node)
+                            .unwrap_or_else(|| initial_snapshot.clone()),
+                    );
                     packets.extend(
                         peer.process_ready_with_snapshot_reader(
                             |_, bytes| {
                                 if bytes == [1] {
-                                    *state.borrow_mut() = fixture(record_count, 1024 * 1024);
+                                    *state.borrow_mut() = large_snapshot.clone();
+                                } else if manifest_count > 0 && !bytes.is_empty() {
+                                    let mut service = crate::MatrixMetaService::new();
+                                    service.install_placement_roster(&state.borrow()).unwrap();
+                                    service.install_snapshot(state.borrow().clone()).unwrap();
+                                    crate::placement_outcome::PlacementOutcome::from_payload(bytes)
+                                        .unwrap()
+                                        .apply(&mut service)
+                                        .unwrap();
+                                    *state.borrow_mut() = service.export_snapshot();
                                 } else if bytes == [2] {
                                     let mut s = state.borrow_mut();
                                     assert_eq!(s.records.len(), record_count);
@@ -489,7 +562,9 @@ mod tests {
         peers.get_mut(&1).unwrap().propose(vec![1]).unwrap();
         drive(&mut peers, &mut states, Some(3));
         assert_eq!(states[&1].records.len(), record_count);
+        assert_eq!(states[&1].object_manifests.len(), expected_manifests);
         assert!(states[&3].records.is_empty());
+        assert_eq!(states[&3].checksum, initial_snapshot.checksum);
         let peer = peers.get_mut(&1).unwrap();
         let id = LogId {
             index: peer.applied_index(),
@@ -500,12 +575,15 @@ mod tests {
             .unwrap();
         let length = stream.length;
         assert!(length > record_count as u64 * 1024 * 1024);
+        if manifest_count > 0 {
+            assert!(length > 8 * 1024 * 1024);
+        }
         peer.checkpoint_from_reader(&mut stream, length).unwrap();
         drop(stream);
-        peers.get_mut(&1).unwrap().propose(vec![2]).unwrap();
+        peers.get_mut(&1).unwrap().propose(later_command).unwrap();
         drive(&mut peers, &mut states, None);
         for _ in 0..80 {
-            if states[&3].records.contains_key("after-checkpoint") {
+            if updated(&states[&3]) {
                 break;
             }
             for peer in peers.values_mut() {
@@ -515,7 +593,12 @@ mod tests {
         }
         let expected = states[&1].checksum.clone();
         for state in states.values() {
-            assert_eq!(state.records.len(), record_count + 1);
+            assert_eq!(
+                state.records.len(),
+                record_count + usize::from(manifest_count == 0)
+            );
+            assert_eq!(state.object_manifests.len(), expected_manifests);
+            assert!(updated(state));
             assert_eq!(state.checksum, expected);
             state.validate().unwrap();
         }
@@ -527,6 +610,8 @@ mod tests {
         drive(&mut peers, &mut states, None);
         for state in states.values() {
             assert_eq!(state.checksum, expected);
+            assert_eq!(state.object_manifests.len(), expected_manifests);
+            assert!(updated(state));
             state.validate().unwrap();
         }
         assert!(dropped, "file transfer was not exercised");
@@ -538,11 +623,15 @@ mod tests {
     }
     #[test]
     fn metadata_group_stream_retries_transfer_and_recovers_later_mutations() {
-        exercise_metadata_group(9);
+        exercise_metadata_group(9, 0);
+    }
+    #[test]
+    fn full_manifest_catalog_transfers_between_raft_voters_and_recovers_later_publication() {
+        exercise_metadata_group(0, 100_000);
     }
     #[test]
     #[ignore = "272 MiB three-peer metadata checkpoint transfer and restart"]
     fn metadata_group_stream_transfers_more_than_256_mib() {
-        exercise_metadata_group(272);
+        exercise_metadata_group(272, 0);
     }
 }

@@ -201,6 +201,12 @@ jobs:
           cargo test --locked --all-features --lib object_manifest::tests::full_manifest_catalog_replays_and_recovers_without_losing_capacity_fences -- --exact --nocapture | tee /tmp/manifest-cardinality.log
           grep -q 'test result: ok. 1 passed' /tmp/manifest-cardinality.log
 
+      - name: full manifest catalog transfers across durable raft voters
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_checkpoint::tests::full_manifest_catalog_transfers_between_raft_voters_and_recovers_later_publication -- --exact --nocapture | tee /tmp/catalog-transfer.log
+          grep -q 'test result: ok. 1 passed' /tmp/catalog-transfer.log
+
       - name: object writer publishes verified pages across groups and recovery
         run: |
           set -o pipefail
