@@ -396,3 +396,53 @@ fn failed_chunk_identity_exchange_can_try_another_voter_before_writing() {
     assert_eq!(one.join().unwrap(), 7);
     assert_eq!(two.join().unwrap(), 7);
 }
+
+#[test]
+fn star_set_reconnects_only_for_a_later_operation_after_uncertain_write() {
+    use matrixobjectstore_rs::cluster::RemoteReplicaSet;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap().to_string();
+    listener.set_nonblocking(true).unwrap();
+    let worker = std::thread::spawn(move || {
+        let accept = || {
+            let until = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        break stream;
+                    }
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < until =>
+                    {
+                        std::thread::sleep(Duration::from_millis(2))
+                    }
+                    other => panic!("missing connection: {other:?}"),
+                }
+            }
+        };
+        let mut first = accept();
+        assert_eq!(receive(&mut first), 3);
+        first
+            .write_all(&encode_failure(StatusCode::NotFound, "absent"))
+            .unwrap();
+        assert_eq!(receive(&mut first), 8);
+        // The write may have committed, but its response is lost.
+        drop(first);
+        let mut later = accept();
+        assert_eq!(receive(&mut later), 5, "the failed mutation was replayed");
+        later
+            .write_all(&encode_reply(&ReplicaReply::Pong { page_count: 1 }))
+            .unwrap();
+    });
+    let mut set = RemoteReplicaSet::connect(&[endpoint], 1, 1, &options()).unwrap();
+    assert!(set.write_chunk(&page(), 0, b"once").is_err());
+    assert_eq!(set.ping_all(), vec![Some(1)]);
+    worker.join().unwrap();
+}

@@ -40,6 +40,7 @@ pub struct RemoteReplicaSet {
     replicas: Vec<RemoteReplicaClient>,
     write_quorum: usize,
     read_quorum: usize,
+    options: ReplicaClientOptions,
 }
 
 impl RemoteReplicaSet {
@@ -91,7 +92,14 @@ impl RemoteReplicaSet {
             replicas,
             write_quorum,
             read_quorum,
+            options: options.clone(),
         })
+    }
+
+    fn reconnect_failed(&mut self) {
+        for replica in &mut self.replicas {
+            let _ = replica.reconnect_standalone_if_failed(&self.options);
+        }
     }
 
     pub fn replica_count(&self) -> usize {
@@ -168,6 +176,7 @@ impl RemoteReplicaSet {
         &mut self,
         page_id: &PageId,
     ) -> Result<(Option<ReplicaHead>, Vec<bool>), ObjectError> {
+        self.reconnect_failed();
         // Establish the state being extended before any mutation is sent. A
         // returning or divergent replica cannot contribute a fresh write vote.
         let observed: Vec<_> = self
@@ -224,6 +233,7 @@ impl RemoteReplicaSet {
         offset: u64,
         length: u64,
     ) -> Result<ReplicaReadResult, ObjectError> {
+        self.reconnect_failed();
         let replica_count = self.replicas.len();
         let read_quorum = self.read_quorum;
         let mut answered = Vec::with_capacity(replica_count);
@@ -277,6 +287,7 @@ impl RemoteReplicaSet {
 
     /// Read a page's metadata from a read quorum, voting on the whole head.
     pub fn head_chunk(&mut self, page_id: &PageId) -> Result<ReplicaHead, ObjectError> {
+        self.reconnect_failed();
         let replica_count = self.replicas.len();
         let read_quorum = self.read_quorum;
         let mut answered = Vec::with_capacity(replica_count);
@@ -347,6 +358,7 @@ impl RemoteReplicaSet {
     /// asserts anything about it: three entries that are all `Some` is the observable form
     /// of three live replica processes.
     pub fn ping_all(&mut self) -> Vec<Option<u64>> {
+        self.reconnect_failed();
         self.replicas
             .iter_mut()
             .map(|replica| replica.ping().ok())

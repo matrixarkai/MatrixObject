@@ -315,3 +315,54 @@ fn conditional_discards_survive_journal_recovery_and_refuse_stale_sequences() {
     assert!(c.discard_chunk_if_sequence(&page(9), 0, 1, 2).is_err());
     assert_eq!(c.read_chunk(&page(9), 0, 8).unwrap().data, b"abCDEfgh");
 }
+
+#[test]
+fn star_set_reconnects_recovered_members_but_excludes_missed_writes() {
+    use matrixobjectstore_rs::cluster::RemoteReplicaSet;
+    let dir = JournalDir::new();
+    let paths: Vec<_> = (0..3)
+        .map(|i| dir.0.join(format!("rejoin-{i}.log")))
+        .collect();
+    let mut nodes: Vec<_> = paths.iter().map(|path| Some(start(path))).collect();
+    let endpoints: Vec<_> = nodes
+        .iter()
+        .map(|n| n.as_ref().unwrap().endpoint.clone())
+        .collect();
+    let restart = |index: usize| {
+        processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", endpoints[index].as_str()),
+                (
+                    "MATRIXOBJECT_REPLICA_JOURNAL",
+                    paths[index].to_str().unwrap(),
+                ),
+            ],
+        )
+    };
+    let options = ReplicaClientOptions {
+        connect_timeout: std::time::Duration::from_millis(200),
+        ..Default::default()
+    };
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
+    assert_eq!(set.write_chunk(&page(10), 0, b"first").unwrap(), 3);
+    drop(nodes[0].take());
+    assert_eq!(set.ping_all(), vec![None, Some(1), Some(1)]);
+    nodes[0] = Some(restart(0));
+    assert_eq!(set.ping_all(), vec![Some(1); 3]);
+    assert_eq!(set.endpoints(), endpoints);
+    assert_eq!(set.write_chunk(&page(10), 0, b"again").unwrap(), 3);
+    // This time the stopped member misses a successful quorum update.
+    drop(nodes[0].take());
+    assert_eq!(set.ping_all(), vec![None, Some(1), Some(1)]);
+    assert_eq!(set.write_chunk(&page(10), 0, b"newer").unwrap(), 2);
+    nodes[0] = Some(restart(0));
+    assert_eq!(set.ping_all(), vec![Some(1); 3]);
+    assert_eq!(set.write_chunk(&page(10), 0, b"final").unwrap(), 2);
+    assert_eq!(set.read_chunk(&page(10), 0, 5).unwrap().data, b"final");
+    let mut stale = client(nodes[0].as_ref().unwrap());
+    assert_eq!(stale.read_chunk(&page(10), 0, 5).unwrap().data, b"again");
+    assert_eq!(stale.head_chunk(&page(10)).unwrap().write_sequence, 2);
+    assert_eq!(set.discard_chunk(&page(10), 0, 1).unwrap(), 2);
+    assert_eq!(stale.read_chunk(&page(10), 0, 5).unwrap().data, b"again");
+}
