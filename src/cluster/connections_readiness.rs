@@ -1,60 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 //! Socket readiness and executor completion wakeups for the bounded API loop.
-#[cfg(unix)]
-use super::CONNECTIONS_PER_WORKER;
-use super::{Connection, ServerShutdown};
+use super::{Connection, ServerShutdown, CONNECTIONS_PER_WORKER};
+pub(super) use crate::cluster::socket_readiness::Notify;
+use crate::cluster::socket_readiness::SocketReadiness;
 use std::io;
 use std::net::TcpListener;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-#[cfg(unix)]
-use std::{
-    io::{Read, Write},
-    os::{fd::AsRawFd, unix::net::UnixStream},
-    sync::Arc,
-};
-
-#[derive(Clone)]
-pub(super) struct Notify {
-    #[cfg(unix)]
-    socket: Arc<UnixStream>,
-}
-impl Notify {
-    pub(super) fn notify(&self) {
-        #[cfg(unix)]
-        {
-            let _ = (&*self.socket).write(&[1]);
-        }
-    }
-}
 pub(super) struct Waiter {
-    #[cfg(unix)]
-    receive: UnixStream,
-    notify: Notify,
+    inner: SocketReadiness,
 }
 impl Waiter {
     pub(super) fn new(stop: &ServerShutdown) -> io::Result<Self> {
-        #[cfg(unix)]
-        {
-            let (receive, send) = UnixStream::pair()?;
-            receive.set_nonblocking(true)?;
-            send.set_nonblocking(true)?;
-            let socket = Arc::new(send);
-            stop.track_wake(&socket);
-            Ok(Self {
-                receive,
-                notify: Notify { socket },
-            })
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = stop;
-            Ok(Self { notify: Notify {} })
-        }
+        Ok(Self {
+            inner: SocketReadiness::new(stop)?,
+        })
     }
     pub(super) fn notifier(&self) -> Notify {
-        self.notify.clone()
+        self.inner.notifier()
     }
     pub(super) fn wait(
         &self,
@@ -62,82 +26,32 @@ impl Waiter {
         connections: &[Connection],
         stop: &ServerShutdown,
     ) -> bool {
-        if stop.is_stopped() {
-            return true;
-        }
-        #[cfg(unix)]
-        {
-            let mut descriptors = Vec::with_capacity(connections.len() + 2);
-            let mut add = |fd, events| {
-                descriptors.push(libc::pollfd {
-                    fd,
-                    events,
-                    revents: 0,
-                })
-            };
-            add(self.receive.as_raw_fd(), libc::POLLIN);
-            if connections.len() < CONNECTIONS_PER_WORKER {
-                add(listener.as_raw_fd(), libc::POLLIN);
-            }
-            for connection in connections {
-                // Completion wakes through the separate socket. Watching a closed
-                // client while its job runs would otherwise create a busy loop.
-                if connection.pending.is_none() {
-                    add(
-                        connection.stream.as_raw_fd(),
-                        if connection.output.is_empty() {
-                            libc::POLLIN
-                        } else {
-                            libc::POLLOUT
-                        },
-                    );
-                }
-            }
-            let timeout = connections
+        let now = Instant::now();
+        let timeout = connections
+            .iter()
+            .map(|c| c.deadline.saturating_duration_since(now))
+            .min()
+            .unwrap_or(Duration::from_millis(50));
+        // Completion uses a separate wake socket. Exclude pending clients so
+        // a disconnected client cannot cause readiness to spin during execution.
+        self.inner.wait(
+            (connections.len() < CONNECTIONS_PER_WORKER).then_some(listener),
+            connections
                 .iter()
-                .map(|c| {
-                    c.deadline
-                        .saturating_duration_since(std::time::Instant::now())
-                })
-                .min()
-                .unwrap_or(Duration::from_millis(50))
-                .min(Duration::from_millis(50));
-            let milliseconds = timeout.as_millis().saturating_add(1).min(50) as libc::c_int;
-            // SAFETY: descriptors owns this initialized contiguous array for the
-            // duration of poll. All descriptors remain owned by this I/O loop.
-            let result = unsafe {
-                libc::poll(
-                    descriptors.as_mut_ptr(),
-                    descriptors.len() as libc::nfds_t,
-                    milliseconds,
-                )
-            };
-            if result < 0 {
-                // A failed readiness facility must not turn into an unbounded spin.
-                stop.wait_for(Duration::from_millis(1));
-            }
-            let mut bytes = [0; 128];
-            for _ in 0..8 {
-                match (&self.receive).read(&mut bytes) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {}
-                }
-            }
-            result > 0
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (listener, connections);
-            stop.wait_for(Duration::from_millis(1));
-            false
-        }
+                .filter(|c| c.pending.is_none())
+                .map(|c| (&c.stream, !c.output.is_empty())),
+            timeout,
+            stop,
+        )
     }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
     use std::net::TcpStream;
+    use std::sync::Arc;
     use std::time::Instant;
 
     #[test]

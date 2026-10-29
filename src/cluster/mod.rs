@@ -196,6 +196,7 @@ pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
 mod replica_journal;
 
 mod connections;
+mod socket_readiness;
 #[cfg(any(feature = "replica-server", feature = "meta-server"))]
 mod shutdown;
 

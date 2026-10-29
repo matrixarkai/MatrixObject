@@ -267,6 +267,12 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus conditional_discards_replicate_and_recover_without_accepting_stale_sequences -- --exact --nocapture | tee /tmp/conditional-discard.log
           grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
 
+      - name: peer readiness bounds waits and ignores listener when full
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::peer_receiver::tests::peer_readiness_bounds_waits_and_ignores_listener_when_full -- --exact --nocapture | tee /tmp/peer-readiness.log
+          grep -q 'test result: ok. 1 passed' /tmp/peer-readiness.log
+
       - name: api readiness waits when idle and wakes for sockets completion and shutdown
         run: |
           set -o pipefail
