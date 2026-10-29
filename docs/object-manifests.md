@@ -146,7 +146,13 @@ steps above. `expected` is the exact current manifest, including a tombstone whe
 recreating an object, or None for absence. Preflight validates names, generation,
 size, page count and options, then checks the current manifest before writing.
 Placement selects up to `target_groups` configured groups, capped by page count.
-The client verifies every group, allocates fresh pages, and distributes contiguous
+The client looks up each selected group once and verifies every group before
+allocation. It retains these configurations for this operation and keeps the
+first write target’s verified connection through allocation. Switching groups
+opens a new connection using the saved configuration and verifies its complete
+identity again. Configurations are not cached across operations, and each lookup
+checks that the returned placement name matches the request. The client then
+allocates fresh pages and distributes contiguous
 extents across those groups. Each page is written with expected sequence zero,
 then read back to check sequence one and exact bytes. Only then does the client
 submit the conditional publication. Empty objects need no data pages.
@@ -154,7 +160,8 @@ submit the conditional publication. Empty objects need no data pages.
 `ObjectWriteOptions` defaults to a 64 MiB object limit, 1 MiB pages and one data
 group. Pages must be 1..1048576 bytes, with no more than 4096 per object. The caller
 supplies the modification time. The input is borrowed; temporary payload memory
-is proportional to one page plus transport buffers and bounded manifest state.
+is proportional to one page plus transport buffers, bounded manifest state and
+one configuration per selected group (each wire response is at most 4 KiB).
 Connections have their configured per-call timeouts; there is no whole-operation
 timeout. Placement currently reserves the complete object length on every target
 group, even when extents are spread across groups.

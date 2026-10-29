@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 //! Bounded object writes across metadata and data quorums.
-use super::{RemoteMetaClient, RemoteReplicaClient, ReplicaClientOptions};
+use super::{ChunkGroupConfig, RemoteMetaClient, RemoteReplicaClient, ReplicaClientOptions};
 use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest};
 use crate::ObjectError;
 
@@ -97,6 +97,17 @@ fn preflight(
     Ok((pages as u32, generation))
 }
 
+fn connect_group(
+    group: &ChunkGroupConfig,
+    options: &ReplicaClientOptions,
+) -> Result<RemoteReplicaClient, ObjectError> {
+    let identity = group
+        .identity
+        .as_ref()
+        .ok_or_else(|| ObjectError::Corruption("chunk group identity missing".into()))?;
+    RemoteReplicaClient::connect_verified_raft_catalog(&group.api_endpoints, identity, options)
+}
+
 impl RemoteMetaClient {
     /// Write fresh pages, verify them and conditionally publish one generation.
     /// Data errors never trigger automatic writes or publication. Pages are not
@@ -130,6 +141,8 @@ impl RemoteMetaClient {
             extents: Vec::new(),
             deleted: false,
         };
+        let mut groups = std::collections::BTreeMap::new();
+        let mut connection: Option<(String, RemoteReplicaClient)> = None;
         if pages > 0 {
             let count = options.target_groups.min(pages);
             let plan = self
@@ -147,11 +160,14 @@ impl RemoteMetaClient {
                     "placement returned invalid data groups".into(),
                 )));
             }
-            // Validate every selected group before allocating or sending any data.
-            // Keep socket count bounded rather than retaining all group connections.
-            for group in &plan.node_ids {
-                self.connect_chunk_group(group, &options.replica)
-                    .map_err(before)?;
+            // Verify every selected group before allocation or data writes. Visit
+            // the first write target last so its verified connection can be reused.
+            // Keep configurations only for this operation and retain one connection.
+            for group in plan.node_ids.iter().rev() {
+                let configured = self.read_chunk_group(group).map_err(before)?;
+                let client = connect_group(&configured, &options.replica).map_err(before)?;
+                groups.insert(group.clone(), configured);
+                connection = Some((group.clone(), client));
             }
             let allocation = self.allocate_object_pages(pages).map_err(before)?;
             for (index, bytes) in data.chunks(options.page_bytes).enumerate() {
@@ -174,13 +190,19 @@ impl RemoteMetaClient {
             error,
             staged: Some(Box::new(manifest.clone())),
         };
-        let mut connection: Option<(String, RemoteReplicaClient)> = None;
         for (extent, bytes) in manifest.extents.iter().zip(data.chunks(options.page_bytes)) {
             if connection.as_ref().map(|(group, _)| group) != Some(&extent.group) {
                 connection = Some((
                     extent.group.clone(),
-                    self.connect_chunk_group(&extent.group, &options.replica)
-                        .map_err(&staged_error)?,
+                    connect_group(
+                        groups.get(&extent.group).ok_or_else(|| {
+                            staged_error(ObjectError::Corruption(
+                                "object extent group was not verified".into(),
+                            ))
+                        })?,
+                        &options.replica,
+                    )
+                    .map_err(&staged_error)?,
                 ));
             }
             let page = crate::PageId {
