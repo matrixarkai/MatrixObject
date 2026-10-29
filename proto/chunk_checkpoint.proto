@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 syntax = "proto3";
 package matrixobject;
+// Standalone MOSJ images use index=1 and term=1, without Raft membership.
 // Version 2. Fields occur once in the shown order, except ordered pages.
 // Each page explicitly emits both byte fields, including zero-length fields.
 // Readers decode headers canonically and consume payload fields directly.

@@ -196,6 +196,8 @@ pub use meta_wire::{MetaRequestCode, META_CODE_BASE};
 
 #[cfg(feature = "replica-server")]
 mod replica_journal;
+#[cfg(feature = "replica-server")]
+mod replica_image;
 
 mod connections;
 mod socket_readiness;

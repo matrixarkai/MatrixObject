@@ -3,7 +3,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::message::ReplicaRequest;
 use super::wire::{RequestCode, MAX_PAYLOAD_BYTES};
@@ -14,6 +14,10 @@ const MAGIC: &[u8; 4] = b"MOR1";
 
 pub(super) struct ReplicaJournal {
     file: File,
+    // Stable across atomic journal replacement; retain the journal lock too.
+    _lock: Option<File>,
+    path: PathBuf,
+    bytes_since_checkpoint: u64,
 }
 
 fn invalid(message: impl ToString) -> io::Error {
@@ -31,12 +35,45 @@ impl ReplicaJournal {
         service: &mut MatrixReplicaService,
         max_pages: usize,
     ) -> io::Result<Self> {
-        let mut file = OpenOptions::new()
+        let path = match path.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let parent = path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                parent.canonicalize()?.join(
+                    path.file_name()
+                        .ok_or_else(|| invalid("journal filename missing"))?,
+                )
+            }
+            Err(error) => return Err(error),
+        };
+        let lock = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(path)?;
+            .open(sibling(&path, ".lock"))?;
+        fs2::FileExt::try_lock_exclusive(&lock)?;
+        let initialized = match lock.metadata()?.len() {
+            0 => false,
+            1 => {
+                let mut marker = [0];
+                (&lock).read_exact(&mut marker)?;
+                if marker != *b"1" {
+                    return Err(invalid("replica journal marker is invalid"));
+                }
+                true
+            }
+            _ => return Err(invalid("replica journal marker is invalid")),
+        };
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(!initialized)
+            .truncate(false)
+            .open(&path)?;
         fs2::FileExt::try_lock_exclusive(&file)?;
         // Sync the file and its directory before this node can acknowledge a write.
         file.sync_all()?;
@@ -48,7 +85,11 @@ impl ReplicaJournal {
         )?
         .sync_all()?;
         let file_len = file.metadata()?.len();
-        let mut offset = 0u64;
+        if initialized && file_len == 0 {
+            return Err(invalid("initialized replica journal is empty"));
+        }
+        let mut offset = restore_base(&mut file, service, max_pages)?;
+        let base_end = offset;
         while offset < file_len {
             let remaining = file_len - offset;
             if remaining < HEADER_LEN as u64 {
@@ -95,6 +136,9 @@ impl ReplicaJournal {
             }
             offset += HEADER_LEN as u64 + length as u64;
         }
+        if initialized && offset == 0 {
+            return Err(invalid("initialized replica journal lost its first record"));
+        }
         if offset != file_len {
             // Only a trailing incomplete record is discarded; complete damaged records
             // are errors. The shortened file is durable before new appends begin.
@@ -102,7 +146,16 @@ impl ReplicaJournal {
             file.sync_all()?;
         }
         file.seek(SeekFrom::End(0))?;
-        Ok(Self { file })
+        let journal = Self {
+            file,
+            _lock: Some(lock),
+            path,
+            bytes_since_checkpoint: offset - base_end,
+        };
+        if offset != 0 {
+            journal.mark_initialized()?;
+        }
+        Ok(journal)
     }
 
     #[cfg(test)]
@@ -135,7 +188,167 @@ impl ReplicaJournal {
 
     pub(super) fn append(&mut self, record: &[u8]) -> io::Result<()> {
         self.file.write_all(record)?;
-        self.file.sync_all()
+        self.file.sync_all()?;
+        self.mark_initialized()?;
+        self.bytes_since_checkpoint = self
+            .bytes_since_checkpoint
+            .checked_add(record.len() as u64)
+            .ok_or_else(|| invalid("journal length overflow"))?;
+        Ok(())
+    }
+
+    fn mark_initialized(&self) -> io::Result<()> {
+        if let Some(lock) = &self._lock {
+            if lock.metadata()?.len() == 0 {
+                let mut marker = lock;
+                marker.write_all(b"1")?;
+                lock.sync_all()?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn checkpoint_due(&self, interval: u64) -> bool {
+        interval != 0 && self.bytes_since_checkpoint >= interval
+    }
+
+    #[cfg(unix)]
+    pub(super) fn checkpoint(&mut self, service: &MatrixReplicaService) -> io::Result<()> {
+        let mut stream = super::replica_image::capture(service.export_snapshot(), (1, 1))
+            .map_err(invalid)?
+            .ok_or_else(|| invalid("replica checkpoint exceeds stream bounds"))?;
+        let length = stream.length;
+        let temporary = sibling(&self.path, ".pending");
+        let mut replacement = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temporary)?;
+        fs2::FileExt::try_lock_exclusive(&replacement)?;
+        replacement.write_all(&[0; BASE_HEADER_LEN])?;
+        let mut output = Digest::new(&mut replacement);
+        if io::copy(&mut stream, &mut output)? != length {
+            return Err(invalid("replica checkpoint stream length changed"));
+        }
+        let checksum = output.hash;
+        replacement.seek(SeekFrom::Start(0))?;
+        replacement.write_all(&base_header(length, checksum))?;
+        replacement.sync_all()?;
+        replacement.seek(SeekFrom::End(0))?;
+        // The stable lock spans both files. No writer can reopen the old inode
+        // between replacement and acquiring the new journal lock.
+        std::fs::rename(&temporary, &self.path)?;
+        self.file = replacement;
+        self.bytes_since_checkpoint = 0;
+        File::open(self.path.parent().unwrap())?.sync_all()?;
+        self.mark_initialized()?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn checkpoint(&mut self, _service: &MatrixReplicaService) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "journal checkpoints require Unix atomic file replacement",
+        ))
+    }
+}
+
+const BASE_HEADER_LEN: usize = 32;
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    name.into()
+}
+fn base_header(length: u64, checksum: u64) -> [u8; BASE_HEADER_LEN] {
+    let mut header = [0; BASE_HEADER_LEN];
+    header[..4].copy_from_slice(b"MOSJ");
+    header[4..8].copy_from_slice(&1u32.to_be_bytes());
+    header[8..16].copy_from_slice(&length.to_be_bytes());
+    header[16..24].copy_from_slice(&checksum.to_be_bytes());
+    let digest = fnv1a64(&header[..24]);
+    header[24..].copy_from_slice(&digest.to_be_bytes());
+    header
+}
+fn restore_base(
+    file: &mut File,
+    service: &mut MatrixReplicaService,
+    max_pages: usize,
+) -> io::Result<u64> {
+    let count = file.metadata()?.len().min(4) as usize;
+    let mut prefix = [0; 4];
+    file.read_exact(&mut prefix[..count])?;
+    file.seek(SeekFrom::Start(0))?;
+    if count == 0 || prefix[..count] != b"MOSJ"[..count] {
+        return Ok(0);
+    }
+    let mut header = [0; BASE_HEADER_LEN];
+    file.read_exact(&mut header)?;
+    if header[4..8] != 1u32.to_be_bytes()
+        || fnv1a64(&header[..24]) != u64::from_be_bytes(header[24..].try_into().unwrap())
+    {
+        return Err(invalid("replica checkpoint header is invalid"));
+    }
+    let length = u64::from_be_bytes(header[8..16].try_into().unwrap());
+    if !(2..=super::replica_image::MAX_FILE_CHECKPOINT_BYTES).contains(&length)
+        || length
+            > file
+                .metadata()?
+                .len()
+                .saturating_sub(BASE_HEADER_LEN as u64)
+    {
+        return Err(invalid("replica checkpoint is incomplete or oversized"));
+    }
+    let mut input = Digest::new(file);
+    let snapshot = super::replica_image::restore(
+        &mut input,
+        length,
+        (1, 1),
+        service.capacity_bytes(),
+        max_pages,
+    )
+    .map_err(invalid)?;
+    if input.hash != u64::from_be_bytes(header[16..24].try_into().unwrap()) {
+        return Err(invalid("replica checkpoint checksum mismatch"));
+    }
+    service.install_snapshot(snapshot).map_err(invalid)?;
+    Ok(BASE_HEADER_LEN as u64 + length)
+}
+
+struct Digest<T> {
+    inner: T,
+    hash: u64,
+}
+impl<T> Digest<T> {
+    fn new(inner: T) -> Self {
+        Self {
+            inner,
+            hash: 0xcbf29ce484222325,
+        }
+    }
+    fn update(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.hash ^= u64::from(*byte);
+            self.hash = self.hash.wrapping_mul(0x100000001b3);
+        }
+    }
+}
+impl<T: Read> Read for Digest<T> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let count = self.inner.read(bytes)?;
+        self.update(&bytes[..count]);
+        Ok(count)
+    }
+}
+impl<T: Write> Write for Digest<T> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let count = self.inner.write(bytes)?;
+        self.update(&bytes[..count]);
+        Ok(count)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -144,6 +357,9 @@ impl ReplicaJournal {
     pub(super) fn read_only_for_test(path: &Path) -> Self {
         Self {
             file: File::open(path).unwrap(),
+            _lock: None,
+            path: path.to_path_buf(),
+            bytes_since_checkpoint: 0,
         }
     }
 }
@@ -202,6 +418,7 @@ mod tests {
                 b"unfinished"
             );
         }
+        std::fs::remove_file(sibling(&path, ".lock")).unwrap();
         std::fs::remove_file(path).unwrap();
     }
 
@@ -219,6 +436,7 @@ mod tests {
             );
             assert_eq!(std::fs::read(&path).unwrap(), damaged);
         }
+        std::fs::remove_file(sibling(&path, ".lock")).unwrap();
         std::fs::remove_file(path).unwrap();
     }
 }
@@ -279,6 +497,171 @@ mod outcome_tests {
             assert!(ReplicaJournal::open(&path, &mut MatrixReplicaService::new()).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
         }
+        std::fs::remove_file(sibling(&path, ".lock")).unwrap();
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod checkpoint_tests {
+    use super::*;
+    use crate::{ChunkId, PageId};
+    struct Directory(PathBuf);
+    impl Directory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "journal-checkpoint-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn file(&self) -> PathBuf {
+            self.0.join("replica.wal")
+        }
+    }
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn service(capacity: u64) -> MatrixReplicaService {
+        let mut service = MatrixReplicaService::new();
+        service.set_capacity_bytes(capacity).unwrap();
+        service
+    }
+    fn page(index: u64) -> PageId {
+        PageId {
+            chunk_id: ChunkId::new(1, 2).unwrap(),
+            page_index: index,
+        }
+    }
+    fn append(journal: &mut ReplicaJournal, service: &mut MatrixReplicaService, value: u8) {
+        let before = service.read_chunk_state(&page(0)).ok();
+        let counters = crate::outcome::PageOutcome::counters(service);
+        service.write_chunk(page(0), 0, &[value; 1024]).unwrap();
+        let outcome = crate::outcome::PageOutcome::between(
+            &page(0),
+            before.as_ref(),
+            &service.read_chunk_state(&page(0)).unwrap(),
+        )
+        .unwrap()
+        .with_counters(counters, crate::outcome::PageOutcome::counters(service));
+        journal
+            .append(&ReplicaJournal::encode_outcome(&outcome).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn journal_checkpoint_reclaims_history_keeps_lock_and_recovers_following_outcomes() {
+        let directory = Directory::new();
+        let path = directory.file();
+        let mut state = service(4096);
+        let mut journal = ReplicaJournal::open_with_limits(&path, &mut state, 2).unwrap();
+        for value in 1..=20 {
+            append(&mut journal, &mut state, value);
+        }
+        let old_len = std::fs::metadata(&path).unwrap().len();
+        assert!(journal.checkpoint_due(1024));
+        let expected = state.export_snapshot();
+        journal.checkpoint(&state).unwrap();
+        let base_len = std::fs::metadata(&path).unwrap().len();
+        assert!(base_len < old_len / 2);
+        assert!(!journal.checkpoint_due(1));
+        assert!(ReplicaJournal::open_with_limits(&path, &mut service(4096), 2).is_err());
+        // A leftover candidate is never an authoritative image.
+        std::fs::write(sibling(&path, ".pending"), b"unfinished image").unwrap();
+        drop(journal);
+        let mut recovered = service(4096);
+        let mut journal = ReplicaJournal::open_with_limits(&path, &mut recovered, 2).unwrap();
+        assert_eq!(recovered.export_snapshot(), expected);
+        assert!(!journal.checkpoint_due(1));
+        append(&mut journal, &mut recovered, 99);
+        let expected = recovered.export_snapshot();
+        assert!(journal.checkpoint_due(1024));
+        drop(journal);
+        // An incomplete later outcome is discarded without discarding the base.
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"MOR2")
+            .unwrap();
+        let mut recovered = service(4096);
+        let mut journal = ReplicaJournal::open_with_limits(&path, &mut recovered, 2).unwrap();
+        assert_eq!(recovered.export_snapshot(), expected);
+        journal.checkpoint(&recovered).unwrap();
+        drop(journal);
+        let mut recovered = service(4096);
+        drop(ReplicaJournal::open_with_limits(&path, &mut recovered, 2).unwrap());
+        assert_eq!(recovered.export_snapshot(), expected);
+    }
+
+    #[test]
+    fn journal_checkpoint_refuses_missing_truncated_damaged_or_misconfigured_state() {
+        let directory = Directory::new();
+        let path = directory.file();
+        let mut state = service(4096);
+        let mut journal = ReplicaJournal::open_with_limits(&path, &mut state, 2).unwrap();
+        append(&mut journal, &mut state, 5);
+        journal.checkpoint(&state).unwrap();
+        drop(journal);
+        let bytes = std::fs::read(&path).unwrap();
+        for cut in [0, 1, 3, 4, 31, 32, bytes.len() - 1] {
+            std::fs::write(&path, &bytes[..cut]).unwrap();
+            assert!(
+                ReplicaJournal::open_with_limits(&path, &mut service(4096), 2).is_err(),
+                "cut {cut}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes[..cut]);
+        }
+        for index in (0..BASE_HEADER_LEN).chain([bytes.len() / 2, bytes.len() - 1]) {
+            let mut damaged = bytes.clone();
+            damaged[index] ^= 1;
+            std::fs::write(&path, &damaged).unwrap();
+            assert!(
+                ReplicaJournal::open_with_limits(&path, &mut service(4096), 2).is_err(),
+                "byte {index}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), damaged);
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(ReplicaJournal::open_with_limits(&path, &mut service(8192), 2).is_err());
+        assert!(ReplicaJournal::open_with_limits(&path, &mut service(4096), 0).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_file(&path).unwrap();
+        assert!(ReplicaJournal::open_with_limits(&path, &mut service(4096), 2).is_err());
+        assert!(
+            !path.exists(),
+            "missing initialized history must not be recreated"
+        );
+    }
+
+    #[test]
+    #[ignore = "272 MiB standalone durable checkpoint; run explicitly in release mode"]
+    fn standalone_journal_streams_large_pages_and_more_than_256_mib() {
+        let directory = Directory::new();
+        let path = directory.file();
+        let mut state = service(300 * 1024 * 1024);
+        let mut journal = ReplicaJournal::open_with_limits(&path, &mut state, 2).unwrap();
+        state
+            .write_chunk(page(0), 0, &vec![7; 256 * 1024 * 1024])
+            .unwrap();
+        state
+            .write_chunk(page(1), 0, &vec![9; 16 * 1024 * 1024])
+            .unwrap();
+        state.discard_chunk(&page(0), 100, 10).unwrap();
+        let expected = state.export_snapshot();
+        journal.checkpoint(&state).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > 256 * 1024 * 1024);
+        drop(journal);
+        drop(state);
+        let mut recovered = service(300 * 1024 * 1024);
+        drop(ReplicaJournal::open_with_limits(&path, &mut recovered, 2).unwrap());
+        assert_eq!(recovered.export_snapshot(), expected);
     }
 }

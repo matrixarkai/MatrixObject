@@ -65,6 +65,7 @@ pub use consensus::ChunkRaftOptions;
 struct NodeReplica {
     service: MatrixReplicaService,
     journal: Option<ReplicaJournal>,
+    journal_checkpoint_after_bytes: u64,
     max_pages: usize,
     used_bytes: u64,
     failed: bool,
@@ -145,6 +146,29 @@ impl ReplicaNodeServer {
         Self::bind_storage(addr, options, Some(path))
     }
 
+    /// Compact a standalone journal after this many new outcome bytes. Unix only.
+    /// A checkpoint keeps complete page state; it does not repair remote replicas.
+    pub fn enable_journal_checkpoints(&mut self, interval: u64) -> std::io::Result<()> {
+        if !cfg!(unix) || !(1024..=512 * 1024 * 1024).contains(&interval) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "journal checkpoints require Unix and an interval of 1024..536870912 bytes",
+            ));
+        }
+        let mut replica = self
+            .replica
+            .lock()
+            .map_err(|_| std::io::Error::other("replica lock poisoned"))?;
+        if replica.journal.is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "journal checkpoints require standalone journal storage",
+            ));
+        }
+        replica.journal_checkpoint_after_bytes = interval;
+        Ok(())
+    }
+
     fn bind_storage(
         addr: &str,
         options: ReplicaNodeOptions,
@@ -174,6 +198,7 @@ impl ReplicaNodeServer {
                 used_bytes: service.physical_bytes(),
                 service,
                 journal,
+                journal_checkpoint_after_bytes: 0,
                 max_pages: options.max_pages,
                 failed: false,
             })),
@@ -490,6 +515,24 @@ fn apply(
                 .append(&record)
                 .map_err(|err| ObjectError::Corruption(err.to_string()))
         })();
+        let persist = persist.and_then(|()| {
+            if guard
+                .journal
+                .as_ref()
+                .unwrap()
+                .checkpoint_due(guard.journal_checkpoint_after_bytes)
+            {
+                let NodeReplica {
+                    service, journal, ..
+                } = &mut *guard;
+                journal
+                    .as_mut()
+                    .unwrap()
+                    .checkpoint(service)
+                    .map_err(|error| ObjectError::Corruption(error.to_string()))?;
+            }
+            Ok(())
+        });
         if let Err(err) = persist {
             guard.failed = true;
             return Err(ObjectError::Corruption(format!(
@@ -663,6 +706,7 @@ mod journal_failure_tests {
             used_bytes: 0,
             service: MatrixReplicaService::new(),
             journal: Some(ReplicaJournal::read_only_for_test(&path)),
+            journal_checkpoint_after_bytes: 0,
             max_pages: 65_536,
             failed: false,
         }));

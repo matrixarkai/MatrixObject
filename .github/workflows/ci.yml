@@ -267,6 +267,30 @@ jobs:
           cargo test --locked --all-features --test network_chunk_consensus conditional_discards_replicate_and_recover_without_accepting_stale_sequences -- --exact --nocapture | tee /tmp/conditional-discard.log
           grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
 
+      - name: journal checkpoint reclaims history keeps lock and recovers following outcomes
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::replica_journal::checkpoint_tests::journal_checkpoint_reclaims_history_keeps_lock_and_recovers_following_outcomes -- --exact --nocapture | tee /tmp/journal-checkpoint.log
+          grep -q 'test result: ok. 1 passed' /tmp/journal-checkpoint.log
+
+      - name: journal checkpoint refuses missing truncated damaged or misconfigured state
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::replica_journal::checkpoint_tests::journal_checkpoint_refuses_missing_truncated_damaged_or_misconfigured_state -- --exact --nocapture | tee /tmp/journal-checkpoint.log
+          grep -q 'test result: ok. 1 passed' /tmp/journal-checkpoint.log
+
+      - name: star journal checkpoints recover quorum pages and later mutations
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery star_journal_checkpoints_recover_quorum_pages_and_later_mutations -- --exact --nocapture | tee /tmp/journal-process.log
+          grep -q 'test result: ok. 1 passed' /tmp/journal-process.log
+
+      - name: failed journal checkpoint fences serving and recovers the durable outcome
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery failed_journal_checkpoint_fences_serving_and_recovers_the_durable_outcome -- --exact --nocapture | tee /tmp/journal-process.log
+          grep -q 'test result: ok. 1 passed' /tmp/journal-process.log
+
       - name: health reports validate canonical protobuf and decided time
         run: |
           set -o pipefail

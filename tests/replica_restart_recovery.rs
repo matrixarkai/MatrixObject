@@ -366,3 +366,183 @@ fn star_set_reconnects_recovered_members_but_excludes_missed_writes() {
     assert_eq!(set.discard_chunk(&page(10), 0, 1).unwrap(), 2);
     assert_eq!(stale.read_chunk(&page(10), 0, 5).unwrap().data, b"again");
 }
+
+
+#[test]
+fn star_journal_checkpoints_recover_quorum_pages_and_later_mutations() {
+    use matrixobjectstore_rs::cluster::RemoteReplicaSet;
+    let directories: Vec<_> = (0..3).map(|_| JournalDir::new()).collect();
+    let start_compacting = |path: &Path| {
+        processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
+                ("MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES", "4096"),
+            ],
+        )
+    };
+    let nodes: Vec<_> = directories
+        .iter()
+        .map(|d| start_compacting(&d.file()))
+        .collect();
+    let endpoints: Vec<_> = nodes.iter().map(|n| n.endpoint.clone()).collect();
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    for value in 1..=20 {
+        assert_eq!(set.write_chunk(&page(1), 0, &[value; 1024]).unwrap(), 3);
+    }
+    assert_eq!(set.discard_chunk(&page(1), 100, 10).unwrap(), 3);
+    let expected = set.head_chunk(&page(1)).unwrap();
+    for directory in &directories {
+        let bytes = std::fs::read(directory.file()).unwrap();
+        assert!(bytes.starts_with(b"MOSJ"));
+        assert!(
+            bytes.len() < 10 * 1024,
+            "journal did not reclaim overwrite history"
+        );
+    }
+    drop(set);
+    drop(nodes);
+    let nodes: Vec<_> = directories.iter().map(|d| start(&d.file())).collect();
+    let endpoints: Vec<_> = nodes.iter().map(|n| n.endpoint.clone()).collect();
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    assert_eq!(set.head_chunk(&page(1)).unwrap(), expected);
+    assert_eq!(
+        set.read_chunk(&page(1), 0, 100).unwrap().data,
+        vec![20; 100]
+    );
+    assert!(set.read_chunk(&page(1), 100, 10).is_err());
+    assert_eq!(set.write_chunk(&page(1), 100, &[77; 10]).unwrap(), 3);
+    let expected = set.head_chunk(&page(1)).unwrap();
+    drop(set);
+    drop(nodes);
+    for directory in &directories {
+        let node = start(&directory.file());
+        let mut connection = client(&node);
+        assert_eq!(connection.head_chunk(&page(1)).unwrap(), expected);
+        assert_eq!(
+            connection.read_chunk(&page(1), 100, 10).unwrap().data,
+            vec![77; 10]
+        );
+    }
+}
+
+#[test]
+fn failed_journal_checkpoint_fences_serving_and_recovers_the_durable_outcome() {
+    let directory = JournalDir::new();
+    let path = directory.file();
+    let mut pending = path.as_os_str().to_owned();
+    pending.push(".pending");
+    let pending = PathBuf::from(pending);
+    std::fs::create_dir(&pending).unwrap();
+    let node = processes::start(
+        env!("CARGO_BIN_EXE_chunkserver"),
+        &[
+            ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+            ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
+            ("MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES", "1024"),
+        ],
+    );
+    let mut connection = client(&node);
+    assert!(connection.write_chunk(page(1), 0, &[8; 1024]).is_err());
+    assert!(connection.ping().is_err());
+    drop(connection);
+    drop(node);
+    std::fs::remove_dir(pending).unwrap();
+    let node = start(&path);
+    let mut connection = client(&node);
+    let result = connection.read_chunk(&page(1), 0, 1024).unwrap();
+    assert_eq!(result.data, vec![8; 1024]);
+    assert_eq!(result.write_sequence, 1);
+}
+
+#[test]
+#[ignore = "64 MiB process interruption during checkpoint streaming; run explicitly in release mode"]
+fn interrupted_journal_checkpoint_preserves_synced_outcomes_and_reclaims_on_retry() {
+    use std::time::{Duration, Instant};
+    let directory = JournalDir::new();
+    let path = directory.file();
+    let start_compacting = || {
+        processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
+                ("MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES", "134217728"),
+            ],
+        )
+    };
+    let node = start_compacting();
+    let mut connection = client(&node);
+    let first = vec![1; 1024 * 1024];
+    let second = vec![2; 1024 * 1024];
+    for index in 0..64 {
+        connection.write_chunk(page(index), 0, &first).unwrap();
+    }
+    for index in 0..63 {
+        connection.write_chunk(page(index), 0, &second).unwrap();
+    }
+    let writer = std::thread::spawn(move || connection.write_chunk(page(63), 0, &second));
+    let mut pending = path.as_os_str().to_owned();
+    pending.push(".pending");
+    let pending = PathBuf::from(pending);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if std::fs::metadata(&pending).is_ok_and(|m| m.len() > 32 && m.len() < 64 * 1024 * 1024) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no partial checkpoint observed");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(std::process::Command::new("kill")
+        .args(["-STOP", &node.pid.to_string()])
+        .status()
+        .unwrap()
+        .success());
+    let history_bytes = std::fs::metadata(&path).unwrap().len();
+    let incomplete = std::fs::metadata(&pending).unwrap().len();
+    assert!(
+        incomplete > 32 && incomplete < 64 * 1024 * 1024,
+        "checkpoint finished before interruption"
+    );
+    drop(node);
+    assert!(
+        writer.join().unwrap().is_err(),
+        "interrupted operation cannot acknowledge"
+    );
+    // Seeing a candidate proves its triggering outcome was already synced.
+    let node = start(&path);
+    let mut connection = client(&node);
+    for index in 0..64 {
+        let value = connection.read_chunk(&page(index), 0, 1024 * 1024).unwrap();
+        assert_eq!(value.write_sequence, 2);
+        assert_eq!(value.data, vec![2; 1024 * 1024]);
+    }
+    assert_eq!(std::fs::metadata(&pending).unwrap().len(), incomplete);
+    drop(connection);
+    drop(node);
+    let node = start_compacting();
+    let mut connection = client(&node);
+    connection.write_chunk(page(0), 0, &[3]).unwrap();
+    assert!(!pending.exists());
+    let checkpoint_bytes = std::fs::metadata(&path).unwrap().len();
+    // The complete image includes redundancy bytes and service metadata.
+    assert!(checkpoint_bytes < history_bytes,
+        "checkpoint {checkpoint_bytes} did not reclaim journal {history_bytes}");
+    drop(connection);
+    drop(node);
+    let node = start(&path);
+    let mut connection = client(&node);
+    assert_eq!(connection.read_chunk(&page(0), 0, 1).unwrap().data, vec![3]);
+    assert_eq!(connection.head_chunk(&page(0)).unwrap().write_sequence, 3);
+    assert_eq!(
+        connection
+            .read_chunk(&page(63), 0, 1024 * 1024)
+            .unwrap()
+            .data,
+        vec![2; 1024 * 1024]
+    );
+    println!("killed checkpoint at {incomplete} bytes; recovered 64 pages; journal {history_bytes} -> checkpoint {checkpoint_bytes} bytes");
+}

@@ -45,6 +45,8 @@
 //!
 //! # RESTART RECOVERY
 //!
+//! On Unix, `MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES` enables standalone journal
+//! compaction after 1024..536870912 new outcome bytes; absent means disabled.
 //! Set `MATRIXOBJECT_REPLICA_JOURNAL` to a file in an existing directory to retain
 //! writes and discards across restarts. Each successful mutation is synced before
 //! acknowledgment. Without this setting the replica remains in memory only.
@@ -157,6 +159,14 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    if std::env::var_os("MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES").is_some() {
+        let interval = env_usize("MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES", 0) as u64;
+        if let Err(error) = server.enable_journal_checkpoints(interval) {
+            eprintln!("invalid journal checkpoint configuration: {error}");
+            std::process::exit(2);
+        }
+    }
 
     if let Some(raw) = raft_peers {
         #[cfg(not(feature = "chunk-consensus"))]
