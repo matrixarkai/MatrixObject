@@ -177,3 +177,52 @@ with:
 ```sh
 cargo test --release --locked --all-features --test replica_state_transfer page_state_transfer_reads_a_full_256_mib_page -- --exact --ignored --nocapture
 ```
+
+
+## Staged standalone page installation
+
+`RemoteReplicaClient::install_chunk_state` installs one already validated source
+page on a standalone replica. The caller supplies a unique token and the expected
+destination head checksum, or `None` to require absence. The binary protobuf
+protocol is code 11 in `proto/chunk_state_install.proto`: begin, ordered append,
+commit and abort. Low-level commands are available through `stage_chunk_state`.
+No command is automatically replayed after an uncertain reply. Raft nodes refuse
+this operation; their state changes must pass through consensus.
+
+Each node permits one staging buffer through 256 MiB, with append data bounded to
+1 MiB and source discard metadata bounded to 4,096 ranges. This buffer is separate
+from committed byte capacity. Begin checks byte/page capacity and the destination
+checksum. Commit checks capacity and the destination again, validates complete
+source bytes and metadata, and refuses sources older than the destination. Equal
+sequence replacement is permitted only with the exact expected destination
+checksum. Partial state remains invisible. Wrong tokens and out-of-order appends
+are refused; commit consumes the stage even when validation fails. A stage idle
+for 60 seconds is discarded when the next request arrives; an entirely idle node
+can retain its buffer until a request or process exit. Tokens are identifiers,
+not authentication, and must never be reused for another operation.
+
+In-memory nodes publish the validated candidate atomically under their service
+lock. Unix journal nodes stream and sync a complete replacement checkpoint,
+rename it and sync the directory before publishing in memory and acknowledging.
+This works for pages larger than the normal outcome-record bound. It writes a
+complete node image and can delay other requests and health reports. Budget disk
+space for the existing journal plus the replacement image, and memory for the
+staged page, candidate redundancy and existing state. Durable installation on
+non-Unix nodes is refused.
+
+Upgrade every process that may open the journal before using installation: this
+operation writes the MOSJ checkpoint format even when periodic checkpointing is
+disabled. Later normal writes still persist binary outcomes. A checkpoint failure
+fences serving until restart. An error can mean the installation became durable
+without its acknowledgement; reconnect and compare the complete head and payload
+before recovery action. A process restart loses incomplete staging but preserves
+acknowledged installations and subsequent writes.
+
+This transport does not select a source quorum or schedule repairs. The caller
+must establish source authority before beginning an install. It does not provide
+cross-client transactions, authenticated peers or automatic missed-write repair.
+Run the maximum-page recovery check separately:
+
+```sh
+cargo test --release --locked --all-features --test replica_restart_recovery staged_install_recovers_a_full_256_mib_page -- --exact --ignored --nocapture
+```

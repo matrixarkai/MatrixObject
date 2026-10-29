@@ -87,6 +87,7 @@ impl ChunkGroupIdentity {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {
+    StateInstall(super::state_install::StateInstall),
     ReadChunkStateRange {
         page_id: PageId,
         expected_state_checksum: String,
@@ -134,6 +135,7 @@ pub enum ReplicaRequest {
 impl ReplicaRequest {
     pub fn code(&self) -> RequestCode {
         match self {
+            ReplicaRequest::StateInstall(_) => RequestCode::StateInstall,
             ReplicaRequest::ReadChunkStateRange { .. } => RequestCode::ReadChunkStateRange,
             ReplicaRequest::DiscardChunkIfSequence { .. } => RequestCode::DiscardChunkIfSequence,
             ReplicaRequest::WriteChunk { .. } => RequestCode::WriteChunk,
@@ -151,6 +153,7 @@ impl ReplicaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            ReplicaRequest::StateInstall(value) => return value.encode_to_vec(),
             ReplicaRequest::ReadChunkStateRange {
                 page_id,
                 expected_state_checksum,
@@ -245,6 +248,10 @@ impl ReplicaRequest {
     /// the wrong place -- a page address read one field short still parses into a valid
     /// `PageId`, naming a page nobody asked about.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::StateInstall {
+            return super::state_install::StateInstall::decode_payload(payload)
+                .map(Self::StateInstall);
+        }
         if code == RequestCode::ReadChunkStateRange {
             if payload.len() > 512 {
                 return Err(ObjectError::Corruption(
@@ -317,6 +324,7 @@ impl ReplicaRequest {
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
+            RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::WriteChunkIfSequence | RequestCode::DiscardChunkIfSequence => {
                 unreachable!()
@@ -461,6 +469,14 @@ impl ReplicaReply {
     /// whose shape is read from the reply itself can be read as the wrong shape. The caller
     /// knows what it asked.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::StateInstall {
+            if !payload.is_empty() {
+                return Err(ObjectError::Corruption(
+                    "install reply must be empty".into(),
+                ));
+            }
+            return Ok(Self::Applied);
+        }
         if code == RequestCode::ReadChunkStateRange {
             return super::state_transfer::ChunkStateRange::decode_payload(payload)
                 .map(Self::StateRange);
@@ -483,6 +499,7 @@ impl ReplicaReply {
         }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
+            RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::GroupIdentity => unreachable!(),
             RequestCode::WriteChunk

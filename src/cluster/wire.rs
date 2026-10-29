@@ -82,6 +82,7 @@ pub enum RequestCode {
     DiscardChunkIfSequence = 9,
     /// Read a bounded raw page range only at the supplied state checksum.
     ReadChunkStateRange = 10,
+    StateInstall = 11,
 }
 
 impl RequestCode {
@@ -102,6 +103,7 @@ impl RequestCode {
             8 => Some(RequestCode::WriteChunkIfSequence),
             9 => Some(RequestCode::DiscardChunkIfSequence),
             10 => Some(RequestCode::ReadChunkStateRange),
+            11 => Some(RequestCode::StateInstall),
             _ => None,
         }
     }

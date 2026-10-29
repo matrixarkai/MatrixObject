@@ -38,7 +38,10 @@
 //! `page_inventory` also returns bounded batches of page identities and write sequences,
 //! without copying payloads. Its exclusive cursor resumes in key order. A traversal is live,
 //! not a snapshot; writers must be fenced before it can certify replica readmission.
-//! Everything else a replica can do is in-process only, and `MatrixChunkService` -- the
+//! Complete page-state reads use bounded checksum-fenced frames. Standalone nodes also
+//! accept bounded staged page installation with destination checks and durable checkpoints.
+//! Source-quorum selection and automatic repair are not part of that installation API.
+//! Other replica operations remain in-process only, and `MatrixChunkService` -- the
 //! service that holds `replicas` and runs the historic fan-out -- is UNCHANGED by this
 //! module. It does not route through [`crate::cluster::placement::ReplicaFanout`].
 //!
@@ -135,6 +138,7 @@
 // those five items and would otherwise need a second copy of them.
 mod conditional_requests;
 pub mod state_transfer;
+pub mod state_install;
 #[cfg(feature = "meta-server")]
 mod health_report;
 pub mod message;

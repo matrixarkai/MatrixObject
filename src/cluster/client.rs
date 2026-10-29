@@ -457,6 +457,66 @@ impl RemoteReplicaClient {
         Ok(state)
     }
 
+    /// Execute one staged installation command without replaying uncertain writes.
+    pub fn stage_chunk_state(
+        &mut self,
+        request: super::state_install::StateInstall,
+    ) -> Result<(), ObjectError> {
+        request.validate()?;
+        match self.call(ReplicaRequest::StateInstall(request))? {
+            ReplicaReply::Applied => Ok(()),
+            other => Err(unexpected_reply(
+                "a state installation acknowledgement",
+                &other,
+            )),
+        }
+    }
+
+    /// Install validated page state on a standalone node using a caller-unique token.
+    /// Empty destination means absence. An error may leave a stage or a committed
+    /// installation; inspect the destination before deciding how to recover.
+    /// Never automatically retries commands or falls back to unconditional writes.
+    pub fn install_chunk_state(
+        &mut self,
+        page: &PageId,
+        state: &crate::PageState,
+        expected: Option<&str>,
+        token: &str,
+    ) -> Result<(), ObjectError> {
+        crate::validate_chunk_state(state)?;
+        let checksum = state.checksum();
+        let head = ReplicaHead {
+            logical_length: state.logical_length,
+            write_sequence: state.write_sequence,
+            checksum: checksum.clone(),
+            state_checksum: crate::chunk_state_handoff_checksum(page, state, &checksum),
+            discarded_ranges: state.discarded_ranges.clone(),
+        };
+        let size = self
+            .max_payload_bytes
+            .saturating_sub(512)
+            .min(super::state_transfer::MAX_STATE_RANGE_BYTES);
+        if size == 0 {
+            return Err(ObjectError::InvalidArgument(
+                "frame limit cannot hold install data".into(),
+            ));
+        }
+        self.stage_chunk_state(super::state_install::StateInstall::begin(
+            token.into(),
+            page,
+            expected,
+            &head,
+            state.data.len() as u64,
+        ))?;
+        for (index, data) in state.data.chunks(size).enumerate() {
+            let mut request = super::state_install::StateInstall::command(2, token.into());
+            request.offset = (index * size) as u64;
+            request.data = data.to_vec();
+            self.stage_chunk_state(request)?;
+        }
+        self.stage_chunk_state(super::state_install::StateInstall::command(3, token.into()))
+    }
+
     pub fn head_chunk(&mut self, page_id: &PageId) -> Result<ReplicaHead, ObjectError> {
         match self.call(ReplicaRequest::HeadChunk {
             page_id: page_id.clone(),

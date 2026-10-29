@@ -608,6 +608,9 @@ fn chunk_catalog_finds_the_leader_and_moves_reads_after_process_loss() {
         group.nodes[first].as_ref().unwrap().endpoint
     );
     assert_eq!(client.head_chunk(&page(0)).unwrap().write_sequence, 1);
+    let state = client.read_chunk_state(&page(0)).unwrap();
+    assert!(client.install_chunk_state(&page(0), &state, None, "raft-refusal").is_err());
+
     group.kill(first);
     let next = group.leader();
     assert_ne!(next, first);
