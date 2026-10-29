@@ -325,3 +325,27 @@ Process tests restart journal-backed members at the same address both with and
 without missed quorum writes. Socket tests drop a write reply and require the next
 connection to carry only the caller's later ping. Standalone clients outside a
 replica set retain their existing closed-connection behavior.
+
+## Release-build large checkpoint recovery
+
+On October 29, 2026, commit
+`84006f35c7de6c7fc4753115badc0415b290a70d` passed
+`chunk_streamed_checkpoints_recover_large_process_state` in 39.06 seconds
+using a release build on a 16-logical-CPU WSL2 host. Three chunk processes use
+300 MiB capacity each, a 300-page limit and a 128 MiB checkpoint interval.
+One follower remains offline while 272 one-MiB pages are created. The test
+requires a checkpoint larger than 256 MiB, restarts the lagging follower,
+then stops the other follower so a new write requires the recovered member.
+All processes then restart, and every original page is checked byte for byte
+at sequence one along with the later write.
+
+The later conditional creation encountered a leadership-change response that
+left its outcome uncertain. The test resolved it through conditional creation
+and readback, and the final sequence remained one. Reproduce with:
+
+```sh
+cargo test --release --locked --all-features --test network_chunk_consensus chunk_streamed_checkpoints_recover_large_process_state -- --exact --ignored --nocapture --test-threads=1
+```
+
+This verifies Raft checkpoint recovery on one host. It does not implement
+repair for star replicas, establish multihost throughput, or measure peak memory.

@@ -418,3 +418,35 @@ leader loss and total restart in 163.60 seconds. Its initial 1,024 writes took
 96.07 seconds, post-failover 256 writes took 20.12 seconds, and verified reads took
 12.18 and 25.45 seconds. These observations follow the nonblocking peer-receive
 change but are not a controlled performance comparison.
+
+## Release-build recovery measurement
+
+On October 29, 2026, commit
+`84006f35c7de6c7fc4753115badc0415b290a70d` passed the complete-object
+51-process scenario in release mode on a 16-logical-CPU WSL2 host with
+24,032 MiB of reported memory and Rust 1.98.0. The test runs three metadata
+voters and sixteen three-voter data groups, with eight concurrent clients and
+sixteen metadata request workers. Objects contain 1 KiB across four 256-byte
+pages. It stops the metadata leader and each data-group leader, verifies the
+initial objects, writes more objects, then restarts all servers and verifies
+all 1,280 objects.
+
+| Phase | Objects | Elapsed | Writes/second | Write p50 / p95 / p99 |
+|---|---:|---:|---:|---|
+| Initial writes | 1,024 | 76.164 s | 13.4 | 595.931 / 922.363 / 1,004.253 ms |
+| Reads after leader failures | 1,024 | 11.325 s | - | - |
+| Writes after leader failures | 256 | 17.851 s | 14.3 | 530.055 / 855.554 / 1,003.744 ms |
+| Reads after full restart | 1,280 | 17.755 s | - | - |
+
+The complete test passed in 134.10 seconds. Reproduce with:
+
+```sh
+cargo test --release --locked --all-features --test network_chunk_consensus coupled_groups::sixteen_groups_preserve_object_writes_and_reads_through_recovery -- --exact --ignored --nocapture --test-threads=1
+```
+
+These are observations from one local run, with all servers sharing one host,
+network stack and storage device. They establish recovery for this workload;
+they do not establish independent failure domains, a sustained throughput target,
+peak resource use, or production latency. No controlled comparison with earlier
+runs was performed. The measured write throughput remains modest and requires
+profiling before making performance commitments.
