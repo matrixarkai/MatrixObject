@@ -135,6 +135,36 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::deferred_metadata_sealing_preserves_captured_roster_and_placements -- --exact --nocapture | tee /tmp/deferred-sealing.log
           grep -q 'test result: ok. 1 passed' /tmp/deferred-sealing.log
 
+      - name: binary manifest roundtrip checks layout and corruption
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib object_manifest::tests::binary_manifest_roundtrip_checks_layout_and_corruption -- --exact --nocapture | tee /tmp/manifest-codec.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-codec.log
+
+      - name: manifest publication fences stale writers and deleted generations
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib object_manifest::tests::manifest_publication_fences_stale_writers_and_deleted_generations -- --exact --nocapture | tee /tmp/manifest-codec.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-codec.log
+
+      - name: manifest catalog snapshot and outcome suffix restore identical state
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib object_manifest::tests::manifest_catalog_snapshot_and_outcome_suffix_restore_identical_state -- --exact --nocapture | tee /tmp/manifest-codec.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-codec.log
+
+      - name: manifest codec rejects unknown fields and enforces version and bounds
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib object_manifest::tests::manifest_codec_rejects_unknown_fields_and_enforces_version_and_bounds -- --exact --nocapture | tee /tmp/manifest-codec.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-codec.log
+
+      - name: manifest publication keeps the catalog checkpointable at capacity
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib object_manifest::tests::manifest_publication_keeps_the_catalog_checkpointable_at_capacity -- --exact --nocapture | tee /tmp/manifest-capacity.log
+          grep -q 'test result: ok. 1 passed' /tmp/manifest-capacity.log
+
       - name: checkpoint envelope binds kind position and canonical bytes
         run: |
           set -o pipefail
