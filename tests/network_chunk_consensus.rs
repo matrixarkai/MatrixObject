@@ -761,11 +761,33 @@ fn metadata_catalog_routes_chunk_group_through_leader_loss() {
         chunk.read_chunk(&page(0), 0, 12).unwrap().data,
         b"catalog-data"
     );
-    chunk.write_chunk(page(0), 12, b"!").unwrap();
-    assert_eq!(
-        chunk.read_chunk(&page(0), 0, 13).unwrap().data,
-        b"catalog-data!"
-    );
+    // A deadline can lose the reply after admission. Keep the same condition
+    // across attempts, then prove the full result and sequence through readback.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let outcome = chunk.write_chunk_if_sequence(page(0), 12, b"!", 1);
+        if let Ok(state) = chunk.read_chunk_state(&page(0)) {
+            if state.write_sequence == 2 {
+                assert_eq!(state.data.as_slice(), b"catalog-data!");
+                assert!(state.discarded_ranges.is_empty());
+                break;
+            }
+            assert_eq!(state.write_sequence, 1);
+            assert_eq!(state.data.as_slice(), b"catalog-data");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "conditional catalog update did not settle: {outcome:?}"
+        );
+        chunk = client
+            .connect_chunk_group("group-a", &ReplicaClientOptions::default())
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(chunk.write_chunk_if_sequence(page(0), 12, b"!", 1).is_err());
+    let state = chunk.read_chunk_state(&page(0)).unwrap();
+    assert_eq!(state.write_sequence, 2);
+    assert_eq!(state.data.as_slice(), b"catalog-data!");
     meta.child.kill().unwrap();
     assert!(processes::reap_within(&mut meta.child, Duration::from_secs(3)).is_some());
 }
