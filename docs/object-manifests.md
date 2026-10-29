@@ -176,3 +176,47 @@ read; a failed single-endpoint connection needs replacement by the caller.
 
 The helper does not enforce page immutability against raw writers, reclaim old or
 abandoned pages, add authentication, or enable the HTTP server's distributed path.
+
+## Complete-object load and recovery check
+
+The `object_writer_load_preserves_manifests_and_pages_through_recovery` integration
+test runs the complete writer with six clients, three data groups and twelve
+processes. It verifies 120 objects across leader loss and full restart and runs in
+CI. It shares the process harness with the older placement/data workload, which
+continues to run independently.
+
+The larger check is explicit because it starts 51 processes (sixteen three-voter
+data groups and three metadata voters):
+
+```sh
+cargo test --locked --all-features --test network_chunk_consensus \
+  coupled_groups::sixteen_groups_preserve_object_writes_and_reads_through_recovery \
+  -- --exact --ignored --nocapture
+```
+
+This profile uses eight clients, 1 KiB objects split into four 256-byte pages,
+16 KiB checkpoint intervals, and sixteen metadata request executors per voter.
+The fixture sets `MATRIXOBJECT_METASERVER_THREADS=16` explicitly and checks the
+startup report. It writes 1024 objects, loses every data-group leader and the
+metadata leader, verifies all objects, writes another 256, restarts all processes,
+and verifies all 1280 objects. Verification checks payloads, manifest generation,
+page sequences and matching placement records, plus group usage and committed
+capacity. Every data group must carry objects. Each write/read phase keeps its
+180-second bound; increasing concurrency does not loosen that deadline.
+
+An October 29, 2026 run on one 16-logical-CPU WSL host with debug binaries took
+212.62 seconds overall. Initial writes took 121.81 seconds (8.4 objects/second,
+median 0.942 seconds, p95 1.426 seconds); the post-failover writes took 28.29 seconds
+(9.0 objects/second). Verified reads took 21.49 seconds after leader loss and
+32.46 seconds after the full restart. These are local functional-load measurements,
+not production throughput or multi-host scaling results.
+
+The same object workload with the default two metadata executors hit the unchanged
+180-second write-phase bound after 777 completed writes, before recovery checks.
+Each executor waits for its Raft result, so two executors limit how many requests
+can reach the existing batcher while 48 chunk processes report health. Sixteen
+executors passed this workload. Size `MATRIXOBJECT_METASERVER_THREADS` for the
+request and heartbeat load, then measure on the deployment hardware; the product
+default remains two. Repeated metadata lookups and per-page readback also cost
+round trips. This check does not certify large catalog cardinality, large-object
+bandwidth, sustained soak behavior, authentication, or multi-host fault isolation.

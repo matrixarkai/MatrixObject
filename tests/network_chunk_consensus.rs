@@ -785,12 +785,17 @@ mod coupled_groups {
         reservations: Vec<Option<(TcpListener, TcpListener)>>,
         multiple_groups: bool,
         checkpoint_bytes: u64,
+        request_threads: usize,
     }
     impl MetadataGroup {
         fn new(chunk: &Group) -> Self {
             Self::for_groups(std::slice::from_ref(chunk))
         }
         fn for_groups(chunks: &[Group]) -> Self {
+            Self::for_groups_with_threads(chunks, 2)
+        }
+        fn for_groups_with_threads(chunks: &[Group], request_threads: usize) -> Self {
+            assert!((1..=32).contains(&request_threads));
             let root = chunks[0].root.join("metadata");
             std::fs::create_dir(&root).unwrap();
             let sockets: Vec<_> = (0..3)
@@ -845,6 +850,7 @@ mod coupled_groups {
                 reservations: sockets.into_iter().map(Some).collect(),
                 multiple_groups: chunks.len() > 1,
                 checkpoint_bytes: chunks[0].checkpoint_bytes,
+                request_threads,
             };
             for i in 0..3 {
                 std::fs::create_dir(group.root.join(i.to_string())).unwrap();
@@ -857,11 +863,13 @@ mod coupled_groups {
             let state = self.root.join(i.to_string());
             let catalog = self.root.join("catalog.bin");
             let checkpoint_bytes = self.checkpoint_bytes.to_string();
+            let request_threads = self.request_threads.to_string();
             drop(self.reservations[i].take());
             let node = processes::start(
                 env!("CARGO_BIN_EXE_metaserver"),
                 &[
                     ("MATRIXOBJECT_METASERVER_ADDR", &self.api[i]),
+                    ("MATRIXOBJECT_METASERVER_THREADS", &request_threads),
                     ("MATRIXOBJECT_METASERVER_RAFT_PEERS", &self.peers),
                     ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", &id),
                     (
@@ -892,6 +900,9 @@ mod coupled_groups {
             );
             assert_eq!(node.endpoint, self.api[i]);
             assert!(node.startup_line.contains("storage=raft"));
+            assert!(node
+                .startup_line
+                .contains(&format!("threads={request_threads} ")));
             self.nodes[i] = Some(node);
         }
         fn ready(&self) -> RemoteMetaClient {
@@ -1899,6 +1910,7 @@ mod coupled_groups {
         start: u64,
         end: u64,
         workers: usize,
+        objects: bool,
     ) -> Vec<(u64, CommittedPlacement)> {
         let begin = Instant::now();
         let results = std::thread::scope(|scope| {
@@ -1917,6 +1929,19 @@ mod coupled_groups {
                                 "bounded workload exceeded deadline after {} writes in worker {worker}; plan/connect/write/commit_us={stages:?}", saved.len()
                             );
                             let started = Instant::now();
+                            if objects {
+                                let options = matrixobjectstore_rs::cluster::ObjectWriteOptions {
+                                    page_bytes: 256, update_time_ms: n + 1,
+                                    replica: chunk_options(), ..Default::default()
+                                };
+                                let manifest = meta.write_object("load", &format!("object-{n}"), None, &load_data(n), &options).unwrap();
+                                assert_eq!(manifest.extents.len(), 4);
+                                let node_ids = manifest.extents.iter().map(|e| e.group.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                                saved.push((n, CommittedPlacement { bucket: manifest.bucket, key: manifest.key, length: manifest.length, node_ids, version: manifest.generation, update_time_ms: n + 1 }));
+                                latencies.push(started.elapsed().as_micros());
+                                if saved.len() % 32 == 0 { println!("OBJECT_WRITER worker={worker} completed={}", saved.len()); }
+                                continue;
+                            }
                             let plan = meta
                                 .plan_object_placement("load", &format!("object-{n}"), 1024, 1)
                                 .unwrap();
@@ -1972,7 +1997,7 @@ mod coupled_groups {
         saved.sort_by_key(|(n, _)| *n);
         latencies.sort_unstable();
         assert_eq!(saved.len() as u64, end - start);
-        println!("MULTIGROUP writes={} workers={} elapsed_ms={} operations_per_second={:.1} p50_us={} p95_us={} p99_us={}", saved.len(), workers, elapsed.as_millis(), saved.len() as f64 / elapsed.as_secs_f64(), latencies[latencies.len()/2], latencies[latencies.len()*95/100], latencies[latencies.len()*99/100]);
+        println!("MULTIGROUP objects={objects} writes={} workers={} elapsed_ms={} operations_per_second={:.1} p50_us={} p95_us={} p99_us={}", saved.len(), workers, elapsed.as_millis(), saved.len() as f64 / elapsed.as_secs_f64(), latencies[latencies.len()/2], latencies[latencies.len()*95/100], latencies[latencies.len()*99/100]);
         saved
     }
     fn group_usage(api: &[String], groups: &[Group], saved: &[(u64, CommittedPlacement)]) {
@@ -2011,7 +2036,59 @@ mod coupled_groups {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-    fn verify_load(api: &[String], saved: &[(u64, CommittedPlacement)]) {
+    fn verify_load(api: &[String], saved: &[(u64, CommittedPlacement)], objects: bool) {
+        if objects {
+            let began = Instant::now();
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..8)
+                    .map(|worker| {
+                        scope.spawn(move || {
+                            let mut meta =
+                                RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
+                            for (index, (n, placement)) in
+                                saved.iter().enumerate().skip(worker).step_by(8)
+                            {
+                                assert!(
+                                    began.elapsed() < Duration::from_secs(180),
+                                    "object read workload exceeded deadline"
+                                );
+                                let (manifest, bytes) = meta
+                                    .read_object(
+                                        &placement.bucket,
+                                        &placement.key,
+                                        1024,
+                                        &chunk_options(),
+                                    )
+                                    .unwrap();
+                                assert_eq!(bytes, load_data(*n));
+                                assert_eq!(manifest.generation, placement.version);
+                                assert_eq!(manifest.length, placement.length);
+                                assert_eq!(manifest.extents.len(), 4);
+                                assert!(manifest.extents.iter().all(|e| e.write_sequence == 1
+                                    && placement.node_ids == [e.group.clone()]));
+                                assert_eq!(
+                                    meta.object_placement(&placement.bucket, &placement.key)
+                                        .unwrap(),
+                                    *placement
+                                );
+                                if index % 128 == 0 {
+                                    println!("OBJECT_READ worker={worker} index={index}");
+                                }
+                            }
+                        })
+                    })
+                    .collect();
+                for handle in handles {
+                    handle.join().unwrap();
+                }
+            });
+            println!(
+                "OBJECT_READ verified={} elapsed_ms={}",
+                saved.len(),
+                began.elapsed().as_millis()
+            );
+            return;
+        }
         let mut meta = RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
         let mut clients = BTreeMap::new();
         for (n, placement) in saved {
@@ -2031,7 +2108,7 @@ mod coupled_groups {
             assert_eq!(chunk.head_chunk(&page(*n)).unwrap().write_sequence, 1);
         }
     }
-    fn multiple_group_load(group_count: usize, writes: u64, workers: usize) {
+    fn multiple_group_load(group_count: usize, writes: u64, workers: usize, objects: bool) {
         assert!((2..=16).contains(&group_count));
         assert!(writes > 0 && writes <= 1024);
         let mut groups: Vec<_> = (0..group_count)
@@ -2045,7 +2122,8 @@ mod coupled_groups {
             })
             .collect();
         // Every API and peer socket stays reserved until its process starts.
-        let mut metadata = MetadataGroup::for_groups(&groups);
+        let request_threads = if objects { 16 } else { 2 };
+        let mut metadata = MetadataGroup::for_groups_with_threads(&groups, request_threads);
         for group in &mut groups {
             group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
             for i in 0..3 {
@@ -2057,7 +2135,7 @@ mod coupled_groups {
             group.leader();
         }
         group_usage(&metadata.api, &groups, &[]);
-        let mut saved = load_batch(&metadata.api, 0, writes, workers);
+        let mut saved = load_batch(&metadata.api, 0, writes, workers, objects);
         group_usage(&metadata.api, &groups, &saved);
         for group in &groups {
             assert!(
@@ -2092,12 +2170,13 @@ mod coupled_groups {
         for group in &groups {
             group.leader();
         }
-        verify_load(&metadata.api, &saved);
+        verify_load(&metadata.api, &saved, objects);
         saved.extend(load_batch(
             &metadata.api,
             writes,
             writes + writes / 4,
             workers,
+            objects,
         ));
         group_usage(&metadata.api, &groups, &saved);
         for group in &mut groups {
@@ -2125,21 +2204,30 @@ mod coupled_groups {
             group.leader();
         }
         group_usage(&metadata.api, &groups, &saved);
-        verify_load(&metadata.api, &saved);
+        verify_load(&metadata.api, &saved, objects);
         println!(
-            "MULTIGROUP verified groups={group_count} processes={} recovered_objects={}",
+            "MULTIGROUP verified objects={objects} groups={group_count} metadata_threads={request_threads} processes={} recovered_objects={}",
             group_count * 3 + 3,
             saved.len()
         );
     }
     #[test]
     fn concurrent_groups_preserve_placement_and_data_through_failover_and_restart() {
-        multiple_group_load(3, 96, 6);
+        multiple_group_load(3, 96, 6, false);
     }
     #[test]
     #[ignore = "bounded 51-process local load and recovery measurement"]
     fn sixteen_groups_preserve_concurrent_writes_through_recovery() {
-        multiple_group_load(16, 1024, 8);
+        multiple_group_load(16, 1024, 8, false);
+    }
+    #[test]
+    fn object_writer_load_preserves_manifests_and_pages_through_recovery() {
+        multiple_group_load(3, 96, 6, true);
+    }
+    #[test]
+    #[ignore = "bounded 51-process complete-object load and recovery measurement"]
+    fn sixteen_groups_preserve_object_writes_and_reads_through_recovery() {
+        multiple_group_load(16, 1024, 8, true);
     }
 }
 

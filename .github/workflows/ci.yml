@@ -135,6 +135,12 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::deferred_metadata_sealing_preserves_captured_roster_and_placements -- --exact --nocapture | tee /tmp/deferred-sealing.log
           grep -q 'test result: ok. 1 passed' /tmp/deferred-sealing.log
 
+      - name: object writer load preserves manifests and pages through recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::object_writer_load_preserves_manifests_and_pages_through_recovery -- --exact --nocapture | tee /tmp/object-load.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-load.log
+
       - name: object write preflight bounds work and checks expected generation
         run: |
           set -o pipefail
