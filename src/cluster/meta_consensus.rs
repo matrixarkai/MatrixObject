@@ -415,9 +415,10 @@ fn run(
         // leadership changes. A client timeout alone does not remove a proposal.
         if pending.is_empty() && pending_read.is_none() {
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
-                let snapshot = service.export_snapshot();
+                let mut snapshot = service.export_snapshot_unsealed();
                 let catalog = groups.to_bytes().map_err(storage)?;
                 Ok(move || {
+                    snapshot.checksum = snapshot.checksum_material_hash();
                     super::meta_checkpoint::capture(snapshot, catalog, id).map(|stream| {
                         stream.map(|s| {
                             let length = s.length;
@@ -920,6 +921,24 @@ mod tests {
         assert_eq!(state(service), state(&candidate));
     }
 
+    #[test]
+    fn deferred_metadata_sealing_preserves_captured_roster_and_placements() {
+        let (mut service, groups) = fixture(1, 30);
+        let expected = service.export_snapshot();
+        let mut captured = service.export_snapshot_unsealed();
+        assert!(captured.checksum.is_empty());
+        apply_with_groups(&mut service, heartbeat(), 16 * 1024 * 1024, &groups).unwrap();
+        let sealed = std::thread::spawn(move || {
+            captured.checksum = captured.checksum_material_hash();
+            captured
+        })
+        .join()
+        .unwrap();
+        assert_eq!(sealed, expected);
+        assert_eq!(sealed.to_bytes().unwrap(), expected.to_bytes().unwrap());
+        assert_ne!(sealed, service.export_snapshot());
+        sealed.validate().unwrap();
+    }
     #[test]
     fn application_checkpoint_restores_placement_health_and_checks_catalog() {
         let (mut service, groups) = fixture(4, 30);

@@ -157,10 +157,7 @@ impl MatrixReplicaService {
 
     pub fn export_snapshot(&self) -> ReplicaServiceSnapshot {
         let mut snapshot = self.export_snapshot_unsealed();
-        let (compressed_chunk_count, compression_saved_bytes) = self.compression_stats();
-        snapshot.compressed_chunk_count = compressed_chunk_count;
-        snapshot.compression_saved_bytes = compression_saved_bytes;
-        snapshot.seal_checksum();
+        snapshot.seal_for_checkpoint();
         snapshot
     }
 

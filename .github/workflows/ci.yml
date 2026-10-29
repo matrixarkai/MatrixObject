@@ -123,6 +123,18 @@ jobs:
           cargo test --locked --all-features --lib cluster::consensus_checkpoint::tests::background_capture_keeps_both_node_policies_writable_and_recovers_suffix -- --exact --nocapture | tee /tmp/background-capture.log
           grep -q 'test result: ok. 1 passed' /tmp/background-capture.log
 
+      - name: deferred chunk sealing preserves captured payload and statistics
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::chunk_checkpoint::tests::deferred_chunk_sealing_preserves_captured_payload_and_statistics -- --exact --nocapture | tee /tmp/deferred-sealing.log
+          grep -q 'test result: ok. 1 passed' /tmp/deferred-sealing.log
+
+      - name: deferred metadata sealing preserves captured roster and placements
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::deferred_metadata_sealing_preserves_captured_roster_and_placements -- --exact --nocapture | tee /tmp/deferred-sealing.log
+          grep -q 'test result: ok. 1 passed' /tmp/deferred-sealing.log
+
       - name: checkpoint envelope binds kind position and canonical bytes
         run: |
           set -o pipefail

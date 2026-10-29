@@ -335,6 +335,26 @@ mod tests {
         service.export_snapshot()
     }
     #[test]
+    fn deferred_chunk_sealing_preserves_captured_payload_and_statistics() {
+        let mut service = MatrixReplicaService::new();
+        service.write_chunk(page(0), 0, &[3; 4096]).unwrap();
+        let expected = service.export_snapshot();
+        let mut captured = service.export_snapshot_unsealed();
+        assert!(captured.checksum.is_empty());
+        service.write_chunk(page(0), 0, &[9; 4096]).unwrap();
+        service.discard_chunk(&page(0), 20, 10).unwrap();
+        let sealed = std::thread::spawn(move || {
+            captured.seal_for_checkpoint();
+            captured
+        })
+        .join()
+        .unwrap();
+        assert_eq!(sealed, expected);
+        assert_eq!(sealed.to_bytes().unwrap(), expected.to_bytes().unwrap());
+        assert_ne!(sealed, service.export_snapshot());
+        sealed.validate().unwrap();
+    }
+    #[test]
     fn streamed_checkpoint_preserves_complete_state_and_legacy_bytes() {
         let original = fixture();
         let bytes = original.to_bytes().unwrap();

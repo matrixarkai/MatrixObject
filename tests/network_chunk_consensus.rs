@@ -713,7 +713,27 @@ fn metadata_catalog_routes_chunk_group_through_leader_loss() {
     let mut chunk = client
         .connect_chunk_group("group-a", &ReplicaClientOptions::default())
         .unwrap();
-    chunk.write_chunk(page(0), 0, b"catalog-data").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        match chunk.write_chunk_if_sequence(page(0), 0, b"catalog-data", 0) {
+            Ok(()) => break,
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "catalog creation did not settle: {error}"
+                );
+                chunk = client
+                    .connect_chunk_group("group-a", &ReplicaClientOptions::default())
+                    .unwrap();
+                if let Ok(read) = chunk.read_chunk(&page(0), 0, 12) {
+                    assert_eq!(read.data, b"catalog-data");
+                    assert_eq!(read.write_sequence, 1);
+                    break;
+                }
+            }
+        }
+    }
+    assert_eq!(chunk.head_chunk(&page(0)).unwrap().write_sequence, 1);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let nodes = client.list_placement_nodes().unwrap();

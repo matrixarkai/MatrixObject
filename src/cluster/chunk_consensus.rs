@@ -468,8 +468,9 @@ fn run(
         // Proposing a second outcome against the same old state would be invalid.
         if pending.is_none() && pending_read.is_none() {
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
-                let snapshot = node.service.export_snapshot();
+                let mut snapshot = node.service.export_snapshot_unsealed();
                 Ok(move || {
+                    snapshot.seal_for_checkpoint();
                     crate::cluster::chunk_checkpoint::capture(snapshot, id).map(|stream| {
                         stream.map(|s| {
                             let length = s.length;
