@@ -239,7 +239,7 @@ impl ObjectStoreDistributedReadiness {
                 &self.placement_metadata_coverage_status,
             ),
             (
-                "placement_blockserver_route_control_proof_checksum",
+                "placement_pageserver_route_control_proof_checksum",
                 &self.root_pageserver_route_control_proof_checksum,
             ),
             (
@@ -380,7 +380,7 @@ impl ObjectStoreDistributedReadiness {
                 self.placement_metadata_coordinator_config_mismatch,
             ),
             (
-                "placement_block_allocator_shards_complete",
+                "placement_page_allocator_shards_complete",
                 self.root_page_allocator_shards_complete,
             ),
         ] {
@@ -475,15 +475,15 @@ impl ObjectStoreDistributedReadiness {
                 self.placement_metadata_external_coordinator_ready_metaserver_count,
             ),
             (
-                "placement_blockserver_route_control_proof_count",
+                "placement_pageserver_route_control_proof_count",
                 self.root_pageserver_route_control_proof_count,
             ),
             (
-                "placement_blockserver_route_control_read_ready_count",
+                "placement_pageserver_route_control_read_ready_count",
                 self.root_pageserver_route_control_read_ready_count,
             ),
             (
-                "placement_blockserver_route_control_write_ready_count",
+                "placement_pageserver_route_control_write_ready_count",
                 self.root_pageserver_route_control_write_ready_count,
             ),
             (

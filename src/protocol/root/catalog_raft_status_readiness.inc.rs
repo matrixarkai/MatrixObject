@@ -82,7 +82,7 @@ fn placement_raft_status_readiness_fields(
             self_.placement_metadata_coordinator_config_mismatch,
         ),
         (
-            "placement_block_allocator_shards_complete",
+            "placement_page_allocator_shards_complete",
             self_.root_page_allocator_shards_complete,
         ),
     ] {
