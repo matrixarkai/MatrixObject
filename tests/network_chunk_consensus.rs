@@ -194,6 +194,10 @@ impl Group {
         }
         let api_environment = api_tls_environment(self.api_tls.as_ref());
         environment.extend(api_environment.iter().map(|(name, value)| (*name, value.as_str())));
+        // A concurrent child can inherit another group's reservations until exec.
+        // Keep release and startup together; membership operations remain concurrent.
+        static STARTUP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _startup = STARTUP.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         drop(self.reservations[i].take());
         let node = processes::start(env!("CARGO_BIN_EXE_chunkserver"), &environment);
         assert_eq!(node.endpoint, bind);
