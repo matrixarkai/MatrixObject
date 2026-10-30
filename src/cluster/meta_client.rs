@@ -493,10 +493,13 @@ impl RemoteMetaClient {
         bytes.try_reserve_exact(length).map_err(|_| {
             ObjectError::PreconditionFailed("object read allocation refused".into())
         })?;
-        // Keep just one verified connection, bounding open sockets even for objects
-        // spread across thousands of groups. Adjacent extents reuse the connection.
+        // Visit each group once, bounding both sockets and catalog lookups.
+        // Manifest validation proves every destination range is in this buffer.
+        bytes.resize(length, 0);
+        let mut order: Vec<_> = manifest.extents.iter().collect();
+        order.sort_by(|left, right| left.group.cmp(&right.group));
         let mut connection: Option<(String, super::RemoteReplicaClient)> = None;
-        for extent in &manifest.extents {
+        for extent in order {
             if connection.as_ref().map(|(group, _)| group) != Some(&extent.group) {
                 connection = Some((
                     extent.group.clone(),
@@ -523,7 +526,8 @@ impl RemoteMetaClient {
                     "object extent does not match manifest".into(),
                 ));
             }
-            bytes.extend_from_slice(&read.data);
+            let start = extent.object_offset as usize;
+            bytes[start..start + read.data.len()].copy_from_slice(&read.data);
         }
         Ok((manifest, bytes))
     }

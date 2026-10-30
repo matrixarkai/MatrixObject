@@ -103,6 +103,7 @@ fn chunk_group_reply_must_name_the_requested_placement() {
 }
 #[test]
 fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
+    let object: Vec<u8> = (0..125).collect();
     let sockets = [listener(), listener()];
     let groups = [config(&sockets[0], 1), config(&sockets[1], 2)];
     let workers: Vec<_> = sockets
@@ -110,10 +111,12 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         .zip(groups.clone())
         .enumerate()
         .map(|(index, (socket, group))| {
+            let object = object.clone();
             thread::spawn(move || {
-                // Group 2's first connection verifies preflight only. Group 1's first
-                // connection is retained for page 0; later connections recheck identity.
-                for turn in 0..2 {
+                // One retained preflight connection for group 1; group 2 verifies
+                // preflight then reconnects once for all writes. Each read visits once.
+                let turns = if index == 0 { 2 } else { 3 };
+                for turn in 0..turns {
                     let mut stream = accept(&socket);
                     assert!(matches!(
                         replica(&mut stream),
@@ -128,48 +131,55 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                         assert_eq!(stream.read(&mut [0]).unwrap(), 0);
                         continue;
                     }
-                    let page_index = if index == 0 { turn * 2 } else { 1 };
-                    let ReplicaRequest::WriteChunkIfSequence {
-                        page_id,
-                        offset,
-                        data,
-                        expected_sequence,
-                    } = replica(&mut stream)
-                    else {
-                        panic!("conditional write missing");
-                    };
-                    assert_eq!(page_id.page_index, page_index);
-                    assert_eq!(offset, 0);
-                    assert_eq!(expected_sequence, 0);
-                    assert_eq!(
-                        data,
-                        b"abcdefghijkl"[(page_index as usize) * 4..(page_index as usize + 1) * 4]
-                    );
-                    stream
-                        .write_all(&message::encode_reply(&ReplicaReply::Applied))
-                        .unwrap();
-                    let ReplicaRequest::ReadChunk {
-                        page_id: read_page,
-                        offset,
-                        length,
-                    } = replica(&mut stream)
-                    else {
-                        panic!("readback missing");
-                    };
-                    assert_eq!(read_page, page_id);
-                    assert_eq!(offset, 0);
-                    assert_eq!(length, 4);
-                    stream
-                        .write_all(&message::encode_reply(&ReplicaReply::Read(
-                            ReplicaReadResult {
-                                data,
-                                write_sequence: 1,
-                                checksum: String::new(),
-                            },
-                        )))
-                        .unwrap();
+                    let writing = turn == if index == 0 { 0 } else { 1 };
+                    let pages = (index as u64..32).step_by(2);
+                    for page_index in pages {
+                        let start = page_index as usize * 4;
+                        let data = object[start..object.len().min(start + 4)].to_vec();
+                        if writing {
+                            let ReplicaRequest::WriteChunkIfSequence {
+                                page_id,
+                                offset,
+                                data: actual,
+                                expected_sequence,
+                            } = replica(&mut stream)
+                            else {
+                                panic!("conditional write missing");
+                            };
+                            assert_eq!(page_id.page_index, page_index);
+                            assert_eq!(offset, 0);
+                            assert_eq!(expected_sequence, 0);
+                            assert_eq!(actual, data);
+                            stream
+                                .write_all(&message::encode_reply(&ReplicaReply::Applied))
+                                .unwrap();
+                        }
+                        let ReplicaRequest::ReadChunk {
+                            page_id,
+                            offset,
+                            length,
+                        } = replica(&mut stream)
+                        else {
+                            panic!("readback missing");
+                        };
+                        assert_eq!(page_id.page_index, page_index);
+                        assert_eq!(offset, 0);
+                        assert_eq!(length, data.len() as u64);
+                        stream
+                            .write_all(&message::encode_reply(&ReplicaReply::Read(
+                                ReplicaReadResult {
+                                    data,
+                                    write_sequence: 1,
+                                    checksum: String::new(),
+                                },
+                            )))
+                            .unwrap();
+                    }
                     assert_eq!(stream.read(&mut [0]).unwrap(), 0);
                 }
+                assert!(
+                    matches!(socket.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+                );
             })
         })
         .collect();
@@ -190,7 +200,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         assert!(matches!(
             meta(&mut stream),
             MetaRequest::PlanObjectPlacement {
-                length: 12,
+                length: 125,
                 replica_count: 2,
                 ..
             }
@@ -200,7 +210,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
             MetaReply::Plan(PlacementAssignment {
                 bucket: "bucket".into(),
                 key: "key".into(),
-                length: 12,
+                length: 125,
                 node_ids: groups.iter().map(|g| g.placement_id.clone()).collect(),
                 skipped_draining: 0,
                 skipped_offline: 0,
@@ -208,7 +218,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                 plan_checksum: "plan".into(),
             }),
         );
-        for group in groups.into_iter().rev() {
+        for group in groups.clone().into_iter().rev() {
             let MetaRequest::ReadChunkGroup { placement_id } = meta(&mut stream) else {
                 panic!("group lookup missing");
             };
@@ -217,22 +227,35 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         }
         assert!(matches!(
             meta(&mut stream),
-            MetaRequest::AllocateObjectPages { page_count: 3 }
+            MetaRequest::AllocateObjectPages { page_count: 32 }
         ));
         reply(
             &mut stream,
             MetaReply::ObjectPages(ObjectPageAllocation {
                 format_version: 1,
                 allocation_id: 1,
-                page_count: 3,
+                page_count: 32,
             }),
         );
         let MetaRequest::PublishManifest { outcome, .. } = meta(&mut stream) else {
             panic!("unexpected additional metadata lookup");
         };
         let manifest = outcome.after.unwrap();
-        assert_eq!(manifest.extents.len(), 3);
+        assert_eq!(manifest.extents.len(), 32);
         reply(&mut stream, MetaReply::Manifest(manifest.clone()));
+        assert!(matches!(
+            meta(&mut stream),
+            MetaRequest::ReadManifest { .. }
+        ));
+        reply(&mut stream, MetaReply::Manifest(manifest.clone()));
+        for group in groups {
+            let MetaRequest::ReadChunkGroup { placement_id } = meta(&mut stream) else {
+                panic!("read group lookup missing");
+            };
+            assert_eq!(placement_id, group.placement_id);
+            reply(&mut stream, MetaReply::ChunkGroup(group));
+        }
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
         manifest
     });
     let mut client = RemoteMetaClient::connect(&address, &MetaClientOptions::default()).unwrap();
@@ -240,14 +263,31 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         "bucket",
         "key",
         None,
-        b"abcdefghijkl",
+        &object,
         &ObjectWriteOptions {
             page_bytes: 4,
             target_groups: 2,
             ..Default::default()
         },
     );
-    assert_eq!(result.unwrap(), metadata.join().unwrap());
+    let written = result.unwrap();
+    let (read_manifest, bytes) = client
+        .read_object("bucket", "key", 125, &ReplicaClientOptions::default())
+        .unwrap();
+    assert_eq!(bytes, object);
+    assert_eq!(read_manifest, written);
+    assert_eq!(
+        written
+            .extents
+            .iter()
+            .map(|e| e.group.as_str())
+            .collect::<Vec<_>>(),
+        (0..32)
+            .map(|i| if i % 2 == 0 { "group-1" } else { "group-2" })
+            .collect::<Vec<_>>()
+    );
+    drop(client);
+    assert_eq!(written, metadata.join().unwrap());
     for worker in workers {
         worker.join().unwrap();
     }
