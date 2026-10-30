@@ -2498,7 +2498,7 @@ mod coupled_groups {
                             if objects {
                                 let options = matrixobjectstore_rs::cluster::ObjectWriteOptions {
                                     page_bytes: (object_bytes / 4) as usize, update_time_ms: n + 1, target_groups,
-                                    replica: chunk_options(), ..Default::default()
+                                    replica: ReplicaClientOptions { deadline: Some(started + Duration::from_secs(10)), ..chunk_options() }, ..Default::default()
                                 };
                                 let manifest = meta.write_object("load", &format!("object-{n}"), None, &load_data_sized(n, object_bytes), &options).unwrap();
                                 assert_eq!(manifest.extents.len(), 4);
@@ -2617,10 +2617,11 @@ mod coupled_groups {
     fn verify_load(api: &[String], saved: &[(u64, CommittedPlacement)], objects: bool) {
         if objects {
             let began = Instant::now();
-            std::thread::scope(|scope| {
+            let mut samples = std::thread::scope(|scope| {
                 let handles: Vec<_> = (0..8)
                     .map(|worker| {
                         scope.spawn(move || {
+                            let mut samples = Vec::new();
                             let mut meta =
                                 RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
                             for (index, (n, placement)) in
@@ -2630,14 +2631,16 @@ mod coupled_groups {
                                     began.elapsed() < Duration::from_secs(180),
                                     "object read workload exceeded deadline"
                                 );
+                                let started = Instant::now();
                                 let (manifest, bytes) = meta
                                     .read_object(
                                         &placement.bucket,
                                         &placement.key,
                                         usize::try_from(placement.length).unwrap(),
-                                        &chunk_options(),
+                                        &ReplicaClientOptions { deadline: Some(started + Duration::from_secs(10)), ..chunk_options() },
                                     )
                                     .unwrap();
+                                samples.push(started.elapsed().as_micros());
                                 assert_eq!(bytes, load_data_sized(*n, placement.length));
                                 assert_eq!(manifest.generation, placement.version);
                                 assert_eq!(manifest.length, placement.length);
@@ -2670,17 +2673,20 @@ mod coupled_groups {
                                     println!("OBJECT_READ worker={worker} index={index}");
                                 }
                             }
+                            samples
                         })
                     })
                     .collect();
-                for handle in handles {
-                    handle.join().unwrap();
-                }
+                handles.into_iter().flat_map(|handle| handle.join().unwrap()).collect::<Vec<_>>()
             });
+            assert_eq!(samples.len(), saved.len());
+            samples.sort_unstable();
+            let elapsed = began.elapsed();
+            let bytes: u64 = saved.iter().map(|(_, placement)| placement.length).sum();
             println!(
-                "OBJECT_READ verified={} elapsed_ms={}",
-                saved.len(),
-                began.elapsed().as_millis()
+                "OBJECT_READ verified={} elapsed_ms={} verified_mib_s={:.2} p50_us={} p95_us={} p99_us={}",
+                saved.len(), elapsed.as_millis(), bytes as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64(),
+                samples[samples.len()/2], samples[samples.len()*95/100], samples[samples.len()*99/100]
             );
             return;
         }
@@ -3139,7 +3145,8 @@ mod coupled_groups {
         assert!((8..=4 * 1024 * 1024).contains(&object_bytes));
         assert_eq!(object_bytes % 4, 0);
         assert!(objects || object_bytes == 1024);
-        assert!(target_groups == 1 || (objects && target_groups == 2));
+        assert!(target_groups == 1 || (objects && matches!(target_groups, 2 | 4)));
+        assert!(target_groups as usize <= group_count);
         assert!((2..=16).contains(&group_count));
         assert!(writes > 0 && writes <= 1024);
         let mut groups: Vec<_> = (0..group_count)
@@ -3292,6 +3299,10 @@ mod coupled_groups {
     }
     #[cfg(feature = "peer-tls")]
     fn tls_payload_recovery(groups: usize, writes: u64, bytes: u64) {
+        tls_payload_recovery_with_width(groups, writes, bytes, 2);
+    }
+    #[cfg(feature = "peer-tls")]
+    fn tls_payload_recovery_with_width(groups: usize, writes: u64, bytes: u64, target_groups: u32) {
         let certificates = node_regime::tls::TlsFiles::new();
         for i in 0..3 {
             certificates.issue(&format!("peer-{i}"), "127.0.0.1");
@@ -3301,7 +3312,7 @@ mod coupled_groups {
             writes,
             4,
             true,
-            2,
+            target_groups,
             bytes,
             VoterSetup { peer_tls: Some(certificates.root.clone()), voters: 3 },
         );
@@ -3331,6 +3342,17 @@ mod coupled_groups {
     #[ignore = "51-process mutually authenticated peer recovery; run explicitly in WSL"]
     fn authenticated_sixteen_groups_recover_one_mib_objects() {
         tls_payload_recovery(16, 128, 1024 * 1024);
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    fn four_way_authenticated_objects_recover_after_leader_loss_and_restart() {
+        tls_payload_recovery_with_width(4, 24, 64 * 1024, 4);
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "51-process four-way authenticated object recovery; run explicitly in WSL"]
+    fn authenticated_sixteen_groups_recover_four_way_objects() {
+        tls_payload_recovery_with_width(16, 128, 1024 * 1024, 4);
     }
     #[test]
     fn striped_payloads_recover_with_exact_bytes_and_capacity_accounting() {
