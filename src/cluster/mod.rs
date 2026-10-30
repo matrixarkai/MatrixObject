@@ -161,6 +161,7 @@ pub mod server;
 
 // The control plane: a metaserver node, a client, and the directory that chooses.
 #[cfg(feature = "meta-server")]
+#[path = "metadata_service_directory.rs"]
 pub mod directory;
 #[cfg(feature = "meta-server")]
 pub mod meta_client;
@@ -211,6 +212,7 @@ mod replica_journal;
 #[cfg(feature = "replica-server")]
 mod replica_image;
 
+#[path = "node_api_connections.rs"]
 mod connections;
 mod socket_readiness;
 #[cfg(any(feature = "replica-server", feature = "meta-server"))]
