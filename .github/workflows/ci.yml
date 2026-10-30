@@ -677,6 +677,13 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus maintenance_repair_stays_excluded_through_metadata_failover_and_total_restart -- --exact --nocapture | tee /tmp/maintenance-recovery.log
           grep -q 'test result: ok. 1 passed' /tmp/maintenance-recovery.log
 
+      - name: star repair batches preserve metadata exclusion
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus star_repair_metadata_scale::five_star_replicas_repair_batches_with_metadata_failover_and_restart -- --exact --nocapture | tee /tmp/star-repair-batches.log
+          grep -q 'test result: ok. 1 passed' /tmp/star-repair-batches.log
+          grep -q 'STAR_REPAIR pages=32 batches=5 replicas=5 metadata=3 verified_copies=160' /tmp/star-repair-batches.log
+
       - name: received chunk health survives failover restart and expiry
         run: |
           set -o pipefail

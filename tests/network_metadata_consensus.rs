@@ -1804,3 +1804,7 @@ fn metadata_membership_never_acknowledges_without_quorum() {
     assert_ne!(next, serving);
     group.client(next).allocate_object_pages(1).unwrap();
 }
+
+#[cfg(feature = "replica-server")]
+#[path = "node_regime/star_repair_metadata_scale.rs"]
+mod star_repair_metadata_scale;
