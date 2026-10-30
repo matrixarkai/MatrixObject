@@ -882,6 +882,7 @@ mod coupled_groups {
     };
 
     mod fenced_heartbeats { include!("node_regime/fenced_chunk_heartbeat_processes.rs"); }
+    mod dynamic_groups { include!("node_regime/dynamic_chunk_group_scale.rs"); }
 
     struct MetadataGroup {
         peer_tls: Option<PathBuf>,
