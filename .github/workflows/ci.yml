@@ -116,6 +116,13 @@ jobs:
           grep -q '^running 1 test$' /tmp/peer-tls.log
           grep -q '^test result: ok. 1 passed' /tmp/peer-tls.log
 
+      - name: larger authenticated quorums survive maximum voter loss
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::larger_authenticated_quorums_recover_after_maximum_voter_loss -- --exact --nocapture | tee /tmp/larger-voter-recovery.log
+          grep -q '^running 1 test$' /tmp/larger-voter-recovery.log
+          grep -q '^test result: ok. 1 passed' /tmp/larger-voter-recovery.log
+
       - name: authenticated metadata and data peers recover together
         run: |
           set -o pipefail
