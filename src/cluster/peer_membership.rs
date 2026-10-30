@@ -5,6 +5,9 @@ use crate::ObjectError;
 use prost::Message;
 
 /// Explicit operator action; a successful mutation reply means locally applied commitment.
+/// A retained leader also obtains a fresh quorum read confirmation after applying
+/// the change. A leader removed by its own command can report local commitment
+/// but cannot confirm a quorum after removal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
 #[repr(i32)]
 pub enum MembershipOperation {

@@ -413,3 +413,17 @@ The three-group case runs in CI. The sixteen-group case is an explicit 67-proces
 WSL workload. Both verify object bytes and committed membership fences after
 metadata and chunk leader loss and after restarting all nodes. These are local
 process simulations, not independent-host or sustained-churn certification.
+
+### Membership reply confirmation
+
+After applying a membership change, a retained leader obtains a fresh quorum read
+confirmation before returning success. The confirmation is started after the
+configuration applies and before another request is admitted. This provides a
+quorum round after local commitment rather than replying immediately from the
+application step. It does not certify that every voter has applied the change.
+
+A leader removed by its own command cannot confirm reads in the new configuration;
+its success reply retains the locally committed-removal meaning. Operators must
+contact the remaining group to verify serving availability. A failed confirmation
+for an already proposed change is an uncertain mutation, even when the underlying
+error is a leadership refusal. It must not be classified as safe to replay.

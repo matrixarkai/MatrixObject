@@ -299,6 +299,13 @@ jobs:
           cargo test --locked --all-features --test chunk_catalog_routing verified_chunk_membership_is_bound_to_the_trusted_inventory -- --exact | tee /tmp/membership-inventory.log
           grep -q 'test result: ok. 1 passed' /tmp/membership-inventory.log
 
+      - name: Membership confirmation failures remain uncertain mutations
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib committed_membership_confirmation_failure_never_authorizes_replay -- --test-threads=1 | tee /tmp/membership-confirmation.log
+          grep -q 'test result: ok. 2 passed' /tmp/membership-confirmation.log
+
       - name: consensus diagnostics preserve late replies and uncertain mutations
         run: |
           set -o pipefail
@@ -439,7 +446,7 @@ jobs:
       - name: bootstrap catalog reads obey limits and failure state without queueing
         run: |
           set -o pipefail
-          cargo test --locked --all-features --lib cluster::meta_consensus::tests::bootstrap_catalog_reads_bypass_queue_but_obey_limits_and_failure_state -- --exact | tee /tmp/bootstrap-read.log
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::catalog_reads_queue_while_only_bootstrap_identity_bypasses_consensus -- --exact | tee /tmp/bootstrap-read.log
           grep -q 'test result: ok. 1 passed' /tmp/bootstrap-read.log
 
       - name: failed chunk identity exchange can try another voter before writing

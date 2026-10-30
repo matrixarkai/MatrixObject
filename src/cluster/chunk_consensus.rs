@@ -108,6 +108,14 @@ fn refused(s: impl ToString) -> ObjectError {
 // A failed read confirmation has not executed the application request. Only
 // typed leadership loss allows catalog routing to another voter; other failures
 // stay authoritative. Never use this conversion for accepted writes.
+fn confirmation_failure(request: &ReplicaRequest, error: &RaftError) -> Result<ReplicaReply, ObjectError> {
+    if read_only(request) {
+        read_failure(error)
+    } else {
+        Err(refused(format!("chunk membership confirmation failed; outcome may be committed; do not replay: {error}")))
+    }
+}
+
 fn read_failure(error: &RaftError) -> Result<ReplicaReply, ObjectError> {
     match error {
         RaftError::NotLeader(_) => Ok(ReplicaReply::NotLeader),
@@ -541,9 +549,29 @@ fn run(
         if let Some((id, _)) = &pending_membership {
             if peer.term() == id.term && peer.applied_index() >= id.index {
                 let (_, request) = pending_membership.take().unwrap();
-                let _ = request.reply.try_send(Ok(ReplicaReply::Membership(
-                    crate::cluster::MembershipStatus::from_peer(peer),
-                )));
+                let membership = peer.membership();
+                if !membership.voters.contains(&peer.node_id())
+                    && !membership.outgoing_voters.contains(&peer.node_id())
+                {
+                    // A removed local leader cannot obtain a new read confirmation.
+                    // Its reply still reports the locally committed removal.
+                    let _ = request.reply.try_send(Ok(ReplicaReply::Membership(
+                        crate::cluster::MembershipStatus::from_peer(peer),
+                    )));
+                } else {
+                    // Confirm with the new quorum after applying the change. This
+                    // requires a fresh quorum confirmation before acknowledging it.
+                    request.progress.mark(RequestPhase::ReadConfirmation);
+                    match peer.begin_read() {
+                        Ok(token) => {
+                            pending_read = Some((token, vec![request]));
+                            admitted = true;
+                        },
+                        Err(error) => {
+                            let _ = request.reply.try_send(confirmation_failure(&request.request, &error));
+                        }
+                    }
+                }
             } else if !peer.is_leader() || peer.term() != id.term {
                 let (_, request) = pending_membership.take().unwrap();
                 let _ = request.reply.try_send(Err(refused(
@@ -586,7 +614,7 @@ fn run(
                                     }
                                 }
                             }
-                            Err(error) => read_failure(error),
+                            Err(error) => confirmation_failure(&request.request, error),
                             Ok(false) => unreachable!(),
                         };
                         let _ = request.reply.try_send(reply);
@@ -960,6 +988,19 @@ mod read_batch_tests {
 #[cfg(test)]
 mod read_failure_tests {
     use super::*;
+
+    #[test]
+    fn committed_membership_confirmation_failure_never_authorizes_replay() {
+        use crate::cluster::{MembershipOperation, MembershipRequest};
+        let mut command = MembershipRequest { version: 1, bootstrap_id: 1, operation: MembershipOperation::Promote as i32, node_id: 4 };
+        for error in [RaftError::NotLeader(1), RaftError::NoLeader, RaftError::Storage("storage unavailable".into())] {
+            let failure = confirmation_failure(&ReplicaRequest::Membership(command.clone()), &error).unwrap_err().to_string();
+            assert!(failure.contains("outcome may be committed; do not replay"));
+        }
+        command.operation = MembershipOperation::Read as i32;
+        command.node_id = 0;
+        assert!(matches!(confirmation_failure(&ReplicaRequest::Membership(command), &RaftError::NotLeader(1)), Ok(ReplicaReply::NotLeader)));
+    }
 
     #[test]
     fn chunk_lost_read_leadership_routes_without_masking_other_failures() {
