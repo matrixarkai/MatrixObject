@@ -3841,19 +3841,42 @@ fn chunk_membership_replaces_lost_storage_with_a_distinct_process() {
     assert_eq!(newcomer.bootstrap_id, identity.bootstrap_id);
     assert!(group.client(3).ping().is_err());
     let deadline = Instant::now() + Duration::from_secs(15);
-    let joint = loop {
-        match client.chunk_membership(command(Op::Promote, 4)) {
-            Ok(status) => break status,
-            Err(error) if error.to_string().contains("caught-up learner") => {
-                assert!(
-                    Instant::now() < deadline,
-                    "learner did not catch up: {error}"
-                );
-                std::thread::sleep(Duration::from_millis(50));
+    let mut writer = group.client(leader);
+    let barrier = std::sync::Barrier::new(2);
+    let (joint, concurrent_pages) = std::thread::scope(|scope| {
+        let writing = scope.spawn(|| {
+            barrier.wait();
+            let mut pages = Vec::new();
+            for i in 100..132 {
+                let p = page(i);
+                let bytes = vec![i as u8; 128];
+                writer.write_chunk_if_sequence(p.clone(), 0, &bytes, 0).unwrap();
+                let state = writer.read_chunk_state(&p).unwrap();
+                let head = writer.head_chunk(&p).unwrap();
+                assert_eq!(head.write_sequence, 1);
+                assert_eq!(writer.read_chunk(&p, 0, 128).unwrap().data, bytes);
+                pages.push((p, state, head));
             }
-            Err(error) => panic!("promotion failed: {error}"),
-        }
-    };
+            pages
+        });
+        barrier.wait();
+        let joint = loop {
+            match client.chunk_membership(command(Op::Promote, 4)) {
+                Ok(status) => break status,
+                Err(error) if error.to_string().contains("caught-up learner") => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "learner did not catch up: {error}"
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("promotion failed: {error}"),
+            }
+        };
+        (joint, writing.join().unwrap())
+    });
+    saved.extend(concurrent_pages);
+    assert_eq!(saved.len(), 48);
     assert_eq!(joint.voters, vec![1, 2, 3, 4]);
     assert_eq!(joint.outgoing_voters, vec![1, 2, 3]);
     client.chunk_membership(command(Op::LeaveJoint, 0)).unwrap();
