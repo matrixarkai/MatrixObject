@@ -317,6 +317,7 @@ fn a_slow_peer_connection_does_not_prevent_shutdown() {
     let mut server = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
     server
         .enable_raft(MetaRaftOptions {
+            peer_tls: None,
             checkpoint_after_bytes: 0,
             node_id: 1,
             group_id: 1,
@@ -395,6 +396,7 @@ fn peer_storage_refuses_missing_zeroed_or_reidentified_history() {
     let address = reserved.local_addr().unwrap();
     drop(reserved);
     let options = MetaRaftOptions {
+        peer_tls: None,
         checkpoint_after_bytes: 0,
         node_id: 1,
         group_id: 1,

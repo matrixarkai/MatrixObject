@@ -593,3 +593,9 @@ with the diagnostic observation. Never infer replay permission from the phase
 or its text. A caller timeout does not cancel a pending proposal or read barrier.
 The phase narrows investigation; it does not prove that CPU, storage, networking,
 or quorum availability caused the delay.
+
+## Authenticated peer transport
+
+Optional [mutual TLS](peer-tls.md) protects metadata and chunk Raft peer ports.
+Without that configuration peer traffic remains plaintext. Client API transport
+and authorization remain separate requirements.

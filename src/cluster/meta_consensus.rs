@@ -41,6 +41,8 @@ const NETWORK_TIMEOUT: Duration = Duration::from_millis(100);
 /// Fixed voter endpoints. Each process uses its own existing state directory.
 #[derive(Clone, Debug)]
 pub struct MetaRaftOptions {
+    /// Mutual TLS for peer ports; this does not protect client API ports.
+    pub peer_tls: Option<crate::cluster::PeerTlsOptions>,
     pub node_id: u64,
     pub group_id: u64,
     pub peers: BTreeMap<u64, SocketAddr>,
@@ -126,6 +128,7 @@ impl MetaConsensus {
         {
             return Err(invalid("invalid metadata voter configuration"));
         }
+        let transport = crate::cluster::peer_tls::PeerTransport::load(options.peer_tls.as_ref())?;
         let directory = options.directory.canonicalize()?;
         let lock = OpenOptions::new()
             .read(true)
@@ -134,6 +137,7 @@ impl MetaConsensus {
             .truncate(false)
             .open(directory.join("metadata.peer.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
+        transport.pin_directory(&directory)?;
         if directory.join("metadata.snapshot").exists()
             || directory.join("metadata.outcomes").exists()
         {
@@ -214,13 +218,15 @@ impl MetaConsensus {
         let (incoming, packets) = mpsc::sync_channel(8);
         let mut handles = Vec::new();
         let inbound_stop = Arc::clone(&stop);
+        let inbound_transport = transport.clone();
         handles.push(thread::spawn(move || {
-            crate::cluster::peer_receiver::receive(
+            crate::cluster::peer_receiver::receive_with_transport(
                 listener,
                 incoming,
                 &inbound_stop,
                 NETWORK_TIMEOUT,
                 inbound_wake,
+                &inbound_transport,
             );
         }));
         let mut outgoing = BTreeMap::new();
@@ -232,6 +238,7 @@ impl MetaConsensus {
             let (tx, rx) = mpsc::sync_channel::<crate::cluster::peer_delivery::PeerDelivery>(8);
             outgoing.insert(*id, tx);
             let address = *address;
+            let transport = transport.clone();
             let stop = Arc::clone(&stop);
             handles.push(thread::spawn(move || {
                 while !stop.is_stopped() {
@@ -240,7 +247,7 @@ impl MetaConsensus {
                         Err(mpsc::RecvTimeoutError::Timeout) => continue,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
-                    let _ = delivery.send(&address);
+                    let _ = delivery.send_with_transport(&address, &transport);
                 }
             }));
         }

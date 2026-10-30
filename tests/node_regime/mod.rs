@@ -411,3 +411,7 @@ pub mod checkpoints;
 
 #[cfg(target_os = "linux")]
 pub mod network;
+
+#[cfg(feature = "peer-tls")]
+#[allow(dead_code)]
+pub mod tls;

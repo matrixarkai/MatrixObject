@@ -60,7 +60,11 @@ matrix-raft = ["dep:matrixraft"]
 chunk-consensus = ["replica-server", "matrix-raft", "matrixraft/peer-runtime"]
 metadata-consensus = ["meta-server", "matrix-raft", "matrixraft/peer-runtime"]
 
+peer-tls = ["dep:rustls", "dep:rustls-pemfile"]
+
 [dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"], optional = true }
+rustls-pemfile = { version = "2", optional = true }
 prost = "0.11.9"
 fs2 = { version = "0.4.3", optional = true }
 raft = { version = "0.7", optional = true, default-features = false, features = ["prost-codec"] }

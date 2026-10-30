@@ -140,6 +140,9 @@ fn main() {
             "MATRIXOBJECT_METASERVER_RAFT_GROUP_ID",
             "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS",
             "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
+            "MATRIXOBJECT_METASERVER_RAFT_TLS_CA_CERT",
+            "MATRIXOBJECT_METASERVER_RAFT_TLS_CERT",
+            "MATRIXOBJECT_METASERVER_RAFT_TLS_KEY",
         ]
         .iter()
         .any(|name| std::env::var_os(name).is_some())
@@ -271,6 +274,10 @@ fn main() {
                     .ok_or("missing Raft state directory")?
                     .into();
                 Ok(matrixobjectstore_rs::cluster::MetaRaftOptions {
+                    peer_tls: matrixobjectstore_rs::cluster::PeerTlsOptions::from_env(
+                        "MATRIXOBJECT_METASERVER_RAFT",
+                    )
+                    .map_err(|e| e.to_string())?,
                     checkpoint_after_bytes: env_usize(
                         "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
                         0,

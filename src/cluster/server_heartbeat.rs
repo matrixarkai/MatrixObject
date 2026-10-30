@@ -248,6 +248,7 @@ mod tests {
                 .join(format!("maintenance-raft-refusal-{}", std::process::id()));
             let error = chunk
                 .enable_consensus(super::super::ChunkRaftOptions {
+                    peer_tls: None,
                     node_id: 1,
                     group_id: 1,
                     peers: std::collections::BTreeMap::new(),

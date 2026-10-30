@@ -142,6 +142,9 @@ fn main() {
             "MATRIXOBJECT_CHUNK_RAFT_GROUP_ID",
             "MATRIXOBJECT_CHUNK_RAFT_TIMEOUT_MS",
             "MATRIXOBJECT_CHUNK_RAFT_CHECKPOINT_BYTES",
+            "MATRIXOBJECT_CHUNK_RAFT_TLS_CA_CERT",
+            "MATRIXOBJECT_CHUNK_RAFT_TLS_CERT",
+            "MATRIXOBJECT_CHUNK_RAFT_TLS_KEY",
         ]
         .iter()
         .any(|name| std::env::var_os(name).is_some())
@@ -215,6 +218,10 @@ fn main() {
                     .ok_or("missing Raft state directory")?
                     .into();
                 Ok(matrixobjectstore_rs::cluster::ChunkRaftOptions {
+                    peer_tls: matrixobjectstore_rs::cluster::PeerTlsOptions::from_env(
+                        "MATRIXOBJECT_CHUNK_RAFT",
+                    )
+                    .map_err(|e| e.to_string())?,
                     checkpoint_after_bytes: env_usize("MATRIXOBJECT_CHUNK_RAFT_CHECKPOINT_BYTES", 0)
                         as u64,
                     node_id,

@@ -50,6 +50,7 @@ fn start(
     }
     server
         .enable_raft(MetaRaftOptions {
+            peer_tls: None,
             node_id: id,
             group_id: 81,
             peers: peers.clone(),
