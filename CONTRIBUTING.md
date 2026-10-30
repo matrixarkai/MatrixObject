@@ -51,7 +51,7 @@ Four jobs, all on a pinned toolchain:
 | job | what it does |
 |---|---|
 | **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
-| **format and rollback guards** | 177 individual tests in the library plus 106 integration tests, each run by name with `--exact` |
+| **format and rollback guards** | 177 individual tests in the library plus 107 integration tests, each run by name with `--exact` |
 
 The **network metadata consensus** job also runs forty-one named health, routing, preparation, and consensus tests
 with the optional consensus feature enabled.
@@ -117,3 +117,9 @@ issue.
 
 By contributing you agree your contribution is licensed under Apache-2.0, the licence in
 [`LICENSE`](LICENSE). Keep the attribution in [`NOTICE`](NOTICE) intact.
+
+The live peer-partition guard runs through `tools/network_partition_test.sh`.
+It builds outside a private Linux network namespace, then uses that namespace for
+the test processes and packet-drop rules. Local distributed simulations use WSL.
+The wrapper requires `ip`, `iptables`, `unshare`, Python 3 and root access (or sudo).
+It fails if isolation cannot be established; it never falls back to host rules.

@@ -2700,6 +2700,17 @@ mod coupled_groups {
 
     #[test]
     fn external_probe_verifies_striped_objects_after_leader_loss_and_restart() {
+        probe_recovery(false);
+    }
+
+    #[test]
+    #[ignore = "requires a private network namespace; use tools/network_partition_test.sh"]
+    fn live_peer_partitions_preserve_objects_and_recover() {
+        node_regime::network::require_isolated();
+        probe_recovery(true);
+    }
+
+    fn probe_recovery(partition: bool) {
         let mut groups: Vec<_> = (1..=2)
             .map(|id| {
                 let mut group = Group::configured(4 * 1024 * 1024);
@@ -2726,7 +2737,7 @@ mod coupled_groups {
             .to_string();
         group_usage(&metadata.api, &groups, &[]);
         let endpoints = metadata.api.join(",");
-        let run = |mode: &str, bytes: &str| {
+        let run = |mode: &str, bytes: &str, name: &str| {
             std::process::Command::new(env!("CARGO_BIN_EXE_distributed_probe"))
                 .args([
                     mode,
@@ -2737,7 +2748,7 @@ mod coupled_groups {
                     "--bucket",
                     "probe-bucket",
                     "--run",
-                    "recovery",
+                    name,
                     "--objects",
                     "12",
                     "--bytes",
@@ -2766,7 +2777,7 @@ mod coupled_groups {
             );
             assert!(!text.contains("failed=true"), "{text}");
         };
-        check(run("write", "1025"));
+        check(run("write", "1025", "recovery"));
         let (_, first) = metadata
             .ready()
             .read_object(
@@ -2781,21 +2792,100 @@ mod coupled_groups {
             &first[..16],
             &[48, 4, 40, 164, 67, 125, 127, 187, 26, 250, 23, 127, 169, 118, 248, 113]
         );
-        assert!(!run("write", "1025").status.success());
-        assert!(!run("verify", "1024").status.success());
-        check(run("verify", "1025"));
-        for group in &mut groups {
-            let leader = group.leader();
-            group.kill(leader);
+        assert!(!run("write", "1025", "recovery").status.success());
+        assert!(!run("verify", "1024", "recovery").status.success());
+        check(run("verify", "1025", "recovery"));
+        if partition {
+            let leaders: Vec<_> = groups.iter().map(Group::leader).collect();
+            let endpoint = metadata.ready().endpoint().to_owned();
+            let meta_leader = metadata
+                .api
+                .iter()
+                .position(|api| api == &endpoint)
+                .unwrap();
+            let mut addresses: Vec<_> = groups
+                .iter()
+                .zip(&leaders)
+                .map(|(group, leader)| group.peers[&(*leader as u64 + 1)])
+                .collect();
+            addresses.push(
+                metadata
+                    .peers
+                    .split(',')
+                    .nth(meta_leader)
+                    .unwrap()
+                    .split_once('@')
+                    .unwrap()
+                    .1
+                    .parse()
+                    .unwrap(),
+            );
+            let mut blocked = node_regime::network::BlockPeers::new(&addresses);
+            for (group, isolated) in groups.iter().zip(&leaders) {
+                let until = Instant::now() + Duration::from_secs(30);
+                while group.leader() == *isolated {
+                    assert!(
+                        Instant::now() < until,
+                        "isolated data leader still serves quorum reads"
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                assert!(group.client(*isolated).ping().is_err());
+            }
+            let until = Instant::now() + Duration::from_secs(30);
+            while metadata.ready().endpoint() == endpoint {
+                assert!(
+                    Instant::now() < until,
+                    "isolated metadata leader still serves quorum reads"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let mut isolated =
+                RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+            assert!(isolated
+                .read_manifest("probe-bucket", "probe/recovery/00000000")
+                .is_err());
+            check(run("verify", "1025", "recovery"));
+            check(run("write", "1025", "partition"));
+            for group in &mut groups {
+                for node in &mut group.nodes {
+                    assert!(node.as_mut().unwrap().child.try_wait().unwrap().is_none());
+                }
+            }
+            for node in &mut metadata.nodes {
+                assert!(node.as_mut().unwrap().child.try_wait().unwrap().is_none());
+            }
+            blocked.assert_dropped();
+            blocked.heal();
+            // Remove the new leaders, so the healed voters must join the next write quorums.
+            for (group, isolated) in groups.iter_mut().zip(&leaders) {
+                let leader = group.leader();
+                assert_ne!(leader, *isolated);
+                group.kill(leader);
+            }
+            let leader = metadata.ready().endpoint().to_owned();
+            let leader = metadata.api.iter().position(|api| api == &leader).unwrap();
+            assert_ne!(leader, meta_leader);
+            metadata.kill(leader);
+            metadata.ready();
+            for group in &groups {
+                group.leader();
+            }
+            check(run("write", "1025", "healed"));
+        } else {
+            for group in &mut groups {
+                let leader = group.leader();
+                group.kill(leader);
+            }
+            let leader = metadata.ready().endpoint().to_owned();
+            let leader = metadata.api.iter().position(|api| api == &leader).unwrap();
+            metadata.kill(leader);
         }
-        let leader = metadata.ready().endpoint().to_owned();
-        let leader = metadata.api.iter().position(|api| api == &leader).unwrap();
-        metadata.kill(leader);
         metadata.ready();
         for group in &groups {
             group.leader();
         }
-        check(run("verify", "1025"));
+        check(run("verify", "1025", "recovery"));
         for group in &mut groups {
             for i in 0..3 {
                 if group.nodes[i].is_some() {
@@ -2818,7 +2908,11 @@ mod coupled_groups {
             }
             group.leader();
         }
-        check(run("verify", "1025"));
+        check(run("verify", "1025", "recovery"));
+        if partition {
+            check(run("verify", "1025", "partition"));
+            check(run("verify", "1025", "healed"));
+        }
     }
 
     fn multiple_group_load(group_count: usize, writes: u64, workers: usize, objects: bool) {
