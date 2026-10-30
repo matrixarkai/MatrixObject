@@ -376,3 +376,27 @@ initial write batch, before refresh was invoked, with metadata response deadline
 and unconfirmed publications. The later pass used unchanged deadlines and did not
 retry those uncertain writes. The initial availability failure remains unresolved;
 these results do not establish stable throughput under load.
+
+### Catalog proposal batching
+
+The metadata consensus worker groups a consecutive prefix of catalog commands into a
+bounded Raft proposal batch. Each command retains its own binary protobuf outcome
+and committed reply. Reads and other command families end the prefix. Existing
+request-count and encoded-byte bounds also limit each batch.
+
+Preparation evaluates commands in order against a private copy of the affected
+catalog health and a reversible roster draft. Multiple reports for one group see
+earlier reports in that batch, while the live catalog and roster remain unchanged
+until committed entries apply. A refusal derived from the prepared prefix waits
+behind that prefix through a committed empty entry. Rejected Raft admission restores
+the original state and returns errors to all prepared callers. Expired commands are
+excluded before proposal; transport uncertainty still does not authorize replay.
+
+This reduces separate proposal cycles for queued health reports. It does not change
+quorum requirements, durability barriers, API deadlines or membership fences.
+
+Worker timeout diagnostics distinguish `apply outcome` from `apply ready`.
+The former measures the application callback, while the latter measures work
+between callbacks in Raft Ready processing. Callback failure or unwinding restores
+the Raft observation phase. These observations never decide admission, commitment,
+or whether a write can be replayed.

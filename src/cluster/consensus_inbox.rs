@@ -28,6 +28,7 @@ pub(super) enum WorkerPhase {
     Requests = 6,
     Idle = 7,
     Stopped = 8,
+    ApplyOutcome = 9,
 }
 impl WorkerProgress {
     pub(super) fn new() -> Self {
@@ -45,20 +46,32 @@ impl WorkerProgress {
         let previous = self.0.phase_and_start.swap((now << 8) | phase as u64, std::sync::atomic::Ordering::Relaxed);
         let previous_phase = previous & 255;
         // Startup, idle waiting and shutdown must not hide a completed work stall.
-        if (1..=6).contains(&previous_phase) {
+        if (1..=6).contains(&previous_phase) || previous_phase == WorkerPhase::ApplyOutcome as u64 {
             let duration = now.saturating_sub(previous >> 8);
             self.0.longest_work_phase.fetch_max((duration << 8) | previous_phase, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+    pub(super) fn applying_outcome(&self) -> OutcomeObservation<'_> {
+        self.mark(WorkerPhase::ApplyOutcome);
+        OutcomeObservation(self)
     }
     pub(super) fn describe(&self) -> String {
         let observed = self.0.phase_and_start.load(std::sync::atomic::Ordering::Relaxed);
         fn name(phase: u64) -> &'static str { match phase {
             0 => "starting", 1 => "peer packets", 2 => "state lock", 3 => "apply ready",
             4 => "restore checkpoint", 5 => "publish checkpoint", 6 => "requests",
-            7 => "idle", 8 => "stopped", _ => "unknown",
+            7 => "idle", 8 => "stopped", 9 => "apply outcome", _ => "unknown",
         } }
         let longest = self.0.longest_work_phase.load(std::sync::atomic::Ordering::Relaxed);
         format!("; observed worker={}; worker_phase_ms={}; max_completed_work_phase={}; max_completed_work_phase_ms={}", name(observed & 255), self.elapsed_ms().saturating_sub(observed >> 8), if longest == 0 { "none" } else { name(longest & 255) }, longest >> 8)
+    }
+}
+
+/// Returns observation to Raft processing even if application fails or unwinds.
+pub(super) struct OutcomeObservation<'a>(&'a WorkerProgress);
+impl Drop for OutcomeObservation<'_> {
+    fn drop(&mut self) {
+        self.0.mark(WorkerPhase::ApplyReady);
     }
 }
 
@@ -253,6 +266,26 @@ mod progress_tests {
         worker.mark(WorkerPhase::Requests);
         assert_eq!(worker.0.longest_work_phase.load(Ordering::Relaxed), longest);
         assert!(worker.describe().contains("observed worker=requests"));
+    }
+
+    #[test]
+    fn outcome_observation_records_application_time_and_restores_raft_phase() {
+        use std::sync::atomic::Ordering;
+        let worker = WorkerProgress::new();
+        worker.mark(WorkerPhase::ApplyReady);
+        let outcome = worker.applying_outcome();
+        assert!(worker.describe().contains("observed worker=apply outcome"));
+        // Set a deterministic old phase start without sleeping.
+        worker.0.phase_and_start.store(WorkerPhase::ApplyOutcome as u64, Ordering::Relaxed);
+        drop(outcome);
+        assert!(worker.describe().contains("observed worker=apply ready"));
+        assert_eq!(worker.0.longest_work_phase.load(Ordering::Relaxed) & 255, WorkerPhase::ApplyOutcome as u64);
+        let result = std::panic::catch_unwind(|| {
+            let _outcome = worker.applying_outcome();
+            panic!("application failed");
+        });
+        assert!(result.is_err());
+        assert!(worker.describe().contains("observed worker=apply ready"));
     }
 
     #[test]

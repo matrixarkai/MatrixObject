@@ -426,6 +426,7 @@ fn run(
         progress.mark(WorkerPhase::ApplyReady);
         let output = peer.process_ready_with_snapshot_reader(
             |id, bytes| {
+                let _observation = progress.applying_outcome();
                 applied_term.set(id.term);
                 apply_committed(
                     &mut application.borrow_mut(),
@@ -549,8 +550,7 @@ fn run(
                         }
                     }
                 } else if queued.front().is_some_and(|r| matches!(r.request, MetaRequest::ChunkCatalog(_))) {
-                    let request = queued.pop_front().unwrap();
-                    propose_catalog(peer, service, groups, limit, request, &mut pending);
+                    propose_catalog_batch(peer, service, groups, limit, &mut queued, &mut pending)?;
                 } else if queued.front().is_some_and(|r| read_only(&r.request)) {
                     let mut reads = Vec::new();
                     while queued.front().is_some_and(|r| read_only(&r.request)) {
@@ -688,50 +688,125 @@ fn apply_committed(
     Ok(())
 }
 
-fn propose_catalog(
+fn propose_catalog_batch(
     peer: &mut DurablePeer,
     service: &mut MatrixMetaService,
     groups: &super::ChunkGroupCatalog,
     limit: usize,
-    request: Request,
+    queued: &mut VecDeque<Request>,
     pending: &mut VecDeque<Pending>,
-) {
-    let prepared = (|| {
+) -> Result<(), RaftError> {
+    // Copy only inventories and retained health touched by this consecutive prefix.
+    // Live membership remains unchanged until committed outcomes are applied.
+    let ids: BTreeSet<_> = queued
+        .iter()
+        .take(PROPOSALS_PER_BATCH)
+        .take_while(|r| matches!(r.request, MetaRequest::ChunkCatalog(_)))
+        .filter_map(|r| match &r.request {
+            MetaRequest::ChunkCatalog(command) => Some(command.placement_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut configurations = Vec::new();
+    let mut health = BTreeMap::new();
+    let mut nodes = Vec::new();
+    for id in ids {
+        if let Some(group) = groups.get(&id) {
+            configurations.push(group.clone());
+            nodes.extend(group.member_ids.clone());
+            if let Some(state) = groups.membership_health(&id).map_err(storage)? {
+                health.insert(id, state);
+            }
+        }
+    }
+    let preview = super::ChunkGroupCatalog::with_membership_health(configurations, health)
+        .map_err(storage)?;
+    let nodes = groups
+        .affected_nodes(nodes)
+        .into_iter()
+        .filter(|id| service.nodes.contains_key(id))
+        .collect();
+    let draft = PlacementDraft::with_records(service, nodes, Vec::new());
+    let mut payloads = Vec::new();
+    let mut prepared = Vec::new();
+    let mut bytes = 0usize;
+    for _ in 0..PROPOSALS_PER_BATCH {
+        if !queued
+            .front()
+            .is_some_and(|r| matches!(r.request, MetaRequest::ChunkCatalog(_)))
+        {
+            break;
+        }
+        let request = queued.pop_front().unwrap();
         if request.deadline <= Instant::now() {
-            return Err(refused("catalog request expired before proposal"));
+            let _ = request
+                .reply
+                .try_send(Err(refused("catalog request expired before proposal")));
+            continue;
         }
         request.progress.mark(RequestPhase::Preparing);
         let MetaRequest::ChunkCatalog(command) = &request.request else {
             unreachable!()
         };
         let (outcome, reply) =
-            super::chunk_catalog_command::prepare(service, groups, command, limit)?;
+            match super::chunk_catalog_command::prepare(draft.service, &preview, command, limit) {
+                Ok((outcome, reply)) => (Some(outcome), Ok(reply)),
+                Err(error) => (None, Err(error)),
+            };
+        // Refusals derived from this speculative prefix wait behind its commit too.
         let payload = Entry {
-            version: 2,
+            version: if outcome.is_some() { 2 } else { 1 },
             outcome: Vec::new(),
-            catalog_outcome: outcome.to_payload()?,
+            catalog_outcome: match &outcome {
+                Some(outcome) => outcome.to_payload().map_err(storage)?,
+                None => Vec::new(),
+            },
         }
         .encode_to_vec();
+        if !prepared.is_empty() && bytes.saturating_add(payload.len()) > PACKET_LIMIT / 2 {
+            queued.push_front(request);
+            break;
+        }
         if payload.len() > PACKET_LIMIT / 2 {
-            return Err(refused("catalog proposal exceeds byte limit"));
+            let _ = request
+                .reply
+                .try_send(Err(refused("catalog proposal exceeds byte limit")));
+            continue;
         }
         if request.deadline <= Instant::now() {
-            return Err(refused("catalog request expired during preparation"));
+            let _ = request
+                .reply
+                .try_send(Err(refused("catalog request expired during preparation")));
+            continue;
+        }
+        if let Some(outcome) = outcome {
+            outcome.apply(draft.service, &preview).map_err(storage)?;
         }
         request.progress.mark(RequestPhase::ProposalCompletion);
-        let id = peer.propose(payload).map_err(refused)?;
-        Ok((id, reply))
-    })();
-    match prepared {
-        Ok((id, reply)) => pending.push_back(Pending {
-            id,
-            request,
-            reply: Some(Ok(reply)),
-        }),
-        Err(error) => {
-            let _ = request.reply.try_send(Err(error));
+        bytes += payload.len();
+        payloads.push(payload);
+        prepared.push((request, reply));
+    }
+    drop(draft);
+    if !payloads.is_empty() {
+        match peer.propose_batch(payloads) {
+            Ok(ids) => {
+                for (id, (request, reply)) in ids.into_iter().zip(prepared) {
+                    pending.push_back(Pending {
+                        id,
+                        request,
+                        reply: Some(reply),
+                    });
+                }
+            }
+            Err(error) => {
+                for (request, _) in prepared {
+                    let _ = request.reply.try_send(Err(refused(&error)));
+                }
+            }
         }
     }
+    Ok(())
 }
 
 fn propose_batch(
@@ -2213,6 +2288,9 @@ mod tests {
         )
         .is_err());
         assert_eq!(state(&restored), saved);
+    }
+    mod catalog_batches {
+        include!("meta_catalog_batch_tests.rs");
     }
 }
 
