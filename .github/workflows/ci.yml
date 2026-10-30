@@ -81,6 +81,13 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Check multi-group dynamic voter replacement
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::dynamic_groups::three_dynamic_groups_replace_voters_during_reads_and_recover -- --exact --nocapture --test-threads=1 | tee /tmp/dynamic-groups.log
+          grep -q 'test result: ok. 1 passed' /tmp/dynamic-groups.log
+          grep -q 'DYNAMIC_GROUPS groups=3 peak_processes=15 objects=60' /tmp/dynamic-groups.log
       - name: Check committed chunk route validation
         shell: bash
         run: |

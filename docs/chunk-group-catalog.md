@@ -279,8 +279,8 @@ configuration remain rejected until that voter catches up.
 The seven-process WSL test covers automatic usage, chunk and metadata leader
 loss, learner catch-up and exclusion from voter majorities, promotion through
 joint consensus, removal, full restart and exclusion of a restarted removed
-member from placement health and client routing. Larger dynamic replacement
-workloads remain unfinished.
+member from placement health and client routing. The multi-group workload below
+extends replacement and recovery coverage across sixteen groups.
 
 
 Run the coupled membership/reporting test with:
@@ -310,3 +310,34 @@ permit routing an unadmitted mutation; a lost response never permits replay.
 Controllers can recover their retained fence through this read after restart.
 A later operation obtains a new route; ongoing operations do not silently refresh
 membership or retry uncertain writes.
+
+## Multi-group replacement under read traffic
+
+The dynamic workload starts each chunk group with three voters and a fourth
+permitted member. It writes 16 KiB objects striped over two groups, then keeps a
+reader checking exact payloads and generations while every group adds a learner,
+promotes it through joint consensus and removes an original nonleader voter.
+Each membership change commits its new metadata fence before client routing uses
+it. Only the explicit learner-not-caught-up refusal is retried; uncertain writes
+are never retried. A separate write batch runs after replacement.
+
+The workload then loses the metadata leader and every chunk leader, verifies all
+objects, restarts all processes including removed members, and verifies retained
+fences, active routes, exact bytes and physical/committed capacity accounting.
+The CI case uses three groups, fifteen processes and sixty objects.
+
+Run the larger workload on the local WSL setup:
+
+```sh
+cargo test --release --locked --all-features --test network_chunk_consensus coupled_groups::dynamic_groups::sixteen_dynamic_groups_replace_voters_during_reads_and_recover -- --exact --ignored --nocapture --test-threads=1
+```
+
+A local release run completed in 34.40 seconds with sixteen groups, sixty-seven
+processes and 320 objects. It completed 274 verified reads during membership
+changes. All objects remained readable after seventeen leader losses and after
+full restart. The initial 256 writes took 12,339 ms and the subsequent 64 writes
+took 2,920 ms; read verification took 760 ms after leader loss and 1,440 ms after
+restart. These are bounded local recovery measurements, not sustained throughput
+or independent-host availability claims. Concurrent membership changes across
+groups, long-running replacement churn, larger payloads and transport partitions
+still require separate validation.
