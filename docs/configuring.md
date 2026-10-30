@@ -343,3 +343,20 @@ does not authenticate an operator or provide exclusive repair ownership. It does
 not by itself certify readmission or prevent another process from being restarted
 with different configuration. Use network access controls as with the ordinary
 unauthenticated data API.
+
+## Standalone replicated request scheduling
+
+`RemoteReplicaSet` sends a phase to every eligible member before collecting its
+replies. This overlaps replica processing and network response latency without
+adding worker threads. Reads still poll the whole set. Writes and discards first
+collect all head responses, require matching state to satisfy both quorum rules,
+and send conditional mutations only to matching members. Returned acknowledgement
+counts still include every completed member response.
+
+Each connection permits one pending request. Its absolute reply deadline starts
+when collection begins for that member, preserving the existing per-member timeout
+policy. A slow early member cannot expire healthy replies waiting on other sockets.
+Abandoned or malformed replies close the socket. No uncertain mutation is replayed.
+Socket writes and failed-connection recovery remain sequential, so a blocked sender
+can delay fan-out; this is not a fastest-quorum completion policy. Complete-state
+repair retains its bounded-memory transfer path.

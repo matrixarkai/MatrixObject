@@ -90,6 +90,32 @@ pub struct RemoteReplicaClient {
     group_identity: Option<crate::cluster::ChunkGroupIdentity>,
 }
 
+// Owns an exclusive client borrow until its response is consumed or abandoned.
+// Abandoning an incomplete response closes the socket before it can be reused.
+pub(super) struct PendingReplicaReply<'a> {
+    client: &'a mut RemoteReplicaClient,
+    code: crate::cluster::wire::RequestCode,
+}
+impl PendingReplicaReply<'_> {
+    pub(super) fn finish(self) -> Result<ReplicaReply, ObjectError> {
+        match self
+            .client
+            .read_reply(self.code, exchange_deadline(self.client.read_timeout)?)
+        {
+            Ok(ReplicaReply::NotLeader) => Err(not_leader()),
+            result => result,
+        }
+    }
+}
+impl Drop for PendingReplicaReply<'_> {
+    fn drop(&mut self) {
+        self.client.last_exchange = Instant::now();
+        if !self.client.connection_usable {
+            let _ = self.client.writer.shutdown(Shutdown::Both);
+        }
+    }
+}
+
 impl RemoteReplicaClient {
     /// Open a connection to `endpoint` and keep it.
     ///
@@ -696,16 +722,54 @@ impl RemoteReplicaClient {
         result
     }
 
+    // Standalone fan-out sends one request per socket before collecting replies.
+    pub(super) fn begin_standalone(
+        &mut self,
+        request: &ReplicaRequest,
+    ) -> Result<PendingReplicaReply<'_>, ObjectError> {
+        if self.catalog.is_some() || !self.connection_usable {
+            return Err(transport_error(
+                &self.endpoint,
+                "starting fan-out",
+                "connection is unavailable or uses a catalog",
+            ));
+        }
+        self.connection_usable = false;
+        let sent = self.send_request(request);
+        match sent {
+            Ok(()) => Ok(PendingReplicaReply {
+                client: self,
+                code: request.code(),
+            }),
+            Err(error) => {
+                self.last_exchange = Instant::now();
+                let _ = self.writer.shutdown(Shutdown::Both);
+                Err(error)
+            }
+        }
+    }
+
     fn exchange(&mut self, request: &ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
-        let code = request.code();
-        let frame = encode_request(&request);
+        self.send_request(request)?;
+        self.read_reply(request.code(), exchange_deadline(self.read_timeout)?)
+    }
+
+    fn send_request(&mut self, request: &ReplicaRequest) -> Result<(), ObjectError> {
+        let frame = encode_request(request);
         write_before(
             &mut self.writer,
             &frame,
             exchange_deadline(self.write_timeout)?,
         )
         .map_err(|err| transport_error(&self.endpoint, "sending a request", &err.to_string()))?;
-        let deadline = exchange_deadline(self.read_timeout)?;
+        Ok(())
+    }
+
+    fn read_reply(
+        &mut self,
+        code: crate::cluster::wire::RequestCode,
+        deadline: Instant,
+    ) -> Result<ReplicaReply, ObjectError> {
         let mut header = [0u8; HEADER_BYTES];
         read_before(&mut self.reader, &mut header, deadline).map_err(|err| {
             transport_error(
@@ -840,4 +904,42 @@ fn write_before(
 
 fn not_leader() -> ObjectError {
     ObjectError::PreconditionFailed("chunk request was not admitted by a leader".into())
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn unfinished_or_malformed_fanout_reply_closes_socket_without_replaying() {
+        for malformed in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = RemoteReplicaClient::connect(
+                &listener.local_addr().unwrap().to_string(),
+                &ReplicaClientOptions::default(),
+            )
+            .unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+            server
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let request = ReplicaRequest::Ping;
+            let pending = client.begin_standalone(&request).unwrap();
+            let expected = encode_request(&request);
+            let mut sent = vec![0; expected.len()];
+            server.read_exact(&mut sent).unwrap();
+            assert_eq!(sent, expected);
+            if malformed {
+                server.write_all(&[255, 0, 0, 0, 0, 0]).unwrap();
+                assert!(pending.finish().is_err());
+            } else {
+                drop(pending);
+            }
+            assert!(!client.connection_usable);
+            assert!(client.begin_standalone(&request).is_err());
+            let mut byte = [0];
+            assert_eq!(server.read(&mut byte).unwrap(), 0);
+        }
+    }
 }
