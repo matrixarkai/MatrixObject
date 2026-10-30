@@ -316,3 +316,30 @@ Fence writers and verify the complete traversal before using it for replica
 readmission. Completion does not automatically change node health or metadata
 placement eligibility. Background scheduling and operator decisions remain
 separate from the bounded traversal API.
+
+
+## Standalone maintenance mode
+
+Set `MATRIXOBJECT_REPLICA_MAINTENANCE=true` when starting a standalone chunk
+process for repair. The default is `false`; other values, including empty strings,
+are refused. Library users set `ReplicaNodeOptions::maintenance`. The startup line
+prints the selected mode. It is fixed for that server lifetime and cannot be
+combined with Raft consensus.
+
+Maintenance mode refuses ordinary and conditional writes and discards before
+changing committed page state or the journal. Reads, inventories, and bounded staged installation
+remain available, so quorum repair can inspect and replace pages. Automatic
+heartbeats report the node offline with its actual used bytes and capacity,
+including after repair. Wait for metadata to observe the offline report, or
+explicitly drain the node, before relying on placement exclusion; propagation is
+not instantaneous. Metadata retains existing operator-owned roster settings.
+
+This is process configuration, not a durable cluster lease. Keep the maintenance
+setting on every restart throughout the maintenance window. Restarting without
+it deliberately resumes ordinary mutation admission. Coordinate all relevant
+writers and replicas, inspect blocked repair reports, and complete verification
+before resuming service. Other repair clients can still install state; the mode
+does not authenticate an operator or provide exclusive repair ownership. It does
+not by itself certify readmission or prevent another process from being restarted
+with different configuration. Use network access controls as with the ordinary
+unauthenticated data API.

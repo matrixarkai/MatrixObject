@@ -1091,3 +1091,97 @@ fn repair_inventory_requires_every_member_before_mutating_any_page() {
         assert_eq!(std::fs::read(path).unwrap(), expected);
     }
 }
+
+#[test]
+fn maintenance_blocks_ordinary_mutations_but_repairs_and_recovers_pages() {
+    let dir = JournalDir::new();
+    let node = start(&dir.file());
+    let mut c = client(&node);
+    c.write_chunk(page(0), 0, b"original").unwrap();
+    let before = c.head_chunk(&page(0)).unwrap();
+    drop(c);
+    drop(node);
+    let start_maintenance = || {
+        processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", dir.file().to_str().unwrap()),
+                ("MATRIXOBJECT_REPLICA_MAINTENANCE", "true"),
+            ],
+        )
+    };
+    let node = start_maintenance();
+    assert!(node.startup_line.contains("maintenance=true"));
+    let mut c = client(&node);
+    let journal = std::fs::read(dir.file()).unwrap();
+    for result in [
+        c.write_chunk(page(0), 0, b"no"),
+        c.write_chunk(page(1), 0, b"new"),
+        c.write_chunk_if_sequence(page(0), 0, b"no", before.write_sequence),
+        c.discard_chunk(&page(0), 0, 1),
+        c.discard_chunk_if_sequence(&page(0), 0, 1, before.write_sequence),
+    ] {
+        assert!(matches!(
+            result,
+            Err(matrixobjectstore_rs::ObjectError::PreconditionFailed(_))
+        ));
+    }
+    assert_eq!(std::fs::read(dir.file()).unwrap(), journal);
+    assert_eq!(c.head_chunk(&page(0)).unwrap(), before);
+    assert_eq!(
+        c.page_inventory(None, 1).unwrap().entries,
+        vec![(page(0), 1)]
+    );
+    let mut source = matrixobjectstore_rs::MatrixReplicaService::new();
+    source.write_chunk(page(0), 0, b"original").unwrap();
+    source.write_chunk(page(0), 0, b"repaired").unwrap();
+    source.discard_chunk(&page(0), 2, 2).unwrap();
+    let state = source.read_chunk_state(&page(0)).unwrap();
+    let expected = source.head_chunk(&page(0)).unwrap();
+    c.install_chunk_state(
+        &page(0),
+        &state,
+        Some(&before.state_checksum),
+        "maintenance-repair",
+    )
+    .unwrap();
+    assert_eq!(c.head_chunk(&page(0)).unwrap(), expected);
+    drop(c);
+    drop(node);
+    let node = start_maintenance();
+    let mut c = client(&node);
+    assert_eq!(c.head_chunk(&page(0)).unwrap(), expected);
+    assert_eq!(c.read_chunk_state(&page(0)).unwrap().data, state.data);
+    assert!(c.write_chunk(page(0), 0, b"still-no").is_err());
+    drop(c);
+    drop(node);
+    let node = start(&dir.file());
+    assert!(node.startup_line.contains("maintenance=false"));
+    let mut c = client(&node);
+    assert_eq!(c.head_chunk(&page(0)).unwrap(), expected);
+    c.write_chunk_if_sequence(page(0), 0, b"resumed!", expected.write_sequence)
+        .unwrap();
+    assert_eq!(c.read_chunk(&page(0), 0, 8).unwrap().data, b"resumed!");
+}
+
+#[test]
+fn invalid_maintenance_configuration_refuses_startup() {
+    use std::process::{Command, Stdio};
+    for value in ["", "yes", "1", "FALSE"] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_chunkserver"))
+            .env("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0")
+            .env("MATRIXOBJECT_REPLICA_MAINTENANCE", value)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let status = processes::reap_within(&mut child, std::time::Duration::from_secs(3));
+        if status.is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("invalid maintenance setting started serving");
+        }
+        assert_eq!(status, Some(2));
+    }
+}

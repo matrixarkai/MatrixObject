@@ -93,7 +93,7 @@ pub(super) fn run(
                 (
                     state.used_bytes,
                     state.service.capacity_bytes(),
-                    !state.failed,
+                    !state.failed && !state.maintenance,
                 )
             };
             if stop.is_stopped() {
@@ -213,5 +213,105 @@ mod tests {
         meta_worker.join().unwrap();
         drop(state);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn maintenance_reports_offline_and_excludes_placement_while_repair_remains_available() {
+        let meta = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
+        let mut chunk = ReplicaNodeServer::bind(
+            "127.0.0.1:0",
+            ReplicaNodeOptions {
+                maintenance: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let endpoint = chunk.local_addr().unwrap();
+        let metadata = meta.local_addr().unwrap();
+        meta.seed_data_roster(
+            &DataNodeSeed::parse_roster(&format!("maintenance-1@{endpoint}@rack")).unwrap(),
+            1 << 28,
+        )
+        .unwrap();
+        chunk
+            .enable_heartbeats(ReplicaHeartbeatOptions {
+                node_id: "maintenance-1".into(),
+                advertised_endpoint: endpoint,
+                metadata_endpoints: vec![metadata],
+                interval: Duration::from_millis(100),
+                expected_metadata_identity: None,
+            })
+            .unwrap();
+        #[cfg(feature = "chunk-consensus")]
+        {
+            let directory = std::env::temp_dir()
+                .join(format!("maintenance-raft-refusal-{}", std::process::id()));
+            let error = chunk
+                .enable_consensus(super::super::ChunkRaftOptions {
+                    node_id: 1,
+                    group_id: 1,
+                    peers: std::collections::BTreeMap::new(),
+                    directory: directory.clone(),
+                    request_timeout: Duration::from_secs(1),
+                    checkpoint_after_bytes: 0,
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("maintenance mode"));
+            assert!(!directory.exists());
+        }
+        let meta_stop = meta.shutdown_handle();
+        let chunk_stop = chunk.shutdown_handle();
+        let meta_worker = std::thread::spawn(move || meta.serve().unwrap());
+        let chunk_worker = std::thread::spawn(move || chunk.serve().unwrap());
+        let mut catalog =
+            RemoteMetaClient::connect(&metadata.to_string(), &MetaClientOptions::default())
+                .unwrap();
+        let wait = |catalog: &mut RemoteMetaClient, used: u64| {
+            let until = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let nodes = catalog.list_placement_nodes().unwrap();
+                let node = &nodes[0];
+                if !node.online && node.used_bytes == used {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < until,
+                    "maintenance health did not converge"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait(&mut catalog, 0);
+        assert!(catalog
+            .plan_object_placement("bucket", "key", 1, 1)
+            .is_err());
+        let mut data =
+            RemoteReplicaClient::connect(&endpoint.to_string(), &ReplicaClientOptions::default())
+                .unwrap();
+        let page = PageId {
+            chunk_id: ChunkId::new(1, 2).unwrap(),
+            page_index: 0,
+        };
+        assert!(data.write_chunk(page.clone(), 0, b"ordinary").is_err());
+        let mut source = crate::MatrixReplicaService::new();
+        source.write_chunk(page.clone(), 0, b"repair-data").unwrap();
+        data.install_chunk_state(
+            &page,
+            &source.read_chunk_state(&page).unwrap(),
+            None,
+            "health-repair",
+        )
+        .unwrap();
+        wait(&mut catalog, 11);
+        assert!(catalog
+            .plan_object_placement("bucket", "other", 1, 1)
+            .is_err());
+        assert_eq!(data.read_chunk(&page, 0, 11).unwrap().data, b"repair-data");
+        drop(data);
+        drop(catalog);
+        chunk_stop.stop();
+        chunk_worker.join().unwrap();
+        meta_stop.stop();
+        meta_worker.join().unwrap();
     }
 }

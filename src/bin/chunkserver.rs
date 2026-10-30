@@ -25,6 +25,7 @@
 //! | `MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS` | *(unset)* | comma-separated metaserver API IP sockets, 1..7 |
 //! | `MATRIXOBJECT_CHUNK_ADVERTISE_ADDR` | bound address | socket address matching the metadata roster |
 //! | `MATRIXOBJECT_CHUNK_HEARTBEAT_MS` | `1000` | report interval, 100..60000 ms |
+//! | `MATRIXOBJECT_REPLICA_MAINTENANCE` | `false` | standalone repair mode; refuse ordinary writes and report offline |
 //! | `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
 //! | `MATRIXOBJECT_REPLICA_CAPACITY_BYTES` | `268435456` | total page payload bytes; positive |
@@ -51,7 +52,8 @@
 //! writes and discards across restarts. Each successful mutation is synced before
 //! acknowledgment. Without this setting the replica remains in memory only.
 //! The journal is exclusively locked, checksummed, and replayed before listening.
-//! It grows with writes; checkpointing and log compaction are not implemented.
+//! It grows with writes unless periodic checkpointing is enabled; staged installation
+//! also persists a complete checkpoint before acknowledgement.
 //! A recovered node still needs coordinated repair for writes missed while offline.
 //!
 //! The optional `chunk-consensus` feature enables independently durable Raft voters.
@@ -112,7 +114,19 @@ fn main() {
 
     let capacity_bytes = env_usize("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", 256 * 1024 * 1024) as u64;
     let max_pages = env_usize("MATRIXOBJECT_REPLICA_MAX_PAGES", 65_536);
+    let maintenance = match std::env::var("MATRIXOBJECT_REPLICA_MAINTENANCE") {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(raw) => raw.trim().parse::<bool>().unwrap_or_else(|_| {
+            eprintln!("MATRIXOBJECT_REPLICA_MAINTENANCE must be true or false");
+            std::process::exit(2);
+        }),
+        Err(_) => {
+            eprintln!("MATRIXOBJECT_REPLICA_MAINTENANCE must be valid text");
+            std::process::exit(2);
+        }
+    };
     let options = ReplicaNodeOptions {
+        maintenance,
         max_payload_bytes,
         worker_threads,
         capacity_bytes,
@@ -333,7 +347,7 @@ fn main() {
     println!(
         "chunkserver listening on {bound} pid={} protocol_stamp={PROTOCOL_STAMP} \
          threads={worker_threads} max_payload_bytes={max_payload_bytes} auth=none \
-         storage={storage} capacity_bytes={capacity_bytes} max_pages={max_pages}",
+         storage={storage} capacity_bytes={capacity_bytes} max_pages={max_pages} maintenance={maintenance}",
         std::process::id()
     );
     if !bound.ip().is_loopback() {
