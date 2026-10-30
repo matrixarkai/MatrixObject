@@ -15,7 +15,7 @@ fn placement_raft_status_page_fields(
             status.root_page_allocator_shard_count,
         ),
         (
-            "placement_block_allocator_covered_shards",
+            "placement_page_allocator_covered_shards",
             status.root_page_allocator_covered_shards,
         ),
         (
@@ -27,115 +27,115 @@ fn placement_raft_status_page_fields(
             status.root_read_ready_pageserver_count,
         ),
         (
-            "placement_blockserver_route_control_proof_count",
+            "placement_pageserver_route_control_proof_count",
             status.root_pageserver_route_control_proof_count,
         ),
         (
-            "placement_blockserver_route_control_read_ready_count",
+            "placement_pageserver_route_control_read_ready_count",
             status.root_pageserver_route_control_read_ready_count,
         ),
         (
-            "placement_blockserver_route_control_write_ready_count",
+            "placement_pageserver_route_control_write_ready_count",
             status.root_pageserver_route_control_write_ready_count,
         ),
         (
-            "placement_blockserver_route_control_min_commit_index",
+            "placement_pageserver_route_control_min_commit_index",
             status.root_pageserver_route_control_min_commit_index,
         ),
         (
-            "placement_blockserver_route_control_max_commit_index",
+            "placement_pageserver_route_control_max_commit_index",
             status.root_pageserver_route_control_max_commit_index,
         ),
         (
-            "placement_blockserver_total_chunk_metadata_dirty_endpoint_count",
+            "placement_pageserver_total_chunk_metadata_dirty_endpoint_count",
             status.root_pageserver_total_chunk_metadata_dirty_endpoint_count,
         ),
         (
-            "placement_blockserver_total_chunk_metadata_dirty_mutations",
+            "placement_pageserver_total_chunk_metadata_dirty_mutations",
             status.root_pageserver_total_chunk_metadata_dirty_mutations,
         ),
         (
-            "placement_blockserver_max_chunk_metadata_checkpoint_interval",
+            "placement_pageserver_max_chunk_metadata_checkpoint_interval",
             status.root_pageserver_max_chunk_metadata_checkpoint_interval,
         ),
         (
-            "placement_blockserver_total_deferred_metadata_checkpoint_endpoint_count",
+            "placement_pageserver_total_deferred_metadata_checkpoint_endpoint_count",
             status.root_pageserver_total_deferred_metadata_checkpoint_endpoint_count,
         ),
         (
-            "placement_blockserver_total_deferred_metadata_checkpoint_requests",
+            "placement_pageserver_total_deferred_metadata_checkpoint_requests",
             status.root_pageserver_total_deferred_metadata_checkpoint_requests,
         ),
         (
-            "placement_blockserver_total_deferred_metadata_checkpoint_runs",
+            "placement_pageserver_total_deferred_metadata_checkpoint_runs",
             status.root_pageserver_total_deferred_metadata_checkpoint_runs,
         ),
         (
-            "placement_blockserver_total_chunk_capacity_rejected_writes",
+            "placement_pageserver_total_chunk_capacity_rejected_writes",
             status.root_pageserver_total_chunk_capacity_rejected_writes,
         ),
         (
-            "placement_blockserver_total_chunk_service_mode_rejected_mutations",
+            "placement_pageserver_total_chunk_service_mode_rejected_mutations",
             status.root_pageserver_total_replica_service_mode_rejected_mutations,
         ),
         (
-            "placement_blockserver_total_chunk_physical_write_count",
+            "placement_pageserver_total_chunk_physical_write_count",
             status.root_pageserver_total_chunk_physical_write_count,
         ),
         (
-            "placement_blockserver_total_chunk_physical_write_bytes",
+            "placement_pageserver_total_chunk_physical_write_bytes",
             status.root_pageserver_total_chunk_physical_write_bytes,
         ),
         (
-            "placement_blockserver_total_chunk_physical_discard_range_count",
+            "placement_pageserver_total_chunk_physical_discard_range_count",
             status.root_pageserver_total_chunk_physical_discard_range_count,
         ),
         (
-            "placement_blockserver_total_chunk_physical_discard_bytes",
+            "placement_pageserver_total_chunk_physical_discard_bytes",
             status.root_pageserver_total_chunk_physical_discard_bytes,
         ),
         (
-            "placement_blockserver_total_reclaimable_bytes",
+            "placement_pageserver_total_reclaimable_bytes",
             status.root_pageserver_total_reclaimable_bytes,
         ),
         (
-            "placement_blockserver_total_trailing_trim_bytes",
+            "placement_pageserver_total_trailing_trim_bytes",
             status.root_pageserver_total_trailing_trim_bytes,
         ),
         (
-            "placement_blockserver_total_fragmented_chunk_count",
+            "placement_pageserver_total_fragmented_chunk_count",
             status.root_pageserver_total_fragmented_chunk_count,
         ),
         (
-            "placement_blockserver_total_fragmented_discarded_bytes",
+            "placement_pageserver_total_fragmented_discarded_bytes",
             status.root_pageserver_total_fragmented_discarded_bytes,
         ),
         (
-            "placement_blockserver_total_allocation_receipt_count",
+            "placement_pageserver_total_allocation_receipt_count",
             status.root_pageserver_total_allocation_receipt_count,
         ),
         (
-            "placement_blockserver_total_batch_allocation_receipt_count",
+            "placement_pageserver_total_batch_allocation_receipt_count",
             status.root_pageserver_total_batch_allocation_receipt_count,
         ),
         (
-            "placement_blockserver_total_release_allocation_receipt_count",
+            "placement_pageserver_total_release_allocation_receipt_count",
             status.root_pageserver_total_release_allocation_receipt_count,
         ),
         (
-            "placement_blockserver_total_write_receipt_count",
+            "placement_pageserver_total_write_receipt_count",
             status.root_pageserver_total_write_receipt_count,
         ),
         (
-            "placement_blockserver_total_batch_write_receipt_count",
+            "placement_pageserver_total_batch_write_receipt_count",
             status.root_pageserver_total_batch_write_receipt_count,
         ),
         (
-            "placement_blockserver_total_discard_receipt_count",
+            "placement_pageserver_total_discard_receipt_count",
             status.root_pageserver_total_discard_receipt_count,
         ),
         (
-            "placement_blockserver_total_batch_discard_receipt_count",
+            "placement_pageserver_total_batch_discard_receipt_count",
             status.root_pageserver_total_batch_discard_receipt_count,
         ),
     ] {

@@ -49289,6 +49289,298 @@ fn a_published_key_names_the_same_tier_as_the_field_behind_it() {
     }
 }
 
+/// A PUBLISHED KEY MUST NOT KEEP A SPELLING ITS OWN FIELD HAS DROPPED.
+///
+/// `a_published_key_names_the_same_tier_as_the_field_behind_it` says in its own doc
+/// comment that it cannot see this: `block` and `page` are two spellings of ONE tier, so
+/// a key spelled the retired way over a field spelled the current way AGREES about the
+/// tier and that guard passes. Thirty-three keys sat in exactly that blind spot --
+/// published under the page tier's retired spelling while every field behind them had
+/// already moved, several of them listed in the same builder beside siblings that had.
+///
+/// So this is the mirror: the SAME key/field pairs, compared on spelling age within one
+/// tier instead of on tier identity across two. The partition is deliberate and neither
+/// guard subsumes the other -- a key naming the OTHER tier is the sibling's question,
+/// and the pairs it carries as open questions must NOT fire here. That is asserted
+/// below, so resolving one guard's list can never quietly arm the other.
+///
+/// The direction matters. This asks only about the PUBLISHED name: a current key over a
+/// field that kept the retired spelling is an internal name no reader sees, and is not
+/// what this guard is for. Asserted below as well, because a detector that fired both
+/// ways would start reporting renames nobody asked for.
+///
+/// The source list is DERIVED from the pairs -- every file under `src` holding a
+/// `("key", receiver.field)` pair where both sides name a tier -- rather than
+/// remembered, because a list written from memory omits the file the problem is in.
+#[test]
+fn a_published_key_does_not_keep_a_spelling_its_field_has_dropped() {
+    const SOURCES: &[(&str, &str)] = &[
+        ("protocol/object/maintenance_root_proofs/page_repair.rs", include_str!("protocol/object/maintenance_root_proofs/page_repair.rs")),
+        ("protocol/object/maintenance_root_proofs/storage_maintenance.rs", include_str!("protocol/object/maintenance_root_proofs/storage_maintenance.rs")),
+        ("protocol/object/reads_changefeed/range_admission.rs", include_str!("protocol/object/reads_changefeed/range_admission.rs")),
+        ("protocol/object/reads_changefeed/read_results.rs", include_str!("protocol/object/reads_changefeed/read_results.rs")),
+        ("protocol/root/catalog_raft_status_chunk.inc.rs", include_str!("protocol/root/catalog_raft_status_chunk.inc.rs")),
+        ("protocol/root/catalog_raft_status_identity.inc.rs", include_str!("protocol/root/catalog_raft_status_identity.inc.rs")),
+        ("protocol/root/catalog_raft_status_page.inc.rs", include_str!("protocol/root/catalog_raft_status_page.inc.rs")),
+        ("protocol/root/catalog_raft_status_readiness.inc.rs", include_str!("protocol/root/catalog_raft_status_readiness.inc.rs")),
+        ("protocol/root/catalog_root_node.inc.rs", include_str!("protocol/root/catalog_root_node.inc.rs")),
+        ("protocol/root/placement_reclaim/reclaim_controls.rs", include_str!("protocol/root/placement_reclaim/reclaim_controls.rs")),
+        ("protocol/storage/distributed_readiness_fields.rs", include_str!("protocol/storage/distributed_readiness_fields.rs")),
+        ("protocol/storage/maintenance/maintenance_plan.rs", include_str!("protocol/storage/maintenance/maintenance_plan.rs")),
+        ("protocol/storage/maintenance/reclaim_candidates/chunk_fields.rs", include_str!("protocol/storage/maintenance/reclaim_candidates/chunk_fields.rs")),
+        ("protocol/storage/maintenance/reclaim_candidates/prepared_envelope_fields.rs", include_str!("protocol/storage/maintenance/reclaim_candidates/prepared_envelope_fields.rs")),
+        ("protocol/storage/maintenance/reclaim_candidates/prepared_replica_fields.rs", include_str!("protocol/storage/maintenance/reclaim_candidates/prepared_replica_fields.rs")),
+        ("protocol/storage/maintenance/reclaim_candidates/replica_plan_fields.rs", include_str!("protocol/storage/maintenance/reclaim_candidates/replica_plan_fields.rs")),
+        ("protocol/storage/maintenance/replica_audit.rs", include_str!("protocol/storage/maintenance/replica_audit.rs")),
+        ("protocol/storage/maintenance/storage_readiness.rs", include_str!("protocol/storage/maintenance/storage_readiness.rs")),
+        ("services/chunk/protocol_receipts/admission_cache_batch/admission_qos.rs", include_str!("services/chunk/protocol_receipts/admission_cache_batch/admission_qos.rs")),
+        ("services/chunk/protocol_receipts/admission_cache_batch/batch_stats.rs", include_str!("services/chunk/protocol_receipts/admission_cache_batch/batch_stats.rs")),
+        ("services/chunk/protocol_receipts/admission_cache_batch/cache_control.rs", include_str!("services/chunk/protocol_receipts/admission_cache_batch/cache_control.rs")),
+        ("services/chunk/protocol_receipts/bootstrap_readiness/control_proof_fields.rs", include_str!("services/chunk/protocol_receipts/bootstrap_readiness/control_proof_fields.rs")),
+        ("services/chunk/protocol_receipts/bootstrap_readiness/storage_readiness.rs", include_str!("services/chunk/protocol_receipts/bootstrap_readiness/storage_readiness.rs")),
+        ("services/chunk/protocol_receipts/prepared_config/prepared_configs.rs", include_str!("services/chunk/protocol_receipts/prepared_config/prepared_configs.rs")),
+        ("services/chunk/protocol_receipts/receipt_pages/lifecycle_receipts.rs", include_str!("services/chunk/protocol_receipts/receipt_pages/lifecycle_receipts.rs")),
+        ("services/chunk/protocol_receipts/reclaim_reports.rs", include_str!("services/chunk/protocol_receipts/reclaim_reports.rs")),
+        ("services/chunk/protocol_receipts/repair_rebalance_health/bounded_repair.rs", include_str!("services/chunk/protocol_receipts/repair_rebalance_health/bounded_repair.rs")),
+        ("services/chunk/protocol_receipts/repair_rebalance_health/object_repair_controls.rs", include_str!("services/chunk/protocol_receipts/repair_rebalance_health/object_repair_controls.rs")),
+        ("services/page/protocol_receipts/audit_receipt_types.rs", include_str!("services/page/protocol_receipts/audit_receipt_types.rs")),
+        ("services/page/protocol_receipts/batch_admission.rs", include_str!("services/page/protocol_receipts/batch_admission.rs")),
+        ("services/page/protocol_receipts/mutation_report_types.rs", include_str!("services/page/protocol_receipts/mutation_report_types.rs")),
+        ("services/page/protocol_receipts/prepared_control_config.rs", include_str!("services/page/protocol_receipts/prepared_control_config.rs")),
+        ("services/page/protocol_receipts/prepared_mutation_envelopes.rs", include_str!("services/page/protocol_receipts/prepared_mutation_envelopes.rs")),
+        ("services/page/protocol_receipts/read_reports.rs", include_str!("services/page/protocol_receipts/read_reports.rs")),
+        ("services/page/protocol_receipts/route_control_proof.rs", include_str!("services/page/protocol_receipts/route_control_proof.rs")),
+    ];
+
+    // Each tier's spellings, and whether the spelling is the retired one.
+    //
+    // ORDER MATTERS, for the same reason it does in the sibling guard: `blockserver`
+    // contains `block` and `chunkserver` contains `chunk`, and a name holding both words
+    // belongs to the one it is named FOR.
+    fn spelling_of(text: &str) -> Option<(&'static str, bool)> {
+        for (needle, tier, retired) in [
+            ("replicaserver", "chunk", true),
+            ("chunkserver", "chunk", false),
+            ("pageserver", "page", false),
+            ("blockserver", "page", true),
+            ("chunk", "chunk", false),
+            ("page", "page", false),
+            ("block", "page", true),
+        ] {
+            if text.contains(needle) {
+                return Some((tier, retired));
+            }
+        }
+        None
+    }
+
+    // A retired spelling in the KEY over a current spelling of THE SAME tier in the
+    // field. Both conditions are required: a different tier is the sibling guard's
+    // question, and a retired field under a current key is nobody's.
+    fn keeps_a_dropped_spelling(key: &str, field: &str) -> bool {
+        match (spelling_of(key), spelling_of(field)) {
+            (Some((key_tier, true)), Some((field_tier, false))) => key_tier == field_tier,
+            _ => false,
+        }
+    }
+
+    // THE DETECTOR IS EXERCISED ON KNOWN ANSWERS FIRST. Once the keys moved, the scan
+    // below finds only the priced pairs, so a detector that had stopped recognising
+    // anything would pass just as quietly. These are the arms of that check: two
+    // positives taken from pairs this guard was written for, and three controls.
+    assert!(
+        keeps_a_dropped_spelling(
+            "placement_blockserver_route_control_proof_count",
+            "root_pageserver_route_control_proof_count"
+        ),
+        "the detector no longer recognises the retired server spelling it was written for"
+    );
+    assert!(
+        keeps_a_dropped_spelling(
+            "placement_block_allocator_covered_shards",
+            "root_page_allocator_covered_shards"
+        ),
+        "the detector no longer recognises the retired bare spelling"
+    );
+    assert!(
+        !keeps_a_dropped_spelling(
+            "placement_pageserver_route_control_proof_count",
+            "root_pageserver_route_control_proof_count"
+        ),
+        "the detector fires on a key that already agrees with its field, so every pair \
+         would be reported and the list below would mean nothing"
+    );
+    assert!(
+        !keeps_a_dropped_spelling(
+            "placement_pageserver_route_control_proof_count",
+            "root_blockserver_route_control_proof_count"
+        ),
+        "the detector fires on a RETIRED FIELD under a current key, which is an internal \
+         name and not this guard's question"
+    );
+    // AND THE SIBLING'S OPEN QUESTIONS STAY ITS OWN: a page-spelled key over a CHUNK-tier
+    // field is a tier mislabel, which is what `MISLABELLED` records. If this ever fired,
+    // closing that list by renaming the key would also silence this guard.
+    assert!(
+        !keeps_a_dropped_spelling(
+            "block_route_control_proof_bytes",
+            "chunk_route_control_proof_bytes"
+        ),
+        "a page-tier key over a chunk-tier field is the sibling guard's finding, not this \
+         one's; the two guards must not both claim it"
+    );
+
+    // Keys whose rename is NOT free, each with what it would cost.
+    //
+    // These are PRICED, not blessed: the entry says what has to be built before the key
+    // can move, and an entry that stops matching fails below, so the list cannot outlive
+    // the problem it records.
+    const PRICED: &[(&str, &str, &str)] = &[
+        (
+            "min_block_physical_discard_bytes",
+            "min_page_physical_discard_bytes",
+            "its builder ends with `control_fields_checksum(&fields)`, which hashes the KEY \
+             NAMES, so renaming the key moves the published `plan_checksum` for unchanged \
+             state -- and that checksum has no accepted-forms set to migrate it through",
+        ),
+        (
+            "min_block_physical_discard_ranges",
+            "min_page_physical_discard_ranges",
+            "the same builder and the same checksum as the bytes key above; the two move \
+             together or not at all",
+        ),
+    ];
+
+    let mut examined = 0usize;
+    let mut tiers_seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut found: Vec<String> = Vec::new();
+    let mut matched: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
+
+    for (path, text) in SOURCES {
+        // Comment lines go BEFORE the join, or a `//` swallows the code after it; and the
+        // join is needed at all because rustfmt splits long pairs across lines.
+        let joined: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let bytes = joined.as_bytes();
+        let mut at = 0usize;
+        while let Some(offset) = joined[at..].find('"') {
+            let quote = at + offset;
+            let open = quote + 1;
+            at = open;
+            // rustfmt puts the `(` on its own line for long tuples, so the paren is the
+            // preceding NON-SPACE byte rather than the adjacent one.
+            let mut back = quote;
+            while back > 0 && bytes[back - 1] == b' ' {
+                back -= 1;
+            }
+            if back == 0 || bytes[back - 1] != b'(' {
+                continue;
+            }
+            let Some(close_offset) = joined[open..].find('"') else {
+                break;
+            };
+            let close = open + close_offset;
+            let key = &joined[open..close];
+            // After the closing quote: whitespace, a comma, an optional `&`, then any
+            // receiver and a `.`. The receiver is not spelled out, because a remembered
+            // set of receiver names is one more list that can omit the interesting case --
+            // these builders use `self`, `self_` and `status` already.
+            let mut cursor = close + 1;
+            while cursor < bytes.len() && (bytes[cursor] == b' ' || bytes[cursor] == b',') {
+                cursor += 1;
+            }
+            if cursor < bytes.len() && bytes[cursor] == b'&' {
+                cursor += 1;
+            }
+            let receiver: String = joined[cursor..]
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            if receiver.is_empty() {
+                continue;
+            }
+            let after_receiver = cursor + receiver.len();
+            if bytes.get(after_receiver) != Some(&b'.') {
+                continue;
+            }
+            let field: String = joined[after_receiver + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            if key.is_empty() || field.is_empty() {
+                continue;
+            }
+            let (Some((key_tier, _)), Some((field_tier, _))) =
+                (spelling_of(key), spelling_of(&field))
+            else {
+                continue;
+            };
+            examined += 1;
+            tiers_seen.insert(key_tier);
+            tiers_seen.insert(field_tier);
+            if !keeps_a_dropped_spelling(key, &field) {
+                continue;
+            }
+            if let Some((k, f, _)) = PRICED
+                .iter()
+                .find(|(k, f, _)| *k == key && *f == field.as_str())
+            {
+                matched.insert((*k, *f));
+                continue;
+            }
+            found.push(format!(
+                "{path}: key `{key}` keeps the {key_tier} tier's retired spelling while \
+                 `{field}`, the field filling it, uses the current one"
+            ));
+        }
+    }
+
+    // NON-VACUITY, three ways, each of which has been the reason a guard of this shape
+    // passed for nothing: an empty catalog, a parse that matched nothing, and a scope that
+    // saw only one tier. 294 tiered pairs across 35 files were counted by a separate scan,
+    // against the tree BEFORE and AFTER the keys moved, before these floors were written
+    // down -- 40 findings before, 2 after.
+    assert!(
+        SOURCES.len() >= 30,
+        "the source catalog shrank to {} files; a guard over nothing passes",
+        SOURCES.len()
+    );
+    assert!(
+        examined >= 250,
+        "only {examined} tiered key/field pairs parsed, so this is measuring its own parse \
+         rather than the code"
+    );
+    assert_eq!(
+        tiers_seen.len(),
+        2,
+        "expected both tiers among the pairs, saw {tiers_seen:?}"
+    );
+
+    found.sort();
+    found.dedup();
+    assert!(
+        found.is_empty(),
+        "a published key keeps a spelling the field behind it has already dropped, which is \
+         what a rename that moved the code and left the published name behind looks \
+         like:\n  {}",
+        found.join("\n  ")
+    );
+
+    // THE PRICED LIST IS ITSELF CHECKED, both ways: an entry that no longer describes a
+    // real pair fails, and so does one carrying no price.
+    for (key, field, price) in PRICED {
+        assert!(
+            matched.contains(&(*key, *field)),
+            "`{key}` no longer keeps a dropped spelling over `{field}`, so delete that entry \
+             instead of carrying the price {price:?}"
+        );
+        assert!(!price.is_empty(), "{key} is listed with no price");
+    }
+}
+
 /// `serves_page_tier()` ANSWERS FROM THE FIELD, AND THE KIND NO LONGER DECIDES.
 ///
 /// This test used to assert the opposite -- that the page KIND decided -- and the kind

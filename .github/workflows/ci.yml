@@ -1634,6 +1634,28 @@ jobs:
           grep -q '^test result: ok. 1 passed' /tmp/guard.log \
             || { echo "::error::a_function_named_for_a_tier_refuses_in_the_name_of_that_tier did not run"; exit 1; }
 
+      # THE TWO PUBLISHED-KEY GUARDS, PINNED HERE BECAUSE NOTHING ELSE RUNS THEM. No
+      # step in this workflow runs the library suite unfiltered, so a guard in
+      # `src/tests.rs` gates only once it is named -- and the first of these two had
+      # been passing in a local run and in CI never.
+      - name: A published key names the same tier as the field behind it
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_published_key_names_the_same_tier_as_the_field_behind_it -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_published_key_names_the_same_tier_as_the_field_behind_it did not run"; exit 1; }
+
+      - name: A published key does not keep a spelling its field has dropped
+        run: |
+          set -o pipefail
+          cargo test --locked --lib \
+            tests::a_published_key_does_not_keep_a_spelling_its_field_has_dropped -- --exact \
+            | tee /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log \
+            || { echo "::error::a_published_key_does_not_keep_a_spelling_its_field_has_dropped did not run"; exit 1; }
+
       # THESE FOUR RUN A BINARY, NOT A LIBRARY. Every guard above is `--lib`, which
       # never links an integration test, so the kill test below would be COMPILED by
       # the build job and RUN by nothing -- which is the state a measurement rots in.

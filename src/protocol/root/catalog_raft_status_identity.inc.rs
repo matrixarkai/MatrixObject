@@ -17,15 +17,15 @@ fn placement_raft_status_identity_fields(
             self_.placement_metadata_control_proof_checksum.as_str(),
         ),
         (
-            "placement_block_allocator_shard_status",
+            "placement_page_allocator_shard_status",
             self_.root_page_allocator_shard_status.as_str(),
         ),
         (
-            "placement_blockserver_route_control_proof_checksum",
+            "placement_pageserver_route_control_proof_checksum",
             self_.root_pageserver_route_control_proof_checksum.as_str(),
         ),
         (
-            "placement_blockserver_service_coverage_status",
+            "placement_pageserver_service_coverage_status",
             self_.root_pageserver_service_coverage_status.as_str(),
         ),
         (
