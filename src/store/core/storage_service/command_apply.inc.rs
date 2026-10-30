@@ -297,7 +297,7 @@ impl MatrixObjectStore {
 }
 
 include!("command_apply/root_bucket.rs");
-include!("command_apply/multipart.rs");
+include!("command_apply/command_apply_multipart.rs");
 include!("command_apply/metadata_shard.rs");
 include!("command_apply/metadata_record_lease.rs");
 include!("command_apply/chunk_control.rs");

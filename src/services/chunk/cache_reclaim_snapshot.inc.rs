@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 include!("cache_reclaim_snapshot/read_cache.inc.rs");
-include!("cache_reclaim_snapshot/discard.inc.rs");
+include!("cache_reclaim_snapshot/cache_reclaim_snapshot_discard.inc.rs");
 include!("cache_reclaim_snapshot/receipt_queries.inc.rs");
-include!("cache_reclaim_snapshot/reclaim.inc.rs");
+include!("cache_reclaim_snapshot/cache_reclaim_snapshot_reclaim.inc.rs");
 include!("cache_reclaim_snapshot/reclaim_execution.inc.rs");
 include!("cache_reclaim_snapshot/reclaim_receipts.inc.rs");
 include!("cache_reclaim_snapshot/repair_simulation.inc.rs");

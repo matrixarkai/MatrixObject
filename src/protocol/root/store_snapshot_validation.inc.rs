@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-include!("store_snapshot_validation/configuration.rs");
+include!("store_snapshot_validation/store_snapshot_validation_configuration.rs");
 include!("store_snapshot_validation/bucket_policies.rs");
 include!("store_snapshot_validation/raft_state.rs");
 include!("store_snapshot_validation/snapshot_checksum.rs");
-include!("store_snapshot_validation/chunks.rs");
-include!("store_snapshot_validation/objects.rs");
+include!("store_snapshot_validation/store_snapshot_validation_chunks.rs");
+include!("store_snapshot_validation/store_snapshot_validation_objects.rs");
 include!("store_snapshot_validation/multipart_uploads.rs");
 include!("store_snapshot_validation/changefeed_state.rs");
 

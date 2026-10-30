@@ -30,6 +30,7 @@ pub mod s3_batch;
 pub mod s3_config;
 pub mod s3_multipart;
 pub mod s3_versions;
+#[path = "net_service.rs"]
 pub mod service;
 
 pub use http::{Request, Response};

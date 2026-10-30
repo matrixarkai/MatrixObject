@@ -10,4 +10,4 @@ include!("records_leases_shards/failover_rebalance.inc.rs");
 include!("records_leases_shards/raft_topology_mutations.inc.rs");
 include!("records_leases_shards/automatic_balancing.inc.rs");
 include!("records_leases_shards/shard_migration_planning.inc.rs");
-include!("records_leases_shards/readiness.inc.rs");
+include!("records_leases_shards/records_leases_shards_readiness.inc.rs");

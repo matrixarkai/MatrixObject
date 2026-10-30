@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-include!("allocation_write/construction.inc.rs");
+include!("allocation_write/allocation_write_construction.inc.rs");
 include!("allocation_write/receipt_retention.inc.rs");
 include!("allocation_write/route_qos_config.inc.rs");
 include!("allocation_write/replica_state.inc.rs");

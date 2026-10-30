@@ -115,7 +115,7 @@ impl TlsConfig {
 }
 
 #[cfg(all(test, feature = "peer-tls", target_os = "linux"))]
-#[path = "../../tests/node_regime/tls.rs"]
+#[path = "../../tests/node_regime/node_regime_tls.rs"]
 pub(super) mod tls_test_material;
 
 #[cfg(all(test, feature = "peer-tls", target_os = "linux"))]
