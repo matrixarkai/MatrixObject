@@ -78,7 +78,7 @@ pub(crate) fn validate_page_chunk_endpoint_topology(
     }
     if endpoints.is_empty() {
         return Err(ObjectError::InvalidArgument(
-            "blockserver requires at least one chunk endpoint".to_string(),
+            "pageserver requires at least one chunk endpoint".to_string(),
         ));
     }
     let mut seen = BTreeSet::new();

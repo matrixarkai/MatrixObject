@@ -38,7 +38,7 @@ impl MatrixObjectStore {
         // and it is the metaserver; a second synthetic node of kind "rootserver" existed only
         // because the service whose placement state was folded into the metaserver used to
         // need one. Nothing reads it: it was never a placement candidate
-        // (`is_data_service_node` admits only chunkserver and blockserver), the metadata
+        // (`is_data_service_node` admits only a store-plane kind), the metadata
         // coverage walk skips any node that is not a metaserver, and the leader lease moved to
         // the metaserver node in #230.
         //

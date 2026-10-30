@@ -39,7 +39,7 @@ impl ChunkServiceBootstrapReport {
             return Ok(());
         }
         Err(ObjectError::PreconditionFailed(format!(
-            "blockserver service bootstrap report checksum mismatch: expected {} got {}",
+            "pageserver service bootstrap report checksum mismatch: expected {} got {}",
             expected_report_checksum, actual
         )))
     }

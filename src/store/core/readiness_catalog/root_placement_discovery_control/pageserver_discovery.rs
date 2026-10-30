@@ -21,7 +21,7 @@ impl MatrixObjectStore {
     ) -> Result<CatalogPageEndpointDiscovery, ObjectError> {
         if !matches!(readiness_policy, "write" | "read" | "online") {
             return Err(ObjectError::InvalidArgument(
-                "blockserver discovery readiness must be write, read, or online".to_string(),
+                "pageserver discovery readiness must be write, read, or online".to_string(),
             ));
         }
         let endpoint_set = self.select_catalog_endpoint_set(None, None)?;
@@ -32,7 +32,7 @@ impl MatrixObjectStore {
         let service_coverage = self.meta_service.pageserver_service_coverage();
         if coverage.status == "none" {
             return Err(ObjectError::PreconditionFailed(
-                "catalog has no active blockserver allocator shards".to_string(),
+                "catalog has no active pageserver allocator shards".to_string(),
             ));
         }
         if coverage.status != "complete"
@@ -79,7 +79,7 @@ impl MatrixObjectStore {
                 || node.page_allocator_shard_index >= node.page_allocator_shard_count
             {
                 return Err(ObjectError::Corruption(format!(
-                    "catalog blockserver node has invalid allocator shard: {}",
+                    "catalog pageserver node has invalid allocator shard: {}",
                     node.node_id
                 )));
             }
@@ -88,7 +88,7 @@ impl MatrixObjectStore {
                 node.page_allocator_shard_index,
             )) {
                 return Err(ObjectError::Corruption(format!(
-                    "catalog blockserver allocator shard is duplicated: {}/{}",
+                    "catalog pageserver allocator shard is duplicated: {}/{}",
                     node.page_allocator_shard_index, node.page_allocator_shard_count
                 )));
             }
@@ -99,7 +99,7 @@ impl MatrixObjectStore {
         endpoints.sort();
         if endpoints.is_empty() {
             return Err(ObjectError::PreconditionFailed(format!(
-                "catalog has no eligible blockserver endpoints for readiness={readiness_policy}"
+                "catalog has no eligible pageserver endpoints for readiness={readiness_policy}"
             )));
         }
         Ok(CatalogPageEndpointDiscovery {

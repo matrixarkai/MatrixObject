@@ -28,7 +28,7 @@ impl MatrixChunkService {
         }
         if applied == 0 {
             return Err(ObjectError::InvalidArgument(
-                "blockserver has no eligible chunk replicas for capacity fanout".to_string(),
+                "pageserver has no eligible chunk replicas for capacity fanout".to_string(),
             ));
         }
         Ok(applied)
@@ -65,7 +65,7 @@ impl MatrixChunkService {
             }
             if replica_count == 0 {
                 return Err(ObjectError::InvalidArgument(
-                    "blockserver has no eligible chunk replicas for capacity prepare".to_string(),
+                    "pageserver has no eligible chunk replicas for capacity prepare".to_string(),
                 ));
             }
             return Ok((etag(&material), replica_count));
