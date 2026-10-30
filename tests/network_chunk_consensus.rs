@@ -1764,6 +1764,13 @@ mod coupled_groups {
 
     #[test]
     fn object_writer_publishes_verified_pages_across_groups_and_recovery() {
+        object_writer_recovery(4);
+    }
+    #[test]
+    fn serial_object_writer_preserves_verified_recovery() {
+        object_writer_recovery(1);
+    }
+    fn object_writer_recovery(max_parallel_groups: usize) {
         use matrixobjectstore_rs::cluster::{ObjectWriteFailure, ObjectWriteOptions};
         let mut groups: Vec<_> = (1..=2)
             .map(|id| {
@@ -1788,6 +1795,7 @@ mod coupled_groups {
         let options = ObjectWriteOptions {
             page_bytes: 4,
             target_groups: 2,
+            max_parallel_groups,
             replica: ReplicaClientOptions {
                 deadline: Some(Instant::now() + Duration::from_secs(60)),
                 ..chunk_options()
@@ -2373,6 +2381,53 @@ mod coupled_groups {
             page_index: extent.page_index,
         };
         assert_eq!(data.read_chunk(&page, 0, 4).unwrap().data, b"abcd");
+    }
+
+    #[test]
+    fn concurrent_group_refusal_drains_siblings_without_publishing() {
+        use matrixobjectstore_rs::cluster::{ObjectWriteFailure, ObjectWriteOptions};
+        let mut groups: Vec<_> = (1..=2).map(|id| {
+            let mut group = Group::configured(65536);
+            group.group_id = id;
+            group.max_pages = if id == 1 { 1 } else { 16 };
+            group
+        }).collect();
+        let metadata = MetadataGroup::for_groups(&groups);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for id in 0..3 { group.start(id); }
+            group.leader();
+        }
+        let mut meta = metadata.ready();
+        group_usage(&metadata.api, &groups, &[]);
+        let bytes = b"abcdefghijklmnop";
+        let error = meta.write_object("written", "partial-groups", None, bytes, &ObjectWriteOptions {
+            page_bytes: 4, target_groups: 2, max_parallel_groups: 2,
+            replica: ReplicaClientOptions {
+                deadline: Some(Instant::now() + Duration::from_secs(10)),
+                ..chunk_options()
+            },
+            ..Default::default()
+        }).unwrap_err();
+        let ObjectWriteFailure::BeforePublication { staged: Some(manifest), .. } = error else {
+            panic!("group refusal must keep the object unpublished");
+        };
+        assert_eq!(manifest.extents.len(), 4);
+        assert!(matches!(meta.read_manifest("written", "partial-groups"), Err(matrixobjectstore_rs::ObjectError::NotFound(_))));
+        let healthy = groups[1].placement_id();
+        let mut data = meta.connect_chunk_group(&healthy, &chunk_options()).unwrap();
+        // All started siblings finish before failure is returned, including their verification.
+        assert_eq!(data.ping().unwrap(), 2);
+        for extent in manifest.extents.iter().filter(|extent| extent.group == healthy) {
+            let page = matrixobjectstore_rs::PageId {
+                chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id).unwrap(),
+                page_index: extent.page_index,
+            };
+            let read = data.read_chunk(&page, 0, extent.length).unwrap();
+            assert_eq!(read.write_sequence, 1);
+            let start = extent.object_offset as usize;
+            assert_eq!(read.data, bytes[start..start + extent.length as usize]);
+        }
     }
 
     fn load_data(n: u64) -> Vec<u8> {

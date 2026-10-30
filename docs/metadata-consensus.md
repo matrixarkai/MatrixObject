@@ -439,3 +439,40 @@ are not automatically reclaimed. The deadline bounds network waits, not CPU
 execution or operating-system scheduling. It does not cancel server-side work.
 Callers constructing either option struct without a default update must now
 provide `deadline: None` or an explicit deadline.
+
+
+### Concurrent immutable data-group writes
+
+`ObjectWriteOptions::max_parallel_groups` defaults to 4 and accepts 1..4.
+After metadata placement, identity validation of every selected group, and page
+allocation, the writer groups candidate extents by data group. It writes and
+verifies up to that many groups concurrently, with one connection and one worker
+per active group. A single-group batch runs on the calling thread. Set the limit
+to 1 for serial execution. Applications must also bound their number of concurrent
+object operations; this is a per-operation limit, not a process-wide worker pool.
+
+The workers borrow the input bytes and immutable candidate manifest. Within each
+group, each page is conditionally written once and then read back to verify its
+bytes and sequence. All workers share the same optional absolute deadline. The
+manifest is published only after every group succeeds. On a group error, worker
+startup failure, or worker panic, all started workers are joined before returning
+an unpublished staged manifest; later batches do not start. A sibling group may
+have durable staged pages even when the operation fails. No mutation is replayed
+and no staged page is automatically reclaimed.
+
+The nine-process recovery checks exercise both serial and concurrent execution
+through updates, stale generations, concurrent publication, leader loss and full
+restart. A separate two-group refusal check confirms that a healthy sibling
+finishes while another group exhausts its page capacity, with no manifest becoming
+visible. Wire messages and binary durable outcomes are unchanged. Exhaustive
+`ObjectWriteOptions` literals must supply the new field.
+
+
+In one before/after local WSL run with 51 processes, mutual-TLS Raft peers,
+16 three-voter data groups, three metadata voters, four writers and one-MiB
+objects striped across two groups, initial write throughput increased from
+7.7 to 9.7 objects/s. Median write latency changed from 494769 to 405153 us,
+and p99 from 747370 to 623076 us. The post-leader-loss batch changed from
+7.0 to 8.9 objects/s. Both runs recovered and verified all 160 objects after
+full restart. These are single-run observations on one PC, not a production
+throughput guarantee or evidence of independent host failure domains.

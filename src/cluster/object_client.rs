@@ -12,6 +12,8 @@ pub struct ObjectWriteOptions {
     pub page_bytes: usize,
     /// Maximum number of configured data groups selected by placement.
     pub target_groups: u32,
+    /// Maximum data groups written concurrently, from 1 through 4.
+    pub max_parallel_groups: usize,
     pub update_time_ms: u64,
     /// The replica deadline also bounds metadata work for this object operation.
     pub replica: ReplicaClientOptions,
@@ -22,6 +24,7 @@ impl Default for ObjectWriteOptions {
             max_object_bytes: 64 * 1024 * 1024,
             page_bytes: 1024 * 1024,
             target_groups: 1,
+            max_parallel_groups: 4,
             update_time_ms: 0,
             replica: ReplicaClientOptions::default(),
         }
@@ -75,6 +78,7 @@ fn preflight(
     if length > options.max_object_bytes
         || !(1..=1024 * 1024).contains(&options.page_bytes)
         || !(1..=4096).contains(&options.target_groups)
+        || !(1..=4).contains(&options.max_parallel_groups)
         || options.replica.max_payload_bytes < options.page_bytes + 256
     {
         return Err(invalid("invalid object write size or options"));
@@ -107,6 +111,35 @@ fn connect_group(
         .as_ref()
         .ok_or_else(|| ObjectError::Corruption("chunk group identity missing".into()))?;
     RemoteReplicaClient::connect_verified_raft_catalog(&group.api_endpoints, identity, options)
+}
+
+fn write_group_extents(
+    indexes: &[usize],
+    configured: &ChunkGroupConfig,
+    client: Option<RemoteReplicaClient>,
+    manifest: &ObjectManifest,
+    data: &[u8],
+    options: &ObjectWriteOptions,
+) -> Result<(), ObjectError> {
+    let mut client = match client {
+        Some(client) => client,
+        None => connect_group(configured, &options.replica)?,
+    };
+    for &index in indexes {
+        let extent = &manifest.extents[index];
+        let start = extent.object_offset as usize;
+        let bytes = &data[start..start + extent.length as usize];
+        let page = crate::PageId {
+            chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)?,
+            page_index: extent.page_index,
+        };
+        client.write_chunk_if_sequence(page.clone(), 0, bytes, 0)?;
+        let read = client.read_chunk(&page, 0, extent.length)?;
+        if read.write_sequence != 1 || read.data != bytes {
+            return Err(ObjectError::Corruption("written page verification failed".into()));
+        }
+    }
+    Ok(())
 }
 
 impl RemoteMetaClient {
@@ -207,49 +240,60 @@ impl RemoteMetaClient {
             error,
             staged: Some(Box::new(manifest.clone())),
         };
-        // Visit each group once while retaining the verified first target. The
-        // manifest remains in object order; only physical I/O is reordered.
-        let first_group = connection.as_ref().map(|(group, _)| group.as_str());
+        // Group I/O may overlap, but publication waits for every started group.
+        // Retain the verified first target and keep the manifest in object order.
+        let first_group = connection.as_ref().map(|(group, _)| group.clone());
         let mut order: Vec<_> = (0..manifest.extents.len()).collect();
         order.sort_by_key(|index| {
             let group = manifest.extents[*index].group.as_str();
-            (Some(group) != first_group, group)
+            (Some(group) != first_group.as_deref(), group)
         });
+        let mut grouped: Vec<Vec<usize>> = Vec::new();
         for index in order {
-            let extent = &manifest.extents[index];
-            let start = index * options.page_bytes;
-            let tail = &data[start..];
-            let bytes = &tail[..tail.len().min(options.page_bytes)];
-            if connection.as_ref().map(|(group, _)| group) != Some(&extent.group) {
-                connection = Some((
-                    extent.group.clone(),
-                    connect_group(
-                        groups.get(&extent.group).ok_or_else(|| {
-                            staged_error(ObjectError::Corruption(
-                                "object extent group was not verified".into(),
-                            ))
-                        })?,
-                        &options.replica,
-                    )
-                    .map_err(&staged_error)?,
-                ));
+            if grouped.last().is_some_and(|indexes| manifest.extents[indexes[0]].group == manifest.extents[index].group) {
+                grouped.last_mut().unwrap().push(index);
+            } else {
+                grouped.push(vec![index]);
             }
-            let page = crate::PageId {
-                chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)
-                    .map_err(&staged_error)?,
-                page_index: extent.page_index,
-            };
-            let client = &mut connection.as_mut().unwrap().1;
-            client
-                .write_chunk_if_sequence(page.clone(), 0, bytes, 0)
-                .map_err(&staged_error)?;
-            let read = client
-                .read_chunk(&page, 0, extent.length)
-                .map_err(&staged_error)?;
-            if read.write_sequence != 1 || read.data != bytes {
-                return Err(staged_error(ObjectError::Corruption(
-                    "written page verification failed".into(),
-                )));
+        }
+        for batch in grouped.chunks(options.max_parallel_groups) {
+            let mut jobs = Vec::new();
+            for indexes in batch {
+                let group = &manifest.extents[indexes[0]].group;
+                let configured = groups.get(group).ok_or_else(|| staged_error(
+                    ObjectError::Corruption("object extent group was not verified".into())))?;
+                let client = if connection.as_ref().map(|(name, _)| name) == Some(group) {
+                    connection.take().map(|(_, client)| client)
+                } else { None };
+                jobs.push((indexes, configured, client));
+            }
+            if jobs.len() == 1 {
+                let (indexes, configured, client) = jobs.pop().unwrap();
+                write_group_extents(indexes, configured, client, &manifest, data, options)
+                    .map_err(&staged_error)?;
+            } else {
+                std::thread::scope(|scope| {
+                    let mut handles = Vec::new();
+                    let mut first_error = None;
+                    for (indexes, configured, client) in jobs {
+                        let manifest = &manifest;
+                        match std::thread::Builder::new().name("object-group-write".into())
+                            .spawn_scoped(scope, move || write_group_extents(indexes, configured, client, manifest, data, options)) {
+                            Ok(handle) => handles.push(handle),
+                            Err(error) => {
+                                first_error = Some(ObjectError::PreconditionFailed(format!("cannot start object group writer: {error}")));
+                                break;
+                            }
+                        }
+                    }
+                    for handle in handles {
+                        let result = handle.join().unwrap_or_else(|_| Err(ObjectError::Corruption("object group writer panicked".into())));
+                        if let Err(error) = result {
+                            if first_error.is_none() { first_error = Some(error); }
+                        }
+                    }
+                    first_error.map_or(Ok(()), Err)
+                }).map_err(&staged_error)?;
             }
         }
         self.check_operation_deadline().map_err(&staged_error)?;
@@ -383,6 +427,11 @@ mod tests {
         options = ObjectWriteOptions::default();
         options.target_groups = 0;
         assert!(preflight("bucket", "key", None, 0, &options).is_err());
+        options = ObjectWriteOptions::default();
+        for limit in [0, 5] {
+            options.max_parallel_groups = limit;
+            assert!(preflight("bucket", "key", None, 1, &options).is_err());
+        }
         options = ObjectWriteOptions::default();
         options.replica.max_payload_bytes = options.page_bytes;
         assert!(preflight("bucket", "key", None, 1, &options).is_err());
