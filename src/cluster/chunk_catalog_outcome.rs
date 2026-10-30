@@ -32,10 +32,10 @@ impl ChunkCatalogOutcome {
             after,
             placement: placement.to_payload()?,
         };
-        outcome.validate()?;
+        outcome.validated_placement()?;
         Ok(outcome)
     }
-    fn validate(&self) -> Result<(), ObjectError> {
+    fn validated_placement(&self) -> Result<PlacementOutcome, ObjectError> {
         if self.version != 1
             || self.placement_id.is_empty()
             || self.placement_id.len() > 128
@@ -55,10 +55,10 @@ impl ChunkCatalogOutcome {
                 "chunk catalog outcome changes object state".into(),
             ));
         }
-        Ok(())
+        Ok(placement)
     }
     pub(super) fn to_payload(&self) -> Result<Vec<u8>, ObjectError> {
-        self.validate()?;
+        self.validated_placement()?;
         Ok(self.encode_to_vec())
     }
     pub(super) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
@@ -70,7 +70,7 @@ impl ChunkCatalogOutcome {
         let value = Self::decode(bytes).map_err(|_| {
             ObjectError::Corruption("invalid chunk catalog outcome protobuf".into())
         })?;
-        value.validate()?;
+        value.validated_placement()?;
         if value.encode_to_vec() != bytes {
             return Err(ObjectError::Corruption(
                 "noncanonical chunk catalog outcome".into(),
@@ -83,8 +83,7 @@ impl ChunkCatalogOutcome {
         service: &mut MatrixMetaService,
         catalog: &ChunkGroupCatalog,
     ) -> Result<(), ObjectError> {
-        self.validate()?;
-        let placement = PlacementOutcome::from_payload(&self.placement)?;
+        let placement = self.validated_placement()?;
         let group = catalog
             .get(&self.placement_id)
             .ok_or_else(|| ObjectError::Corruption("chunk catalog outcome group missing".into()))?;
@@ -178,5 +177,37 @@ impl ChunkCatalogOutcome {
             &self.after,
             || placement.apply(service),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validated_placement_preserves_fields_and_rejects_object_changes() {
+        let placement = PlacementOutcome {
+            version: 1,
+            before_index: 41,
+            after_index: 42,
+            ..Default::default()
+        };
+        let mut outcome = ChunkCatalogOutcome::new(
+            "group-1".into(), vec![1], vec![2], &placement,
+        ).unwrap();
+        assert_eq!(outcome.validated_placement().unwrap(), placement);
+        let restored = ChunkCatalogOutcome::from_payload(&outcome.to_payload().unwrap()).unwrap();
+        assert_eq!(restored.validated_placement().unwrap(), placement);
+
+        outcome.placement = vec![0xff];
+        assert!(outcome.validated_placement().is_err());
+        let mut changed = placement;
+        changed.placements.push(crate::placement_outcome::PlacementChange::default());
+        outcome.placement = changed.to_payload().unwrap();
+        assert!(PlacementOutcome::from_payload(&outcome.placement).is_ok());
+        assert!(outcome.validated_placement().is_err());
+        outcome.placement = restored.placement;
+        outcome.before.clear();
+        assert!(outcome.validated_placement().is_err());
     }
 }
