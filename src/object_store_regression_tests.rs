@@ -45082,9 +45082,9 @@ fn every_heap_owning_field_of_the_long_lived_state_is_named_in_the_footprint() {
     ];
     const ACCOUNTING: [&str; 5] = [
         include_str!("store/core/footprint_audit.rs"),
-        include_str!("services/page/footprint.rs"),
-        include_str!("services/chunk/footprint.rs"),
-        include_str!("services/meta/footprint.rs"),
+        include_str!("services/page/page_footprint.rs"),
+        include_str!("services/chunk/chunk_footprint.rs"),
+        include_str!("services/meta/meta_footprint.rs"),
         include_str!("services/meta/maintenance_persistence/mutation_preflight.rs"),
     ];
     const OWNS_HEAP: [&str; 9] = [
@@ -47940,7 +47940,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
 
     // EVERY REFUSAL IN `validate` OWES A CASE HERE. Read out of the source, because a
     // `return Err` is not something the compiler can make us enumerate.
-    const VALIDATION: &str = include_str!("protocol/root/root_snapshot/validation.rs");
+    const VALIDATION: &str = include_str!("protocol/root/root_snapshot/root_snapshot_validation.rs");
     let sites = VALIDATION.matches("ObjectError::Corruption").count();
     assert_eq!(
         cases.len(),
@@ -49655,7 +49655,7 @@ fn a_published_key_does_not_keep_a_spelling_its_field_has_dropped() {
 #[test]
 fn every_placement_reason_has_a_status_of_its_own() {
     const SOURCE: &str = include_str!(
-        "store/core/object_read_lifecycle/readiness_status/distributed_readiness/evaluation.rs"
+        "store/core/object_read_lifecycle/readiness_status/distributed_readiness/distributed_readiness_evaluation.rs"
     );
 
     // The chain and the match live in one file, so the split is what separates "a label
@@ -50509,7 +50509,7 @@ fn a_record_without_the_page_tier_field_derives_it_from_its_kind() {
 #[test]
 fn the_node_decoder_accepts_the_page_tier_shape_before_the_encoder_writes_it() {
     const DECODER: &str = include_str!("protocol/root/root_snapshot/decoding_nodes.rs");
-    const ENCODER: &str = include_str!("protocol/root/root_snapshot/encoding.rs");
+    const ENCODER: &str = include_str!("protocol/root/root_snapshot/root_snapshot_encoding.rs");
 
     assert!(DECODER.len() > 1000, "the decoder source did not load");
     assert!(ENCODER.len() > 1000, "the encoder source did not load");
@@ -50536,7 +50536,7 @@ fn the_node_decoder_accepts_the_page_tier_shape_before_the_encoder_writes_it() {
     );
     // AND THE OLD SHAPE IS STILL ACCEPTED. Narrowing this range is what would make every
     // existing store unreadable, so it is asserted rather than assumed.
-    const DECODING: &str = include_str!("protocol/root/root_snapshot/decoding.rs");
+    const DECODING: &str = include_str!("protocol/root/root_snapshot/root_snapshot_decoding.rs");
     assert!(
         DECODING.contains("(1..=33).contains(version)"),
         "the accepted shape range no longer spans the old shapes through the new one"
@@ -50564,7 +50564,7 @@ fn the_page_tier_field_is_decided_on_through_its_accessor_only() {
         ),
         (
             "membership",
-            include_str!("services/meta/placement/membership.rs"),
+            include_str!("services/meta/placement/placement_membership.rs"),
         ),
         (
             "page coverage",

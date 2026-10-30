@@ -2,8 +2,8 @@
 // Copyright 2026 MatrixArkAI
 include!("metadata_coordinator/page_storage.rs");
 include!("metadata_coordinator/root_placement.rs");
-include!("metadata_coordinator/coordinator.rs");
-include!("metadata_coordinator/transactions.rs");
+include!("metadata_coordinator/metadata_coordinator_coordinator.rs");
+include!("metadata_coordinator/metadata_coordinator_transactions.rs");
 
 impl MatrixObjectStore {
     fn apply_metadata_coordinator_command(

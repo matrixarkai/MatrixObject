@@ -407,6 +407,7 @@ pub mod sockets {
     }
 }
 
+#[path = "node_regime_checkpoints.rs"]
 pub mod checkpoints;
 
 #[cfg(target_os = "linux")]
@@ -415,4 +416,5 @@ pub mod network;
 
 #[cfg(feature = "peer-tls")]
 #[allow(dead_code)]
+#[path = "node_regime_tls.rs"]
 pub mod tls;

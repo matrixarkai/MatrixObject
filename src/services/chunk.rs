@@ -9,4 +9,4 @@ include!("chunk/page_access.rs");
 include!("chunk/configuration_mutation.inc.rs");
 include!("chunk/write_read_repair.inc.rs");
 include!("chunk/cache_reclaim_snapshot.inc.rs");
-include!("chunk/footprint.rs");
+include!("chunk/chunk_footprint.rs");

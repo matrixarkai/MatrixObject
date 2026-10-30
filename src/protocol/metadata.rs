@@ -9,4 +9,4 @@ include!("metadata/record_pages.inc.rs");
 include!("metadata/changefeed_pages.inc.rs");
 include!("metadata/changefeed_checkpoints.inc.rs");
 include!("metadata/changefeed_checkpoint_lag.inc.rs");
-include!("metadata/snapshots.inc.rs");
+include!("metadata/metadata_snapshots.inc.rs");

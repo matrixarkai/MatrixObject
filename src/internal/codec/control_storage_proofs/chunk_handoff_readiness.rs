@@ -11,7 +11,7 @@ include!("chunk_handoff_readiness/state_validation_ec.rs");
 // somewhere to live.
 #[cfg(test)]
 include!("chunk_handoff_readiness/fragment_coding.rs");
-include!("chunk_handoff_readiness/checksums.rs");
+include!("chunk_handoff_readiness/chunk_handoff_readiness_checksums.rs");
 include!("chunk_handoff_readiness/prepared_envelopes.rs");
 include!("chunk_handoff_readiness/handoff_validation.rs");
 include!("chunk_handoff_readiness/page_readiness_fingerprint.rs");
