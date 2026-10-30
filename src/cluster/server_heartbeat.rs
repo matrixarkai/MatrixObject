@@ -252,6 +252,7 @@ mod tests {
                 .join(format!("maintenance-raft-refusal-{}", std::process::id()));
             let error = chunk
                 .enable_consensus(super::super::ChunkRaftOptions {
+                    bootstrap_voters: None,
                     peer_tls: None,
                     node_id: 1,
                     group_id: 1,

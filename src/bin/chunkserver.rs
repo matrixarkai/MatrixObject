@@ -141,6 +141,7 @@ fn main() {
     let raft_peers = std::env::var_os("MATRIXOBJECT_CHUNK_RAFT_PEERS");
     if raft_peers.is_none()
         && [
+            "MATRIXOBJECT_CHUNK_RAFT_BOOTSTRAP_VOTERS",
             "MATRIXOBJECT_CHUNK_RAFT_NODE_ID",
             "MATRIXOBJECT_CHUNK_RAFT_STATE_DIR",
             "MATRIXOBJECT_CHUNK_RAFT_GROUP_ID",
@@ -222,6 +223,17 @@ fn main() {
                     .ok_or("missing Raft state directory")?
                     .into();
                 Ok(matrixobjectstore_rs::cluster::ChunkRaftOptions {
+                    bootstrap_voters: match std::env::var(
+                        "MATRIXOBJECT_CHUNK_RAFT_BOOTSTRAP_VOTERS",
+                    ) {
+                        Ok(raw) => Some(
+                            raw.split(',')
+                                .map(|id| id.parse::<u64>().map_err(|_| "invalid bootstrap voter"))
+                                .collect::<Result<Vec<_>, _>>()?,
+                        ),
+                        Err(std::env::VarError::NotPresent) => None,
+                        Err(_) => return Err("bootstrap voters are not UTF-8".into()),
+                    },
                     peer_tls: matrixobjectstore_rs::cluster::PeerTlsOptions::from_env(
                         "MATRIXOBJECT_CHUNK_RAFT",
                     )

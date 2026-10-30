@@ -78,9 +78,9 @@ refusal, storage guards, shutdown, and metadata reports. They are functional
 fault tests, not a large-scale throughput result. Metadata placement of Raft groups
 is described in `chunk-group-catalog.md`. Binary APIs support optional
 [mutual TLS](api-tls.md), including replicated load and recovery validation.
-The HTTP distributed backend, per-user authorization and membership changes
-remain unfinished. File-backed checkpoint
-recovery is described below. To exercise already-running metadata and data quorums,
+New standalone groups support [committed voter replacement](metadata-consensus.md#chunk-voter-replacement-for-new-groups) with distinct node identities.
+The HTTP distributed backend, per-user authorization and placement-catalog membership
+updates remain unfinished. File-backed checkpoint recovery is described below. To exercise already-running metadata and data quorums,
 use the [external workload probe](distributed-probe.md); it supports a separate
 read-only verification run after an operator-controlled restart.
 

@@ -65,6 +65,9 @@ impl ChunkGroupCatalog {
                 .as_mut()
                 .ok_or_else(|| invalid("chunk group identity missing"))?;
             identity.validate()?;
+            if identity.version != 1 {
+                return Err(invalid("chunk catalog requires fixed membership"));
+            }
             identity.node_id = identity.voters[0];
             for endpoint in &identity.peer_endpoints {
                 if !peer_endpoints.insert(endpoint.clone()) {
@@ -313,6 +316,8 @@ pub(super) mod tests {
             placement_id: "group-a".into(),
             failure_domain: "rack-a".into(),
             identity: Some(ChunkGroupIdentity {
+                bootstrap_voters: Vec::new(),
+                bootstrap_id: 0,
                 version: 1,
                 group_id: 1,
                 node_id: 1,
@@ -335,6 +340,13 @@ pub(super) mod tests {
     }
     #[test]
     fn catalog_canonical_binary_roundtrip_and_corruption() {
+        let mut changing = config();
+        let identity = changing.identity.as_mut().unwrap();
+        identity.version = 2;
+        identity.bootstrap_voters = identity.voters.clone();
+        identity.bootstrap_id = 9;
+        identity.validate().unwrap();
+        assert!(ChunkGroupCatalog::new(vec![changing]).is_err());
         let catalog = ChunkGroupCatalog::new(vec![config()]).unwrap();
         let bytes = catalog.to_bytes().unwrap();
         assert_eq!(

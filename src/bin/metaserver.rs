@@ -139,6 +139,7 @@ fn main() {
     let raft_peers = std::env::var_os("MATRIXOBJECT_METASERVER_RAFT_PEERS");
     if raft_peers.is_none()
         && [
+            "MATRIXOBJECT_METASERVER_RAFT_BOOTSTRAP_VOTERS",
             "MATRIXOBJECT_METASERVER_RAFT_NODE_ID",
             "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
             "MATRIXOBJECT_METASERVER_RAFT_GROUP_ID",

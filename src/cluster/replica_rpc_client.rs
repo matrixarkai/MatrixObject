@@ -660,6 +660,16 @@ impl RemoteReplicaClient {
         self.stage_chunk_state(super::state_install::StateInstall::command(3, token.into()))
     }
 
+    pub fn chunk_membership(
+        &mut self,
+        request: super::MembershipRequest,
+    ) -> Result<super::MembershipStatus, ObjectError> {
+        request.validate()?;
+        match self.call(ReplicaRequest::Membership(request))? {
+            ReplicaReply::Membership(status) => Ok(status),
+            reply => Err(unexpected_reply("chunk membership", &reply)),
+        }
+    }
     pub fn head_chunk(&mut self, page_id: &PageId) -> Result<ReplicaHead, ObjectError> {
         match self.call(ReplicaRequest::HeadChunk {
             page_id: page_id.clone(),
@@ -772,7 +782,7 @@ impl RemoteReplicaClient {
                 | ReplicaRequest::ReadChunkStateRange { .. }
                 | ReplicaRequest::HeadChunk { .. }
                 | ReplicaRequest::PageInventory { .. }
-        );
+        ) || matches!(&request, ReplicaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
         for offset in 0..endpoints.len() {
             let endpoint = &endpoints[(start + offset) % endpoints.len()];

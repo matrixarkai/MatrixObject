@@ -929,6 +929,8 @@ mod tests {
                         placement_id: format!("group-{g}"),
                         failure_domain: format!("rack-{g}"),
                         identity: Some(ChunkGroupIdentity {
+                            bootstrap_voters: Vec::new(),
+                            bootstrap_id: 0,
                             version: 1,
                             group_id: g as u64 + 1,
                             node_id: 1,

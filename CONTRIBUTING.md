@@ -56,13 +56,13 @@ Four jobs, all on a pinned toolchain:
 The **network metadata consensus** job also runs forty-four named health, routing, preparation, and consensus tests
 with the optional consensus feature enabled.
 
-The **network chunk consensus** job runs thirty-one identity, routing, process, recovery, configuration,
+The **network chunk consensus** job runs thirty-four identity, routing, process, recovery, configuration,
 capacity, shutdown, and metadata-health tests with the chunk consensus feature. The coupled
 quorum test additionally enables metadata consensus and starts three voters for each service.
 
-Across these jobs, 216 individual tests run in the library.
+Across these jobs, 217 individual tests run in the library.
 
-**CI does not run the suite.** It compiles everything and runs those 216 guards plus the integration tests. A green
+**CI does not run the suite.** It compiles everything and runs those 217 guards plus the integration tests. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run
 `tools/suite_gate.sh` yourself.
 

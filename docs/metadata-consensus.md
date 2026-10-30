@@ -65,7 +65,7 @@ joins the consensus and network workers.
 
 This is an integration stage, not a production-readiness claim. Without optional
 peer TLS and [API TLS](api-tls.md), those transports are unauthenticated and
-unencrypted; use an isolated test network. Chunk-group membership changes, per-user
+unencrypted; use an isolated test network. Placement-catalog membership updates, per-user
 authorization and deployment-scale validation remain required. Metadata membership
 for new opt-in groups is described below. File-backed
 checkpoint recovery is described below. The [external workload probe](distributed-probe.md)
@@ -169,7 +169,7 @@ journal-backed chunk recovery. Additional tests cover wrong endpoints, draining,
 storage failure, binary request truncation, bounded shutdown, partial configuration,
 and a single-node expiry within a 1024-node roster. These are functional checks,
 not a large-scale throughput result. Heartbeats support [API mutual TLS](api-tls.md).
-Full HTTP integration, per-user authorization and chunk-group membership changes remain
+Full HTTP integration, per-user authorization and placement-catalog membership updates remain
 separate work. Network chunk Raft is described in `chunk-consensus.md`.
 
 ## Application checkpoint recovery
@@ -514,8 +514,8 @@ Keep a failed voter fenced if its durable state is lost or damaged. Starting an
 empty directory under the same voter ID loses its persisted term and vote; it is
 not a supported recovery procedure. Restoring replicas that retain their durable
 state is covered by the recovery tests. New opt-in metadata groups support the
-new-identity replacement sequence below. Fixed metadata groups and chunk groups
-do not yet support that workflow.
+new-identity replacement sequence below. Fixed metadata groups do not support that workflow. New standalone chunk groups
+can opt in as described below; placement-catalog integration remains unfinished.
 
 The peer runtime rejects heartbeat commit positions beyond its local log before
 entering the consensus core. This prevents a malformed or inconsistent packet
@@ -567,5 +567,45 @@ WSL process tests fence an original voter, seed a new identity from checkpointed
 history, promote it, remove the old identity, read and write with the new quorum,
 and restart all processes including the removed peer. A second test refuses
 membership acknowledgment and status without quorum and exercises removal of the
-serving leader. These are local multi-process tests. Chunk-group membership and
-changes to the metadata placement roster remain separate work.
+serving leader. These are local multi-process tests. Changes to the metadata placement roster remain separate work.
+
+
+## Chunk voter replacement for new groups
+
+Standalone chunk groups can opt in with
+`MATRIXOBJECT_CHUNK_RAFT_BOOTSTRAP_VOTERS=1,2,3` and a
+`MATRIXOBJECT_CHUNK_RAFT_PEERS` map containing the initial voters and future
+replacement identities. In-process callers use `ChunkRaftOptions::bootstrap_voters`.
+All processes must retain the same bootstrap list, capacity, page limit, group ID
+and endpoint inventory. These settings are bound into a version-2
+`ChunkGroupIdentity::bootstrap_id`. Existing fixed-mode history cannot be migrated
+by changing the configuration. The old binary identity format remains unchanged
+when membership is disabled.
+
+Use `RemoteReplicaClient::chunk_membership` with the same `MembershipRequest`
+operations as metadata, carrying the trusted chunk `bootstrap_id`. Requests and
+status replies use canonical bounded binary protobuf on replica opcode 12.
+Read status requires quorum; mutations reply only after committed application.
+The `voters` and `peer_endpoints` fields of the version-2 group identity describe
+the immutable permitted inventory, while membership status reports actual voters,
+outgoing voters and learners. An inventory entry alone has no voting rights.
+
+Fence a failed process, preserve its files, and add a distinct permitted identity
+as a learner. The leader refreshes an existing compacted image for that learner.
+Start the new identity in its own empty state directory. After catch-up, commit
+Promote and LeaveJoint, then Remove for the old identity and another LeaveJoint.
+Quorum loss cannot produce a successful mutation or status reply. A timeout can
+still be followed by commitment after recovery: read status before deciding the
+next action. A removed leader steps down and refuses subsequent data mutations.
+
+The WSL tests preserve complete page state, including bytes, discard ranges,
+sequences and checksums, through learner catch-up, replacement, new-quorum writes
+and full restart including the removed process. Separate tests exercise minority
+refusal and removal of the serving leader. These are local process simulations.
+
+The metadata placement catalog currently accepts fixed chunk groups only and
+explicitly rejects version-2 identities. Its health quorum calculation must use
+committed membership before membership-enabled chunk groups can participate in
+catalog-managed object placement. Do not describe this standalone group API as
+completed placement integration. API endpoint discovery remains manual, and
+client catalogs retain the seven-endpoint bound.
