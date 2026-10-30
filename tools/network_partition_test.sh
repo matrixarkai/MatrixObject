@@ -24,5 +24,6 @@ if (( EUID != 0 )); then privileged=(sudo --); fi
 "${privileged[@]}" unshare --net -- bash -c '
 set -euo pipefail
 ip link set dev lo up
-exec "$1" coupled_groups::live_peer_partitions_preserve_objects_and_recover --exact --ignored --nocapture --test-threads=1
+"$1" coupled_groups::live_peer_partitions_preserve_objects_and_recover --exact --ignored --nocapture --test-threads=1
+exec "$1" coupled_groups::authenticated_live_peer_partitions_preserve_objects_and_recover --exact --ignored --nocapture --test-threads=1
 ' bash "$binary"

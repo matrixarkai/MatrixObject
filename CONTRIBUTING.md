@@ -118,7 +118,8 @@ issue.
 By contributing you agree your contribution is licensed under Apache-2.0, the licence in
 [`LICENSE`](LICENSE). Keep the attribution in [`NOTICE`](NOTICE) intact.
 
-The live peer-partition guard runs through `tools/network_partition_test.sh`.
+The plaintext and mutual-TLS live peer-partition guards run through
+`tools/network_partition_test.sh`; CI requires both named cases to pass.
 It builds outside a private Linux network namespace, then uses that namespace for
 the test processes and packet-drop rules. Local distributed simulations use WSL.
 The wrapper requires `ip`, `iptables`, `unshare`, Python 3 and root access (or sudo).

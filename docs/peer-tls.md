@@ -73,3 +73,14 @@ checks reads and new writes before restarting all voters from their own state.
 Exact object bytes, manifest generations, write sequences, physical usage,
 committed capacity and every voter TLS marker are verified. This exercises fixed
 membership fault tolerance; it does not change membership during the run.
+
+Run `bash tools/network_partition_test.sh` in WSL to exercise live peer packet
+loss with both plaintext and mutual TLS. The runner creates a disposable network
+namespace and changes only its loopback firewall. Each case isolates the current
+leader of the metadata group and both data groups, proves packets were dropped
+and every process stayed alive, and checks that isolated leaders refuse reads.
+The surviving quorums verify existing objects and accept new objects. After
+healing the network, the test stops the replacement leaders so the healed voters
+must participate in subsequent write quorums. A full restart then verifies all
+three object batches. This is a local kernel-network fault simulation, not a
+cross-host performance result.

@@ -528,7 +528,8 @@ jobs:
         run: |
           set -o pipefail
           bash tools/network_partition_test.sh | tee /tmp/live-peer-partitions.log
-          grep -q 'test result: ok. 1 passed' /tmp/live-peer-partitions.log
+          test "$(grep -c '^running 1 test$' /tmp/live-peer-partitions.log)" -eq 2
+          test "$(grep -c '^test result: ok. 1 passed' /tmp/live-peer-partitions.log)" -eq 2
 
       - name: external probe verifies data across leader loss and restart
         run: |
