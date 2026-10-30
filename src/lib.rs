@@ -297,7 +297,7 @@ impl fmt::Display for ObjectError {
 
 impl std::error::Error for ObjectError {}
 
-#[path = "internal/codec.rs"]
+#[path = "internal/metadata_storage_proof_codecs.rs"]
 mod internal_codec;
 pub use internal_codec::*;
 

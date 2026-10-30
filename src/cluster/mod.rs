@@ -142,7 +142,9 @@ pub mod state_transfer;
 pub mod state_install;
 #[cfg(feature = "meta-server")]
 mod health_report;
+#[path = "replica_rpc_messages.rs"]
 pub mod message;
+#[path = "replica_wire_frames.rs"]
 pub mod wire;
 
 // The data plane: a replica node, a client, and the quorum over several of them.
