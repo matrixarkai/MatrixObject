@@ -173,6 +173,7 @@ fn star_state_transfer_requires_valid_bytes_from_a_read_quorum() {
                 result.is_err(),
                 "matching heads alone cannot supply a byte quorum"
             );
+            assert!(set.repair_chunk(&page(0)).is_err());
         } else {
             let state = result.unwrap();
             assert_eq!(state.data.as_slice(), vec![7; 8192]);
@@ -214,4 +215,193 @@ fn page_state_transfer_reads_a_full_256_mib_page() {
     assert_eq!(state.discarded_ranges, head.discarded_ranges);
     assert_eq!(state.checksum(), head.checksum);
     println!("transferred {total} page bytes through frames bounded to one MiB");
+}
+
+
+#[test]
+fn star_repair_aborts_changed_sources_and_never_replays_uncertain_commits() {
+    use matrixobjectstore_rs::cluster::{
+        message::{encode_failure, encode_reply},
+        state_transfer::ChunkStateRange,
+        PageRepairStatus, ReplicaReply, ReplicaRequest, RequestCode, StatusCode,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::{Duration, Instant};
+    let mut source = matrixobjectstore_rs::MatrixReplicaService::new();
+    source.write_chunk(page(0), 0, &vec![7; 8192]).unwrap();
+    let original = source.head_chunk(&page(0)).unwrap();
+    source.write_chunk(page(0), 0, b"updated").unwrap();
+    let newer = source.head_chunk(&page(0)).unwrap();
+    for change_source in [true, false] {
+        let changed = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let commits = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let listeners: Vec<_> = (0..3)
+            .map(|_| {
+                let l = TcpListener::bind("127.0.0.1:0").unwrap();
+                l.set_nonblocking(true).unwrap();
+                l
+            })
+            .collect();
+        let endpoints: Vec<_> = listeners
+            .iter()
+            .map(|l| l.local_addr().unwrap().to_string())
+            .collect();
+        let workers: Vec<_> = listeners
+            .into_iter()
+            .enumerate()
+            .map(|(index, listener)| {
+                let original = original.clone();
+                let newer = newer.clone();
+                let changed = changed.clone();
+                let finished = finished.clone();
+                let commits = commits.clone();
+                let aborts = aborts.clone();
+                std::thread::spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    let mut stream = loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => break stream,
+                            Err(error)
+                                if error.kind() == std::io::ErrorKind::WouldBlock
+                                    && Instant::now() < deadline =>
+                            {
+                                std::thread::sleep(Duration::from_millis(1))
+                            }
+                            other => panic!("repair connection failed: {other:?}"),
+                        }
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(10)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(10)))
+                        .unwrap();
+                    loop {
+                        let mut header = [0; 6];
+                        if stream.read_exact(&mut header).is_err() {
+                            break;
+                        }
+                        let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                        assert!(length <= 4096);
+                        let mut bytes = vec![0; length];
+                        stream.read_exact(&mut bytes).unwrap();
+                        let request = ReplicaRequest::decode(
+                            RequestCode::from_u8(header[1]).unwrap(),
+                            &bytes,
+                        )
+                        .unwrap();
+                        let reply = match request {
+                            ReplicaRequest::HeadChunk { .. } if index == 2 => {
+                                encode_failure(StatusCode::NotFound, "absent")
+                            }
+                            ReplicaRequest::HeadChunk { .. } => encode_reply(&ReplicaReply::Head(
+                                if changed.load(Ordering::SeqCst) {
+                                    newer.clone()
+                                } else {
+                                    original.clone()
+                                },
+                            )),
+                            ReplicaRequest::ReadChunkStateRange {
+                                offset,
+                                length,
+                                expected_state_checksum,
+                                ..
+                            } => {
+                                assert!(index < 2);
+                                assert_eq!(expected_state_checksum, original.state_checksum);
+                                encode_reply(&ReplicaReply::StateRange(ChunkStateRange {
+                                    version: 1,
+                                    offset,
+                                    data_length: 8192,
+                                    data: vec![7; length.min(8192 - offset) as usize],
+                                    state_checksum: original.state_checksum.clone(),
+                                }))
+                            }
+                            ReplicaRequest::StateInstall(request) => {
+                                assert_eq!(index, 2);
+                                match request.operation {
+                                    1 => {
+                                        assert_eq!(
+                                            request.head.unwrap().state_checksum,
+                                            original.state_checksum
+                                        );
+                                    }
+                                    2 => {
+                                        if change_source {
+                                            changed.store(true, Ordering::SeqCst);
+                                        }
+                                    }
+                                    3 => {
+                                        commits.fetch_add(1, Ordering::SeqCst);
+                                    drop(stream);
+                                    loop {
+                                        match listener.accept() {
+                                            Ok(_) => panic!("uncertain commit was reconnected for replay"),
+                                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                                if finished.load(Ordering::SeqCst) { break; }
+                                                assert!(Instant::now() < deadline, "repair did not return after lost commit reply");
+                                                std::thread::sleep(Duration::from_millis(1));
+                                            }
+                                            Err(error) => panic!("repair listener failed: {error}"),
+                                        }
+                                    }
+                                    return;
+                                    }
+                                    4 => {
+                                        aborts.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                    _ => panic!("unexpected stage operation"),
+                                }
+                                encode_reply(&ReplicaReply::Applied)
+                            }
+                            _ => panic!("unexpected repair request"),
+                        };
+                        if stream.write_all(&reply).is_err() {
+                            break;
+                        }
+                    }
+                })
+            })
+            .collect();
+        let mut set = RemoteReplicaSet::connect(
+            &endpoints,
+            2,
+            2,
+            &ReplicaClientOptions {
+                max_payload_bytes: 4096,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let report = set.repair_chunk(&page(0)).unwrap();
+        finished.store(true, Ordering::SeqCst);
+        assert_eq!(report.source, original);
+        assert_eq!(
+            &report.members[..2],
+            &[PageRepairStatus::Current, PageRepairStatus::Current]
+        );
+        if change_source {
+            assert!(matches!(report.members[2], PageRepairStatus::Deferred(_)));
+            assert_eq!(commits.load(Ordering::SeqCst), 0);
+            assert_eq!(aborts.load(Ordering::SeqCst), 1);
+        } else {
+            assert!(matches!(
+                report.members[2],
+                PageRepairStatus::Unconfirmed(_)
+            ));
+            assert_eq!(commits.load(Ordering::SeqCst), 1);
+            assert_eq!(aborts.load(Ordering::SeqCst), 0);
+        }
+        drop(set);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    }
 }

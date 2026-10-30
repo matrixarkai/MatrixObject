@@ -43,6 +43,25 @@ pub struct RemoteReplicaSet {
     options: ReplicaClientOptions,
 }
 
+/// Result for one configured member, in endpoint order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PageRepairStatus {
+    /// Exact validated bytes already matched the selected source state.
+    Current,
+    /// The node acknowledged durable installation (or atomic in-memory installation).
+    Installed,
+    /// No commit was sent. A best-effort abort may leave staging until expiry.
+    Deferred(String),
+    /// A commit was sent without a confirmed result. Inspect before retrying repair.
+    Unconfirmed(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PageRepairReport {
+    pub source: ReplicaHead,
+    pub members: Vec<PageRepairStatus>,
+}
+
 impl RemoteReplicaSet {
     /// Connect to every endpoint, refusing incomplete or duplicate membership.
     ///
@@ -289,7 +308,15 @@ impl RemoteReplicaSet {
     /// Each source is checksum-fenced; exact bytes must also agree. At most two
     /// assembled payloads are retained, independent of the replica count.
     pub fn read_chunk_state(&mut self, page_id: &PageId) -> Result<crate::PageState, ObjectError> {
-        let expected = self.head_chunk(page_id)?;
+        self.read_chunk_state_with_quorum(page_id, self.read_quorum)
+    }
+
+    fn read_chunk_state_with_quorum(
+        &mut self,
+        page_id: &PageId,
+        quorum: usize,
+    ) -> Result<crate::PageState, ObjectError> {
+        let expected = self.head_chunk_with_quorum(page_id, quorum)?;
         let mut candidate: Option<crate::PageState> = None;
         let mut agreeing = 0;
         for replica in &mut self.replicas {
@@ -304,17 +331,17 @@ impl RemoteReplicaSet {
                     candidate = Some(state);
                 }
                 agreeing += 1;
-                if agreeing == self.read_quorum {
+                if agreeing == quorum {
                     break;
                 }
             }
         }
-        if agreeing < self.read_quorum {
+        if agreeing < quorum {
             return Err(ObjectError::PreconditionFailed(
                 "complete page state did not reach read quorum".into(),
             ));
         }
-        if self.head_chunk(page_id)? != expected {
+        if self.head_chunk_with_quorum(page_id, quorum)? != expected {
             return Err(ObjectError::PreconditionFailed(
                 "page quorum changed during state transfer".into(),
             ));
@@ -324,9 +351,16 @@ impl RemoteReplicaSet {
 
     /// Read a page's metadata from a read quorum, voting on the whole head.
     pub fn head_chunk(&mut self, page_id: &PageId) -> Result<ReplicaHead, ObjectError> {
+        self.head_chunk_with_quorum(page_id, self.read_quorum)
+    }
+
+    fn head_chunk_with_quorum(
+        &mut self,
+        page_id: &PageId,
+        read_quorum: usize,
+    ) -> Result<ReplicaHead, ObjectError> {
         self.reconnect_failed();
         let replica_count = self.replicas.len();
-        let read_quorum = self.read_quorum;
         let mut answered = Vec::with_capacity(replica_count);
         let mut not_found = 0usize;
         let mut unreachable = 0usize;
@@ -352,6 +386,125 @@ impl RemoteReplicaSet {
             )));
         }
         crate::cluster::placement::vote_heads(answered, read_quorum)
+    }
+
+    /// Repair one existing page from max(read_quorum, write_quorum) validated copies.
+    /// Does not delete pages, retry uncertain commits, or run in the background.
+    /// The report describes the selected state, not a cross-node transaction.
+    pub fn repair_chunk(&mut self, page_id: &PageId) -> Result<PageRepairReport, ObjectError> {
+        use super::state_install::StateInstall;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_REPAIR: AtomicU64 = AtomicU64::new(0);
+        let quorum = self.read_quorum.max(self.write_quorum);
+        let state = self.read_chunk_state_with_quorum(page_id, quorum)?;
+        let checksum = state.checksum();
+        let source = ReplicaHead {
+            logical_length: state.logical_length,
+            write_sequence: state.write_sequence,
+            checksum: checksum.clone(),
+            state_checksum: crate::chunk_state_handoff_checksum(page_id, &state, &checksum),
+            discarded_ranges: state.discarded_ranges.clone(),
+        };
+        let prefix = format!(
+            "repair-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| ObjectError::InvalidArgument("system clock precedes epoch".into()))?
+                .as_nanos(),
+            NEXT_REPAIR.fetch_add(1, Ordering::Relaxed)
+        );
+        let size = self
+            .options
+            .max_payload_bytes
+            .saturating_sub(512)
+            .min(super::state_transfer::MAX_STATE_RANGE_BYTES);
+        if size == 0 {
+            return Err(ObjectError::InvalidArgument(
+                "frame limit cannot hold repair data".into(),
+            ));
+        }
+        let mut report = PageRepairReport {
+            source: source.clone(),
+            members: Vec::with_capacity(self.replicas.len()),
+        };
+        for index in 0..self.replicas.len() {
+            let observed = match self.replicas[index].head_chunk(page_id) {
+                Ok(head) => Some(head),
+                Err(ObjectError::NotFound(_)) => None,
+                Err(error) => {
+                    report
+                        .members
+                        .push(PageRepairStatus::Deferred(error.to_string()));
+                    continue;
+                }
+            };
+            if observed.as_ref() == Some(&source) {
+                if let Ok(current) = self.replicas[index].read_chunk_state_at(page_id, &source) {
+                    if current.data == state.data {
+                        report.members.push(PageRepairStatus::Current);
+                        continue;
+                    }
+                }
+            }
+            if observed
+                .as_ref()
+                .is_some_and(|head| head.write_sequence > source.write_sequence)
+            {
+                report.members.push(PageRepairStatus::Deferred(
+                    "destination is newer than source quorum".into(),
+                ));
+                continue;
+            }
+            // Check authority immediately before staging and again before commit.
+            if self.head_chunk_with_quorum(page_id, quorum).ok().as_ref() != Some(&source) {
+                report.members.resize(
+                    self.replicas.len(),
+                    PageRepairStatus::Deferred("source quorum changed before staging".into()),
+                );
+                break;
+            }
+            let token = format!("{prefix}-{index}");
+            let staged = (|| -> Result<(), ObjectError> {
+                let target = &mut self.replicas[index];
+                target.stage_chunk_state(StateInstall::begin(
+                    token.clone(),
+                    page_id,
+                    observed.as_ref().map(|head| head.state_checksum.as_str()),
+                    &source,
+                    state.data.len() as u64,
+                ))?;
+                for (part, data) in state.data.chunks(size).enumerate() {
+                    let mut append = StateInstall::command(2, token.clone());
+                    append.offset = (part * size) as u64;
+                    append.data = data.to_vec();
+                    target.stage_chunk_state(append)?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = staged {
+                let _ = self.replicas[index].stage_chunk_state(StateInstall::command(4, token));
+                report
+                    .members
+                    .push(PageRepairStatus::Deferred(error.to_string()));
+                continue;
+            }
+            if self.head_chunk_with_quorum(page_id, quorum).ok().as_ref() != Some(&source) {
+                let _ = self.replicas[index].stage_chunk_state(StateInstall::command(4, token));
+                report.members.resize(
+                    self.replicas.len(),
+                    PageRepairStatus::Deferred("source quorum changed before commit".into()),
+                );
+                break;
+            }
+            match self.replicas[index].stage_chunk_state(StateInstall::command(3, token)) {
+                Ok(()) => report.members.push(PageRepairStatus::Installed),
+                Err(error) => report
+                    .members
+                    .push(PageRepairStatus::Unconfirmed(error.to_string())),
+            }
+        }
+        Ok(report)
     }
 
     /// Conditionally discard on replicas matching a quorum-agreed existing page.

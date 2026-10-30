@@ -40,7 +40,8 @@
 //! not a snapshot; writers must be fenced before it can certify replica readmission.
 //! Complete page-state reads use bounded checksum-fenced frames. Standalone nodes also
 //! accept bounded staged page installation with destination checks and durable checkpoints.
-//! Source-quorum selection and automatic repair are not part of that installation API.
+//! Explicit star repair selects validated source quorums before staged installation.
+//! Background repair scheduling is not provided.
 //! Other replica operations remain in-process only, and `MatrixChunkService` -- the
 //! service that holds `replicas` and runs the historic fan-out -- is UNCHANGED by this
 //! module. It does not route through [`crate::cluster::placement::ReplicaFanout`].
@@ -180,7 +181,7 @@ pub use placement::{
     check_quorums, majority, InProcessReplicaSet, ReplicaFanout, ReplicaPlacement,
 };
 #[cfg(feature = "replica-server")]
-pub use replica_set::RemoteReplicaSet;
+pub use replica_set::{PageRepairReport, PageRepairStatus, RemoteReplicaSet};
 #[cfg(all(feature = "replica-server", feature = "meta-server"))]
 pub use server::ReplicaHeartbeatOptions;
 #[cfg(feature = "replica-server")]

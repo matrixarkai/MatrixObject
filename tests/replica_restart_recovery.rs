@@ -365,6 +365,42 @@ fn star_set_reconnects_recovered_members_but_excludes_missed_writes() {
     assert_eq!(stale.head_chunk(&page(10)).unwrap().write_sequence, 2);
     assert_eq!(set.discard_chunk(&page(10), 0, 1).unwrap(), 2);
     assert_eq!(stale.read_chunk(&page(10), 0, 5).unwrap().data, b"again");
+    use matrixobjectstore_rs::cluster::PageRepairStatus;
+    let report = set.repair_chunk(&page(10)).unwrap();
+    assert_eq!(
+        report.members,
+        vec![
+            PageRepairStatus::Installed,
+            PageRepairStatus::Current,
+            PageRepairStatus::Current
+        ]
+    );
+    assert_eq!(stale.head_chunk(&page(10)).unwrap(), report.source);
+    assert!(stale.read_chunk(&page(10), 0, 1).is_err());
+    assert_eq!(
+        stale.read_chunk_state(&page(10)).unwrap().data.as_slice(),
+        b"final"
+    );
+    assert_eq!(set.write_chunk(&page(10), 0, b"fixed").unwrap(), 3);
+    let expected = set.head_chunk(&page(10)).unwrap();
+    drop(stale);
+    drop(set);
+    for node in &mut nodes {
+        drop(node.take());
+    }
+    for (i, node) in nodes.iter_mut().enumerate() {
+        *node = Some(restart(i));
+    }
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
+    assert_eq!(
+        set.repair_chunk(&page(10)).unwrap().members,
+        vec![PageRepairStatus::Current; 3]
+    );
+    for node in &nodes {
+        let mut c = client(node.as_ref().unwrap());
+        assert_eq!(c.head_chunk(&page(10)).unwrap(), expected);
+        assert_eq!(c.read_chunk(&page(10), 0, 5).unwrap().data, b"fixed");
+    }
 }
 
 
@@ -786,4 +822,59 @@ fn staged_install_rechecks_capacity_and_releases_aborted_buffers() {
             4
         ))
         .is_err());
+}
+
+
+#[test]
+fn star_repair_requires_write_strength_and_preserves_newer_destinations() {
+    use matrixobjectstore_rs::cluster::{PageRepairStatus, RemoteReplicaSet};
+    let dir = JournalDir::new();
+    let paths: Vec<_> = (0..3)
+        .map(|i| dir.0.join(format!("repair-{i}.log")))
+        .collect();
+    let nodes: Vec<_> = paths.iter().map(|path| start(path)).collect();
+    let endpoints: Vec<_> = nodes.iter().map(|node| node.endpoint.clone()).collect();
+    for (i, node) in nodes.iter().enumerate() {
+        client(node)
+            .write_chunk(page(0), 0, if i == 0 { b"wrong" } else { b"right" })
+            .unwrap();
+    }
+    let before: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    let mut strict =
+        RemoteReplicaSet::connect(&endpoints, 3, 1, &ReplicaClientOptions::default()).unwrap();
+    assert!(strict.repair_chunk(&page(0)).is_err());
+    for (p, bytes) in paths.iter().zip(before) {
+        assert_eq!(std::fs::read(p).unwrap(), bytes);
+    }
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    assert_eq!(
+        set.repair_chunk(&page(0)).unwrap().members,
+        vec![
+            PageRepairStatus::Installed,
+            PageRepairStatus::Current,
+            PageRepairStatus::Current
+        ]
+    );
+    client(&nodes[0]).write_chunk(page(0), 0, b"newer").unwrap();
+    let newer = client(&nodes[0]).head_chunk(&page(0)).unwrap();
+    let report = set.repair_chunk(&page(0)).unwrap();
+    assert!(matches!(report.members[0], PageRepairStatus::Deferred(_)));
+    assert_eq!(client(&nodes[0]).head_chunk(&page(0)).unwrap(), newer);
+    for node in &nodes[1..] {
+        client(node).write_chunk(page(1), 0, b"create").unwrap();
+    }
+    assert_eq!(
+        set.repair_chunk(&page(1)).unwrap().members,
+        vec![
+            PageRepairStatus::Installed,
+            PageRepairStatus::Current,
+            PageRepairStatus::Current
+        ]
+    );
+    assert_eq!(
+        client(&nodes[0]).read_chunk(&page(1), 0, 6).unwrap().data,
+        b"create"
+    );
+    assert!(set.repair_chunk(&page(99)).is_err());
 }

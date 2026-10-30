@@ -333,6 +333,18 @@ jobs:
           cargo test --locked --all-features --test replica_restart_recovery staged_install_rechecks_capacity_and_releases_aborted_buffers -- --exact | tee /tmp/staged-install.log
           grep -q 'test result: ok. 1 passed' /tmp/staged-install.log
 
+      - name: star repair requires write strength and preserves newer destinations
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery star_repair_requires_write_strength_and_preserves_newer_destinations -- --exact | tee /tmp/quorum-repair.log
+          grep -q 'test result: ok. 1 passed' /tmp/quorum-repair.log
+
+      - name: star repair aborts changed sources and never replays uncertain commits
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_state_transfer star_repair_aborts_changed_sources_and_never_replays_uncertain_commits -- --exact | tee /tmp/quorum-repair.log
+          grep -q 'test result: ok. 1 passed' /tmp/quorum-repair.log
+
       - name: health reports validate canonical protobuf and decided time
         run: |
           set -o pipefail
