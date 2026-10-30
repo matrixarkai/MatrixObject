@@ -49581,6 +49581,208 @@ fn a_published_key_does_not_keep_a_spelling_its_field_has_dropped() {
     }
 }
 
+/// EVERY PLACEMENT READINESS REASON HAS A STATUS OF ITS OWN.
+///
+/// Two surfaces are published side by side. `reason()` picks one label out of a long
+/// `else if` chain, and `placement_reason_status` turns that label into the shorter
+/// `root_status` a reader sorts on. The second is a `match` over string literals ending
+/// in `_ => "not_ready"`.
+///
+/// NOTHING TIED THE TWO SETS TOGETHER. Rename a label in the chain and its arm simply
+/// stops matching: the status silently becomes `not_ready`, the compiler says nothing and
+/// no test fails -- a check that passes by disappearing. It is not a cosmetic surface
+/// either. Both the reason and the status are appended into the distributed readiness
+/// material, and `verify_objectstore_distributed_readiness_checksum` compares that
+/// against a checksum a caller supplies, so a label that quietly collapses into the
+/// fall-through moves a number a peer checks.
+///
+/// So this asserts the pairing as a SET, in both directions, and the shape of each arm as
+/// well: every arm strips exactly the `root_` prefix, and an arm that stopped doing that
+/// would be a second way for the two surfaces to disagree while each piece looked fine.
+///
+/// WHAT THIS DOES NOT DO: it renames nothing. These labels keep a spelling the page tier
+/// retired, and they have to, for the reason above -- moving one changes a verified
+/// checksum for state that did not change, and that checksum holds a single value rather
+/// than a set of accepted forms. This guard is what a later change would need before it
+/// could move them safely.
+#[test]
+fn every_placement_reason_has_a_status_of_its_own() {
+    const SOURCE: &str = include_str!(
+        "store/core/object_read_lifecycle/readiness_status/distributed_readiness/evaluation.rs"
+    );
+
+    // The chain and the match live in one file, so the split is what separates "a label
+    // this code can EMIT" from "a label this code can TRANSLATE". Taking both sets from
+    // the whole file would compare the match against itself and pass for nothing.
+    let split = SOURCE
+        .find("fn placement_reason_status")
+        .expect("the status mapping should still be in this file");
+    let (chain, mapping) = SOURCE.split_at(split);
+
+    fn quoted_labels(text: &str) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        let mut at = 0usize;
+        while let Some(offset) = text[at..].find("\"root_") {
+            let open = at + offset + 1;
+            at = open;
+            let Some(close_offset) = text[open..].find('"') else {
+                break;
+            };
+            let label = &text[open..open + close_offset];
+            if label
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                found.push(label.to_string());
+            }
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    let emitted = quoted_labels(chain);
+
+    // An arm is `"<label>" => "<status>"`, and rustfmt is free to put the status on the
+    // next line or inside a block, so the arrow is located first and the status after it.
+    let mut arms: Vec<(String, String)> = Vec::new();
+    for label in quoted_labels(mapping) {
+        let needle = format!("\"{label}\"");
+        let Some(at) = mapping.find(&needle) else {
+            continue;
+        };
+        let after = &mapping[at + needle.len()..];
+        let Some(arrow) = after.find("=>") else {
+            continue;
+        };
+        let rest = &after[arrow + 2..];
+        let Some(open) = rest.find('"') else {
+            continue;
+        };
+        let Some(close_offset) = rest[open + 1..].find('"') else {
+            continue;
+        };
+        arms.push((label, rest[open + 1..open + 1 + close_offset].to_string()));
+    }
+    arms.sort();
+    arms.dedup();
+
+    // Labels the chain emits that the mapping deliberately does not translate, each with
+    // the reason it needs no arm. Checked below in both directions, so an entry that has
+    // stopped being true fails rather than quietly covering a new hole.
+    const UNTRANSLATED: &[(&str, &str)] = &[
+        (
+            "root_leader_not_ready",
+            "`root_status` answers `leader_unavailable` under the same predicate that \
+             produces this label, before the mapping is consulted at all, so this label \
+             cannot reach it",
+        ),
+        (
+            "root_placement_degraded",
+            "the last arm of the chain, chosen when nothing more specific is unready; the \
+             fall-through `not_ready` is the right answer for it rather than a missing one",
+        ),
+    ];
+
+    // NON-VACUITY FIRST, four ways: a source that did not load, a parse that found no
+    // labels, a parse that found no arms, or a mapping that lost its fall-through would
+    // each make the assertions below pass by having nothing to compare. 33 emitted labels
+    // and 31 arms were counted by a separate scan before these floors were written down.
+    assert!(
+        SOURCE.len() > 4000,
+        "the readiness evaluation source did not load"
+    );
+    assert!(
+        emitted.len() >= 30,
+        "only {} emitted labels parsed, so this is measuring its own parse rather than the \
+         code: {emitted:?}",
+        emitted.len()
+    );
+    assert!(
+        arms.len() >= 28,
+        "only {} mapping arms parsed, so the mapping parse is broken rather than the code \
+         being clean",
+        arms.len()
+    );
+    assert!(
+        mapping.contains("_ => \"not_ready\""),
+        "the mapping lost its fall-through arm, which changes what an unmapped label means"
+    );
+
+    let translated: std::collections::BTreeSet<&str> =
+        arms.iter().map(|(label, _)| label.as_str()).collect();
+    let emitted_set: std::collections::BTreeSet<&str> =
+        emitted.iter().map(String::as_str).collect();
+
+    // DIRECTION ONE: a label the chain can emit must have an arm, or its status collapses
+    // into the fall-through with nothing going red.
+    let missing: Vec<&str> = emitted_set
+        .iter()
+        .copied()
+        .filter(|label| {
+            !translated.contains(label) && !UNTRANSLATED.iter().any(|(name, _)| name == label)
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these reasons have no status of their own, so they report as `not_ready` and the \
+         readiness checksum moves with them: {missing:?}"
+    );
+
+    // DIRECTION TWO: an arm for a label nothing emits is dead, and reads as cover for a
+    // label that was renamed on one side only.
+    let orphaned: Vec<&str> = translated
+        .iter()
+        .copied()
+        .filter(|label| !emitted_set.contains(label))
+        .collect();
+    assert!(
+        orphaned.is_empty(),
+        "the mapping translates labels this chain cannot emit, so one side was renamed \
+         without the other: {orphaned:?}"
+    );
+
+    // AND THE SHAPE OF EVERY ARM: the status is the label with `root_` removed. An arm
+    // that stopped doing that is a third way for the two surfaces to disagree.
+    let reshaped: Vec<String> = arms
+        .iter()
+        .filter(|(label, status)| label.strip_prefix("root_") != Some(status.as_str()))
+        .map(|(label, status)| format!("{label} => {status}"))
+        .collect();
+    assert!(
+        reshaped.is_empty(),
+        "every status is its reason with `root_` removed, and these are not: {reshaped:?}"
+    );
+
+    // NO TWO REASONS SHARE A STATUS, or the status stops saying which reason produced it,
+    // which is the whole point of having one per reason.
+    let mut statuses: Vec<&str> = arms.iter().map(|(_, status)| status.as_str()).collect();
+    statuses.sort_unstable();
+    let before = statuses.len();
+    statuses.dedup();
+    assert_eq!(
+        before,
+        statuses.len(),
+        "two reasons map to the same status, so the status no longer says which reason it was"
+    );
+
+    // THE UNTRANSLATED LIST IS ITSELF CHECKED, both ways: an entry for a label this chain
+    // no longer emits is stale, and an entry that has since been given an arm must be
+    // deleted rather than left to excuse it.
+    for (label, why) in UNTRANSLATED {
+        assert!(
+            emitted_set.contains(label),
+            "{label} is listed as deliberately untranslated and this chain no longer emits it"
+        );
+        assert!(
+            !translated.contains(label),
+            "{label} has a status of its own now, so delete that entry instead of carrying \
+             the note {why:?}"
+        );
+        assert!(!why.is_empty(), "{label} is listed with no reason");
+    }
+}
+
 /// `serves_page_tier()` ANSWERS FROM THE FIELD, AND THE KIND NO LONGER DECIDES.
 ///
 /// This test used to assert the opposite -- that the page KIND decided -- and the kind
