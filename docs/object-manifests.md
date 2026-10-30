@@ -492,3 +492,20 @@ restart in 2,117 ms. Every phase retained the 180-second workload bound and made
 no automatic mutation retries. The existing one-group-per-object case remains
 separate. These local results are recovery evidence, not a controlled performance
 comparison, sustained throughput target or multihost qualification.
+
+### An unavailable group during metadata failover
+
+The CI-pinned `coupled_groups::unavailable_group_preserves_striped_objects_and_other_group_writes`
+starts three three-voter data groups and three metadata voters. It writes 48
+objects striped over two groups, stops two voters in one data group and waits for
+metadata to mark that group unavailable. It then kills the metadata leader. The
+existing metadata client must follow the new leader, retain the exact manifest,
+and keep the minority data group excluded from placement.
+
+A read spanning the unavailable group fails; a conditional write through its lone
+voter also fails. Objects entirely on the other groups remain readable, and 24 new
+objects use only those groups. Restoring one stopped voter recovers quorum and
+makes all 72 objects readable while the third voter remains stopped. Restoring the
+last voter preserves physical usage, committed accounting and the original
+manifest. This tests an overlapping control-plane and data-plane failure locally;
+it does not establish multihost partition behavior.

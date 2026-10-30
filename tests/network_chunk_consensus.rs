@@ -2303,15 +2303,6 @@ mod coupled_groups {
             ..Default::default()
         }
     }
-    fn load_batch(
-        api: &[String],
-        start: u64,
-        end: u64,
-        workers: usize,
-        objects: bool,
-    ) -> Vec<(u64, CommittedPlacement)> {
-        load_batch_with_groups(api, start, end, workers, objects, 1)
-    }
     fn load_batch_with_groups(
         api: &[String],
         start: u64,
@@ -2547,6 +2538,13 @@ mod coupled_groups {
     }
     #[test]
     fn unavailable_data_group_is_isolated_and_recovers_without_losing_objects() {
+        unavailable_group_objects(1);
+    }
+    #[test]
+    fn unavailable_group_preserves_striped_objects_and_other_group_writes() {
+        unavailable_group_objects(2);
+    }
+    fn unavailable_group_objects(target_groups: u32) {
         let mut groups: Vec<_> = (0..3)
             .map(|index| {
                 let mut group = Group::configured(64 * 1024 * 1024);
@@ -2557,7 +2555,7 @@ mod coupled_groups {
                 group
             })
             .collect();
-        let metadata = MetadataGroup::for_groups_with_threads(&groups, 16);
+        let mut metadata = MetadataGroup::for_groups_with_threads(&groups, 16);
         for group in &mut groups {
             group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
             for id in 0..3 {
@@ -2567,17 +2565,17 @@ mod coupled_groups {
         }
         metadata.ready();
         group_usage(&metadata.api, &groups, &[]);
-        let mut saved = load_batch(&metadata.api, 0, 48, 4, true);
+        let mut saved = load_batch_with_groups(&metadata.api, 0, 48, 4, true, target_groups);
         group_usage(&metadata.api, &groups, &saved);
         for group in &groups {
             assert!(saved
                 .iter()
-                .any(|(_, p)| p.node_ids == [group.placement_id()]));
+                .any(|(_, p)| p.node_ids.contains(&group.placement_id())));
         }
         let unavailable = groups[0].placement_id();
         let isolated = saved
             .iter()
-            .find(|(_, p)| p.node_ids == [unavailable.clone()])
+            .find(|(_, p)| p.node_ids.contains(&unavailable))
             .unwrap()
             .0;
         let mut meta = metadata.ready();
@@ -2608,6 +2606,32 @@ mod coupled_groups {
             );
             std::thread::sleep(Duration::from_millis(100));
         }
+        if target_groups == 2 {
+            let leader = metadata.ready().endpoint().to_string();
+            let leader = metadata
+                .api
+                .iter()
+                .position(|endpoint| endpoint == &leader)
+                .unwrap();
+            metadata.kill(leader);
+            metadata.ready();
+            // The existing catalog client must follow leadership while one data
+            // group remains unavailable; its immutable manifest must survive.
+            assert_eq!(
+                meta.read_manifest("load", &format!("object-{isolated}"))
+                    .unwrap(),
+                original
+            );
+            assert!(
+                !meta
+                    .list_placement_nodes()
+                    .unwrap()
+                    .iter()
+                    .find(|n| n.node_id == unavailable)
+                    .unwrap()
+                    .online
+            );
+        }
         // Metadata remains readable, but one surviving data voter cannot serve
         // an object from this group or acknowledge a replacement page.
         let short = ReplicaClientOptions {
@@ -2625,7 +2649,11 @@ mod coupled_groups {
             original
         );
         let mut minority = meta.connect_chunk_group(&unavailable, &short).unwrap();
-        let extent = &original.extents[0];
+        let extent = original
+            .extents
+            .iter()
+            .find(|e| e.group == unavailable)
+            .unwrap();
         let existing_page = matrixobjectstore_rs::PageId {
             chunk_id: matrixobjectstore_rs::ChunkId::new(extent.volume_id, extent.chunk_id)
                 .unwrap(),
@@ -2638,15 +2666,15 @@ mod coupled_groups {
             .is_err());
         let available: Vec<_> = saved
             .iter()
-            .filter(|(_, p)| p.node_ids != [unavailable.clone()])
+            .filter(|(_, p)| !p.node_ids.contains(&unavailable))
             .cloned()
             .collect();
         assert!(!available.is_empty());
         verify_load(&metadata.api, &available, true);
-        let newer = load_batch(&metadata.api, 48, 72, 4, true);
+        let newer = load_batch_with_groups(&metadata.api, 48, 72, 4, true, target_groups);
         assert!(newer
             .iter()
-            .all(|(_, p)| p.node_ids != [unavailable.clone()]));
+            .all(|(_, p)| !p.node_ids.contains(&unavailable)));
         verify_load(&metadata.api, &newer, true);
         saved.extend(newer);
         // Restore only one voter first: the restored quorum must catch up and
