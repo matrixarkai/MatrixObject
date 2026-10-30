@@ -97,6 +97,15 @@ fn invalid(e: impl ToString) -> io::Error {
 fn refused(s: impl ToString) -> ObjectError {
     ObjectError::InvalidArgument(s.to_string())
 }
+// A failed read confirmation has not executed the application request. Only
+// typed leadership loss allows catalog routing to another voter; other failures
+// stay authoritative. Never use this conversion for accepted writes.
+fn read_failure(error: &RaftError) -> Result<ReplicaReply, ObjectError> {
+    match error {
+        RaftError::NotLeader(_) => Ok(ReplicaReply::NotLeader),
+        _ => Err(refused(error)),
+    }
+}
 fn hash(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
         (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
@@ -447,7 +456,7 @@ fn run(
                                 let max_pages = node.max_pages;
                                 checked_apply(&mut node.service, request.request, max_pages, limit)
                             }
-                            Err(error) => Err(refused(error)),
+                            Err(error) => read_failure(error),
                             Ok(false) => unreachable!(),
                         };
                         let _ = request.reply.try_send(reply);
@@ -486,7 +495,7 @@ fn run(
                             Ok(token) => pending_read = Some((token, batch)),
                             Err(error) => {
                                 for request in batch {
-                                    let _ = request.reply.try_send(Err(refused(&error)));
+                                    let _ = request.reply.try_send(read_failure(&error));
                                 }
                             }
                         }
@@ -792,5 +801,30 @@ mod read_batch_tests {
         tx.send(make(ReplicaRequest::Ping, live).0).unwrap();
         assert_eq!(rx.try_iter().count(), 10);
         assert_eq!(batch.len(), 32);
+    }
+}
+
+#[cfg(test)]
+mod read_failure_tests {
+    use super::*;
+
+    #[test]
+    fn chunk_lost_read_leadership_routes_without_masking_other_failures() {
+        assert!(matches!(
+            read_failure(&RaftError::NotLeader(1)),
+            Ok(ReplicaReply::NotLeader)
+        ));
+        // Matching text cannot grant permission to route another request.
+        for error in [
+            RaftError::Storage("node 1 is not the leader".into()),
+            RaftError::InvalidRequest("node 1 is not the leader".into()),
+            RaftError::Transport("node 1 is not the leader".into()),
+            RaftError::NoLeader,
+        ] {
+            assert!(matches!(
+                read_failure(&error),
+                Err(ObjectError::InvalidArgument(_))
+            ));
+        }
     }
 }

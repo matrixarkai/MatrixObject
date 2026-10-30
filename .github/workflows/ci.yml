@@ -81,6 +81,18 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: metadata read leadership loss remains routable
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::read_failure_tests::metadata_lost_read_leadership_routes_without_masking_other_failures -- --exact --nocapture | tee /tmp/read-leadership-0.log
+          grep -q 'test result: ok. 1 passed' /tmp/read-leadership-0.log
+
+      - name: chunk read leadership loss remains routable
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::server::consensus::read_failure_tests::chunk_lost_read_leadership_routes_without_masking_other_failures -- --exact --nocapture | tee /tmp/read-leadership-1.log
+          grep -q 'test result: ok. 1 passed' /tmp/read-leadership-1.log
+
       - name: metadata group stream retries transfer and recovers later mutations
         run: |
           set -o pipefail
@@ -146,6 +158,12 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --lib cluster::object_client::tests::object_write_preflight_bounds_work_and_checks_expected_generation -- --exact --nocapture | tee /tmp/object-writer.log
           grep -q 'test result: ok. 1 passed' /tmp/object-writer.log
+
+      - name: typed publication refusals preserve admission state without replay
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::object_client::tests::typed_publication_refusals_do_not_become_uncertain_or_replay -- --exact --nocapture | tee /tmp/publication-admission.log
+          grep -q 'test result: ok. 1 passed' /tmp/publication-admission.log
 
       - name: lost publication replies are confirmed by exact readback without replay
         run: |

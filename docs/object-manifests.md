@@ -172,14 +172,16 @@ Connections have their configured per-call timeouts; there is no whole-operation
 timeout. Placement currently reserves the complete object length on every target
 group, even when extents are spread across groups.
 
-`ObjectWriteFailure::BeforePublication` means no publication request was sent.
+`ObjectWriteFailure::BeforePublication` means publication was not admitted. This
+includes a request that was never sent and a typed leader refusal from every
+contacted voter. Ordinary error text is not evidence of non-admission.
 Its optional staged manifest identifies candidate pages, some of which may be
 unwritten or unverified; it is diagnostic state, not authorization to publish it.
 A data error never triggers an automatic write retry or publication. Failed writes
 may leave data behind, which the client does not reclaim. An early manifest check
 reduces wasted writes but does not replace the final publication condition.
 
-After a publication error, the client reads the manifest and returns success only
+After a publication error whose admission is uncertain, the client reads the manifest and returns success only
 when the exact attempted result is visible. Otherwise it returns
 `PublicationUnconfirmed` with the complete attempted outcome. It never replays
 publication automatically. Reconnect and read metadata to investigate this state;
