@@ -206,6 +206,14 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::automatic_health_survives_clock_rollback_and_snapshot_recovery -- --exact --nocapture | tee /tmp/health-clock-rollback.log
           grep -q 'test result: ok. 1 passed' /tmp/health-clock-rollback.log
 
+      - name: membership replies stay inside trusted inventories
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_client::operation_deadline_tests::verified_metadata_membership_is_bound_to_the_trusted_inventory -- --exact | tee /tmp/membership-inventory.log
+          grep -q 'test result: ok. 1 passed' /tmp/membership-inventory.log
+          cargo test --locked --all-features --test chunk_catalog_routing verified_chunk_membership_is_bound_to_the_trusted_inventory -- --exact | tee /tmp/membership-inventory.log
+          grep -q 'test result: ok. 1 passed' /tmp/membership-inventory.log
+
       - name: consensus diagnostics preserve late replies and uncertain mutations
         run: |
           set -o pipefail
