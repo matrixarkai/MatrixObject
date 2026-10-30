@@ -254,3 +254,6 @@ mod consensus_inbox;
 mod peer_tls;
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 pub use peer_tls::PeerTlsOptions;
+
+#[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
+mod tls_config;
