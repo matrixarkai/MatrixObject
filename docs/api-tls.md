@@ -94,3 +94,24 @@ The output reports write latency and throughput, verified read throughput,
 process count, and recovered object count. Run scale cases individually in WSL
 to avoid competing process workloads. These measurements describe this bounded
 local simulation, not independent-host throughput or a production capacity limit.
+
+## Measured encrypted scale run
+
+An October 30, 2026 Ubuntu WSL release run at commit
+`889d3a6198cfee10fcba23295fead371b42ba911` passed the explicit 51-process
+case above in 32.68 seconds, excluding compilation. Four clients wrote one-MiB
+objects, each split across four of the 16 data groups. The run verified all
+160 objects after complete process restart, including 32 written after leader
+loss. API and Raft peer mutual TLS were enabled together.
+
+| Phase | Count | Elapsed | Rate | p95 operation latency |
+|---|---:|---:|---:|---:|
+| Initial writes | 128 objects | 16.495 s | 7.8 objects/s | 827.150 ms |
+| Reads after leader loss | 128 objects | 1.206 s | 106.06 MiB/s | 91.815 ms |
+| Writes after leader loss | 32 objects | 3.474 s | 9.2 objects/s | 602.518 ms |
+| Reads after full restart | 160 objects | 1.717 s | 93.18 MiB/s | 107.212 ms |
+
+This is one shared-host functional scale measurement with fixed placement groups.
+It does not establish behavior during sustained host I/O pressure, independent
+failure domains, or catalog-managed voter replacement. Those remain separate
+validation and integration requirements.
