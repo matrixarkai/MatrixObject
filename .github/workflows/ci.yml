@@ -211,6 +211,13 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::catalog_reads_queue_while_only_bootstrap_identity_bypasses_consensus -- --exact | tee /tmp/catalog-read-confirmation.log
           grep -q 'test result: ok. 1 passed' /tmp/catalog-read-confirmation.log
+      - name: live catalog state and committed recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib live_catalog -- --test-threads=1 | tee /tmp/live-catalog.log
+          grep -q 'test result: ok. 2 passed' /tmp/live-catalog.log
+          cargo test --locked --all-features --lib cluster::meta_server::chunk_group_tests::live_membership_health_restores_from_local_snapshot_and_streamed_checkpoint -- --exact | tee /tmp/live-catalog.log
+          grep -q 'test result: ok. 1 passed' /tmp/live-catalog.log
       - name: retained chunk membership fences and joint health
         run: |
           set -o pipefail

@@ -225,3 +225,25 @@ rollback, local durable restart, follower routing, metadata leader loss, full
 metadata restart and expiry of the recovered timestamp. The automatic heartbeat
 process tests exercise usage updates, identity verification and stopped-node
 expiry through this operation.
+
+
+## Retained membership outcomes
+
+Catalog version 1 remains the encoding for fixed groups. Version 2 stores a
+separate, bounded binary protobuf health state for each changing group. The
+permitted members, group identity, capacity and sockets remain immutable.
+Checkpoint restoration accepts newer health only for the same inventory and
+rejects regressing configurations or reports. Local snapshots retain the same
+catalog bytes as Raft checkpoints.
+
+Metadata consensus entry version 2 carries one catalog outcome: expected health,
+resulting health, and the corresponding placement outcome. Application checks
+both preconditions before changing either state. Accepted report values must
+agree with member health, and the logical placement target must agree with the
+incoming and outgoing voter majorities. Catalog outcomes cannot change object
+manifests, committed capacity charges or another group's nodes.
+
+The metadata service does not yet expose network commands that prepare these
+outcomes or send fenced automatic heartbeats. Existing fixed-group deployment
+continues to use its established reports. Dynamic placement is unfinished until
+that command path and coupled process replacement/recovery tests are complete.
