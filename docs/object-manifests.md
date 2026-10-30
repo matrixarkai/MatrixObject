@@ -103,9 +103,11 @@ bytes only after every extent matches its exact length, write sequence and FNV-1
 data checksum. A deleted or absent object returns NotFound; a live empty object
 returns an empty buffer. The caller supplies a maximum object byte count, checked
 before allocating or connecting to data nodes. Allocation failure returns an error.
-The client retains at most one data-group connection, reusing it for adjacent
-extents in the same group. Memory includes the bounded complete output plus one
-extent response and transport buffers. This API reads a complete object, not a
+The client visits all extents of each group together, retaining one data-group
+connection and looking up each distinct group once. It copies validated responses
+into their original object offsets, preserving byte order even for alternating
+groups. Memory includes the bounded complete output, at most 4096 ordering entries,
+one extent response and transport buffers. This API reads a complete object, not a
 stream or range; it does not enable HTTP routing or reclaim old pages. A concurrent
 manifest update does not change the captured generation. Overwriting one of its
 pages causes sequence validation to fail even when the replacement bytes match.
@@ -148,9 +150,13 @@ size, page count and options, then checks the current manifest before writing.
 Placement selects up to `target_groups` configured groups, capped by page count.
 The client looks up each selected group once and verifies every group before
 allocation. It retains these configurations for this operation and keeps the
-first write target’s verified connection through allocation. Switching groups
+first write target’s verified connection through allocation. It writes and verifies
+all pages of that group before moving to each remaining group once. Switching groups
 opens a new connection using the saved configuration and verifies its complete
-identity again. Configurations are not cached across operations, and each lookup
+identity again. Manifest extents retain their original object order; only I/O order
+changes. For nonempty objects with P pages over G healthy groups, preflight and writing use at most
+2G - 1 group connections instead of up to P + G - 1. Reads use G group lookups
+and connections instead of up to P. Configurations are not cached across operations, and each lookup
 checks that the returned placement name matches the request. The client then
 allocates fresh pages and distributes contiguous
 extents across those groups. Each page is written with expected sequence zero,
@@ -450,3 +456,10 @@ they do not establish independent failure domains, a sustained throughput target
 peak resource use, or production latency. No controlled comparison with earlier
 runs was performed. The measured write throughput remains modest and requires
 profiling before making performance commitments.
+
+The connection-count regression uses 32 alternating extents across two groups,
+including a partial final page. It requires three total write-side connections
+(including preflight), two read-side connections, and exactly one metadata lookup
+per group per operation. It validates the original manifest order and complete
+reconstructed bytes. Real Raft process tests separately exercise durability,
+leader loss, damaged extents and conditional publication.

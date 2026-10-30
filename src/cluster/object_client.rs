@@ -190,7 +190,19 @@ impl RemoteMetaClient {
             error,
             staged: Some(Box::new(manifest.clone())),
         };
-        for (extent, bytes) in manifest.extents.iter().zip(data.chunks(options.page_bytes)) {
+        // Visit each group once while retaining the verified first target. The
+        // manifest remains in object order; only physical I/O is reordered.
+        let first_group = connection.as_ref().map(|(group, _)| group.as_str());
+        let mut order: Vec<_> = (0..manifest.extents.len()).collect();
+        order.sort_by_key(|index| {
+            let group = manifest.extents[*index].group.as_str();
+            (Some(group) != first_group, group)
+        });
+        for index in order {
+            let extent = &manifest.extents[index];
+            let start = index * options.page_bytes;
+            let tail = &data[start..];
+            let bytes = &tail[..tail.len().min(options.page_bytes)];
             if connection.as_ref().map(|(group, _)| group) != Some(&extent.group) {
                 connection = Some((
                     extent.group.clone(),
