@@ -8,6 +8,50 @@ use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::Duration;
 
+/// Shared worker observations never participate in admission or consensus decisions.
+#[derive(Clone)]
+pub(super) struct WorkerProgress(std::sync::Arc<WorkerObservation>);
+struct WorkerObservation {
+    epoch: std::time::Instant,
+    phase_and_start: std::sync::atomic::AtomicU64,
+}
+#[derive(Clone, Copy)]
+pub(super) enum WorkerPhase {
+    Starting = 0,
+    PeerPackets = 1,
+    #[cfg(feature = "chunk-consensus")]
+    StateLock = 2,
+    ApplyReady = 3,
+    RestoreCheckpoint = 4,
+    PublishCheckpoint = 5,
+    Requests = 6,
+    Idle = 7,
+    Stopped = 8,
+}
+impl WorkerProgress {
+    pub(super) fn new() -> Self {
+        Self(std::sync::Arc::new(WorkerObservation {
+            epoch: std::time::Instant::now(),
+            phase_and_start: std::sync::atomic::AtomicU64::new(WorkerPhase::Starting as u64),
+        }))
+    }
+    fn elapsed_ms(&self) -> u64 {
+        self.0.epoch.elapsed().as_millis().min(u128::from(u64::MAX >> 8)) as u64
+    }
+    pub(super) fn mark(&self, phase: WorkerPhase) {
+        self.0.phase_and_start.store((self.elapsed_ms() << 8) | phase as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn describe(&self) -> String {
+        let observed = self.0.phase_and_start.load(std::sync::atomic::Ordering::Relaxed);
+        let name = match observed & 255 {
+            0 => "starting", 1 => "peer packets", 2 => "state lock", 3 => "apply ready",
+            4 => "restore checkpoint", 5 => "publish checkpoint", 6 => "requests",
+            7 => "idle", 8 => "stopped", _ => "unknown",
+        };
+        format!("; observed worker={name}; worker_phase_ms={}", self.elapsed_ms().saturating_sub(observed >> 8))
+    }
+}
+
 /// Observations are diagnostic only, never evidence that a mutation is safe to replay.
 #[derive(Clone)]
 pub(super) struct RequestProgress {
@@ -34,11 +78,21 @@ impl RequestProgress {
         self.phase
             .store(phase as u8, std::sync::atomic::Ordering::Relaxed);
     }
+    #[cfg(test)]
     pub(super) fn wait<T>(
         &self,
         receiver: &Receiver<Result<T, crate::ObjectError>>,
         timeout: Duration,
         service: &str,
+    ) -> Result<T, crate::ObjectError> {
+        self.wait_observed(receiver, timeout, service, None)
+    }
+    pub(super) fn wait_observed<T>(
+        &self,
+        receiver: &Receiver<Result<T, crate::ObjectError>>,
+        timeout: Duration,
+        service: &str,
+        worker: Option<&WorkerProgress>,
     ) -> Result<T, crate::ObjectError> {
         match receiver.recv_timeout(timeout) {
             Ok(reply) => reply,
@@ -59,8 +113,9 @@ impl RequestProgress {
                 } else {
                     "write outcome may be committed; do not replay"
                 };
+                let worker = worker.map(WorkerProgress::describe).unwrap_or_default();
                 Err(crate::ObjectError::InvalidArgument(format!(
-                    "{service} consensus {reason}; last observed phase={phase}; {outcome}"
+                    "{service} consensus {reason}; last observed phase={phase}; {outcome}{worker}"
                 )))
             }
         }
@@ -68,6 +123,7 @@ impl RequestProgress {
 }
 
 pub(super) struct ConsensusChannels<T> {
+    pub(super) progress: WorkerProgress,
     pub(super) requests: ConsensusInbox<T>,
     pub(super) packets: Receiver<Vec<u8>>,
     pub(super) outgoing: BTreeMap<u64, SyncSender<super::peer_delivery::PeerDelivery>>,
@@ -201,6 +257,31 @@ mod progress_tests {
                 assert!(error.contains(&format!("last observed phase={expected}")));
                 assert_eq!(error.contains("write outcome may be committed"), !read_only);
             }
+            let worker = WorkerProgress::new();
+            for (phase, expected) in [
+                (WorkerPhase::Starting, "starting"),
+                (WorkerPhase::PeerPackets, "peer packets"),
+                (WorkerPhase::ApplyReady, "apply ready"),
+                (WorkerPhase::RestoreCheckpoint, "restore checkpoint"),
+                (WorkerPhase::PublishCheckpoint, "publish checkpoint"),
+                (WorkerPhase::Requests, "requests"),
+                (WorkerPhase::Idle, "idle"),
+                (WorkerPhase::Stopped, "stopped"),
+            ] {
+                let observation = worker.clone();
+                std::thread::spawn(move || observation.mark(phase)).join().unwrap();
+                let error = progress.wait_observed::<u64>(&rx, Duration::ZERO, "chunk", Some(&worker)).unwrap_err().to_string();
+                assert!(error.contains(&format!("observed worker={expected}; worker_phase_ms=")));
+                assert_eq!(error.contains("write outcome may be committed"), !read_only);
+                assert_eq!(error.contains("no mutation submitted"), read_only);
+            }
+            worker.mark(WorkerPhase::RestoreCheckpoint);
+            std::thread::sleep(Duration::from_millis(10));
+            let description = worker.describe();
+            let age: u64 = description.split("worker_phase_ms=").nth(1).unwrap().parse().unwrap();
+            assert!(age >= 10);
+            tx.send(Ok(23)).unwrap();
+            assert_eq!(progress.wait_observed(&rx, Duration::ZERO, "chunk", Some(&worker)).unwrap(), 23);
             // A timeout observes the channel; it does not cancel accepted work.
             tx.send(Ok(42)).unwrap();
             assert_eq!(progress.wait(&rx, Duration::ZERO, "chunk").unwrap(), 42);
