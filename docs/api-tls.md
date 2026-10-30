@@ -75,3 +75,22 @@ data groups. It verifies objects through leader loss and full process restart.
 The partition script uses a private network namespace and also checks live
 isolated leaders, quorum refusal, healing, and recovered objects with API and
 Raft TLS enabled. These are local multi-process simulations.
+
+For concurrent object loads, the regular test runs 15 processes and places each
+object across four groups. An explicit scale case runs 51 processes: three
+metadata voters and 16 three-voter data groups. It writes 128 one-MiB objects,
+removes every group leader, verifies the objects, writes another 32 objects,
+and verifies all 160 after a complete restart. Both API and Raft traffic use TLS.
+Every node's persisted transport markers and each group's physical and committed
+capacity accounting are checked. The workload retains a ten-second deadline per
+object operation and does not retry uncertain mutations.
+
+```sh
+cargo test --locked --all-features --test network_chunk_consensus coupled_groups::encrypted_api_load_recovers_four_way_objects -- --exact --nocapture
+cargo test --release --locked --all-features --test network_chunk_consensus coupled_groups::encrypted_api_sixteen_groups_recover_four_way_objects -- --exact --ignored --nocapture
+```
+
+The output reports write latency and throughput, verified read throughput,
+process count, and recovered object count. Run scale cases individually in WSL
+to avoid competing process workloads. These measurements describe this bounded
+local simulation, not independent-host throughput or a production capacity limit.

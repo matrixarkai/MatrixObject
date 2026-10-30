@@ -123,6 +123,13 @@ jobs:
           grep -q '^running 1 test$' /tmp/api-tls.log
           grep -q '^test result: ok. 1 passed' /tmp/api-tls.log
 
+      - name: encrypted APIs recover concurrent four-group objects
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::encrypted_api_load_recovers_four_way_objects -- --exact --nocapture | tee /tmp/api-load.log
+          grep -q '^running 1 test$' /tmp/api-load.log
+          grep -q '^test result: ok. 1 passed' /tmp/api-load.log
+
       - name: peer TLS refuses incomplete configuration
         run: |
           set -o pipefail
@@ -584,8 +591,8 @@ jobs:
         run: |
           set -o pipefail
           bash tools/network_partition_test.sh | tee /tmp/live-peer-partitions.log
-          test "$(grep -c '^running 1 test$' /tmp/live-peer-partitions.log)" -eq 2
-          test "$(grep -c '^test result: ok. 1 passed' /tmp/live-peer-partitions.log)" -eq 2
+          test "$(grep -c '^running 1 test$' /tmp/live-peer-partitions.log)" -eq 3
+          test "$(grep -c '^test result: ok. 1 passed' /tmp/live-peer-partitions.log)" -eq 3
 
       - name: external probe verifies data across leader loss and restart
         run: |
