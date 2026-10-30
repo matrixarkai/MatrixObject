@@ -427,3 +427,19 @@ its success reply retains the locally committed-removal meaning. Operators must
 contact the remaining group to verify serving availability. A failed confirmation
 for an already proposed change is an uncertain mutation, even when the underlying
 error is a leadership refusal. It must not be classified as safe to replay.
+
+### Repeated voter rejoin
+
+The repeated-controller workloads choose each joining identity from the current
+committed membership instead of assuming one fixed spare. After each replacement,
+they stop the removed process and retain its durable directory. A later round adds
+that identity as a learner, restarts it against its existing state, and promotes it
+only after catch-up. Controllers must overlap in every round.
+
+New object batches run between rounds after the committed catalog reports eligible
+healthy groups with the expected usage. A temporary placement refusal is not
+replayed as a mutation. Continuous readers check the original objects throughout;
+final verification includes all newly written objects, retained membership fences,
+leader loss and full process restart. The CI case uses three groups and three
+rounds; the explicit WSL case uses sixteen groups and four rounds. These bounded
+workloads do not establish long-duration availability.

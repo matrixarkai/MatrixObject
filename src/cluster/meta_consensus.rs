@@ -498,10 +498,13 @@ fn run(
         }
         for packet in output {
             if let Some(tx) = outgoing.get(&packet.to) {
-                let _ = tx.try_send(crate::cluster::peer_delivery::PeerDelivery::new(
+                if tx.try_send(crate::cluster::peer_delivery::PeerDelivery::observed(
                     packet.bytes,
                     NETWORK_TIMEOUT,
-                ));
+                    progress.peer_deliveries(),
+                )).is_err() {
+                    progress.peer_deliveries().queue_rejected();
+                }
             }
         }
         if pending

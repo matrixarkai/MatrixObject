@@ -99,6 +99,14 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --test chunk_membership_controller -- --test-threads=1 | tee /tmp/membership-controller.log
           grep -q 'test result: ok. 3 passed' /tmp/membership-controller.log
+      - name: Check repeated concurrent voter rejoin
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::dynamic_groups::three_dynamic_groups_rejoin_removed_voters_across_three_rounds -- --exact --nocapture --test-threads=1 | tee /tmp/repeated-membership.log
+          grep -q 'test result: ok. 1 passed' /tmp/repeated-membership.log
+          grep -q 'DYNAMIC_GROUPS groups=3 peak_processes=15 objects=84' /tmp/repeated-membership.log
+          grep -q 'replacement_rounds=3' /tmp/repeated-membership.log
       - name: Check concurrent dynamic group controllers
         shell: bash
         run: |
@@ -743,6 +751,8 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib cluster::peer_delivery::tests::queued_peer_delivery_expires_before_connect_and_preserves_fresh_frames -- --exact --nocapture | tee /tmp/peer-delivery.log
+          grep -q 'test result: ok. 1 passed' /tmp/peer-delivery.log
+          cargo test --locked --all-features --lib cluster::peer_delivery::tests::delivery_observations_distinguish_queue_expiry_connection_and_success -- --exact --nocapture | tee /tmp/peer-delivery.log
           grep -q 'test result: ok. 1 passed' /tmp/peer-delivery.log
 
       - name: consensus inbox bounds admission and wakes for work ticks and shutdown
