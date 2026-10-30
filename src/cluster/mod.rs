@@ -249,3 +249,8 @@ mod peer_delivery;
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod consensus_inbox;
+
+#[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
+mod peer_tls;
+#[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
+pub use peer_tls::PeerTlsOptions;

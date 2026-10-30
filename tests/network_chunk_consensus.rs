@@ -16,6 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 struct Group {
+    peer_tls: Option<PathBuf>,
     nodes: Vec<Option<NodeProcess>>,
     peers: BTreeMap<u64, SocketAddr>,
     root: PathBuf,
@@ -62,6 +63,7 @@ impl Group {
             .map(|(api, _)| api.local_addr().unwrap())
             .collect();
         let g = Self {
+            peer_tls: None,
             nodes: vec![None, None, None],
             peers,
             root,
@@ -132,6 +134,29 @@ impl Group {
                 ("MATRIXOBJECT_CHUNK_NODE_ID", node_id.as_str()),
                 ("MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS", metadata.as_str()),
                 ("MATRIXOBJECT_CHUNK_HEARTBEAT_MS", self.heartbeat_ms),
+            ]);
+        }
+        let tls_paths = self.peer_tls.as_ref().map(|root| {
+            [
+                root.join("ca.pem"),
+                root.join(format!("peer-{i}.pem")),
+                root.join(format!("peer-{i}.key")),
+            ]
+        });
+        if let Some(paths) = &tls_paths {
+            environment.extend([
+                (
+                    "MATRIXOBJECT_CHUNK_RAFT_TLS_CA_CERT",
+                    paths[0].to_str().unwrap(),
+                ),
+                (
+                    "MATRIXOBJECT_CHUNK_RAFT_TLS_CERT",
+                    paths[1].to_str().unwrap(),
+                ),
+                (
+                    "MATRIXOBJECT_CHUNK_RAFT_TLS_KEY",
+                    paths[2].to_str().unwrap(),
+                ),
             ]);
         }
         drop(self.reservations[i].take());
@@ -297,6 +322,7 @@ fn chunk_peer_storage_lock_configuration_and_truncation_fail_closed() {
     let address = reserved.local_addr().unwrap();
     drop(reserved);
     let options = ChunkRaftOptions {
+        peer_tls: None,
         checkpoint_after_bytes: 0,
         node_id: 1,
         group_id: 8,
@@ -341,6 +367,7 @@ fn slow_chunk_peer_packets_do_not_prevent_shutdown() {
     drop(socket);
     server
         .enable_consensus(ChunkRaftOptions {
+            peer_tls: None,
             checkpoint_after_bytes: 0,
             node_id: 1,
             group_id: 4,
@@ -424,6 +451,7 @@ fn chunk_voter_catalog_rejects_aliases_and_invalid_addresses_before_storage() {
             ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
         assert!(server
             .enable_consensus(ChunkRaftOptions {
+                peer_tls: None,
                 checkpoint_after_bytes: 0,
                 node_id: 1,
                 group_id: 1,
@@ -516,6 +544,7 @@ fn oversized_chunk_outcome_is_refused_without_poisoning_the_group() {
     drop(socket);
     server
         .enable_consensus(ChunkRaftOptions {
+            peer_tls: None,
             checkpoint_after_bytes: 0,
             node_id: 1,
             group_id: 9,
@@ -810,6 +839,7 @@ mod coupled_groups {
     };
 
     struct MetadataGroup {
+        peer_tls: Option<PathBuf>,
         nodes: Vec<Option<NodeProcess>>,
         api: Vec<String>,
         peers: String,
@@ -875,6 +905,7 @@ mod coupled_groups {
             .unwrap();
             std::fs::write(root.join("catalog.bin"), catalog.to_bytes().unwrap()).unwrap();
             let mut group = Self {
+                peer_tls: chunks[0].peer_tls.clone(),
                 nodes: vec![None, None, None],
                 api,
                 peers,
@@ -896,45 +927,34 @@ mod coupled_groups {
             let catalog = self.root.join("catalog.bin");
             let checkpoint_bytes = self.checkpoint_bytes.to_string();
             let request_threads = self.request_threads.to_string();
+            let mut environment: Vec<(&str, &str)> = vec![
+                ("MATRIXOBJECT_METASERVER_ADDR", &self.api[i]),
+                ("MATRIXOBJECT_METASERVER_THREADS", &request_threads),
+                ("MATRIXOBJECT_METASERVER_RAFT_PEERS", &self.peers),
+                ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", &id),
+                ("MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES", &checkpoint_bytes),
+                ("MATRIXOBJECT_METASERVER_RAFT_STATE_DIR", state.to_str().unwrap()),
+                ("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", if self.multiple_groups { "5000" } else { "700" }),
+                ("MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE", catalog.to_str().unwrap()),
+                ("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", if self.multiple_groups { "10000" } else { "1500" }),
+            ];
+            let tls_paths = self.peer_tls.as_ref().map(|root| [
+                root.join("ca.pem"),
+                root.join(format!("peer-{i}.pem")),
+                root.join(format!("peer-{i}.key")),
+            ]);
+            if let Some(paths) = &tls_paths {
+                environment.extend([
+                    ("MATRIXOBJECT_METASERVER_RAFT_TLS_CA_CERT", paths[0].to_str().unwrap()),
+                    ("MATRIXOBJECT_METASERVER_RAFT_TLS_CERT", paths[1].to_str().unwrap()),
+                    ("MATRIXOBJECT_METASERVER_RAFT_TLS_KEY", paths[2].to_str().unwrap()),
+                ]);
+            }
             drop(self.reservations[i].take());
-            let node = processes::start(
-                env!("CARGO_BIN_EXE_metaserver"),
-                &[
-                    ("MATRIXOBJECT_METASERVER_ADDR", &self.api[i]),
-                    ("MATRIXOBJECT_METASERVER_THREADS", &request_threads),
-                    ("MATRIXOBJECT_METASERVER_RAFT_PEERS", &self.peers),
-                    ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", &id),
-                    (
-                        "MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES",
-                        &checkpoint_bytes,
-                    ),
-                    (
-                        "MATRIXOBJECT_METASERVER_RAFT_STATE_DIR",
-                        state.to_str().unwrap(),
-                    ),
-                    (
-                        "MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS",
-                        if self.multiple_groups { "5000" } else { "700" },
-                    ),
-                    (
-                        "MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE",
-                        catalog.to_str().unwrap(),
-                    ),
-                    (
-                        "MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS",
-                        if self.multiple_groups {
-                            "10000"
-                        } else {
-                            "1500"
-                        },
-                    ),
-                ],
-            );
+            let node = processes::start(env!("CARGO_BIN_EXE_metaserver"), &environment);
             assert_eq!(node.endpoint, self.api[i]);
             assert!(node.startup_line.contains("storage=raft"));
-            assert!(node
-                .startup_line
-                .contains(&format!("threads={request_threads} ")));
+            assert!(node.startup_line.contains(&format!("threads={request_threads} ")));
             self.nodes[i] = Some(node);
         }
         fn ready(&self) -> RemoteMetaClient {
@@ -2952,6 +2972,25 @@ mod coupled_groups {
         target_groups: u32,
         object_bytes: u64,
     ) {
+        multiple_group_load_with_transport(
+            group_count,
+            writes,
+            workers,
+            objects,
+            target_groups,
+            object_bytes,
+            None,
+        );
+    }
+    fn multiple_group_load_with_transport(
+        group_count: usize,
+        writes: u64,
+        workers: usize,
+        objects: bool,
+        target_groups: u32,
+        object_bytes: u64,
+        peer_tls: Option<PathBuf>,
+    ) {
         assert!((8..=4 * 1024 * 1024).contains(&object_bytes));
         assert_eq!(object_bytes % 4, 0);
         assert!(objects || object_bytes == 1024);
@@ -2961,6 +3000,7 @@ mod coupled_groups {
         let mut groups: Vec<_> = (0..group_count)
             .map(|i| {
                 let mut g = Group::configured(64 * 1024 * 1024);
+                g.peer_tls = peer_tls.clone();
                 g.group_id = i as u64 + 1;
                 g.max_pages = 2048;
                 g.checkpoint_bytes = 16 * 1024;
@@ -3062,6 +3102,16 @@ mod coupled_groups {
         }
         group_usage(&metadata.api, &groups, &saved);
         verify_load(&metadata.api, &saved, objects);
+        if peer_tls.is_some() {
+            for root in std::iter::once(&metadata.root).chain(groups.iter().map(|g| &g.root)) {
+                for i in 0..3 {
+                    assert_eq!(
+                        std::fs::read(root.join(i.to_string()).join("peer.transport")).unwrap(),
+                        b"tls-v1\n"
+                    );
+                }
+            }
+        }
         println!(
             "MULTIGROUP verified objects={objects} object_bytes={object_bytes} groups={group_count} groups_per_object={target_groups} metadata_threads={request_threads} processes={} recovered_objects={}",
             group_count * 3 + 3,
@@ -3084,6 +3134,33 @@ mod coupled_groups {
     #[test]
     fn striped_objects_preserve_pages_across_group_failover_and_restart() {
         multiple_group_load_with_groups(3, 96, 6, true, 2);
+    }
+    #[cfg(feature = "peer-tls")]
+    fn tls_payload_recovery(groups: usize, writes: u64, bytes: u64) {
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..3 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        multiple_group_load_with_transport(
+            groups,
+            writes,
+            4,
+            true,
+            2,
+            bytes,
+            Some(certificates.root.clone()),
+        );
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    fn authenticated_peer_quorums_recover_striped_payloads_and_capacity() {
+        tls_payload_recovery(3, 24, 64 * 1024);
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "51-process mutually authenticated peer recovery; run explicitly in WSL"]
+    fn authenticated_sixteen_groups_recover_one_mib_objects() {
+        tls_payload_recovery(16, 128, 1024 * 1024);
     }
     #[test]
     fn striped_payloads_recover_with_exact_bytes_and_capacity_accounting() {

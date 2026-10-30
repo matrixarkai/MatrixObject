@@ -63,9 +63,9 @@ queues are bounded; network delivery has a total deadline. Packet loss is handle
 by Raft retransmission. Storage or application failure stops the server. Shutdown
 joins the consensus and network workers.
 
-This is an integration stage, not a production-readiness claim. Peer traffic is
+This is an integration stage, not a production-readiness claim. Without optional peer TLS, traffic is
 unauthenticated and unencrypted; use an isolated test network. Membership changes,
-authenticated transport and large-scale validation remain required. File-backed
+client API authentication and large-scale validation remain required. File-backed
 checkpoint recovery is described below. The [external workload probe](distributed-probe.md)
 can exercise an existing deployment and verify its objects after restart. Mutable-state reads use quorum confirmation
 without appending entries. Group identity and the immutable bootstrap data-group
@@ -378,3 +378,9 @@ identity, endpoint, capacity and outcome checks remain unchanged. Expiration sti
 uses wall time: a rollback can delay expiry, and synchronized metadata clocks
 remain necessary. This protects automatic report ordering, not a timing lease or
 a guarantee that quorum remains available during host stalls.
+
+## Authenticated peer transport
+
+Optional [mutual TLS](peer-tls.md) protects metadata and chunk Raft peer ports.
+Without that configuration peer traffic remains plaintext. Client API transport
+and authorization remain separate requirements.

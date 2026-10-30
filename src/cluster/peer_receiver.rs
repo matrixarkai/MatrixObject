@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use super::peer_tls::{PeerSocket, PeerTransport};
 use super::shutdown::ServerShutdown;
 use super::socket_readiness::{Notify, SocketReadiness};
 use std::io::{self, Read};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
+#[cfg(test)]
+use std::net::TcpStream;
 use std::sync::mpsc::SyncSender;
 use std::time::{Duration, Instant};
 
@@ -14,7 +17,7 @@ const CONNECTION_LIMIT: usize = 16;
 const READ_BUDGET: usize = 64 * 1024;
 
 struct Frame {
-    stream: TcpStream,
+    stream: PeerSocket,
     deadline: Instant,
     header: [u8; 4],
     header_read: usize,
@@ -57,12 +60,31 @@ impl Frame {
 
 // One bounded sweep per connection prevents a fragmented sender from holding
 // the listener. Each connection still carries exactly one existing wire frame.
+#[cfg(test)]
 pub(super) fn receive(
     listener: TcpListener,
     incoming: SyncSender<Vec<u8>>,
     stop: &ServerShutdown,
     timeout: Duration,
     wake: Option<Notify>,
+) {
+    receive_with_transport(
+        listener,
+        incoming,
+        stop,
+        timeout,
+        wake,
+        &PeerTransport::Plain,
+    )
+}
+
+pub(super) fn receive_with_transport(
+    listener: TcpListener,
+    incoming: SyncSender<Vec<u8>>,
+    stop: &ServerShutdown,
+    timeout: Duration,
+    wake: Option<Notify>,
+    transport: &PeerTransport,
 ) {
     let mut frames: Vec<Frame> = Vec::new();
     let mut reserved = 0;
@@ -74,6 +96,10 @@ pub(super) fn receive(
                     if stream.set_nonblocking(true).is_err() {
                         continue;
                     }
+                    let stream = match PeerSocket::new(stream, transport) {
+                        Ok(stream) => stream,
+                        Err(_) => continue,
+                    };
                     frames.push(Frame {
                         stream,
                         deadline: Instant::now() + timeout,
@@ -105,7 +131,10 @@ pub(super) fn receive(
                 result => {
                     let frame = frames.swap_remove(index);
                     reserved -= frame.body.len();
-                    if matches!(result, Ok(true)) && incoming.try_send(frame.body).is_ok() {
+                    if matches!(result, Ok(true))
+                        && Instant::now() < frame.deadline
+                        && incoming.try_send(frame.body).is_ok()
+                    {
                         if let Some(wake) = &wake {
                             wake.notify();
                         }
@@ -141,7 +170,9 @@ fn wait_for_frames(
         .unwrap_or(Duration::from_millis(50));
     waiter.wait(
         (frames.len() < CONNECTION_LIMIT).then_some(listener),
-        frames.iter().map(|f| (&f.stream, false)),
+        frames
+            .iter()
+            .map(|f| (&f.stream.socket, f.stream.wants_write())),
         timeout,
         stop,
     )
@@ -167,7 +198,7 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             stream.set_nonblocking(true).unwrap();
             frames.push(Frame {
-                stream,
+                stream: stream.into(),
                 deadline: Instant::now() + Duration::from_secs(5),
                 header: [0; 4],
                 header_read: 0,
@@ -213,7 +244,7 @@ mod tests {
             (
                 client,
                 Frame {
-                    stream,
+                    stream: stream.into(),
                     deadline: Instant::now() + Duration::from_secs(5),
                     header: [0; 4],
                     header_read: 0,

@@ -16,24 +16,31 @@ impl PeerDelivery {
             deadline: Instant::now() + timeout,
         }
     }
+    #[cfg(test)]
     pub(super) fn send(self, address: &SocketAddr) -> io::Result<()> {
+        self.send_with_transport(address, &super::peer_tls::PeerTransport::Plain)
+    }
+    pub(super) fn send_with_transport(
+        self,
+        address: &SocketAddr,
+        transport: &super::peer_tls::PeerTransport,
+    ) -> io::Result<()> {
         let mut stream = TcpStream::connect_timeout(address, remaining(self.deadline)?)?;
         stream.set_nodelay(true)?;
-        write_until(
-            &mut stream,
-            &(self.bytes.len() as u32).to_be_bytes(),
-            self.deadline,
-        )?;
-        write_until(&mut stream, &self.bytes, self.deadline)
+        transport.send(&mut stream, address, &self.bytes, self.deadline)
     }
 }
-fn remaining(deadline: Instant) -> io::Result<Duration> {
+pub(super) fn remaining(deadline: Instant) -> io::Result<Duration> {
     deadline
         .checked_duration_since(Instant::now())
         .filter(|d| !d.is_zero())
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "peer packet deadline"))
 }
-fn write_until(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+pub(super) fn write_until(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
     while !bytes.is_empty() {
         stream.set_write_timeout(Some(remaining(deadline)?))?;
         match stream.write(bytes) {

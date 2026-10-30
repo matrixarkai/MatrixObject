@@ -46385,7 +46385,8 @@ fn every_guard_the_workflow_pins_by_name_exists() {
                 requested_features_enabled &= cfg!(all(
                     feature = "matrix-raft",
                     feature = "metadata-consensus",
-                    feature = "chunk-consensus"
+                    feature = "chunk-consensus",
+                    feature = "peer-tls"
                 ));
             }
             if word == "--features" {
@@ -46394,6 +46395,7 @@ fn every_guard_the_workflow_pins_by_name_exists() {
                         "matrix-raft" => cfg!(feature = "matrix-raft"),
                         "metadata-consensus" => cfg!(feature = "metadata-consensus"),
                         "chunk-consensus" => cfg!(feature = "chunk-consensus"),
+                        "peer-tls" => cfg!(feature = "peer-tls"),
                         _ => panic!("workflow guard must account for feature {feature}"),
                     };
                     requested_features_enabled &= enabled;
