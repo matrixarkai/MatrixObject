@@ -821,14 +821,25 @@ fn metadata_raft_recovers_chunk_catalog_and_group_health() {
     let mut group = Group::with_catalog(None, None, Some(catalog.to_bytes().unwrap()));
     let leader = group.leader();
     let mut client = group.client(leader);
-    // Followers serve the same immutable bootstrap catalog without routing.
-    for id in 0..3 {
-        assert_eq!(
-            group.client(id).read_chunk_group("group-a").unwrap(),
-            config
-        );
+    // Starting with a follower must route to a confirmed leader for catalog reads.
+    let mut endpoints: Vec<_> = (0..3).filter(|id| *id != leader)
+        .map(|id| group.nodes[id].as_ref().unwrap().endpoint.clone()).collect();
+    endpoints.push(group.nodes[leader].as_ref().unwrap().endpoint.clone());
+    let mut routed = RemoteMetaClient::connect_catalog(&endpoints, &MetaClientOptions {
+        read_timeout: Duration::from_secs(2),
+        ..Default::default()
+    }).unwrap();
+    assert_ne!(routed.endpoint(), group.nodes[leader].as_ref().unwrap().endpoint);
+    assert_eq!(routed.read_chunk_group("group-a").unwrap(), config);
+    assert_eq!(routed.endpoint(), group.nodes[leader].as_ref().unwrap().endpoint);
+    let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
+    let before = std::fs::read(&wal).unwrap();
+    for _ in 0..16 {
+        assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
+        assert!(matches!(client.read_chunk_group("missing"),
+            Err(matrixobjectstore_rs::ObjectError::NotFound(_))));
     }
-    assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
+    assert_eq!(std::fs::read(&wal).unwrap(), before, "catalog reads must not append outcomes");
     for id in ["member-a", "member-b"] {
         client
             .heartbeat_placement_node(id, 123, 65536, false, true, 1000)
@@ -872,18 +883,17 @@ fn metadata_raft_recovers_chunk_catalog_and_group_health() {
                 .starts_with(b"MOGB")
         );
     }
-    // A minority can describe configured groups, but cannot expose mutable
-    // health, plan placement, read a manifest, or allocate fresh page namespaces.
+    // A minority can describe its immutable identity, but cannot expose catalog
+    // state, health, placements, manifests, or fresh page namespaces.
     for id in 0..3 {
         if id != current {
             group.kill(id);
         }
     }
-    assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
-    assert!(matches!(
-        client.read_chunk_group("missing"),
-        Err(matrixobjectstore_rs::ObjectError::NotFound(_))
-    ));
+    assert!(client.read_chunk_group("group-a").is_err());
+    let missing_error = group.client(current).read_chunk_group("missing").unwrap_err();
+    assert!(!matches!(missing_error, matrixobjectstore_rs::ObjectError::NotFound(_)),
+        "missing catalog entries also require a confirmed read");
     assert!(client.list_placement_nodes().is_err());
     assert!(group
         .client(current)

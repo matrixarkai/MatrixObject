@@ -186,12 +186,14 @@ establish a throughput improvement. Read-generated WAL records are removed;
 heartbeat updates, expiry, writes and elections still need durable history, and
 snapshot compaction remains unfinished.
 
-The immutable bootstrap catalog is an exception to queued reads: `ReadChunkGroup`
-returns fixed configuration from any running metadata voter without a Raft read
-barrier. The retained bootstrap and checkpoints bind this catalog to the group.
-This reply does not establish quorum or current data-group health; placement,
-health and object-state reads still require quorum confirmation. Failed or stopped
-metadata consensus refuses local configuration reads too.
+`ReadChunkGroup` runs in the metadata worker after quorum confirmation, including
+lookups that return a missing-group error. A follower directs catalog clients to
+the leader; a minority cannot answer from a bootstrap copy. Confirmed catalog
+reads do not append WAL outcomes. Only `GroupIdentity`, which describes immutable
+bootstrap identity, is served locally without a read barrier. Failed or stopped
+metadata consensus refuses requests in either path. This keeps catalog reads on
+the same consistency boundary needed for committed membership updates; dynamic
+catalog mutations are not yet exposed by the metadata service.
 
 
 ## Health reports and clocks

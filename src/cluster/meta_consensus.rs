@@ -76,7 +76,6 @@ pub(super) struct MetaConsensus {
     progress: WorkerProgress,
     pub(super) node_count: usize,
     identity: super::MetaGroupIdentity,
-    groups: Arc<super::ChunkGroupCatalog>,
     reply_limit: usize,
     requests: SyncSender<Request>,
     wake: Option<Notify>,
@@ -293,8 +292,6 @@ impl MetaConsensus {
                 }
             }));
         }
-        let groups = Arc::new(groups);
-        let worker_groups = Arc::clone(&groups);
         let node_count = service.nodes.len();
         let failed = Arc::new(AtomicBool::new(false));
         let worker_failed = Arc::clone(&failed);
@@ -306,7 +303,7 @@ impl MetaConsensus {
             if let Err(error) = run(
                 &mut peer,
                 &mut service,
-                &worker_groups,
+                &groups,
                 ConsensusChannels {
                     progress: worker_progress.clone(),
                     requests: rx,
@@ -326,7 +323,6 @@ impl MetaConsensus {
         Ok(Self {
             progress,
             identity: group_identity,
-            groups,
             reply_limit: limit,
             node_count,
             requests,
@@ -347,26 +343,13 @@ impl MetaConsensus {
                 return Err(refused("membership mode or group identity mismatch"));
             }
         }
-        if matches!(
-            request,
-            MetaRequest::GroupIdentity | MetaRequest::ReadChunkGroup { .. }
-        ) {
-            if self.is_failed() || self.stop.is_stopped() {
-                return Err(refused("metadata consensus stopped"));
-            }
-            // Both values come from the retained bootstrap image. The catalog
-            // is immutable and included in the voting group's bootstrap identity;
-            // serving it locally does not expose mutable placement or health.
-            let reply = match request {
-                MetaRequest::GroupIdentity => MetaReply::GroupIdentity(self.identity.clone()),
-                MetaRequest::ReadChunkGroup { placement_id } => self
-                    .groups
-                    .get(&placement_id)
-                    .cloned()
-                    .map(MetaReply::ChunkGroup)
-                    .ok_or_else(|| ObjectError::NotFound("chunk group missing".into()))?,
-                _ => unreachable!(),
-            };
+        if self.is_failed() || self.stop.is_stopped() {
+            return Err(refused("metadata consensus stopped"));
+        }
+        if matches!(request, MetaRequest::GroupIdentity) {
+            // Bootstrap identity is immutable. Catalog state belongs to the worker
+            // and must be read after quorum confirmation, like placement and health.
+            let reply = MetaReply::GroupIdentity(self.identity.clone());
             super::message::check_reply_size(reply.payload_len(), self.reply_limit)?;
             return Ok(reply);
         }
@@ -1022,9 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_catalog_reads_bypass_queue_but_obey_limits_and_failure_state() {
-        let (_, groups) = fixture(1, 0);
-        let expected = groups.get("group-0").unwrap().clone();
+    fn catalog_reads_queue_while_only_bootstrap_identity_bypasses_consensus() {
         let (requests, receiver) = mpsc::sync_channel(1);
         let mut consensus = MetaConsensus {
             progress: WorkerProgress::new(),
@@ -1038,7 +1019,6 @@ mod tests {
                 peer_endpoints: vec!["127.0.0.1:9999".into()],
                 bootstrap_id: 1,
             },
-            groups: Arc::new(groups),
             reply_limit: 4096,
             requests,
             wake: None,
@@ -1050,16 +1030,15 @@ mod tests {
         let request = MetaRequest::ReadChunkGroup {
             placement_id: "group-0".into(),
         };
-        assert_eq!(
-            consensus.request(request.clone()).unwrap(),
-            MetaReply::ChunkGroup(expected)
-        );
-        assert!(matches!(
-            receiver.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
-        consensus.reply_limit = 1;
+        // With no worker, catalog reads must time out instead of returning a
+        // bootstrap copy. The request is queued for the worker's read barrier.
         assert!(consensus.request(request.clone()).is_err());
+        assert_eq!(receiver.try_recv().unwrap().request, request);
+        assert!(matches!(consensus.request(MetaRequest::GroupIdentity),
+            Ok(MetaReply::GroupIdentity(_))));
+        assert!(matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        consensus.reply_limit = 1;
+        assert!(consensus.request(MetaRequest::GroupIdentity).is_err());
         consensus.reply_limit = 4096;
         consensus.failed.store(true, Ordering::SeqCst);
         assert!(consensus.request(request.clone()).is_err());
