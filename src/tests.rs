@@ -49430,6 +49430,51 @@ fn a_published_key_does_not_keep_a_spelling_its_field_has_dropped() {
          one's; the two guards must not both claim it"
     );
 
+    // TWO KEYS THE PAIR RULE CANNOT SEE, PINNED BY NAME INSTEAD.
+    //
+    // `ChunkStorageReadiness` publishes its route-control readiness from `self.readable`
+    // and `self.writable`, which name no tier at all, so the rule above has nothing to
+    // compare the key against and skips the pair. Those two were the last published keys
+    // in the tree still on the page tier's retired spelling, while every other
+    // route-control readiness name -- the coverage counters, the raft status keys, the
+    // distributed readiness keys -- had moved.
+    //
+    // Widening the rule to flag a retired spelling in ANY key, field or no field, is what
+    // would catch them generally, and that is deliberately not done: the retired bare
+    // spelling is also an ordinary English word here, and the wider rule reports every
+    // `blocked`, `nonblocking` and `WouldBlock` beside the real findings -- sixty-odd
+    // lines of noise around two. Pinning the two literally costs nothing and fails in
+    // both directions, which is what the wider rule would have bought.
+    let (_, chunk_readiness) = SOURCES
+        .iter()
+        .find(|(path, _)| *path == "protocol/storage/maintenance/storage_readiness.rs")
+        .expect("the storage readiness builder should still be in the derived source list");
+    assert!(
+        chunk_readiness.len() > 500,
+        "the storage readiness source did not load"
+    );
+    for name in [
+        "pageserver_route_control_read_ready",
+        "pageserver_route_control_write_ready",
+    ] {
+        assert!(
+            chunk_readiness.contains(&format!("(\"{name}\"")),
+            "{name} is the spelling every other route-control readiness name in this tree \
+             uses, and this builder no longer publishes it"
+        );
+    }
+    for retired in [
+        "blockserver_route_control_read_ready",
+        "blockserver_route_control_write_ready",
+    ] {
+        assert!(
+            !chunk_readiness.contains(retired),
+            "{retired} is back, and the pair rule cannot see it: the field filling it names \
+             no tier, which is the whole reason these two are pinned by name"
+        );
+    }
+
+
     // Keys whose rename is NOT free, each with what it would cost.
     //
     // These are PRICED, not blessed: the entry says what has to be built before the key
