@@ -181,7 +181,7 @@ pub use placement::{
     check_quorums, majority, InProcessReplicaSet, ReplicaFanout, ReplicaPlacement,
 };
 #[cfg(feature = "replica-server")]
-pub use replica_set::{PageRepairReport, PageRepairStatus, RemoteReplicaSet};
+pub use replica_set::{PageRepairBatch, PageRepairEntry, PageRepairReport, PageRepairStatus, RemoteReplicaSet};
 #[cfg(all(feature = "replica-server", feature = "meta-server"))]
 pub use server::ReplicaHeartbeatOptions;
 #[cfg(feature = "replica-server")]

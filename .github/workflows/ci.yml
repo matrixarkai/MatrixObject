@@ -351,6 +351,18 @@ jobs:
           cargo test --release --locked --all-features --test replica_restart_recovery star_repair_restores_a_full_256_mib_page_and_three_member_writes -- --exact --ignored --nocapture | tee /tmp/large-star-repair.log
           grep -q 'test result: ok. 1 passed' /tmp/large-star-repair.log
 
+      - name: repair inventory batches merge members and stop before unresolved pages
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery repair_inventory_batches_merge_members_and_stop_before_unresolved_pages -- --exact | tee /tmp/inventory-repair.log
+          grep -q 'test result: ok. 1 passed' /tmp/inventory-repair.log
+
+      - name: repair inventory requires every member before mutating any page
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery repair_inventory_requires_every_member_before_mutating_any_page -- --exact | tee /tmp/inventory-repair.log
+          grep -q 'test result: ok. 1 passed' /tmp/inventory-repair.log
+
       - name: health reports validate canonical protobuf and decided time
         run: |
           set -o pipefail

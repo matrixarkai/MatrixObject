@@ -284,3 +284,35 @@ CI runs this guard explicitly in release mode. It stays ignored in unfiltered
 local test runs because it starts three large processes and validates several
 complete page copies. The normal small-page repair guards continue testing source
 changes, quorum refusal, uncertain commit replies and preservation of newer state.
+
+
+## Bounded inventory repair traversal
+
+`RemoteReplicaSet::repair_inventory_batch(after, limit)` repairs a bounded union
+of page identities from every configured member. `after` is an exclusive page
+cursor; `limit` must be 1 through 64. Every member must answer its inventory before
+any page mutation begins. The merge retains at most `limit` candidate identities
+plus one bounded member response, rather than collecting the complete cluster
+inventory. Repair still applies the source-quorum and destination checks above.
+Pages are processed sequentially; this is a page-count bound, not a total network
+byte budget or an end-to-end deadline.
+
+The returned `PageRepairBatch` includes each attempted page and its result,
+`resume_after`, `has_more`, and `blocked`. The cursor advances only after every
+member for that page reports `Current` or `Installed`. An error, deferred member,
+or unconfirmed commit stops the batch immediately, leaves the cursor before that
+page, and sets both `blocked` and `has_more`. Earlier successful page results are
+retained. An initial inventory error returns no batch and performs no repair.
+
+Resume an unblocked batch after `resume_after` when `has_more` is true. Stop and
+inspect a blocked batch, especially an unconfirmed commit, before deciding how to
+recover. Do not blindly loop on the same blocked cursor. A page seen only on a
+minority blocks the traversal; the client neither deletes it nor invents a source
+quorum. Empty inventories preserve the supplied cursor and return no further work.
+
+This traversal observes live indexes, not a shared snapshot. Concurrent writers
+can introduce identities before the cursor or advance pages already inspected.
+Fence writers and verify the complete traversal before using it for replica
+readmission. Completion does not automatically change node health or metadata
+placement eligibility. Background scheduling and operator decisions remain
+separate from the bounded traversal API.

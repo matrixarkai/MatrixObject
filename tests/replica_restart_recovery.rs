@@ -970,3 +970,124 @@ fn star_repair_restores_a_full_256_mib_page_and_three_member_writes() {
     assert_eq!(read.write_sequence, expected.write_sequence + 1);
     println!("256 MiB quorum repair took {repair_ms} ms; all three complete copies recovered and accepted later writes");
 }
+
+#[test]
+fn repair_inventory_batches_merge_members_and_stop_before_unresolved_pages() {
+    use matrixobjectstore_rs::cluster::RemoteReplicaSet;
+    let dir = JournalDir::new();
+    let paths: Vec<_> = (0..3)
+        .map(|i| dir.0.join(format!("batch-{i}.log")))
+        .collect();
+    let nodes: Vec<_> = paths.iter().map(|p| start(p)).collect();
+    let endpoints: Vec<_> = nodes.iter().map(|n| n.endpoint.clone()).collect();
+    let owners: [&[usize]; 5] = [&[1, 2], &[0, 2], &[0], &[0, 1], &[1, 2]];
+    for (index, owners) in owners.iter().enumerate() {
+        for owner in *owners {
+            client(&nodes[*owner])
+                .write_chunk(page(index as u64), 0, &[index as u8; 8])
+                .unwrap();
+        }
+    }
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    let before: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    assert!(set.repair_inventory_batch(None, 0).is_err());
+    assert!(set.repair_inventory_batch(None, 65).is_err());
+    for (p, expected) in paths.iter().zip(before) {
+        assert_eq!(std::fs::read(p).unwrap(), expected);
+    }
+    let first = set.repair_inventory_batch(None, 2).unwrap();
+    assert!(!first.blocked);
+    assert!(first.has_more);
+    assert_eq!(first.resume_after, Some(page(1)));
+    assert_eq!(
+        first
+            .pages
+            .iter()
+            .map(|entry| entry.page.clone())
+            .collect::<Vec<_>>(),
+        vec![page(0), page(1)]
+    );
+    let blocked = set
+        .repair_inventory_batch(first.resume_after.as_ref(), 2)
+        .unwrap();
+    assert!(blocked.blocked);
+    assert!(blocked.has_more);
+    assert_eq!(blocked.resume_after, first.resume_after);
+    assert_eq!(blocked.pages.len(), 1);
+    assert_eq!(blocked.pages[0].page, page(2));
+    assert!(blocked.pages[0].result.is_err());
+    assert!(client(&nodes[1]).head_chunk(&page(2)).is_err());
+    assert!(client(&nodes[2]).head_chunk(&page(3)).is_err());
+    // Establish a second matching source explicitly; the traversal never invents it.
+    client(&nodes[1]).write_chunk(page(2), 0, &[2; 8]).unwrap();
+    let resumed = set
+        .repair_inventory_batch(blocked.resume_after.as_ref(), 2)
+        .unwrap();
+    assert!(!resumed.blocked);
+    assert!(resumed.has_more);
+    assert_eq!(resumed.resume_after, Some(page(3)));
+    let last = set
+        .repair_inventory_batch(resumed.resume_after.as_ref(), 2)
+        .unwrap();
+    assert!(!last.blocked);
+    assert!(!last.has_more);
+    assert_eq!(last.resume_after, Some(page(4)));
+    assert_eq!(last.pages.len(), 1);
+    let empty = set
+        .repair_inventory_batch(last.resume_after.as_ref(), 2)
+        .unwrap();
+    assert!(empty.pages.is_empty());
+    assert!(!empty.has_more);
+    assert_eq!(empty.resume_after, last.resume_after);
+    drop(set);
+    drop(nodes);
+    for path in &paths {
+        let node = start(path);
+        let mut c = client(&node);
+        assert_eq!(c.ping().unwrap(), 5);
+        for index in 0..5 {
+            let read = c.read_chunk(&page(index), 0, 8).unwrap();
+            assert_eq!(read.data, vec![index as u8; 8]);
+            assert_eq!(read.write_sequence, 1);
+        }
+    }
+}
+
+#[test]
+fn repair_inventory_requires_every_member_before_mutating_any_page() {
+    use matrixobjectstore_rs::cluster::RemoteReplicaSet;
+    let dir = JournalDir::new();
+    let paths: Vec<_> = (0..5)
+        .map(|i| dir.0.join(format!("inventory-{i}.log")))
+        .collect();
+    let mut nodes: Vec<_> = paths.iter().map(|p| Some(start(p))).collect();
+    let endpoints: Vec<_> = nodes
+        .iter()
+        .map(|n| n.as_ref().unwrap().endpoint.clone())
+        .collect();
+    for node in &nodes[..3] {
+        client(node.as_ref().unwrap())
+            .write_chunk(page(0), 0, b"quorum")
+            .unwrap();
+    }
+    let mut set = RemoteReplicaSet::connect(
+        &endpoints,
+        3,
+        3,
+        &ReplicaClientOptions {
+            connect_timeout: std::time::Duration::from_millis(200),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    drop(nodes[4].take());
+    assert!(set.repair_inventory_batch(None, 2).is_err());
+    assert!(client(nodes[3].as_ref().unwrap())
+        .head_chunk(&page(0))
+        .is_err());
+    for (path, expected) in paths.iter().zip(before) {
+        assert_eq!(std::fs::read(path).unwrap(), expected);
+    }
+}
