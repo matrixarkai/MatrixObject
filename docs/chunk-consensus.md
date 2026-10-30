@@ -599,3 +599,18 @@ or quorum availability caused the delay.
 Optional [mutual TLS](peer-tls.md) protects metadata and chunk Raft peer ports.
 Without that configuration peer traffic remains plaintext. Client API transport
 and authorization remain separate requirements.
+
+### Bounded star response collection
+
+Star fan-out starts each member's response deadline after sending its request.
+It collects nonblocking replies in bounded 64 KiB sweeps across all members, so a
+stalled first member does not prevent healthy replies from being consumed.
+Idle sweeps sleep briefly; sweeps that receive bytes continue immediately.
+Waiting on earlier members never grants later members a fresh read timeout.
+All sent requests are resolved or expired before returning, with results kept in
+membership order and the same quorum checks. Incomplete or invalid frames retire
+their sockets; fully decoded replies restore blocking operation for reuse.
+There are no extra worker threads or automatic mutation retries. Request sends
+and reconnects retain their existing per-member budgets; this is not a single
+deadline for an entire multi-phase object operation. Each pending reply retains
+at most its configured payload bound plus its frame header.

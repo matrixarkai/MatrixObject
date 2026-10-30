@@ -95,15 +95,77 @@ pub struct RemoteReplicaClient {
 pub(super) struct PendingReplicaReply<'a> {
     client: &'a mut RemoteReplicaClient,
     code: crate::cluster::wire::RequestCode,
+    deadline: Instant,
+    header: [u8; HEADER_BYTES],
+    header_read: usize,
+    payload: Option<(StatusCode, Vec<u8>)>,
+    payload_read: usize,
 }
 impl PendingReplicaReply<'_> {
-    pub(super) fn finish(self) -> Result<ReplicaReply, ObjectError> {
-        match self
-            .client
-            .read_reply(self.code, exchange_deadline(self.client.read_timeout)?)
-        {
-            Ok(ReplicaReply::NotLeader) => Err(not_leader()),
-            result => result,
+    pub(super) fn received_bytes(&self) -> usize {
+        self.header_read + self.payload_read
+    }
+    pub(super) fn poll(&mut self) -> Option<Result<ReplicaReply, ObjectError>> {
+        match self.poll_inner() {
+            Ok(None) => None,
+            Ok(Some(ReplicaReply::NotLeader)) => Some(Err(not_leader())),
+            Ok(Some(reply)) => Some(Ok(reply)),
+            Err(error) => Some(Err(error)),
+        }
+    }
+
+    fn poll_inner(&mut self) -> Result<Option<ReplicaReply>, ObjectError> {
+        // Bound each member's work so fragmented or large replies cannot monopolize a sweep.
+        let mut budget = 64 * 1024;
+        loop {
+            time_left(self.deadline).map_err(|error| {
+                transport_error(&self.client.endpoint, "collecting a fan-out response", &error.to_string())
+            })?;
+            if self.header_read == HEADER_BYTES && self.payload.is_none() {
+                let (status, length) = self.client.reply_header(&self.header)?;
+                self.payload = Some((status, vec![0; length]));
+            }
+            if let Some((status, payload)) = &self.payload {
+                if self.payload_read == payload.len() {
+                    self.client.writer.set_nonblocking(false).map_err(|error| {
+                        transport_error(&self.client.endpoint, "restoring response socket", &error.to_string())
+                    })?;
+                    return self.client.decode_reply(self.code, *status, payload).map(Some);
+                }
+            }
+            if budget == 0 {
+                return Ok(None);
+            }
+            let target = if self.header_read < HEADER_BYTES {
+                &mut self.header[self.header_read..]
+            } else {
+                &mut self.payload.as_mut().unwrap().1[self.payload_read..]
+            };
+            let limit = target.len().min(budget);
+            match self.client.reader.read(&mut target[..limit]) {
+                Ok(0) => return Err(transport_error(&self.client.endpoint, "collecting a fan-out response", "incomplete frame")),
+                Ok(count) => {
+                    if self.header_read < HEADER_BYTES {
+                        self.header_read += count;
+                    } else {
+                        self.payload_read += count;
+                    }
+                    budget -= count;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
+                Err(error) => return Err(transport_error(&self.client.endpoint, "collecting a fan-out response", &error.to_string())),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn finish(mut self) -> Result<ReplicaReply, ObjectError> {
+        loop {
+            if let Some(result) = self.poll() {
+                return result;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 }
@@ -737,10 +799,29 @@ impl RemoteReplicaClient {
         self.connection_usable = false;
         let sent = self.send_request(request);
         match sent {
-            Ok(()) => Ok(PendingReplicaReply {
-                client: self,
-                code: request.code(),
-            }),
+            Ok(()) => {
+                let setup = exchange_deadline(self.read_timeout).and_then(|deadline| {
+                    self.writer.set_nonblocking(true).map_err(|error| {
+                        transport_error(&self.endpoint, "starting response collection", &error.to_string())
+                    })?;
+                    Ok(deadline)
+                });
+                match setup {
+                    Ok(deadline) => Ok(PendingReplicaReply {
+                        client: self,
+                        code: request.code(),
+                        deadline,
+                        header: [0; HEADER_BYTES],
+                        header_read: 0,
+                        payload: None,
+                        payload_read: 0,
+                    }),
+                    Err(error) => {
+                        let _ = self.writer.shutdown(Shutdown::Both);
+                        Err(error)
+                    }
+                }
+            },
             Err(error) => {
                 self.last_exchange = Instant::now();
                 let _ = self.writer.shutdown(Shutdown::Both);
@@ -778,6 +859,19 @@ impl RemoteReplicaClient {
                 &err.to_string(),
             )
         })?;
+        let (status, payload_len) = self.reply_header(&header)?;
+        let mut payload = vec![0u8; payload_len];
+        read_before(&mut self.reader, &mut payload, deadline).map_err(|err| {
+            transport_error(
+                &self.endpoint,
+                "reading a response payload",
+                &err.to_string(),
+            )
+        })?;
+        self.decode_reply(code, status, &payload)
+    }
+
+    fn reply_header(&self, header: &[u8; HEADER_BYTES]) -> Result<(StatusCode, usize), ObjectError> {
         check_stamp(header[0])?;
         let status = StatusCode::from_u8(header[1]).ok_or_else(|| {
             ObjectError::Corruption(format!(
@@ -793,14 +887,10 @@ impl RemoteReplicaClient {
                 self.endpoint, self.max_payload_bytes
             )));
         }
-        let mut payload = vec![0u8; payload_len];
-        read_before(&mut self.reader, &mut payload, deadline).map_err(|err| {
-            transport_error(
-                &self.endpoint,
-                "reading a response payload",
-                &err.to_string(),
-            )
-        })?;
+        Ok((status, payload_len))
+    }
+
+    fn decode_reply(&mut self, code: crate::cluster::wire::RequestCode, status: StatusCode, payload: &[u8]) -> Result<ReplicaReply, ObjectError> {
         if status == StatusCode::NotLeader {
             if !payload.is_empty() {
                 return Err(ObjectError::Corruption(
@@ -811,11 +901,11 @@ impl RemoteReplicaClient {
             return Ok(ReplicaReply::NotLeader);
         }
         if status == StatusCode::Ok {
-            let reply = ReplicaReply::decode(code, &payload)?;
+            let reply = ReplicaReply::decode(code, payload)?;
             self.connection_usable = true;
             return Ok(reply);
         }
-        let message = decode_failure(&payload)?;
+        let message = decode_failure(payload)?;
         self.connection_usable = true;
         Err(status.into_error(message))
     }
@@ -910,6 +1000,26 @@ fn not_leader() -> ObjectError {
 mod pending_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn fanout_reply_deadline_starts_when_request_is_sent() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = RemoteReplicaClient::connect(
+            &listener.local_addr().unwrap().to_string(),
+            &ReplicaClientOptions { read_timeout: Duration::from_millis(100), ..Default::default() },
+        ).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let request = ReplicaRequest::Ping;
+        let pending = client.begin_standalone(&request).unwrap();
+        let mut sent = vec![0; encode_request(&request).len()];
+        server.read_exact(&mut sent).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        server.write_all(&crate::cluster::message::encode_reply(&ReplicaReply::Pong { page_count: 0 })).unwrap();
+        assert!(pending.finish().is_err(), "collecting a late reply must not grant a new timeout");
+        assert!(!client.connection_usable);
+        assert!(client.begin_standalone(&request).is_err());
+    }
 
     #[test]
     fn unfinished_or_malformed_fanout_reply_closes_socket_without_replaying() {
