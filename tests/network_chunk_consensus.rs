@@ -2495,10 +2495,22 @@ mod coupled_groups {
         objects: bool,
         target_groups: u32,
     ) -> Vec<(u64, CommittedPlacement)> {
-        load_batch_sized(api, start, end, workers, objects, target_groups, 1024)
+        load_batch_sized(&LoadEndpoint { api, tls: None }, start, end, workers, objects, target_groups, 1024)
+    }
+    struct LoadEndpoint<'a> {
+        api: &'a [String],
+        tls: Option<matrixobjectstore_rs::cluster::ApiTlsConfig>,
+    }
+    impl LoadEndpoint<'_> {
+        fn metadata_options(&self) -> MetaClientOptions {
+            MetaClientOptions { tls: self.tls.clone(), ..load_options() }
+        }
+        fn replica_options(&self) -> ReplicaClientOptions {
+            ReplicaClientOptions { tls: self.tls.clone(), ..chunk_options() }
+        }
     }
     fn load_batch_sized(
-        api: &[String],
+        endpoint: &LoadEndpoint<'_>,
         start: u64,
         end: u64,
         workers: usize,
@@ -2514,7 +2526,7 @@ mod coupled_groups {
                 .map(|worker| {
                     scope.spawn(move || {
                         let mut meta =
-                            RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
+                            RemoteMetaClient::connect_catalog(endpoint.api, &endpoint.metadata_options()).unwrap();
                         let mut clients = BTreeMap::new();
                         let mut saved = Vec::new();
                         let mut latencies = Vec::new();
@@ -2528,7 +2540,7 @@ mod coupled_groups {
                             if objects {
                                 let options = matrixobjectstore_rs::cluster::ObjectWriteOptions {
                                     page_bytes: (object_bytes / 4) as usize, update_time_ms: n + 1, target_groups,
-                                    replica: ReplicaClientOptions { deadline: Some(started + Duration::from_secs(10)), ..chunk_options() }, ..Default::default()
+                                    replica: ReplicaClientOptions { deadline: Some(started + Duration::from_secs(10)), ..endpoint.replica_options() }, ..Default::default()
                                 };
                                 let manifest = meta.write_object("load", &format!("object-{n}"), None, &load_data_sized(n, object_bytes), &options).unwrap();
                                 assert_eq!(manifest.extents.len(), 4);
@@ -2556,7 +2568,7 @@ mod coupled_groups {
                             assert_eq!(plan.node_ids.len(), 1);
                             let group = plan.node_ids[0].clone();
                             let chunk = clients.entry(group.clone()).or_insert_with(|| {
-                                meta.connect_chunk_group(&group, &chunk_options()).unwrap()
+                                meta.connect_chunk_group(&group, &endpoint.replica_options()).unwrap()
                             });
                             stages[1] += phase.elapsed().as_micros();
                             let phase = Instant::now();
@@ -2647,6 +2659,9 @@ mod coupled_groups {
         }
     }
     fn verify_load(api: &[String], saved: &[(u64, CommittedPlacement)], objects: bool) {
+        verify_load_with_transport(&LoadEndpoint { api, tls: None }, saved, objects);
+    }
+    fn verify_load_with_transport(endpoint: &LoadEndpoint<'_>, saved: &[(u64, CommittedPlacement)], objects: bool) {
         if objects {
             let began = Instant::now();
             let mut samples = std::thread::scope(|scope| {
@@ -2655,7 +2670,7 @@ mod coupled_groups {
                         scope.spawn(move || {
                             let mut samples = Vec::new();
                             let mut meta =
-                                RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
+                                RemoteMetaClient::connect_catalog(endpoint.api, &endpoint.metadata_options()).unwrap();
                             for (index, (n, placement)) in
                                 saved.iter().enumerate().skip(worker).step_by(8)
                             {
@@ -2669,7 +2684,7 @@ mod coupled_groups {
                                         &placement.bucket,
                                         &placement.key,
                                         usize::try_from(placement.length).unwrap(),
-                                        &ReplicaClientOptions { deadline: Some(started + Duration::from_secs(10)), ..chunk_options() },
+                                        &ReplicaClientOptions { deadline: Some(started + Duration::from_secs(10)), ..endpoint.replica_options() },
                                     )
                                     .unwrap();
                                 samples.push(started.elapsed().as_micros());
@@ -2722,7 +2737,7 @@ mod coupled_groups {
             );
             return;
         }
-        let mut meta = RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
+        let mut meta = RemoteMetaClient::connect_catalog(endpoint.api, &endpoint.metadata_options()).unwrap();
         let mut clients = BTreeMap::new();
         for (n, placement) in saved {
             assert_eq!(
@@ -2733,7 +2748,7 @@ mod coupled_groups {
             let id = &placement.node_ids[0];
             let chunk = clients
                 .entry(id.clone())
-                .or_insert_with(|| meta.connect_chunk_group(id, &chunk_options()).unwrap());
+                .or_insert_with(|| meta.connect_chunk_group(id, &endpoint.replica_options()).unwrap());
             assert_eq!(
                 chunk.read_chunk(&page(*n), 0, 1024).unwrap().data,
                 load_data(*n)
@@ -3186,11 +3201,12 @@ mod coupled_groups {
             objects,
             target_groups,
             object_bytes,
-            VoterSetup { peer_tls: None, voters: 3 },
+            VoterSetup { peer_tls: None, api_tls: false, voters: 3 },
         );
     }
     struct VoterSetup {
         peer_tls: Option<PathBuf>,
+        api_tls: bool,
         voters: usize,
     }
     fn multiple_group_load_with_transport(
@@ -3202,7 +3218,8 @@ mod coupled_groups {
         object_bytes: u64,
         setup: VoterSetup,
     ) {
-        let VoterSetup { peer_tls, voters } = setup;
+        let VoterSetup { peer_tls, api_tls, voters } = setup;
+        assert!(!api_tls || peer_tls.is_some());
         assert!((8..=4 * 1024 * 1024).contains(&object_bytes));
         assert_eq!(object_bytes % 4, 0);
         assert!(objects || object_bytes == 1024);
@@ -3214,6 +3231,7 @@ mod coupled_groups {
             .map(|i| {
                 let mut g = Group::configured_voters(64 * 1024 * 1024, voters);
                 g.peer_tls = peer_tls.clone();
+                g.api_tls = if api_tls { peer_tls.clone() } else { None };
                 g.group_id = i as u64 + 1;
                 g.max_pages = 2048;
                 g.checkpoint_bytes = 16 * 1024;
@@ -3235,8 +3253,9 @@ mod coupled_groups {
             group.leader();
         }
         group_usage(&metadata.api, &groups, &[]);
+        let tls = api_tls_config(metadata.api_tls.as_ref());
         let mut saved = load_batch_sized(
-            &metadata.api,
+            &LoadEndpoint { api: &metadata.api, tls: tls.clone() },
             0,
             writes,
             workers,
@@ -3288,9 +3307,9 @@ mod coupled_groups {
         for group in &groups {
             group.leader();
         }
-        verify_load(&metadata.api, &saved, objects);
+        verify_load_with_transport(&LoadEndpoint { api: &metadata.api, tls: tls.clone() }, &saved, objects);
         saved.extend(load_batch_sized(
-            &metadata.api,
+            &LoadEndpoint { api: &metadata.api, tls: tls.clone() },
             writes,
             writes + writes / 4,
             workers,
@@ -3324,7 +3343,7 @@ mod coupled_groups {
             group.leader();
         }
         group_usage(&metadata.api, &groups, &saved);
-        verify_load(&metadata.api, &saved, objects);
+        verify_load_with_transport(&LoadEndpoint { api: &metadata.api, tls: tls.clone() }, &saved, objects);
         if peer_tls.is_some() {
             for root in std::iter::once(&metadata.root).chain(groups.iter().map(|g| &g.root)) {
                 for i in 0..voters {
@@ -3332,11 +3351,17 @@ mod coupled_groups {
                         std::fs::read(root.join(i.to_string()).join("peer.transport")).unwrap(),
                         b"tls-v1\n"
                     );
+                    if api_tls {
+                        assert_eq!(
+                            std::fs::read(root.join(i.to_string()).join("api.transport")).unwrap(),
+                            b"tls-v1\n"
+                        );
+                    }
                 }
             }
         }
         println!(
-            "MULTIGROUP verified objects={objects} object_bytes={object_bytes} groups={group_count} groups_per_object={target_groups} metadata_threads={request_threads} processes={} recovered_objects={}",
+            "MULTIGROUP verified api_tls={api_tls} objects={objects} object_bytes={object_bytes} groups={group_count} groups_per_object={target_groups} metadata_threads={request_threads} processes={} recovered_objects={}",
             (group_count + 1) * voters,
             saved.len()
         );
@@ -3359,6 +3384,28 @@ mod coupled_groups {
         multiple_group_load_with_groups(3, 96, 6, true, 2);
     }
     #[cfg(feature = "peer-tls")]
+    fn api_tls_load(groups: usize, writes: u64, bytes: u64) {
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..3 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        multiple_group_load_with_transport(
+            groups, writes, 4, true, 4, bytes,
+            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
+        );
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    fn encrypted_api_load_recovers_four_way_objects() {
+        api_tls_load(4, 24, 64 * 1024);
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "51-process API and Raft TLS load; run explicitly in WSL"]
+    fn encrypted_api_sixteen_groups_recover_four_way_objects() {
+        api_tls_load(16, 128, 1024 * 1024);
+    }
+    #[cfg(feature = "peer-tls")]
     fn tls_payload_recovery(groups: usize, writes: u64, bytes: u64) {
         tls_payload_recovery_with_width(groups, writes, bytes, 2);
     }
@@ -3375,7 +3422,7 @@ mod coupled_groups {
             true,
             target_groups,
             bytes,
-            VoterSetup { peer_tls: Some(certificates.root.clone()), voters: 3 },
+            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: false, voters: 3 },
         );
     }
     #[cfg(feature = "peer-tls")]
@@ -3389,7 +3436,7 @@ mod coupled_groups {
             println!("AUTHENTICATED_VOTERS voters={voters} failures_per_group={}", voters / 2);
             multiple_group_load_with_transport(
                 3, 24, 4, true, 2, 64 * 1024,
-                VoterSetup { peer_tls: Some(certificates.root.clone()), voters },
+                VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: false, voters },
             );
         }
     }

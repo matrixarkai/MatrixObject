@@ -63,9 +63,10 @@ queues are bounded; network delivery has a total deadline. Packet loss is handle
 by Raft retransmission. Storage or application failure stops the server. Shutdown
 joins the consensus and network workers.
 
-This is an integration stage, not a production-readiness claim. Without optional peer TLS, traffic is
-unauthenticated and unencrypted; use an isolated test network. Membership changes,
-client API authentication and large-scale validation remain required. File-backed
+This is an integration stage, not a production-readiness claim. Without optional
+peer TLS and [API TLS](api-tls.md), those transports are unauthenticated and
+unencrypted; use an isolated test network. Membership changes, per-user
+authorization and deployment-scale validation remain required. File-backed
 checkpoint recovery is described below. The [external workload probe](distributed-probe.md)
 can exercise an existing deployment and verify its objects after restart. Mutable-state reads use quorum confirmation
 without appending entries. Group identity and the immutable bootstrap data-group
@@ -166,8 +167,9 @@ metaserver leader loss, killed-chunk expiry, exclusion from new placement, and
 journal-backed chunk recovery. Additional tests cover wrong endpoints, draining,
 storage failure, binary request truncation, bounded shutdown, partial configuration,
 and a single-node expiry within a 1024-node roster. These are functional checks,
-not a large-scale throughput result. Full HTTP integration, authentication and membership changes
-remain separate work. Network chunk Raft is described in `chunk-consensus.md`.
+not a large-scale throughput result. Heartbeats support [API mutual TLS](api-tls.md).
+Full HTTP integration, per-user authorization and membership changes remain
+separate work. Network chunk Raft is described in `chunk-consensus.md`.
 
 ## Application checkpoint recovery
 
