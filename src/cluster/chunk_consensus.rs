@@ -466,7 +466,7 @@ fn run(
         {
             let p = pending.take().unwrap();
             let _ = p.request.reply.try_send(Err(refused(
-                "chunk leadership changed; write outcome may be committed",
+                format!("chunk leadership changed; write outcome may be committed{}", progress.describe()),
             )));
         }
         if let Some((token, _)) = &pending_read {

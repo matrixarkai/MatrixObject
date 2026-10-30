@@ -498,7 +498,7 @@ fn run(
         {
             for p in pending.drain(..) {
                 let _ = p.request.reply.try_send(Err(refused(
-                    "metadata leadership changed; write outcome may be committed",
+                    format!("metadata leadership changed; write outcome may be committed{}", progress.describe()),
                 )));
             }
         }
