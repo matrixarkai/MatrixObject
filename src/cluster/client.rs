@@ -101,14 +101,36 @@ pub(super) struct PendingReplicaReply<'a> {
     client: &'a mut RemoteReplicaClient,
     code: crate::cluster::wire::RequestCode,
     deadline: Instant,
+    request: Option<std::sync::Arc<[u8]>>,
+    request_written: usize,
     header: [u8; HEADER_BYTES],
     header_read: usize,
     payload: Option<(StatusCode, Vec<u8>)>,
     payload_read: usize,
 }
 impl PendingReplicaReply<'_> {
-    pub(super) fn received_bytes(&self) -> usize {
-        self.header_read + self.payload_read
+    pub(super) fn transferred_bytes(&self) -> usize {
+        self.request_written + self.header_read + self.payload_read
+    }
+
+    fn send_pending(&mut self) -> Result<bool, ObjectError> {
+        let Some(frame) = &self.request else { return Ok(true) };
+        time_left(self.deadline).map_err(|error| {
+            transport_error(&self.client.endpoint, "sending a fan-out request", &error.to_string())
+        })?;
+        let end = frame.len().min(self.request_written + 64 * 1024);
+        match self.client.writer.write(&frame[self.request_written..end]) {
+            Ok(0) => return Err(transport_error(&self.client.endpoint, "sending a fan-out request", "zero-byte write")),
+            Ok(count) => self.request_written += count,
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => return Ok(false),
+            Err(error) => return Err(transport_error(&self.client.endpoint, "sending a fan-out request", &error.to_string())),
+        }
+        if self.request_written != frame.len() {
+            return Ok(false);
+        }
+        self.request = None;
+        self.deadline = exchange_deadline(self.client.read_timeout, self.client.deadline)?;
+        Ok(true)
     }
     pub(super) fn poll(&mut self) -> Option<Result<ReplicaReply, ObjectError>> {
         match self.poll_inner() {
@@ -120,6 +142,9 @@ impl PendingReplicaReply<'_> {
     }
 
     fn poll_inner(&mut self) -> Result<Option<ReplicaReply>, ObjectError> {
+        if !self.send_pending()? {
+            return Ok(None);
+        }
         // Bound each member's work so fragmented or large replies cannot monopolize a sweep.
         let mut budget = 64 * 1024;
         loop {
@@ -800,10 +825,21 @@ impl RemoteReplicaClient {
         result
     }
 
-    // Standalone fan-out sends one request per socket before collecting replies.
-    pub(super) fn begin_standalone(
+    #[cfg(test)]
+    fn begin_standalone(
         &mut self,
         request: &ReplicaRequest,
+    ) -> Result<PendingReplicaReply<'_>, ObjectError> {
+        let mut pending = self.begin_encoded(request.code(), encode_request(request).into())?;
+        pending.send_pending()?;
+        Ok(pending)
+    }
+
+    // Every member shares one immutable frame and advances without blocking siblings.
+    pub(super) fn begin_encoded(
+        &mut self,
+        code: crate::cluster::wire::RequestCode,
+        frame: std::sync::Arc<[u8]>,
     ) -> Result<PendingReplicaReply<'_>, ObjectError> {
         if self.catalog.is_some() || !self.connection_usable {
             return Err(transport_error(
@@ -812,38 +848,23 @@ impl RemoteReplicaClient {
                 "connection is unavailable or uses a catalog",
             ));
         }
+        let deadline = exchange_deadline(self.write_timeout, self.deadline)?;
         self.connection_usable = false;
-        let sent = self.send_request(request);
-        match sent {
-            Ok(()) => {
-                let setup = exchange_deadline(self.read_timeout, self.deadline).and_then(|deadline| {
-                    self.writer.set_nonblocking(true).map_err(|error| {
-                        transport_error(&self.endpoint, "starting response collection", &error.to_string())
-                    })?;
-                    Ok(deadline)
-                });
-                match setup {
-                    Ok(deadline) => Ok(PendingReplicaReply {
-                        client: self,
-                        code: request.code(),
-                        deadline,
-                        header: [0; HEADER_BYTES],
-                        header_read: 0,
-                        payload: None,
-                        payload_read: 0,
-                    }),
-                    Err(error) => {
-                        let _ = self.writer.shutdown(Shutdown::Both);
-                        Err(error)
-                    }
-                }
-            },
-            Err(error) => {
-                self.last_exchange = Instant::now();
-                let _ = self.writer.shutdown(Shutdown::Both);
-                Err(error)
-            }
+        if let Err(error) = self.writer.set_nonblocking(true) {
+            let _ = self.writer.shutdown(Shutdown::Both);
+            return Err(transport_error(&self.endpoint, "starting fan-out", &error.to_string()));
         }
+        Ok(PendingReplicaReply {
+            client: self,
+            code,
+            deadline,
+            request: Some(frame),
+            request_written: 0,
+            header: [0; HEADER_BYTES],
+            header_read: 0,
+            payload: None,
+            payload_read: 0,
+        })
     }
 
     fn exchange(&mut self, request: &ReplicaRequest) -> Result<ReplicaReply, ObjectError> {

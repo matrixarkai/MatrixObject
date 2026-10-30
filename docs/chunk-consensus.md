@@ -333,8 +333,8 @@ quorum head checks. Each sent exchange is finished, including responses beyond
 the required quorum. Full-head voting, absence detection, distinct-peer checks,
 per-connection deadlines and failure handling retain their existing semantics.
 No worker threads, mutation retries or new protocol messages are introduced.
-An individual blocked send or response can still delay the operation; this is not
-early return on quorum or a whole-operation deadline.
+All selected exchanges finish or expire before returning; this is not early
+return on quorum. An optional absolute client deadline also bounds their waits.
 
 The existing socket-phase test now holds every head reply until all members have
 received the request, checking both present and absent pages. The controlled-delay
@@ -600,17 +600,31 @@ Optional [mutual TLS](peer-tls.md) protects metadata and chunk Raft peer ports.
 Without that configuration peer traffic remains plaintext. Client API transport
 and authorization remain separate requirements.
 
-### Bounded star response collection
+### Bounded star request and response collection
 
-Star fan-out starts each member's response deadline after sending its request.
-It collects nonblocking replies in bounded 64 KiB sweeps across all members, so a
-stalled first member does not prevent healthy replies from being consumed.
-Idle sweeps sleep briefly; sweeps that receive bytes continue immediately.
-Waiting on earlier members never grants later members a fresh read timeout.
-All sent requests are resolved or expired before returning, with results kept in
-membership order and the same quorum checks. Incomplete or invalid frames retire
-their sockets; fully decoded replies restore blocking operation for reuse.
-There are no extra worker threads or automatic mutation retries. Request sends
-and reconnects retain their existing per-member budgets; this is not a single
-deadline for an entire multi-phase object operation. Each pending reply retains
-at most its configured payload bound plus its frame header.
+Star fan-out encodes one immutable request frame shared by all selected members.
+Each member advances its send by at most 64 KiB per sweep using nonblocking I/O.
+A member that stops reading cannot prevent healthy members from receiving the
+request. Its write deadline starts when the exchange is prepared; its response
+deadline starts only when the entire request has been sent. An optional absolute
+client deadline clamps both stages.
+
+Replies also advance in bounded 64 KiB sweeps. Idle sweeps sleep briefly; sweeps
+that transfer bytes continue immediately. Waiting on earlier members never grants
+later members a fresh timeout. All selected exchanges are resolved or expired
+before returning, with results kept in membership order and the same quorum
+checks. Partial requests and incomplete or invalid responses retire their sockets;
+fully decoded replies restore blocking operation for reuse. An expired partial
+write can still have reached the server and is never automatically replayed.
+
+No extra worker threads are created. Pending sends share one encoded frame, and
+each pending response retains at most its configured payload bound plus its frame
+header. Reconnecting failed sockets still happens before the exchange and uses
+the configured connection limits.
+
+A Linux socket test restricts the first member's receive window and withholds
+reads while an 8 MiB mutation is sent to three members. Both healthy members must
+receive and acknowledge the complete request before the stalled member's send
+timeout. The test checks a partial frame at the stalled member and no replay at
+the healthy members. It fails with the former sequential send implementation and
+passes with bounded send sweeps in local WSL.
