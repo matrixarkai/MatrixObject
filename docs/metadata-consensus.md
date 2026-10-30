@@ -304,6 +304,11 @@ Invalid transfer payloads do not stop a healthy voter. Shutdown retains the peer
 storage lock until this worker finishes. Fragment staging, WAL publication and
 application restoration remain synchronous.
 
+Live installation reuses the payload already validated and synced by the receive
+worker, avoiding another full-file checksum scan on the Raft loop. Received
+checkpoints retain their commit-position floor and exact manifest checks.
+Restart recovery still validates the complete payload before restoring it.
+
 Over-limit snapshots keep WAL history. Worker failures stop the node rather than
 silently treating a failed capture as durable. Orderly shutdown joins the worker
 and discards an unpublished payload. Snapshot export copies collections on the consensus loop; checksum sealing and
