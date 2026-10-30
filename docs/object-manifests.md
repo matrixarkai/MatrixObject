@@ -92,7 +92,13 @@ it is not a constant-cost operation and is not used by the Raft path.
 
 Catalog routing may retry an explicitly unadmitted NotLeader response. It never
 automatically replays an uncertain publication; read the manifest to resolve
-the result. Unknown chunk-group names are rejected before proposal. The metadata
+the result. When every voter explicitly refuses admission and the caller supplied
+an absolute deadline, metadata and chunk clients wait 25 ms before another voter
+round within that same budget. Calls without an absolute deadline retain one-round
+behavior. Transport failures and decoded server errors do not enable another
+round; uncertain mutations are never replayed.
+
+Unknown chunk-group names are rejected before proposal. The metadata
 node does not read extent payloads or prove their durability or immutability.
 Clients must finish immutable data writes first, verify group identity and read
 sequence/checksum, and preserve old extents until readers no longer need them.

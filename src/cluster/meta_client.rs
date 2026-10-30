@@ -773,55 +773,67 @@ impl RemoteMetaClient {
         ) || matches!(&request, MetaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
         let mut unadmitted = true;
-        for offset in 0..endpoints.len() {
-            let endpoint = &endpoints[(start + offset) % endpoints.len()];
-            if !self.live || self.endpoint != *endpoint {
-                match Self::connect(endpoint, &options) {
-                    Ok(mut next) => {
-                        if let Some(expected) = &self.group_identity {
-                            match next.call_one(&MetaRequest::GroupIdentity) {
-                                MetaCallOutcome::Answered(MetaReply::GroupIdentity(actual))
-                                    if expected.same_group(&actual) =>
-                                {
-                                    next.group_identity = Some(expected.clone())
+        loop {
+            let mut refusals = 0;
+            for offset in 0..endpoints.len() {
+                let endpoint = &endpoints[(start + offset) % endpoints.len()];
+                if !self.live || self.endpoint != *endpoint {
+                    match Self::connect(endpoint, &options) {
+                        Ok(mut next) => {
+                            if let Some(expected) = &self.group_identity {
+                                match next.call_one(&MetaRequest::GroupIdentity) {
+                                    MetaCallOutcome::Answered(MetaReply::GroupIdentity(actual))
+                                        if expected.same_group(&actual) =>
+                                    {
+                                        next.group_identity = Some(expected.clone())
+                                    }
+                                    MetaCallOutcome::Answered(_) => {
+                                        return (
+                                            MetaCallOutcome::Refused(ObjectError::PreconditionFailed(
+                                                "metadata voter configuration does not match catalog"
+                                                    .into(),
+                                            )),
+                                            unadmitted,
+                                        )
+                                    }
+                                    MetaCallOutcome::Unreachable(error) => {
+                                        last = MetaCallOutcome::Unreachable(error);
+                                        continue;
+                                    }
+                                    outcome => return (outcome, unadmitted),
                                 }
-                                MetaCallOutcome::Answered(_) => {
-                                    return (
-                                        MetaCallOutcome::Refused(ObjectError::PreconditionFailed(
-                                            "metadata voter configuration does not match catalog"
-                                                .into(),
-                                        )),
-                                        unadmitted,
-                                    )
-                                }
-                                MetaCallOutcome::Unreachable(error) => {
-                                    last = MetaCallOutcome::Unreachable(error);
-                                    continue;
-                                }
-                                outcome => return (outcome, unadmitted),
                             }
+                            next.catalog = Some((endpoints.clone(), options.clone()));
+                            *self = next;
                         }
-                        next.catalog = Some((endpoints.clone(), options.clone()));
-                        *self = next;
+                        Err(error) => {
+                            last = MetaCallOutcome::Unreachable(error);
+                            continue;
+                        }
                     }
+                }
+                match self.exchange(&request, request.code()) {
+                    Ok(Ok(MetaReply::NotLeader)) => {
+                        last = not_leader();
+                        refusals += 1;
+                    }
+                    Ok(Ok(reply)) => return (MetaCallOutcome::Answered(reply), false),
+                    Ok(Err(error)) => return (MetaCallOutcome::Refused(error), false),
                     Err(error) => {
+                        unadmitted = false;
                         last = MetaCallOutcome::Unreachable(error);
-                        continue;
+                        if !read_only {
+                            return (last, false);
+                        }
                     }
                 }
             }
-            match self.exchange(&request, request.code()) {
-                Ok(Ok(MetaReply::NotLeader)) => last = not_leader(),
-                Ok(Ok(reply)) => return (MetaCallOutcome::Answered(reply), false),
-                Ok(Err(error)) => return (MetaCallOutcome::Refused(error), false),
-                Err(error) => {
-                    unadmitted = false;
-                    last = MetaCallOutcome::Unreachable(error);
-                    if !read_only {
-                        return (last, false);
-                    }
-                }
+            // Retry only an entirely unadmitted round, within the existing budget.
+            if refusals != endpoints.len() || !options.deadline.is_some_and(|deadline|
+                deadline.saturating_duration_since(Instant::now()) > Duration::from_millis(25)) {
+                break;
             }
+            std::thread::sleep(Duration::from_millis(25));
         }
         (last, unadmitted)
     }
@@ -1058,6 +1070,56 @@ fn write_before(
 mod operation_deadline_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn catalog_retries_only_explicit_non_admission_within_deadline() {
+        for mode in 0..5 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = listener.local_addr().unwrap().to_string();
+            let started = Instant::now();
+            let options = MetaClientOptions {
+                deadline: (mode != 1).then_some(started + Duration::from_secs(1)),
+                ..Default::default()
+            };
+            let mut client = RemoteMetaClient::connect_catalog(&[endpoint], &options).unwrap();
+            let request = MetaRequest::ExpireRootNodeHeartbeats { ttl_ms: 10, now_ms: 20 };
+            let expected = encode_meta_request(&request);
+            let worker = std::thread::spawn(move || {
+                let (mut server, _) = listener.accept().unwrap();
+                server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut calls = 0;
+                let mut bytes = vec![0; expected.len()];
+                while server.read_exact(&mut bytes).is_ok() {
+                    assert_eq!(bytes, expected);
+                    calls += 1;
+                    if mode == 2 { break; }
+                    if mode == 4 {
+                        server.write_all(&super::super::message::encode_failure(
+                            StatusCode::PreconditionFailed, "rejected mutation",
+                        )).unwrap();
+                        continue;
+                    }
+                    let reply = if mode == 0 && calls == 2 {
+                        MetaReply::Expired { offline_count: 0 }
+                    } else { MetaReply::NotLeader };
+                    server.write_all(&super::super::meta_message::encode_meta_reply(&reply)).unwrap();
+                    if mode == 0 && calls == 2 { break; }
+                }
+                calls
+            });
+            let result = client.try_call(request);
+            assert_eq!(matches!(result, MetaCallOutcome::Answered(MetaReply::Expired { .. })), mode == 0);
+            if mode == 2 { assert!(matches!(result, MetaCallOutcome::Unreachable(_))); }
+            drop(client);
+            let calls = worker.join().unwrap();
+            match mode {
+                0 => assert_eq!(calls, 2),
+                1 | 2 | 4 => assert_eq!(calls, 1),
+                _ => assert!(calls > 1),
+            }
+            assert!(started.elapsed() < Duration::from_secs(3));
+        }
+    }
 
     #[test]
     fn verified_metadata_membership_is_bound_to_the_trusted_inventory() {

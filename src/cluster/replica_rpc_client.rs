@@ -819,52 +819,65 @@ impl RemoteReplicaClient {
                 | ReplicaRequest::PageInventory { .. }
         ) || matches!(&request, ReplicaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
-        for offset in 0..endpoints.len() {
-            let endpoint = &endpoints[(start + offset) % endpoints.len()];
-            if !self.connection_usable || self.endpoint != *endpoint {
-                match Self::connect(endpoint, &options) {
-                    Ok(mut next) => {
-                        if let Some(expected) = &self.group_identity {
-                            let actual = match next.chunk_group_identity() {
-                                Ok(identity) => identity,
-                                Err(error) if !next.connection_usable => {
-                                    last = error;
-                                    continue;
+        loop {
+            let mut refusals = 0;
+            for offset in 0..endpoints.len() {
+                let endpoint = &endpoints[(start + offset) % endpoints.len()];
+                if !self.connection_usable || self.endpoint != *endpoint {
+                    match Self::connect(endpoint, &options) {
+                        Ok(mut next) => {
+                            if let Some(expected) = &self.group_identity {
+                                let actual = match next.chunk_group_identity() {
+                                    Ok(identity) => identity,
+                                    Err(error) if !next.connection_usable => {
+                                        last = error;
+                                        continue;
+                                    }
+                                    Err(error) => return Err(error),
+                                };
+                                if !expected.same_group(&actual) {
+                                    return Err(ObjectError::PreconditionFailed(
+                                        "chunk voter configuration does not match catalog".into(),
+                                    ));
                                 }
-                                Err(error) => return Err(error),
-                            };
-                            if !expected.same_group(&actual) {
-                                return Err(ObjectError::PreconditionFailed(
-                                    "chunk voter configuration does not match catalog".into(),
-                                ));
+                                if self.catalog_members.as_ref().is_some_and(|members| members.get(endpoint) != Some(&actual.node_id)) {
+                                    return Err(ObjectError::PreconditionFailed("chunk route socket identity mismatch".into()));
+                                }
+                                next.group_identity = Some(expected.clone());
                             }
-                            if self.catalog_members.as_ref().is_some_and(|members| members.get(endpoint) != Some(&actual.node_id)) {
-                                return Err(ObjectError::PreconditionFailed("chunk route socket identity mismatch".into()));
-                            }
-                            next.group_identity = Some(expected.clone());
+                            next.catalog_members = self.catalog_members.clone();
+                            next.catalog = Some((endpoints.clone(), options.clone()));
+                            *self = next;
                         }
-                        next.catalog_members = self.catalog_members.clone();
-                        next.catalog = Some((endpoints.clone(), options.clone()));
-                        *self = next;
+                        Err(error) => {
+                            last = error;
+                            continue;
+                        }
                     }
+                }
+                match self.call_one(&request) {
+                    Ok(ReplicaReply::NotLeader) => {
+                        last = not_leader();
+                        refusals += 1;
+                    }
+                    Ok(reply) => return Ok(reply),
                     Err(error) => {
+                        // A decoded server refusal is authoritative. A transport failure
+                        // after sending a mutation is uncertain, so neither is replayed.
+                        if self.connection_usable || !read_only {
+                            return Err(error);
+                        }
                         last = error;
-                        continue;
                     }
                 }
             }
-            match self.call_one(&request) {
-                Ok(ReplicaReply::NotLeader) => last = not_leader(),
-                Ok(reply) => return Ok(reply),
-                Err(error) => {
-                    // A decoded server refusal is authoritative. A transport failure
-                    // after sending a mutation is uncertain, so neither is replayed.
-                    if self.connection_usable || !read_only {
-                        return Err(error);
-                    }
-                    last = error;
-                }
+            // Only explicit non-admission from every voter permits another round.
+            // Keep the caller's original deadline; uncertain mutations never reach here.
+            if refusals != endpoints.len() || !options.deadline.is_some_and(|deadline|
+                deadline.saturating_duration_since(Instant::now()) > Duration::from_millis(25)) {
+                break;
             }
+            std::thread::sleep(Duration::from_millis(25));
         }
         Err(last)
     }
@@ -1116,6 +1129,60 @@ fn not_leader() -> ObjectError {
 mod pending_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn catalog_retries_only_explicit_non_admission_within_deadline() {
+        for mode in 0..5 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = listener.local_addr().unwrap().to_string();
+            let started = Instant::now();
+            let options = ReplicaClientOptions {
+                deadline: (mode != 1).then_some(started + Duration::from_secs(1)),
+                ..Default::default()
+            };
+            let mut client = RemoteReplicaClient::connect(&endpoint, &options).unwrap();
+            client.catalog = Some((vec![endpoint], options));
+            let request = ReplicaRequest::WriteChunk {
+                page_id: crate::PageId { chunk_id: crate::ChunkId::new(0, 1).unwrap(), page_index: 0 },
+                offset: 0,
+                data: vec![7],
+            };
+            let expected = encode_request(&request);
+            let worker = std::thread::spawn(move || {
+                let (mut server, _) = listener.accept().unwrap();
+                server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut calls = 0;
+                let mut bytes = vec![0; expected.len()];
+                while server.read_exact(&mut bytes).is_ok() {
+                    assert_eq!(bytes, expected);
+                    calls += 1;
+                    if mode == 2 { break; }
+                    if mode == 4 {
+                        server.write_all(&super::super::message::encode_failure(
+                            StatusCode::PreconditionFailed, "rejected mutation",
+                        )).unwrap();
+                        continue;
+                    }
+                    let reply = if mode == 0 && calls == 2 {
+                        ReplicaReply::Applied
+                    } else { ReplicaReply::NotLeader };
+                    server.write_all(&super::super::message::encode_reply(&reply)).unwrap();
+                    if mode == 0 && calls == 2 { break; }
+                }
+                calls
+            });
+            let result = client.call(request);
+            assert_eq!(matches!(result, Ok(ReplicaReply::Applied)), mode == 0);
+            drop(client);
+            let calls = worker.join().unwrap();
+            match mode {
+                0 => assert_eq!(calls, 2),
+                1 | 2 | 4 => assert_eq!(calls, 1),
+                _ => assert!(calls > 1),
+            }
+            assert!(started.elapsed() < Duration::from_secs(3));
+        }
+    }
 
     #[test]
     fn absolute_deadline_bounds_fanout_and_refuses_dns() {
