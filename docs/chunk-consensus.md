@@ -82,6 +82,38 @@ recovery is described below. To exercise already-running metadata and data quoru
 use the [external workload probe](distributed-probe.md); it supports a separate
 read-only verification run after an operator-controlled restart.
 
+## Larger striped-object recovery workload
+
+The ignored release test `sixteen_groups_recover_one_mib_striped_objects` uses
+16 three-voter data groups and three metadata voters: 51 local processes.
+Eight clients write 128 one-MiB objects, each as four 256-KiB pages striped over
+two groups. Every group must hold data and create application checkpoints.
+The test stops all 17 leaders, verifies the original objects, writes 32 more,
+restarts every process and verifies all 160 objects byte for byte. It also checks
+manifest generation, page sequence, group placement, physical usage and committed
+capacity accounting. Payload bytes are a deterministic repeating pattern with an
+object-specific prefix. Mutation failures are not replayed to make the run pass.
+
+An October 30, 2026 release run on the local WSL setup passed in 25.63 seconds:
+
+| Phase | Objects | Elapsed | Rate |
+|---|---:|---:|---:|
+| Initial writes | 128 | 13.112 s | 9.8 objects/s |
+| Reads after leader loss | 128 | 0.598 s | — |
+| Writes after leader loss | 32 | 2.775 s | 11.5 objects/s |
+| Reads after full restart | 160 | 0.858 s | — |
+
+The final corpus is 160 MiB of logical object data, replicated across three
+members per selected group. This is one bounded functional and timing run on a
+shared host, not a throughput guarantee, a measured memory bound or a substitute
+for larger deployments. The existing 1-KiB, 1,280-object workload remains available
+to exercise more manifests and pages. CI runs a smaller 12-process, 64-KiB-object
+case named `striped_payloads_recover_with_exact_bytes_and_capacity_accounting`.
+
+```sh
+cargo test --release --locked --all-features --test network_chunk_consensus coupled_groups::sixteen_groups_recover_one_mib_striped_objects -- --exact --ignored --nocapture --test-threads=1
+```
+
 ## Bounded leader routing
 
 Use `RemoteReplicaClient::connect_verified_raft_catalog(&endpoints, &identity, &options)`

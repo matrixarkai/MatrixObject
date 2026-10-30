@@ -215,6 +215,13 @@ jobs:
           grep -q '^running 1 test$' /tmp/raft-preparation.log
           grep -q '^test result: ok. 1 passed' /tmp/raft-preparation.log
 
+      - name: striped payloads preserve bytes and accounting through recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::striped_payloads_recover_with_exact_bytes_and_capacity_accounting -- --exact --nocapture | tee /tmp/striped-payload.log
+          grep -q '^running 1 test$' /tmp/striped-payload.log
+          grep -q '^test result: ok. 1 passed' /tmp/striped-payload.log
+
       - name: bootstrap catalog reads obey limits and failure state without queueing
         run: |
           set -o pipefail

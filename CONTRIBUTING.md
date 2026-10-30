@@ -51,7 +51,7 @@ Four jobs, all on a pinned toolchain:
 | job | what it does |
 |---|---|
 | **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
-| **format and rollback guards** | 187 individual tests in the library plus 107 integration tests, each run by name with `--exact` |
+| **format and rollback guards** | 187 individual tests in the library plus 108 integration tests, each run by name with `--exact` |
 
 The **network metadata consensus** job also runs forty-one named health, routing, preparation, and consensus tests
 with the optional consensus feature enabled.
