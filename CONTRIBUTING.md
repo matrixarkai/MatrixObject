@@ -10,7 +10,7 @@ over a chunk/page/fragment storage tier, with erasure-coded striping, write rece
 metaserver control plane, and an optional MatrixRaft backend behind the `matrix-raft`
 feature. The S3 HTTP front door (`http-server`, also spelled `s3`) is on by default and
 adds no dependencies. The library is `src/lib.rs` plus a tree of included modules; the
-whole test suite lives in `src/tests.rs`.
+whole test suite lives in `src/object_store_regression_tests.rs`.
 
 ## Build and test
 

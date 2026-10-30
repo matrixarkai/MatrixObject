@@ -45066,7 +45066,7 @@ fn every_heap_owning_field_of_the_long_lived_state_is_named_in_the_footprint() {
     // map added to a service with nothing in the audit that mentions it -- and
     // that is the case that produced every finding above.
     const STATE: [(&str, &str); 4] = [
-        ("the store", include_str!("store/core.rs")),
+        ("the store", include_str!("store/object_store_state.rs")),
         (
             "the page service",
             include_str!("services/page/service_state.inc.rs"),
@@ -50292,7 +50292,7 @@ fn the_route_checksum_migration_holds_against_committed_values() {
     // what makes this a check rather than a belief: if that fixture stops asserting the
     // retired kind, the claim "an old store with blockserver loads" is no longer proven
     // anywhere, and this fails instead of silently becoming unsupported.
-    const SELF_SOURCE: &str = include_str!("tests.rs");
+    const SELF_SOURCE: &str = include_str!("object_store_regression_tests.rs");
     assert!(
         SELF_SOURCE.contains("fn a_store_written_before_the_roster_had_one_home_still_loads"),
         "the committed-bytes store fixture is gone, so nothing proves an old store loads"

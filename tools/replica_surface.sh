@@ -98,8 +98,8 @@ if not sites:
     sys.exit('REFUSED TO SCORE: no method sites found at all, so the stand-in did nothing')
 
 per = collections.Counter(n for n, _ in sites)
-prod = collections.Counter(n for n, f in sites if f != 'src/tests.rs')
-prod_sites = [s for s in sites if s[1] != 'src/tests.rs']
+prod = collections.Counter(n for n, f in sites if f != 'src/object_store_regression_tests.rs')
+prod_sites = [s for s in sites if s[1] != 'src/object_store_regression_tests.rs']
 
 print('REPLICA SURFACE, as the compiler sees it')
 print('  method calls (E0599)        : %d' % len(calls))
