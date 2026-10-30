@@ -411,6 +411,12 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus received_chunk_health_keeps_decided_time_through_failover_restart_and_expiry -- --exact --nocapture | tee /tmp/health-process.log
           grep -q 'test result: ok. 1 passed' /tmp/health-process.log
 
+      - name: star fanout delayed response measurement validates every copy
+        run: |
+          set -o pipefail
+          cargo test --release --locked --all-features --test replica_state_transfer star_fanout_measures_reads_and_writes_with_delayed_replies -- --exact --ignored --nocapture | tee /tmp/star-latency.log
+          grep -q 'test result: ok. 1 passed' /tmp/star-latency.log
+
       - name: slow star member preserves healthy quorum replies
         run: |
           set -o pipefail
