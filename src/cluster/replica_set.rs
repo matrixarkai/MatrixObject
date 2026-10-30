@@ -29,6 +29,7 @@
 //! never written cannot tell the absence it is checking for from the outage it just caused.
 
 use crate::cluster::client::{RemoteReplicaClient, ReplicaClientOptions};
+use crate::cluster::message::{ReplicaReply, ReplicaRequest};
 use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -79,6 +80,16 @@ pub struct PageRepairBatch {
     pub has_more: bool,
     /// Inspect the last page before resuming, especially after an uncertain commit.
     pub blocked: bool,
+}
+
+
+fn applied(reply: Result<ReplicaReply, ObjectError>) -> Result<(), ObjectError> {
+    match reply? {
+        ReplicaReply::Applied => Ok(()),
+        _ => Err(ObjectError::Corruption(
+            "unexpected replica mutation response".into(),
+        )),
+    }
 }
 
 impl RemoteReplicaSet {
@@ -134,6 +145,26 @@ impl RemoteReplicaSet {
         })
     }
 
+    fn fan_out(
+        &mut self,
+        request: &ReplicaRequest,
+        selected: Option<&[bool]>,
+    ) -> Vec<Result<ReplicaReply, ObjectError>> {
+        // One borrowed pending response per selected member; no worker threads and
+        // no mutation retries. Finish every sent exchange even if quorum is met.
+        let pending: Vec<_> = self
+            .replicas
+            .iter_mut()
+            .enumerate()
+            .filter(|(i, _)| selected.map_or(true, |members| members[*i]))
+            .map(|(_, replica)| replica.begin_standalone(request))
+            .collect();
+        pending
+            .into_iter()
+            .map(|reply| reply.and_then(|reply| reply.finish()))
+            .collect()
+    }
+
     fn reconnect_failed(&mut self) {
         for replica in &mut self.replicas {
             let _ = replica.reconnect_standalone_if_failed(&self.options);
@@ -187,11 +218,14 @@ impl RemoteReplicaSet {
         let sequence = expected.as_ref().map_or(0, |head| head.write_sequence);
         let mut acknowledged = 0usize;
         let mut first_error: Option<ObjectError> = None;
-        for (replica, observed) in self.replicas.iter_mut().zip(observed) {
-            if !observed {
-                continue;
-            }
-            match replica.write_chunk_if_sequence(page_id.clone(), offset, data, sequence) {
+        let request = ReplicaRequest::WriteChunkIfSequence {
+            page_id: page_id.clone(),
+            offset,
+            data: data.to_vec(),
+            expected_sequence: sequence,
+        };
+        for result in self.fan_out(&request, Some(&observed)) {
+            match applied(result) {
                 Ok(()) => acknowledged += 1,
                 Err(err) if first_error.is_none() => first_error = Some(err),
                 Err(_) => {}
@@ -218,12 +252,17 @@ impl RemoteReplicaSet {
         // Establish the state being extended before any mutation is sent. A
         // returning or divergent replica cannot contribute a fresh write vote.
         let observed: Vec<_> = self
-            .replicas
-            .iter_mut()
-            .map(|replica| match replica.head_chunk(page_id) {
-                Ok(head) => Some(Some(head)),
+            .fan_out(
+                &ReplicaRequest::HeadChunk {
+                    page_id: page_id.clone(),
+                },
+                None,
+            )
+            .into_iter()
+            .map(|reply| match reply {
+                Ok(ReplicaReply::Head(head)) => Some(Some(head)),
                 Err(ObjectError::NotFound(_)) => Some(None),
-                Err(_) => None,
+                _ => None,
             })
             .collect();
         let absent = observed
@@ -278,8 +317,19 @@ impl RemoteReplicaSet {
         let mut not_found = 0usize;
         let mut unreachable = 0usize;
         let mut first_error: Option<ObjectError> = None;
-        for replica in self.replicas.iter_mut() {
-            match replica.read_chunk(page_id, offset, length) {
+        let request = ReplicaRequest::ReadChunk {
+            page_id: page_id.clone(),
+            offset,
+            length,
+        };
+        for result in self.fan_out(&request, None) {
+            let result = result.and_then(|reply| match reply {
+                ReplicaReply::Read(read) => Ok(read),
+                _ => Err(ObjectError::Corruption(
+                    "unexpected replica read response".into(),
+                )),
+            });
+            match result {
                 Ok(read) => answered.push(read),
                 Err(err) => {
                     if matches!(err, ObjectError::NotFound(_)) {
@@ -596,11 +646,14 @@ impl RemoteReplicaSet {
             expected.ok_or_else(|| ObjectError::NotFound("no quorum page to discard".into()))?;
         let mut acknowledged = 0usize;
         let mut first_error: Option<ObjectError> = None;
-        for (replica, observed) in self.replicas.iter_mut().zip(observed) {
-            if !observed {
-                continue;
-            }
-            match replica.discard_chunk_if_sequence(page_id, offset, length, expected.write_sequence) {
+        let request = ReplicaRequest::DiscardChunkIfSequence {
+            page_id: page_id.clone(),
+            offset,
+            length,
+            expected_sequence: expected.write_sequence,
+        };
+        for result in self.fan_out(&request, Some(&observed)) {
+            match applied(result) {
                 Ok(()) => acknowledged += 1,
                 Err(err) if first_error.is_none() => first_error = Some(err),
                 Err(_) => {}

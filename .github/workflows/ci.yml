@@ -411,6 +411,24 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus received_chunk_health_keeps_decided_time_through_failover_restart_and_expiry -- --exact --nocapture | tee /tmp/health-process.log
           grep -q 'test result: ok. 1 passed' /tmp/health-process.log
 
+      - name: slow star member preserves healthy quorum replies
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_state_transfer star_slow_first_member_does_not_expire_healthy_quorum_replies -- --exact --nocapture | tee /tmp/star-slow.log
+          grep -q 'test result: ok. 1 passed' /tmp/star-slow.log
+
+      - name: star fanout sends all members before collecting replies
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_state_transfer star_reads_writes_and_discards_send_all_members_before_waiting_for_replies -- --exact --nocapture | tee /tmp/star-fanout.log
+          grep -q 'test result: ok. 1 passed' /tmp/star-fanout.log
+
+      - name: unfinished fanout replies close their connections
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::client::pending_tests::unfinished_or_malformed_fanout_reply_closes_socket_without_replaying -- --exact --nocapture | tee /tmp/star-pending.log
+          grep -q 'test result: ok. 1 passed' /tmp/star-pending.log
+
       - name: peer delivery deadline includes queue and connection time
         run: |
           set -o pipefail

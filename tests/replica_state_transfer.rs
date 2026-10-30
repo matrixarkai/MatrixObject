@@ -419,3 +419,160 @@ fn star_repair_aborts_changed_sources_and_never_replays_uncertain_commits() {
         }
     }
 }
+
+#[test]
+fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() {
+    use matrixobjectstore_rs::cluster::RequestCode;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    let nodes: Vec<_> = (0..3).map(|_| start()).collect();
+    let listeners: Vec<_> = (0..3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = listeners
+        .iter()
+        .map(|l| l.local_addr().unwrap().to_string())
+        .collect();
+    let (arrived, arrivals) = mpsc::channel();
+    let mut releases = Vec::new();
+    let mut workers = Vec::new();
+    for (index, listener) in listeners.into_iter().enumerate() {
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = nodes[index].endpoint.clone();
+        let arrived = arrived.clone();
+        let (release, released) = mpsc::channel();
+        releases.push(release);
+        workers.push(std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(5);
+            let mut front = loop {
+                match listener.accept() {
+                    Ok((s, _)) => break s,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until =>
+                    {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    other => panic!("proxy accept: {other:?}"),
+                }
+            };
+            let mut back = TcpStream::connect(endpoint).unwrap();
+            for s in [&front, &back] {
+                s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                s.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                s.set_nodelay(true).unwrap();
+            }
+            for phase in 0..6 {
+                let mut header = [0; 6];
+                front.read_exact(&mut header).unwrap();
+                let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
+                assert!(size <= 4096);
+                let mut body = vec![0; size];
+                front.read_exact(&mut body).unwrap();
+                arrived.send((phase, index, header[1])).unwrap();
+                // No member can answer until the whole phase has been sent.
+                released.recv_timeout(Duration::from_secs(5)).unwrap();
+                back.write_all(&header).unwrap();
+                back.write_all(&body).unwrap();
+                back.read_exact(&mut header).unwrap();
+                let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
+                assert!(size <= 4096);
+                body.resize(size, 0);
+                back.read_exact(&mut body).unwrap();
+                front.write_all(&header).unwrap();
+                front.write_all(&body).unwrap();
+            }
+        }));
+    }
+    drop(arrived);
+    let coordinator = std::thread::spawn(move || {
+        let codes = [
+            RequestCode::HeadChunk,
+            RequestCode::WriteChunkIfSequence,
+            RequestCode::ReadChunk,
+            RequestCode::HeadChunk,
+            RequestCode::DiscardChunkIfSequence,
+            RequestCode::ReadChunk,
+        ];
+        for (phase, code) in codes.into_iter().enumerate() {
+            let mut members = std::collections::BTreeSet::new();
+            for _ in 0..3 {
+                let (actual, index, actual_code) =
+                    arrivals.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert_eq!(actual, phase);
+                assert_eq!(actual_code, code as u8);
+                assert!(members.insert(index));
+            }
+            for release in &releases {
+                release.send(()).unwrap();
+            }
+        }
+    });
+    let options = ReplicaClientOptions {
+        read_timeout: Duration::from_secs(8),
+        ..Default::default()
+    };
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
+    assert_eq!(set.write_chunk(&page(0), 0, b"abcdefgh").unwrap(), 3);
+    assert_eq!(set.read_chunk(&page(0), 0, 8).unwrap().data, b"abcdefgh");
+    assert_eq!(set.discard_chunk(&page(0), 2, 2).unwrap(), 3);
+    assert_eq!(set.read_chunk(&page(0), 0, 2).unwrap().data, b"ab");
+    drop(set);
+    coordinator.join().unwrap();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    for node in &nodes {
+        let mut c = client(node);
+        assert_eq!(c.head_chunk(&page(0)).unwrap().write_sequence, 2);
+        assert!(c.read_chunk(&page(0), 2, 2).is_err());
+    }
+}
+
+#[test]
+fn star_slow_first_member_does_not_expire_healthy_quorum_replies() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+    let nodes: Vec<_> = (0..2).map(|_| start()).collect();
+    for node in &nodes {
+        client(node).write_chunk(page(0), 0, b"healthy").unwrap();
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut endpoints = vec![listener.local_addr().unwrap().to_string()];
+    endpoints.extend(nodes.iter().map(|n| n.endpoint.clone()));
+    let slow = std::thread::spawn(move || {
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((s, _)) => break s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until => {
+                    std::thread::sleep(Duration::from_millis(1))
+                }
+                other => panic!("slow member accept: {other:?}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut received = Vec::new();
+        stream.read_to_end(&mut received).unwrap();
+        assert!(!received.is_empty());
+    });
+    let mut set = RemoteReplicaSet::connect(
+        &endpoints,
+        2,
+        2,
+        &ReplicaClientOptions {
+            read_timeout: Duration::from_millis(200),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let read = set.read_chunk(&page(0), 0, 7).unwrap();
+    assert_eq!(read.data, b"healthy");
+    drop(set);
+    slow.join().unwrap();
+}
