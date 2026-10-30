@@ -1003,17 +1003,23 @@ mod coupled_groups {
     fn health(client: &mut RemoteMetaClient, online: bool, used: u64, committed: u64) {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            let nodes = client.list_placement_nodes().unwrap();
-            let group = nodes.iter().find(|n| n.node_id == "group-a").unwrap();
-            if group.online == online
-                && group.used_bytes == used
-                && group.committed_bytes == committed
-            {
-                return;
-            }
+            // This is an eventual-state read; a transient refusal does not extend its deadline.
+            let observed = match client.list_placement_nodes() {
+                Ok(nodes) => {
+                    let group = nodes.iter().find(|n| n.node_id == "group-a").unwrap();
+                    if group.online == online
+                        && group.used_bytes == used
+                        && group.committed_bytes == committed
+                    {
+                        return;
+                    }
+                    format!("{nodes:?}")
+                }
+                Err(error) => format!("read failed: {error}"),
+            };
             assert!(
                 Instant::now() < deadline,
-                "group health did not converge: {nodes:?}"
+                "group health did not converge: {observed}"
             );
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -1056,6 +1062,35 @@ mod coupled_groups {
             );
             assert_eq!(chunk.head_chunk(&page(n as u64)).unwrap().write_sequence, 1);
         }
+    }
+    #[test]
+    fn health_convergence_wait_survives_temporary_metadata_quorum_loss() {
+        let mut chunks = Group::configured(65536);
+        let mut metadata = MetadataGroup::new(&chunks);
+        chunks.report = Some((metadata.api.join(","), chunks.api_addresses.clone()));
+        for i in 0..3 {
+            chunks.start(i);
+        }
+        chunks.leader();
+        let mut client = metadata.ready();
+        health(&mut client, true, 0, 0);
+        let leader = metadata.api.iter().position(|a| a == client.endpoint()).unwrap();
+        let stopped: Vec<_> = (0..3).filter(|i| *i != leader).collect();
+        for &i in &stopped {
+            metadata.kill(i);
+        }
+        // Prove the read cannot succeed before asking the convergence waiter to recover.
+        assert!(client.list_placement_nodes().is_err());
+        let waiting = std::thread::spawn(move || health(&mut client, true, 0, 0));
+        // The configured consensus deadline is 700 ms; force another refused read.
+        std::thread::sleep(Duration::from_secs(2));
+        let finished_without_quorum = waiting.is_finished();
+        for i in stopped {
+            metadata.start(i);
+        }
+        waiting.join().expect("health convergence must survive a temporary read failure");
+        assert!(!finished_without_quorum, "health wait returned without metadata quorum");
+        metadata.ready();
     }
     #[test]
     fn metadata_and_chunk_quorums_recover_together_and_refuse_minority_operations() {
