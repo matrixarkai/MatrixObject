@@ -218,11 +218,49 @@ without its acknowledgement; reconnect and compare the complete head and payload
 before recovery action. A process restart loses incomplete staging but preserves
 acknowledged installations and subsequent writes.
 
-This transport does not select a source quorum or schedule repairs. The caller
-must establish source authority before beginning an install. It does not provide
+The low-level installation transport does not select a source quorum or schedule
+repairs. Its caller must establish source authority before beginning an install;
+`RemoteReplicaSet::repair_chunk` provides quorum selection for explicit star repair. It does not provide
 cross-client transactions, authenticated peers or automatic missed-write repair.
 Run the maximum-page recovery check separately:
 
 ```sh
 cargo test --release --locked --all-features --test replica_restart_recovery staged_install_recovers_a_full_256_mib_page -- --exact --ignored --nocapture
 ```
+
+
+## Quorum-selected star page repair
+
+`RemoteReplicaSet::repair_chunk` explicitly repairs one existing page across the
+configured standalone members. It first requires identical validated raw bytes
+and complete heads from `max(read_quorum, write_quorum)` distinct members. This
+conservative source rule can refuse repair even when an ordinary read succeeds.
+It never creates a source from a minority, treats a missing source as no repair,
+and does not delete minority pages when others report absence.
+
+For each member, repair checks its head and validates matching bytes before
+calling it current. Missing or divergent pages use bounded staged installation,
+with the observed destination checksum as the condition. Newer destinations are
+left untouched. Repair checks the complete source-head quorum before staging and
+again before commit. If that quorum changes, it attempts to abort the stage and
+stops processing further members. A concurrent destination write is also refused
+by the destination commit check. Successful repair allows the matching member to
+participate in later normal star writes.
+
+The report retains the selected source head and one status per configured member,
+in endpoint order: `Current`, `Installed`, `Deferred`, or `Unconfirmed`. An `Ok`
+report does not mean every member was repaired. `Deferred` means no commit was
+sent; a failed abort can leave an invisible stage until expiry. `Unconfirmed`
+means a commit was sent but its result is unknown. Inspect that member's complete
+state before further recovery action. The client does not replay that commit or
+abort after an uncertain commit response.
+
+This is an explicit bounded page operation, not a background repair scheduler or
+an atomic transaction across replicas. Writers can advance the source after the
+last quorum check; the report names the state selected for this operation, not a
+promise that every node still has that version at return. Normal quorum admission
+continues excluding divergent members. Each call retains the selected page plus
+at most one comparison page and bounded frame buffers; destinations additionally
+use the staging/checkpoint memory described above. Repairs are sequential and can
+be expensive for large pages. Node identity is checked by connected peer address,
+not authenticated machine or failure-domain identity.
