@@ -363,6 +363,24 @@ jobs:
           cargo test --locked --all-features --test replica_restart_recovery repair_inventory_requires_every_member_before_mutating_any_page -- --exact | tee /tmp/inventory-repair.log
           grep -q 'test result: ok. 1 passed' /tmp/inventory-repair.log
 
+      - name: maintenance reports offline and excludes placement while repair remains available
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::server::heartbeat::tests::maintenance_reports_offline_and_excludes_placement_while_repair_remains_available -- --exact | tee /tmp/maintenance.log
+          grep -q 'test result: ok. 1 passed' /tmp/maintenance.log
+
+      - name: maintenance blocks ordinary mutations but repairs and recovers pages
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery maintenance_blocks_ordinary_mutations_but_repairs_and_recovers_pages -- --exact | tee /tmp/maintenance.log
+          grep -q 'test result: ok. 1 passed' /tmp/maintenance.log
+
+      - name: invalid maintenance configuration refuses startup
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_restart_recovery invalid_maintenance_configuration_refuses_startup -- --exact | tee /tmp/maintenance.log
+          grep -q 'test result: ok. 1 passed' /tmp/maintenance.log
+
       - name: health reports validate canonical protobuf and decided time
         run: |
           set -o pipefail

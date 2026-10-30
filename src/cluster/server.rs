@@ -67,6 +67,7 @@ struct NodeReplica {
     journal: Option<ReplicaJournal>,
     journal_checkpoint_after_bytes: u64,
     staged: Option<super::state_install::StagedState>,
+    maintenance: bool,
     max_pages: usize,
     used_bytes: u64,
     failed: bool,
@@ -75,6 +76,9 @@ struct NodeReplica {
 /// How a replica node is sized and bounded.
 #[derive(Clone, Debug)]
 pub struct ReplicaNodeOptions {
+    /// Standalone only: refuse ordinary writes/discards, retain reads and repair,
+    /// and report offline for metadata placement. Fixed for this server lifetime.
+    pub maintenance: bool,
     /// Largest payload this node will read from a frame.
     ///
     /// A length field arrives before the bytes it describes, so this is the bound on what
@@ -97,6 +101,7 @@ pub struct ReplicaNodeOptions {
 impl Default for ReplicaNodeOptions {
     fn default() -> Self {
         Self {
+            maintenance: false,
             max_payload_bytes: MAX_PAYLOAD_BYTES,
             capacity_bytes: 256 * 1024 * 1024,
             max_pages: 65_536,
@@ -201,6 +206,7 @@ impl ReplicaNodeServer {
                 journal,
                 journal_checkpoint_after_bytes: 0,
                 staged: None,
+                maintenance: options.maintenance,
                 max_pages: options.max_pages,
                 failed: false,
             })),
@@ -217,6 +223,12 @@ impl ReplicaNodeServer {
     /// Enable one independently durable Raft voter before serving any requests.
     #[cfg(feature = "chunk-consensus")]
     pub fn enable_consensus(&mut self, options: ChunkRaftOptions) -> std::io::Result<()> {
+        if self.options.maintenance {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "maintenance mode is only supported by standalone replicas",
+            ));
+        }
         if self.consensus.is_some() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -436,6 +448,19 @@ fn apply(
     }
     if guard.staged.as_ref().is_some_and(|stage| stage.expired()) {
         guard.staged = None;
+    }
+    if guard.maintenance
+        && matches!(
+            &request,
+            ReplicaRequest::WriteChunk { .. }
+                | ReplicaRequest::WriteChunkIfSequence { .. }
+                | ReplicaRequest::DiscardChunk { .. }
+                | ReplicaRequest::DiscardChunkIfSequence { .. }
+        )
+    {
+        return Err(ObjectError::PreconditionFailed(
+            "replica maintenance mode refuses ordinary mutations".into(),
+        ));
     }
     if let ReplicaRequest::StateInstall(request) = request {
         return apply_state_install(&mut guard, request);
@@ -848,6 +873,7 @@ mod journal_failure_tests {
             journal: Some(ReplicaJournal::read_only_for_test(&path)),
             journal_checkpoint_after_bytes: 0,
             staged: None,
+            maintenance: false,
             max_pages: 65_536,
             failed: false,
         }));

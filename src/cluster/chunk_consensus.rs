@@ -702,6 +702,7 @@ mod checkpoint_tests {
             journal: None,
             journal_checkpoint_after_bytes: 0,
             staged: None,
+            maintenance: false,
             max_pages,
             used_bytes: 0,
             failed: false,
