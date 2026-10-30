@@ -14,6 +14,7 @@ use std::sync::{
 };
 use std::time::Duration;
 pub(super) struct Options {
+    pub tls: Option<super::ApiTlsConfig>,
     pub max_payload_bytes: usize,
     pub read_timeout: Duration,
     pub write_timeout: Duration,
@@ -83,7 +84,7 @@ impl Dispatch {
 }
 struct Connection {
     wake: Option<readiness::Notify>,
-    stream: TcpStream,
+    stream: super::api_tls::ApiSocket,
     _active: ActiveConnection,
     header: [u8; HEADER_BYTES],
     header_read: usize,
@@ -107,10 +108,10 @@ impl Connection {
         active: ActiveConnection,
         options: &Options,
         wake: Option<&readiness::Notify>,
-    ) -> Self {
-        Self {
+    ) -> std::io::Result<Self> {
+        Ok(Self {
             wake: wake.cloned(),
-            stream,
+            stream: super::api_tls::ApiSocket::server(stream, options.tls.as_ref())?,
             _active: active,
             header: [0; HEADER_BYTES],
             header_read: 0,
@@ -122,7 +123,7 @@ impl Connection {
             deadline: deadline(options.read_timeout),
             close_after_write: false,
             pending: None,
-        }
+        })
     }
     fn respond(&mut self, output: Vec<u8>, budget: &Budget, options: &Options) -> bool {
         // Request and encoded response coexist only while this worker handles one frame.
@@ -165,18 +166,25 @@ impl Connection {
             }
         }
         if !self.output.is_empty() {
-            match self.stream.write(&self.output[self.output_written..]) {
-                Ok(0) => return false,
-                Ok(n) => {
-                    self.output_written += n;
-                    *progressed = true;
+            if self.output_written < self.output.len() {
+                match self.stream.write(&self.output[self.output_written..]) {
+                    Ok(0) => return false,
+                    Ok(n) => {
+                        self.output_written += n;
+                        *progressed = true;
+                    }
+                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                        return true
+                    }
+                    Err(_) => return false,
                 }
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
-                    return true
-                }
-                Err(_) => return false,
             }
             if self.output_written == self.output.len() {
+                match self.stream.flush() {
+                    Ok(()) => {},
+                    Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => return true,
+                    Err(_) => return false,
+                }
                 if self.close_after_write {
                     return false;
                 }
@@ -338,7 +346,9 @@ pub(super) fn accept_loop(
                             Ok(None) => break,
                             Err(_) => continue,
                         };
-                        connections.push(Connection::new(stream, active, &options, wake.as_ref()));
+                        if let Ok(connection) = Connection::new(stream, active, &options, wake.as_ref()) {
+                            connections.push(connection);
+                        }
                     }
                     Err(_) => break,
                 }
@@ -413,6 +423,7 @@ mod tests {
                     },
                     stop,
                     Options {
+                        tls: None,
                         max_payload_bytes: 64,
                         read_timeout: Duration::from_secs(5),
                         write_timeout: Duration::from_secs(5),

@@ -16,6 +16,7 @@ mod probe {
     pub const USAGE: &str = "distributed_probe write|verify --metadata IP:PORT,IP:PORT --group ID --bucket NAME --run NAME --objects N --bytes N --workers N --groups N [--page-bytes N] [--timeout-ms N] [--operation-timeout-ms N]\nwrite creates new objects and verifies them; verify only reads. Reuse identical parameters for later verification. No cleanup or mutation replay is performed.";
 
     struct Config {
+        tls: Option<matrixobjectstore_rs::cluster::ApiTlsConfig>,
         write: bool,
         endpoints: Vec<String>,
         group: u64,
@@ -118,6 +119,7 @@ mod probe {
             let timeout_ms = number("--timeout-ms", Some("10000"), 1, 300_000)?;
             let operation_default = timeout_ms.to_string();
             let config = Self {
+                tls: matrixobjectstore_rs::cluster::ApiTlsConfig::from_env("MATRIXOBJECT_CLIENT").map_err(|error| error.to_string())?,
                 write,
                 endpoints,
                 bucket,
@@ -163,6 +165,7 @@ mod probe {
         }
         fn client(&self, expected: Option<&MetaGroupIdentity>) -> Result<RemoteMetaClient, String> {
             let options = MetaClientOptions {
+                tls: self.tls.clone(),
                 connect_timeout: self.timeout,
                 read_timeout: self.timeout,
                 write_timeout: self.timeout,
@@ -182,6 +185,7 @@ mod probe {
         }
         fn replica(&self, started: Instant) -> ReplicaClientOptions {
             ReplicaClientOptions {
+                tls: self.tls.clone(),
                 deadline: Some(started + self.operation_timeout),
                 connect_timeout: self.timeout,
                 read_timeout: self.timeout,

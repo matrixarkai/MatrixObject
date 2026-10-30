@@ -60,6 +60,7 @@ matrix-raft = ["dep:matrixraft"]
 chunk-consensus = ["replica-server", "matrix-raft", "matrixraft/peer-runtime"]
 metadata-consensus = ["meta-server", "matrix-raft", "matrixraft/peer-runtime"]
 
+api-tls = ["peer-tls"]
 peer-tls = ["dep:rustls", "dep:rustls-pemfile"]
 
 [dependencies]

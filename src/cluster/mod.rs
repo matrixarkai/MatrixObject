@@ -255,5 +255,6 @@ mod peer_tls;
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 pub use peer_tls::PeerTlsOptions;
 
-#[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod tls_config;
+mod api_tls;
+pub use api_tls::{ApiTlsConfig, ApiTlsOptions};

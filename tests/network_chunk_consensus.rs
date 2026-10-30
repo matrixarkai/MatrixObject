@@ -15,8 +15,29 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+fn api_tls_config(root: Option<&PathBuf>) -> Option<matrixobjectstore_rs::cluster::ApiTlsConfig> {
+    root.map(|root| matrixobjectstore_rs::cluster::ApiTlsConfig::load(
+        &matrixobjectstore_rs::cluster::ApiTlsOptions {
+            ca_certificate: root.join("ca.pem"),
+            certificate: root.join("peer.pem"),
+            private_key: root.join("peer.key"),
+        },
+    ).unwrap())
+}
+fn api_tls_environment(root: Option<&PathBuf>) -> Vec<(&'static str, String)> {
+    let Some(root) = root else { return Vec::new() };
+    [
+        ("MATRIXOBJECT_API_TLS_CA_CERT", "ca.pem"),
+        ("MATRIXOBJECT_API_TLS_CERT", "peer.pem"),
+        ("MATRIXOBJECT_API_TLS_KEY", "peer.key"),
+        ("MATRIXOBJECT_CLIENT_TLS_CA_CERT", "ca.pem"),
+        ("MATRIXOBJECT_CLIENT_TLS_CERT", "peer.pem"),
+        ("MATRIXOBJECT_CLIENT_TLS_KEY", "peer.key"),
+    ].into_iter().map(|(name, file)| (name, root.join(file).to_str().unwrap().to_owned())).collect()
+}
 struct Group {
     peer_tls: Option<PathBuf>,
+    api_tls: Option<PathBuf>,
     nodes: Vec<Option<NodeProcess>>,
     peers: BTreeMap<u64, SocketAddr>,
     root: PathBuf,
@@ -68,6 +89,7 @@ impl Group {
             .collect();
         let g = Self {
             peer_tls: None,
+            api_tls: None,
             nodes: (0..voters).map(|_| None).collect(),
             peers,
             root,
@@ -163,6 +185,8 @@ impl Group {
                 ),
             ]);
         }
+        let api_environment = api_tls_environment(self.api_tls.as_ref());
+        environment.extend(api_environment.iter().map(|(name, value)| (*name, value.as_str())));
         drop(self.reservations[i].take());
         let node = processes::start(env!("CARGO_BIN_EXE_chunkserver"), &environment);
         assert_eq!(node.endpoint, bind);
@@ -180,6 +204,7 @@ impl Group {
             &ReplicaClientOptions {
                 connect_timeout: Duration::from_millis(200),
                 read_timeout: Duration::from_secs(if self.capacity > 65536 { 10 } else { 2 }),
+                tls: api_tls_config(self.api_tls.as_ref()),
                 write_timeout: Duration::from_secs(2),
                 ..Default::default()
             },
@@ -844,6 +869,7 @@ mod coupled_groups {
 
     struct MetadataGroup {
         peer_tls: Option<PathBuf>,
+        api_tls: Option<PathBuf>,
         nodes: Vec<Option<NodeProcess>>,
         api: Vec<String>,
         peers: String,
@@ -914,6 +940,7 @@ mod coupled_groups {
             std::fs::write(root.join("catalog.bin"), catalog.to_bytes().unwrap()).unwrap();
             let mut group = Self {
                 peer_tls: chunks[0].peer_tls.clone(),
+                api_tls: chunks[0].api_tls.clone(),
                 nodes: (0..voters).map(|_| None).collect(),
                 api,
                 peers,
@@ -958,6 +985,8 @@ mod coupled_groups {
                     ("MATRIXOBJECT_METASERVER_RAFT_TLS_KEY", paths[2].to_str().unwrap()),
                 ]);
             }
+            let api_environment = api_tls_environment(self.api_tls.as_ref());
+            environment.extend(api_environment.iter().map(|(name, value)| (*name, value.as_str())));
             drop(self.reservations[i].take());
             let node = processes::start(env!("CARGO_BIN_EXE_metaserver"), &environment);
             assert_eq!(node.endpoint, self.api[i]);
@@ -972,6 +1001,7 @@ mod coupled_groups {
                     connect_timeout: Duration::from_millis(200),
                     read_timeout: Duration::from_secs(2),
                     write_timeout: Duration::from_secs(2),
+                    tls: api_tls_config(self.api_tls.as_ref()),
                     ..Default::default()
                 };
                 if let Ok(mut client) = RemoteMetaClient::connect_catalog(&self.api, &options) {
@@ -2577,7 +2607,9 @@ mod coupled_groups {
         saved
     }
     fn group_usage(api: &[String], groups: &[Group], saved: &[(u64, CommittedPlacement)]) {
-        let mut meta = RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
+        let mut options = load_options();
+        options.tls = api_tls_config(groups[0].api_tls.as_ref());
+        let mut meta = RemoteMetaClient::connect_catalog(api, &options).unwrap();
         let expected: BTreeMap<_, _> = groups
             .iter()
             .map(|g| {
@@ -2892,11 +2924,37 @@ mod coupled_groups {
     fn probe_recovery(partition: bool) {
         probe_recovery_with_transport(partition, None);
     }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    fn authenticated_api_and_peer_objects_recover_after_restart() {
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..3 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        probe_recovery_with_security(false, Some(certificates.root.clone()), true);
+    }
+
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "requires a private network namespace; use tools/network_partition_test.sh"]
+    fn authenticated_api_and_peer_partitions_preserve_objects() {
+        node_regime::network::require_isolated();
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..3 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        probe_recovery_with_security(true, Some(certificates.root.clone()), true);
+    }
+
     fn probe_recovery_with_transport(partition: bool, peer_tls: Option<PathBuf>) {
+        probe_recovery_with_security(partition, peer_tls, false);
+    }
+    fn probe_recovery_with_security(partition: bool, peer_tls: Option<PathBuf>, api_tls: bool) {
         let mut groups: Vec<_> = (1..=2)
             .map(|id| {
                 let mut group = Group::configured(4 * 1024 * 1024);
                 group.peer_tls = peer_tls.clone();
+                group.api_tls = if api_tls { peer_tls.clone() } else { None };
                 group.group_id = id;
                 group.max_pages = 1024;
                 group.checkpoint_bytes = 16 * 1024;
@@ -2920,8 +2978,11 @@ mod coupled_groups {
             .to_string();
         group_usage(&metadata.api, &groups, &[]);
         let endpoints = metadata.api.join(",");
+        let api_environment = api_tls_environment(metadata.api_tls.as_ref());
+        let replica_options = ReplicaClientOptions { tls: api_tls_config(metadata.api_tls.as_ref()), ..Default::default() };
         let run = |mode: &str, bytes: &str, name: &str| {
             std::process::Command::new(env!("CARGO_BIN_EXE_distributed_probe"))
+                .envs(api_environment.iter().map(|(name, value)| (*name, value)))
                 .args([
                     mode,
                     "--metadata",
@@ -2967,7 +3028,7 @@ mod coupled_groups {
                 "probe-bucket",
                 "probe/recovery/00000000",
                 1025,
-                &ReplicaClientOptions::default(),
+                &replica_options,
             )
             .unwrap();
         // Keep workload version 1 reproducible across client upgrades.
@@ -3024,7 +3085,7 @@ mod coupled_groups {
                 std::thread::sleep(Duration::from_millis(50));
             }
             let mut isolated =
-                RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+                RemoteMetaClient::connect(&endpoint, &MetaClientOptions { tls: api_tls_config(metadata.api_tls.as_ref()), ..Default::default() }).unwrap();
             assert!(isolated
                 .read_manifest("probe-bucket", "probe/recovery/00000000")
                 .is_err());

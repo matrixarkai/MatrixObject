@@ -76,6 +76,8 @@ struct NodeReplica {
 /// How a replica node is sized and bounded.
 #[derive(Clone, Debug)]
 pub struct ReplicaNodeOptions {
+    /// Optional preloaded mutual-TLS identity required for API clients.
+    pub tls: Option<super::ApiTlsConfig>,
     /// Standalone only: refuse ordinary writes/discards, retain reads and repair,
     /// and report offline for metadata placement. Fixed for this server lifetime.
     pub maintenance: bool,
@@ -101,6 +103,7 @@ pub struct ReplicaNodeOptions {
 impl Default for ReplicaNodeOptions {
     fn default() -> Self {
         Self {
+            tls: None,
             maintenance: false,
             max_payload_bytes: MAX_PAYLOAD_BYTES,
             capacity_bytes: 256 * 1024 * 1024,
@@ -196,6 +199,9 @@ impl ReplicaNodeServer {
         let journal = path
             .map(|path| ReplicaJournal::open_with_limits(path, &mut service, options.max_pages))
             .transpose()?;
+        if let Some(path) = path {
+            super::api_tls::pin_file(&super::api_tls::journal_pin(path), options.tls.is_some())?;
+        }
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         Ok(Self {
@@ -235,12 +241,15 @@ impl ReplicaNodeServer {
                 "chunk consensus already configured",
             ));
         }
-        self.consensus = Some(Arc::new(consensus::ChunkConsensus::open(
+        let directory = options.directory.clone();
+        let consensus = consensus::ChunkConsensus::open(
             options,
             Arc::clone(&self.replica),
             Arc::clone(&self.stop),
             self.options.max_payload_bytes,
-        )?));
+        )?;
+        super::api_tls::pin_file(&directory.join("api.transport"), self.options.tls.is_some())?;
+        self.consensus = Some(Arc::new(consensus));
         Ok(())
     }
 
@@ -363,6 +372,7 @@ fn accept_loop(
         },
         stop,
         super::connections::Options {
+            tls: options.tls.clone(),
             max_payload_bytes: options.max_payload_bytes,
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
