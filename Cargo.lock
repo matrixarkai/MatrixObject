@@ -271,7 +271,7 @@ dependencies = [
 [[package]]
 name = "matrixraft"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/matrixraft.git?rev=ea64e21ac988e8c34e004d01a21c9061fe4c9ad4#ea64e21ac988e8c34e004d01a21c9061fe4c9ad4"
+source = "git+https://github.com/matrixarkai/matrixraft.git?rev=adb4f5b811b32bdf8d0885138a9428fe967ce3e4#adb4f5b811b32bdf8d0885138a9428fe967ce3e4"
 dependencies = [
  "fs2",
  "prost",

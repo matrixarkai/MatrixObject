@@ -166,7 +166,7 @@ impl MetaConsensus {
         let base = directory.join("metadata.peer.base");
         let wal = directory.join("metadata.peer.wal");
         let checkpoint =
-            Policy::new(1, wal.clone(), options.checkpoint_after_bytes).map_err(invalid)?;
+            Policy::new(1, options.checkpoint_after_bytes).map_err(invalid)?;
         if base.exists() != wal.exists() {
             return Err(invalid("incomplete metadata peer storage"));
         }

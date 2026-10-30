@@ -190,7 +190,7 @@ impl ChunkConsensus {
         let base = directory.join("chunk.peer.base");
         let wal = directory.join("chunk.peer.wal");
         let checkpoint =
-            Policy::new(2, wal.clone(), options.checkpoint_after_bytes).map_err(invalid)?;
+            Policy::new(2, options.checkpoint_after_bytes).map_err(invalid)?;
         if base.exists() != wal.exists() {
             return Err(invalid("incomplete chunk peer storage"));
         }

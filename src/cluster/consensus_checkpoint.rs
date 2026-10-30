@@ -9,10 +9,9 @@ use matrixraft::{
 use prost::Message;
 #[cfg(test)]
 use std::io::Cursor;
-use std::{
-    io::{self, Read},
-    path::PathBuf,
-};
+#[cfg(test)]
+use std::path::PathBuf;
+use std::io::{self, Read};
 
 #[derive(Clone, PartialEq, Message)]
 pub(super) struct Image {
@@ -149,14 +148,13 @@ type CaptureWorker = std::thread::JoinHandle<
 pub(super) struct Policy {
     worker: Option<(CaptureWorker, u64)>,
     kind: u32,
-    wal: PathBuf,
     interval: u64,
     baseline: u64,
     observed: u64,
     checkpoint: u64,
 }
 impl Policy {
-    pub(super) fn new(kind: u32, wal: PathBuf, interval: u64) -> Result<Self, ObjectError> {
+    pub(super) fn new(kind: u32, interval: u64) -> Result<Self, ObjectError> {
         if interval != 0 && !(1024..=128 * 1024 * 1024).contains(&interval) {
             return Err(ObjectError::InvalidArgument(
                 "checkpoint byte interval must be zero or between 1 KiB and 128 MiB".into(),
@@ -165,7 +163,6 @@ impl Policy {
         Ok(Self {
             worker: None,
             kind,
-            wal,
             interval,
             baseline: 0,
             observed: 0,
@@ -188,7 +185,7 @@ impl Policy {
             return Ok(None);
         }
         self.observed = index;
-        let size = std::fs::metadata(&self.wal).map_err(storage)?.len();
+        let size = peer.persisted_wal_bytes()?;
         if !membership_due && size.saturating_sub(self.baseline) < self.interval {
             return Ok(None);
         }
@@ -305,9 +302,17 @@ mod tests {
             let mut peer = DurablePeer::open(options.clone()).unwrap();
             peer.campaign().unwrap();
             peer.process_ready(|_, _| Ok(())).unwrap();
+            let mut admission_policy = Policy::new(kind, 1024).unwrap();
+            assert!(admission_policy.due(&peer).unwrap().is_none());
             peer.propose(vec![7; 2048]).unwrap();
+            assert!(admission_policy.due(&peer).unwrap().is_none());
             peer.process_ready(|_, _| Ok(())).unwrap();
-            let mut policy = Policy::new(kind, options.wal_path.clone(), 1024).unwrap();
+            assert_eq!(
+                admission_policy.due(&peer).unwrap(),
+                Some((peer.applied_index(), std::fs::metadata(&options.wal_path).unwrap().len())),
+            );
+            assert!(admission_policy.due(&peer).unwrap().is_none());
+            let mut policy = Policy::new(kind, 1024).unwrap();
             let (started_tx, started_rx) = mpsc::channel();
             let (resume_tx, resume_rx) = mpsc::channel();
             let term = peer.term();
@@ -469,10 +474,10 @@ mod tests {
     #[test]
     fn checkpoint_policy_bounds_the_configured_interval() {
         for value in [0, 1024, 128 * 1024 * 1024] {
-            Policy::new(1, PathBuf::new(), value).unwrap();
+            Policy::new(1, value).unwrap();
         }
         for value in [1, 1023, 128 * 1024 * 1024 + 1, u64::MAX] {
-            assert!(Policy::new(1, PathBuf::new(), value).is_err());
+            assert!(Policy::new(1, value).is_err());
         }
     }
 }
