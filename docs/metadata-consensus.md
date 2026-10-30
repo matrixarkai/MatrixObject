@@ -65,8 +65,9 @@ joins the consensus and network workers.
 
 This is an integration stage, not a production-readiness claim. Peer traffic is
 unauthenticated and unencrypted; use an isolated test network. Membership changes,
-authenticated transport, file-backed snapshots for larger state, and
-large-scale validation remain required. Mutable-state reads use quorum confirmation
+authenticated transport and large-scale validation remain required. File-backed
+checkpoint recovery is described below. The [external workload probe](distributed-probe.md)
+can exercise an existing deployment and verify its objects after restart. Mutable-state reads use quorum confirmation
 without appending entries. Group identity and the immutable bootstrap data-group
 catalog are served locally by running voters; this does not report current health
 or establish quorum. Mutations prepare changes against committed state and batch
@@ -165,7 +166,7 @@ metaserver leader loss, killed-chunk expiry, exclusion from new placement, and
 journal-backed chunk recovery. Additional tests cover wrong endpoints, draining,
 storage failure, binary request truncation, bounded shutdown, partial configuration,
 and a single-node expiry within a 1024-node roster. These are functional checks,
-not a large-scale throughput result. Full HTTP integration, authentication, membership changes, and file-backed snapshots for larger state
+not a large-scale throughput result. Full HTTP integration, authentication and membership changes
 remain separate work. Network chunk Raft is described in `chunk-consensus.md`.
 
 ## Application checkpoint recovery

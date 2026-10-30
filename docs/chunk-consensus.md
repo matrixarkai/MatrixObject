@@ -66,8 +66,10 @@ discards, leader loss, refusal below quorum, restart of all processes, capacity
 refusal, storage guards, shutdown, and metadata reports. They are functional
 fault tests, not a large-scale throughput result. Metadata placement of Raft groups
 is described in `chunk-group-catalog.md`. The HTTP distributed backend,
-authentication, file-backed snapshots for larger state, and membership changes
-remain unfinished.
+authentication and membership changes remain unfinished. File-backed checkpoint
+recovery is described below. To exercise already-running metadata and data quorums,
+use the [external workload probe](distributed-probe.md); it supports a separate
+read-only verification run after an operator-controlled restart.
 
 ## Bounded leader routing
 
