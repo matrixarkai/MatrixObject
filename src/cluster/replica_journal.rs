@@ -312,7 +312,9 @@ fn restore_base(
     if input.hash != u64::from_be_bytes(header[16..24].try_into().unwrap()) {
         return Err(invalid("replica checkpoint checksum mismatch"));
     }
-    service.install_snapshot(snapshot).map_err(invalid)?;
+    service
+        .install_validated_snapshot(snapshot)
+        .map_err(invalid)?;
     Ok(BASE_HEADER_LEN as u64 + length)
 }
 

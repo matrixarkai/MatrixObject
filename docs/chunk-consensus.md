@@ -156,6 +156,13 @@ Receipts, settings, counters, discard ranges and compression accounting are kept
 fragment digests are rebuilt from validated data as in the earlier snapshot codec.
 The older version-1 application envelope remains readable.
 
+The page-stream decoder returns an owned, internally validated snapshot. Raft and
+standalone journal recovery consume that value when installing state, avoiding a
+second scan of every payload byte. The validated value has no mutable access.
+Public snapshot installation still validates its input, and journal header/body
+checksums and configured capacity checks remain mandatory. This does not change
+the persisted format or make recovery asynchronous.
+
 On a 64-bit host the checkpoint file may be up to 16 GiB. Each page payload and
 metadata record remains limited to 256 MiB, and configured capacity and page
 count limits are checked during restore. Metadata records, page descriptors and

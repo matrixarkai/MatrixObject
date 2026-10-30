@@ -564,17 +564,19 @@ fn restore_checkpoint(node: &mut NodeReplica, bytes: &[u8], id: LogId) -> Result
 }
 fn restore_snapshot(
     node: &mut NodeReplica,
-    snapshot: crate::ReplicaServiceSnapshot,
+    snapshot: crate::ValidatedReplicaServiceSnapshot,
 ) -> Result<(), RaftError> {
-    if snapshot.capacity_bytes != node.service.capacity_bytes()
-        || snapshot.pages.len() > node.max_pages
+    if snapshot.snapshot().capacity_bytes != node.service.capacity_bytes()
+        || snapshot.snapshot().pages.len() > node.max_pages
     {
         return Err(storage(
             "chunk checkpoint exceeds or changes configured limits",
         ));
     }
     let mut service = MatrixReplicaService::new();
-    service.install_snapshot(snapshot).map_err(storage)?;
+    service
+        .install_validated_snapshot(snapshot)
+        .map_err(storage)?;
     let used_bytes = service.physical_bytes();
     if used_bytes > node.service.capacity_bytes() {
         return Err(storage("chunk checkpoint exceeds configured byte capacity"));

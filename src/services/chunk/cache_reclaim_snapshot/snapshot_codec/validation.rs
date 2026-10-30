@@ -1,5 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
+/// An owned snapshot whose bytes and metadata have passed all integrity checks.
+/// The private field and immutable accessor prevent mutation after validation.
+pub(crate) struct ValidatedReplicaServiceSnapshot(ReplicaServiceSnapshot);
+
+impl ValidatedReplicaServiceSnapshot {
+    pub(crate) fn new(snapshot: ReplicaServiceSnapshot) -> Result<Self, ObjectError> {
+        snapshot.validate()?;
+        Ok(Self(snapshot))
+    }
+
+    #[cfg(feature = "chunk-consensus")]
+    pub(crate) fn snapshot(&self) -> &ReplicaServiceSnapshot {
+        &self.0
+    }
+}
+
 impl ReplicaServiceSnapshot {
     pub fn validate(&self) -> Result<(), ObjectError> {
         validate_storage_receipt_retention(self.receipt_retention)?;
