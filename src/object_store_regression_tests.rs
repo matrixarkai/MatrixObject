@@ -34373,7 +34373,7 @@ fn every_durable_format_constant_is_accounted_for() {
             if path.extension().and_then(|e| e.to_str()) != Some("rs") {
                 continue;
             }
-            if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
+            if path.file_name() == std::path::Path::new(file!()).file_name() {
                 continue;
             }
             let text = std::fs::read_to_string(&path).expect("source file is readable");
