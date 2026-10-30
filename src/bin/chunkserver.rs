@@ -343,6 +343,11 @@ fn main() {
                         Err(_) => return Err("metadata identity path is not UTF-8".into()),
                     };
                 Ok(matrixobjectstore_rs::cluster::ReplicaHeartbeatOptions {
+                    placement_id: match std::env::var("MATRIXOBJECT_CHUNK_PLACEMENT_ID") {
+                        Ok(value) => Some(value),
+                        Err(std::env::VarError::NotPresent) => None,
+                        Err(_) => return Err("chunk placement ID is not UTF-8".into()),
+                    },
                     tls: matrixobjectstore_rs::cluster::ApiTlsConfig::from_env("MATRIXOBJECT_CLIENT").map_err(|error| error.to_string())?,
                     expected_metadata_identity,
                     node_id,

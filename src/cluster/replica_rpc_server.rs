@@ -70,6 +70,8 @@ struct NodeReplica {
     maintenance: bool,
     max_pages: usize,
     used_bytes: u64,
+    #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
+    applied_membership: Option<(crate::cluster::MembershipStatus, std::time::Instant)>,
     failed: bool,
 }
 
@@ -214,6 +216,8 @@ impl ReplicaNodeServer {
                 staged: None,
                 maintenance: options.maintenance,
                 max_pages: options.max_pages,
+                #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
+                applied_membership: None,
                 failed: false,
             })),
             options,
@@ -285,6 +289,17 @@ impl ReplicaNodeServer {
 
     /// Accept and serve until the shutdown handle is used.
     pub fn serve(self) -> std::io::Result<()> {
+        #[cfg(feature = "meta-server")]
+        if let Some(options) = &self.heartbeat {
+            #[cfg(feature = "chunk-consensus")]
+            let dynamic = self.consensus.as_ref().is_some_and(|c| c.identity().version == 2);
+            #[cfg(not(feature = "chunk-consensus"))]
+            let dynamic = false;
+            if options.placement_id.is_some() != dynamic {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                    "fenced heartbeat placement ID is required only for dynamic chunk consensus"));
+            }
+        }
         let worker_threads = self.options.worker_threads.max(1);
         let dispatch = super::connections::Dispatch::new(worker_threads);
         let mut handles = Vec::with_capacity(worker_threads);
@@ -314,8 +329,12 @@ impl ReplicaNodeServer {
         if let Some(options) = self.heartbeat {
             let replica = Arc::clone(&self.replica);
             let stop = Arc::clone(&self.stop);
+            #[cfg(feature = "chunk-consensus")]
+            let consensus = self.consensus.clone();
             handles.push(std::thread::spawn(move || {
-                heartbeat::run(options, replica, stop)
+                heartbeat::run(options, replica, stop,
+                    #[cfg(feature = "chunk-consensus")]
+                    consensus)
             }));
         }
         for handle in handles {
@@ -888,6 +907,8 @@ mod journal_failure_tests {
             staged: None,
             maintenance: false,
             max_pages: 65_536,
+            #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
+            applied_membership: None,
             failed: false,
         }));
         let page = PageId {

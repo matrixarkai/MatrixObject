@@ -172,17 +172,24 @@ impl Group {
         )
         .unwrap()
     }
+    #[track_caller]
     fn leader(&self) -> usize {
         let until = Instant::now() + Duration::from_secs(15);
+        let mut last = vec![String::new(); self.nodes.len()];
         loop {
-            for i in 0..self.nodes.len() {
-                if self.nodes[i].is_some() && self.client(i).probe().into_result().is_ok() {
-                    return i;
+            for (i, reply) in last.iter_mut().enumerate() {
+                if self.nodes[i].is_some() {
+                    match self.client(i).probe().into_result() {
+                        Ok(_) => return i,
+                        Err(error) => *reply = error.to_string(),
+                    }
+                } else {
+                    *reply = "process stopped".into();
                 }
             }
             assert!(
                 Instant::now() < until,
-                "no metadata leader committed a read barrier"
+                "no metadata leader committed a read barrier; last replies: {last:?}"
             );
             std::thread::sleep(Duration::from_millis(50));
         }
