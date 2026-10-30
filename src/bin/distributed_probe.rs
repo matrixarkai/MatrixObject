@@ -13,7 +13,7 @@ mod probe {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    pub const USAGE: &str = "distributed_probe write|verify --metadata IP:PORT,IP:PORT --group ID --bucket NAME --run NAME --objects N --bytes N --workers N --groups N [--page-bytes N] [--timeout-ms N]\nwrite creates new objects and verifies them; verify only reads. Reuse identical parameters for later verification. No cleanup or mutation replay is performed.";
+    pub const USAGE: &str = "distributed_probe write|verify --metadata IP:PORT,IP:PORT --group ID --bucket NAME --run NAME --objects N --bytes N --workers N --groups N [--page-bytes N] [--timeout-ms N] [--operation-timeout-ms N]\nwrite creates new objects and verifies them; verify only reads. Reuse identical parameters for later verification. No cleanup or mutation replay is performed.";
 
     struct Config {
         write: bool,
@@ -27,6 +27,7 @@ mod probe {
         groups: u32,
         page_bytes: usize,
         timeout: Duration,
+        operation_timeout: Duration,
     }
     impl Config {
         fn parse(args: &[String]) -> Result<Self, String> {
@@ -49,6 +50,7 @@ mod probe {
                     "--groups",
                     "--page-bytes",
                     "--timeout-ms",
+                    "--operation-timeout-ms",
                 ]
                 .contains(&pair[0].as_str())
                     || options.insert(pair[0].as_str(), pair[1].as_str()).is_some()
@@ -113,6 +115,8 @@ mod probe {
                     "run must contain 1..64 ASCII letters, digits, hyphens or underscores".into(),
                 );
             }
+            let timeout_ms = number("--timeout-ms", Some("10000"), 1, 300_000)?;
+            let operation_default = timeout_ms.to_string();
             let config = Self {
                 write,
                 endpoints,
@@ -124,7 +128,13 @@ mod probe {
                 workers: number("--workers", None, 1, 64)? as usize,
                 groups: number("--groups", None, 1, 4096)? as u32,
                 page_bytes: number("--page-bytes", Some("1048576"), 1, 1024 * 1024)? as usize,
-                timeout: Duration::from_millis(number("--timeout-ms", Some("10000"), 1, 300_000)?),
+                timeout: Duration::from_millis(timeout_ms),
+                operation_timeout: Duration::from_millis(number(
+                    "--operation-timeout-ms",
+                    Some(operation_default.as_str()),
+                    1,
+                    300_000,
+                )?),
             };
             if config.bytes.div_ceil(config.page_bytes) > 4096
                 || config.workers > config.objects
@@ -170,8 +180,9 @@ mod probe {
             }
             .map_err(|e| e.to_string())
         }
-        fn replica(&self) -> ReplicaClientOptions {
+        fn replica(&self, started: Instant) -> ReplicaClientOptions {
             ReplicaClientOptions {
+                deadline: Some(started + self.operation_timeout),
                 connect_timeout: self.timeout,
                 read_timeout: self.timeout,
                 write_timeout: self.timeout,
@@ -192,7 +203,7 @@ mod probe {
                     max_object_bytes: self.bytes,
                     page_bytes: self.page_bytes,
                     target_groups: self.groups,
-                    replica: self.replica(),
+                    replica: self.replica(started),
                     ..Default::default()
                 };
                 client
@@ -200,7 +211,7 @@ mod probe {
                     .map_err(|e| format!("{key}: {e}; outcome must be inspected, not replayed"))?;
             } else {
                 let (manifest, actual) = client
-                    .read_object(&self.bucket, &key, self.bytes, &self.replica())
+                    .read_object(&self.bucket, &key, self.bytes, &self.replica(started))
                     .map_err(|e| format!("{key}: {e}"))?;
                 if actual != expected || manifest.generation != 1 {
                     return Err(format!("{key}: recovered bytes or generation do not match"));
@@ -271,7 +282,7 @@ mod probe {
     }
     pub fn run(args: &[String]) -> Result<(), String> {
         let config = Config::parse(args)?;
-        println!("WORKLOAD version=1 group={} bucket={} run={} objects={} bytes={} workers={} groups={} page_bytes={} timeout_ms={}", config.group, config.bucket, config.run, config.objects, config.bytes, config.workers, config.groups, config.page_bytes, config.timeout.as_millis());
+        println!("WORKLOAD version=1 group={} bucket={} run={} objects={} bytes={} workers={} groups={} page_bytes={} timeout_ms={} operation_timeout_ms={}", config.group, config.bucket, config.run, config.objects, config.bytes, config.workers, config.groups, config.page_bytes, config.timeout.as_millis(), config.operation_timeout.as_millis());
         let identity = config
             .client(None)?
             .metadata_group_identity()
