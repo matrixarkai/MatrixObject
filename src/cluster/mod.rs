@@ -230,6 +230,12 @@ pub use server::ChunkRaftOptions;
 #[cfg(feature = "meta-server")]
 mod chunk_groups;
 #[cfg(feature = "meta-server")]
+mod chunk_membership_health;
+#[cfg(feature = "meta-server")]
+pub use chunk_membership_health::ChunkMembershipHealth;
+mod chunk_membership_fence;
+pub use chunk_membership_fence::ChunkMembershipFence;
+#[cfg(feature = "meta-server")]
 pub use chunk_groups::{ChunkGroupCatalog, ChunkGroupConfig};
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]

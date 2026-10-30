@@ -206,6 +206,13 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::automatic_health_survives_clock_rollback_and_snapshot_recovery -- --exact --nocapture | tee /tmp/health-clock-rollback.log
           grep -q 'test result: ok. 1 passed' /tmp/health-clock-rollback.log
 
+      - name: retained chunk membership fences and joint health
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::chunk_membership -- --test-threads=1 | tee /tmp/chunk-membership-health.log
+          grep -q 'test result: ok. 4 passed' /tmp/chunk-membership-health.log
+          cargo test --locked --all-features --lib cluster::chunk_groups::tests::joint_health_requires_both_majorities_and_excludes_learners -- --exact | tee /tmp/chunk-membership-health.log
+          grep -q 'test result: ok. 1 passed' /tmp/chunk-membership-health.log
       - name: membership replies stay inside trusted inventories
         run: |
           set -o pipefail

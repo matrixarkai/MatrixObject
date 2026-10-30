@@ -43,6 +43,51 @@ fn name_ok(s: &str) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
 }
+#[derive(Clone, Copy)]
+pub(super) struct VoterHealth {
+    pub(super) online: bool,
+    pub(super) draining: bool,
+    pub(super) used_bytes: u64,
+    pub(super) heartbeat_ms: u64,
+}
+
+// During a joint configuration, each voter set needs its own majority. Inventory
+// entries that are absent from both sets have no effect on availability or usage.
+pub(super) fn project_voter_health(
+    incoming: &[u64],
+    outgoing: &[u64],
+    report: impl Fn(u64) -> Option<VoterHealth>,
+) -> (bool, u64, Option<u64>) {
+    let quorum_time = |voters: &[u64]| {
+        if voters.is_empty() || voters[0] == 0 || voters.windows(2).any(|w| w[0] >= w[1]) {
+            return None;
+        }
+        let mut times: Vec<_> = voters
+            .iter()
+            .filter_map(|id| report(*id))
+            .filter(|health| health.online && !health.draining)
+            .map(|health| health.heartbeat_ms)
+            .collect();
+        times.sort_unstable_by(|a, b| b.cmp(a));
+        times.get(voters.len() / 2).copied()
+    };
+    let timestamp = quorum_time(incoming).and_then(|time| {
+        if outgoing.is_empty() {
+            Some(time)
+        } else {
+            quorum_time(outgoing).map(|other| time.min(other))
+        }
+    });
+    let used = incoming
+        .iter()
+        .chain(outgoing)
+        .filter_map(|id| report(*id))
+        .map(|health| health.used_bytes)
+        .max()
+        .unwrap_or(0);
+    (timestamp.is_some(), used, timestamp)
+}
+
 impl ChunkGroupCatalog {
     pub fn new(groups: Vec<ChunkGroupConfig>) -> Result<Self, ObjectError> {
         if groups.len() > 512 {
@@ -201,22 +246,19 @@ impl ChunkGroupCatalog {
             .collect();
         for id in ids {
             let group = &self.groups[id];
-            let members: Vec<_> = group
-                .member_ids
-                .iter()
-                .map(|id| &service.nodes[id])
-                .collect();
-            let mut times: Vec<_> = members
-                .iter()
-                .filter(|n| n.online && !n.draining)
-                .map(|n| n.last_heartbeat_ms)
-                .collect();
-            times.sort_unstable();
-            times.reverse();
-            let quorum = members.len() / 2 + 1;
-            let used = members.iter().map(|n| n.used_bytes).max().unwrap_or(0);
-            let online = times.len() >= quorum;
-            let timestamp = times.get(quorum - 1).copied();
+            let voters = &group.identity.as_ref().unwrap().voters;
+            let (online, used, timestamp) = project_voter_health(voters, &[], |voter| {
+                let index = voters.binary_search(&voter).ok()?;
+                service
+                    .nodes
+                    .get(&group.member_ids[index])
+                    .map(|node| VoterHealth {
+                        online: node.online,
+                        draining: node.draining,
+                        used_bytes: node.used_bytes,
+                        heartbeat_ms: node.last_heartbeat_ms,
+                    })
+            });
             let target = service.nodes.get_mut(id).unwrap();
             target.online = online;
             target.used_bytes = used;
@@ -338,6 +380,51 @@ pub(super) mod tests {
             member_ids: vec!["voter-a".into(), "voter-b".into(), "voter-c".into()],
         }
     }
+    #[test]
+    fn joint_health_requires_both_majorities_and_excludes_learners() {
+        let incoming = [1, 2, 3];
+        let outgoing = [3, 4, 5];
+        for mask in 0u64..64 {
+            let report = |id: u64| {
+                Some(VoterHealth {
+                    online: mask & (1 << (id - 1)) != 0,
+                    draining: false,
+                    used_bytes: if id == 6 { 999 } else { id * 10 },
+                    heartbeat_ms: id * 100,
+                })
+            };
+            let (online, used, _) = project_voter_health(&incoming, &outgoing, report);
+            let current_count = (mask & 0b000111).count_ones();
+            let previous_count = (mask & 0b011100).count_ones();
+            assert_eq!(
+                online,
+                current_count >= 2 && previous_count >= 2,
+                "mask={mask}"
+            );
+            assert_eq!(used, 50, "learner usage must not enter voter accounting");
+        }
+        let report = |id| {
+            Some(VoterHealth {
+                online: true,
+                draining: id == 3,
+                used_bytes: id * 10,
+                heartbeat_ms: id * 100,
+            })
+        };
+        assert_eq!(
+            project_voter_health(&incoming, &outgoing, report),
+            (true, 50, Some(100))
+        );
+        let missing = |id| if id == 1 { None } else { report(id) };
+        assert!(!project_voter_health(&incoming, &outgoing, missing).0);
+        assert!(!project_voter_health(&[1, 1, 2], &[], report).0);
+        assert!(!project_voter_health(&[], &outgoing, report).0);
+        assert_eq!(
+            project_voter_health(&[1, 2, 3], &[], report),
+            (true, 30, Some(100))
+        );
+    }
+
     #[test]
     fn catalog_canonical_binary_roundtrip_and_corruption() {
         let mut changing = config();
