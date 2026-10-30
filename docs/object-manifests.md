@@ -463,3 +463,32 @@ including a partial final page. It requires three total write-side connections
 per group per operation. It validates the original manifest order and complete
 reconstructed bytes. Real Raft process tests separately exercise durability,
 leader loss, damaged extents and conditional publication.
+
+## Striped object load and recovery
+
+The complete-object workload also supports two data groups per object. Four
+256-byte extents alternate between the selected groups, exercising repeated-group
+connection reuse while preserving the 1 KiB object bytes and generation. The
+workload verifies that every configured group holds data. Physical usage counts
+only that group’s extent bytes; committed accounting retains the complete object
+length on each selected group, as required by current placement accounting.
+
+CI runs `coupled_groups::striped_objects_preserve_pages_across_group_failover_and_restart`
+with three data groups, three voters per group and three metadata voters. It
+writes 96 objects, kills every group leader and the metadata leader, checks reads,
+writes 24 more objects, restarts all 12 processes and checks all 120 objects.
+
+Run the larger case explicitly:
+
+```sh
+cargo test --release --locked --all-features --test network_chunk_consensus coupled_groups::sixteen_groups_preserve_striped_objects_through_recovery -- --exact --ignored --nocapture --test-threads=1
+```
+
+A local release run used 16 three-voter data groups, three metadata voters, eight
+writer clients and 16 metadata executors. It completed in 48.72 seconds: 1,024
+initial object writes took 29,682 ms, reads after 17 leader losses took 1,439 ms,
+256 subsequent writes took 6,933 ms, and all 1,280 objects were read after full
+restart in 2,117 ms. Every phase retained the 180-second workload bound and made
+no automatic mutation retries. The existing one-group-per-object case remains
+separate. These local results are recovery evidence, not a controlled performance
+comparison, sustained throughput target or multihost qualification.

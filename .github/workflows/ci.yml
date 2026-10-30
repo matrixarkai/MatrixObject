@@ -411,6 +411,12 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus received_chunk_health_keeps_decided_time_through_failover_restart_and_expiry -- --exact --nocapture | tee /tmp/health-process.log
           grep -q 'test result: ok. 1 passed' /tmp/health-process.log
 
+      - name: striped objects recover across multiple data groups
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::striped_objects_preserve_pages_across_group_failover_and_restart -- --exact --nocapture | tee /tmp/striped-recovery.log
+          grep -q 'test result: ok. 1 passed' /tmp/striped-recovery.log
+
       - name: star fanout delayed response measurement validates every copy
         run: |
           set -o pipefail

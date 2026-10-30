@@ -2310,6 +2310,16 @@ mod coupled_groups {
         workers: usize,
         objects: bool,
     ) -> Vec<(u64, CommittedPlacement)> {
+        load_batch_with_groups(api, start, end, workers, objects, 1)
+    }
+    fn load_batch_with_groups(
+        api: &[String],
+        start: u64,
+        end: u64,
+        workers: usize,
+        objects: bool,
+        target_groups: u32,
+    ) -> Vec<(u64, CommittedPlacement)> {
         let begin = Instant::now();
         let results = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
@@ -2329,11 +2339,21 @@ mod coupled_groups {
                             let started = Instant::now();
                             if objects {
                                 let options = matrixobjectstore_rs::cluster::ObjectWriteOptions {
-                                    page_bytes: 256, update_time_ms: n + 1,
+                                    page_bytes: 256, update_time_ms: n + 1, target_groups,
                                     replica: chunk_options(), ..Default::default()
                                 };
                                 let manifest = meta.write_object("load", &format!("object-{n}"), None, &load_data(n), &options).unwrap();
                                 assert_eq!(manifest.extents.len(), 4);
+                                let distinct = manifest.extents.iter().map(|e| &e.group).collect::<std::collections::BTreeSet<_>>();
+                                assert_eq!(distinct.len(), target_groups as usize);
+                                for group in distinct {
+                                    assert_eq!(manifest.extents.iter().filter(|e| &e.group == group).count(), 4 / target_groups as usize);
+                                }
+                                if target_groups == 2 {
+                                    assert_eq!(manifest.extents[0].group, manifest.extents[2].group);
+                                    assert_eq!(manifest.extents[1].group, manifest.extents[3].group);
+                                    assert_ne!(manifest.extents[0].group, manifest.extents[1].group);
+                                }
                                 let node_ids = manifest.extents.iter().map(|e| e.group.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
                                 saved.push((n, CommittedPlacement { bucket: manifest.bucket, key: manifest.key, length: manifest.length, node_ids, version: manifest.generation, update_time_ms: n + 1 }));
                                 latencies.push(started.elapsed().as_micros());
@@ -2404,12 +2424,14 @@ mod coupled_groups {
             .iter()
             .map(|g| {
                 let id = g.placement_id();
-                let bytes = saved
-                    .iter()
-                    .filter(|(_, p)| p.node_ids == [id.clone()])
-                    .count() as u64
-                    * 1024;
-                (id, bytes)
+                let mut physical = 0;
+                let mut committed = 0;
+                for (_, placement) in saved.iter().filter(|(_, p)| p.node_ids.contains(&id)) {
+                    assert_eq!(placement.length % placement.node_ids.len() as u64, 0);
+                    physical += placement.length / placement.node_ids.len() as u64;
+                    committed += placement.length;
+                }
+                (id, (physical, committed))
             })
             .collect();
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -2421,8 +2443,8 @@ mod coupled_groups {
                 let node = nodes.iter().find(|n| n.node_id == id).unwrap();
                 node.online
                     && node.data_eligible
-                    && node.used_bytes == expected[&id]
-                    && node.committed_bytes == expected[&id]
+                    && node.used_bytes == expected[&id].0
+                    && node.committed_bytes == expected[&id].1
                     && node.capacity_bytes == g.capacity
             }) {
                 return;
@@ -2462,8 +2484,25 @@ mod coupled_groups {
                                 assert_eq!(manifest.generation, placement.version);
                                 assert_eq!(manifest.length, placement.length);
                                 assert_eq!(manifest.extents.len(), 4);
-                                assert!(manifest.extents.iter().all(|e| e.write_sequence == 1
-                                    && placement.node_ids == [e.group.clone()]));
+                                assert!(manifest.extents.iter().all(|e| e.write_sequence == 1));
+                                let actual: Vec<_> = manifest
+                                    .extents
+                                    .iter()
+                                    .map(|e| e.group.clone())
+                                    .collect::<std::collections::BTreeSet<_>>()
+                                    .into_iter()
+                                    .collect();
+                                assert_eq!(actual, placement.node_ids);
+                                for group in &actual {
+                                    assert_eq!(
+                                        manifest
+                                            .extents
+                                            .iter()
+                                            .filter(|e| &e.group == group)
+                                            .count(),
+                                        4 / actual.len()
+                                    );
+                                }
                                 assert_eq!(
                                     meta.object_placement(&placement.bucket, &placement.key)
                                         .unwrap(),
@@ -2626,6 +2665,16 @@ mod coupled_groups {
     }
 
     fn multiple_group_load(group_count: usize, writes: u64, workers: usize, objects: bool) {
+        multiple_group_load_with_groups(group_count, writes, workers, objects, 1);
+    }
+    fn multiple_group_load_with_groups(
+        group_count: usize,
+        writes: u64,
+        workers: usize,
+        objects: bool,
+        target_groups: u32,
+    ) {
+        assert!(target_groups == 1 || (objects && target_groups == 2));
         assert!((2..=16).contains(&group_count));
         assert!(writes > 0 && writes <= 1024);
         let mut groups: Vec<_> = (0..group_count)
@@ -2652,13 +2701,14 @@ mod coupled_groups {
             group.leader();
         }
         group_usage(&metadata.api, &groups, &[]);
-        let mut saved = load_batch(&metadata.api, 0, writes, workers, objects);
+        let mut saved =
+            load_batch_with_groups(&metadata.api, 0, writes, workers, objects, target_groups);
         group_usage(&metadata.api, &groups, &saved);
         for group in &groups {
             assert!(
                 saved
                     .iter()
-                    .any(|(_, p)| p.node_ids == [group.placement_id()]),
+                    .any(|(_, p)| p.node_ids.contains(&group.placement_id())),
                 "every group must carry data"
             );
         }
@@ -2688,12 +2738,13 @@ mod coupled_groups {
             group.leader();
         }
         verify_load(&metadata.api, &saved, objects);
-        saved.extend(load_batch(
+        saved.extend(load_batch_with_groups(
             &metadata.api,
             writes,
             writes + writes / 4,
             workers,
             objects,
+            target_groups,
         ));
         group_usage(&metadata.api, &groups, &saved);
         for group in &mut groups {
@@ -2723,7 +2774,7 @@ mod coupled_groups {
         group_usage(&metadata.api, &groups, &saved);
         verify_load(&metadata.api, &saved, objects);
         println!(
-            "MULTIGROUP verified objects={objects} groups={group_count} metadata_threads={request_threads} processes={} recovered_objects={}",
+            "MULTIGROUP verified objects={objects} groups={group_count} groups_per_object={target_groups} metadata_threads={request_threads} processes={} recovered_objects={}",
             group_count * 3 + 3,
             saved.len()
         );
@@ -2740,6 +2791,15 @@ mod coupled_groups {
     #[test]
     fn object_writer_load_preserves_manifests_and_pages_through_recovery() {
         multiple_group_load(3, 96, 6, true);
+    }
+    #[test]
+    fn striped_objects_preserve_pages_across_group_failover_and_restart() {
+        multiple_group_load_with_groups(3, 96, 6, true, 2);
+    }
+    #[test]
+    #[ignore = "bounded 51-process striped-object load and recovery measurement"]
+    fn sixteen_groups_preserve_striped_objects_through_recovery() {
+        multiple_group_load_with_groups(16, 1024, 8, true, 2);
     }
     #[test]
     #[ignore = "bounded 51-process complete-object load and recovery measurement"]
