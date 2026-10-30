@@ -150,14 +150,15 @@ impl RemoteReplicaSet {
         request: &ReplicaRequest,
         selected: Option<&[bool]>,
     ) -> Vec<Result<ReplicaReply, ObjectError>> {
-        // One borrowed pending response per selected member; no worker threads and
-        // no mutation retries. Finish every sent exchange even if quorum is met.
+        // One shared encoded frame and one pending exchange per selected member.
+        // No worker threads or mutation retries; finish every exchange even after quorum.
+        let frame: std::sync::Arc<[u8]> = super::message::encode_request(request).into();
         let pending: Vec<_> = self
             .replicas
             .iter_mut()
             .enumerate()
             .filter(|(i, _)| selected.map_or(true, |members| members[*i]))
-            .map(|(_, replica)| replica.begin_standalone(request))
+            .map(|(_, replica)| replica.begin_encoded(request.code(), frame.clone()))
             .collect();
         let mut replies: Vec<_> = (0..pending.len()).map(|_| None).collect();
         let mut pending: Vec<_> = pending.into_iter().enumerate().map(|(index, result)| {
@@ -173,9 +174,9 @@ impl RemoteReplicaSet {
             let mut progressed = false;
             for (index, slot) in pending.iter_mut().enumerate() {
                 let result = slot.as_mut().and_then(|reply| {
-                    let before = reply.received_bytes();
+                    let before = reply.transferred_bytes();
                     let result = reply.poll();
-                    progressed |= result.is_some() || reply.received_bytes() != before;
+                    progressed |= result.is_some() || reply.transferred_bytes() != before;
                     result
                 });
                 if let Some(result) = result {
@@ -795,5 +796,78 @@ mod tests {
         let mut changed = reply(vec![1]);
         changed.checksum.push('x');
         assert!(vote_reads(vec![reply(vec![1]), changed], 2, 2).is_err());
+    }
+}
+
+
+#[cfg(all(test, target_os = "linux"))]
+mod send_progress_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::os::fd::AsRawFd;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn star_blocked_sender_does_not_delay_healthy_members_or_replay() {
+        let listeners: Vec<_> = (0..3).map(|_| TcpListener::bind("127.0.0.1:0").unwrap()).collect();
+        // Bound the first receive window before the handshake to force backpressure.
+        let size: libc::c_int = 4096;
+        assert_eq!(unsafe {
+            libc::setsockopt(listeners[0].as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF,
+                &size as *const _ as *const libc::c_void, std::mem::size_of_val(&size) as libc::socklen_t)
+        }, 0);
+        let endpoints: Vec<_> = listeners.iter().map(|listener| listener.local_addr().unwrap().to_string()).collect();
+        let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions {
+            write_timeout: Duration::from_secs(3),
+            read_timeout: Duration::from_secs(3),
+            ..Default::default()
+        }).unwrap();
+        let sockets: Vec<_> = listeners.iter().map(|listener| listener.accept().unwrap().0).collect();
+        let (ready, received) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let mut receivers = Vec::new();
+        let mut released = Some(released);
+        for (index, mut socket) in sockets.into_iter().enumerate() {
+            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let ready = ready.clone();
+            let released = if index == 0 { released.take() } else { None };
+            receivers.push(std::thread::spawn(move || {
+                if let Some(released) = released {
+                    released.recv_timeout(Duration::from_secs(5)).unwrap();
+                    let mut bytes = Vec::new();
+                    socket.read_to_end(&mut bytes).unwrap();
+                    assert!(!bytes.is_empty());
+                    assert!(bytes.len() < 8 * 1024 * 1024, "stalled member must receive only a partial frame");
+                    return;
+                }
+                let mut header = [0; 6];
+                socket.read_exact(&mut header).unwrap();
+                let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                assert!(length > 8 * 1024 * 1024 && length < 9 * 1024 * 1024);
+                let mut payload = vec![0; length];
+                socket.read_exact(&mut payload).unwrap();
+                ready.send(index).unwrap();
+                socket.write_all(&super::super::message::encode_reply(&ReplicaReply::Applied)).unwrap();
+                let mut byte = [0];
+                assert_eq!(socket.read(&mut byte).unwrap(), 0, "mutation must not replay");
+            }));
+        }
+        let writer = std::thread::spawn(move || {
+            let replies = set.fan_out(&ReplicaRequest::WriteChunkIfSequence {
+                page_id: PageId { chunk_id: crate::ChunkId::new(1, 1).unwrap(), page_index: 0 },
+                offset: 0, data: vec![7; 8 * 1024 * 1024], expected_sequence: 0,
+            }, None);
+            assert!(replies[0].is_err());
+            assert!(matches!(replies[1], Ok(ReplicaReply::Applied)));
+            assert!(matches!(replies[2], Ok(ReplicaReply::Applied)));
+        });
+        let first = received.recv_timeout(Duration::from_secs(1));
+        let second = received.recv_timeout(Duration::from_secs(1));
+        writer.join().unwrap();
+        release.send(()).unwrap();
+        for worker in receivers { worker.join().unwrap(); }
+        assert!(first.is_ok() && second.is_ok(), "healthy members waited behind the stalled sender");
     }
 }
