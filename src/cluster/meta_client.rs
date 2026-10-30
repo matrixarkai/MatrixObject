@@ -42,6 +42,9 @@ use crate::ObjectError;
 /// How a metaserver client is bounded.
 #[derive(Clone, Debug)]
 pub struct MetaClientOptions {
+    /// Optional absolute deadline shared by connection attempts and wire frames.
+    /// Deadline-bound connections require numeric IP endpoints to avoid blocking DNS.
+    pub deadline: Option<Instant>,
     pub connect_timeout: Duration,
     pub read_timeout: Duration,
     pub write_timeout: Duration,
@@ -51,6 +54,7 @@ pub struct MetaClientOptions {
 impl Default for MetaClientOptions {
     fn default() -> Self {
         Self {
+            deadline: None,
             connect_timeout: Duration::from_secs(5),
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
@@ -94,6 +98,7 @@ impl MetaCallOutcome {
 /// One active connection, optionally selected from a fixed metadata catalog.
 #[derive(Debug)]
 pub struct RemoteMetaClient {
+    deadline: Option<Instant>,
     endpoint: String,
     reader: BufReader<TcpStream>,
     writer: TcpStream,
@@ -105,6 +110,22 @@ pub struct RemoteMetaClient {
     catalog: Option<(Vec<String>, MetaClientOptions)>,
 }
 
+#[cfg(any(feature = "replica-server", test))]
+struct OperationDeadlineGuard<'a> {
+    client: &'a mut RemoteMetaClient,
+    previous: Option<Instant>,
+    previous_catalog: Option<Instant>,
+}
+#[cfg(any(feature = "replica-server", test))]
+impl Drop for OperationDeadlineGuard<'_> {
+    fn drop(&mut self) {
+        self.client.deadline = self.previous;
+        if let Some((_, options)) = &mut self.client.catalog {
+            options.deadline = self.previous_catalog;
+        }
+    }
+}
+
 impl RemoteMetaClient {
     /// Open a connection to `endpoint` and keep it.
     ///
@@ -112,8 +133,18 @@ impl RemoteMetaClient {
     /// has something an operator can look at: an established socket with a PID on each end
     /// is the observable form of "these processes are talking to each other".
     pub fn connect(endpoint: &str, options: &MetaClientOptions) -> Result<Self, ObjectError> {
-        let address = resolve(endpoint)?;
-        let stream = TcpStream::connect_timeout(&address, options.connect_timeout)
+        let address = if options.deadline.is_some() {
+            endpoint.parse::<SocketAddr>().map_err(|_| ObjectError::InvalidArgument(
+                "deadline-bound connections require a numeric IP endpoint".into()))?
+        } else {
+            resolve(endpoint)?
+        };
+        let connect_timeout = match options.deadline {
+            Some(deadline) => options.connect_timeout.min(time_left(deadline)
+                .map_err(|error| transport_error(endpoint, "connecting", &error.to_string()))?),
+            None => options.connect_timeout,
+        };
+        let stream = TcpStream::connect_timeout(&address, connect_timeout)
             .map_err(|err| transport_error(endpoint, "connecting", &err.to_string()))?;
         stream
             .set_read_timeout(Some(options.read_timeout))
@@ -128,6 +159,7 @@ impl RemoteMetaClient {
             .try_clone()
             .map_err(|err| transport_error(endpoint, "duplicating the socket", &err.to_string()))?;
         Ok(Self {
+            deadline: options.deadline,
             endpoint: endpoint.to_string(),
             reader: BufReader::new(stream),
             writer,
@@ -226,6 +258,39 @@ impl RemoteMetaClient {
             MetaReply::GroupIdentity(identity) => Ok(identity),
             other => Err(unexpected_reply("a metadata group identity", &other)),
         }
+    }
+
+    #[cfg(any(feature = "replica-server", test))]
+    pub(super) fn with_operation_deadline<T>(
+        &mut self,
+        requested: Option<Instant>,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = self.deadline;
+        let previous_catalog = self.catalog.as_ref().and_then(|(_, options)| options.deadline);
+        self.deadline = match (previous, requested) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        };
+        if let Some((_, options)) = &mut self.catalog {
+            options.deadline = self.deadline;
+        }
+        let guard = OperationDeadlineGuard { client: self, previous, previous_catalog };
+        operation(&mut *guard.client)
+    }
+
+    #[cfg(any(feature = "replica-server", test))]
+    pub(super) fn operation_deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    #[cfg(any(feature = "replica-server", test))]
+    pub(super) fn check_operation_deadline(&self) -> Result<(), ObjectError> {
+        if let Some(deadline) = self.deadline {
+            time_left(deadline).map_err(|error|
+                transport_error(&self.endpoint, "checking object deadline", &error.to_string()))?;
+        }
+        Ok(())
     }
 
     /// The currently selected metadata API endpoint.
@@ -480,6 +545,22 @@ impl RemoteMetaClient {
         max_bytes: usize,
         options: &super::ReplicaClientOptions,
     ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
+        self.with_operation_deadline(options.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.deadline = client.operation_deadline();
+            client.read_object_inner(bucket, key, max_bytes, &bounded)
+        })
+    }
+
+    #[cfg(feature = "replica-server")]
+    fn read_object_inner(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        max_bytes: usize,
+        options: &super::ReplicaClientOptions,
+    ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
+        self.check_operation_deadline()?;
         let manifest = self.read_manifest(bucket, key)?;
         manifest.validate()?;
         if manifest.deleted {
@@ -529,6 +610,7 @@ impl RemoteMetaClient {
             let start = extent.object_offset as usize;
             bytes[start..start + read.data.len()].copy_from_slice(&read.data);
         }
+        self.check_operation_deadline()?;
         Ok((manifest, bytes))
     }
 
@@ -702,6 +784,7 @@ impl RemoteMetaClient {
             &frame,
             Instant::now()
                 .checked_add(self.write_timeout)
+                .map(|deadline| self.deadline.map_or(deadline, |limit| limit.min(deadline)))
                 .ok_or_else(|| {
                     transport_error(
                         &self.endpoint,
@@ -713,6 +796,7 @@ impl RemoteMetaClient {
         .map_err(|err| transport_error(&self.endpoint, "sending a request", &err.to_string()))?;
         let deadline = Instant::now()
             .checked_add(self.read_timeout)
+            .map(|deadline| self.deadline.map_or(deadline, |limit| limit.min(deadline)))
             .ok_or_else(|| {
                 transport_error(
                     &self.endpoint,
@@ -858,4 +942,76 @@ fn write_before(
         bytes = &bytes[count..];
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod operation_deadline_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn operation_deadline_restores_catalog_after_unwind_and_uses_earliest_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let limit = Instant::now() + Duration::from_secs(10);
+        let options = MetaClientOptions { deadline: Some(limit), ..Default::default() };
+        let mut client = RemoteMetaClient::connect_catalog(&[listener.local_addr().unwrap().to_string()], &options).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        client.with_operation_deadline(Some(limit + Duration::from_secs(1)), |client| {
+            assert_eq!(client.operation_deadline(), Some(limit));
+        });
+        let earlier = limit - Duration::from_secs(1);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.with_operation_deadline(Some(earlier), |client| {
+                assert_eq!(client.operation_deadline(), Some(earlier));
+                assert_eq!(client.catalog.as_ref().unwrap().1.deadline, Some(earlier));
+                panic!("test scope restoration");
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(client.operation_deadline(), Some(limit));
+        assert_eq!(client.catalog.as_ref().unwrap().1.deadline, Some(limit));
+    }
+
+    #[test]
+    fn operation_deadline_survives_catalog_rotation_without_new_budget() {
+        let first = TcpListener::bind("127.0.0.1:0").unwrap();
+        let second = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoints = vec![first.local_addr().unwrap().to_string(), second.local_addr().unwrap().to_string()];
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = first.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request = [0; 6];
+            stream.read_exact(&mut request).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            stream.write_all(&super::super::meta_message::encode_meta_reply(&MetaReply::NotLeader)).unwrap();
+            let (mut stream, _) = second.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            stream.read_exact(&mut request).unwrap();
+            let mut byte = [0];
+            assert_eq!(stream.read(&mut byte).unwrap(), 0);
+        });
+        let mut client = RemoteMetaClient::connect_catalog(&endpoints, &MetaClientOptions::default()).unwrap();
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(1);
+        client.with_operation_deadline(Some(deadline), |client| {
+            assert!(matches!(client.try_call(MetaRequest::Ping), MetaCallOutcome::Unreachable(_)));
+            assert_eq!(client.endpoint(), endpoints[1]);
+            assert_eq!(client.operation_deadline(), Some(deadline));
+            assert_eq!(client.catalog.as_ref().unwrap().1.deadline, Some(deadline));
+        });
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(client.operation_deadline().is_none());
+        assert!(client.catalog.as_ref().unwrap().1.deadline.is_none());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn deadline_connections_refuse_dns_and_expired_budget_before_connect() {
+        let options = MetaClientOptions { deadline: Some(Instant::now()), ..Default::default() };
+        assert!(matches!(RemoteMetaClient::connect("localhost:80", &options), Err(ObjectError::InvalidArgument(_))));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert!(RemoteMetaClient::connect(&listener.local_addr().unwrap().to_string(), &options).is_err());
+        assert!(matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+    }
 }

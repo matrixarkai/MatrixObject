@@ -413,3 +413,29 @@ automatically replayed. Normal replies and durable formats are unchanged.
 A durable checkpoint record can become visible before application restoration
 finishes. A recorded checkpoint is not a voter-readiness certificate. Use quorum
 operations to establish service availability after recovery.
+
+
+### Optional object operation deadline
+
+`MetaClientOptions::deadline` and `ReplicaClientOptions::deadline` accept an
+absolute `std::time::Instant`. The default `None` preserves the existing
+per-connection and per-frame timeout behavior. When set, the earliest limit
+bounds connection attempts, catalog rotation, identity checks, request writes,
+and response reads. Numeric IP endpoints (including a port) are required for
+deadline-bound connections because synchronous hostname resolution cannot be
+bounded by the socket timeout.
+
+For `read_object`, the replica option supplies a shared deadline for metadata
+lookup and all data reads. For `write_object`, `options.replica.deadline` also
+covers placement, allocation, data writes, verification, publication, and any
+confirmation read. An earlier metadata-client deadline still wins. The temporary
+object deadline is restored on return, including routing to another metadata
+endpoint. A new operation should supply a new absolute deadline.
+
+Expiry before publication returns `BeforePublication` with any staged manifest.
+Expiry after publication is attempted retains `PublicationUnconfirmed` unless
+the exact publication was confirmed; it never authorizes replay. Staged pages
+are not automatically reclaimed. The deadline bounds network waits, not CPU
+execution or operating-system scheduling. It does not cancel server-side work.
+Callers constructing either option struct without a default update must now
+provide `deadline: None` or an explicit deadline.

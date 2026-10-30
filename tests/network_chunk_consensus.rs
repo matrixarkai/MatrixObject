@@ -1788,7 +1788,10 @@ mod coupled_groups {
         let options = ObjectWriteOptions {
             page_bytes: 4,
             target_groups: 2,
-            replica: chunk_options(),
+            replica: ReplicaClientOptions {
+                deadline: Some(Instant::now() + Duration::from_secs(60)),
+                ..chunk_options()
+            },
             ..Default::default()
         };
         let first = meta
@@ -1797,7 +1800,7 @@ mod coupled_groups {
         assert_eq!(first.extents.len(), 5);
         assert_ne!(first.extents[0].group, first.extents[1].group);
         assert_eq!(
-            meta.read_object("written", "object", 100, &chunk_options())
+            meta.read_object("written", "object", 100, &options.replica)
                 .unwrap(),
             (first.clone(), b"abcdefghijklmnopq".to_vec())
         );
@@ -1818,7 +1821,7 @@ mod coupled_groups {
         // Old generations stay readable from their retained pages.
         let old = &first.extents[0];
         let mut data = meta
-            .connect_chunk_group(&old.group, &chunk_options())
+            .connect_chunk_group(&old.group, &options.replica)
             .unwrap();
         let page = matrixobjectstore_rs::PageId {
             chunk_id: matrixobjectstore_rs::ChunkId::new(old.volume_id, old.chunk_id).unwrap(),
@@ -1925,7 +1928,7 @@ mod coupled_groups {
             group.leader();
         }
         assert_eq!(
-            meta.read_object("written", "object", 100, &chunk_options())
+            meta.read_object("written", "object", 100, &options.replica)
                 .unwrap(),
             winning
         );

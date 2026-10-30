@@ -52,6 +52,9 @@ use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 /// How a client connects and how long it waits.
 #[derive(Clone, Debug)]
 pub struct ReplicaClientOptions {
+    /// Optional absolute deadline shared by connection attempts and wire frames.
+    /// Deadline-bound connections require numeric IP endpoints to avoid blocking DNS.
+    pub deadline: Option<Instant>,
     pub connect_timeout: Duration,
     /// Deadline for the complete response header and payload.
     pub read_timeout: Duration,
@@ -63,6 +66,7 @@ pub struct ReplicaClientOptions {
 impl Default for ReplicaClientOptions {
     fn default() -> Self {
         Self {
+            deadline: None,
             connect_timeout: Duration::from_secs(5),
             read_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
@@ -77,6 +81,7 @@ impl Default for ReplicaClientOptions {
 /// A failed write may have reached the node and is never replayed on uncertainty.
 #[derive(Debug)]
 pub struct RemoteReplicaClient {
+    deadline: Option<Instant>,
     endpoint: String,
     peer: SocketAddr,
     reader: BufReader<TcpStream>,
@@ -187,8 +192,18 @@ impl RemoteReplicaClient {
     /// an established socket with a PID on each end is the observable form of "these
     /// processes are talking to each other".
     pub fn connect(endpoint: &str, options: &ReplicaClientOptions) -> Result<Self, ObjectError> {
-        let address = resolve(endpoint)?;
-        let stream = TcpStream::connect_timeout(&address, options.connect_timeout)
+        let address = if options.deadline.is_some() {
+            endpoint.parse::<SocketAddr>().map_err(|_| ObjectError::InvalidArgument(
+                "deadline-bound connections require a numeric IP endpoint".into()))?
+        } else {
+            resolve(endpoint)?
+        };
+        let connect_timeout = match options.deadline {
+            Some(deadline) => options.connect_timeout.min(time_left(deadline)
+                .map_err(|error| transport_error(endpoint, "connecting", &error.to_string()))?),
+            None => options.connect_timeout,
+        };
+        let stream = TcpStream::connect_timeout(&address, connect_timeout)
             .map_err(|err| transport_error(endpoint, "connecting", &err.to_string()))?;
         stream
             .set_read_timeout(Some(options.read_timeout))
@@ -203,6 +218,7 @@ impl RemoteReplicaClient {
             .try_clone()
             .map_err(|err| transport_error(endpoint, "duplicating the socket", &err.to_string()))?;
         Ok(Self {
+            deadline: options.deadline,
             endpoint: endpoint.to_string(),
             peer: address,
             reader: BufReader::new(stream),
@@ -800,7 +816,7 @@ impl RemoteReplicaClient {
         let sent = self.send_request(request);
         match sent {
             Ok(()) => {
-                let setup = exchange_deadline(self.read_timeout).and_then(|deadline| {
+                let setup = exchange_deadline(self.read_timeout, self.deadline).and_then(|deadline| {
                     self.writer.set_nonblocking(true).map_err(|error| {
                         transport_error(&self.endpoint, "starting response collection", &error.to_string())
                     })?;
@@ -832,7 +848,7 @@ impl RemoteReplicaClient {
 
     fn exchange(&mut self, request: &ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
         self.send_request(request)?;
-        self.read_reply(request.code(), exchange_deadline(self.read_timeout)?)
+        self.read_reply(request.code(), exchange_deadline(self.read_timeout, self.deadline)?)
     }
 
     fn send_request(&mut self, request: &ReplicaRequest) -> Result<(), ObjectError> {
@@ -840,7 +856,7 @@ impl RemoteReplicaClient {
         write_before(
             &mut self.writer,
             &frame,
-            exchange_deadline(self.write_timeout)?,
+            exchange_deadline(self.write_timeout, self.deadline)?,
         )
         .map_err(|err| transport_error(&self.endpoint, "sending a request", &err.to_string()))?;
         Ok(())
@@ -942,9 +958,10 @@ fn unexpected_reply(asked: &str, got: &ReplicaReply) -> ObjectError {
     ))
 }
 
-fn exchange_deadline(timeout: Duration) -> Result<Instant, ObjectError> {
+fn exchange_deadline(timeout: Duration, absolute: Option<Instant>) -> Result<Instant, ObjectError> {
     Instant::now()
         .checked_add(timeout)
+        .map(|deadline| absolute.map_or(deadline, |limit| limit.min(deadline)))
         .ok_or_else(|| ObjectError::InvalidArgument("replica timeout exceeds clock range".into()))
 }
 fn time_left(deadline: Instant) -> std::io::Result<Duration> {
@@ -1000,6 +1017,29 @@ fn not_leader() -> ObjectError {
 mod pending_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn absolute_deadline_bounds_fanout_and_refuses_dns() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let options = ReplicaClientOptions {
+            deadline: Some(Instant::now() + Duration::from_millis(300)),
+            ..Default::default()
+        };
+        assert!(matches!(RemoteReplicaClient::connect("localhost:80", &options), Err(ObjectError::InvalidArgument(_))));
+        let mut client = RemoteReplicaClient::connect(&listener.local_addr().unwrap().to_string(), &options).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let request = ReplicaRequest::Ping;
+        let started = Instant::now();
+        let pending = client.begin_standalone(&request).unwrap();
+        let mut sent = vec![0; encode_request(&request).len()];
+        server.read_exact(&mut sent).unwrap();
+        assert!(pending.finish().is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(!client.connection_usable);
+        let mut byte = [0];
+        assert_eq!(server.read(&mut byte).unwrap(), 0);
+    }
 
     #[test]
     fn fanout_reply_deadline_starts_when_request_is_sent() {
