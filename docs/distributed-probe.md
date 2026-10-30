@@ -80,3 +80,21 @@ healed voters to participate in new metadata and data write quorums. It then
 restarts every process and verifies all 36 objects written before, during and
 after the partition. The ordinary leader-kill test remains separate. Neither
 test establishes behavior under every network failure pattern or sustained load.
+
+
+### Per-object network budget
+
+`--timeout-ms` bounds each connection attempt and request/response frame.
+`--operation-timeout-ms` bounds the combined metadata and data network work for
+each object, including placement, allocation, page writes, verification, and
+publication. It defaults to `--timeout-ms` and accepts 1..300000 milliseconds.
+Each object receives a fresh absolute deadline; one object's elapsed time does
+not consume the next object's budget. The selected value is printed as
+`operation_timeout_ms` in the workload header.
+
+Initial metadata catalog connection and identity discovery use the connection
+and frame limits separately. Payload generation happens before the object timer.
+This is not a deadline for the complete workload or a cancellation request to
+servers. A timed-out write is never replayed; inspect any uncertain publication
+before rerunning a write workload. Data catalog endpoints must be numeric IP
+sockets when operation deadlines are enabled.
