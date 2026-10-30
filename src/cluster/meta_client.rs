@@ -260,6 +260,16 @@ impl RemoteMetaClient {
         Ok(client)
     }
     /// Describe this voter without leader routing or a read barrier.
+    pub fn metadata_membership(
+        &mut self,
+        request: super::MembershipRequest,
+    ) -> Result<super::MembershipStatus, ObjectError> {
+        request.validate()?;
+        match self.call(MetaRequest::Membership(request))? {
+            MetaReply::Membership(status) => Ok(status),
+            reply => Err(unexpected_reply("metadata membership", &reply)),
+        }
+    }
     pub fn metadata_group_identity(&mut self) -> Result<super::MetaGroupIdentity, ObjectError> {
         match self.call_one(&MetaRequest::GroupIdentity).into_result()? {
             MetaReply::GroupIdentity(identity) => Ok(identity),
@@ -682,7 +692,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadManifest { .. }
                 | MetaRequest::ReadObjectRootPlacement { .. }
                 | MetaRequest::ReadChunkGroup { .. }
-        );
+        ) || matches!(&request, MetaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
         let mut unadmitted = true;
         for offset in 0..endpoints.len() {

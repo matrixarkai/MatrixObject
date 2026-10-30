@@ -41,6 +41,8 @@ const NETWORK_TIMEOUT: Duration = Duration::from_millis(100);
 /// Fixed voter endpoints. Each process uses its own existing state directory.
 #[derive(Clone, Debug)]
 pub struct MetaRaftOptions {
+    /// Opt in to membership changes. peers then contains all permitted endpoints.
+    pub bootstrap_voters: Option<Vec<u64>>,
     /// Mutual TLS for peer ports; this does not protect client API ports.
     pub peer_tls: Option<crate::cluster::PeerTlsOptions>,
     pub node_id: u64,
@@ -114,7 +116,12 @@ impl MetaConsensus {
         if options.group_id == 0
             || options.node_id == 0
             || options.peers.is_empty()
-            || options.peers.len() > 7
+            || options.peers.len()
+                > if options.bootstrap_voters.is_some() {
+                    64
+                } else {
+                    7
+                }
             || options.peers.keys().any(|id| *id == 0)
             || !options.peers.contains_key(&options.node_id)
             || options.request_timeout < Duration::from_millis(100)
@@ -128,6 +135,17 @@ impl MetaConsensus {
                 != options.peers.len()
         {
             return Err(invalid("invalid metadata voter configuration"));
+        }
+        let voters = options
+            .bootstrap_voters
+            .clone()
+            .unwrap_or_else(|| options.peers.keys().copied().collect());
+        if voters.is_empty()
+            || voters.len() > 7
+            || voters.windows(2).any(|w| w[0] >= w[1])
+            || voters.iter().any(|id| !options.peers.contains_key(id))
+        {
+            return Err(invalid("invalid metadata bootstrap voters"));
         }
         let transport = crate::cluster::peer_tls::PeerTransport::load(options.peer_tls.as_ref())?;
         let directory = options.directory.canonicalize()?;
@@ -184,9 +202,27 @@ impl MetaConsensus {
         // Different bootstrap images cannot form one voting group.
         let mut identity = bytes.clone();
         identity.extend_from_slice(&options.group_id.to_be_bytes());
+        if options.bootstrap_voters.is_some() {
+            identity.extend_from_slice(b"membership-v1");
+            identity.extend_from_slice(&(voters.len() as u64).to_be_bytes());
+            for id in &voters {
+                identity.extend_from_slice(&id.to_be_bytes());
+            }
+            for (id, endpoint) in &options.peers {
+                identity.extend_from_slice(&id.to_be_bytes());
+                let endpoint = endpoint.to_string();
+                identity.extend_from_slice(&(endpoint.len() as u64).to_be_bytes());
+                identity.extend_from_slice(endpoint.as_bytes());
+            }
+        }
         let group_id = hash(&identity).max(1);
         let group_identity = super::MetaGroupIdentity {
-            version: 1,
+            bootstrap_voters: options.bootstrap_voters.clone().unwrap_or_default(),
+            version: if options.bootstrap_voters.is_some() {
+                2
+            } else {
+                1
+            },
             group_id: options.group_id,
             node_id: options.node_id,
             voters: options.peers.keys().copied().collect(),
@@ -194,12 +230,17 @@ impl MetaConsensus {
             bootstrap_id: group_id,
         };
         group_identity.validate().map_err(invalid)?;
-        let mut peer = DurablePeer::open(PeerOptions {
+        let peer_options = PeerOptions {
             node_id: options.node_id,
             group_id,
-            voters: options.peers.keys().copied().collect(),
+            voters,
             wal_path: wal,
-        })
+        };
+        let mut peer = if options.bootstrap_voters.is_some() {
+            DurablePeer::open_with_membership(peer_options, options.peers.keys().copied().collect())
+        } else {
+            DurablePeer::open(peer_options)
+        }
         .map_err(invalid)?;
         if !base.exists() {
             let mut file = OpenOptions::new()
@@ -300,6 +341,12 @@ impl MetaConsensus {
         self.failed.load(Ordering::SeqCst)
     }
     pub(super) fn request(&self, request: MetaRequest) -> Result<MetaReply, ObjectError> {
+        if let MetaRequest::Membership(command) = &request {
+            command.validate()?;
+            if self.identity.version != 2 || command.bootstrap_id != self.identity.bootstrap_id {
+                return Err(refused("membership mode or group identity mismatch"));
+            }
+        }
         if matches!(
             request,
             MetaRequest::GroupIdentity | MetaRequest::ReadChunkGroup { .. }
@@ -373,10 +420,12 @@ fn run(
     let mut queued = VecDeque::new();
     let mut pending_read: Option<(u64, Vec<Request>)> = None;
     let applied_term = Cell::new(0);
+    let mut recovered = false;
+    let mut pending_membership: Option<(LogId, Request)> = None;
     while !stop.is_stopped() {
         progress.mark(WorkerPhase::PeerPackets);
         let mut admitted = false;
-        for _ in 0..32 {
+        for _ in 0..if recovered { 32 } else { 0 } {
             match packets.try_recv() {
                 Ok(bytes) => {
                     let _ = peer.step(&bytes);
@@ -384,7 +433,7 @@ fn run(
                 Err(_) => break,
             }
         }
-        if tick.elapsed() >= TICK {
+        if recovered && tick.elapsed() >= TICK {
             peer.tick()?;
             tick = Instant::now();
         }
@@ -421,6 +470,20 @@ fn run(
         )?;
         progress.mark(WorkerPhase::Requests);
         drop(application);
+        recovered = true;
+        if let Some((id, _)) = &pending_membership {
+            if peer.term() == id.term && peer.applied_index() >= id.index {
+                let (_, request) = pending_membership.take().unwrap();
+                let _ = request.reply.try_send(Ok(MetaReply::Membership(
+                    super::MembershipStatus::from_peer(peer),
+                )));
+            } else if !peer.is_leader() || peer.term() != id.term {
+                let (_, request) = pending_membership.take().unwrap();
+                let _ = request.reply.try_send(Err(refused(
+                    "metadata leadership changed; membership outcome may be committed",
+                )));
+            }
+        }
         for packet in output {
             if let Some(tx) = outgoing.get(&packet.to) {
                 let _ = tx.try_send(crate::cluster::peer_delivery::PeerDelivery::new(
@@ -446,7 +509,12 @@ fn run(
                     let (_, requests) = pending_read.take().unwrap();
                     for request in requests {
                         let reply = match &result {
-                            Ok(true) => apply_with_groups(service, request.request, limit, groups),
+                            Ok(true) => match request.request {
+                                MetaRequest::Membership(_) => Ok(MetaReply::Membership(
+                                    super::MembershipStatus::from_peer(peer),
+                                )),
+                                other => apply_with_groups(service, other, limit, groups),
+                            },
                             Err(error) => read_failure(error),
                             Ok(false) => unreachable!(),
                         };
@@ -457,7 +525,7 @@ fn run(
         }
         // No new batch is prepared until all earlier accepted outcomes apply or
         // leadership changes. A client timeout alone does not remove a proposal.
-        if pending.is_empty() && pending_read.is_none() {
+        if pending.is_empty() && pending_read.is_none() && pending_membership.is_none() {
             progress.mark(WorkerPhase::PublishCheckpoint);
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
                 let mut snapshot = service.export_snapshot_unsealed();
@@ -485,7 +553,19 @@ fn run(
                     let _ = request.reply.try_send(Ok(MetaReply::NotLeader));
                 }
             } else {
-                if queued.front().is_some_and(|r| read_only(&r.request)) {
+                if queued.front().is_some_and(|r| matches!(&r.request, MetaRequest::Membership(command) if !command.is_read())) {
+                    let request = queued.pop_front().unwrap();
+                    if request.deadline <= Instant::now() {
+                        let _ = request.reply.try_send(Err(refused("membership request expired before proposal")));
+                    } else {
+                        let MetaRequest::Membership(command) = &request.request else { unreachable!() };
+                        request.progress.mark(RequestPhase::ProposalCompletion);
+                        match command.change().and_then(|change| peer.propose_membership(change).map_err(refused)) {
+                            Ok(id) => pending_membership = Some((id, request)),
+                            Err(error) => { let _ = request.reply.try_send(Err(error)); }
+                        }
+                    }
+                } else if queued.front().is_some_and(|r| read_only(&r.request)) {
                     let mut reads = Vec::new();
                     while queued.front().is_some_and(|r| read_only(&r.request)) {
                         let request = queued.pop_front().unwrap();
@@ -513,7 +593,7 @@ fn run(
                 } else {
                     // A later write must not pass reads already admitted to this queue.
                     let mut writes = VecDeque::new();
-                    while queued.front().is_some_and(|r| !read_only(&r.request)) {
+                    while queued.front().is_some_and(|r| !read_only(&r.request) && !matches!(r.request, MetaRequest::Membership(_))) {
                         writes.push_back(queued.pop_front().unwrap());
                     }
                     propose_batch(peer, service, groups, limit, &mut writes, &mut pending)?;
@@ -560,6 +640,7 @@ fn restore_snapshot(
 }
 fn read_only(request: &MetaRequest) -> bool {
     match request {
+        MetaRequest::Membership(command) => command.is_read(),
         MetaRequest::ReadManifest { .. }
         | MetaRequest::ListRootNodes
         | MetaRequest::ReadChunkGroup { .. }
@@ -932,6 +1013,7 @@ mod tests {
             progress: WorkerProgress::new(),
             node_count: 4,
             identity: super::super::MetaGroupIdentity {
+                bootstrap_voters: Vec::new(),
                 version: 1,
                 group_id: 1,
                 node_id: 1,

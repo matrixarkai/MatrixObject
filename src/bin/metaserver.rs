@@ -278,6 +278,17 @@ fn main() {
                     .ok_or("missing Raft state directory")?
                     .into();
                 Ok(matrixobjectstore_rs::cluster::MetaRaftOptions {
+                    bootstrap_voters: match std::env::var(
+                        "MATRIXOBJECT_METASERVER_RAFT_BOOTSTRAP_VOTERS",
+                    ) {
+                        Ok(raw) => Some(
+                            raw.split(',')
+                                .map(|id| id.parse::<u64>().map_err(|_| "invalid bootstrap voter"))
+                                .collect::<Result<Vec<_>, _>>()?,
+                        ),
+                        Err(std::env::VarError::NotPresent) => None,
+                        Err(_) => return Err("bootstrap voters are not UTF-8".into()),
+                    },
                     peer_tls: matrixobjectstore_rs::cluster::PeerTlsOptions::from_env(
                         "MATRIXOBJECT_METASERVER_RAFT",
                     )

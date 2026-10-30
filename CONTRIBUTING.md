@@ -51,18 +51,18 @@ Four jobs, all on a pinned toolchain:
 | job | what it does |
 |---|---|
 | **build & docs** | `cargo build --all-targets --locked` and `--all-features`, then `cargo doc --no-deps --locked` and `--all-features`, all with warnings denied |
-| **format and rollback guards** | 192 individual tests in the library plus 112 integration tests, each run by name with `--exact` |
+| **format and rollback guards** | 196 individual tests in the library plus named integration tests and network-partition checks |
 
-The **network metadata consensus** job also runs forty-one named health, routing, preparation, and consensus tests
+The **network metadata consensus** job also runs forty-four named health, routing, preparation, and consensus tests
 with the optional consensus feature enabled.
 
 The **network chunk consensus** job runs thirty-one identity, routing, process, recovery, configuration,
 capacity, shutdown, and metadata-health tests with the chunk consensus feature. The coupled
 quorum test additionally enables metadata consensus and starts three voters for each service.
 
-Across these jobs, 210 individual tests run in the library.
+Across these jobs, 215 individual tests run in the library.
 
-**CI does not run the suite.** It compiles everything and runs those 210 guards plus the integration tests. A green
+**CI does not run the suite.** It compiles everything and runs those 215 guards plus the integration tests. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run
 `tools/suite_gate.sh` yourself.
 

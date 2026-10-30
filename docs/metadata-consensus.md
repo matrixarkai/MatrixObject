@@ -65,8 +65,9 @@ joins the consensus and network workers.
 
 This is an integration stage, not a production-readiness claim. Without optional
 peer TLS and [API TLS](api-tls.md), those transports are unauthenticated and
-unencrypted; use an isolated test network. Membership changes, per-user
-authorization and deployment-scale validation remain required. File-backed
+unencrypted; use an isolated test network. Chunk-group membership changes, per-user
+authorization and deployment-scale validation remain required. Metadata membership
+for new opt-in groups is described below. File-backed
 checkpoint recovery is described below. The [external workload probe](distributed-probe.md)
 can exercise an existing deployment and verify its objects after restart. Mutable-state reads use quorum confirmation
 without appending entries. Group identity and the immutable bootstrap data-group
@@ -168,7 +169,7 @@ journal-backed chunk recovery. Additional tests cover wrong endpoints, draining,
 storage failure, binary request truncation, bounded shutdown, partial configuration,
 and a single-node expiry within a 1024-node roster. These are functional checks,
 not a large-scale throughput result. Heartbeats support [API mutual TLS](api-tls.md).
-Full HTTP integration, per-user authorization and membership changes remain
+Full HTTP integration, per-user authorization and chunk-group membership changes remain
 separate work. Network chunk Raft is described in `chunk-consensus.md`.
 
 ## Application checkpoint recovery
@@ -512,10 +513,59 @@ API authentication remains a separate requirement from peer TLS.
 Keep a failed voter fenced if its durable state is lost or damaged. Starting an
 empty directory under the same voter ID loses its persisted term and vote; it is
 not a supported recovery procedure. Restoring replicas that retain their durable
-state is covered by the recovery tests, but new-identity replacement and membership
-changes remain unfinished.
+state is covered by the recovery tests. New opt-in metadata groups support the
+new-identity replacement sequence below. Fixed metadata groups and chunk groups
+do not yet support that workflow.
 
 The peer runtime rejects heartbeat commit positions beyond its local log before
 entering the consensus core. This prevents a malformed or inconsistent packet
 from panicking the worker. It does not restore lost votes or authorize identity
 reuse. The same rule applies to metadata and chunk voters.
+
+
+## Metadata voter replacement for new groups
+
+Set `MATRIXOBJECT_METASERVER_RAFT_BOOTSTRAP_VOTERS=1,2,3` on every process to
+create a membership-enabled group. `MATRIXOBJECT_METASERVER_RAFT_PEERS` then names
+the immutable permitted endpoint inventory, including future replacement IDs,
+for example `1@127.0.0.1:18201,2@127.0.0.1:18202,3@127.0.0.1:18203,4@127.0.0.1:18204`.
+Use the same ordered bootstrap voter list (one through seven IDs), inventory (at
+most 64 IDs), group ID and bootstrap application state on every instance.
+`MetaRaftOptions::bootstrap_voters = Some(...)` enables the same mode in-process.
+Omitting this option preserves fixed membership. Existing fixed-mode storage
+cannot be migrated by setting this option; reopen refuses the different identity.
+
+The version-2 `MetaGroupIdentity` binds the bootstrap voters and endpoint inventory
+into the effective `bootstrap_id`. Its `voters` and `peer_endpoints` fields describe
+that immutable inventory; `bootstrap_voters` names the initial voting set.
+They do not describe current voting rights. Older clients refuse version 2.
+Use `RemoteMetaClient::metadata_membership` with a `MembershipRequest` to read or
+change committed voting rights. Every request carries version 1 and the trusted
+effective `bootstrap_id`. Operation values are `Read`, `AddLearner`, `Promote`,
+`Remove` and `LeaveJoint`; Read and LeaveJoint use node ID zero. The request and
+status reply are bounded canonical binary protobuf messages (metadata opcode 79).
+
+Fence a failed voter and preserve its files. Add a distinct permitted ID as a
+learner, then start that identity in a new state directory with the same initial
+application configuration. The leader automatically captures a fresh checkpoint
+when its compacted image predates the learner. Promotion refuses until the learner
+has caught up to the leader's commit index. Commit `Promote`, then `LeaveJoint`,
+then `Remove(old_id)` and another `LeaveJoint`. Each voter transition requires both
+old and new majorities until LeaveJoint commits. A current leader removed from the
+final voter set steps down. Losing durable votes never makes reuse of an old ID safe.
+
+Successful mutation replies are sent only after the corresponding configuration
+entry is durable and applied locally. Read status uses a current-term quorum
+confirmation. A timeout or leadership change can leave the mutation committed;
+read status after recovery before deciding the next action, and never blindly
+retry an uncertain command. Membership operations serialize with ordinary metadata
+writes and reads on the same worker. Client catalogs can include replacement API
+endpoints, subject to their existing seven-endpoint bound; update catalogs as
+voters are retired. Endpoint discovery is not automatic.
+
+WSL process tests fence an original voter, seed a new identity from checkpointed
+history, promote it, remove the old identity, read and write with the new quorum,
+and restart all processes including the removed peer. A second test refuses
+membership acknowledgment and status without quorum and exercises removal of the
+serving leader. These are local multi-process tests. Chunk-group membership and
+changes to the metadata placement roster remain separate work.

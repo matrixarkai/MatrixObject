@@ -18,18 +18,30 @@ pub struct MetaGroupIdentity {
     /// The effective Raft group ID derived from the persisted bootstrap image.
     #[prost(uint64, tag = "6")]
     pub bootstrap_id: u64,
+    /// Version 2: initial voters; voters/peer_endpoints describe the permitted inventory.
+    #[prost(uint64, repeated, tag = "7")]
+    pub bootstrap_voters: Vec<u64>,
 }
 impl MetaGroupIdentity {
     pub fn validate(&self) -> Result<(), ObjectError> {
         use std::collections::BTreeSet;
         use std::net::SocketAddr;
         let mut addresses = BTreeSet::new();
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || self.group_id == 0
             || self.bootstrap_id == 0
             || self.node_id == 0
             || self.voters.is_empty()
-            || self.voters.len() > 7
+            || self.voters.len() > if self.version == 1 { 7 } else { 64 }
+            || (self.version == 1 && !self.bootstrap_voters.is_empty())
+            || (self.version == 2
+                && (self.bootstrap_voters.is_empty()
+                    || self.bootstrap_voters.len() > 7
+                    || self.bootstrap_voters.windows(2).any(|w| w[0] >= w[1])
+                    || self
+                        .bootstrap_voters
+                        .iter()
+                        .any(|id| !self.voters.contains(id))))
             || self.voters.len() != self.peer_endpoints.len()
             || !self.voters.contains(&self.node_id)
             || self.voters[0] == 0
@@ -68,6 +80,7 @@ impl MetaGroupIdentity {
         self.version == other.version
             && self.group_id == other.group_id
             && self.bootstrap_id == other.bootstrap_id
+            && self.bootstrap_voters == other.bootstrap_voters
             && self.voters == other.voters
             && self.peer_endpoints == other.peer_endpoints
     }
@@ -80,6 +93,7 @@ mod tests {
     #[test]
     fn metadata_identity_is_bounded_canonical_and_complete() {
         let identity = MetaGroupIdentity {
+            bootstrap_voters: Vec::new(),
             version: 1,
             group_id: 4,
             node_id: 1,

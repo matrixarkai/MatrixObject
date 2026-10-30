@@ -181,12 +181,15 @@ impl Policy {
     }
     fn due(&mut self, peer: &DurablePeer) -> Result<Option<(u64, u64)>, RaftError> {
         let index = peer.applied_index();
-        if self.interval == 0 || index <= self.observed || index <= self.checkpoint {
+        let membership_due = peer.membership_checkpoint_needed();
+        if (!membership_due && (self.interval == 0 || index <= self.observed))
+            || index <= self.checkpoint
+        {
             return Ok(None);
         }
         self.observed = index;
         let size = std::fs::metadata(&self.wal).map_err(storage)?.len();
-        if size.saturating_sub(self.baseline) < self.interval {
+        if !membership_due && size.saturating_sub(self.baseline) < self.interval {
             return Ok(None);
         }
         Ok(Some((index, size)))

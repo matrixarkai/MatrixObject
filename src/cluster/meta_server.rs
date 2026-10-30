@@ -1038,6 +1038,9 @@ pub(super) fn apply_to_meta(
             )?;
             Ok(MetaReply::Plan(PlacementAssignment::from_plan(&plan)))
         }
+        MetaRequest::Membership(_) => Err(ObjectError::InvalidArgument(
+            "membership requires an enabled consensus group".into(),
+        )),
         MetaRequest::GroupIdentity => Err(ObjectError::InvalidArgument(
             "metadata node has no Raft group".into(),
         )),

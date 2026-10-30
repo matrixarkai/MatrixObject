@@ -48,6 +48,7 @@ fn probe_object_budget_bounds_multiple_metadata_stages_without_replay() {
     let endpoint = listener.local_addr().unwrap().to_string();
     let worker = std::thread::spawn(move || {
         let identity = encode_meta_reply(&MetaReply::GroupIdentity(MetaGroupIdentity {
+            bootstrap_voters: Vec::new(),
             version: 1,
             group_id: 4,
             node_id: 1,
