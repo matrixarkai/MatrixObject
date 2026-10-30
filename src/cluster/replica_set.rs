@@ -433,11 +433,14 @@ impl RemoteReplicaSet {
         let mut answered = Vec::with_capacity(replica_count);
         let mut not_found = 0usize;
         let mut unreachable = 0usize;
-        for replica in self.replicas.iter_mut() {
-            match replica.head_chunk(page_id) {
-                Ok(head) => answered.push(head),
+        let request = ReplicaRequest::HeadChunk {
+            page_id: page_id.clone(),
+        };
+        for reply in self.fan_out(&request, None) {
+            match reply {
+                Ok(ReplicaReply::Head(head)) => answered.push(head),
                 Err(ObjectError::NotFound(_)) => not_found += 1,
-                Err(_) => unreachable += 1,
+                _ => unreachable += 1,
             }
         }
         if answered.len() < read_quorum {
