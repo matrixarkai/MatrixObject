@@ -878,3 +878,95 @@ fn star_repair_requires_write_strength_and_preserves_newer_destinations() {
     );
     assert!(set.repair_chunk(&page(99)).is_err());
 }
+
+#[test]
+#[ignore = "three-node 256 MiB quorum repair and total restart; run explicitly in release mode"]
+fn star_repair_restores_a_full_256_mib_page_and_three_member_writes() {
+    use matrixobjectstore_rs::cluster::{PageRepairStatus, RemoteReplicaSet};
+    use std::time::{Duration, Instant};
+    let dir = JournalDir::new();
+    let paths: Vec<_> = (0..3)
+        .map(|i| dir.0.join(format!("large-repair-{i}.log")))
+        .collect();
+    let start_large = |path: &Path| {
+        processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", "127.0.0.1:0"),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", path.to_str().unwrap()),
+                ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "314572800"),
+            ],
+        )
+    };
+    let nodes: Vec<_> = paths.iter().map(|p| start_large(p)).collect();
+    let options = ReplicaClientOptions {
+        read_timeout: Duration::from_secs(60),
+        write_timeout: Duration::from_secs(60),
+        max_payload_bytes: 1024 * 1024 + 512,
+        ..Default::default()
+    };
+    let mut source = matrixobjectstore_rs::MatrixReplicaService::new();
+    source
+        .write_chunk(page(0), 0, &vec![31; 256 * 1024 * 1024])
+        .unwrap();
+    source
+        .write_chunk(page(0), 256 * 1024 * 1024 - 1, &[19])
+        .unwrap();
+    source.discard_chunk(&page(0), 1024 * 1024 - 3, 9).unwrap();
+    let state = source.read_chunk_state(&page(0)).unwrap();
+    let original = source.head_chunk(&page(0)).unwrap();
+    for (i, node) in nodes.iter().enumerate() {
+        let mut c = RemoteReplicaClient::connect(&node.endpoint, &options).unwrap();
+        if i == 0 {
+            c.write_chunk(page(0), 0, b"stale").unwrap();
+        } else {
+            c.install_chunk_state(&page(0), &state, None, &format!("seed-{i}"))
+                .unwrap();
+        }
+    }
+    drop(state);
+    drop(source);
+    let endpoints: Vec<_> = nodes.iter().map(|n| n.endpoint.clone()).collect();
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
+    let began = Instant::now();
+    let report = set.repair_chunk(&page(0)).unwrap();
+    let repair_ms = began.elapsed().as_millis();
+    assert_eq!(report.source, original);
+    assert_eq!(
+        report.members,
+        vec![
+            PageRepairStatus::Installed,
+            PageRepairStatus::Current,
+            PageRepairStatus::Current
+        ]
+    );
+    assert_eq!(set.write_chunk(&page(0), 128, &[42]).unwrap(), 3);
+    let expected = set.head_chunk(&page(0)).unwrap();
+    assert_eq!(expected.write_sequence, original.write_sequence + 1);
+    drop(set);
+    drop(nodes);
+    let nodes: Vec<_> = paths.iter().map(|p| start_large(p)).collect();
+    for node in &nodes {
+        let mut c = RemoteReplicaClient::connect(&node.endpoint, &options).unwrap();
+        assert_eq!(c.head_chunk(&page(0)).unwrap(), expected);
+        let state = c.read_chunk_state(&page(0)).unwrap();
+        assert_eq!(state.data.len(), 256 * 1024 * 1024);
+        assert!(state.data.iter().enumerate().all(|(i, b)| *b
+            == if i == 128 {
+                42
+            } else if i == 256 * 1024 * 1024 - 1 {
+                19
+            } else {
+                31
+            }));
+        assert_eq!(state.discarded_ranges, expected.discarded_ranges);
+        assert!(c.read_chunk(&page(0), 1024 * 1024, 1).is_err());
+    }
+    let endpoints: Vec<_> = nodes.iter().map(|n| n.endpoint.clone()).collect();
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
+    assert_eq!(set.write_chunk(&page(0), 129, &[43]).unwrap(), 3);
+    let read = set.read_chunk(&page(0), 128, 2).unwrap();
+    assert_eq!(read.data, vec![42, 43]);
+    assert_eq!(read.write_sequence, expected.write_sequence + 1);
+    println!("256 MiB quorum repair took {repair_ms} ms; all three complete copies recovered and accepted later writes");
+}

@@ -345,6 +345,12 @@ jobs:
           cargo test --locked --all-features --test replica_state_transfer star_repair_aborts_changed_sources_and_never_replays_uncertain_commits -- --exact | tee /tmp/quorum-repair.log
           grep -q 'test result: ok. 1 passed' /tmp/quorum-repair.log
 
+      - name: maximum page star repair survives total restart
+        run: |
+          set -o pipefail
+          cargo test --release --locked --all-features --test replica_restart_recovery star_repair_restores_a_full_256_mib_page_and_three_member_writes -- --exact --ignored --nocapture | tee /tmp/large-star-repair.log
+          grep -q 'test result: ok. 1 passed' /tmp/large-star-repair.log
+
       - name: health reports validate canonical protobuf and decided time
         run: |
           set -o pipefail
