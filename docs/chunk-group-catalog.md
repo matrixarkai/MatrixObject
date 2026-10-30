@@ -273,7 +273,8 @@ shutdown. Fixed Raft groups and standalone star replicas keep code 78 reports.
 A dynamic group with automatic reporting must have a placement ID; a fixed or
 standalone replica must not set one. Startup refuses a mode mismatch. Reports do
 not advance the metadata membership fence: the controller must first commit a
-trusted membership observation using operation 1. Reports from an older chunk
+trusted membership observation using operation 1, or use the verified refresh
+helper described below. Reports from an older chunk
 configuration remain rejected until that voter catches up.
 
 The seven-process WSL test covers automatic usage, chunk and metadata leader
@@ -341,3 +342,37 @@ restart. These are bounded local recovery measurements, not sustained throughput
 or independent-host availability claims. Concurrent membership changes across
 groups, long-running replacement churn, larger payloads and transport partitions
 still require separate validation.
+
+## Controller membership refresh
+
+After an explicit chunk membership change, a controller can call
+`RemoteMetaClient::refresh_chunk_membership(placement_id, replica_options)`.
+The helper reads the current metadata route through its quorum-confirmed API,
+connects only to its permitted active voters, verifies each socket identity, and
+performs a quorum-confirmed chunk membership read. The observation must name the
+member assigned to the responding socket and stay within the trusted inventory.
+A stale applied position or a conflicting configuration at the same position is
+rejected before any catalog write.
+
+The helper commits the observation using the complete previously retained fence
+as a compare-and-swap condition. It returns the new fence only after metadata
+acknowledges that group's update. An identical observation needs no catalog write.
+A concurrent controller's update, unavailable quorum, invalid observation or
+uncertain commit is returned to the caller without replaying the mutation. On an
+uncertain result, read the retained route to reconcile before deciding what to do
+next. A later invocation starts with a fresh metadata route.
+
+The helper does not propose membership changes, expand the permitted inventory,
+or run as an unattended controller. Fixed groups reject refresh. If no voter in
+the retained route is reachable, the helper cannot discover a disjoint new group
+and fails explicitly. Use the configured authenticated API transport for metadata
+and chunk clients; identity matching alone does not authenticate a server.
+
+The refresh helper passed the seven- and fifteen-process replacement workloads.
+A subsequent sixty-seven-process run using the helper verified all 320 objects,
+retained fences and accounting after leader loss and restart, with 176 reads
+during membership changes, in 77.05 seconds. An earlier attempt failed in its
+initial write batch, before refresh was invoked, with metadata response deadlines
+and unconfirmed publications. The later pass used unchanged deadlines and did not
+retry those uncertain writes. The initial availability failure remains unresolved;
+these results do not establish stable throughput under load.

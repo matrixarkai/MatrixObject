@@ -470,6 +470,56 @@ impl RemoteMetaClient {
         }
     }
 
+    /// Refresh retained membership from a quorum-confirmed chunk membership read.
+    /// Uses the current metadata route and checks every chunk socket's identity.
+    /// A concurrent catalog change or uncertain commit is returned to the caller;
+    /// this method does not replay mutations or initiate membership changes.
+    #[cfg(feature = "replica-server")]
+    pub fn refresh_chunk_membership(
+        &mut self,
+        placement_id: &str,
+        options: &super::ReplicaClientOptions,
+    ) -> Result<super::ChunkMembershipFence, ObjectError> {
+        let route = self.read_chunk_route(placement_id)?;
+        let previous = route.membership_fence()?.ok_or_else(|| {
+            ObjectError::PreconditionFailed("fixed chunk groups have no membership fence".into())
+        })?;
+        let identity = route.group.as_ref().unwrap().identity.as_ref().unwrap();
+        let mut chunk = super::RemoteReplicaClient::connect_routed_raft_catalog(&route, options)?;
+        let status = chunk.chunk_membership(super::MembershipRequest {
+            version: 1,
+            bootstrap_id: identity.bootstrap_id,
+            operation: super::MembershipOperation::Read as i32,
+            node_id: 0,
+        })?;
+        if !route.active_members()?.iter().any(|(endpoint, id)| {
+            endpoint == chunk.endpoint() && *id == status.node_id
+        }) {
+            return Err(ObjectError::Corruption("membership observation names another socket member".into()));
+        }
+        let next = previous.advance(identity, &status)?;
+        if next == previous {
+            return Ok(previous);
+        }
+        let reply = self.update_chunk_catalog(super::ChunkCatalogCommand {
+            version: 1,
+            operation: 1,
+            placement_id: placement_id.into(),
+            expected_fence: previous.to_bytes(),
+            bootstrap_id: identity.bootstrap_id,
+            status: Some(status),
+            member_id: String::new(),
+            expected_endpoint: String::new(),
+            used_bytes: 0,
+            capacity_bytes: 0,
+            online: false,
+        })?;
+        if reply.node_id != placement_id {
+            return Err(ObjectError::Corruption("membership refresh reply names another group".into()));
+        }
+        Ok(next)
+    }
+
     /// Resolve metadata membership and verify the first chunk connection before data can be sent.
     #[cfg(feature = "replica-server")]
     pub fn connect_chunk_group(

@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 use super::*;
 use matrixobjectstore_rs::cluster::{
-    ChunkCatalogCommand, MembershipOperation as Op, MembershipRequest,
+    MembershipOperation as Op, MembershipRequest,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -45,24 +45,15 @@ fn replace_member(meta: &mut RemoteMetaClient, group: &mut Group) {
                 Err(error) => panic!("membership operation {op:?} failed for {placement}: {error}"),
             }
         };
-        let expected = fence.advance(identity, &status).unwrap();
-        meta.update_chunk_catalog(ChunkCatalogCommand {
-            version: 1,
-            operation: 1,
-            placement_id: placement.clone(),
-            expected_fence: fence.to_bytes(),
-            bootstrap_id: identity.bootstrap_id,
-            status: Some(status),
-            member_id: String::new(),
-            expected_endpoint: String::new(),
-            used_bytes: 0,
-            capacity_bytes: 0,
-            online: false,
-        })
-        .unwrap();
+        let previous_floor = fence.applied_floor();
+        fence = meta.refresh_chunk_membership(&placement, &chunk_options()).unwrap();
+        assert!(fence.applied_floor() >= status.applied_index);
+        assert!(fence.applied_floor() >= previous_floor);
+        assert_eq!(fence.voters(), status.voters);
+        assert_eq!(fence.outgoing_voters(), status.outgoing_voters);
+        assert_eq!(fence.learners(), status.learners);
         let route = meta.read_chunk_route(&placement).unwrap();
-        fence = route.membership_fence().unwrap().unwrap();
-        assert_eq!(fence, expected);
+        assert_eq!(route.membership_fence().unwrap().unwrap(), fence);
         if op == Op::AddLearner {
             assert!(!route
                 .active_members()
