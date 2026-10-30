@@ -477,7 +477,9 @@ mod tests {
         let mut drive = |peers: &mut BTreeMap<u64, DurablePeer>,
                          states: &mut BTreeMap<u64, MetaSnapshot>,
                          isolate: Option<u64>| {
-            for _ in 0..4000 {
+            let mut waiting_since = None;
+            let mut exchanges = 0;
+            while exchanges < 4000 {
                 let mut packets = Vec::new();
                 for (node, peer) in peers.iter_mut() {
                     let state = RefCell::new(
@@ -531,8 +533,19 @@ mod tests {
                     states.insert(*node, state.into_inner());
                 }
                 if packets.is_empty() {
+                    if peers.values().any(DurablePeer::checkpoint_receive_pending) {
+                        let began = waiting_since.get_or_insert_with(std::time::Instant::now);
+                        assert!(
+                            began.elapsed() < std::time::Duration::from_secs(30),
+                            "metadata checkpoint finalization did not finish"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        continue;
+                    }
                     return;
                 }
+                waiting_since = None;
+                exchanges += 1;
                 for packet in packets {
                     assert!(packet.bytes.len() < 2 * 1024 * 1024);
                     // Canonical version-3 packets carry file payload fragments.
