@@ -21,7 +21,7 @@ use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{self, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -235,34 +235,18 @@ impl ChunkConsensus {
             .iter()
             .filter(|(id, _)| **id != options.node_id)
         {
-            let (tx, rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::sync_channel(8);
+            let (tx, rx) = mpsc::sync_channel::<crate::cluster::peer_delivery::PeerDelivery>(8);
             outgoing.insert(*id, tx);
             let address = *address;
             let stop = Arc::clone(&stop);
             handles.push(thread::spawn(move || {
                 while !stop.is_stopped() {
-                    let bytes = match rx.recv_timeout(NETWORK_TIMEOUT) {
+                    let delivery = match rx.recv_timeout(NETWORK_TIMEOUT) {
                         Ok(bytes) => bytes,
                         Err(mpsc::RecvTimeoutError::Timeout) => continue,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
-                    {
-                        if let Ok(mut stream) =
-                            TcpStream::connect_timeout(&address, NETWORK_TIMEOUT)
-                        {
-                            let deadline = Instant::now() + NETWORK_TIMEOUT;
-                            let _ = stream.set_nodelay(true);
-                            if write_until(
-                                &mut stream,
-                                &(bytes.len() as u32).to_be_bytes(),
-                                deadline,
-                            )
-                            .is_ok()
-                            {
-                                let _ = write_until(&mut stream, &bytes, deadline);
-                            }
-                        }
-                    }
+                    let _ = delivery.send(&address);
                 }
             }));
         }
@@ -437,7 +421,10 @@ fn run(
         drop(application);
         for packet in output {
             if let Some(tx) = outgoing.get(&packet.to) {
-                let _ = tx.try_send(packet.bytes);
+                let _ = tx.try_send(crate::cluster::peer_delivery::PeerDelivery::new(
+                    packet.bytes,
+                    NETWORK_TIMEOUT,
+                ));
             }
         }
         if pending
@@ -668,27 +655,6 @@ fn prepare(
         .with_counters(counters, PageOutcome::counters(&candidate))
         .to_payload()?;
     Ok((outcome, Some(reply)))
-}
-
-fn remaining(deadline: Instant) -> io::Result<Duration> {
-    deadline
-        .checked_duration_since(Instant::now())
-        .filter(|d| !d.is_zero())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "peer packet deadline"))
-}
-fn write_until(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
-    while !bytes.is_empty() {
-        stream.set_write_timeout(Some(remaining(deadline)?))?;
-        let n = stream.write(bytes)?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "incomplete peer packet",
-            ));
-        }
-        bytes = &bytes[n..];
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -411,6 +411,12 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus received_chunk_health_keeps_decided_time_through_failover_restart_and_expiry -- --exact --nocapture | tee /tmp/health-process.log
           grep -q 'test result: ok. 1 passed' /tmp/health-process.log
 
+      - name: peer delivery deadline includes queue and connection time
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::peer_delivery::tests::queued_peer_delivery_expires_before_connect_and_preserves_fresh_frames -- --exact --nocapture | tee /tmp/peer-delivery.log
+          grep -q 'test result: ok. 1 passed' /tmp/peer-delivery.log
+
       - name: consensus inbox bounds admission and wakes for work ticks and shutdown
         run: |
           set -o pipefail

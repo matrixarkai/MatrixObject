@@ -328,3 +328,12 @@ lengths, EOF and shutdown release the connection and its incomplete buffer.
 Connections waiting in the operating-system accept backlog are admitted when a
 slot becomes available. This is bounded receive scheduling, not authenticated
 admission or protection against a sustained connection flood.
+
+### Outbound peer packet age
+
+Each outbound packet has one 100 ms delivery deadline starting when the consensus
+worker queues it. Queue waiting, TCP connection and both frame writes share that
+deadline. Expired packets are discarded before connecting, and partial delivery
+closes the connection. Raft retransmission supplies later packets; the sender does
+not replay a failed packet or extend its deadline. Per-peer queues remain bounded
+to eight packets so an unavailable voter cannot block consensus admission.
