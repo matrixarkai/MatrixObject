@@ -476,3 +476,31 @@ and p99 from 747370 to 623076 us. The post-leader-loss batch changed from
 7.0 to 8.9 objects/s. Both runs recovered and verified all 160 objects after
 full restart. These are single-run observations on one PC, not a production
 throughput guarantee or evidence of independent host failure domains.
+
+
+### Four-way object recovery validation
+
+The regular network chunk suite includes
+`four_way_authenticated_objects_recover_after_leader_loss_and_restart`: 15 local
+processes, four three-voter data groups, three metadata voters, and objects with
+one immutable page in each of four groups. It checks exact bytes, generation,
+placement membership and physical/committed capacity after leader loss, further
+writes and total restart. Raft peers use mutual TLS. Each complete object read or
+write in the multi-group workload now has a fresh 10-second absolute network
+deadline in addition to the individual connection and frame limits.
+
+Run the larger local WSL case explicitly:
+
+```sh
+cargo test --release --locked --all-features --test network_chunk_consensus authenticated_sixteen_groups_recover_four_way_objects -- --ignored --nocapture --test-threads=1
+```
+
+One local run with 51 processes, 16 data groups and four writers completed the
+initial 128 one-MiB writes at 10.7 objects/s (median 350027 us, p99 632830 us).
+After losing the leader of every group and the metadata leader, another 32 writes
+completed at 9.9 objects/s. All 160 objects then recovered after total restart.
+Post-restart verification measured 123.71 MiB/s, with object-read median 45738 us
+and p99 116194 us. The reported verified throughput includes payload comparison
+and placement checks; read percentiles time the object read itself. Results are
+single-run observations on one PC, not multi-host production guarantees. Client
+API authentication remains a separate requirement from peer TLS.
