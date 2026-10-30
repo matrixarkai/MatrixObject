@@ -13,6 +13,7 @@ pub struct ObjectWriteOptions {
     /// Maximum number of configured data groups selected by placement.
     pub target_groups: u32,
     pub update_time_ms: u64,
+    /// The replica deadline also bounds metadata work for this object operation.
     pub replica: ReplicaClientOptions,
 }
 impl Default for ObjectWriteOptions {
@@ -120,6 +121,22 @@ impl RemoteMetaClient {
         data: &[u8],
         options: &ObjectWriteOptions,
     ) -> Result<ObjectManifest, ObjectWriteFailure> {
+        self.with_operation_deadline(options.replica.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.replica.deadline = client.operation_deadline();
+            client.write_object_inner(bucket, key, expected, data, &bounded)
+        })
+    }
+
+    fn write_object_inner(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        expected: Option<ObjectManifest>,
+        data: &[u8],
+        options: &ObjectWriteOptions,
+    ) -> Result<ObjectManifest, ObjectWriteFailure> {
+        self.check_operation_deadline().map_err(before)?;
         let (pages, generation) =
             preflight(bucket, key, expected.as_ref(), data.len(), options).map_err(before)?;
         let current = match self.read_manifest(bucket, key) {
@@ -235,6 +252,7 @@ impl RemoteMetaClient {
                 )));
             }
         }
+        self.check_operation_deadline().map_err(&staged_error)?;
         let (publication, unadmitted) =
             self.publish_manifest_attempt(outcome.clone(), options.update_time_ms);
         match publication {
@@ -292,6 +310,53 @@ mod tests {
         stream.read_exact(&mut payload).unwrap();
         MetaRequest::decode(MetaRequestCode::from_u8(header[1]).unwrap(), &payload).unwrap()
     }
+    #[test]
+    fn expired_object_deadline_sends_nothing_and_restores_client_scope() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let mut client = RemoteMetaClient::connect_catalog(&[endpoint], &MetaClientOptions::default()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        let options = ObjectWriteOptions {
+            replica: ReplicaClientOptions { deadline: Some(Instant::now()), ..Default::default() },
+            ..Default::default()
+        };
+        assert!(matches!(client.write_object("bucket", "key", None, b"", &options),
+            Err(ObjectWriteFailure::BeforePublication { staged: None, .. })));
+        assert!(client.read_object("bucket", "key", 1, &options.replica).is_err());
+        assert!(client.operation_deadline().is_none());
+        let mut byte = [0];
+        assert!(matches!(server.read(&mut byte), Err(error) if matches!(error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)));
+    }
+
+    #[test]
+    fn object_deadline_bounds_publication_without_replay() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let worker = std::thread::spawn(move || {
+            let mut stream = accept(&listener);
+            assert!(matches!(receive(&mut stream), MetaRequest::ReadManifest { .. }));
+            stream.write_all(&crate::cluster::message::encode_failure(StatusCode::NotFound, "object missing")).unwrap();
+            assert!(matches!(receive(&mut stream), MetaRequest::PublishManifest { .. }));
+            let mut byte = [0];
+            assert_eq!(stream.read(&mut byte).unwrap(), 0, "expired publication must close without replay or readback");
+            assert!(matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+        });
+        let mut client = RemoteMetaClient::connect_catalog(&[endpoint], &MetaClientOptions::default()).unwrap();
+        let started = Instant::now();
+        let options = ObjectWriteOptions {
+            replica: ReplicaClientOptions { deadline: Some(started + Duration::from_millis(500)), ..Default::default() },
+            ..Default::default()
+        };
+        assert!(matches!(client.write_object("bucket", "key", None, b"", &options),
+            Err(ObjectWriteFailure::PublicationUnconfirmed { .. })));
+        assert!(started.elapsed() < Duration::from_secs(3), "must not wait for the default 30 second response timeout");
+        assert!(client.operation_deadline().is_none());
+        worker.join().unwrap();
+    }
+
     #[test]
     fn object_write_preflight_bounds_work_and_checks_expected_generation() {
         let mut options = ObjectWriteOptions::default();
