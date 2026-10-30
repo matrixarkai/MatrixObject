@@ -819,6 +819,7 @@ impl RemoteReplicaClient {
                 | ReplicaRequest::PageInventory { .. }
         ) || matches!(&request, ReplicaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
+        let mut retry_delay = Duration::from_millis(25);
         loop {
             let mut refusals = 0;
             for offset in 0..endpoints.len() {
@@ -874,10 +875,11 @@ impl RemoteReplicaClient {
             // Only explicit non-admission from every voter permits another round.
             // Keep the caller's original deadline; uncertain mutations never reach here.
             if refusals != endpoints.len() || !options.deadline.is_some_and(|deadline|
-                deadline.saturating_duration_since(Instant::now()) > Duration::from_millis(25)) {
+                deadline.saturating_duration_since(Instant::now()) > retry_delay) {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(retry_delay);
+            retry_delay = (retry_delay * 2).min(Duration::from_millis(250));
         }
         Err(last)
     }
@@ -1178,7 +1180,7 @@ mod pending_tests {
             match mode {
                 0 => assert_eq!(calls, 2),
                 1 | 2 | 4 => assert_eq!(calls, 1),
-                _ => assert!(calls > 1),
+                _ => assert!((2..=8).contains(&calls), "unadmitted requests={calls}"),
             }
             assert!(started.elapsed() < Duration::from_secs(3));
         }

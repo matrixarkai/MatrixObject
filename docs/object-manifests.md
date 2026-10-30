@@ -93,9 +93,13 @@ it is not a constant-cost operation and is not used by the Raft path.
 Catalog routing may retry an explicitly unadmitted NotLeader response. It never
 automatically replays an uncertain publication; read the manifest to resolve
 the result. When every voter explicitly refuses admission and the caller supplied
-an absolute deadline, metadata and chunk clients wait 25 ms before another voter
-round within that same budget. Calls without an absolute deadline retain one-round
-behavior. Transport failures and decoded server errors do not enable another
+an absolute deadline, metadata and chunk clients wait before another voter round
+within that same budget. The delay starts at 25 ms, doubles after each retry, and
+is capped at 250 ms. A further round is refused when its delay no longer fits the
+remaining budget, bounding repeated probes during elections. Calls without an
+absolute deadline retain one-round behavior. The reduced probe rate can delay
+discovery of a new leader by up to the current backoff interval. Transport failures
+and decoded server errors do not enable another
 round; uncertain mutations are never replayed.
 
 Unknown chunk-group names are rejected before proposal. The metadata
