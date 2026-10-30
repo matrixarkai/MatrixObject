@@ -27,7 +27,9 @@ fn advance(
             online: false,
         })
         .unwrap();
-    *fence = fence.advance(identity, &status).unwrap();
+    let expected = fence.advance(identity, &status).unwrap();
+    *fence = client.read_chunk_route("group-a").unwrap().membership_fence().unwrap().unwrap();
+    assert_eq!(*fence, expected);
 }
 fn member_health(client: &mut RemoteMetaClient, id: &str, used: u64) {
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -85,7 +87,7 @@ fn automatic_fenced_reports_follow_chunk_replacement_and_coupled_restart() {
         member_health(&mut client, &chunks.member_id(i), 0);
     }
     let first = chunks.leader();
-    let mut writer = chunks.client(first);
+    let mut writer = client.connect_chunk_group("group-a", &Default::default()).unwrap();
     let mut placements = Vec::new();
     for i in 0..16 {
         placements.push(store(&mut client, &mut writer, i));
@@ -105,7 +107,7 @@ fn automatic_fenced_reports_follow_chunk_replacement_and_coupled_restart() {
     metadata.kill(metadata_leader);
     let mut client = metadata.ready();
     let leader = chunks.leader();
-    let mut writer = chunks.client(leader);
+    let mut writer = client.connect_chunk_group("group-a", &Default::default()).unwrap();
     let status = writer.chunk_membership(command(Op::AddLearner, 4)).unwrap();
     advance(&mut client, &identity, &mut fence, status);
     chunks.start(3);
@@ -116,8 +118,10 @@ fn automatic_fenced_reports_follow_chunk_replacement_and_coupled_restart() {
     chunks.kill(other);
     health(&mut client, false, 4096, 4096);
     chunks.start(other);
+    // Wait for the restored quorum to commit a read before issuing membership writes.
+    chunks.leader();
     drop(writer);
-    let mut writer = chunks.client(chunks.leader());
+    let mut writer = client.connect_chunk_group("group-a", &Default::default()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
         match writer.chunk_membership(command(Op::Promote, 4)) {
@@ -169,8 +173,11 @@ fn automatic_fenced_reports_follow_chunk_replacement_and_coupled_restart() {
     health(&mut client, true, 4096, 4096);
     let leader = chunks.leader();
     assert_ne!(leader, first);
-    let mut writer = chunks.client(leader);
+    let mut writer = client.connect_chunk_group("group-a", &Default::default()).unwrap();
     verify(&mut client, &mut writer, &placements);
+    let recovered = client.read_chunk_route("group-a").unwrap();
+    assert_eq!(recovered.membership_fence().unwrap().unwrap(), fence);
+    assert!(!recovered.active_members().unwrap().iter().any(|(_, id)| *id == first as u64 + 1));
     let status = writer.chunk_membership(command(Op::Read, 0)).unwrap();
     assert_eq!(status.voters, fence.voters());
     // A restarted removed member cannot restore health after two active voters stop.

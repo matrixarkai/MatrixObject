@@ -81,6 +81,18 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Check committed chunk route validation
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::chunk_group_route::tests -- --test-threads=1 | tee /tmp/chunk-route.log
+          grep -q 'test result: ok. 3 passed' /tmp/chunk-route.log
+      - name: Check routed chunk sockets and uncertain writes
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test chunk_catalog_routing routed_catalog_ -- --test-threads=1 | tee /tmp/chunk-route.log
+          grep -q 'test result: ok. 3 passed' /tmp/chunk-route.log
       - name: automatic fenced reports follow replacement and coupled restart
         run: |
           set -euo pipefail
@@ -355,7 +367,7 @@ jobs:
       - name: chunk group reply must name the requested placement
         run: |
           set -o pipefail
-          cargo test --locked --all-features --test object_writer_connections chunk_group_reply_must_name_the_requested_placement -- --exact | tee /tmp/object-connections.log
+          cargo test --locked --all-features --test object_writer_connections chunk_route_reply_must_name_the_requested_placement -- --exact | tee /tmp/object-connections.log
           grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
 
       - name: writer reuses preflight connection and only looks up each group once

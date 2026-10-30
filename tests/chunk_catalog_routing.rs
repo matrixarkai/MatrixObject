@@ -483,3 +483,74 @@ fn verified_chunk_membership_is_bound_to_the_trusted_inventory() {
         handle.join().unwrap();
     }
 }
+
+#[cfg(feature = "meta-server")]
+fn fixed_route(endpoints: Vec<String>) -> matrixobjectstore_rs::cluster::ChunkGroupRoute {
+    use matrixobjectstore_rs::cluster::{ChunkGroupRoute,ChunkGroupConfig};
+    ChunkGroupRoute { version:1,fence:vec![],group:Some(ChunkGroupConfig {
+        placement_id:"group-a".into(),failure_domain:"zone-a".into(),identity:Some(identity(1)),
+        api_endpoints:endpoints,member_ids:vec!["member-1".into(),"member-2".into()],
+    }) }
+}
+#[cfg(feature = "meta-server")]
+#[test]
+fn routed_catalog_binds_initial_and_redirected_sockets_to_member_ids() {
+    for redirected in [false,true] {
+        let (wrong,wrong_worker)=identity_server(identity(1),None);
+        let (first,first_worker)=if redirected {
+            let (endpoint,worker)=identity_server(identity(1),Some(ReplicaReply::NotLeader));
+            (endpoint,Some(worker))
+        } else {
+            let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+            let address=listener.local_addr().unwrap().to_string();drop(listener);(address,None)
+        };
+        let result=RemoteReplicaClient::connect_routed_raft_catalog(&fixed_route(vec![first,wrong]),&options());
+        if redirected {
+            let mut client=result.unwrap();
+            assert!(client.write_chunk(page(),0,b"data").unwrap_err().to_string().contains("socket identity"));
+        } else { assert!(matches!(result,Err(ObjectError::PreconditionFailed(_)))); }
+        if let Some(worker)=first_worker {worker.join().unwrap();}
+        wrong_worker.join().unwrap();
+    }
+}
+#[cfg(feature = "meta-server")]
+#[test]
+fn routed_catalog_never_replays_a_write_after_lost_response() {
+    let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+    let first=listener.local_addr().unwrap().to_string();
+    let worker=thread::spawn(move || {
+        let (mut socket,_)=listener.accept().unwrap();assert_eq!(receive(&mut socket),7);
+        socket.write_all(&encode_reply(&ReplicaReply::GroupIdentity(identity(1)))).unwrap();
+        assert_eq!(receive(&mut socket),1);
+        // The server may have committed the mutation before this connection closes.
+    });
+    let unused=TcpListener::bind("127.0.0.1:0").unwrap();unused.set_nonblocking(true).unwrap();
+    let route=fixed_route(vec![first,unused.local_addr().unwrap().to_string()]);
+    let mut client=RemoteReplicaClient::connect_routed_raft_catalog(&route,&options()).unwrap();
+    assert!(client.write_chunk(page(),0,b"once").is_err());worker.join().unwrap();
+    assert!(matches!(unused.accept(),Err(e) if e.kind()==std::io::ErrorKind::WouldBlock));
+}
+
+#[cfg(feature = "meta-server")]
+#[test]
+fn routed_catalog_can_reach_the_fourteenth_joint_voter() {
+    use matrixobjectstore_rs::cluster::{ChunkGroupIdentity,ChunkGroupConfig,ChunkGroupRoute,ChunkMembershipFence,MembershipStatus};
+    let mut expected=ChunkGroupIdentity {version:2,group_id:42,node_id:1,capacity_bytes:4096,max_pages:16,
+        voters:(1..=14).collect(),peer_endpoints:(1..=14).map(|id|format!("127.0.0.1:{}",18000+id)).collect(),
+        bootstrap_id:91,bootstrap_voters:(1..=7).collect()};
+    let fence=ChunkMembershipFence::from_status(&expected,&MembershipStatus {version:1,node_id:1,term:2,applied_index:20,
+        voters:(8..=14).collect(),outgoing_voters:(1..=7).collect(),learners:vec![]}).unwrap();
+    expected.node_id=14;
+    let (last,worker)=identity_server(expected.clone(),Some(ReplicaReply::Applied));
+    expected.node_id=1;
+    // Keep distinct reservations until the complete address list has been allocated.
+    let reservations:Vec<_>=(0..13).map(|_|TcpListener::bind("127.0.0.1:0").unwrap()).collect();
+    let mut endpoints:Vec<_>=reservations.iter().map(|s|s.local_addr().unwrap().to_string()).collect();
+    endpoints.push(last.clone());drop(reservations);
+    let route=ChunkGroupRoute {version:1,fence:fence.to_bytes(),group:Some(ChunkGroupConfig {
+        placement_id:"group-a".into(),failure_domain:"zone-a".into(),identity:Some(expected),api_endpoints:endpoints,
+        member_ids:(1..=14).map(|id|format!("member-{id}")).collect(),
+    })};
+    let mut client=RemoteReplicaClient::connect_routed_raft_catalog(&route,&options()).unwrap();
+    assert_eq!(client.endpoint(),last);client.write_chunk(page(),0,b"data").unwrap();worker.join().unwrap();
+}

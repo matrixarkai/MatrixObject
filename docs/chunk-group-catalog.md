@@ -279,8 +279,8 @@ configuration remain rejected until that voter catches up.
 The seven-process WSL test covers automatic usage, chunk and metadata leader
 loss, learner catch-up and exclusion from voter majorities, promotion through
 joint consensus, removal, full restart and exclusion of a restarted removed
-member from placement health. Active-voter client routing and larger dynamic
-replacement workloads remain unfinished.
+member from placement health and client routing. Larger dynamic replacement
+workloads remain unfinished.
 
 
 Run the coupled membership/reporting test with:
@@ -291,3 +291,22 @@ cargo test --locked --all-features --test network_chunk_consensus coupled_groups
 
 This test uses real local processes and durable directories. It does not establish
 independent-host availability or production-scale throughput.
+
+## Committed member routing
+
+Request code 81 returns a canonical binary protobuf `ChunkGroupRoute` after
+metadata quorum confirmation. It contains the immutable inventory and retained
+membership fence in one response, bounded to 65,536 bytes. The request is bounded
+to 256 bytes. Fixed groups have an empty fence; changing groups require a fence
+bound to the exact group and bootstrap identity. Upgrade all metadata replicas
+before using clients that send code 81; clients do not fall back to inventory-only
+routing when a server does not support it.
+
+The client selects the union of incoming and outgoing voters, at most fourteen
+members from an inventory of up to sixty-four. Learners and removed members are
+excluded. Every initial and replacement socket must report its assigned member
+ID and complete group identity before data operations. Typed not-leader replies
+permit routing an unadmitted mutation; a lost response never permits replay.
+Controllers can recover their retained fence through this read after restart.
+A later operation obtains a new route; ongoing operations do not silently refresh
+membership or retry uncertain writes.

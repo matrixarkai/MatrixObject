@@ -96,6 +96,7 @@ pub struct RemoteReplicaClient {
     write_timeout: Duration,
     catalog: Option<(Vec<String>, ReplicaClientOptions)>,
     group_identity: Option<crate::cluster::ChunkGroupIdentity>,
+    catalog_members: Option<std::collections::BTreeMap<String, u64>>,
 }
 
 // Owns an exclusive client borrow until its response is consumed or abandoned.
@@ -269,6 +270,7 @@ impl RemoteReplicaClient {
             write_timeout: options.write_timeout,
             catalog: None,
             group_identity: None,
+            catalog_members: None,
         })
     }
 
@@ -302,9 +304,12 @@ impl RemoteReplicaClient {
         endpoints: &[String],
         options: &ReplicaClientOptions,
     ) -> Result<Self, ObjectError> {
-        if endpoints.is_empty() || endpoints.len() > 7 {
+        Self::connect_catalog_bounded(endpoints, options, 7)
+    }
+    fn connect_catalog_bounded(endpoints: &[String], options: &ReplicaClientOptions, bound: usize) -> Result<Self, ObjectError> {
+        if endpoints.is_empty() || endpoints.len() > bound {
             return Err(ObjectError::InvalidArgument(
-                "chunk catalog requires one through seven endpoints".into(),
+                format!("chunk catalog requires one through {bound} endpoints"),
             ));
         }
         let mut unique = std::collections::BTreeSet::new();
@@ -358,12 +363,15 @@ impl RemoteReplicaClient {
         group_id: u64,
         options: &ReplicaClientOptions,
     ) -> Result<Self, ObjectError> {
+        Self::connect_raft_catalog_bounded(endpoints, group_id, options, 7)
+    }
+    fn connect_raft_catalog_bounded(endpoints: &[String], group_id: u64, options: &ReplicaClientOptions, bound: usize) -> Result<Self, ObjectError> {
         if group_id == 0 {
             return Err(ObjectError::InvalidArgument(
                 "chunk group ID must be nonzero".into(),
             ));
         }
-        let mut client = Self::connect_catalog(endpoints, options)?;
+        let mut client = Self::connect_catalog_bounded(endpoints, options, bound)?;
         let catalog = client.catalog.as_ref().unwrap().0.clone();
         let identity = loop {
             match client.chunk_group_identity() {
@@ -375,7 +383,7 @@ impl RemoteReplicaClient {
                     if next == catalog.len() {
                         return Err(error);
                     }
-                    client = Self::connect_catalog(&catalog[next..], options)?;
+                    client = Self::connect_catalog_bounded(&catalog[next..], options, bound)?;
                     client.catalog = Some((catalog.clone(), options.clone()));
                 }
                 Err(error) => return Err(error),
@@ -409,6 +417,23 @@ impl RemoteReplicaClient {
                 "initial chunk voter configuration does not match catalog".into(),
             ));
         }
+        Ok(client)
+    }
+
+    /// Connect only to voters selected by a quorum-confirmed metadata route.
+    /// A new metadata route is needed when a later operation outlives this configuration.
+    #[cfg(feature = "meta-server")]
+    pub fn connect_routed_raft_catalog(route: &crate::cluster::ChunkGroupRoute, options: &ReplicaClientOptions) -> Result<Self, ObjectError> {
+        let active = route.active_members()?;
+        let endpoints: Vec<_> = active.iter().map(|(endpoint, _)| endpoint.clone()).collect();
+        let members: std::collections::BTreeMap<_, _> = active.into_iter().collect();
+        let expected = route.group.as_ref().unwrap().identity.as_ref().unwrap();
+        let mut client = Self::connect_raft_catalog_bounded(&endpoints, expected.group_id, options, 14)?;
+        let actual = client.group_identity.as_ref().unwrap();
+        if !expected.same_group(actual) || members.get(client.endpoint()) != Some(&actual.node_id) {
+            return Err(ObjectError::PreconditionFailed("chunk route socket identity mismatch".into()));
+        }
+        client.catalog_members = Some(members);
         Ok(client)
     }
 
@@ -813,8 +838,12 @@ impl RemoteReplicaClient {
                                     "chunk voter configuration does not match catalog".into(),
                                 ));
                             }
+                            if self.catalog_members.as_ref().is_some_and(|members| members.get(endpoint) != Some(&actual.node_id)) {
+                                return Err(ObjectError::PreconditionFailed("chunk route socket identity mismatch".into()));
+                            }
                             next.group_identity = Some(expected.clone());
                         }
+                        next.catalog_members = self.catalog_members.clone();
                         next.catalog = Some((endpoints.clone(), options.clone()));
                         *self = next;
                     }

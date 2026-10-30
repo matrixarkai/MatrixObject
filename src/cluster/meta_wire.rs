@@ -86,6 +86,7 @@ pub enum MetaRequestCode {
     ReportChunkNode = 78,
     Membership = 79,
     ChunkCatalog = 80,
+    ReadChunkRoute = 81,
 }
 
 impl MetaRequestCode {
@@ -113,6 +114,7 @@ impl MetaRequestCode {
             78 => Some(MetaRequestCode::ReportChunkNode),
             79 => Some(MetaRequestCode::Membership),
             80 => Some(MetaRequestCode::ChunkCatalog),
+            81 => Some(MetaRequestCode::ReadChunkRoute),
             _ => None,
         }
     }
@@ -137,6 +139,7 @@ impl MetaRequestCode {
             MetaRequestCode::ReportChunkNode,
             MetaRequestCode::Membership,
             MetaRequestCode::ChunkCatalog,
+            MetaRequestCode::ReadChunkRoute,
         ]
     }
 }

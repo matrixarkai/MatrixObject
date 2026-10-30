@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 //! Bounded object writes across metadata and data quorums.
-use super::{ChunkGroupConfig, RemoteMetaClient, RemoteReplicaClient, ReplicaClientOptions};
+use super::{ChunkGroupRoute, RemoteMetaClient, RemoteReplicaClient, ReplicaClientOptions};
 use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest};
 use crate::ObjectError;
 
@@ -103,19 +103,15 @@ fn preflight(
 }
 
 fn connect_group(
-    group: &ChunkGroupConfig,
+    group: &ChunkGroupRoute,
     options: &ReplicaClientOptions,
 ) -> Result<RemoteReplicaClient, ObjectError> {
-    let identity = group
-        .identity
-        .as_ref()
-        .ok_or_else(|| ObjectError::Corruption("chunk group identity missing".into()))?;
-    RemoteReplicaClient::connect_verified_raft_catalog(&group.api_endpoints, identity, options)
+    RemoteReplicaClient::connect_routed_raft_catalog(group, options)
 }
 
 fn write_group_extents(
     indexes: &[usize],
-    configured: &ChunkGroupConfig,
+    configured: &ChunkGroupRoute,
     client: Option<RemoteReplicaClient>,
     manifest: &ObjectManifest,
     data: &[u8],
@@ -214,7 +210,7 @@ impl RemoteMetaClient {
             // the first write target last so its verified connection can be reused.
             // Keep configurations only for this operation and retain one connection.
             for group in plan.node_ids.iter().rev() {
-                let configured = self.read_chunk_group(group).map_err(before)?;
+                let configured = self.read_chunk_route(group).map_err(before)?;
                 let client = connect_group(&configured, &options.replica).map_err(before)?;
                 groups.insert(group.clone(), configured);
                 connection = Some((group.clone(), client));
