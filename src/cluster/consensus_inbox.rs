@@ -14,6 +14,7 @@ pub(super) struct WorkerProgress(std::sync::Arc<WorkerObservation>);
 struct WorkerObservation {
     epoch: std::time::Instant,
     phase_and_start: std::sync::atomic::AtomicU64,
+    longest_work_phase: std::sync::atomic::AtomicU64,
 }
 #[derive(Clone, Copy)]
 pub(super) enum WorkerPhase {
@@ -33,22 +34,31 @@ impl WorkerProgress {
         Self(std::sync::Arc::new(WorkerObservation {
             epoch: std::time::Instant::now(),
             phase_and_start: std::sync::atomic::AtomicU64::new(WorkerPhase::Starting as u64),
+            longest_work_phase: std::sync::atomic::AtomicU64::new(0),
         }))
     }
     fn elapsed_ms(&self) -> u64 {
         self.0.epoch.elapsed().as_millis().min(u128::from(u64::MAX >> 8)) as u64
     }
     pub(super) fn mark(&self, phase: WorkerPhase) {
-        self.0.phase_and_start.store((self.elapsed_ms() << 8) | phase as u64, std::sync::atomic::Ordering::Relaxed);
+        let now = self.elapsed_ms();
+        let previous = self.0.phase_and_start.swap((now << 8) | phase as u64, std::sync::atomic::Ordering::Relaxed);
+        let previous_phase = previous & 255;
+        // Startup, idle waiting and shutdown must not hide a completed work stall.
+        if (1..=6).contains(&previous_phase) {
+            let duration = now.saturating_sub(previous >> 8);
+            self.0.longest_work_phase.fetch_max((duration << 8) | previous_phase, std::sync::atomic::Ordering::Relaxed);
+        }
     }
-    fn describe(&self) -> String {
+    pub(super) fn describe(&self) -> String {
         let observed = self.0.phase_and_start.load(std::sync::atomic::Ordering::Relaxed);
-        let name = match observed & 255 {
+        fn name(phase: u64) -> &'static str { match phase {
             0 => "starting", 1 => "peer packets", 2 => "state lock", 3 => "apply ready",
             4 => "restore checkpoint", 5 => "publish checkpoint", 6 => "requests",
             7 => "idle", 8 => "stopped", _ => "unknown",
-        };
-        format!("; observed worker={name}; worker_phase_ms={}", self.elapsed_ms().saturating_sub(observed >> 8))
+        } }
+        let longest = self.0.longest_work_phase.load(std::sync::atomic::Ordering::Relaxed);
+        format!("; observed worker={}; worker_phase_ms={}; max_completed_work_phase={}; max_completed_work_phase_ms={}", name(observed & 255), self.elapsed_ms().saturating_sub(observed >> 8), if longest == 0 { "none" } else { name(longest & 255) }, longest >> 8)
     }
 }
 
@@ -226,6 +236,26 @@ mod progress_tests {
     use crate::ObjectError;
 
     #[test]
+    fn completed_work_stalls_remain_visible_after_idle_and_shorter_phases() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let worker = WorkerProgress(std::sync::Arc::new(WorkerObservation {
+            epoch: std::time::Instant::now() - Duration::from_secs(2),
+            phase_and_start: AtomicU64::new(WorkerPhase::ApplyReady as u64),
+            longest_work_phase: AtomicU64::new(0),
+        }));
+        worker.mark(WorkerPhase::Requests);
+        let longest = worker.0.longest_work_phase.load(Ordering::Relaxed);
+        assert!(longest >> 8 >= 2000);
+        assert!(worker.describe().contains("max_completed_work_phase=apply ready"));
+        worker.mark(WorkerPhase::Idle);
+        // Simulate a long idle interval without sleeping or changing the clock.
+        worker.0.phase_and_start.store(WorkerPhase::Idle as u64, Ordering::Relaxed);
+        worker.mark(WorkerPhase::Requests);
+        assert_eq!(worker.0.longest_work_phase.load(Ordering::Relaxed), longest);
+        assert!(worker.describe().contains("observed worker=requests"));
+    }
+
+    #[test]
     fn consensus_diagnostics_preserve_late_replies_and_uncertain_mutations() {
         for read_only in [false, true] {
             let progress = RequestProgress::new(read_only);
@@ -278,7 +308,7 @@ mod progress_tests {
             worker.mark(WorkerPhase::RestoreCheckpoint);
             std::thread::sleep(Duration::from_millis(10));
             let description = worker.describe();
-            let age: u64 = description.split("worker_phase_ms=").nth(1).unwrap().parse().unwrap();
+            let age: u64 = description.split("worker_phase_ms=").nth(1).unwrap().split(';').next().unwrap().parse().unwrap();
             assert!(age >= 10);
             tx.send(Ok(23)).unwrap();
             assert_eq!(progress.wait_observed(&rx, Duration::ZERO, "chunk", Some(&worker)).unwrap(), 23);
