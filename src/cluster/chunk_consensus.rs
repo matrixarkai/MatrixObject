@@ -291,14 +291,17 @@ impl ChunkConsensus {
         let mut handles = Vec::new();
         let inbound_stop = Arc::clone(&stop);
         let inbound_transport = transport.clone();
+        let progress = WorkerProgress::new();
+        let inbound_observation = progress.peer_receives();
         handles.push(thread::spawn(move || {
-            crate::cluster::peer_receiver::receive_with_transport(
+            crate::cluster::peer_receiver::receive_observed(
                 listener,
                 incoming,
                 &inbound_stop,
                 NETWORK_TIMEOUT,
                 inbound_wake,
                 &inbound_transport,
+                &inbound_observation,
             );
         }));
         let mut outgoing = BTreeMap::new();
@@ -326,7 +329,6 @@ impl ChunkConsensus {
         let failed = Arc::new(AtomicBool::new(false));
         let worker_failed = Arc::clone(&failed);
         let worker_stop = Arc::clone(&stop);
-        let progress = WorkerProgress::new();
         let worker_progress = progress.clone();
         #[cfg(feature = "meta-server")]
         let track_membership = group_identity.version == 2;

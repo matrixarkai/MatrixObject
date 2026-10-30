@@ -11,6 +11,25 @@ use std::net::TcpStream;
 use std::sync::mpsc::SyncSender;
 use std::time::{Duration, Instant};
 
+/// Per-worker receiver observations never influence admission or frame limits.
+#[derive(Clone, Default)]
+pub(super) struct PeerReceiveCounters(std::sync::Arc<ReceiveCounts>);
+#[derive(Default)]
+struct ReceiveCounts {
+    accepted: std::sync::atomic::AtomicU64,
+    expired: std::sync::atomic::AtomicU64,
+    failed: std::sync::atomic::AtomicU64,
+    inbox_rejected: std::sync::atomic::AtomicU64,
+    enqueued: std::sync::atomic::AtomicU64,
+}
+impl PeerReceiveCounters {
+    pub(super) fn describe(&self) -> String {
+        use std::sync::atomic::Ordering::Relaxed;
+        let c = &self.0;
+        format!("; peer_receive_accepted={}; peer_receive_expired={}; peer_receive_failed={}; peer_inbox_rejected={}; peer_enqueued={}",c.accepted.load(Relaxed),c.expired.load(Relaxed),c.failed.load(Relaxed),c.inbox_rejected.load(Relaxed),c.enqueued.load(Relaxed))
+    }
+}
+
 const PACKET_LIMIT: usize = 8 * 1024 * 1024;
 const BUFFER_LIMIT: usize = 2 * PACKET_LIMIT;
 const CONNECTION_LIMIT: usize = 16;
@@ -78,6 +97,7 @@ pub(super) fn receive(
     )
 }
 
+#[cfg(test)]
 pub(super) fn receive_with_transport(
     listener: TcpListener,
     incoming: SyncSender<Vec<u8>>,
@@ -86,6 +106,27 @@ pub(super) fn receive_with_transport(
     wake: Option<Notify>,
     transport: &PeerTransport,
 ) {
+    receive_observed(
+        listener,
+        incoming,
+        stop,
+        timeout,
+        wake,
+        transport,
+        &PeerReceiveCounters::default(),
+    );
+}
+
+pub(super) fn receive_observed(
+    listener: TcpListener,
+    incoming: SyncSender<Vec<u8>>,
+    stop: &ServerShutdown,
+    timeout: Duration,
+    wake: Option<Notify>,
+    transport: &PeerTransport,
+    counters: &PeerReceiveCounters,
+) {
+    use std::sync::atomic::Ordering::Relaxed;
     let mut frames: Vec<Frame> = Vec::new();
     let mut reserved = 0;
     let readiness = SocketReadiness::new(stop).ok();
@@ -93,12 +134,17 @@ pub(super) fn receive_with_transport(
         for _ in frames.len()..CONNECTION_LIMIT {
             match listener.accept() {
                 Ok((stream, _)) => {
+                    counters.0.accepted.fetch_add(1, Relaxed);
                     if stream.set_nonblocking(true).is_err() {
+                        counters.0.failed.fetch_add(1, Relaxed);
                         continue;
                     }
                     let stream = match PeerSocket::new(stream, transport) {
                         Ok(stream) => stream,
-                        Err(_) => continue,
+                        Err(_) => {
+                            counters.0.failed.fetch_add(1, Relaxed);
+                            continue;
+                        }
                     };
                     frames.push(Frame {
                         stream,
@@ -131,13 +177,21 @@ pub(super) fn receive_with_transport(
                 result => {
                     let frame = frames.swap_remove(index);
                     reserved -= frame.body.len();
-                    if matches!(result, Ok(true))
-                        && Instant::now() < frame.deadline
-                        && incoming.try_send(frame.body).is_ok()
+                    if Instant::now() >= frame.deadline
+                        || matches!(&result, Err(error) if error.kind()==io::ErrorKind::TimedOut)
                     {
-                        if let Some(wake) = &wake {
-                            wake.notify();
+                        counters.0.expired.fetch_add(1, Relaxed);
+                    } else if matches!(result, Ok(true)) {
+                        if incoming.try_send(frame.body).is_ok() {
+                            counters.0.enqueued.fetch_add(1, Relaxed);
+                            if let Some(wake) = &wake {
+                                wake.notify();
+                            }
+                        } else {
+                            counters.0.inbox_rejected.fetch_add(1, Relaxed);
                         }
+                    } else {
+                        counters.0.failed.fetch_add(1, Relaxed);
                     }
                     progressed = true;
                 }
@@ -183,6 +237,68 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::{mpsc, Arc};
+
+    #[test]
+    fn receiver_observations_separate_expiry_invalid_frames_and_full_inboxes() {
+        use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+        fn wait_for(value: &AtomicU64, expected: u64) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while value.load(Relaxed) < expected {
+                assert!(
+                    Instant::now() < deadline,
+                    "receiver did not reach expected counter"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(value.load(Relaxed), expected);
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let counters = PeerReceiveCounters::default();
+        let observation = counters.clone();
+        let isolated = PeerReceiveCounters::default();
+        let stop = Arc::new(ServerShutdown::default());
+        let shutdown = Arc::clone(&stop);
+        let (tx, rx) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            receive_observed(
+                listener,
+                tx,
+                &shutdown,
+                Duration::from_secs(2),
+                None,
+                &PeerTransport::Plain,
+                &observation,
+            )
+        });
+        let send = |bytes: &[u8]| {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream.write_all(bytes).unwrap();
+            stream
+        };
+        drop(send(&[0, 0, 0, 2, b'o', b'k']));
+        wait_for(&counters.0.enqueued, 1);
+        drop(send(&[0, 0, 0, 2, b'n', b'o']));
+        wait_for(&counters.0.inbox_rejected, 1);
+        drop(send(&[0, 0, 0, 0]));
+        wait_for(&counters.0.failed, 1);
+        let partial = send(&[0, 0, 0, 2, b'x']);
+        wait_for(&counters.0.expired, 1);
+        drop(partial);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), b"ok");
+        drop(send(&[0, 0, 0, 2, b'u', b'p']));
+        wait_for(&counters.0.enqueued, 2);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), b"up");
+        stop.stop();
+        worker.join().unwrap();
+        assert_eq!(counters.0.accepted.load(Relaxed), 5);
+        assert_eq!(counters.0.failed.load(Relaxed), 1);
+        assert_eq!(counters.0.expired.load(Relaxed), 1);
+        assert_eq!(counters.0.inbox_rejected.load(Relaxed), 1);
+        assert_eq!(isolated.0.accepted.load(Relaxed), 0);
+        assert!(counters.describe().contains("peer_enqueued=2"));
+    }
 
     #[cfg(unix)]
     #[test]

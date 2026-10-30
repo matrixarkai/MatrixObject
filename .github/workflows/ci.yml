@@ -754,6 +754,8 @@ jobs:
           grep -q 'test result: ok. 1 passed' /tmp/peer-delivery.log
           cargo test --locked --all-features --lib cluster::peer_delivery::tests::delivery_observations_distinguish_queue_expiry_connection_and_success -- --exact --nocapture | tee /tmp/peer-delivery.log
           grep -q 'test result: ok. 1 passed' /tmp/peer-delivery.log
+          cargo test --locked --all-features --lib cluster::peer_receiver::tests::receiver_observations_separate_expiry_invalid_frames_and_full_inboxes -- --exact --nocapture | tee /tmp/peer-receiver.log
+          grep -q 'test result: ok. 1 passed' /tmp/peer-receiver.log
 
       - name: consensus inbox bounds admission and wakes for work ticks and shutdown
         run: |
