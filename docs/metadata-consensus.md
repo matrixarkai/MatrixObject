@@ -506,3 +506,16 @@ and p99 116194 us. The reported verified throughput includes payload comparison
 and placement checks; read percentiles time the object read itself. Results are
 single-run observations on one PC, not multi-host production guarantees. Client
 API authentication remains a separate requirement from peer TLS.
+
+## Lost voter storage
+
+Keep a failed voter fenced if its durable state is lost or damaged. Starting an
+empty directory under the same voter ID loses its persisted term and vote; it is
+not a supported recovery procedure. Restoring replicas that retain their durable
+state is covered by the recovery tests, but new-identity replacement and membership
+changes remain unfinished.
+
+The peer runtime rejects heartbeat commit positions beyond its local log before
+entering the consensus core. This prevents a malformed or inconsistent packet
+from panicking the worker. It does not restore lost votes or authorize identity
+reuse. The same rule applies to metadata and chunk voters.
