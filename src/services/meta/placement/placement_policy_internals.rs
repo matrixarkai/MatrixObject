@@ -15,7 +15,7 @@ impl MatrixMetaService {
                 || node.page_allocator_shard_index >= node.page_allocator_shard_count)
         {
             return Err(ObjectError::InvalidArgument(
-                "blockserver allocator shard is invalid".to_string(),
+                "pageserver allocator shard is invalid".to_string(),
             ));
         }
         Ok(())
@@ -62,12 +62,12 @@ impl MatrixMetaService {
             }
             if existing.page_allocator_shard_count != node.page_allocator_shard_count {
                 return Err(ObjectError::InvalidArgument(
-                    "active blockserver allocator shard count mismatch".to_string(),
+                    "active pageserver allocator shard count mismatch".to_string(),
                 ));
             }
             if existing.page_allocator_shard_index == node.page_allocator_shard_index {
                 return Err(ObjectError::InvalidArgument(
-                    "active blockserver allocator shard duplicate".to_string(),
+                    "active pageserver allocator shard duplicate".to_string(),
                 ));
             }
         }

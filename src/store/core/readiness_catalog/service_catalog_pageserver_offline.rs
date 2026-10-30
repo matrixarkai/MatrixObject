@@ -14,12 +14,12 @@ impl MatrixObjectStore {
         validate_node_id(node_id)?;
         if catalog_source.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "blockserver catalog source must be set".to_string(),
+                "pageserver catalog source must be set".to_string(),
             ));
         }
         if allocator_shard_count == 0 || allocator_shard_index >= allocator_shard_count {
             return Err(ObjectError::InvalidArgument(
-                "blockserver allocator shard must satisfy index < count and count > 0".to_string(),
+                "pageserver allocator shard must satisfy index < count and count > 0".to_string(),
             ));
         }
         let existing = self
@@ -30,7 +30,7 @@ impl MatrixObjectStore {
             .clone();
         if !existing.serves_page_tier() || !existing.data_eligible {
             return Err(ObjectError::PreconditionFailed(
-                "blockserver catalog offline heartbeat requires registered blockserver node"
+                "pageserver catalog offline heartbeat requires registered pageserver node"
                     .to_string(),
             ));
         }
@@ -38,7 +38,7 @@ impl MatrixObjectStore {
             || existing.page_allocator_shard_count != allocator_shard_count
         {
             return Err(ObjectError::PreconditionFailed(
-                "blockserver catalog offline heartbeat shard fence does not match registered node"
+                "pageserver catalog offline heartbeat shard fence does not match registered node"
                     .to_string(),
             ));
         }

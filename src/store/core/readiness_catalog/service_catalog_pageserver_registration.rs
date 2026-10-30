@@ -16,22 +16,22 @@ impl MatrixObjectStore {
         validate_node_id(node_id)?;
         if endpoint.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "blockserver catalog endpoint must be set".to_string(),
+                "pageserver catalog endpoint must be set".to_string(),
             ));
         }
         if failure_domain.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "blockserver catalog failure domain must be set".to_string(),
+                "pageserver catalog failure domain must be set".to_string(),
             ));
         }
         if catalog_source.is_empty() {
             return Err(ObjectError::InvalidArgument(
-                "blockserver catalog source must be set".to_string(),
+                "pageserver catalog source must be set".to_string(),
             ));
         }
         if allocator_shard_count == 0 || allocator_shard_index >= allocator_shard_count {
             return Err(ObjectError::InvalidArgument(
-                "blockserver allocator shard must satisfy index < count and count > 0".to_string(),
+                "pageserver allocator shard must satisfy index < count and count > 0".to_string(),
             ));
         }
         let readiness =

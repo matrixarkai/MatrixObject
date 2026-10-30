@@ -99,13 +99,13 @@ impl MatrixMetaService {
         let node = self
             .nodes
             .get_mut(node_id)
-            .ok_or_else(|| ObjectError::NotFound("root blockserver node missing".to_string()))?;
+            .ok_or_else(|| ObjectError::NotFound("root pageserver node missing".to_string()))?;
         if !node.serves_page_tier() {
             return Err(ObjectError::PreconditionFailed(
-                "root page health heartbeat requires blockserver node".to_string(),
+                "root page health heartbeat requires pageserver node".to_string(),
             ));
         }
-        Self::reject_stale_node_heartbeat(node, now_ms, "block health heartbeat")?;
+        Self::reject_stale_node_heartbeat(node, now_ms, "page health heartbeat")?;
         node.page_health = health;
         node.last_heartbeat_ms = now_ms;
         let updated_node = node.clone();
