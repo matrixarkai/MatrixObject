@@ -83,6 +83,15 @@ fn invalid(e: impl ToString) -> io::Error {
 fn refused(s: impl ToString) -> ObjectError {
     ObjectError::InvalidArgument(s.to_string())
 }
+// A failed read confirmation has not executed the application request. Only
+// typed leadership loss allows catalog routing to another voter; other failures
+// stay authoritative. Never use this conversion for accepted writes.
+fn read_failure(error: &RaftError) -> Result<MetaReply, ObjectError> {
+    match error {
+        RaftError::NotLeader(_) => Ok(MetaReply::NotLeader),
+        _ => Err(refused(error)),
+    }
+}
 fn hash(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325u64, |h, b| {
         (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
@@ -415,7 +424,7 @@ fn run(
                     for request in requests {
                         let reply = match &result {
                             Ok(true) => apply_with_groups(service, request.request, limit, groups),
-                            Err(error) => Err(refused(error)),
+                            Err(error) => read_failure(error),
                             Ok(false) => unreachable!(),
                         };
                         let _ = request.reply.try_send(reply);
@@ -468,7 +477,7 @@ fn run(
                             Ok(token) => pending_read = Some((token, reads)),
                             Err(error) => {
                                 for request in reads {
-                                    let _ = request.reply.try_send(Err(refused(&error)));
+                                    let _ = request.reply.try_send(read_failure(&error));
                                 }
                             }
                         }
@@ -1710,5 +1719,30 @@ mod tests {
         )
         .is_err());
         assert_eq!(state(&restored), saved);
+    }
+}
+
+#[cfg(test)]
+mod read_failure_tests {
+    use super::*;
+
+    #[test]
+    fn metadata_lost_read_leadership_routes_without_masking_other_failures() {
+        assert!(matches!(
+            read_failure(&RaftError::NotLeader(1)),
+            Ok(MetaReply::NotLeader)
+        ));
+        // Matching text cannot grant permission to route another request.
+        for error in [
+            RaftError::Storage("node 1 is not the leader".into()),
+            RaftError::InvalidRequest("node 1 is not the leader".into()),
+            RaftError::Transport("node 1 is not the leader".into()),
+            RaftError::NoLeader,
+        ] {
+            assert!(matches!(
+                read_failure(&error),
+                Err(ObjectError::InvalidArgument(_))
+            ));
+        }
     }
 }

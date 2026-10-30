@@ -29,7 +29,7 @@ impl Default for ObjectWriteOptions {
 
 #[derive(Debug)]
 pub enum ObjectWriteFailure {
-    /// No publication was submitted. Some candidate pages may already exist.
+    /// Publication was not admitted. Some candidate pages may already exist.
     BeforePublication {
         error: ObjectError,
         staged: Option<Box<ObjectManifest>>,
@@ -235,8 +235,11 @@ impl RemoteMetaClient {
                 )));
             }
         }
-        match self.publish_manifest(outcome.clone(), options.update_time_ms) {
+        let (publication, unadmitted) =
+            self.publish_manifest_attempt(outcome.clone(), options.update_time_ms);
+        match publication {
             Ok(value) => Ok(value),
+            Err(error) if unadmitted => Err(staged_error(error)),
             Err(error) => {
                 // Never replay publication. Only the exact resulting value proves
                 // current visibility; a failed read or another value stays uncertain.
@@ -256,6 +259,39 @@ impl RemoteMetaClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cluster::{MetaClientOptions, MetaReply, MetaRequest, MetaRequestCode, StatusCode};
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::{Duration, Instant};
+    fn accept(listener: &TcpListener) -> TcpStream {
+        let end = Instant::now() + Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    return stream;
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end =>
+                {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                other => panic!("missing client connection: {other:?}"),
+            }
+        }
+    }
+    fn receive(stream: &mut TcpStream) -> MetaRequest {
+        let mut header = [0; 6];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[0], crate::cluster::PROTOCOL_STAMP);
+        let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+        assert!(size <= 4096);
+        let mut payload = vec![0; size];
+        stream.read_exact(&mut payload).unwrap();
+        MetaRequest::decode(MetaRequestCode::from_u8(header[1]).unwrap(), &payload).unwrap()
+    }
     #[test]
     fn object_write_preflight_bounds_work_and_checks_expected_generation() {
         let mut options = ObjectWriteOptions::default();
@@ -304,43 +340,98 @@ mod tests {
         assert!(preflight("bucket", "key", Some(&previous), 0, &options).is_err());
     }
     #[test]
-    fn lost_publication_replies_are_confirmed_by_exact_readback_without_replay() {
-        use crate::cluster::{
-            MetaClientOptions, MetaReply, MetaRequest, MetaRequestCode, StatusCode,
-        };
-        use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
-        use std::time::{Duration, Instant};
-        fn accept(listener: &TcpListener) -> TcpStream {
-            let end = Instant::now() + Duration::from_secs(5);
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
+    fn typed_publication_refusals_do_not_become_uncertain_or_replay() {
+        for catalog in [false, true] {
+            for typed in [false, true] {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                listener.set_nonblocking(true).unwrap();
+                let endpoint = listener.local_addr().unwrap().to_string();
+                let worker = std::thread::spawn(move || {
+                    let mut stream = accept(&listener);
+                    assert!(matches!(
+                        receive(&mut stream),
+                        MetaRequest::ReadManifest { .. }
+                    ));
+                    stream
+                        .write_all(&crate::cluster::message::encode_failure(
+                            StatusCode::NotFound,
+                            "object missing",
+                        ))
+                        .unwrap();
+                    let MetaRequest::PublishManifest { outcome, .. } = receive(&mut stream) else {
+                        panic!("publication missing");
+                    };
+                    if typed {
                         stream
-                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .write_all(&crate::cluster::meta_message::encode_meta_reply(
+                                &MetaReply::NotLeader,
+                            ))
                             .unwrap();
-                        return stream;
+                        stream
+                            .set_read_timeout(Some(Duration::from_millis(200)))
+                            .unwrap();
+                        let mut byte = [0];
+                        match stream.read(&mut byte) {
+                            Ok(0) => {},
+                            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {},
+                            other => panic!("unadmitted publication must not be replayed or read back: {other:?}"),
+                        }
+                    } else {
+                        // Identical text in an ordinary failure is not admission evidence.
+                        stream
+                            .write_all(&crate::cluster::message::encode_failure(
+                                StatusCode::PreconditionFailed,
+                                "metadata request was not admitted by a leader",
+                            ))
+                            .unwrap();
+                        assert!(matches!(
+                            receive(&mut stream),
+                            MetaRequest::ReadManifest { .. }
+                        ));
+                        stream
+                            .write_all(&crate::cluster::message::encode_failure(
+                                StatusCode::NotFound,
+                                "object missing",
+                            ))
+                            .unwrap();
                     }
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && Instant::now() < end =>
-                    {
-                        std::thread::sleep(Duration::from_millis(5))
-                    }
-                    other => panic!("missing client connection: {other:?}"),
+                    outcome
+                });
+                let options = MetaClientOptions {
+                    read_timeout: Duration::from_secs(2),
+                    ..Default::default()
+                };
+                let mut client = if catalog {
+                    RemoteMetaClient::connect_catalog(&[endpoint], &options).unwrap()
+                } else {
+                    RemoteMetaClient::connect(&endpoint, &options).unwrap()
+                };
+                let result =
+                    client.write_object("bucket", "key", None, b"", &ObjectWriteOptions::default());
+                let attempted = worker.join().unwrap();
+                if typed {
+                    let ObjectWriteFailure::BeforePublication {
+                        staged: Some(staged),
+                        ..
+                    } = result.unwrap_err()
+                    else {
+                        panic!("typed refusal must preserve the unadmitted candidate");
+                    };
+                    assert_eq!(*staged, attempted.after.unwrap());
+                } else {
+                    let ObjectWriteFailure::PublicationUnconfirmed { outcome, .. } =
+                        result.unwrap_err()
+                    else {
+                        panic!("ordinary error text cannot prove non-admission");
+                    };
+                    assert_eq!(*outcome, attempted);
                 }
             }
         }
-        fn receive(stream: &mut TcpStream) -> MetaRequest {
-            let mut header = [0; 6];
-            stream.read_exact(&mut header).unwrap();
-            assert_eq!(header[0], crate::cluster::PROTOCOL_STAMP);
-            let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
-            assert!(size <= 4096);
-            let mut payload = vec![0; size];
-            stream.read_exact(&mut payload).unwrap();
-            MetaRequest::decode(MetaRequestCode::from_u8(header[1]).unwrap(), &payload).unwrap()
-        }
+    }
+
+    #[test]
+    fn lost_publication_replies_are_confirmed_by_exact_readback_without_replay() {
         for mode in 0..3 {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();

@@ -504,3 +504,13 @@ deadline. Expired packets are discarded before connecting, and partial delivery
 closes the connection. Raft retransmission supplies later packets; the sender does
 not replay a failed packet or extend its deadline. Per-peer queues remain bounded
 to eight packets so an unavailable voter cannot block consensus admission.
+
+## Leadership changes during read confirmation
+
+If a quorum read loses its leadership term before application execution, the
+server sends the typed `NotLeader` response. Catalog clients can then try another
+configured voter within the existing single-pass routing bound. Storage,
+transport, and other consensus errors retain their ordinary error response;
+matching error text never permits routing. Accepted writes retain their uncertain
+outcome handling and are not replayed after leadership loss. This does not add
+an election wait or guarantee availability while every voter refuses a request.

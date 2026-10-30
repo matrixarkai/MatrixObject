@@ -539,15 +539,32 @@ impl RemoteMetaClient {
         outcome: crate::object_manifest::ManifestOutcome,
         update_time_ms: u64,
     ) -> Result<crate::object_manifest::ObjectManifest, ObjectError> {
-        outcome.validate()?;
+        self.publish_manifest_attempt(outcome, update_time_ms).0
+    }
+
+    /// The boolean proves that this publication was not admitted. It comes from
+    /// routing state and the typed wire reply, never from an error message.
+    pub(super) fn publish_manifest_attempt(
+        &mut self,
+        outcome: crate::object_manifest::ManifestOutcome,
+        update_time_ms: u64,
+    ) -> (
+        Result<crate::object_manifest::ObjectManifest, ObjectError>,
+        bool,
+    ) {
+        if let Err(error) = outcome.validate() {
+            return (Err(error), true);
+        }
         let expected = outcome.after.clone().unwrap();
-        match self.call(MetaRequest::PublishManifest {
+        let (reply, unadmitted) = self.try_call_admission(MetaRequest::PublishManifest {
             outcome,
             update_time_ms,
-        })? {
+        });
+        let result = reply.into_result().and_then(|reply| match reply {
             MetaReply::Manifest(value) if value == expected => Ok(value),
             _ => Err(ObjectError::Corruption("unexpected manifest reply".into())),
-        }
+        });
+        (result, unadmitted)
     }
 
     fn call(&mut self, request: MetaRequest) -> Result<MetaReply, ObjectError> {
@@ -556,8 +573,12 @@ impl RemoteMetaClient {
 
     /// Make a call and say which of the three things happened.
     pub fn try_call(&mut self, request: MetaRequest) -> MetaCallOutcome {
+        self.try_call_admission(request).0
+    }
+
+    fn try_call_admission(&mut self, request: MetaRequest) -> (MetaCallOutcome, bool) {
         let Some((endpoints, options)) = self.catalog.clone() else {
-            return self.call_one(&request);
+            return self.call_one_admission(&request);
         };
         let start = endpoints
             .iter()
@@ -574,6 +595,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadChunkGroup { .. }
         );
         let mut last = not_leader();
+        let mut unadmitted = true;
         for offset in 0..endpoints.len() {
             let endpoint = &endpoints[(start + offset) % endpoints.len()];
             if !self.live || self.endpoint != *endpoint {
@@ -587,18 +609,19 @@ impl RemoteMetaClient {
                                     next.group_identity = Some(expected.clone())
                                 }
                                 MetaCallOutcome::Answered(_) => {
-                                    return MetaCallOutcome::Refused(
-                                        ObjectError::PreconditionFailed(
+                                    return (
+                                        MetaCallOutcome::Refused(ObjectError::PreconditionFailed(
                                             "metadata voter configuration does not match catalog"
                                                 .into(),
-                                        ),
+                                        )),
+                                        unadmitted,
                                     )
                                 }
                                 MetaCallOutcome::Unreachable(error) => {
                                     last = MetaCallOutcome::Unreachable(error);
                                     continue;
                                 }
-                                outcome => return outcome,
+                                outcome => return (outcome, unadmitted),
                             }
                         }
                         next.catalog = Some((endpoints.clone(), options.clone()));
@@ -612,25 +635,30 @@ impl RemoteMetaClient {
             }
             match self.exchange(&request, request.code()) {
                 Ok(Ok(MetaReply::NotLeader)) => last = not_leader(),
-                Ok(Ok(reply)) => return MetaCallOutcome::Answered(reply),
-                Ok(Err(error)) => return MetaCallOutcome::Refused(error),
+                Ok(Ok(reply)) => return (MetaCallOutcome::Answered(reply), false),
+                Ok(Err(error)) => return (MetaCallOutcome::Refused(error), false),
                 Err(error) => {
+                    unadmitted = false;
                     last = MetaCallOutcome::Unreachable(error);
                     if !read_only {
-                        return last;
+                        return (last, false);
                     }
                 }
             }
         }
-        last
+        (last, unadmitted)
     }
 
     fn call_one(&mut self, request: &MetaRequest) -> MetaCallOutcome {
+        self.call_one_admission(request).0
+    }
+
+    fn call_one_admission(&mut self, request: &MetaRequest) -> (MetaCallOutcome, bool) {
         match self.exchange(request, request.code()) {
-            Ok(Ok(MetaReply::NotLeader)) => not_leader(),
-            Ok(Ok(reply)) => MetaCallOutcome::Answered(reply),
-            Ok(Err(error)) => MetaCallOutcome::Refused(error),
-            Err(error) => MetaCallOutcome::Unreachable(error),
+            Ok(Ok(MetaReply::NotLeader)) => (not_leader(), true),
+            Ok(Ok(reply)) => (MetaCallOutcome::Answered(reply), false),
+            Ok(Err(error)) => (MetaCallOutcome::Refused(error), false),
+            Err(error) => (MetaCallOutcome::Unreachable(error), false),
         }
     }
 
