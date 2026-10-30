@@ -1,26 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 use super::*;
-use matrixobjectstore_rs::cluster::{
-    MembershipOperation as Op, MembershipRequest,
-};
+use matrixobjectstore_rs::cluster::{MembershipOperation as Op, MembershipRequest};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-fn replace_member(meta: &mut RemoteMetaClient, group: &mut Group) {
+fn replace_member(meta: &mut RemoteMetaClient, group: &mut Group, recycle: bool) {
     let placement = group.placement_id();
     let route = meta.read_chunk_route(&placement).unwrap();
     let identity = route.group.as_ref().unwrap().identity.as_ref().unwrap();
     let mut fence = route.membership_fence().unwrap().unwrap();
     let leader = group.leader();
-    let removed = (leader + 1) % 3;
+    assert!(fence.outgoing_voters().is_empty());
+    assert!(fence.learners().is_empty());
+    let added = (1..=4).find(|id| !fence.voters().contains(id)).unwrap();
+    let removed = *fence
+        .voters()
+        .iter()
+        .find(|id| **id != leader as u64 + 1)
+        .unwrap();
     let mut client = meta
         .connect_chunk_group(&placement, &chunk_options())
         .unwrap();
     for (op, id) in [
-        (Op::AddLearner, 4),
-        (Op::Promote, 4),
+        (Op::AddLearner, added),
+        (Op::Promote, added),
         (Op::LeaveJoint, 0),
-        (Op::Remove, removed as u64 + 1),
+        (Op::Remove, removed),
         (Op::LeaveJoint, 0),
     ] {
         let request = MembershipRequest {
@@ -46,7 +51,9 @@ fn replace_member(meta: &mut RemoteMetaClient, group: &mut Group) {
             }
         };
         let previous_floor = fence.applied_floor();
-        fence = meta.refresh_chunk_membership(&placement, &chunk_options()).unwrap();
+        fence = meta
+            .refresh_chunk_membership(&placement, &chunk_options())
+            .unwrap();
         assert!(fence.applied_floor() >= status.applied_index);
         assert!(fence.applied_floor() >= previous_floor);
         assert_eq!(fence.voters(), status.voters);
@@ -59,15 +66,21 @@ fn replace_member(meta: &mut RemoteMetaClient, group: &mut Group) {
                 .active_members()
                 .unwrap()
                 .iter()
-                .any(|(_, id)| *id == 4));
-            group.start(3);
+                .any(|(_, id)| *id == added));
+            let joining = added as usize - 1;
+            assert!(group.nodes[joining].is_none());
+            group.start(joining);
         }
     }
     assert_eq!(fence.voters().len(), 3);
-    assert!(fence.voters().contains(&4));
-    assert!(!fence.voters().contains(&(removed as u64 + 1)));
+    assert!(fence.voters().contains(&added));
+    assert!(!fence.voters().contains(&removed));
+    if recycle {
+        group.kill(removed as usize - 1);
+    }
 }
-fn replacement_load(group_count: usize, writes: u64, concurrent: bool) {
+fn replacement_load(group_count: usize, writes: u64, concurrent: bool, rounds: u64) {
+    assert!(rounds > 0);
     let mut groups: Vec<_> = (0..group_count)
         .map(|i| {
             let mut group = Group::configured_voters(64 * 1024 * 1024, 4);
@@ -119,6 +132,7 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool) {
     }
     let stop = AtomicBool::new(false);
     let mut controller_peak = 1;
+    let mut added_objects = Vec::new();
     let reads = std::thread::scope(|scope| {
         let reader = scope.spawn(|| {
             let started = Instant::now();
@@ -153,56 +167,85 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool) {
             }
         }
         let guard = Stop(&stop);
-        if concurrent {
-            // Separate controller connections exercise independent group updates
-            // contending for the same metadata quorum while reads continue.
-            std::thread::scope(|controllers| {
-                let handles: Vec<_> = groups.iter_mut().map(|group| {
-                    let api = &metadata.api;
-                    controllers.spawn(move || {
-                        let mut meta = RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
-                        let started = Instant::now();
-                        replace_member(&mut meta, group);
-                        (started, Instant::now())
-                    })
-                }).collect();
-                let mut intervals = Vec::new();
-                for handle in handles {
-                    let (start, end) = handle.join().unwrap();
-                    intervals.push((start, 1isize));
-                    intervals.push((end, -1isize));
+        for round in 0..rounds {
+            if concurrent {
+                // Separate controller connections exercise independent group updates
+                // contending for the same metadata quorum while reads continue.
+                std::thread::scope(|controllers| {
+                    let handles: Vec<_> = groups
+                        .iter_mut()
+                        .map(|group| {
+                            let api = &metadata.api;
+                            controllers.spawn(move || {
+                                let mut meta =
+                                    RemoteMetaClient::connect_catalog(api, &load_options())
+                                        .unwrap();
+                                let started = Instant::now();
+                                replace_member(&mut meta, group, rounds > 1);
+                                (started, Instant::now())
+                            })
+                        })
+                        .collect();
+                    let mut intervals = Vec::new();
+                    for handle in handles {
+                        let (start, end) = handle.join().unwrap();
+                        intervals.push((start, 1isize));
+                        intervals.push((end, -1isize));
+                    }
+                    intervals.sort_unstable();
+                    let mut active = 0isize;
+                    let mut round_peak = 0;
+                    for (_, delta) in intervals {
+                        active += delta;
+                        round_peak = round_peak.max(active as usize);
+                    }
+                    assert!(round_peak > 1, "membership controllers did not overlap");
+                    controller_peak = controller_peak.max(round_peak);
+                });
+            } else {
+                let mut meta = metadata.ready();
+                for group in &mut groups {
+                    replace_member(&mut meta, group, rounds > 1);
                 }
-                intervals.sort_unstable();
-                let mut active = 0isize;
-                for (_, delta) in intervals {
-                    active += delta;
-                    controller_peak = controller_peak.max(active as usize);
-                }
-                assert!(controller_peak > 1, "membership controllers did not overlap");
-            });
-        } else {
-            let mut meta = metadata.ready();
-            for group in &mut groups {
-                replace_member(&mut meta, group);
+            }
+            if rounds > 1 {
+                let expected: Vec<_> = saved.iter().chain(added_objects.iter()).cloned().collect();
+                group_usage(&metadata.api, &groups, &expected);
+                let start = writes + round * (writes / 4);
+                added_objects.extend(load_batch_sized(
+                    &LoadEndpoint {
+                        api: &metadata.api,
+                        tls: None,
+                    },
+                    start,
+                    start + writes / 4,
+                    4,
+                    true,
+                    2,
+                    16384,
+                ));
             }
         }
         drop(guard);
         reader.join().unwrap()
     });
     assert!(reads > 0);
+    saved.extend(added_objects);
     group_usage(&metadata.api, &groups, &saved);
-    saved.extend(load_batch_sized(
-        &LoadEndpoint {
-            api: &metadata.api,
-            tls: None,
-        },
-        writes,
-        writes + writes / 4,
-        4,
-        true,
-        2,
-        16384,
-    ));
+    if rounds == 1 {
+        saved.extend(load_batch_sized(
+            &LoadEndpoint {
+                api: &metadata.api,
+                tls: None,
+            },
+            writes,
+            writes + writes / 4,
+            4,
+            true,
+            2,
+            16384,
+        ));
+    }
     let fences: Vec<_> = groups
         .iter()
         .map(|group| {
@@ -264,27 +307,37 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool) {
     group_usage(&metadata.api, &groups, &saved);
     verify_load(&metadata.api, &saved, true);
     println!(
-        "DYNAMIC_GROUPS groups={group_count} peak_processes={} objects={} concurrent_reads={reads} concurrent_controllers={concurrent} peak_controllers={controller_peak}",
+        "DYNAMIC_GROUPS groups={group_count} peak_processes={} objects={} concurrent_reads={reads} concurrent_controllers={concurrent} peak_controllers={controller_peak} replacement_rounds={rounds}",
         group_count * 4 + 3,
         saved.len()
     );
 }
 #[test]
 fn three_dynamic_groups_replace_voters_during_reads_and_recover() {
-    replacement_load(3, 48, false);
+    replacement_load(3, 48, false, 1);
 }
 #[test]
 #[ignore = "67-process dynamic replacement workload; run explicitly in WSL"]
 fn sixteen_dynamic_groups_replace_voters_during_reads_and_recover() {
-    replacement_load(16, 256, false);
+    replacement_load(16, 256, false, 1);
 }
 
 #[test]
 fn three_dynamic_groups_replace_voters_concurrently_during_reads_and_recover() {
-    replacement_load(3, 48, true);
+    replacement_load(3, 48, true, 1);
 }
 #[test]
 #[ignore = "67-process concurrent dynamic replacement workload; run explicitly in WSL"]
 fn sixteen_dynamic_groups_replace_voters_concurrently_during_reads_and_recover() {
-    replacement_load(16, 256, true);
+    replacement_load(16, 256, true, 1);
+}
+
+#[test]
+fn three_dynamic_groups_rejoin_removed_voters_across_three_rounds() {
+    replacement_load(3, 48, true, 3);
+}
+#[test]
+#[ignore = "67-process repeated membership workload; run explicitly in WSL"]
+fn sixteen_dynamic_groups_rejoin_removed_voters_across_four_rounds() {
+    replacement_load(16, 256, true, 4);
 }
