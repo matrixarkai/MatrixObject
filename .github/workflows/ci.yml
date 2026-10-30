@@ -81,6 +81,20 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: automatic fenced reports follow replacement and coupled restart
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::fenced_heartbeats::automatic_fenced_reports_follow_chunk_replacement_and_coupled_restart -- --exact | tee /tmp/fenced-health.log
+          grep -q '^running 1 test$' /tmp/fenced-health.log
+          grep -q '^test result: ok. 1 passed' /tmp/fenced-health.log
+
+      - name: heartbeat observations reject stale state and preserve bounded shutdown
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::server::heartbeat::tests -- --test-threads=1 | tee /tmp/fenced-health.log
+          grep -q '^running 4 tests$' /tmp/fenced-health.log
+          grep -q '^test result: ok. 4 passed' /tmp/fenced-health.log
+
       - name: catalog commands preserve durable state and quorum admission
         run: |
           set -euo pipefail

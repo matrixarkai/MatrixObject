@@ -199,7 +199,7 @@ catalog mutations are serialized with other metadata writes.
 
 ## Health reports and clocks
 
-Automatic chunk heartbeats use request code 78 (`ReportChunkNode`), a canonical
+Automatic heartbeats for fixed groups use request code 78 (`ReportChunkNode`), a canonical
 binary protobuf message bounded to 1,024 bytes. The report carries node ID,
 expected endpoint, used bytes, capacity and online status. It carries no client
 timestamp. The metadata leader supplies its current time while preparing the
@@ -262,7 +262,32 @@ Use `ChunkGroupCatalog::with_membership_health` to bootstrap a changing inventor
 from trusted observations. Reading an inventory validates its structure without
 inventing retained membership evidence. The command endpoint does not itself
 contact chunk voters to prove the submitted observation; callers must obtain it
-through authenticated, quorum-confirmed chunk membership reads. Automatic chunk
-heartbeats still use the fixed-group report path, which dynamic groups reject.
-Automatic fenced reporting, active-voter routing and coupled chunk replacement
-validation remain unfinished.
+through authenticated, quorum-confirmed chunk membership reads. For dynamic chunk consensus, configure `MATRIXOBJECT_CHUNK_PLACEMENT_ID` alongside
+the existing metadata endpoints and chunk node ID. The heartbeat worker submits
+code 80 reports using the local worker's applied membership, usage and capacity
+captured under one state lock. It does not redirect a follower's observation to
+the leader. Missing, failed or more-than-one-second-old observations do not
+produce fresh reports. A busy state lock skips that interval instead of blocking
+shutdown. Fixed Raft groups and standalone star replicas keep code 78 reports.
+
+A dynamic group with automatic reporting must have a placement ID; a fixed or
+standalone replica must not set one. Startup refuses a mode mismatch. Reports do
+not advance the metadata membership fence: the controller must first commit a
+trusted membership observation using operation 1. Reports from an older chunk
+configuration remain rejected until that voter catches up.
+
+The seven-process WSL test covers automatic usage, chunk and metadata leader
+loss, learner catch-up and exclusion from voter majorities, promotion through
+joint consensus, removal, full restart and exclusion of a restarted removed
+member from placement health. Active-voter client routing and larger dynamic
+replacement workloads remain unfinished.
+
+
+Run the coupled membership/reporting test with:
+
+```sh
+cargo test --locked --all-features --test network_chunk_consensus coupled_groups::fenced_heartbeats::automatic_fenced_reports_follow_chunk_replacement_and_coupled_restart -- --exact
+```
+
+This test uses real local processes and durable directories. It does not establish
+independent-host availability or production-scale throughput.

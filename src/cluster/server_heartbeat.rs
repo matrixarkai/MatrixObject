@@ -11,6 +11,8 @@ use std::{
 /// Automatic reports for one chunk process. Metadata membership must already exist.
 #[derive(Clone, Debug)]
 pub struct ReplicaHeartbeatOptions {
+    /// Logical metadata placement target for fenced reports from a dynamic Raft group.
+    pub placement_id: Option<String>,
     pub tls: Option<crate::cluster::ApiTlsConfig>,
     pub node_id: String,
     pub advertised_endpoint: SocketAddr,
@@ -36,6 +38,16 @@ impl ReplicaHeartbeatOptions {
                 "heartbeats require 1..7 metadata endpoints and a 100..60000 ms interval".into(),
             ));
         }
+        if let Some(id) = &self.placement_id {
+            if id.is_empty()
+                || id.len() > 128
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            {
+                return Err(invalid("invalid chunk placement identity".into()));
+            }
+        }
         if let Some(identity) = &self.expected_metadata_identity {
             identity.validate().map_err(|e| invalid(e.to_string()))?;
         }
@@ -51,10 +63,26 @@ impl ReplicaHeartbeatOptions {
     }
 }
 
+#[cfg(feature = "chunk-consensus")]
+fn local_membership(
+    state: &NodeReplica,
+) -> Result<crate::cluster::MembershipStatus, crate::ObjectError> {
+    let (status, observed) = state.applied_membership.as_ref().ok_or_else(|| {
+        crate::ObjectError::PreconditionFailed("chunk membership has not applied".into())
+    })?;
+    if observed.elapsed() > Duration::from_secs(1) {
+        return Err(crate::ObjectError::PreconditionFailed(
+            "chunk membership observation expired".into(),
+        ));
+    }
+    Ok(status.clone())
+}
+
 pub(super) fn run(
     options: ReplicaHeartbeatOptions,
     replica: Arc<Mutex<NodeReplica>>,
     stop: Arc<ServerShutdown>,
+    #[cfg(feature = "chunk-consensus")] consensus: Option<Arc<super::consensus::ChunkConsensus>>,
 ) {
     let mut endpoints: Vec<_> = options
         .metadata_endpoints
@@ -88,26 +116,66 @@ pub(super) fn run(
                 )?,
                 None => RemoteMetaClient::connect_catalog(&endpoints, &client_options)?,
             };
-            let (used, capacity, online) = {
-                let state = replica.lock().map_err(|_| {
-                    crate::ObjectError::Corruption("replica health lock poisoned".into())
+            #[cfg(feature = "chunk-consensus")]
+            let dynamic = consensus.as_ref().filter(|c| c.identity().version == 2);
+            let (used, capacity, online, membership) = {
+                let state = replica.try_lock().map_err(|error| match error {
+                    std::sync::TryLockError::WouldBlock => crate::ObjectError::PreconditionFailed(
+                        "replica health is busy applying state".into(),
+                    ),
+                    std::sync::TryLockError::Poisoned(_) => {
+                        crate::ObjectError::Corruption("replica health lock poisoned".into())
+                    }
                 })?;
+                #[cfg(feature = "chunk-consensus")]
+                let membership = if let Some(consensus) = dynamic {
+                    if consensus.is_failed() || state.failed {
+                        return Err(crate::ObjectError::PreconditionFailed(
+                            "chunk consensus unavailable for health report".into(),
+                        ));
+                    }
+                    Some(local_membership(&state)?)
+                } else {
+                    None
+                };
+                #[cfg(not(feature = "chunk-consensus"))]
+                let membership: Option<crate::cluster::MembershipStatus> = None;
                 (
                     state.used_bytes,
                     state.service.capacity_bytes(),
                     !state.failed && !state.maintenance,
+                    membership,
                 )
             };
             if stop.is_stopped() {
                 return Ok(());
             }
-            client.report_chunk_node(
-                &options.node_id,
-                &advertised,
-                used,
-                capacity,
-                online,
-            )?;
+            if let Some(status) = membership {
+                #[cfg(feature = "chunk-consensus")]
+                client.update_chunk_catalog(crate::cluster::ChunkCatalogCommand {
+                    version: 1,
+                    operation: 2,
+                    placement_id: options
+                        .placement_id
+                        .clone()
+                        .expect("validated dynamic report mode"),
+                    expected_fence: Vec::new(),
+                    bootstrap_id: dynamic.unwrap().identity().bootstrap_id,
+                    status: Some(status),
+                    member_id: options.node_id.clone(),
+                    expected_endpoint: advertised.clone(),
+                    used_bytes: used,
+                    capacity_bytes: capacity,
+                    online,
+                })?;
+                #[cfg(not(feature = "chunk-consensus"))]
+                {
+                    let _ = status;
+                    unreachable!("standalone replica has no applied membership");
+                }
+            } else {
+                client.report_chunk_node(&options.node_id, &advertised, used, capacity, online)?;
+            }
             if let Some(position) = endpoints
                 .iter()
                 .position(|endpoint| endpoint == client.endpoint())
@@ -142,6 +210,75 @@ mod tests {
     };
     use crate::{ChunkId, PageId};
 
+    #[cfg(feature = "chunk-consensus")]
+    #[test]
+    fn fenced_report_uses_local_applied_identity_and_refuses_stale_observations() {
+        let server = ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
+        let mut state = server.replica.lock().unwrap();
+        assert!(local_membership(&state).is_err());
+        let status = crate::cluster::MembershipStatus {
+            version: 1,
+            node_id: 2,
+            term: 3,
+            applied_index: 19,
+            voters: vec![1, 2, 3],
+            outgoing_voters: vec![],
+            learners: vec![4],
+        };
+        state.used_bytes = 123;
+        state.applied_membership = Some((status.clone(), std::time::Instant::now()));
+        assert_eq!(local_membership(&state).unwrap(), status);
+        state.applied_membership.as_mut().unwrap().1 -= Duration::from_secs(2);
+        assert!(local_membership(&state).is_err());
+    }
+
+    #[test]
+    fn busy_replica_state_does_not_block_heartbeat_shutdown() {
+        let meta = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
+        let mut chunk =
+            ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
+        let endpoint = chunk.local_addr().unwrap();
+        let metadata = meta.local_addr().unwrap();
+        meta.seed_data_roster(
+            &DataNodeSeed::parse_roster(&format!("chunk-1@{endpoint}@rack")).unwrap(),
+            1 << 28,
+        )
+        .unwrap();
+        chunk
+            .enable_heartbeats(ReplicaHeartbeatOptions {
+                placement_id: None,
+                tls: None,
+                expected_metadata_identity: None,
+                node_id: "chunk-1".into(),
+                advertised_endpoint: endpoint,
+                metadata_endpoints: vec![metadata],
+                interval: Duration::from_millis(100),
+            })
+            .unwrap();
+        let state = chunk.replica.clone();
+        let stop = chunk.shutdown_handle();
+        let meta_stop = meta.shutdown_handle();
+        let metadata_thread = std::thread::spawn(move || meta.serve().unwrap());
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let result = chunk.serve();
+            tx.send(()).unwrap();
+            result
+        });
+        let guard = state.lock().unwrap();
+        std::thread::sleep(Duration::from_millis(350));
+        stop.stop();
+        let finished = rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        drop(guard);
+        worker.join().unwrap().unwrap();
+        meta_stop.stop();
+        metadata_thread.join().unwrap();
+        assert!(
+            finished,
+            "heartbeat waited for the replica lock during shutdown"
+        );
+    }
+
     #[test]
     fn failed_journal_is_reported_offline_with_correct_cached_usage() {
         let meta = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
@@ -156,6 +293,7 @@ mod tests {
         .unwrap();
         chunk
             .enable_heartbeats(ReplicaHeartbeatOptions {
+                placement_id: None,
                 tls: None,
                 expected_metadata_identity: None,
                 node_id: "chunk-1".into(),
@@ -238,6 +376,7 @@ mod tests {
         .unwrap();
         chunk
             .enable_heartbeats(ReplicaHeartbeatOptions {
+                placement_id: None,
                 tls: None,
                 node_id: "maintenance-1".into(),
                 advertised_endpoint: endpoint,

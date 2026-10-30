@@ -320,6 +320,8 @@ impl ChunkConsensus {
         let worker_stop = Arc::clone(&stop);
         let progress = WorkerProgress::new();
         let worker_progress = progress.clone();
+        #[cfg(feature = "meta-server")]
+        let track_membership = group_identity.version == 2;
         handles.push(thread::spawn(move || {
             let _lock = lock;
             if let Err(error) = run(
@@ -334,6 +336,8 @@ impl ChunkConsensus {
                 &worker_stop,
                 limit,
                 checkpoint,
+                #[cfg(feature = "meta-server")]
+                track_membership,
             ) {
                 if let Ok(mut node) = state.lock() {
                     node.failed = true;
@@ -355,6 +359,11 @@ impl ChunkConsensus {
             handles: Mutex::new(handles),
         })
     }
+    #[cfg(feature = "meta-server")]
+    pub(super) fn identity(&self) -> &ChunkGroupIdentity {
+        &self.identity
+    }
+
     pub(super) fn is_failed(&self) -> bool {
         self.failed.load(Ordering::SeqCst)
     }
@@ -408,6 +417,7 @@ fn run(
     stop: &ServerShutdown,
     limit: usize,
     mut checkpoint: Policy,
+    #[cfg(feature = "meta-server")] track_membership: bool,
 ) -> Result<(), RaftError> {
     let ConsensusChannels {
         progress,
@@ -505,6 +515,27 @@ fn run(
         )?;
         progress.mark(WorkerPhase::Requests);
         drop(application);
+        // Capture only after Ready has durably applied data and membership. The
+        // heartbeat worker reads this view and usage under the same state lock.
+        #[cfg(feature = "meta-server")]
+        if track_membership {
+            match &mut node.applied_membership {
+                Some((status, refreshed))
+                    if status.term == peer.term()
+                        && status.applied_index == peer.applied_index() =>
+                {
+                    *refreshed = Instant::now();
+                }
+                _ => {
+                    let status = crate::cluster::MembershipStatus::from_peer(peer);
+                    node.applied_membership = if status.validate().is_ok() {
+                        Some((status, Instant::now()))
+                    } else {
+                        None
+                    };
+                }
+            }
+        }
         recovered = true;
         if let Some((id, _)) = &pending_membership {
             if peer.term() == id.term && peer.applied_index() >= id.index {
@@ -800,6 +831,8 @@ mod checkpoint_tests {
             maintenance: false,
             max_pages,
             used_bytes: 0,
+            #[cfg(all(feature = "chunk-consensus", feature = "meta-server"))]
+            applied_membership: None,
             failed: false,
         }
     }

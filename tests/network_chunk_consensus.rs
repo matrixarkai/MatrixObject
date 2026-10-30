@@ -138,6 +138,7 @@ impl Group {
             .map(|(_, a)| a[i].to_string())
             .unwrap_or_else(|| self.api_addresses[i].to_string());
         let node_id = self.member_id(i);
+        let placement_id = self.placement_id();
         let group_id = self.group_id.to_string();
         let max_pages = self.max_pages.to_string();
         let capacity = self.capacity.to_string();
@@ -161,6 +162,7 @@ impl Group {
             environment.push(("MATRIXOBJECT_CHUNK_RAFT_BOOTSTRAP_VOTERS", "1,2,3"));
         }
         if let Some((metadata, _)) = &self.report {
+            if self.membership { environment.push(("MATRIXOBJECT_CHUNK_PLACEMENT_ID", placement_id.as_str())); }
             environment.extend([
                 ("MATRIXOBJECT_CHUNK_NODE_ID", node_id.as_str()),
                 ("MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS", metadata.as_str()),
@@ -879,6 +881,8 @@ mod coupled_groups {
         MetaClientOptions, RemoteMetaClient,
     };
 
+    mod fenced_heartbeats { include!("node_regime/fenced_chunk_heartbeat_processes.rs"); }
+
     struct MetadataGroup {
         peer_tls: Option<PathBuf>,
         api_tls: Option<PathBuf>,
@@ -924,10 +928,12 @@ mod coupled_groups {
                 .map(|(i, (_, p))| format!("{}@{}", i + 1, p.local_addr().unwrap()))
                 .collect::<Vec<_>>()
                 .join(",");
-            let catalog = ChunkGroupCatalog::new(
+            let mut health = BTreeMap::new();
+            let groups =
                 chunks
                     .iter()
-                    .map(|chunk| ChunkGroupConfig {
+                    .map(|chunk| {
+                        let mut config = ChunkGroupConfig {
                         placement_id: chunk.placement_id(),
                         failure_domain: format!("rack-{}", chunk.group_id),
                         identity: Some(ChunkGroupIdentity {
@@ -947,10 +953,20 @@ mod coupled_groups {
                             .map(ToString::to_string)
                             .collect(),
                         member_ids: (0..chunk.nodes.len()).map(|i| chunk.member_id(i)).collect(),
+                        };
+                        if chunk.membership {
+                            use matrixobjectstore_rs::cluster::{ChunkMembershipFence, ChunkMembershipHealth, MembershipRequest};
+                            let mut client = chunk.client(chunk.leader());
+                            let identity = client.chunk_group_identity().unwrap();
+                            let status = client.chunk_membership(MembershipRequest {version: 1, bootstrap_id: identity.bootstrap_id, operation: 0, node_id: 0}).unwrap();
+                            let fence = ChunkMembershipFence::from_status(&identity, &status).unwrap();
+                            health.insert(chunk.placement_id(), ChunkMembershipHealth::new(fence));
+                            config.identity = Some(identity);
+                        }
+                        config
                     })
-                    .collect(),
-            )
-            .unwrap();
+                    .collect();
+            let catalog = ChunkGroupCatalog::with_membership_health(groups, health).unwrap();
             std::fs::write(root.join("catalog.bin"), catalog.to_bytes().unwrap()).unwrap();
             let mut group = Self {
                 peer_tls: chunks[0].peer_tls.clone(),
