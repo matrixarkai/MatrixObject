@@ -147,12 +147,14 @@ pub mod wire;
 
 // The data plane: a replica node, a client, and the quorum over several of them.
 #[cfg(feature = "replica-server")]
+#[path = "replica_rpc_client.rs"]
 pub mod client;
 #[cfg(feature = "replica-server")]
 pub mod placement;
 #[cfg(feature = "replica-server")]
 pub mod replica_set;
 #[cfg(feature = "replica-server")]
+#[path = "replica_rpc_server.rs"]
 pub mod server;
 
 // The control plane: a metaserver node, a client, and the directory that chooses.
