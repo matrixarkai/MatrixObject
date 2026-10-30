@@ -344,7 +344,14 @@ impl MatrixReplicaService {
     }
 
     pub fn install_snapshot(&mut self, snapshot: ReplicaServiceSnapshot) -> Result<(), ObjectError> {
-        snapshot.validate()?;
+        self.install_validated_snapshot(ValidatedReplicaServiceSnapshot::new(snapshot)?)
+    }
+
+    pub(crate) fn install_validated_snapshot(
+        &mut self,
+        snapshot: ValidatedReplicaServiceSnapshot,
+    ) -> Result<(), ObjectError> {
+        let snapshot = snapshot.0;
         self.snapshot_assembler.reset();
         if snapshot.capacity_bytes > 0 {
             let snapshot_bytes = snapshot.pages.values().fold(0u64, |acc, state| {

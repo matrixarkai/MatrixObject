@@ -230,7 +230,7 @@ pub(super) fn restore(
     id: (u64, u64),
     capacity: u64,
     max_pages: usize,
-) -> Result<ReplicaServiceSnapshot, ObjectError> {
+) -> Result<crate::ValidatedReplicaServiceSnapshot, ObjectError> {
     if !(2..=MAX_FILE_CHECKPOINT_BYTES).contains(&size) {
         return Err(storage("chunk checkpoint size exceeds limits"));
     }
@@ -318,6 +318,5 @@ pub(super) fn restore(
     snapshot.compressed_chunk_count = header.compressed_count;
     snapshot.compression_saved_bytes = header.compression_saved;
     snapshot.checksum = header.checksum;
-    snapshot.validate().map_err(storage)?;
-    Ok(snapshot)
+    crate::ValidatedReplicaServiceSnapshot::new(snapshot).map_err(storage)
 }

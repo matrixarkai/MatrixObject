@@ -19,7 +19,7 @@ pub(super) fn restore(
     id: LogId,
     capacity: u64,
     max_pages: usize,
-) -> Result<ReplicaServiceSnapshot, RaftError> {
+) -> Result<crate::ValidatedReplicaServiceSnapshot, RaftError> {
     if !(2..=super::replica_image::MAX_FILE_CHECKPOINT_BYTES).contains(&size) {
         return Err(storage("chunk checkpoint size exceeds limits"));
     }
@@ -31,7 +31,8 @@ pub(super) fn restore(
         if !image.catalog.is_empty() {
             return Err(storage("chunk checkpoint contains a metadata catalog"));
         }
-        return ReplicaServiceSnapshot::from_bytes(&image.state).map_err(storage);
+        let snapshot = ReplicaServiceSnapshot::from_bytes(&image.state).map_err(storage)?;
+        return crate::ValidatedReplicaServiceSnapshot::new(snapshot).map_err(storage);
     }
     super::replica_image::restore(&mut reader, size, (id.index, id.term), capacity, max_pages)
         .map_err(storage)
@@ -103,12 +104,21 @@ mod tests {
         }
         let len = stream.length;
         let restored = restore(&mut stream, len, id(), 16384, 2).unwrap();
-        assert_eq!(restored, original);
-        assert_eq!(restored.to_bytes().unwrap(), bytes);
+        assert_eq!(restored.snapshot(), &original);
+        assert_eq!(restored.snapshot().to_bytes().unwrap(), bytes);
+        let mut service = MatrixReplicaService::new();
+        service.install_validated_snapshot(restored).unwrap();
+        assert_eq!(service.export_snapshot(), original);
+        let mut damaged = original.clone();
+        damaged.checksum.clear();
+        assert!(service.install_snapshot(damaged).is_err());
+        assert_eq!(service.export_snapshot(), original);
         let old = Image::new(2, id(), bytes, vec![]).encode_to_vec();
         assert_eq!(
-            restore(&mut Cursor::new(&old), old.len() as u64, id(), 16384, 2).unwrap(),
-            original
+            restore(&mut Cursor::new(&old), old.len() as u64, id(), 16384, 2)
+                .unwrap()
+                .snapshot(),
+            &original
         );
     }
     #[test]
@@ -210,12 +220,25 @@ mod tests {
         file.sync_all().unwrap();
         file.seek(SeekFrom::Start(0)).unwrap();
         let restored = restore(&mut file, length, id(), 300 * 1024 * 1024, 272).unwrap();
-        assert_eq!(restored.checksum, expected_checksum);
-        assert_eq!(restored.pages.len(), 272);
-        for state in restored.pages.values() {
+        assert_eq!(restored.snapshot().checksum, expected_checksum);
+        assert_eq!(restored.snapshot().pages.len(), 272);
+        for state in restored.snapshot().pages.values() {
             assert_eq!(state.data.as_slice(), data.as_slice());
         }
-        println!("streamed application checkpoint: {length} bytes, 272 pages recovered");
+        let expected_pages = restored.snapshot().pages.clone();
+        let started = std::time::Instant::now();
+        let mut installed = MatrixReplicaService::new();
+        installed.install_validated_snapshot(restored).unwrap();
+        let install_time = started.elapsed();
+        assert_eq!(installed.physical_bytes(), 272 * 1024 * 1024);
+        assert_eq!(installed.capacity_bytes(), 300 * 1024 * 1024);
+        // Export computes compression statistics omitted by this synthetic image.
+        // Compare every installed page, including its sequence and discard state.
+        assert_eq!(installed.export_snapshot().pages, expected_pages);
+        println!(
+            "streamed application checkpoint: {length} bytes, 272 pages recovered, install_us={}",
+            install_time.as_micros()
+        );
         drop(file);
         drop(cleanup);
     }
