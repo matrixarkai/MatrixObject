@@ -2272,6 +2272,29 @@ mod coupled_groups {
                 .unwrap(),
             (second.clone(), b"ijklmnop".to_vec())
         );
+        // A recovered data quorum can serve reads before its next capacity
+        // report makes the group eligible for a new placement. Observe that
+        // readiness explicitly; do not retry the object mutation.
+        let placement_deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let observed = meta.list_placement_nodes();
+            if observed.as_ref().is_ok_and(|nodes| {
+                groups.iter().all(|group| {
+                    nodes.iter().any(|node| {
+                        node.node_id == group.placement_id()
+                            && node.online
+                            && node.data_eligible
+                    })
+                })
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < placement_deadline,
+                "resumed groups did not become eligible for placement: {observed:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let third = meta
             .write_object("suspended", "object", Some(second), b"qrstuvwx", &options)
             .unwrap();

@@ -296,6 +296,14 @@ capture runs. The completed payload is published at its original applied
 position, retaining every later log entry for recovery. A newer received
 checkpoint can supersede the worker result without replacing newer state.
 
+Incoming file checkpoints also have one finalization worker per peer. The last
+fragment starts payload copying, checksum validation and disk sync off the Raft
+loop; both node loops keep polling ready work on their regular timer. Completion
+is acknowledged only after validation, and an older-term result is discarded.
+Invalid transfer payloads do not stop a healthy voter. Shutdown retains the peer
+storage lock until this worker finishes. Fragment staging, WAL publication and
+application restoration remain synchronous.
+
 Over-limit snapshots keep WAL history. Worker failures stop the node rather than
 silently treating a failed capture as durable. Orderly shutdown joins the worker
 and discards an unpublished payload. Snapshot export copies collections on the consensus loop; checksum sealing and
