@@ -64,3 +64,12 @@ metadata/data leader-loss and full-restart recovery.
 Rust callers set `peer_tls` on `MetaRaftOptions` or `ChunkRaftOptions` to
 `Some(PeerTlsOptions { ca_certificate, certificate, private_key })`, or `None`
 for a new plaintext voter. Existing option struct literals must add this field.
+
+The coupled recovery guard also exercises five and seven voters per group:
+one metadata group and three data groups, for 20 and 28 local WSL processes.
+It removes the current leader plus enough other voters to leave exactly a
+majority in every group (two failures with five voters, three with seven), then
+checks reads and new writes before restarting all voters from their own state.
+Exact object bytes, manifest generations, write sequences, physical usage,
+committed capacity and every voter TLS marker are verified. This exercises fixed
+membership fault tolerance; it does not change membership during the run.

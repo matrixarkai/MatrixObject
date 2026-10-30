@@ -41,11 +41,15 @@ impl Group {
         group
     }
     fn configured(capacity: u64) -> Self {
+        Self::configured_voters(capacity, 3)
+    }
+    fn configured_voters(capacity: u64, voters: usize) -> Self {
+        assert!([3, 5, 7].contains(&voters));
         let root = std::env::temp_dir().join(node_regime::run_token("chunk-peers"));
         std::fs::create_dir(&root).unwrap();
-        // Hold all six distinct listeners until their process takes ownership.
+        // Hold all distinct listeners until their process takes ownership.
         // API port selection must never consume a future voter's Raft endpoint.
-        let reserved: Vec<_> = (0..3)
+        let reserved: Vec<_> = (0..voters)
             .map(|_| {
                 (
                     TcpListener::bind("127.0.0.1:0").unwrap(),
@@ -64,7 +68,7 @@ impl Group {
             .collect();
         let g = Self {
             peer_tls: None,
-            nodes: vec![None, None, None],
+            nodes: (0..voters).map(|_| None).collect(),
             peers,
             root,
             capacity,
@@ -76,7 +80,7 @@ impl Group {
             reservations: reserved.into_iter().map(Some).collect(),
             report: None,
         };
-        for i in 0..3 {
+        for i in 0..voters {
             std::fs::create_dir(g.root.join(i.to_string())).unwrap();
         }
         g
@@ -184,7 +188,7 @@ impl Group {
     }
     fn leader(&self) -> usize {
         let deadline = Instant::now() + Duration::from_secs(15);
-        let mut last = [String::new(), String::new(), String::new()];
+        let mut last = vec![String::new(); self.nodes.len()];
         loop {
             for (i, reply) in last.iter_mut().enumerate() {
                 if self.nodes[i].is_some() {
@@ -857,10 +861,14 @@ mod coupled_groups {
             Self::for_groups_with_threads(chunks, 2)
         }
         fn for_groups_with_threads(chunks: &[Group], request_threads: usize) -> Self {
+            Self::for_groups_with_voters(chunks, request_threads, 3)
+        }
+        fn for_groups_with_voters(chunks: &[Group], request_threads: usize, voters: usize) -> Self {
+            assert!([3, 5, 7].contains(&voters));
             assert!((1..=32).contains(&request_threads));
             let root = chunks[0].root.join("metadata");
             std::fs::create_dir(&root).unwrap();
-            let sockets: Vec<_> = (0..3)
+            let sockets: Vec<_> = (0..voters)
                 .map(|_| {
                     (
                         TcpListener::bind("127.0.0.1:0").unwrap(),
@@ -898,7 +906,7 @@ mod coupled_groups {
                             .iter()
                             .map(ToString::to_string)
                             .collect(),
-                        member_ids: (0..3).map(|i| chunk.member_id(i)).collect(),
+                        member_ids: (0..chunk.nodes.len()).map(|i| chunk.member_id(i)).collect(),
                     })
                     .collect(),
             )
@@ -906,7 +914,7 @@ mod coupled_groups {
             std::fs::write(root.join("catalog.bin"), catalog.to_bytes().unwrap()).unwrap();
             let mut group = Self {
                 peer_tls: chunks[0].peer_tls.clone(),
-                nodes: vec![None, None, None],
+                nodes: (0..voters).map(|_| None).collect(),
                 api,
                 peers,
                 root,
@@ -915,7 +923,7 @@ mod coupled_groups {
                 checkpoint_bytes: chunks[0].checkpoint_bytes,
                 request_threads,
             };
-            for i in 0..3 {
+            for i in 0..voters {
                 std::fs::create_dir(group.root.join(i.to_string())).unwrap();
                 group.start(i);
             }
@@ -2471,7 +2479,7 @@ mod coupled_groups {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let nodes = meta.list_placement_nodes().unwrap();
-            assert_eq!(nodes.len(), groups.len() * 4);
+            assert_eq!(nodes.len(), groups.iter().map(|g| g.nodes.len() + 1).sum::<usize>());
             if groups.iter().all(|g| {
                 let id = g.placement_id();
                 let node = nodes.iter().find(|n| n.node_id == id).unwrap();
@@ -2979,8 +2987,12 @@ mod coupled_groups {
             objects,
             target_groups,
             object_bytes,
-            None,
+            VoterSetup { peer_tls: None, voters: 3 },
         );
+    }
+    struct VoterSetup {
+        peer_tls: Option<PathBuf>,
+        voters: usize,
     }
     fn multiple_group_load_with_transport(
         group_count: usize,
@@ -2989,8 +3001,9 @@ mod coupled_groups {
         objects: bool,
         target_groups: u32,
         object_bytes: u64,
-        peer_tls: Option<PathBuf>,
+        setup: VoterSetup,
     ) {
+        let VoterSetup { peer_tls, voters } = setup;
         assert!((8..=4 * 1024 * 1024).contains(&object_bytes));
         assert_eq!(object_bytes % 4, 0);
         assert!(objects || object_bytes == 1024);
@@ -2999,7 +3012,7 @@ mod coupled_groups {
         assert!(writes > 0 && writes <= 1024);
         let mut groups: Vec<_> = (0..group_count)
             .map(|i| {
-                let mut g = Group::configured(64 * 1024 * 1024);
+                let mut g = Group::configured_voters(64 * 1024 * 1024, voters);
                 g.peer_tls = peer_tls.clone();
                 g.group_id = i as u64 + 1;
                 g.max_pages = 2048;
@@ -3010,10 +3023,10 @@ mod coupled_groups {
             .collect();
         // Every API and peer socket stays reserved until its process starts.
         let request_threads = if objects { 16 } else { 2 };
-        let mut metadata = MetadataGroup::for_groups_with_threads(&groups, request_threads);
+        let mut metadata = MetadataGroup::for_groups_with_voters(&groups, request_threads, voters);
         for group in &mut groups {
             group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
-            for i in 0..3 {
+            for i in 0..voters {
                 group.start(i);
             }
         }
@@ -3057,10 +3070,20 @@ mod coupled_groups {
             );
         }
         metadata.kill(leader);
+        for _ in 1..voters / 2 {
+            let follower = metadata.nodes.iter().position(Option::is_some).unwrap();
+            metadata.kill(follower);
+        }
         for group in &mut groups {
             let leader = group.leader();
             group.kill(leader);
+            for _ in 1..voters / 2 {
+                let follower = group.nodes.iter().position(Option::is_some).unwrap();
+                group.kill(follower);
+            }
+            assert_eq!(group.nodes.iter().filter(|n| n.is_some()).count(), voters / 2 + 1);
         }
+        assert_eq!(metadata.nodes.iter().filter(|n| n.is_some()).count(), voters / 2 + 1);
         metadata.ready();
         for group in &groups {
             group.leader();
@@ -3077,22 +3100,22 @@ mod coupled_groups {
         ));
         group_usage(&metadata.api, &groups, &saved);
         for group in &mut groups {
-            for i in 0..3 {
+            for i in 0..voters {
                 if group.nodes[i].is_some() {
                     group.kill(i);
                 }
             }
         }
-        for i in 0..3 {
+        for i in 0..voters {
             if metadata.nodes[i].is_some() {
                 metadata.kill(i);
             }
         }
-        for i in 0..3 {
+        for i in 0..voters {
             metadata.start(i);
         }
         for group in &mut groups {
-            for i in 0..3 {
+            for i in 0..voters {
                 group.start(i);
             }
         }
@@ -3104,7 +3127,7 @@ mod coupled_groups {
         verify_load(&metadata.api, &saved, objects);
         if peer_tls.is_some() {
             for root in std::iter::once(&metadata.root).chain(groups.iter().map(|g| &g.root)) {
-                for i in 0..3 {
+                for i in 0..voters {
                     assert_eq!(
                         std::fs::read(root.join(i.to_string()).join("peer.transport")).unwrap(),
                         b"tls-v1\n"
@@ -3114,7 +3137,7 @@ mod coupled_groups {
         }
         println!(
             "MULTIGROUP verified objects={objects} object_bytes={object_bytes} groups={group_count} groups_per_object={target_groups} metadata_threads={request_threads} processes={} recovered_objects={}",
-            group_count * 3 + 3,
+            (group_count + 1) * voters,
             saved.len()
         );
     }
@@ -3148,8 +3171,23 @@ mod coupled_groups {
             true,
             2,
             bytes,
-            Some(certificates.root.clone()),
+            VoterSetup { peer_tls: Some(certificates.root.clone()), voters: 3 },
         );
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    fn larger_authenticated_quorums_recover_after_maximum_voter_loss() {
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..7 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        for voters in [5, 7] {
+            println!("AUTHENTICATED_VOTERS voters={voters} failures_per_group={}", voters / 2);
+            multiple_group_load_with_transport(
+                3, 24, 4, true, 2, 64 * 1024,
+                VoterSetup { peer_tls: Some(certificates.root.clone()), voters },
+            );
+        }
     }
     #[cfg(feature = "peer-tls")]
     #[test]
