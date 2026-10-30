@@ -11,7 +11,7 @@ use std::time::Duration;
 pub(super) struct ConsensusChannels<T> {
     pub(super) requests: ConsensusInbox<T>,
     pub(super) packets: Receiver<Vec<u8>>,
-    pub(super) outgoing: BTreeMap<u64, SyncSender<Vec<u8>>>,
+    pub(super) outgoing: BTreeMap<u64, SyncSender<super::peer_delivery::PeerDelivery>>,
 }
 
 pub(super) struct ConsensusInbox<T> {

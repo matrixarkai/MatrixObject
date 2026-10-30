@@ -486,3 +486,12 @@ reads took 1.167 seconds after leader failures and 2.039 seconds after full rest
 The preceding peer-readiness run above took 87.11 seconds overall, with 21.7 and
 20.1 writes/second. These are single local observations for the same workload,
 not statistical comparisons, production targets or multihost qualification.
+
+### Outbound peer packet age
+
+Each outbound packet has one 100 ms delivery deadline starting when the consensus
+worker queues it. Queue waiting, TCP connection and both frame writes share that
+deadline. Expired packets are discarded before connecting, and partial delivery
+closes the connection. Raft retransmission supplies later packets; the sender does
+not replay a failed packet or extend its deadline. Per-peer queues remain bounded
+to eight packets so an unavailable voter cannot block consensus admission.

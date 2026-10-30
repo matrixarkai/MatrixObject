@@ -244,6 +244,8 @@ pub use object_client::{ObjectWriteFailure, ObjectWriteOptions};
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod peer_receiver;
+#[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
+mod peer_delivery;
 
 #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
 mod consensus_inbox;
