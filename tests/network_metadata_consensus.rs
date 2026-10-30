@@ -24,6 +24,7 @@ struct Group {
     catalog: Option<PathBuf>,
     heartbeat_ttl: Option<String>,
     checkpoint_bytes: u64,
+    membership: bool,
 }
 impl Group {
     fn new() -> Self {
@@ -48,9 +49,18 @@ impl Group {
         catalog: Option<Vec<u8>>,
         checkpoint_bytes: u64,
     ) -> Self {
+        Self::with_membership_options(roster, heartbeat_ttl, catalog, checkpoint_bytes, false)
+    }
+    fn with_membership_options(
+        roster: Option<String>,
+        heartbeat_ttl: Option<String>,
+        catalog: Option<Vec<u8>>,
+        checkpoint_bytes: u64,
+        membership: bool,
+    ) -> Self {
         let root = std::env::temp_dir().join(node_regime::run_token("metadata-peers"));
         std::fs::create_dir(&root).unwrap();
-        let reserved: Vec<_> = (0..3)
+        let reserved: Vec<_> = (0..if membership { 4 } else { 3 })
             .map(|_| {
                 (
                     TcpListener::bind("127.0.0.1:0").unwrap(),
@@ -73,7 +83,7 @@ impl Group {
             path
         });
         let mut group = Self {
-            nodes: vec![None, None, None],
+            nodes: (0..if membership { 4 } else { 3 }).map(|_| None).collect(),
             peers,
             root,
             api_addresses,
@@ -82,10 +92,13 @@ impl Group {
             catalog,
             heartbeat_ttl,
             checkpoint_bytes,
+            membership,
         };
-        for i in 0..3 {
+        for i in 0..group.nodes.len() {
             std::fs::create_dir(group.root.join(i.to_string())).unwrap();
-            group.start(i);
+            if i < 3 {
+                group.start(i);
+            }
         }
         group
     }
@@ -114,6 +127,9 @@ impl Group {
                 checkpoint_bytes.as_str(),
             ),
         ];
+        if self.membership {
+            environment.push(("MATRIXOBJECT_METASERVER_RAFT_BOOTSTRAP_VOTERS", "1,2,3"));
+        }
         let roster = self.roster.as_ref().map(|roster| {
             let mut entries: Vec<_> = roster.split(',').collect();
             if i % 2 == 1 {
@@ -159,7 +175,7 @@ impl Group {
     fn leader(&self) -> usize {
         let until = Instant::now() + Duration::from_secs(15);
         loop {
-            for i in 0..3 {
+            for i in 0..self.nodes.len() {
                 if self.nodes[i].is_some() && self.client(i).probe().into_result().is_ok() {
                     return i;
                 }
@@ -317,6 +333,7 @@ fn a_slow_peer_connection_does_not_prevent_shutdown() {
     let mut server = MetaNodeServer::bind("127.0.0.1:0", MetaNodeOptions::default()).unwrap();
     server
         .enable_raft(MetaRaftOptions {
+            bootstrap_voters: None,
             peer_tls: None,
             checkpoint_after_bytes: 0,
             node_id: 1,
@@ -396,6 +413,7 @@ fn peer_storage_refuses_missing_zeroed_or_reidentified_history() {
     let address = reserved.local_addr().unwrap();
     drop(reserved);
     let options = MetaRaftOptions {
+        bootstrap_voters: None,
         peer_tls: None,
         checkpoint_after_bytes: 0,
         node_id: 1,
@@ -607,10 +625,12 @@ fn configured_placement_writes_real_chunk_processes_and_recovers_after_failover(
 fn chunk_processes_report_usage_follow_leaders_and_expire_without_manual_heartbeats() {
     run_chunk_health(false);
 }
+#[cfg(feature = "replica-server")]
 #[test]
 fn verified_chunk_heartbeats_follow_metadata_failover_and_chunk_restart() {
     run_chunk_health(true);
 }
+#[cfg(feature = "replica-server")]
 fn run_chunk_health(verified: bool) {
     use matrixobjectstore_rs::cluster::{RemoteReplicaClient, ReplicaClientOptions};
     use matrixobjectstore_rs::{ChunkId, PageId};
@@ -1570,4 +1590,187 @@ fn maintenance_repair_stays_excluded_through_metadata_failover_and_total_restart
         set.read_chunk(&page, 0, 14).unwrap().data,
         b"ready-to-write"
     );
+}
+
+#[test]
+fn metadata_membership_replaces_a_lost_voter_with_a_new_process() {
+    use matrixobjectstore_rs::cluster::{MembershipOperation as Op, MembershipRequest};
+    let mut group = Group::with_membership_options(None, None, None, 1024, true);
+    let first = group.leader();
+    let identity = group.client(first).metadata_group_identity().unwrap();
+    assert_eq!(identity.version, 2);
+    assert_eq!(identity.bootstrap_voters, vec![1, 2, 3]);
+    assert_eq!(identity.voters, vec![1, 2, 3, 4]);
+    let command = |op: Op, id| MembershipRequest {
+        version: 1,
+        bootstrap_id: identity.bootstrap_id,
+        operation: op as i32,
+        node_id: id,
+    };
+    let mut saved = Vec::new();
+    for n in 0..24 {
+        let mut client = group.client(group.leader());
+        let plan = client
+            .plan_object_placement("membership", &format!("key-{n}"), 64, 2)
+            .unwrap();
+        saved.push(
+            client
+                .commit_object_placement(
+                    CommittedPlacement {
+                        bucket: plan.bucket,
+                        key: plan.key,
+                        length: plan.length,
+                        node_ids: plan.node_ids,
+                        version: 1,
+                        update_time_ms: n + 1,
+                    },
+                    &plan.plan_checksum,
+                )
+                .unwrap(),
+        );
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !group
+        .root
+        .join(first.to_string())
+        .join("metadata.peer.wal.payloads")
+        .is_dir()
+    {
+        assert!(Instant::now() < deadline, "checkpoint was not captured");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The old voter is fenced. Its durable files are preserved and never reused.
+    group.kill(first);
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let mut wrong = command(Op::Read, 0);
+    wrong.bootstrap_id ^= 1;
+    assert!(client.metadata_membership(wrong).is_err());
+    let added = client
+        .metadata_membership(command(Op::AddLearner, 4))
+        .unwrap();
+    assert_eq!(added.learners, vec![4]);
+    assert!(client.metadata_membership(command(Op::Promote, 4)).is_err());
+    group.start(3);
+    let new_identity = group.client(3).metadata_group_identity().unwrap();
+    assert!(identity.same_group(&new_identity));
+    assert!(group.client(3).probe().into_result().is_err());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let joint = loop {
+        match client.metadata_membership(command(Op::Promote, 4)) {
+            Ok(status) => break status,
+            Err(error) if error.to_string().contains("caught-up learner") => {
+                assert!(
+                    Instant::now() < deadline,
+                    "learner did not catch up: {error}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("promotion failed: {error}"),
+        }
+    };
+    assert_eq!(joint.voters, vec![1, 2, 3, 4]);
+    assert_eq!(joint.outgoing_voters, vec![1, 2, 3]);
+    client
+        .metadata_membership(command(Op::LeaveJoint, 0))
+        .unwrap();
+    client
+        .metadata_membership(command(Op::Remove, first as u64 + 1))
+        .unwrap();
+    let final_status = client
+        .metadata_membership(command(Op::LeaveJoint, 0))
+        .unwrap();
+    let expected: Vec<_> = (1..=4).filter(|id| *id != first as u64 + 1).collect();
+    assert_eq!(final_status.voters, expected);
+    assert!(final_status.outgoing_voters.is_empty());
+    // Remove another original process: successful reads now require the new voter.
+    group.kill(leader);
+    let serving = group.leader();
+    let mut client = group.client(serving);
+    for item in &saved {
+        assert_eq!(
+            client.object_placement(&item.bucket, &item.key).unwrap(),
+            *item
+        );
+    }
+    let allocation = client.allocate_object_pages(3).unwrap();
+    drop(client);
+    for i in 0..group.nodes.len() {
+        if group.nodes[i].is_some() {
+            group.kill(i);
+        }
+    }
+    for i in 0..group.nodes.len() {
+        group.start(i);
+    }
+    let serving = group.leader();
+    assert_ne!(serving, first, "removed voter became leader after replay");
+    let mut client = group.client(serving);
+    let status = client.metadata_membership(command(Op::Read, 0)).unwrap();
+    assert_eq!(status.voters, expected);
+    for item in &saved {
+        assert_eq!(
+            client.object_placement(&item.bucket, &item.key).unwrap(),
+            *item
+        );
+    }
+    let next = client.allocate_object_pages(3).unwrap();
+    assert_ne!(next, allocation);
+    assert!(group.client(first).probe().into_result().is_err());
+}
+
+#[test]
+fn metadata_membership_never_acknowledges_without_quorum() {
+    use matrixobjectstore_rs::cluster::{MembershipOperation as Op, MembershipRequest};
+    let mut group = Group::with_membership_options(None, None, None, 0, true);
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let identity = client.metadata_group_identity().unwrap();
+    for i in 0..3 {
+        if i != leader {
+            group.kill(i);
+        }
+    }
+    let command = |op: Op, id| MembershipRequest {
+        version: 1,
+        bootstrap_id: identity.bootstrap_id,
+        operation: op as i32,
+        node_id: id,
+    };
+    assert!(client
+        .metadata_membership(command(Op::AddLearner, 4))
+        .is_err());
+    assert!(client.metadata_membership(command(Op::Read, 0)).is_err());
+    for i in 0..3 {
+        if i != leader {
+            group.start(i);
+        }
+    }
+    let serving = group.leader();
+    let mut client = group.client(serving);
+    let status = client.metadata_membership(command(Op::Read, 0)).unwrap();
+    assert_eq!(status.voters, vec![1, 2, 3]);
+    assert!(status.outgoing_voters.is_empty());
+    // The timed-out proposal may commit after healing; read before a new action.
+    assert!(status.learners.is_empty() || status.learners == vec![4]);
+    if status.learners.is_empty() {
+        client
+            .metadata_membership(command(Op::AddLearner, 4))
+            .unwrap();
+    }
+    let status = client.metadata_membership(command(Op::Remove, 4)).unwrap();
+    assert!(status.learners.is_empty());
+    // Removing the current leader from a three-voter group needs two commits.
+    client
+        .metadata_membership(command(Op::Remove, serving as u64 + 1))
+        .unwrap();
+    let status = client
+        .metadata_membership(command(Op::LeaveJoint, 0))
+        .unwrap();
+    assert!(!status.voters.contains(&(serving as u64 + 1)));
+    assert!(status.outgoing_voters.is_empty());
+    assert!(client.allocate_object_pages(1).is_err());
+    let next = group.leader();
+    assert_ne!(next, serving);
+    group.client(next).allocate_object_pages(1).unwrap();
 }

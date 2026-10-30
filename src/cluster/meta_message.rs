@@ -206,6 +206,7 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
+    Membership(super::MembershipRequest),
     AllocateObjectPages {
         page_count: u32,
     },
@@ -277,6 +278,7 @@ impl MetaRequest {
             MetaRequest::AllocateObjectPages { .. } => MetaRequestCode::AllocateObjectPages,
             MetaRequest::ReadManifest { .. } => MetaRequestCode::ReadManifest,
             MetaRequest::PublishManifest { .. } => MetaRequestCode::PublishManifest,
+            MetaRequest::Membership(_) => MetaRequestCode::Membership,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
             MetaRequest::ReportChunkNode { .. } => MetaRequestCode::ReportChunkNode,
@@ -325,6 +327,7 @@ impl MetaRequest {
                 }
                 .encode_to_vec();
             }
+            MetaRequest::Membership(value) => return value.encode_to_vec(),
             MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
                 placement,
@@ -424,6 +427,16 @@ impl MetaRequest {
     /// every field this reader did take came out of the wrong place -- a node id read one
     /// field short still parses into a valid string, naming a node nobody asked about.
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == MetaRequestCode::Membership {
+            if payload.len() > 128 {
+                return Err(ObjectError::Corruption(
+                    "membership request exceeds bound".into(),
+                ));
+            }
+            let value: super::MembershipRequest = super::conditional_requests::decode(payload)?;
+            value.validate()?;
+            return Ok(Self::Membership(value));
+        }
         if code == MetaRequestCode::ReportChunkNode {
             return super::health_report::decode(payload);
         }
@@ -508,7 +521,8 @@ impl MetaRequest {
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
-            MetaRequestCode::ReportChunkNode
+            MetaRequestCode::Membership
+            | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
             | MetaRequestCode::PublishManifest
@@ -568,6 +582,7 @@ impl MetaRequest {
 /// Reply contents, including a pre-admission leader-routing response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
+    Membership(super::MembershipStatus),
     ObjectPages(crate::object_manifest::ObjectPageAllocation),
     Manifest(crate::object_manifest::ObjectManifest),
     GroupIdentity(super::MetaGroupIdentity),
@@ -598,6 +613,7 @@ impl MetaReply {
                 .fold(0usize, |n, v| n.saturating_add(4).saturating_add(v.len()))
         };
         match self {
+            Self::Membership(value) => value.encoded_len(),
             Self::NotLeader => 0,
             Self::GroupIdentity(identity) => identity.encoded_len(),
             Self::ChunkGroup(group) => group.encoded_len(),
@@ -633,6 +649,7 @@ impl MetaReply {
         match self {
             MetaReply::ObjectPages(value) => return value.encode_to_vec(),
             MetaReply::Manifest(value) => return value.encode_to_vec(),
+            MetaReply::Membership(value) => return value.encode_to_vec(),
             MetaReply::NotLeader => {}
             MetaReply::GroupIdentity(identity) => return identity.encode_to_vec(),
             MetaReply::ChunkGroup(group) => return group.encode_to_vec(),
@@ -677,6 +694,16 @@ impl MetaReply {
     /// shape is read from the reply itself can be read as the wrong shape. The caller knows
     /// what it asked.
     pub fn decode(code: MetaRequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == MetaRequestCode::Membership {
+            if payload.len() > 2048 {
+                return Err(ObjectError::Corruption(
+                    "membership reply exceeds bound".into(),
+                ));
+            }
+            let value: super::MembershipStatus = super::conditional_requests::decode(payload)?;
+            value.validate()?;
+            return Ok(Self::Membership(value));
+        }
         if code == MetaRequestCode::AllocateObjectPages {
             if payload.len() > 32 {
                 return Err(ObjectError::Corruption(
@@ -704,7 +731,7 @@ impl MetaReply {
         }
 
         if code == MetaRequestCode::GroupIdentity {
-            if payload.len() > 4096 {
+            if payload.len() > 16384 {
                 return Err(ObjectError::Corruption(
                     "metadata identity exceeds size bound".into(),
                 ));
@@ -733,7 +760,8 @@ impl MetaReply {
         }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
-            MetaRequestCode::AllocateObjectPages
+            MetaRequestCode::Membership
+            | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::ReadChunkGroup

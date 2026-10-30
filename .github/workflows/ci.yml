@@ -2259,6 +2259,12 @@ jobs:
       - name: process quorum preserves outcomes across leader loss and total restart
         run: |
           set -o pipefail
+          cargo test --locked --features metadata-consensus --lib cluster::peer_membership::tests::membership_protobuf_refuses_unknown_fields_and_invalid_actions -- --exact | tee /tmp/metadata-membership-codec.log
+          grep -q 'test result: ok. 1 passed' /tmp/metadata-membership-codec.log
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus metadata_membership_replaces_a_lost_voter_with_a_new_process -- --exact | tee /tmp/metadata-membership.log
+          grep -q 'test result: ok. 1 passed' /tmp/metadata-membership.log
+          cargo test --locked --features metadata-consensus --test network_metadata_consensus metadata_membership_never_acknowledges_without_quorum -- --exact | tee /tmp/metadata-membership.log
+          grep -q 'test result: ok. 1 passed' /tmp/metadata-membership.log
           cargo test --locked --features metadata-consensus --test network_metadata_consensus process_quorum_preserves_outcomes_across_leader_loss_and_total_restart -- --exact | tee /tmp/metadata-consensus.log
           grep -q '^running 1 test$' /tmp/metadata-consensus.log
           grep -q '^test result: ok. 1 passed' /tmp/metadata-consensus.log

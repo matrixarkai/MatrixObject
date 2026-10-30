@@ -162,6 +162,8 @@ pub mod directory;
 pub mod meta_client;
 #[cfg(feature = "meta-server")]
 mod meta_identity;
+mod peer_membership;
+pub use peer_membership::{MembershipOperation, MembershipRequest, MembershipStatus};
 #[cfg(feature = "meta-server")]
 pub mod meta_message;
 #[cfg(feature = "meta-server")]

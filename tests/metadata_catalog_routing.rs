@@ -171,6 +171,7 @@ fn response_timeout_covers_the_entire_frame_not_each_byte() {
 
 fn identity() -> matrixobjectstore_rs::cluster::MetaGroupIdentity {
     matrixobjectstore_rs::cluster::MetaGroupIdentity {
+        bootstrap_voters: Vec::new(),
         version: 1,
         group_id: 42,
         node_id: 1,

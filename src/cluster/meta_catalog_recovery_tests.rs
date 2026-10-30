@@ -50,6 +50,7 @@ fn start(
     }
     server
         .enable_raft(MetaRaftOptions {
+            bootstrap_voters: None,
             peer_tls: None,
             node_id: id,
             group_id: 81,
@@ -165,8 +166,18 @@ fn checkpoint_index(path: &Path) -> Option<u64> {
     if batch.version != 4 {
         return None;
     }
-    let snapshot = raft::eraftpb::Snapshot::decode(batch.snapshot.as_slice()).ok()?;
-    Some(snapshot.get_metadata().index)
+    #[derive(Clone, PartialEq, Message)]
+    struct Metadata {
+        #[prost(uint64, tag = "2")]
+        index: u64,
+    }
+    #[derive(Clone, PartialEq, Message)]
+    struct Snapshot {
+        #[prost(message, optional, tag = "2")]
+        metadata: Option<Metadata>,
+    }
+    let snapshot = Snapshot::decode(batch.snapshot.as_slice()).ok()?;
+    Some(snapshot.metadata?.index)
 }
 
 #[test]
