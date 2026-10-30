@@ -287,7 +287,7 @@ impl MatrixReplicaService {
     // -----------------------------------------------------------------------------------
     //
     // EVERY ACCESSOR BELOW IS `#[cfg(test)]`, AND THAT IS THE POINT RATHER THAN TIDINESS.
-    // Their only callers are in `src/tests.rs`. Left ungated they would be a production
+    // Their only callers are in `src/object_store_regression_tests.rs`. Left ungated they would be a production
     // surface whose readers are all `cfg(test)` -- which this repository has been bitten by
     // before: a field whose only readers were test code could not be seen to be dead by
     // `cargo test --lib`, because the suite is exactly the build in which it is alive.

@@ -266,7 +266,7 @@ pub use storage_protocol::*;
 mod raft;
 pub use raft::*;
 
-#[path = "store/core.rs"]
+#[path = "store/object_store_state.rs"]
 mod core_store;
 pub use core_store::*;
 
@@ -324,4 +324,5 @@ pub mod net;
 pub mod cluster;
 
 #[cfg(test)]
+#[path = "object_store_regression_tests.rs"]
 mod tests;

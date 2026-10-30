@@ -30,7 +30,7 @@ pub struct ObjectChangeRecord {
     /// "fnv1a64:" followed by 16 hex digits, so holding the number costs the
     /// same 16 inline bytes a `Box<str>` cost and drops the 24-byte buffer
     /// behind it -- 24,576 bytes across the 1,024 records the feed retains at
-    /// its bound, at no per-object cost. `store/core.rs` already holds payload
+    /// its bound, at no per-object cost. `store/object_store_state.rs` already holds payload
     /// digests this way.
     ///
     /// `None` is the EMPTY etag, which is a real state rather than a missing
