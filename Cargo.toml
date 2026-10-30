@@ -69,7 +69,7 @@ rustls-pemfile = { version = "2", optional = true }
 prost = "0.11.9"
 fs2 = { version = "0.4.3", optional = true }
 raft = { version = "0.7", optional = true, default-features = false, features = ["prost-codec"] }
-matrixraft = { git = "https://github.com/matrixarkai/matrixraft.git", rev = "7fac845ab1bfd34ef69f142d2d5fd0cb39e28f1c", optional = true }
+matrixraft = { git = "https://github.com/matrixarkai/matrixraft.git", rev = "e3f6d9f4a5da1fe4c340dc6f1dc565ddb1506f2f", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2", optional = true }
