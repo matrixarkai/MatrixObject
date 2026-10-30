@@ -463,7 +463,7 @@ fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() 
                 s.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
                 s.set_nodelay(true).unwrap();
             }
-            for phase in 0..6 {
+            for phase in 0..8 {
                 let mut header = [0; 6];
                 front.read_exact(&mut header).unwrap();
                 let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
@@ -494,6 +494,8 @@ fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() 
             RequestCode::HeadChunk,
             RequestCode::DiscardChunkIfSequence,
             RequestCode::ReadChunk,
+            RequestCode::HeadChunk,
+            RequestCode::HeadChunk,
         ];
         for (phase, code) in codes.into_iter().enumerate() {
             let mut members = std::collections::BTreeSet::new();
@@ -518,6 +520,13 @@ fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() 
     assert_eq!(set.read_chunk(&page(0), 0, 8).unwrap().data, b"abcdefgh");
     assert_eq!(set.discard_chunk(&page(0), 2, 2).unwrap(), 3);
     assert_eq!(set.read_chunk(&page(0), 0, 2).unwrap().data, b"ab");
+    let head = set.head_chunk(&page(0)).unwrap();
+    assert_eq!(head.write_sequence, 2);
+    assert_eq!(head.discarded_ranges.len(), 1);
+    assert!(matches!(
+        set.head_chunk(&page(1)),
+        Err(ObjectError::NotFound(_))
+    ));
     drop(set);
     coordinator.join().unwrap();
     for worker in workers {
@@ -661,6 +670,7 @@ fn star_fanout_measures_reads_and_writes_with_delayed_replies() {
         };
         let mut writes = Vec::new();
         let mut reads = Vec::new();
+        let mut heads = Vec::new();
         for index in 0..24 {
             let id = page(index);
             let data = vec![index as u8; 1024];
@@ -694,6 +704,23 @@ fn star_fanout_measures_reads_and_writes_with_delayed_replies() {
                 }
             }
             reads.push(began.elapsed().as_micros() as u64);
+            let began = Instant::now();
+            if let Some(set) = &mut set {
+                let head = set.head_chunk(&id).unwrap();
+                assert_eq!(head.write_sequence, 1);
+                assert_eq!(head.logical_length, 1024);
+                assert!(head.discarded_ranges.is_empty());
+            } else {
+                let results: Vec<_> = serial
+                    .iter_mut()
+                    .map(|c| c.head_chunk(&id).unwrap())
+                    .collect();
+                assert!(results.iter().all(|head| head == &results[0]));
+                assert_eq!(results[0].write_sequence, 1);
+                assert_eq!(results[0].logical_length, 1024);
+                assert!(results[0].discarded_ranges.is_empty());
+            }
+            heads.push(began.elapsed().as_micros() as u64);
         }
         drop(set);
         drop(serial);
@@ -709,7 +736,7 @@ fn star_fanout_measures_reads_and_writes_with_delayed_replies() {
                 assert_eq!(read.write_sequence, 1);
             }
         }
-        for (operation, mut samples) in [("write", writes), ("read", reads)] {
+        for (operation, mut samples) in [("write", writes), ("read", reads), ("head", heads)] {
             let total: u64 = samples.iter().sum();
             samples.sort_unstable();
             eprintln!("STAR_DELAY round={round} pipelined={pipelined} operation={operation} replicas=3 bytes=1024 delay_ms=5 samples=24 total_us={total} p50_us={} p95_us={} operations_per_second={:.1}", samples[11], samples[22], 24_000_000.0 / total as f64);

@@ -320,9 +320,30 @@ partial application can still occur if a member fails after preflight. Callers
 must resolve uncertain results before issuing another operation.
 
 The check prevents an already divergent member from counting toward a fresh write
-acknowledgment. It does not repair that member, establish
-cross-client linearizability, authenticate replies. Repair of missed writes remains unfinished. Raft-group
-writes continue through their leader and do not use this star fan-out.
+acknowledgment. It does not repair that member, establish cross-client linearizability
+or authenticate replies. Explicit repair is available through `repair_chunk` and
+`repair_inventory_batch`; see [maintenance and repair](configuring.md).
+Raft-group writes continue through their leader and do not use this star fan-out.
+
+## Star head-read scheduling
+
+`RemoteReplicaSet::head_chunk` sends a head request to every member before waiting
+for responses. Complete-state reads and repair use the same scheduling for their
+quorum head checks. Each sent exchange is finished, including responses beyond
+the required quorum. Full-head voting, absence detection, distinct-peer checks,
+per-connection deadlines and failure handling retain their existing semantics.
+No worker threads, mutation retries or new protocol messages are introduced.
+An individual blocked send or response can still delay the operation; this is not
+early return on quorum or a whole-operation deadline.
+
+The existing socket-phase test now holds every head reply until all members have
+received the request, checking both present and absent pages. The controlled-delay
+release benchmark also times heads: over three alternating serial/send-all rounds
+of 24 samples with three members and a 5 ms delay per reply, median head latency
+was 16.78–16.91 ms serially and 5.87–5.88 ms with send-all scheduling on local WSL.
+Those injected-delay observations measure overlapping replies, not production
+latency or total repair throughput. Repair still validates complete bytes and
+rechecks its source quorum before staging and committing each destination.
 
 ## Conditional discards
 
