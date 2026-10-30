@@ -1,7 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
+    /// Compatibility spelling; use [`Self::can_accept_page_read`].
+    #[deprecated(note = "use can_accept_page_read")]
     pub fn can_accept_slab_read(
+        &self,
+        chunk_id: &ChunkId,
+        offset: u64,
+        length: u64,
+        max_payload_bytes: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_read(chunk_id, offset, length, max_payload_bytes)
+    }
+
+    pub fn can_accept_page_read(
         &self,
         chunk_id: &ChunkId,
         offset: u64,
@@ -131,7 +143,17 @@ impl MatrixChunkService {
         Ok(admission)
     }
 
+    /// Compatibility spelling; use [`Self::can_accept_page_reads`].
+    #[deprecated(note = "use can_accept_page_reads")]
     pub fn can_accept_slab_reads(
+        &self,
+        requests: Vec<ChunkRangeRequest>,
+        max_payload_bytes: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_reads(requests, max_payload_bytes)
+    }
+
+    pub fn can_accept_page_reads(
         &self,
         requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,
@@ -291,7 +313,7 @@ impl MatrixChunkService {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let mut admission = self.can_accept_slab_reads(requests, max_payload_bytes)?;
+        let mut admission = self.can_accept_page_reads(requests, max_payload_bytes)?;
         self.stamp_route_control_admission(&mut admission, expected_route_control_checksum);
         stamp_page_range_admission_proof("CanReadBlockBatch", &mut admission);
         Ok(admission)

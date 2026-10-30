@@ -1,7 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
+    /// Compatibility spelling; use [`Self::can_accept_page_discard`].
+    #[deprecated(note = "use can_accept_page_discard")]
     pub fn can_accept_slab_discard(
+        &self,
+        chunk_id: &ChunkId,
+        offset: u64,
+        length: u64,
+        max_discard_bytes: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_discard(chunk_id, offset, length, max_discard_bytes)
+    }
+
+    pub fn can_accept_page_discard(
         &self,
         chunk_id: &ChunkId,
         offset: u64,
@@ -77,7 +89,26 @@ impl MatrixChunkService {
         Ok(admission)
     }
 
+    /// Compatibility spelling; use [`Self::can_accept_page_discard_fenced`].
+    #[deprecated(note = "use can_accept_page_discard_fenced")]
     pub fn can_accept_slab_discard_fenced(
+        &self,
+        chunk_id: &ChunkId,
+        offset: u64,
+        length: u64,
+        max_discard_bytes: u64,
+        expected_route_control_checksum: Option<&str>,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_discard_fenced(
+            chunk_id,
+            offset,
+            length,
+            max_discard_bytes,
+            expected_route_control_checksum,
+        )
+    }
+
+    pub fn can_accept_page_discard_fenced(
         &self,
         chunk_id: &ChunkId,
         offset: u64,
@@ -87,42 +118,88 @@ impl MatrixChunkService {
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         let mut admission =
-            self.can_accept_slab_discard(chunk_id, offset, length, max_discard_bytes)?;
+            self.can_accept_page_discard(chunk_id, offset, length, max_discard_bytes)?;
         self.stamp_route_control_admission(&mut admission, expected_route_control_checksum);
         stamp_page_range_admission_proof("CanDiscardBlock", &mut admission);
         Ok(admission)
     }
 
+    /// Compatibility spelling; use [`Self::can_accept_page_discards`].
+    #[deprecated(note = "use can_accept_page_discards")]
     pub fn can_accept_slab_discards(
         &self,
         requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.can_accept_slab_discards_borrowed(&requests, max_discard_bytes)
+        self.can_accept_page_discards(requests, max_discard_bytes)
     }
 
+    pub fn can_accept_page_discards(
+        &self,
+        requests: Vec<ChunkRangeRequest>,
+        max_discard_bytes: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_discards_borrowed(&requests, max_discard_bytes)
+    }
+
+    /// Compatibility spelling; use [`Self::can_accept_page_discards_borrowed`].
+    #[deprecated(note = "use can_accept_page_discards_borrowed")]
     pub fn can_accept_slab_discards_borrowed(
         &self,
         requests: &[ChunkRangeRequest],
         max_discard_bytes: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.can_accept_slab_discards_from_borrowed(requests, max_discard_bytes, 0)
+        self.can_accept_page_discards_borrowed(requests, max_discard_bytes)
     }
 
+    pub fn can_accept_page_discards_borrowed(
+        &self,
+        requests: &[ChunkRangeRequest],
+        max_discard_bytes: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_discards_from_borrowed(requests, max_discard_bytes, 0)
+    }
+
+    /// Compatibility spelling; use [`Self::can_accept_page_discards_from`].
+    #[deprecated(note = "use can_accept_page_discards_from")]
     pub fn can_accept_slab_discards_from(
         &self,
         requests: Vec<ChunkRangeRequest>,
         max_discard_bytes: u64,
         discard_start_range_index: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.can_accept_slab_discards_from_borrowed(
+        self.can_accept_page_discards_from(requests, max_discard_bytes, discard_start_range_index)
+    }
+
+    pub fn can_accept_page_discards_from(
+        &self,
+        requests: Vec<ChunkRangeRequest>,
+        max_discard_bytes: u64,
+        discard_start_range_index: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_discards_from_borrowed(
             &requests,
             max_discard_bytes,
             discard_start_range_index,
         )
     }
 
+    /// Compatibility spelling; use [`Self::can_accept_page_discards_from_borrowed`].
+    #[deprecated(note = "use can_accept_page_discards_from_borrowed")]
     pub fn can_accept_slab_discards_from_borrowed(
+        &self,
+        requests: &[ChunkRangeRequest],
+        max_discard_bytes: u64,
+        discard_start_range_index: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_discards_from_borrowed(
+            requests,
+            max_discard_bytes,
+            discard_start_range_index,
+        )
+    }
+
+    pub fn can_accept_page_discards_from_borrowed(
         &self,
         requests: &[ChunkRangeRequest],
         max_discard_bytes: u64,
@@ -254,7 +331,7 @@ impl MatrixChunkService {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let mut admission = self.can_accept_slab_discards_borrowed(&requests, max_discard_bytes)?;
+        let mut admission = self.can_accept_page_discards_borrowed(&requests, max_discard_bytes)?;
         self.stamp_route_control_admission(&mut admission, expected_route_control_checksum);
         stamp_page_range_admission_proof("CanDiscardBlockBatch", &mut admission);
         Ok(admission)
@@ -283,7 +360,7 @@ impl MatrixChunkService {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let mut admission = self.can_accept_slab_discards_from_borrowed(
+        let mut admission = self.can_accept_page_discards_from_borrowed(
             requests,
             max_discard_bytes,
             discard_start_range_index,

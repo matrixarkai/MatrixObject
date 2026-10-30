@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
+    /// Compatibility spelling; use [`Self::discard_page_ranges`].
+    #[deprecated(note = "use discard_page_ranges")]
     pub fn discard_slab_ranges(
+        &mut self,
+        requests: Vec<ChunkRangeRequest>,
+    ) -> Result<ChunkBatchStats, ObjectError> {
+        self.discard_page_ranges(requests)
+    }
+
+    pub fn discard_page_ranges(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
     ) -> Result<ChunkBatchStats, ObjectError> {
@@ -14,13 +23,13 @@ impl MatrixChunkService {
         max_discard_bytes: u64,
         discard_start_range_index: u64,
     ) -> Result<(ChunkBatchStats, ChunkRangeAdmission), ObjectError> {
-        let admission = self.can_accept_slab_discards_from_borrowed(
+        let admission = self.can_accept_page_discards_from_borrowed(
             &requests,
             max_discard_bytes,
             discard_start_range_index,
         )?;
         let selected = select_admitted_page_discard_requests(requests, &admission)?;
-        let stats = self.discard_slab_ranges(selected)?;
+        let stats = self.discard_page_ranges(selected)?;
         Ok((stats, admission))
     }
 
@@ -40,7 +49,7 @@ impl MatrixChunkService {
     ) -> Result<ChunkBatchStats, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
         self.check_expected_chunk_control_proof_checksum(expected_chunk_control_proof_checksum)?;
-        self.discard_slab_ranges(requests)
+        self.discard_page_ranges(requests)
     }
 
     pub fn discard_chunk_ranges_storage_fenced_report(

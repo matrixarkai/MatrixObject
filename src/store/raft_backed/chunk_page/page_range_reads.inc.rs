@@ -117,6 +117,8 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         Ok(ProvenStorageRead { value, proof })
     }
 
+    /// Compatibility spelling; use [`Self::read_page_ranges_with_read_proof_linearizable_fenced`].
+    #[deprecated(note = "use read_page_ranges_with_read_proof_linearizable_fenced")]
     pub fn read_slab_ranges_with_read_proof_linearizable_fenced(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
@@ -124,7 +126,22 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         max_chunk_read_count: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ProvenStorageRead<(Vec<ChunkRangeReadResult>, ChunkBatchStats)>, ObjectError> {
-        self.read_slab_ranges_with_read_proof_linearizable_fenced_committed_at(
+        self.read_page_ranges_with_read_proof_linearizable_fenced(
+            requests,
+            max_payload_bytes,
+            max_chunk_read_count,
+            expected_route_control_checksum,
+        )
+    }
+
+    pub fn read_page_ranges_with_read_proof_linearizable_fenced(
+        &mut self,
+        requests: Vec<ChunkRangeRequest>,
+        max_payload_bytes: u64,
+        max_chunk_read_count: u64,
+        expected_route_control_checksum: Option<&str>,
+    ) -> Result<ProvenStorageRead<(Vec<ChunkRangeReadResult>, ChunkBatchStats)>, ObjectError> {
+        self.read_page_ranges_with_read_proof_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
             max_chunk_read_count,
@@ -168,7 +185,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
     > {
         let expected_checksum = expected_route_control_checksum.as_ref().to_string();
         let route_control_proof = self.store.chunk_service.route_control_proof();
-        let proven = self.read_slab_ranges_with_read_proof_linearizable_fenced_committed_at(
+        let proven = self.read_page_ranges_with_read_proof_linearizable_fenced_committed_at(
             requests,
             max_payload_bytes,
             max_chunk_read_count,
@@ -184,7 +201,28 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         })
     }
 
+    /// Compatibility spelling; use [`Self::read_page_ranges_with_read_proof_linearizable_fenced_committed_at`].
+    #[deprecated(note = "use read_page_ranges_with_read_proof_linearizable_fenced_committed_at")]
     pub fn read_slab_ranges_with_read_proof_linearizable_fenced_committed_at(
+        &mut self,
+        requests: Vec<ChunkRangeRequest>,
+        max_payload_bytes: u64,
+        max_chunk_read_count: u64,
+        expected_route_control_checksum: Option<&str>,
+        min_read_index: u64,
+        min_commit_index: u64,
+    ) -> Result<ProvenStorageRead<(Vec<ChunkRangeReadResult>, ChunkBatchStats)>, ObjectError> {
+        self.read_page_ranges_with_read_proof_linearizable_fenced_committed_at(
+            requests,
+            max_payload_bytes,
+            max_chunk_read_count,
+            expected_route_control_checksum,
+            min_read_index,
+            min_commit_index,
+        )
+    }
+
+    pub fn read_page_ranges_with_read_proof_linearizable_fenced_committed_at(
         &mut self,
         requests: Vec<ChunkRangeRequest>,
         max_payload_bytes: u64,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-pub(crate) fn slab_discard_request_checksum(
+pub(crate) fn chunk_range_discard_request_checksum(
     chunk_id: &ChunkId,
     ranges: &[DataRange],
 ) -> String {

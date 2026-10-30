@@ -189,7 +189,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &mut self,
         min_stale_bytes: u64,
         max_ranges_per_chunk: usize,
-        max_slabs: usize,
+        max_chunks: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
     ) -> Result<ChunkDiscardRunReport, ObjectError> {
         let mut route_checksum = expected_page_route_control_checksum.as_ref().to_string();
@@ -226,7 +226,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                 report.compaction_chunk_ids.push(plan.chunk_id);
                 continue;
             }
-            if max_slabs > 0 && report.attempted_chunks >= max_slabs as u64 {
+            if max_chunks > 0 && report.attempted_chunks >= max_chunks as u64 {
                 report.skipped_limit_chunks = report.skipped_limit_chunks.saturating_add(1);
                 continue;
             }
@@ -270,7 +270,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         &mut self,
         min_stale_bytes: u64,
         max_ranges_per_chunk: usize,
-        max_slabs: usize,
+        max_chunks: usize,
         expected_page_route_control_checksum: impl AsRef<str>,
         expected_object_gc_report_proof_checksum: impl AsRef<str>,
     ) -> Result<ChunkDiscardRunReport, ObjectError> {
@@ -291,7 +291,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
         self.propose_chunk_discards_prepared_linearizable_fenced(
             min_stale_bytes,
             max_ranges_per_chunk,
-            max_slabs,
+            max_chunks,
             route_checksum,
         )
     }

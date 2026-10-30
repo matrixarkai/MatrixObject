@@ -209,7 +209,7 @@ impl MatrixObjectStore {
         }
         if !discard_requests.is_empty() {
             self.chunk_service
-                .discard_slab_ranges(discard_requests)?;
+                .discard_page_ranges(discard_requests)?;
         }
         Ok(())
     }

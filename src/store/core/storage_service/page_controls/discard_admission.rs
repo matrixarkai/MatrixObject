@@ -9,7 +9,7 @@ impl MatrixObjectStore {
         max_discard_bytes: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.chunk_service
-            .can_accept_slab_discard(chunk_id, offset, length, max_discard_bytes)
+            .can_accept_page_discard(chunk_id, offset, length, max_discard_bytes)
     }
 
     pub fn can_accept_page_discard_fenced(
@@ -20,7 +20,7 @@ impl MatrixObjectStore {
         max_discard_bytes: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.chunk_service.can_accept_slab_discard_fenced(
+        self.chunk_service.can_accept_page_discard_fenced(
             chunk_id,
             offset,
             length,
@@ -35,7 +35,7 @@ impl MatrixObjectStore {
         max_discard_bytes: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.chunk_service
-            .can_accept_slab_discards(requests, max_discard_bytes)
+            .can_accept_page_discards(requests, max_discard_bytes)
     }
 
     pub fn can_accept_page_batch_discard_from(
@@ -44,7 +44,7 @@ impl MatrixObjectStore {
         max_discard_bytes: u64,
         discard_start_range_index: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.chunk_service.can_accept_slab_discards_from(
+        self.chunk_service.can_accept_page_discards_from(
             requests,
             max_discard_bytes,
             discard_start_range_index,

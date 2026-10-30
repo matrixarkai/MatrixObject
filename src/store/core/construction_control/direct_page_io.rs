@@ -96,7 +96,7 @@ impl MatrixObjectStore {
         };
         let (stats, receipt) = self
             .chunk_service
-            .write_slab_ranges_idempotent_borrowed(&writes, idempotency_key)?;
+            .write_page_ranges_idempotent_borrowed(&writes, idempotency_key)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
                 if let Some(rollback) = rollback {
@@ -163,7 +163,7 @@ impl MatrixObjectStore {
         };
         let (stats, receipt) = self
             .chunk_service
-            .discard_slab_ranges_idempotent_borrowed(&requests, idempotency_key)?;
+            .discard_page_ranges_idempotent_borrowed(&requests, idempotency_key)?;
         if self.options.persistent_snapshot_flush_on_commit {
             if let Err(err) = self.flush_persistent_snapshot() {
                 if let Some(rollback) = rollback {

@@ -34,7 +34,7 @@ impl MatrixObjectStore {
             page_batch_mutation_image_fingerprint(&self.chunk_service);
         let mut projected = self.chunk_service.clone();
         let (_stats, receipt) =
-            projected.write_slab_ranges_idempotent_borrowed(&writes, idempotency_key)?;
+            projected.write_page_ranges_idempotent_borrowed(&writes, idempotency_key)?;
         let after_page_service_fingerprint = page_batch_mutation_image_fingerprint(&projected);
         let mut prepared = PreparedPageBatchWrite {
             writes,
@@ -91,7 +91,7 @@ impl MatrixObjectStore {
                 "page prepared batch write must contain at least one range".to_string(),
             ));
         }
-        let admission = self.chunk_service.can_accept_slab_writes_borrowed(
+        let admission = self.chunk_service.can_accept_page_writes_borrowed(
             &selected,
             max_write_bytes,
             max_chunk_write_count,
@@ -328,7 +328,7 @@ impl MatrixObjectStore {
                 "page prepared batch write source fingerprint mismatch".to_string(),
             ));
         }
-        let (_stats, receipt) = self.chunk_service.write_slab_ranges_idempotent_borrowed(
+        let (_stats, receipt) = self.chunk_service.write_page_ranges_idempotent_borrowed(
             &prepared.writes,
             &prepared.receipt.idempotency_key,
         )?;

@@ -1,7 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 impl MatrixChunkService {
+    /// Compatibility spelling; use [`Self::can_accept_page_write`].
+    #[deprecated(note = "use can_accept_page_write")]
     pub fn can_accept_slab_write(
+        &self,
+        chunk_id: &ChunkId,
+        offset: u64,
+        length: u64,
+        max_write_bytes: u64,
+        max_chunk_write_count: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_write(chunk_id, offset, length, max_write_bytes, max_chunk_write_count)
+    }
+
+    pub fn can_accept_page_write(
         &self,
         chunk_id: &ChunkId,
         offset: u64,
@@ -71,6 +84,8 @@ impl MatrixChunkService {
         Ok(admission)
     }
 
+    /// Compatibility spelling; use [`Self::can_accept_page_write_fenced`].
+    #[deprecated(note = "use can_accept_page_write_fenced")]
     pub fn can_accept_slab_write_fenced(
         &self,
         chunk_id: &ChunkId,
@@ -80,8 +95,27 @@ impl MatrixChunkService {
         max_chunk_write_count: u64,
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_write_fenced(
+            chunk_id,
+            offset,
+            length,
+            max_write_bytes,
+            max_chunk_write_count,
+            expected_route_control_checksum,
+        )
+    }
+
+    pub fn can_accept_page_write_fenced(
+        &self,
+        chunk_id: &ChunkId,
+        offset: u64,
+        length: u64,
+        max_write_bytes: u64,
+        max_chunk_write_count: u64,
+        expected_route_control_checksum: Option<&str>,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let mut admission = self.can_accept_slab_write(
+        let mut admission = self.can_accept_page_write(
             chunk_id,
             offset,
             length,
@@ -93,22 +127,44 @@ impl MatrixChunkService {
         Ok(admission)
     }
 
+    /// Compatibility spelling; use [`Self::can_accept_page_writes`].
+    #[deprecated(note = "use can_accept_page_writes")]
     pub fn can_accept_slab_writes(
         &self,
         writes: Vec<ChunkRangeWrite>,
         max_write_bytes: u64,
         max_chunk_write_count: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.can_accept_slab_writes_borrowed(&writes, max_write_bytes, max_chunk_write_count)
+        self.can_accept_page_writes(writes, max_write_bytes, max_chunk_write_count)
     }
 
+    pub fn can_accept_page_writes(
+        &self,
+        writes: Vec<ChunkRangeWrite>,
+        max_write_bytes: u64,
+        max_chunk_write_count: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_writes_borrowed(&writes, max_write_bytes, max_chunk_write_count)
+    }
+
+    /// Compatibility spelling; use [`Self::can_accept_page_writes_borrowed`].
+    #[deprecated(note = "use can_accept_page_writes_borrowed")]
     pub fn can_accept_slab_writes_borrowed(
         &self,
         writes: &[ChunkRangeWrite],
         max_write_bytes: u64,
         max_chunk_write_count: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.can_accept_slab_writes_from_borrowed(
+        self.can_accept_page_writes_borrowed(writes, max_write_bytes, max_chunk_write_count)
+    }
+
+    pub fn can_accept_page_writes_borrowed(
+        &self,
+        writes: &[ChunkRangeWrite],
+        max_write_bytes: u64,
+        max_chunk_write_count: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_writes_from_borrowed(
             writes,
             max_write_bytes,
             max_chunk_write_count,
@@ -116,6 +172,8 @@ impl MatrixChunkService {
         )
     }
 
+    /// Compatibility spelling; use [`Self::can_accept_page_writes_from`].
+    #[deprecated(note = "use can_accept_page_writes_from")]
     pub fn can_accept_slab_writes_from(
         &self,
         writes: Vec<ChunkRangeWrite>,
@@ -123,7 +181,22 @@ impl MatrixChunkService {
         max_chunk_write_count: u64,
         write_start_range_index: u64,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
-        self.can_accept_slab_writes_from_borrowed(
+        self.can_accept_page_writes_from(
+            writes,
+            max_write_bytes,
+            max_chunk_write_count,
+            write_start_range_index,
+        )
+    }
+
+    pub fn can_accept_page_writes_from(
+        &self,
+        writes: Vec<ChunkRangeWrite>,
+        max_write_bytes: u64,
+        max_chunk_write_count: u64,
+        write_start_range_index: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_writes_from_borrowed(
             &writes,
             max_write_bytes,
             max_chunk_write_count,
@@ -131,7 +204,24 @@ impl MatrixChunkService {
         )
     }
 
+    /// Compatibility spelling; use [`Self::can_accept_page_writes_from_borrowed`].
+    #[deprecated(note = "use can_accept_page_writes_from_borrowed")]
     pub fn can_accept_slab_writes_from_borrowed(
+        &self,
+        writes: &[ChunkRangeWrite],
+        max_write_bytes: u64,
+        max_chunk_write_count: u64,
+        write_start_range_index: u64,
+    ) -> Result<ChunkRangeAdmission, ObjectError> {
+        self.can_accept_page_writes_from_borrowed(
+            writes,
+            max_write_bytes,
+            max_chunk_write_count,
+            write_start_range_index,
+        )
+    }
+
+    pub fn can_accept_page_writes_from_borrowed(
         &self,
         writes: &[ChunkRangeWrite],
         max_write_bytes: u64,
@@ -349,7 +439,7 @@ impl MatrixChunkService {
         expected_route_control_checksum: Option<&str>,
     ) -> Result<ChunkRangeAdmission, ObjectError> {
         self.check_expected_route_control_checksum(expected_route_control_checksum)?;
-        let mut admission = self.can_accept_slab_writes_from_borrowed(
+        let mut admission = self.can_accept_page_writes_from_borrowed(
             writes,
             max_write_bytes,
             max_chunk_write_count,
