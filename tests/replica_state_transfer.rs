@@ -237,7 +237,8 @@ fn star_repair_aborts_changed_sources_and_never_replays_uncertain_commits() {
     let original = source.head_chunk(&page(0)).unwrap();
     source.write_chunk(page(0), 0, b"updated").unwrap();
     let newer = source.head_chunk(&page(0)).unwrap();
-    for change_source in [true, false] {
+    for (change_source, batch_mode) in [(true, false), (false, false), (true, true), (false, true)]
+    {
         let changed = Arc::new(AtomicBool::new(false));
         let finished = Arc::new(AtomicBool::new(false));
         let commits = Arc::new(AtomicUsize::new(0));
@@ -298,6 +299,10 @@ fn star_repair_aborts_changed_sources_and_never_replays_uncertain_commits() {
                         )
                         .unwrap();
                         let reply = match request {
+                            ReplicaRequest::PageInventory { after, limit } => {
+                                assert!(after.is_none());assert_eq!(limit,1);
+                                encode_reply(&ReplicaReply::PageInventory(matrixobjectstore_rs::cluster::message::PageInventory {entries:if index==2 {vec![]} else {vec![(page(0),1)]},has_more:false}))
+                            }
                             ReplicaRequest::HeadChunk { .. } if index == 2 => {
                                 encode_failure(StatusCode::NotFound, "absent")
                             }
@@ -380,7 +385,16 @@ fn star_repair_aborts_changed_sources_and_never_replays_uncertain_commits() {
             },
         )
         .unwrap();
-        let report = set.repair_chunk(&page(0)).unwrap();
+        let report = if batch_mode {
+            let batch = set.repair_inventory_batch(None, 1).unwrap();
+            assert!(batch.blocked);
+            assert!(batch.has_more);
+            assert_eq!(batch.resume_after, None);
+            assert_eq!(batch.pages.len(), 1);
+            batch.pages.into_iter().next().unwrap().result.unwrap()
+        } else {
+            set.repair_chunk(&page(0)).unwrap()
+        };
         finished.store(true, Ordering::SeqCst);
         assert_eq!(report.source, original);
         assert_eq!(

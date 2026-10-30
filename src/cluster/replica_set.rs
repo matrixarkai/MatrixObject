@@ -62,6 +62,25 @@ pub struct PageRepairReport {
     pub members: Vec<PageRepairStatus>,
 }
 
+/// One attempted page in a bounded inventory repair traversal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PageRepairEntry {
+    pub page: PageId,
+    pub result: Result<PageRepairReport, String>,
+}
+
+/// Live inventory progress; this is not a frozen snapshot or readmission certificate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PageRepairBatch {
+    pub pages: Vec<PageRepairEntry>,
+    /// Last page whose members all returned Current or Installed. Exclusive on resume.
+    pub resume_after: Option<PageId>,
+    /// More inventory was observed, or an unresolved page stopped traversal.
+    pub has_more: bool,
+    /// Inspect the last page before resuming, especially after an uncertain commit.
+    pub blocked: bool,
+}
+
 impl RemoteReplicaSet {
     /// Connect to every endpoint, refusing incomplete or duplicate membership.
     ///
@@ -505,6 +524,64 @@ impl RemoteReplicaSet {
             }
         }
         Ok(report)
+    }
+
+    /// Repair at most 64 distinct pages from a bounded union of member inventories.
+    /// Every inventory must answer before mutations begin. Stop at the first page
+    /// with an error, deferred member or uncertain commit, without advancing past it.
+    /// Fence writers before using a completed live traversal for readmission.
+    pub fn repair_inventory_batch(
+        &mut self,
+        after: Option<&PageId>,
+        limit: usize,
+    ) -> Result<PageRepairBatch, ObjectError> {
+        if !(1..=64).contains(&limit) {
+            return Err(ObjectError::InvalidArgument(
+                "repair batch limit must be between 1 and 64".into(),
+            ));
+        }
+        self.reconnect_failed();
+        let mut selected = BTreeSet::new();
+        let mut has_more = false;
+        for replica in &mut self.replicas {
+            let inventory = replica.page_inventory(after, limit as u64)?;
+            has_more |= inventory.has_more;
+            for (page, _) in inventory.entries {
+                selected.insert(page);
+                if selected.len() > limit {
+                    selected.pop_last();
+                    has_more = true;
+                }
+            }
+        }
+        let mut batch = PageRepairBatch {
+            pages: Vec::with_capacity(selected.len()),
+            resume_after: after.cloned(),
+            has_more,
+            blocked: false,
+        };
+        for page in selected {
+            let result = self.repair_chunk(&page).map_err(|error| error.to_string());
+            let resolved = result.as_ref().is_ok_and(|report| {
+                report.members.iter().all(|status| {
+                    matches!(
+                        status,
+                        PageRepairStatus::Current | PageRepairStatus::Installed
+                    )
+                })
+            });
+            batch.pages.push(PageRepairEntry {
+                page: page.clone(),
+                result,
+            });
+            if !resolved {
+                batch.blocked = true;
+                batch.has_more = true;
+                break;
+            }
+            batch.resume_after = Some(page);
+        }
+        Ok(batch)
     }
 
     /// Conditionally discard on replicas matching a quorum-agreed existing page.
