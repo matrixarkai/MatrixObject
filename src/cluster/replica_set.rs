@@ -159,10 +159,36 @@ impl RemoteReplicaSet {
             .filter(|(i, _)| selected.map_or(true, |members| members[*i]))
             .map(|(_, replica)| replica.begin_standalone(request))
             .collect();
-        pending
-            .into_iter()
-            .map(|reply| reply.and_then(|reply| reply.finish()))
-            .collect()
+        let mut replies: Vec<_> = (0..pending.len()).map(|_| None).collect();
+        let mut pending: Vec<_> = pending.into_iter().enumerate().map(|(index, result)| {
+            match result {
+                Ok(reply) => Some(reply),
+                Err(error) => {
+                    replies[index] = Some(Err(error));
+                    None
+                }
+            }
+        }).collect();
+        while pending.iter().any(Option::is_some) {
+            let mut progressed = false;
+            for (index, slot) in pending.iter_mut().enumerate() {
+                let result = slot.as_mut().and_then(|reply| {
+                    let before = reply.received_bytes();
+                    let result = reply.poll();
+                    progressed |= result.is_some() || reply.received_bytes() != before;
+                    result
+                });
+                if let Some(result) = result {
+                    replies[index] = Some(result);
+                    // Drop retires an incomplete frame before the connection can be reused.
+                    *slot = None;
+                }
+            }
+            if !progressed && pending.iter().any(Option::is_some) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        replies.into_iter().map(Option::unwrap).collect()
     }
 
     fn reconnect_failed(&mut self) {

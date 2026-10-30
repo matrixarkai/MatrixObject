@@ -753,3 +753,30 @@ fn star_fanout_measures_reads_and_writes_with_delayed_replies() {
         }
     }
 }
+
+#[test]
+fn star_stalled_members_share_reply_wait_budget_without_replaying() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+    let listeners: Vec<_> = (0..3).map(|_| TcpListener::bind("127.0.0.1:0").unwrap()).collect();
+    let endpoints: Vec<_> = listeners.iter().map(|s| s.local_addr().unwrap().to_string()).collect();
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions {
+        read_timeout: Duration::from_millis(600), ..Default::default()
+    }).unwrap();
+    let mut sockets: Vec<_> = listeners.iter().map(|l| l.accept().unwrap().0).collect();
+    for socket in &sockets {
+        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    }
+    let began = Instant::now();
+    assert!(set.head_chunk(&page(0)).is_err());
+    assert!(began.elapsed() < Duration::from_millis(1200), "three reply budgets accumulated: {:?}", began.elapsed());
+    for socket in &mut sockets {
+        let mut bytes = Vec::new();
+        socket.read_to_end(&mut bytes).unwrap();
+        assert!(bytes.len() >= 6);
+        assert_eq!(bytes[1], matrixobjectstore_rs::cluster::RequestCode::HeadChunk as u8);
+        let length = u32::from_be_bytes(bytes[2..6].try_into().unwrap()) as usize;
+        assert_eq!(bytes.len(), 6 + length, "exactly one request must be sent per member");
+    }
+}

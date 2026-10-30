@@ -116,6 +116,20 @@ jobs:
           grep -q '^running 1 test$' /tmp/peer-tls.log
           grep -q '^test result: ok. 1 passed' /tmp/peer-tls.log
 
+      - name: fanout reply deadline starts at send
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::client::pending_tests::fanout_reply_deadline_starts_when_request_is_sent -- --exact --nocapture | tee /tmp/fanout-deadline.log
+          grep -q '^running 1 test$' /tmp/fanout-deadline.log
+          grep -q '^test result: ok. 1 passed' /tmp/fanout-deadline.log
+
+      - name: stalled star members share their reply wait budget
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test replica_state_transfer star_stalled_members_share_reply_wait_budget_without_replaying -- --exact --nocapture | tee /tmp/star-stalled.log
+          grep -q '^running 1 test$' /tmp/star-stalled.log
+          grep -q '^test result: ok. 1 passed' /tmp/star-stalled.log
+
       - name: health convergence survives temporary metadata quorum loss
         run: |
           set -o pipefail
