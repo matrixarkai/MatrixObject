@@ -657,7 +657,7 @@ fn apply(
         drop(guard);
         return consensus.request(request);
     }
-    let request = super::health_report::stamp(request)?;
+    let request = super::health_report::stamp(request, &guard.service)?;
     let decision = match &request {
         MetaRequest::AllocateObjectPages { page_count } => {
             if guard.storage.is_none() {
@@ -1146,6 +1146,30 @@ mod chunk_group_tests {
             panic!("missing report")
         };
         assert!(reported.last_heartbeat_ms > 0);
+        let explicit = MetaRequest::HeartbeatChunkNode {
+            node_id: "chunk-1".into(),
+            expected_endpoint: "127.0.0.1:9100".into(),
+            used_bytes: 17,
+            capacity_bytes: 1024,
+            online: true,
+            now_ms: u64::MAX,
+        };
+        apply(&server.meta, explicit, 65536).unwrap();
+        // The retained timestamp is ahead of every representable wall-clock sample.
+        let automatic = MetaRequest::ReportChunkNode {
+            node_id: "chunk-1".into(),
+            expected_endpoint: "127.0.0.1:9100".into(),
+            used_bytes: 18,
+            capacity_bytes: 1024,
+            online: true,
+        };
+        let MetaReply::PlacementNode(reported) =
+            apply(&server.meta, automatic.clone(), 65536).unwrap()
+        else {
+            panic!("missing rollback report")
+        };
+        assert_eq!(reported.last_heartbeat_ms, u64::MAX);
+        assert_eq!(reported.used_bytes, 18);
         drop(server);
         let recovered = MetaNodeServer::bind_with_snapshot(
             "127.0.0.1:0",
@@ -1158,7 +1182,20 @@ mod chunk_group_tests {
         else {
             panic!("missing roster")
         };
-        assert_eq!(nodes, vec![reported]);
+        assert_eq!(nodes, vec![reported.clone()]);
+        assert_eq!(
+            apply(&recovered.meta, automatic, 65536).unwrap(),
+            MetaReply::PlacementNode(reported)
+        );
+        let stale = MetaRequest::HeartbeatChunkNode {
+            node_id: "chunk-1".into(),
+            expected_endpoint: "127.0.0.1:9100".into(),
+            used_bytes: 19,
+            capacity_bytes: 1024,
+            online: true,
+            now_ms: u64::MAX - 1,
+        };
+        assert!(apply(&recovered.meta, stale, 65536).is_err());
         drop(recovered);
         std::fs::remove_dir_all(directory).unwrap();
     }

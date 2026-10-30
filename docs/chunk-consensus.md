@@ -514,3 +514,18 @@ transport, and other consensus errors retain their ordinary error response;
 matching error text never permits routing. Accepted writes retain their uncertain
 outcome handling and are not replayed after leadership loss. This does not add
 an election wait or guarantee availability while every voter refuses a request.
+
+## Request deadline diagnostics
+
+Consensus response errors distinguish a deadline from a disconnected worker and
+include the last observed request phase: queued, preparing, read confirmation,
+or proposal completion. Each admitted request retains one shared atomic byte
+until its worker and waiting caller release it. The markers do not change queues,
+consensus decisions, request deadlines, or durable formats.
+
+Read failures state that no mutation was submitted. Mutation failures remain
+uncertain in every phase, including queued: the worker can advance concurrently
+with the diagnostic observation. Never infer replay permission from the phase
+or its text. A caller timeout does not cancel a pending proposal or read barrier.
+The phase narrows investigation; it does not prove that CPU, storage, networking,
+or quorum availability caused the delay.

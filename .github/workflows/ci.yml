@@ -81,6 +81,18 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: automatic health survives clock rollback and snapshot recovery
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::automatic_health_survives_clock_rollback_and_snapshot_recovery -- --exact --nocapture | tee /tmp/health-clock-rollback.log
+          grep -q 'test result: ok. 1 passed' /tmp/health-clock-rollback.log
+
+      - name: consensus diagnostics preserve late replies and uncertain mutations
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::consensus_inbox::progress_tests::consensus_diagnostics_preserve_late_replies_and_uncertain_mutations -- --exact --nocapture | tee /tmp/consensus-diagnostics.log
+          grep -q 'test result: ok. 1 passed' /tmp/consensus-diagnostics.log
+
       - name: metadata read leadership loss remains routable
         run: |
           set -o pipefail
