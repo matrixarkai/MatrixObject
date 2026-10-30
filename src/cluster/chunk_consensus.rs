@@ -664,7 +664,7 @@ fn prepare(
         Err(e) => return Err(e),
     };
     let counters = PageOutcome::counters(service);
-    let mut candidate = service.clone();
+    let mut candidate = service.clone_for_raft_preparation();
     let reply = checked_apply(&mut candidate, request.clone(), max_pages, limit)?;
     let after = match candidate.read_chunk_state(page) {
         Ok(state) => state,
@@ -835,6 +835,208 @@ mod read_failure_tests {
                 read_failure(&error),
                 Err(ObjectError::InvalidArgument(_))
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    fn prepare_with_full_clone(
+        service: &MatrixReplicaService,
+        request: &ReplicaRequest,
+        max_pages: usize,
+        limit: usize,
+    ) -> Result<(Vec<u8>, Option<ReplicaReply>), ObjectError> {
+        if matches!(request, ReplicaRequest::StateInstall(_)) {
+            return Err(ObjectError::PreconditionFailed(
+                "standalone state installation is unavailable on Raft nodes".into(),
+            ));
+        }
+        let page = match request {
+            ReplicaRequest::WriteChunk { page_id, .. }
+            | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+            | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
+            | ReplicaRequest::DiscardChunk { page_id, .. } => page_id,
+            _ => return Ok((Vec::new(), None)),
+        };
+        let before = match service.read_chunk_state(page) {
+            Ok(state) => Some(state),
+            Err(ObjectError::NotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+        let counters = PageOutcome::counters(service);
+        let mut candidate = service.clone();
+        let reply = checked_apply(&mut candidate, request.clone(), max_pages, limit)?;
+        let after = match candidate.read_chunk_state(page) {
+            Ok(state) => state,
+            Err(ObjectError::NotFound(_)) if before.is_none() => {
+                return Ok((Vec::new(), Some(reply)))
+            }
+            Err(e) => return Err(e),
+        };
+        let outcome = PageOutcome::between(page, before.as_ref(), &after)?
+            .with_counters(counters, PageOutcome::counters(&candidate))
+            .to_payload()?;
+        Ok((outcome, Some(reply)))
+    }
+
+    #[test]
+    fn raft_preparation_skips_runtime_caches_without_changing_outcomes() {
+        let mut service = MatrixReplicaService::new();
+        service.set_capacity_bytes(65536).unwrap();
+        service.set_read_cache_max_bytes(65536);
+        service.set_read_cache_max_cacheable_read_bytes(1024);
+        let page = |index| crate::PageId {
+            chunk_id: crate::ChunkId::new(1, 1).unwrap(),
+            page_index: index,
+        };
+        for i in 0..32 {
+            service
+                .write_chunk(page(i), 0, &vec![i as u8; 1024])
+                .unwrap();
+            service.read_chunk(&page(i), 0, 1024).unwrap();
+        }
+        let requests = vec![
+            ReplicaRequest::WriteChunk {
+                page_id: page(0),
+                offset: 17,
+                data: vec![9; 31],
+            },
+            ReplicaRequest::WriteChunk {
+                page_id: page(40),
+                offset: 0,
+                data: vec![7; 1024],
+            },
+            ReplicaRequest::WriteChunk {
+                page_id: page(40),
+                offset: 0,
+                data: vec![7; 65536],
+            },
+            ReplicaRequest::WriteChunkIfSequence {
+                page_id: page(0),
+                offset: 0,
+                data: vec![8],
+                expected_sequence: 1,
+            },
+            ReplicaRequest::WriteChunkIfSequence {
+                page_id: page(0),
+                offset: 0,
+                data: vec![8],
+                expected_sequence: 0,
+            },
+            ReplicaRequest::WriteChunkIfSequence {
+                page_id: page(40),
+                offset: 0,
+                data: vec![8],
+                expected_sequence: 0,
+            },
+            ReplicaRequest::DiscardChunk {
+                page_id: page(0),
+                offset: 0,
+                length: 32,
+            },
+            ReplicaRequest::DiscardChunk {
+                page_id: page(40),
+                offset: 0,
+                length: 32,
+            },
+            ReplicaRequest::DiscardChunkIfSequence {
+                page_id: page(0),
+                offset: 0,
+                length: 32,
+                expected_sequence: 1,
+            },
+            ReplicaRequest::DiscardChunkIfSequence {
+                page_id: page(0),
+                offset: 0,
+                length: 32,
+                expected_sequence: 9,
+            },
+        ];
+        for mode in 0..5 {
+            let frozen = mode == 1;
+            for max_pages in [32, 64] {
+                for limit in [16, 1 << 20] {
+                    for request in &requests {
+                        let mut actual = service.clone();
+                        actual.configure_service_mode(None, None, Some(frozen));
+                        match mode {
+                            2 => actual.configure_service_mode(Some(false), None, None),
+                            3 => {
+                                actual
+                                    .configure_mutation_qos(crate::ReplicaMutationQosConfig {
+                                        max_write_bytes_per_window: 1,
+                                        max_discard_bytes_per_window: 1,
+                                        ..Default::default()
+                                    })
+                                    .unwrap();
+                            }
+                            4 => actual.corrupt_chunk_payload_for_repair(&page(0)).unwrap(),
+                            _ => {}
+                        }
+
+                        let expected = actual.clone();
+                        let left = prepare(&actual, request, max_pages, limit)
+                            .map_err(|error| error.to_string());
+                        let right = prepare_with_full_clone(&expected, request, max_pages, limit)
+                            .map_err(|error| error.to_string());
+                        assert_eq!(
+                            left, right,
+                            "{request:?} frozen={frozen} pages={max_pages} limit={limit}"
+                        );
+                        assert_eq!(
+                            actual, expected,
+                            "speculation must preserve identical live state"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    #[ignore = "bounded local write preparation timing; run explicitly in release mode"]
+    fn measure_raft_preparation_with_warm_read_caches() {
+        use std::time::Instant;
+        for count in [64, 1024, 4096] {
+            let mut service = MatrixReplicaService::new();
+            service.set_capacity_bytes(128 * 1024 * 1024).unwrap();
+            service.set_read_cache_max_bytes(32 * 1024 * 1024);
+            service.set_read_cache_max_cacheable_read_bytes(4096);
+            let bytes: Vec<u8> = (0..4096)
+                .map(|n| ((n * 31 + n / 251) % 251) as u8)
+                .collect();
+            let page = |index| crate::PageId {
+                chunk_id: crate::ChunkId::new(1, 1).unwrap(),
+                page_index: index,
+            };
+            for i in 0..count {
+                service.write_chunk(page(i), 0, &bytes).unwrap();
+                service.read_chunk(&page(i), 0, 4096).unwrap();
+            }
+            assert_eq!(service.read_cache_stats().entries, count);
+            let request = ReplicaRequest::WriteChunkIfSequence {
+                page_id: page(0),
+                offset: 17,
+                data: vec![7; 32],
+                expected_sequence: 1,
+            };
+            let mut full = Vec::new();
+            let mut candidate = Vec::new();
+            for _ in 0..30 {
+                let began = Instant::now();
+                let expected = prepare_with_full_clone(&service, &request, 8192, 1 << 20).unwrap();
+                full.push(began.elapsed().as_nanos());
+                let began = Instant::now();
+                let actual = prepare(&service, &request, 8192, 1 << 20).unwrap();
+                candidate.push(began.elapsed().as_nanos());
+                assert_eq!(actual, expected);
+            }
+            full.sort();
+            candidate.sort();
+            println!("PREPARATION pages={count} cached_bytes={} full_p50_ns={} full_p95_ns={} candidate_p50_ns={} candidate_p95_ns={}",
+                service.read_cache_stats().bytes, full[15], full[28], candidate[15], candidate[28]);
+            assert_eq!(service.read_cache_stats().entries, count);
         }
     }
 }

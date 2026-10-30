@@ -56,10 +56,21 @@ offline.
 The request queue holds 32 entries, peer queues hold eight packets, and peer TCP
 frames are bounded at 8 MiB with 100 ms transfer deadlines. MatrixRaft currently
 limits individual proposals to 4 MiB and its WAL to 512 MiB. Oversized proposals
-are refused without changing committed page state. The candidate preparation
-currently clones replica state. Quorum-confirmed reads avoid additional log
-entries. Write history can use the opt-in application checkpoint policy below;
+are refused without changing committed page state. Candidate preparation shares
+page payloads and receipts while cloning their indexes. It starts with empty
+runtime read caches and validation indexes, leaving the live service caches
+unchanged. Configuration, capacity checks, mutation controls and physical counters
+are retained; binary outcomes are unchanged. Index cloning still scales with the
+number of stored pages. Quorum-confirmed reads avoid additional log entries.
+Write history can use the opt-in application checkpoint policy below;
 large-scale measurement remains required.
+
+The ignored release test `measure_raft_preparation_with_warm_read_caches` compares
+complete single-write preparation with and without copying the caches and checks
+identical outcomes. A local WSL run with 4,096 pages of 4 KiB and 16 MiB of warmed
+reads measured median preparation of 8.32 ms with cache copying and 0.36 ms without
+it over 30 samples. This is preparation timing on one shared host, not distributed
+write throughput or a latency guarantee.
 
 The process tests cover three independent voters, acknowledged writes and
 discards, leader loss, refusal below quorum, restart of all processes, capacity
