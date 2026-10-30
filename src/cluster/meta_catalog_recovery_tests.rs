@@ -64,7 +64,13 @@ fn start(
         thread: Some(std::thread::spawn(move || server.serve())),
     }
 }
-fn client(nodes: &[Option<Running>]) -> RemoteMetaClient {
+// Readiness is not a lease: retry the requested read if leadership moves.
+// Callers share their existing deadline; no mutation is submitted here.
+fn read_until<T>(
+    nodes: &[Option<Running>],
+    until: Instant,
+    mut operation: impl FnMut(&mut RemoteMetaClient) -> Result<T, ObjectError>,
+) -> (RemoteMetaClient, T) {
     let endpoints: Vec<_> = nodes.iter().flatten().map(|n| n.address.clone()).collect();
     let options = MetaClientOptions {
         connect_timeout: Duration::from_millis(200),
@@ -72,24 +78,39 @@ fn client(nodes: &[Option<Running>]) -> RemoteMetaClient {
         write_timeout: Duration::from_secs(5),
         ..MetaClientOptions::default()
     };
-    let until = Instant::now() + Duration::from_secs(60);
     loop {
-        if let Ok(mut client) = RemoteMetaClient::connect_catalog(&endpoints, &options) {
-            if client.read_manifest("capacity", "object-099999").is_ok() {
-                return client;
-            }
-        }
+        let error = match RemoteMetaClient::connect_catalog(&endpoints, &options) {
+            Ok(mut client) => match operation(&mut client) {
+                Ok(value) => return (client, value),
+                Err(error) => error,
+            },
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, ObjectError::InvalidArgument(_))
+                || matches!(&error, ObjectError::PreconditionFailed(message)
+                    if message == "metadata request was not admitted by a leader"),
+            "metadata read returned a persistent state error: {error}"
+        );
         assert!(
             Instant::now() < until,
-            "metadata quorum did not become ready"
+            "metadata read did not complete: {error}"
         );
         std::thread::sleep(Duration::from_millis(100));
     }
 }
+fn client(nodes: &[Option<Running>]) -> RemoteMetaClient {
+    read_until(nodes, Instant::now() + Duration::from_secs(60), |client| {
+        client.read_manifest("capacity", "object-099999")
+    })
+    .0
+}
 fn publish(nodes: &[Option<Running>], index: usize, generation: u64) {
     let key = format!("object-{index:06}");
-    let mut connection = client(nodes);
-    let before = connection.read_manifest("capacity", &key).unwrap();
+    let (mut connection, before) =
+        read_until(nodes, Instant::now() + Duration::from_secs(60), |client| {
+            client.read_manifest("capacity", &key)
+        });
     let mut after = before.clone();
     after.generation = generation;
     after.deleted = generation == 2;
@@ -98,7 +119,11 @@ fn publish(nodes: &[Option<Running>], index: usize, generation: u64) {
         // An uncertain response is resolved by reading, never by resending.
         let until = Instant::now() + Duration::from_secs(60);
         loop {
-            if client(nodes).read_manifest("capacity", &key).unwrap() == after {
+            if read_until(nodes, until, |client| {
+                client.read_manifest("capacity", &key)
+            })
+            .1 == after
+            {
                 break;
             }
             assert!(Instant::now() < until, "publication was not confirmed");
@@ -106,7 +131,10 @@ fn publish(nodes: &[Option<Running>], index: usize, generation: u64) {
         }
     }
     assert_eq!(
-        client(nodes).read_manifest("capacity", &key).unwrap(),
+        read_until(nodes, Instant::now() + Duration::from_secs(60), |client| {
+            client.read_manifest("capacity", &key)
+        })
+        .1,
         after
     );
 }
@@ -221,18 +249,20 @@ fn full_catalog_tcp_servers_checkpoint_rejoin_and_restart() {
     for (i, node) in nodes.iter_mut().enumerate() {
         *node = Some(start(&root.0, i as u64 + 1, &peers, None));
     }
-    let mut connection = client(&nodes);
+    let (_, reply) = read_until(&nodes, Instant::now() + Duration::from_secs(60), |client| {
+        client.probe().into_result()
+    });
     assert!(matches!(
-        connection.probe().into_result().unwrap(),
+        reply,
         MetaReply::Pong {
             placement_count: 100_000,
             ..
         }
     ));
     for index in [0, 1, 31, 63, 50_000, 99_999] {
-        let value = connection
-            .read_manifest("capacity", &format!("object-{index:06}"))
-            .unwrap();
+        let (_, value) = read_until(&nodes, Instant::now() + Duration::from_secs(60), |client| {
+            client.read_manifest("capacity", &format!("object-{index:06}"))
+        });
         assert_eq!(
             value.generation,
             if index == 0 {
