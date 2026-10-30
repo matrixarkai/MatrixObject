@@ -50,7 +50,10 @@ pub(super) fn decode(payload: &[u8]) -> Result<MetaRequest, ObjectError> {
 
 // Called only where a local durable outcome is prepared. Followers do not stamp
 // reports, and replay applies the decided timestamp without consulting a clock.
-pub(super) fn stamp(request: MetaRequest) -> Result<MetaRequest, ObjectError> {
+pub(super) fn stamp(
+    request: MetaRequest,
+    service: &crate::MatrixMetaService,
+) -> Result<MetaRequest, ObjectError> {
     if !matches!(request, MetaRequest::ReportChunkNode { .. }) {
         return Ok(request);
     }
@@ -62,10 +65,19 @@ pub(super) fn stamp(request: MetaRequest) -> Result<MetaRequest, ObjectError> {
         .map_err(|_| {
             ObjectError::PreconditionFailed("metadata clock exceeds health range".into())
         })?;
-    Ok(stamp_at(request, now_ms))
+    let floor = match &request {
+        MetaRequest::ReportChunkNode { node_id, .. } => service
+            .nodes
+            .get(node_id)
+            .map_or(0, |node| node.last_heartbeat_ms),
+        _ => 0,
+    };
+    // A fresh automatic report cannot be older than this node's retained state.
+    // Equality avoids overflow and does not advance time artificially during rollback.
+    Ok(stamp_at(request, now_ms, floor))
 }
 
-fn stamp_at(request: MetaRequest, now_ms: u64) -> MetaRequest {
+fn stamp_at(request: MetaRequest, now_ms: u64, floor: u64) -> MetaRequest {
     match request {
         MetaRequest::ReportChunkNode {
             node_id,
@@ -79,7 +91,7 @@ fn stamp_at(request: MetaRequest, now_ms: u64) -> MetaRequest {
             used_bytes,
             capacity_bytes,
             online,
-            now_ms,
+            now_ms: now_ms.max(floor),
         },
         other => other,
     }
@@ -125,7 +137,7 @@ mod tests {
             }
             assert!(decode(&invalid.encode_to_vec()).is_err());
         }
-        let stamped = stamp_at(request.clone(), 1234);
+        let stamped = stamp_at(request.clone(), 1234, 0);
         assert!(matches!(
             &stamped,
             MetaRequest::HeartbeatChunkNode {
@@ -134,8 +146,16 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(stamp_at(stamped.clone(), 9999), stamped);
-        assert_eq!(stamp(stamped.clone()).unwrap(), stamped);
+        assert_eq!(stamp_at(request.clone(), 900, 1234), stamped);
+        assert!(matches!(
+            stamp_at(request.clone(), 2000, 1234),
+            MetaRequest::HeartbeatChunkNode { now_ms: 2000, .. }
+        ));
+        assert_eq!(stamp_at(stamped.clone(), 9999, u64::MAX), stamped);
+        assert_eq!(
+            stamp(stamped.clone(), &crate::MatrixMetaService::new()).unwrap(),
+            stamped
+        );
         let decoded = MetaRequest::decode(request.code(), &payload).unwrap();
         assert_eq!(decoded, request, "decoding must not consult a clock");
     }

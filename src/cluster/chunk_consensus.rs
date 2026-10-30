@@ -5,6 +5,10 @@ use super::{apply_to_replica, NodeReplica};
 #[cfg(test)]
 use crate::cluster::consensus_checkpoint::Image;
 use crate::cluster::consensus_checkpoint::{storage, Policy};
+use crate::cluster::consensus_inbox::{
+    ConsensusChannels, ConsensusInbox, RequestPhase, RequestProgress,
+};
+use crate::cluster::socket_readiness::Notify;
 use crate::cluster::message::{ChunkGroupIdentity, ReplicaReply, ReplicaRequest};
 use crate::cluster::shutdown::ServerShutdown;
 use crate::outcome::PageOutcome;
@@ -14,8 +18,6 @@ use matrixraft::{
     LogId, RaftError,
 };
 use prost::Message;
-use crate::cluster::consensus_inbox::{ConsensusChannels, ConsensusInbox};
-use crate::cluster::socket_readiness::Notify;
 use std::cell::{Cell, RefCell};
 use std::{
     collections::BTreeMap,
@@ -66,6 +68,7 @@ struct Request {
     request: ReplicaRequest,
     reply: SyncSender<Result<ReplicaReply, ObjectError>>,
     deadline: Instant,
+    progress: RequestProgress,
 }
 struct Pending {
     id: LogId,
@@ -304,6 +307,7 @@ impl ChunkConsensus {
             }
             return Ok(ReplicaReply::GroupIdentity(self.identity.clone()));
         }
+        let progress = RequestProgress::new(read_only(&request));
         let (reply, rx) = mpsc::sync_channel(1);
         let deadline = Instant::now() + self.timeout;
         self.requests
@@ -311,13 +315,13 @@ impl ChunkConsensus {
                 request,
                 reply,
                 deadline,
+                progress: progress.clone(),
             })
             .map_err(|_| refused("chunk consensus unavailable or request queue full"))?;
         if let Some(wake) = &self.wake {
             wake.notify();
         }
-        rx.recv_timeout(self.timeout)
-            .map_err(|_| refused("chunk consensus deadline; write outcome may be committed"))?
+        progress.wait(&rx, self.timeout, "chunk")
     }
 }
 impl Drop for ChunkConsensus {
@@ -491,6 +495,9 @@ fn run(
                     if read_only(&request.request) {
                         let batch =
                             read_batch(request, requests.receiver(), &mut deferred, Instant::now());
+                        for request in &batch {
+                            request.progress.mark(RequestPhase::ReadConfirmation);
+                        }
                         match peer.begin_read() {
                             Ok(token) => pending_read = Some((token, batch)),
                             Err(error) => {
@@ -500,6 +507,7 @@ fn run(
                             }
                         }
                     } else {
+                        request.progress.mark(RequestPhase::Preparing);
                         let (outcome, reply) =
                             match prepare(&node.service, &request.request, node.max_pages, limit) {
                                 Ok((outcome, reply)) => (outcome, reply.map(Ok)),
@@ -510,6 +518,7 @@ fn run(
                             outcome,
                         }
                         .encode_to_vec();
+                        request.progress.mark(RequestPhase::ProposalCompletion);
                         match peer.propose(payload) {
                             Ok(id) => pending = Some(Pending { id, request, reply }),
                             Err(e) => {
@@ -759,6 +768,7 @@ mod read_batch_tests {
             let (reply, response) = mpsc::sync_channel(1);
             (
                 Request {
+                    progress: RequestProgress::new(read_only(&request)),
                     request,
                     reply,
                     deadline,

@@ -7,6 +7,10 @@ use super::shutdown::ServerShutdown;
 #[cfg(test)]
 use crate::cluster::consensus_checkpoint::Image;
 use crate::cluster::consensus_checkpoint::{storage, Policy};
+use crate::cluster::consensus_inbox::{
+    ConsensusChannels, ConsensusInbox, RequestPhase, RequestProgress,
+};
+use crate::cluster::socket_readiness::Notify;
 use crate::placement_outcome::PlacementOutcome;
 use crate::{MatrixMetaService, MetaSnapshot, ObjectError};
 use matrixraft::{
@@ -14,8 +18,6 @@ use matrixraft::{
     LogId, RaftError,
 };
 use prost::Message;
-use crate::cluster::consensus_inbox::{ConsensusChannels, ConsensusInbox};
-use crate::cluster::socket_readiness::Notify;
 use std::cell::{Cell, RefCell};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -59,6 +61,7 @@ struct Request {
     request: MetaRequest,
     reply: SyncSender<Result<MetaReply, ObjectError>>,
     deadline: Instant,
+    progress: RequestProgress,
 }
 struct Pending {
     id: LogId,
@@ -307,6 +310,7 @@ impl MetaConsensus {
             super::message::check_reply_size(reply.payload_len(), self.reply_limit)?;
             return Ok(reply);
         }
+        let progress = RequestProgress::new(read_only(&request));
         let (reply, rx) = mpsc::sync_channel(1);
         let deadline = Instant::now() + self.timeout;
         self.requests
@@ -314,13 +318,13 @@ impl MetaConsensus {
                 request,
                 reply,
                 deadline,
+                progress: progress.clone(),
             })
             .map_err(|_| refused("metadata consensus unavailable or request queue full"))?;
         if let Some(wake) = &self.wake {
             wake.notify();
         }
-        rx.recv_timeout(self.timeout)
-            .map_err(|_| refused("metadata consensus deadline; write outcome may be committed"))?
+        progress.wait(&rx, self.timeout, "metadata")
     }
 }
 impl Drop for MetaConsensus {
@@ -473,6 +477,9 @@ fn run(
                         }
                     }
                     if !reads.is_empty() {
+                        for request in &reads {
+                            request.progress.mark(RequestPhase::ReadConfirmation);
+                        }
                         match peer.begin_read() {
                             Ok(token) => pending_read = Some((token, reads)),
                             Err(error) => {
@@ -591,6 +598,9 @@ fn propose_batch(
     if queued.is_empty() {
         return Ok(());
     }
+    for request in queued.iter() {
+        request.progress.mark(RequestPhase::Preparing);
+    }
     let mut nodes = BTreeSet::new();
     let mut objects = BTreeSet::new();
     for request in queued.iter() {
@@ -654,6 +664,7 @@ fn propose_batch(
             break;
         }
         let length = payload.len();
+        request.progress.mark(RequestPhase::ProposalCompletion);
         match peer.propose(payload) {
             Ok(id) => {
                 // Only this exclusive worker sees the projected prefix. The guard
@@ -683,7 +694,7 @@ fn prepare(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<(Vec<u8>, Option<MetaReply>), ObjectError> {
     let stamped = if matches!(request, MetaRequest::ReportChunkNode { .. }) {
-        Some(super::health_report::stamp(request.clone())?)
+        Some(super::health_report::stamp(request.clone(), service)?)
     } else {
         None
     };
@@ -937,6 +948,75 @@ mod tests {
             receiver.try_recv(),
             Err(mpsc::TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn automatic_health_survives_clock_rollback_and_snapshot_recovery() {
+        let (mut service, groups) = fixture(1, 0);
+        service
+            .nodes
+            .get_mut("member-0-0")
+            .unwrap()
+            .last_heartbeat_ms = u64::MAX;
+        service.invalidate_snapshot_export_cache();
+        let request = MetaRequest::ReportChunkNode {
+            node_id: "member-0-0".into(),
+            expected_endpoint: "127.0.0.1:10003".into(),
+            used_bytes: 256,
+            capacity_bytes: 1 << 30,
+            online: true,
+        };
+        for used in [256, 257] {
+            let mut request = request.clone();
+            if let MetaRequest::ReportChunkNode { used_bytes, .. } = &mut request {
+                *used_bytes = used;
+            }
+            let before = state(&service);
+            let (payload, reply) = prepare(&mut service, &request, 65536, &groups).unwrap();
+            assert_eq!(
+                state(&service),
+                before,
+                "preparation must remain speculative"
+            );
+            let Some(MetaReply::PlacementNode(node)) = reply else {
+                panic!("missing health reply")
+            };
+            assert_eq!(node.last_heartbeat_ms, u64::MAX);
+            assert_eq!(node.used_bytes, used);
+            PlacementOutcome::from_payload(&payload)
+                .unwrap()
+                .apply(&mut service)
+                .unwrap();
+            assert_eq!(service.nodes["member-0-0"].last_heartbeat_ms, u64::MAX);
+            assert_eq!(service.nodes["member-0-0"].used_bytes, used);
+            let snapshot = service.export_snapshot();
+            service = restore_snapshot(snapshot, &groups).unwrap();
+        }
+        let before = state(&service);
+        let mut explicit = heartbeat();
+        if let MetaRequest::HeartbeatChunkNode { now_ms, .. } = &mut explicit {
+            *now_ms = u64::MAX - 1;
+        }
+        assert!(prepare(&mut service, &explicit, 65536, &groups).is_err());
+        assert_eq!(state(&service), before);
+        let mut other = request;
+        if let MetaRequest::ReportChunkNode {
+            node_id,
+            expected_endpoint,
+            ..
+        } = &mut other
+        {
+            *node_id = "member-0-1".into();
+            *expected_endpoint = "127.0.0.1:10004".into();
+        }
+        let (_, reply) = prepare(&mut service, &other, 65536, &groups).unwrap();
+        let Some(MetaReply::PlacementNode(node)) = reply else {
+            panic!("missing other report")
+        };
+        assert!(
+            node.last_heartbeat_ms < u64::MAX,
+            "the floor belongs to one node"
+        );
     }
 
     #[test]
@@ -1254,6 +1334,7 @@ mod tests {
         let (reply, rx) = mpsc::sync_channel(1);
         (
             Request {
+                progress: RequestProgress::new(read_only(&request)),
                 request,
                 deadline,
                 reply,

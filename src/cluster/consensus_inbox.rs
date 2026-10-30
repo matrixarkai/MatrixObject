@@ -8,6 +8,65 @@ use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::Duration;
 
+/// Observations are diagnostic only, never evidence that a mutation is safe to replay.
+#[derive(Clone)]
+pub(super) struct RequestProgress {
+    phase: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    read_only: bool,
+}
+#[derive(Clone, Copy)]
+pub(super) enum RequestPhase {
+    Queued = 0,
+    Preparing = 1,
+    ReadConfirmation = 2,
+    ProposalCompletion = 3,
+}
+impl RequestProgress {
+    pub(super) fn new(read_only: bool) -> Self {
+        Self {
+            phase: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                RequestPhase::Queued as u8,
+            )),
+            read_only,
+        }
+    }
+    pub(super) fn mark(&self, phase: RequestPhase) {
+        self.phase
+            .store(phase as u8, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub(super) fn wait<T>(
+        &self,
+        receiver: &Receiver<Result<T, crate::ObjectError>>,
+        timeout: Duration,
+        service: &str,
+    ) -> Result<T, crate::ObjectError> {
+        match receiver.recv_timeout(timeout) {
+            Ok(reply) => reply,
+            Err(error) => {
+                let reason = match error {
+                    mpsc::RecvTimeoutError::Timeout => "deadline",
+                    mpsc::RecvTimeoutError::Disconnected => "worker disconnected",
+                };
+                let phase = match self.phase.load(std::sync::atomic::Ordering::Relaxed) {
+                    0 => "queued",
+                    1 => "preparing",
+                    2 => "read confirmation",
+                    3 => "proposal completion",
+                    _ => "unknown",
+                };
+                let outcome = if self.read_only {
+                    "read request; no mutation submitted"
+                } else {
+                    "write outcome may be committed; do not replay"
+                };
+                Err(crate::ObjectError::InvalidArgument(format!(
+                    "{service} consensus {reason}; last observed phase={phase}; {outcome}"
+                )))
+            }
+        }
+    }
+}
+
 pub(super) struct ConsensusChannels<T> {
     pub(super) requests: ConsensusInbox<T>,
     pub(super) packets: Receiver<Vec<u8>>,
@@ -102,5 +161,61 @@ mod tests {
         assert!(inbox.wait(&stop, Duration::from_millis(50)));
         worker.join().unwrap();
         assert!(stop.is_stopped());
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use crate::ObjectError;
+
+    #[test]
+    fn consensus_diagnostics_preserve_late_replies_and_uncertain_mutations() {
+        for read_only in [false, true] {
+            let progress = RequestProgress::new(read_only);
+            let (tx, rx) = mpsc::sync_channel(1);
+            let error = progress
+                .wait::<u64>(&rx, Duration::ZERO, "metadata")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("deadline; last observed phase=queued"));
+            assert_eq!(error.contains("write outcome may be committed"), !read_only);
+            assert_eq!(error.contains("no mutation submitted"), read_only);
+            // Observation of queued work must never authorize a mutation replay.
+            if !read_only {
+                assert!(error.contains("do not replay"));
+            }
+            for (phase, expected) in [
+                (RequestPhase::Preparing, "preparing"),
+                (RequestPhase::ReadConfirmation, "read confirmation"),
+                (RequestPhase::ProposalCompletion, "proposal completion"),
+            ] {
+                let worker = progress.clone();
+                std::thread::spawn(move || worker.mark(phase))
+                    .join()
+                    .unwrap();
+                let error = progress
+                    .wait::<u64>(&rx, Duration::ZERO, "chunk")
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains(&format!("last observed phase={expected}")));
+                assert_eq!(error.contains("write outcome may be committed"), !read_only);
+            }
+            // A timeout observes the channel; it does not cancel accepted work.
+            tx.send(Ok(42)).unwrap();
+            assert_eq!(progress.wait(&rx, Duration::ZERO, "chunk").unwrap(), 42);
+            tx.send(Err(ObjectError::Corruption("stored data rejected".into())))
+                .unwrap();
+            assert!(matches!(progress.wait(&rx, Duration::ZERO, "chunk"),
+                Err(ObjectError::Corruption(message)) if message == "stored data rejected"));
+            drop(tx);
+            let error = progress
+                .wait::<u64>(&rx, Duration::from_secs(1), "metadata")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("worker disconnected"));
+            assert!(!error.contains("deadline"));
+            assert_eq!(error.contains("write outcome may be committed"), !read_only);
+        }
     }
 }
