@@ -211,6 +211,7 @@ impl ChunkGroupCatalog {
         Ok(result)
     }
     /// Check only immutable configuration when restoring a newer committed catalog.
+    #[cfg(any(test, feature = "metadata-consensus"))]
     pub(super) fn same_inventory(&self, other: &Self) -> bool {
         self.groups == other.groups && self.members == other.members
     }
@@ -265,6 +266,7 @@ impl ChunkGroupCatalog {
         states.insert(id.to_string(), next);
         Ok(())
     }
+    #[cfg(any(test, feature = "metadata-consensus"))]
     pub(super) fn install_membership_health(&self, restored: &Self) -> Result<(), ObjectError> {
         if !self.same_inventory(restored) {
             return Err(invalid("chunk catalog inventory changed during recovery"));
