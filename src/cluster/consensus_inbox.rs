@@ -16,6 +16,7 @@ struct WorkerObservation {
     phase_and_start: std::sync::atomic::AtomicU64,
     longest_work_phase: std::sync::atomic::AtomicU64,
     deliveries: super::peer_delivery::PeerDeliveryCounters,
+    receives: super::peer_receiver::PeerReceiveCounters,
 }
 #[derive(Clone, Copy)]
 pub(super) enum WorkerPhase {
@@ -38,6 +39,7 @@ impl WorkerProgress {
             phase_and_start: std::sync::atomic::AtomicU64::new(WorkerPhase::Starting as u64),
             longest_work_phase: std::sync::atomic::AtomicU64::new(0),
             deliveries: super::peer_delivery::PeerDeliveryCounters::default(),
+            receives: super::peer_receiver::PeerReceiveCounters::default(),
         }))
     }
     fn elapsed_ms(&self) -> u64 {
@@ -57,6 +59,7 @@ impl WorkerProgress {
         self.mark(WorkerPhase::ApplyOutcome);
         OutcomeObservation(self)
     }
+    pub(super) fn peer_receives(&self) -> super::peer_receiver::PeerReceiveCounters { self.0.receives.clone() }
     pub(super) fn peer_deliveries(&self) -> super::peer_delivery::PeerDeliveryCounters { self.0.deliveries.clone() }
     pub(super) fn describe(&self) -> String {
         let observed = self.0.phase_and_start.load(std::sync::atomic::Ordering::Relaxed);
@@ -66,7 +69,7 @@ impl WorkerProgress {
             7 => "idle", 8 => "stopped", 9 => "apply outcome", _ => "unknown",
         } }
         let longest = self.0.longest_work_phase.load(std::sync::atomic::Ordering::Relaxed);
-        format!("; observed worker={}; worker_phase_ms={}; max_completed_work_phase={}; max_completed_work_phase_ms={}", name(observed & 255), self.elapsed_ms().saturating_sub(observed >> 8), if longest == 0 { "none" } else { name(longest & 255) }, longest >> 8) + &self.0.deliveries.describe()
+        format!("; observed worker={}; worker_phase_ms={}; max_completed_work_phase={}; max_completed_work_phase_ms={}", name(observed & 255), self.elapsed_ms().saturating_sub(observed >> 8), if longest == 0 { "none" } else { name(longest & 255) }, longest >> 8) + &self.0.deliveries.describe() + &self.0.receives.describe()
     }
 }
 
@@ -259,6 +262,7 @@ mod progress_tests {
             phase_and_start: AtomicU64::new(WorkerPhase::ApplyReady as u64),
             longest_work_phase: AtomicU64::new(0),
             deliveries: super::super::peer_delivery::PeerDeliveryCounters::default(),
+            receives: super::super::peer_receiver::PeerReceiveCounters::default(),
         }));
         worker.mark(WorkerPhase::Requests);
         let longest = worker.0.longest_work_phase.load(Ordering::Relaxed);
@@ -340,6 +344,7 @@ mod progress_tests {
                 let error = progress.wait_observed::<u64>(&rx, Duration::ZERO, "chunk", Some(&worker)).unwrap_err().to_string();
                 assert!(error.contains(&format!("observed worker={expected}; worker_phase_ms=")));
                 assert!(error.contains("peer_attempted=0"));
+                assert!(error.contains("peer_enqueued=0"));
                 assert_eq!(error.contains("write outcome may be committed"), !read_only);
                 assert_eq!(error.contains("no mutation submitted"), read_only);
             }
