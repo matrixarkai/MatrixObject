@@ -837,12 +837,13 @@ fn metadata_raft_recovers_chunk_catalog_and_group_health() {
         ..Default::default()
     }).unwrap();
     assert_ne!(routed.endpoint(), group.nodes[leader].as_ref().unwrap().endpoint);
-    assert_eq!(routed.read_chunk_group("group-a").unwrap(), config);
+    assert_eq!(routed.read_chunk_route("group-a").unwrap().group.unwrap(), config);
     assert_eq!(routed.endpoint(), group.nodes[leader].as_ref().unwrap().endpoint);
     let wal = group.root.join(leader.to_string()).join("metadata.peer.wal");
     let before = std::fs::read(&wal).unwrap();
     for _ in 0..16 {
         assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
+        assert_eq!(client.read_chunk_route("group-a").unwrap().group.unwrap(), config);
         assert!(matches!(client.read_chunk_group("missing"),
             Err(matrixobjectstore_rs::ObjectError::NotFound(_))));
     }
@@ -879,6 +880,7 @@ fn metadata_raft_recovers_chunk_catalog_and_group_health() {
     let current = group.leader();
     let mut client = group.client(current);
     assert_eq!(client.read_chunk_group("group-a").unwrap(), config);
+        assert_eq!(client.read_chunk_route("group-a").unwrap().group.unwrap(), config);
     let nodes = client.list_placement_nodes().unwrap();
     let logical = nodes.iter().find(|n| n.node_id == "group-a").unwrap();
     assert!(logical.online);
@@ -898,6 +900,8 @@ fn metadata_raft_recovers_chunk_catalog_and_group_health() {
         }
     }
     assert!(client.read_chunk_group("group-a").is_err());
+    assert!(group.client(current).read_chunk_route("group-a").is_err());
+    assert!(!matches!(group.client(current).read_chunk_route("missing").unwrap_err(), matrixobjectstore_rs::ObjectError::NotFound(_)));
     let missing_error = group.client(current).read_chunk_group("missing").unwrap_err();
     assert!(!matches!(missing_error, matrixobjectstore_rs::ObjectError::NotFound(_)),
         "missing catalog entries also require a confirmed read");

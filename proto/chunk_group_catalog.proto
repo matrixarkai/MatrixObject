@@ -27,3 +27,15 @@ message ChunkCatalogHealth {
   string placement_id = 1;
   bytes state = 2;
 }
+
+// Request code 81. Read after metadata quorum confirmation.
+message ChunkRouteRead {
+  uint32 version = 1;
+  string placement_id = 2;
+}
+message ChunkGroupRoute {
+  uint32 version = 1;
+  ChunkGroupConfig group = 2;
+  // Canonical ChunkMembershipFence bytes, empty only for fixed membership.
+  bytes fence = 3;
+}

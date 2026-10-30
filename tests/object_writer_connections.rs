@@ -76,7 +76,7 @@ fn config(socket: &TcpListener, id: u64) -> ChunkGroupConfig {
     }
 }
 #[test]
-fn chunk_group_reply_must_name_the_requested_placement() {
+fn chunk_route_reply_must_name_the_requested_placement() {
     for matched in [true, false] {
         let socket = listener();
         let address = socket.local_addr().unwrap().to_string();
@@ -85,15 +85,15 @@ fn chunk_group_reply_must_name_the_requested_placement() {
             let mut stream = accept(&socket);
             assert!(matches!(
                 meta(&mut stream),
-                MetaRequest::ReadChunkGroup { .. }
+                MetaRequest::ReadChunkRoute { .. }
             ));
-            reply(&mut stream, MetaReply::ChunkGroup(group));
+            reply(&mut stream, MetaReply::ChunkRoute(ChunkGroupRoute {version:1,group:Some(group),fence:vec![]}));
         });
         let mut client =
             RemoteMetaClient::connect(&address, &MetaClientOptions::default()).unwrap();
-        let result = client.read_chunk_group(if matched { "group-1" } else { "group-2" });
+        let result = client.read_chunk_route(if matched { "group-1" } else { "group-2" });
         if matched {
-            assert_eq!(result.unwrap().placement_id, "group-1");
+            assert_eq!(result.unwrap().group.unwrap().placement_id, "group-1");
         } else {
             assert!(matches!(
                 result,
@@ -221,11 +221,11 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
             }),
         );
         for group in groups.clone().into_iter().rev() {
-            let MetaRequest::ReadChunkGroup { placement_id } = meta(&mut stream) else {
+            let MetaRequest::ReadChunkRoute { placement_id } = meta(&mut stream) else {
                 panic!("group lookup missing");
             };
             assert_eq!(placement_id, group.placement_id);
-            reply(&mut stream, MetaReply::ChunkGroup(group));
+            reply(&mut stream, MetaReply::ChunkRoute(ChunkGroupRoute {version:1,group:Some(group),fence:vec![]}));
         }
         assert!(matches!(
             meta(&mut stream),
@@ -251,11 +251,11 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         ));
         reply(&mut stream, MetaReply::Manifest(manifest.clone()));
         for group in groups {
-            let MetaRequest::ReadChunkGroup { placement_id } = meta(&mut stream) else {
+            let MetaRequest::ReadChunkRoute { placement_id } = meta(&mut stream) else {
                 panic!("read group lookup missing");
             };
             assert_eq!(placement_id, group.placement_id);
-            reply(&mut stream, MetaReply::ChunkGroup(group));
+            reply(&mut stream, MetaReply::ChunkRoute(ChunkGroupRoute {version:1,group:Some(group),fence:vec![]}));
         }
         assert_eq!(stream.read(&mut [0]).unwrap(), 0);
         manifest

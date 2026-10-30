@@ -462,6 +462,14 @@ impl RemoteMetaClient {
             _ => Err(ObjectError::Corruption("missing chunk group reply".into())),
         }
     }
+    /// Read the inventory and retained membership fence after metadata quorum confirmation.
+    pub fn read_chunk_route(&mut self, placement_id: &str) -> Result<super::ChunkGroupRoute, ObjectError> {
+        match self.call(MetaRequest::ReadChunkRoute { placement_id: placement_id.into() })? {
+            MetaReply::ChunkRoute(route) if route.group.as_ref().is_some_and(|g| g.placement_id == placement_id) => Ok(route),
+            _ => Err(ObjectError::Corruption("missing chunk route reply".into())),
+        }
+    }
+
     /// Resolve metadata membership and verify the first chunk connection before data can be sent.
     #[cfg(feature = "replica-server")]
     pub fn connect_chunk_group(
@@ -469,12 +477,8 @@ impl RemoteMetaClient {
         placement_id: &str,
         options: &super::ReplicaClientOptions,
     ) -> Result<super::RemoteReplicaClient, ObjectError> {
-        let group = self.read_chunk_group(placement_id)?;
-        super::RemoteReplicaClient::connect_verified_raft_catalog(
-            &group.api_endpoints,
-            group.identity.as_ref().unwrap(),
-            options,
-        )
+        let route = self.read_chunk_route(placement_id)?;
+        super::RemoteReplicaClient::connect_routed_raft_catalog(&route, options)
     }
 
     pub fn plan_object_placement(
@@ -715,6 +719,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadManifest { .. }
                 | MetaRequest::ReadObjectRootPlacement { .. }
                 | MetaRequest::ReadChunkGroup { .. }
+                | MetaRequest::ReadChunkRoute { .. }
         ) || matches!(&request, MetaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
         let mut unadmitted = true;
