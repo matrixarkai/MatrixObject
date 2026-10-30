@@ -264,3 +264,23 @@ at most one comparison page and bounded frame buffers; destinations additionally
 use the staging/checkpoint memory described above. Repairs are sequential and can
 be expensive for large pages. Node identity is checked by connected peer address,
 not authenticated machine or failure-domain identity.
+
+
+The maximum-page star recovery guard runs three standalone journal processes,
+each with 300 MiB of configured page capacity. Two members hold matching 256 MiB
+pages with a discarded range crossing a transfer-frame boundary; the third holds
+an older small page. The guard repairs that member from a two-member quorum,
+requires a subsequent write to reach all three members, kills and restarts all
+processes, verifies every byte and discard range on each member, and requires
+another three-member write. Client frames are bounded to 1 MiB plus protocol
+space. The test prints repair elapsed time for the local run; it is not a
+multihost throughput or latency qualification.
+
+```sh
+cargo test --release --locked --all-features --test replica_restart_recovery star_repair_restores_a_full_256_mib_page_and_three_member_writes -- --exact --ignored --nocapture
+```
+
+CI runs this guard explicitly in release mode. It stays ignored in unfiltered
+local test runs because it starts three large processes and validates several
+complete page copies. The normal small-page repair guards continue testing source
+changes, quorum refusal, uncertain commit replies and preservation of newer state.
