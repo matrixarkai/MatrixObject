@@ -206,6 +206,11 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_consensus::tests::automatic_health_survives_clock_rollback_and_snapshot_recovery -- --exact --nocapture | tee /tmp/health-clock-rollback.log
           grep -q 'test result: ok. 1 passed' /tmp/health-clock-rollback.log
 
+      - name: chunk catalogs enter metadata read confirmation
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::meta_consensus::tests::catalog_reads_queue_while_only_bootstrap_identity_bypasses_consensus -- --exact | tee /tmp/catalog-read-confirmation.log
+          grep -q 'test result: ok. 1 passed' /tmp/catalog-read-confirmation.log
       - name: retained chunk membership fences and joint health
         run: |
           set -o pipefail
