@@ -743,6 +743,8 @@ fn propose_batch(
         .collect();
     let draft = PlacementDraft::with_records(service, nodes, objects.into_iter().collect());
     let mut bytes = 0usize;
+    let mut payloads = Vec::new();
+    let mut prepared = Vec::new();
     for _ in 0..PROPOSALS_PER_BATCH {
         let Some(request) = queued.pop_front() else {
             break;
@@ -762,31 +764,44 @@ fn propose_batch(
             outcome: outcome.clone(),
         }
         .encode_to_vec();
-        if !pending.is_empty() && bytes.saturating_add(payload.len()) > PACKET_LIMIT / 2 {
+        if !prepared.is_empty() && bytes.saturating_add(payload.len()) > PACKET_LIMIT / 2 {
             queued.push_front(request);
             break;
         }
         let length = payload.len();
+        if length > PACKET_LIMIT / 2 {
+            let _ = request
+                .reply
+                .try_send(Err(refused("metadata proposal exceeds batch byte limit")));
+            break;
+        }
         request.progress.mark(RequestPhase::ProposalCompletion);
-        match peer.propose(payload) {
-            Ok(id) => {
-                // Only this exclusive worker sees the projected prefix. The guard
-                // restores it before any Raft Ready processing or client reply.
-                if !outcome.is_empty() {
-                    PlacementOutcome::from_payload(&outcome)
-                        .and_then(|o| o.apply(draft.service))
-                        .map_err(|e| RaftError::Storage(e.to_string()))?;
+        // Prepare the next outcome against this prefix, but restore the live
+        // service before admission, Ready processing, or any client reply.
+        if !outcome.is_empty() {
+            PlacementOutcome::from_payload(&outcome)
+                .and_then(|o| o.apply(draft.service))
+                .map_err(|e| RaftError::Storage(e.to_string()))?;
+        }
+        payloads.push(payload);
+        prepared.push((request, reply));
+        bytes += length;
+    }
+    drop(draft);
+    if !payloads.is_empty() {
+        match peer.propose_batch(payloads) {
+            Ok(ids) => {
+                for (id, (request, reply)) in ids.into_iter().zip(prepared) {
+                    pending.push_back(Pending { id, request, reply });
                 }
-                pending.push_back(Pending { id, request, reply });
-                bytes += length;
             }
             Err(error) => {
-                let _ = request.reply.try_send(Err(refused(error)));
-                break;
+                for (request, _) in prepared {
+                    let _ = request.reply.try_send(Err(refused(&error)));
+                }
             }
         }
     }
-    drop(draft);
     Ok(())
 }
 
@@ -1560,6 +1575,38 @@ mod tests {
             .unwrap();
         assert_eq!(state(&restored), state(&expected));
     }
+    #[test]
+    fn rejected_proposal_group_restores_prepared_state_and_replies_to_every_request() {
+        let (_files, mut peer) = batch_peer();
+        let (mut service, groups) = fixture(2, 1);
+        let operations = [heartbeat(), placement(&service, "refused-object")];
+        let saved = state(&service);
+        // Keep the core's admission budget occupied until Ready processing.
+        peer.propose(vec![0; 4 * 1024 * 1024]).unwrap();
+        let mut requests = VecDeque::new();
+        let mut receivers = Vec::new();
+        for operation in operations {
+            let (request, rx) = queued(operation, Instant::now() + Duration::from_secs(30));
+            requests.push_back(request);
+            receivers.push(rx);
+        }
+        let mut pending = VecDeque::new();
+        propose_batch(
+            &mut peer,
+            &mut service,
+            &groups,
+            65536,
+            &mut requests,
+            &mut pending,
+        ).unwrap();
+        assert!(requests.is_empty());
+        assert!(pending.is_empty());
+        assert_eq!(state(&service), saved);
+        for rx in receivers {
+            assert!(rx.try_recv().unwrap().is_err());
+        }
+    }
+
     #[test]
     fn proposal_batches_bound_bytes_and_keep_deferred_requests() {
         let (_files, mut peer) = batch_peer();
