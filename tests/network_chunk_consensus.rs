@@ -2790,10 +2790,26 @@ mod coupled_groups {
         probe_recovery(true);
     }
 
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "requires a private network namespace; use tools/network_partition_test.sh"]
+    fn authenticated_live_peer_partitions_preserve_objects_and_recover() {
+        node_regime::network::require_isolated();
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..3 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        probe_recovery_with_transport(true, Some(certificates.root.clone()));
+    }
+
     fn probe_recovery(partition: bool) {
+        probe_recovery_with_transport(partition, None);
+    }
+    fn probe_recovery_with_transport(partition: bool, peer_tls: Option<PathBuf>) {
         let mut groups: Vec<_> = (1..=2)
             .map(|id| {
                 let mut group = Group::configured(4 * 1024 * 1024);
+                group.peer_tls = peer_tls.clone();
                 group.group_id = id;
                 group.max_pages = 1024;
                 group.checkpoint_bytes = 16 * 1024;
