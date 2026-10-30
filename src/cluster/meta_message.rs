@@ -207,6 +207,7 @@ pub fn object_id(bucket: &str, key: &str) -> ObjectId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaRequest {
     Membership(super::MembershipRequest),
+    ChunkCatalog(super::ChunkCatalogCommand),
     AllocateObjectPages {
         page_count: u32,
     },
@@ -279,6 +280,7 @@ impl MetaRequest {
             MetaRequest::ReadManifest { .. } => MetaRequestCode::ReadManifest,
             MetaRequest::PublishManifest { .. } => MetaRequestCode::PublishManifest,
             MetaRequest::Membership(_) => MetaRequestCode::Membership,
+            MetaRequest::ChunkCatalog(_) => MetaRequestCode::ChunkCatalog,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
             MetaRequest::ReportChunkNode { .. } => MetaRequestCode::ReportChunkNode,
@@ -328,6 +330,7 @@ impl MetaRequest {
                 .encode_to_vec();
             }
             MetaRequest::Membership(value) => return value.encode_to_vec(),
+            MetaRequest::ChunkCatalog(value) => return value.encode_to_vec(),
             MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
                 placement,
@@ -437,6 +440,9 @@ impl MetaRequest {
             value.validate()?;
             return Ok(Self::Membership(value));
         }
+        if code == MetaRequestCode::ChunkCatalog {
+            return super::ChunkCatalogCommand::from_payload(payload).map(Self::ChunkCatalog);
+        }
         if code == MetaRequestCode::ReportChunkNode {
             return super::health_report::decode(payload);
         }
@@ -522,6 +528,7 @@ impl MetaRequest {
         let mut cursor = Cursor::new(payload);
         let request = match code {
             MetaRequestCode::Membership
+            | MetaRequestCode::ChunkCatalog
             | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
@@ -741,7 +748,7 @@ impl MetaReply {
             return Ok(Self::GroupIdentity(identity));
         }
         if code == MetaRequestCode::ReadChunkGroup {
-            if payload.len() > 4096 {
+            if payload.len() > 32768 {
                 return Err(ObjectError::Corruption(
                     "chunk group response exceeds size bound".into(),
                 ));
@@ -749,14 +756,13 @@ impl MetaReply {
             let group = super::ChunkGroupConfig::decode(payload).map_err(|_| {
                 ObjectError::Corruption("invalid chunk group response protobuf".into())
             })?;
-            let catalog = super::ChunkGroupCatalog::new(vec![group])?;
-            let normalized = catalog.groups().next().unwrap();
+            let normalized = group.normalized_inventory()?;
             if normalized.encode_to_vec() != payload {
                 return Err(ObjectError::Corruption(
                     "noncanonical chunk group response".into(),
                 ));
             }
-            return Ok(MetaReply::ChunkGroup(normalized.clone()));
+            return Ok(MetaReply::ChunkGroup(normalized));
         }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
@@ -766,7 +772,8 @@ impl MetaReply {
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::ReadChunkGroup
             | MetaRequestCode::GroupIdentity => unreachable!(),
-            MetaRequestCode::ReportChunkNode
+            MetaRequestCode::ChunkCatalog
+            | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::HeartbeatRootNode
             | MetaRequestCode::HeartbeatChunkNode => {
                 MetaReply::PlacementNode(take_node(&mut cursor)?)

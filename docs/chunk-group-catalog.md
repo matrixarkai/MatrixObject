@@ -29,8 +29,9 @@ an operator or prove that a leader is currently available.
 Local metadata snapshots and metadata Raft bootstrap files preserve the catalog
 in a checksummed binary protobuf envelope. Existing snapshots without a catalog
 retain their original encoding. Recovered membership takes precedence over new
-bootstrap settings. Membership is static; this interface does not perform
-online voter replacement.
+bootstrap settings. Fixed groups retain static membership. Changing groups use
+separately retained membership observations and fenced catalog commands; the
+permitted member inventory itself remains immutable.
 
 Catalog-enabled state requires a metadata binary that understands MOGB and the
 ReadChunkGroup verb. Upgrade all metadata voters and clients before bootstrapping
@@ -193,7 +194,7 @@ reads do not append WAL outcomes. Only `GroupIdentity`, which describes immutabl
 bootstrap identity, is served locally without a read barrier. Failed or stopped
 metadata consensus refuses requests in either path. This keeps catalog reads on
 the same consistency boundary needed for committed membership updates; dynamic
-catalog mutations are not yet exposed by the metadata service.
+catalog mutations are serialized with other metadata writes.
 
 
 ## Health reports and clocks
@@ -243,7 +244,25 @@ agree with member health, and the logical placement target must agree with the
 incoming and outgoing voter majorities. Catalog outcomes cannot change object
 manifests, committed capacity charges or another group's nodes.
 
-The metadata service does not yet expose network commands that prepare these
-outcomes or send fenced automatic heartbeats. Existing fixed-group deployment
-continues to use its established reports. Dynamic placement is unfinished until
-that command path and coupled process replacement/recovery tests are complete.
+`RemoteMetaClient::update_chunk_catalog` sends request code 80, a canonical binary
+protobuf command bounded to 4,096 bytes. Operation 1 advances a membership
+observation using the expected retained fence; operation 2 reports one member's
+applied configuration, usage and availability. Reports must match the immutable
+member ID, socket, capacity and bootstrap identity. Metadata decides the report
+time, preserving the previous timestamp if its clock moves backwards. Operator
+draining state is preserved. A learner never supplies a voter majority.
+
+Preparation restores live state before proposal. Raft applies the complete outcome
+before replying; local durable metadata syncs an MOCJ journal record before
+applying and replying. Mixed MOCJ/MOMJ journals recover complete records and discard
+only a recognized incomplete suffix. Non-durable metadata refuses catalog changes.
+Upgrade all metadata replicas before sending code 80 or writing MOCJ records.
+
+Use `ChunkGroupCatalog::with_membership_health` to bootstrap a changing inventory
+from trusted observations. Reading an inventory validates its structure without
+inventing retained membership evidence. The command endpoint does not itself
+contact chunk voters to prove the submitted observation; callers must obtain it
+through authenticated, quorum-confirmed chunk membership reads. Automatic chunk
+heartbeats still use the fixed-group report path, which dynamic groups reject.
+Automatic fenced reporting, active-voter routing and coupled chunk replacement
+validation remain unfinished.

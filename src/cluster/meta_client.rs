@@ -259,6 +259,18 @@ impl RemoteMetaClient {
         }
         Ok(client)
     }
+    /// Commit a fenced chunk catalog observation or member health report.
+    pub fn update_chunk_catalog(
+        &mut self,
+        command: super::ChunkCatalogCommand,
+    ) -> Result<PlacementNodeSummary, ObjectError> {
+        command.validate()?;
+        match self.call(MetaRequest::ChunkCatalog(command))? {
+            MetaReply::PlacementNode(node) => Ok(node),
+            reply => Err(unexpected_reply("chunk catalog update", &reply)),
+        }
+    }
+
     /// Read quorum-confirmed membership or apply a committed membership change.
     pub fn metadata_membership(
         &mut self,

@@ -666,6 +666,23 @@ fn apply(
         drop(guard);
         return consensus.request(request);
     }
+    if let MetaRequest::ChunkCatalog(command) = &request {
+        if guard.storage.is_none() {
+            return Err(ObjectError::PreconditionFailed("catalog update requires durable metadata storage".into()));
+        }
+        let groups = guard.groups.clone();
+        let (outcome, reply) = super::chunk_catalog_command::prepare(&mut guard.service, &groups, command, max_payload_bytes)?;
+        if !guard.recovered { guard.persist()?; guard.recovered = true; }
+        if let Err(error) = guard.storage.as_mut().unwrap().append_catalog_outcome(&outcome) {
+            guard.failed = true;
+            return Err(ObjectError::Corruption(error.to_string()));
+        }
+        if let Err(error) = outcome.apply(&mut guard.service, &groups) {
+            guard.failed = true;
+            return Err(error);
+        }
+        return Ok(reply);
+    }
     let request = super::health_report::stamp(request, &guard.service)?;
     let decision = match &request {
         MetaRequest::AllocateObjectPages { page_count } => {
@@ -913,6 +930,7 @@ pub(super) fn apply_to_meta(
     max_payload_bytes: usize,
 ) -> Result<MetaReply, ObjectError> {
     match request {
+        MetaRequest::ChunkCatalog(_) => Err(ObjectError::InvalidArgument("catalog update requires durable dispatch".into())),
         MetaRequest::AllocateObjectPages { .. } => Err(ObjectError::InvalidArgument(
             "allocation requires durable dispatch".into(),
         )),
@@ -1506,3 +1524,7 @@ mod chunk_group_tests {
 #[cfg(all(test, feature = "metadata-consensus"))]
 #[path = "meta_catalog_recovery_tests.rs"]
 mod catalog_recovery_tests;
+
+#[cfg(test)]
+#[path = "meta_catalog_command_tests.rs"]
+mod catalog_command_tests;

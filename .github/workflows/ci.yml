@@ -81,6 +81,13 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: catalog commands preserve durable state and quorum admission
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-features --lib cluster::meta_server::catalog_command_tests -- --test-threads=1 | tee /tmp/catalog-commands.log
+          grep -q '^running 4 tests$' /tmp/catalog-commands.log
+          grep -q '^test result: ok. 4 passed' /tmp/catalog-commands.log
+
       - name: api tls serves persistent metadata and star data connections
         run: |
           set -o pipefail
