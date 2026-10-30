@@ -2698,6 +2698,129 @@ mod coupled_groups {
         );
     }
 
+    #[test]
+    fn external_probe_verifies_striped_objects_after_leader_loss_and_restart() {
+        let mut groups: Vec<_> = (1..=2)
+            .map(|id| {
+                let mut group = Group::configured(4 * 1024 * 1024);
+                group.group_id = id;
+                group.max_pages = 1024;
+                group.checkpoint_bytes = 16 * 1024;
+                group.heartbeat_ms = "1000";
+                group
+            })
+            .collect();
+        let mut metadata = MetadataGroup::for_groups_with_threads(&groups, 8);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for i in 0..3 {
+                group.start(i);
+            }
+            group.leader();
+        }
+        let group_id = metadata
+            .ready()
+            .metadata_group_identity()
+            .unwrap()
+            .group_id
+            .to_string();
+        group_usage(&metadata.api, &groups, &[]);
+        let endpoints = metadata.api.join(",");
+        let run = |mode: &str, bytes: &str| {
+            std::process::Command::new(env!("CARGO_BIN_EXE_distributed_probe"))
+                .args([
+                    mode,
+                    "--metadata",
+                    &endpoints,
+                    "--group",
+                    &group_id,
+                    "--bucket",
+                    "probe-bucket",
+                    "--run",
+                    "recovery",
+                    "--objects",
+                    "12",
+                    "--bytes",
+                    bytes,
+                    "--workers",
+                    "3",
+                    "--groups",
+                    "2",
+                    "--page-bytes",
+                    "256",
+                ])
+                .output()
+                .unwrap()
+        };
+        let check = |output: std::process::Output| {
+            assert!(
+                output.status.success(),
+                "stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                text.contains("phase=verify completed=12 requested=12"),
+                "{text}"
+            );
+            assert!(!text.contains("failed=true"), "{text}");
+        };
+        check(run("write", "1025"));
+        let (_, first) = metadata
+            .ready()
+            .read_object(
+                "probe-bucket",
+                "probe/recovery/00000000",
+                1025,
+                &ReplicaClientOptions::default(),
+            )
+            .unwrap();
+        // Keep workload version 1 reproducible across client upgrades.
+        assert_eq!(
+            &first[..16],
+            &[48, 4, 40, 164, 67, 125, 127, 187, 26, 250, 23, 127, 169, 118, 248, 113]
+        );
+        assert!(!run("write", "1025").status.success());
+        assert!(!run("verify", "1024").status.success());
+        check(run("verify", "1025"));
+        for group in &mut groups {
+            let leader = group.leader();
+            group.kill(leader);
+        }
+        let leader = metadata.ready().endpoint().to_owned();
+        let leader = metadata.api.iter().position(|api| api == &leader).unwrap();
+        metadata.kill(leader);
+        metadata.ready();
+        for group in &groups {
+            group.leader();
+        }
+        check(run("verify", "1025"));
+        for group in &mut groups {
+            for i in 0..3 {
+                if group.nodes[i].is_some() {
+                    group.kill(i);
+                }
+            }
+        }
+        for i in 0..3 {
+            if metadata.nodes[i].is_some() {
+                metadata.kill(i);
+            }
+        }
+        for i in 0..3 {
+            metadata.start(i);
+        }
+        metadata.ready();
+        for group in &mut groups {
+            for i in 0..3 {
+                group.start(i);
+            }
+            group.leader();
+        }
+        check(run("verify", "1025"));
+    }
+
     fn multiple_group_load(group_count: usize, writes: u64, workers: usize, objects: bool) {
         multiple_group_load_with_groups(group_count, writes, workers, objects, 1);
     }
