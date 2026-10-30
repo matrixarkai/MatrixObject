@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 use super::*;
 use matrixobjectstore_rs::cluster::{
-    ChunkCatalogCommand, ChunkMembershipFence, MembershipOperation as Op, MembershipRequest,
+    ChunkMembershipFence, MembershipOperation as Op, MembershipRequest,
     MembershipStatus,
 };
 
@@ -12,24 +12,14 @@ fn advance(
     fence: &mut ChunkMembershipFence,
     status: MembershipStatus,
 ) {
-    client
-        .update_chunk_catalog(ChunkCatalogCommand {
-            version: 1,
-            operation: 1,
-            placement_id: "group-a".into(),
-            expected_fence: fence.to_bytes(),
-            bootstrap_id: identity.bootstrap_id,
-            status: Some(status.clone()),
-            member_id: String::new(),
-            expected_endpoint: String::new(),
-            used_bytes: 0,
-            capacity_bytes: 0,
-            online: false,
-        })
-        .unwrap();
     let expected = fence.advance(identity, &status).unwrap();
-    *fence = client.read_chunk_route("group-a").unwrap().membership_fence().unwrap().unwrap();
-    assert_eq!(*fence, expected);
+    *fence = client.refresh_chunk_membership("group-a", &Default::default()).unwrap();
+    assert!(fence.applied_floor() >= expected.applied_floor());
+    assert_eq!(fence.voters(), expected.voters());
+    assert_eq!(fence.outgoing_voters(), expected.outgoing_voters());
+    assert_eq!(fence.learners(), expected.learners());
+    assert_eq!(client.read_chunk_route("group-a").unwrap().membership_fence().unwrap().unwrap(), *fence);
+
 }
 fn member_health(client: &mut RemoteMetaClient, id: &str, used: u64) {
     let deadline = Instant::now() + Duration::from_secs(20);

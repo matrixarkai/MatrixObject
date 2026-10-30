@@ -81,6 +81,12 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: Check verified membership controller refresh
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test chunk_membership_controller -- --test-threads=1 | tee /tmp/membership-controller.log
+          grep -q 'test result: ok. 3 passed' /tmp/membership-controller.log
       - name: Check multi-group dynamic voter replacement
         shell: bash
         run: |
