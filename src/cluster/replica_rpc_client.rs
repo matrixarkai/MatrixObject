@@ -665,8 +665,18 @@ impl RemoteReplicaClient {
         request: super::MembershipRequest,
     ) -> Result<super::MembershipStatus, ObjectError> {
         request.validate()?;
+        if let Some(identity) = &self.group_identity {
+            if identity.version != 2 || identity.bootstrap_id != request.bootstrap_id {
+                return Err(ObjectError::PreconditionFailed("membership request does not match trusted group".into()));
+            }
+        }
         match self.call(ReplicaRequest::Membership(request))? {
-            ReplicaReply::Membership(status) => Ok(status),
+            ReplicaReply::Membership(status) => {
+                if let Some(identity) = &self.group_identity {
+                    status.validate_inventory(&identity.voters)?;
+                }
+                Ok(status)
+            },
             reply => Err(unexpected_reply("chunk membership", &reply)),
         }
     }

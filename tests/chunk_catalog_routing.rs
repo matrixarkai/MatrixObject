@@ -448,3 +448,38 @@ fn star_set_reconnects_only_for_a_later_operation_after_uncertain_write() {
     assert_eq!(set.ping_all(), vec![Some(1)]);
     worker.join().unwrap();
 }
+
+#[test]
+fn verified_chunk_membership_is_bound_to_the_trusted_inventory() {
+    use matrixobjectstore_rs::cluster::{MembershipRequest, MembershipStatus};
+    for field in 0..5 {
+        let mut expected = identity(1);
+        expected.version = 2;
+        expected.bootstrap_id = 91;
+        expected.bootstrap_voters = vec![1, 2];
+        let mut status = MembershipStatus { version: 1, node_id: 1, term: 2, applied_index: 9,
+            voters: vec![1], outgoing_voters: vec![1, 2], learners: vec![] };
+        match field { 1 => status.node_id = 3, 2 => status.voters = vec![3],
+            3 => status.outgoing_voters = vec![3], 4 => status.learners = vec![3], _ => {} }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let unused = TcpListener::bind("127.0.0.1:0").unwrap();
+        let reported = expected.clone();
+        let handle = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            receive(&mut socket);
+            socket.write_all(&encode_reply(&ReplicaReply::GroupIdentity(reported))).unwrap();
+            assert_eq!(receive(&mut socket), 12);
+            socket.write_all(&encode_reply(&ReplicaReply::Membership(status))).unwrap();
+        });
+        let mut client = RemoteReplicaClient::connect_verified_raft_catalog(
+            &[endpoint, unused.local_addr().unwrap().to_string()], &expected, &options()).unwrap();
+        let mut request = MembershipRequest { version: 1, bootstrap_id: 92, operation: 0, node_id: 0 };
+        assert!(client.chunk_membership(request.clone()).unwrap_err().to_string().contains("trusted group"));
+        request.bootstrap_id = 91;
+        let result = client.chunk_membership(request);
+        assert_eq!(result.is_ok(), field == 0, "field={field}: {result:?}");
+        if field != 0 { assert!(result.unwrap_err().to_string().contains("trusted inventory")); }
+        handle.join().unwrap();
+    }
+}

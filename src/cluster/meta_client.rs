@@ -259,17 +259,28 @@ impl RemoteMetaClient {
         }
         Ok(client)
     }
-    /// Describe this voter without leader routing or a read barrier.
+    /// Read quorum-confirmed membership or apply a committed membership change.
     pub fn metadata_membership(
         &mut self,
         request: super::MembershipRequest,
     ) -> Result<super::MembershipStatus, ObjectError> {
         request.validate()?;
+        if let Some(identity) = &self.group_identity {
+            if identity.version != 2 || identity.bootstrap_id != request.bootstrap_id {
+                return Err(ObjectError::PreconditionFailed("membership request does not match trusted group".into()));
+            }
+        }
         match self.call(MetaRequest::Membership(request))? {
-            MetaReply::Membership(status) => Ok(status),
+            MetaReply::Membership(status) => {
+                if let Some(identity) = &self.group_identity {
+                    status.validate_inventory(&identity.voters)?;
+                }
+                Ok(status)
+            },
             reply => Err(unexpected_reply("metadata membership", &reply)),
         }
     }
+    /// Describe this voter without leader routing or a read barrier.
     pub fn metadata_group_identity(&mut self) -> Result<super::MetaGroupIdentity, ObjectError> {
         match self.call_one(&MetaRequest::GroupIdentity).into_result()? {
             MetaReply::GroupIdentity(identity) => Ok(identity),
@@ -980,6 +991,41 @@ fn write_before(
 mod operation_deadline_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn verified_metadata_membership_is_bound_to_the_trusted_inventory() {
+        use crate::cluster::{MembershipRequest, MembershipStatus, MetaGroupIdentity};
+        for field in 0..5 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut status = MembershipStatus { version: 1, node_id: 1, term: 2, applied_index: 9,
+                voters: vec![1], outgoing_voters: vec![1, 2], learners: vec![] };
+            match field { 1 => status.node_id = 3, 2 => status.voters = vec![3],
+                3 => status.outgoing_voters = vec![3], 4 => status.learners = vec![3], _ => {} }
+            let mut client = RemoteMetaClient::connect(&listener.local_addr().unwrap().to_string(), &MetaClientOptions::default()).unwrap();
+            client.group_identity = Some(MetaGroupIdentity { version: 2, group_id: 42,
+                node_id: 1, voters: vec![1, 2], peer_endpoints: vec!["127.0.0.1:18001".into(), "127.0.0.1:18002".into()],
+                bootstrap_id: 91, bootstrap_voters: vec![1, 2] });
+            let handle = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut header = [0; 6];
+                socket.read_exact(&mut header).unwrap();
+                let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                assert!(length < 1024);
+                let mut payload = vec![0; length];
+                socket.read_exact(&mut payload).unwrap();
+                assert_eq!(header[1], MetaRequestCode::Membership as u8);
+                socket.write_all(&super::super::meta_message::encode_meta_reply(&MetaReply::Membership(status))).unwrap();
+            });
+            let mut request = MembershipRequest { version: 1, bootstrap_id: 92, operation: 0, node_id: 0 };
+            assert!(client.metadata_membership(request.clone()).unwrap_err().to_string().contains("trusted group"));
+            request.bootstrap_id = 91;
+            let result = client.metadata_membership(request);
+            assert_eq!(result.is_ok(), field == 0, "field={field}: {result:?}");
+            if field != 0 { assert!(result.unwrap_err().to_string().contains("trusted inventory")); }
+            handle.join().unwrap();
+        }
+    }
 
     #[test]
     fn operation_deadline_restores_catalog_after_unwind_and_uses_earliest_limit() {

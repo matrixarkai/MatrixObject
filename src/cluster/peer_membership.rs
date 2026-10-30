@@ -82,6 +82,16 @@ fn invalid(s: &str) -> ObjectError {
     ObjectError::InvalidArgument(s.into())
 }
 impl MembershipStatus {
+    pub(super) fn validate_inventory(&self, inventory: &[u64]) -> Result<(), ObjectError> {
+        self.validate()?;
+        if !inventory.contains(&self.node_id)
+            || self.voters.iter().chain(&self.outgoing_voters).chain(&self.learners)
+                .any(|id| !inventory.contains(id))
+        {
+            return Err(ObjectError::Corruption("membership status exceeds trusted inventory".into()));
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), ObjectError> {
         if self.version != 1
             || self.node_id == 0
