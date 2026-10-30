@@ -99,6 +99,14 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --test chunk_membership_controller -- --test-threads=1 | tee /tmp/membership-controller.log
           grep -q 'test result: ok. 3 passed' /tmp/membership-controller.log
+      - name: Check concurrent dynamic group controllers
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::dynamic_groups::three_dynamic_groups_replace_voters_concurrently_during_reads_and_recover -- --exact --nocapture --test-threads=1 | tee /tmp/concurrent-groups.log
+          grep -q 'test result: ok. 1 passed' /tmp/concurrent-groups.log
+          grep -q 'DYNAMIC_GROUPS groups=3 peak_processes=15 objects=60' /tmp/concurrent-groups.log
+          grep -q 'concurrent_controllers=true' /tmp/concurrent-groups.log
       - name: Check multi-group dynamic voter replacement
         shell: bash
         run: |

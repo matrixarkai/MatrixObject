@@ -400,3 +400,16 @@ The former measures the application callback, while the latter measures work
 between callbacks in Raft Ready processing. Callback failure or unwinding restores
 the Raft observation phase. These observations never decide admission, commitment,
 or whether a write can be replayed.
+
+### Concurrent group controllers
+
+The dynamic-group process tests also run one independent membership controller per
+group while an object reader stays active. Each controller adds a learner, promotes
+it after catch-up, leaves joint configuration, removes an original voter, and
+refreshes the metadata fence after each change. Recorded controller intervals must
+overlap; separate threads alone are not counted as evidence of concurrent work.
+
+The three-group case runs in CI. The sixteen-group case is an explicit 67-process
+WSL workload. Both verify object bytes and committed membership fences after
+metadata and chunk leader loss and after restarting all nodes. These are local
+process simulations, not independent-host or sustained-churn certification.

@@ -67,7 +67,7 @@ fn replace_member(meta: &mut RemoteMetaClient, group: &mut Group) {
     assert!(fence.voters().contains(&4));
     assert!(!fence.voters().contains(&(removed as u64 + 1)));
 }
-fn replacement_load(group_count: usize, writes: u64) {
+fn replacement_load(group_count: usize, writes: u64, concurrent: bool) {
     let mut groups: Vec<_> = (0..group_count)
         .map(|i| {
             let mut group = Group::configured_voters(64 * 1024 * 1024, 4);
@@ -118,6 +118,7 @@ fn replacement_load(group_count: usize, writes: u64) {
             .any(|(_, p)| p.node_ids.contains(&group.placement_id())));
     }
     let stop = AtomicBool::new(false);
+    let mut controller_peak = 1;
     let reads = std::thread::scope(|scope| {
         let reader = scope.spawn(|| {
             let started = Instant::now();
@@ -152,9 +153,38 @@ fn replacement_load(group_count: usize, writes: u64) {
             }
         }
         let guard = Stop(&stop);
-        let mut meta = metadata.ready();
-        for group in &mut groups {
-            replace_member(&mut meta, group);
+        if concurrent {
+            // Separate controller connections exercise independent group updates
+            // contending for the same metadata quorum while reads continue.
+            std::thread::scope(|controllers| {
+                let handles: Vec<_> = groups.iter_mut().map(|group| {
+                    let api = &metadata.api;
+                    controllers.spawn(move || {
+                        let mut meta = RemoteMetaClient::connect_catalog(api, &load_options()).unwrap();
+                        let started = Instant::now();
+                        replace_member(&mut meta, group);
+                        (started, Instant::now())
+                    })
+                }).collect();
+                let mut intervals = Vec::new();
+                for handle in handles {
+                    let (start, end) = handle.join().unwrap();
+                    intervals.push((start, 1isize));
+                    intervals.push((end, -1isize));
+                }
+                intervals.sort_unstable();
+                let mut active = 0isize;
+                for (_, delta) in intervals {
+                    active += delta;
+                    controller_peak = controller_peak.max(active as usize);
+                }
+                assert!(controller_peak > 1, "membership controllers did not overlap");
+            });
+        } else {
+            let mut meta = metadata.ready();
+            for group in &mut groups {
+                replace_member(&mut meta, group);
+            }
         }
         drop(guard);
         reader.join().unwrap()
@@ -234,17 +264,27 @@ fn replacement_load(group_count: usize, writes: u64) {
     group_usage(&metadata.api, &groups, &saved);
     verify_load(&metadata.api, &saved, true);
     println!(
-        "DYNAMIC_GROUPS groups={group_count} peak_processes={} objects={} concurrent_reads={reads}",
+        "DYNAMIC_GROUPS groups={group_count} peak_processes={} objects={} concurrent_reads={reads} concurrent_controllers={concurrent} peak_controllers={controller_peak}",
         group_count * 4 + 3,
         saved.len()
     );
 }
 #[test]
 fn three_dynamic_groups_replace_voters_during_reads_and_recover() {
-    replacement_load(3, 48);
+    replacement_load(3, 48, false);
 }
 #[test]
 #[ignore = "67-process dynamic replacement workload; run explicitly in WSL"]
 fn sixteen_dynamic_groups_replace_voters_during_reads_and_recover() {
-    replacement_load(16, 256);
+    replacement_load(16, 256, false);
+}
+
+#[test]
+fn three_dynamic_groups_replace_voters_concurrently_during_reads_and_recover() {
+    replacement_load(3, 48, true);
+}
+#[test]
+#[ignore = "67-process concurrent dynamic replacement workload; run explicitly in WSL"]
+fn sixteen_dynamic_groups_replace_voters_concurrently_during_reads_and_recover() {
+    replacement_load(16, 256, true);
 }
