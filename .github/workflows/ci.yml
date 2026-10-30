@@ -411,6 +411,12 @@ jobs:
           cargo test --locked --all-features --test network_metadata_consensus received_chunk_health_keeps_decided_time_through_failover_restart_and_expiry -- --exact --nocapture | tee /tmp/health-process.log
           grep -q 'test result: ok. 1 passed' /tmp/health-process.log
 
+      - name: unavailable group preserves striped objects and other writes
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::unavailable_group_preserves_striped_objects_and_other_group_writes -- --exact --nocapture | tee /tmp/striped-isolation.log
+          grep -q 'test result: ok. 1 passed' /tmp/striped-isolation.log
+
       - name: striped objects recover across multiple data groups
         run: |
           set -o pipefail
