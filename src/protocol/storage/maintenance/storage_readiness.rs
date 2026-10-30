@@ -9,8 +9,8 @@ impl ChunkStorageReadiness {
             ("ready", self.ready),
             ("read_cache_pressure", self.read_cache_pressure),
             ("route_qos_pressure", self.route_qos_pressure),
-            ("blockserver_route_control_read_ready", self.readable),
-            ("blockserver_route_control_write_ready", self.writable),
+            ("pageserver_route_control_read_ready", self.readable),
+            ("pageserver_route_control_write_ready", self.writable),
         ] {
             fields.insert(format!("{field_prefix}{name}"), value.to_string());
         }
