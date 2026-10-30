@@ -360,3 +360,35 @@ Abandoned or malformed replies close the socket. No uncertain mutation is replay
 Socket writes and failed-connection recovery remain sequential, so a blocked sender
 can delay fan-out; this is not a fastest-quorum completion policy. Complete-state
 repair retains its bounded-memory transfer path.
+
+### Controlled star response-latency measurement
+
+Run the repeatable measurement with:
+
+```sh
+cargo test --release --locked --all-features --test replica_state_transfer star_fanout_measures_reads_and_writes_with_delayed_replies -- --exact --ignored --nocapture
+```
+
+The test starts three independent in-memory chunk processes behind TCP proxies
+that delay each response by 5 ms. One client creates and reads 24 distinct 1 KiB
+pages per case, with read and write quorums of two. The sequential case calls the
+existing single-node client: all absent-head checks, all conditional creates,
+then all reads. The pipelined case uses `RemoteReplicaSet` and requires all three
+write acknowledgements. Both cases validate bytes and sequence, and every stored
+copy is checked directly after timing ends. Three rounds alternate case order.
+This compares request scheduling on healthy members, not two historical binaries.
+
+A local release run produced these ranges across the three rounds:
+
+| Operation and scheduling | Median latency | 95th percentile | Operations/second |
+|---|---:|---:|---:|
+| Sequential writes | 33.40–33.51 ms | 33.89–34.64 ms | 29.7–29.9 |
+| Pipelined writes | 11.46–11.74 ms | 11.84–11.92 ms | 85.7–86.8 |
+| Sequential reads | 16.97–17.19 ms | 17.61–17.70 ms | 58.2–58.7 |
+| Pipelined reads | 5.81–5.90 ms | 5.91–6.00 ms | 171.5–173.0 |
+
+These are single-host, single-client, synthetic response-delay measurements with
+no journal or metadata service in the measured path. They demonstrate overlap of
+replica processing and response waits; they do not rate durable throughput,
+metadata capacity, multihost performance or a saturated cluster. CI checks stored
+results and completion, never a timing ratio or throughput threshold.

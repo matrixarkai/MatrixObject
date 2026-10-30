@@ -576,3 +576,153 @@ fn star_slow_first_member_does_not_expire_healthy_quorum_replies() {
     drop(set);
     slow.join().unwrap();
 }
+
+#[test]
+#[ignore = "controlled three-replica latency measurement; run explicitly in release mode"]
+fn star_fanout_measures_reads_and_writes_with_delayed_replies() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::{Duration, Instant};
+    fn run(pipelined: bool, round: usize) {
+        let nodes: Vec<_> = (0..3).map(|_| start()).collect();
+        let listeners: Vec<_> = (0..3)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let endpoints: Vec<_> = listeners
+            .iter()
+            .map(|l| l.local_addr().unwrap().to_string())
+            .collect();
+        let workers: Vec<_> = listeners
+            .into_iter()
+            .enumerate()
+            .map(|(index, listener)| {
+                let endpoint = nodes[index].endpoint.clone();
+                listener.set_nonblocking(true).unwrap();
+                std::thread::spawn(move || {
+                    let until = Instant::now() + Duration::from_secs(5);
+                    let mut front = loop {
+                        match listener.accept() {
+                            Ok((s, _)) => break s,
+                            Err(e)
+                                if e.kind() == std::io::ErrorKind::WouldBlock
+                                    && Instant::now() < until =>
+                            {
+                                std::thread::sleep(Duration::from_millis(1))
+                            }
+                            other => panic!("latency proxy accept: {other:?}"),
+                        }
+                    };
+                    let mut back = TcpStream::connect(endpoint).unwrap();
+                    for socket in [&front, &back] {
+                        socket.set_nodelay(true).unwrap();
+                        socket
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        socket
+                            .set_write_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                    }
+                    loop {
+                        let mut header = [0; 6];
+                        if front.read_exact(&mut header).is_err() {
+                            break;
+                        }
+                        let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
+                        assert!(size <= 8192);
+                        let mut body = vec![0; size];
+                        front.read_exact(&mut body).unwrap();
+                        back.write_all(&header).unwrap();
+                        back.write_all(&body).unwrap();
+                        back.read_exact(&mut header).unwrap();
+                        let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
+                        assert!(size <= 8192);
+                        body.resize(size, 0);
+                        back.read_exact(&mut body).unwrap();
+                        std::thread::sleep(Duration::from_millis(5));
+                        front.write_all(&header).unwrap();
+                        front.write_all(&body).unwrap();
+                    }
+                })
+            })
+            .collect();
+        let options = ReplicaClientOptions::default();
+        let mut set = if pipelined {
+            Some(RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap())
+        } else {
+            None
+        };
+        let mut serial: Vec<_> = if pipelined {
+            vec![]
+        } else {
+            endpoints
+                .iter()
+                .map(|e| RemoteReplicaClient::connect(e, &options).unwrap())
+                .collect()
+        };
+        let mut writes = Vec::new();
+        let mut reads = Vec::new();
+        for index in 0..24 {
+            let id = page(index);
+            let data = vec![index as u8; 1024];
+            let began = Instant::now();
+            if let Some(set) = &mut set {
+                assert_eq!(set.write_chunk(&id, 0, &data).unwrap(), 3);
+            } else {
+                // Same healthy-member admission and conditional mutation phases.
+                for c in &mut serial {
+                    assert!(matches!(c.head_chunk(&id), Err(ObjectError::NotFound(_))));
+                }
+                for c in &mut serial {
+                    c.write_chunk_if_sequence(id.clone(), 0, &data, 0).unwrap();
+                }
+            }
+            writes.push(began.elapsed().as_micros() as u64);
+            let began = Instant::now();
+            if let Some(set) = &mut set {
+                let read = set.read_chunk(&id, 0, 1024).unwrap();
+                assert_eq!(read.data, data);
+                assert_eq!(read.write_sequence, 1);
+            } else {
+                let mut results = Vec::new();
+                for c in &mut serial {
+                    results.push(c.read_chunk(&id, 0, 1024).unwrap());
+                }
+                for read in &results {
+                    assert_eq!(read.data, data);
+                    assert_eq!(read.write_sequence, 1);
+                    assert_eq!(read.checksum, results[0].checksum);
+                }
+            }
+            reads.push(began.elapsed().as_micros() as u64);
+        }
+        drop(set);
+        drop(serial);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        // Validate every stored copy outside the measured request interval.
+        for node in &nodes {
+            let mut c = client(node);
+            for index in 0..24 {
+                let read = c.read_chunk(&page(index), 0, 1024).unwrap();
+                assert_eq!(read.data, vec![index as u8; 1024]);
+                assert_eq!(read.write_sequence, 1);
+            }
+        }
+        for (operation, mut samples) in [("write", writes), ("read", reads)] {
+            let total: u64 = samples.iter().sum();
+            samples.sort_unstable();
+            eprintln!("STAR_DELAY round={round} pipelined={pipelined} operation={operation} replicas=3 bytes=1024 delay_ms=5 samples=24 total_us={total} p50_us={} p95_us={} operations_per_second={:.1}", samples[11], samples[22], 24_000_000.0 / total as f64);
+        }
+    }
+    // Alternate order to reduce systematic warm-up bias. Do not assert timing ratios.
+    for round in 0..3 {
+        for pipelined in if round % 2 == 0 {
+            [false, true]
+        } else {
+            [true, false]
+        } {
+            run(pipelined, round);
+        }
+    }
+}
