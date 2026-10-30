@@ -455,6 +455,7 @@ fn run(
         progress.mark(WorkerPhase::ApplyReady);
         let output = peer.process_ready_with_snapshot_reader(
             |id, bytes| {
+                let _observation = progress.applying_outcome();
                 let mut node = application.borrow_mut();
                 if !bytes.is_empty() {
                     let entry =
