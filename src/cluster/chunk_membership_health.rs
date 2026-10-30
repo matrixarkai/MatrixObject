@@ -101,7 +101,9 @@ impl ChunkMembershipHealth {
         if let Some(previous) = self.reports.get(&expected_node) {
             if next.applied_index < previous.applied_index
                 || next.observed_at_ms < previous.observed_at_ms
-                || (next.observed_at_ms == previous.observed_at_ms && next != *previous)
+                || (next.observed_at_ms == previous.observed_at_ms
+                    && next.applied_index == previous.applied_index
+                    && next != *previous)
                 || (next.applied_index == previous.applied_index
                     && next.used_bytes != previous.used_bytes)
             {
@@ -130,14 +132,71 @@ impl ChunkMembershipHealth {
     /// Reports at or before the supplied expiration cutoff cannot count as online.
     /// Their usage remains conservative until a newer report or membership update.
     pub fn project(&self, expired_at_or_before_ms: u64) -> (bool, u64, Option<u64>) {
+        self.project_with_status(expired_at_or_before_ms, |_| (true, false))
+    }
+    pub(super) fn project_with_status(
+        &self,
+        expired_at_or_before_ms: u64,
+        status: impl Fn(u64) -> (bool, bool),
+    ) -> (bool, u64, Option<u64>) {
         project_voter_health(self.fence.voters(), self.fence.outgoing_voters(), |id| {
             self.reports.get(&id).map(|report| VoterHealth {
-                online: report.online && report.observed_at_ms > expired_at_or_before_ms,
-                draining: report.draining,
+                online: report.online
+                    && status(id).0
+                    && report.observed_at_ms > expired_at_or_before_ms,
+                draining: report.draining || status(id).1,
                 used_bytes: report.used_bytes,
                 heartbeat_ms: report.observed_at_ms,
             })
         })
+    }
+    pub(super) fn accepted_report(&self, node_id: u64) -> Option<VoterHealth> {
+        self.reports.get(&node_id).map(|report| VoterHealth {
+            online: report.online,
+            draining: report.draining,
+            used_bytes: report.used_bytes,
+            heartbeat_ms: report.observed_at_ms,
+        })
+    }
+    pub(super) fn check_successor(
+        &self,
+        next: &Self,
+        identity: &ChunkGroupIdentity,
+    ) -> Result<(), ObjectError> {
+        Self::from_bytes(&self.to_bytes(), identity)?;
+        Self::from_bytes(&next.to_bytes(), identity)?;
+        let status = MembershipStatus {
+            version: 1,
+            node_id: identity.node_id,
+            term: 1,
+            applied_index: next.fence.applied_floor(),
+            voters: next.fence.voters().to_vec(),
+            outgoing_voters: next.fence.outgoing_voters().to_vec(),
+            learners: next.fence.learners().to_vec(),
+        };
+        self.fence.advance(identity, &status)?;
+        let same_configuration = self.fence.voters() == next.fence.voters()
+            && self.fence.outgoing_voters() == next.fence.outgoing_voters()
+            && self.fence.learners() == next.fence.learners();
+        if same_configuration {
+            for (id, previous) in &self.reports {
+                if let Some(report) = next.reports.get(id) {
+                    if report.applied_index < previous.applied_index
+                        || report.observed_at_ms < previous.observed_at_ms
+                        || (report.observed_at_ms == previous.observed_at_ms
+                            && report.applied_index == previous.applied_index
+                            && report != previous)
+                        || (report.applied_index == previous.applied_index
+                            && report.used_bytes != previous.used_bytes)
+                    {
+                        return Err(invalid("chunk health outcome would regress a report"));
+                    }
+                } else if previous.applied_index >= next.fence.applied_floor() {
+                    return Err(invalid("chunk health outcome discards a current report"));
+                }
+            }
+        }
+        Ok(())
     }
     pub fn to_bytes(&self) -> Vec<u8> {
         Image {

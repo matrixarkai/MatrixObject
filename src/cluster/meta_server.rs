@@ -1215,6 +1215,131 @@ mod chunk_group_tests {
     use super::*;
     use crate::cluster::{chunk_groups::tests::config, ChunkGroupCatalog};
     #[test]
+    #[cfg(feature = "metadata-consensus")]
+    fn live_membership_health_restores_from_local_snapshot_and_streamed_checkpoint() {
+        use crate::cluster::{ChunkMembershipHealth, MembershipStatus};
+        use std::collections::BTreeMap;
+        let (group, health) = crate::cluster::chunk_groups::tests::dynamic_config();
+        let identity = group.identity.as_ref().unwrap();
+        let initial = ChunkGroupCatalog::with_membership_health(
+            vec![group.clone()],
+            BTreeMap::from([("group-a".into(), health.clone())]),
+        )
+        .unwrap();
+        let initial_bytes = initial.to_bytes().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "live-group-recovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let server =
+            MetaNodeServer::bind_with_snapshot("127.0.0.1:0", MetaNodeOptions::default(), &dir)
+                .unwrap();
+        server.seed_chunk_groups(initial).unwrap();
+        let mut next: ChunkMembershipHealth = health.clone();
+        for id in [1, 2] {
+            next.record(
+                identity,
+                id,
+                91,
+                &MembershipStatus {
+                    version: 1,
+                    node_id: id,
+                    term: 2,
+                    applied_index: 11,
+                    voters: vec![1, 2, 3],
+                    outgoing_voters: vec![],
+                    learners: vec![4],
+                },
+                100,
+                id * 100,
+                true,
+                false,
+            )
+            .unwrap();
+        }
+        let (snapshot, encoded_catalog) = {
+            let mut guard = server.meta.lock().unwrap();
+            let catalog = guard.groups.clone();
+            catalog
+                .replace_membership_health("group-a", &health.to_bytes(), &next.to_bytes())
+                .unwrap();
+            for (id, used) in [("voter-a", 100), ("voter-b", 200)] {
+                let node = guard.service.nodes.get_mut(id).unwrap();
+                node.online = true;
+                node.used_bytes = used;
+                node.last_heartbeat_ms = 100;
+            }
+            catalog.project(&mut guard.service, &["voter-a".into(), "voter-b".into()]);
+            assert!(guard.service.nodes["group-a"].online);
+            assert_eq!(guard.service.nodes["group-a"].used_bytes, 200);
+            guard.persist().unwrap();
+            (guard.service.export_snapshot(), catalog.to_bytes().unwrap())
+        };
+        let id = matrixraft::LogId { index: 20, term: 2 };
+        let mut stream =
+            crate::cluster::meta_checkpoint::capture(snapshot, encoded_catalog.clone(), id.clone())
+                .unwrap()
+                .unwrap();
+        let length = stream.length;
+        let bootstrap = ChunkGroupCatalog::from_bytes(&initial_bytes).unwrap();
+        let (restored, catalog) =
+            crate::cluster::meta_checkpoint::restore_live(&mut stream, length, id, &bootstrap).unwrap();
+        let mut service = MatrixMetaService::new();
+        service.install_placement_roster(&restored).unwrap();
+        service.install_snapshot(restored).unwrap();
+        catalog.validate_roster(&service).unwrap();
+        assert_eq!(catalog.to_bytes().unwrap(), encoded_catalog);
+        bootstrap.install_membership_health(&catalog).unwrap();
+        assert!(service.nodes["group-a"].online);
+        drop(stream);
+        drop(server);
+        let restored =
+            MetaNodeServer::bind_with_snapshot("127.0.0.1:0", MetaNodeOptions::default(), &dir)
+                .unwrap();
+        {
+            let guard = restored.meta.lock().unwrap();
+            assert_eq!(
+                guard.groups.membership_health("group-a").unwrap().unwrap(),
+                next
+            );
+            assert!(guard.service.nodes["group-a"].online);
+        }
+        apply(
+            &restored.meta,
+            MetaRequest::ExpireRootNodeHeartbeats {
+                ttl_ms: 10,
+                now_ms: 200,
+            },
+            65536,
+        )
+        .unwrap();
+        assert!(!restored.meta.lock().unwrap().service.nodes["group-a"].online);
+        drop(restored);
+        let restored =
+            MetaNodeServer::bind_with_snapshot("127.0.0.1:0", MetaNodeOptions::default(), &dir)
+                .unwrap();
+        assert!(!restored.meta.lock().unwrap().service.nodes["group-a"].online);
+        assert_eq!(
+            restored
+                .meta
+                .lock()
+                .unwrap()
+                .groups
+                .membership_health("group-a")
+                .unwrap()
+                .unwrap(),
+            next
+        );
+        drop(restored);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn group_catalog_and_projected_outcomes_survive_disk_recovery() {
         let dir = std::env::temp_dir().join(format!(
             "group-recovery-{}-{}",

@@ -60,6 +60,8 @@ struct Entry {
     version: u32,
     #[prost(bytes = "vec", tag = "2")]
     outcome: Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    catalog_outcome: Vec<u8>,
 }
 struct Request {
     request: MetaRequest,
@@ -437,13 +439,11 @@ fn run(
             },
             |id, reader, length| {
                 progress.mark(WorkerPhase::RestoreCheckpoint);
-                let snapshot = super::meta_checkpoint::restore(
-                    reader,
-                    length,
-                    id.clone(),
-                    &groups.to_bytes().map_err(storage)?,
+                let (snapshot, restored_groups) = super::meta_checkpoint::restore_live(
+                    reader, length, id.clone(), groups,
                 )?;
-                let restored = restore_snapshot(snapshot, groups)?;
+                let restored = restore_snapshot(snapshot, &restored_groups)?;
+                groups.install_membership_health(&restored_groups).map_err(storage)?;
                 **application.borrow_mut() = restored;
                 applied_term.set(id.term);
                 checkpoint.restored(id.index);
@@ -651,10 +651,20 @@ fn apply_committed(
 ) -> Result<(), RaftError> {
     if !bytes.is_empty() {
         let entry = Entry::decode(bytes).map_err(|e| RaftError::Storage(e.to_string()))?;
-        if entry.version != 1 || entry.encode_to_vec() != bytes {
+        let valid_kind = match entry.version {
+            1 => entry.catalog_outcome.is_empty(),
+            2 => entry.outcome.is_empty() && !entry.catalog_outcome.is_empty(),
+            _ => false,
+        };
+        if !valid_kind || entry.encode_to_vec() != bytes {
             return Err(RaftError::Storage(
                 "invalid metadata consensus entry".into(),
             ));
+        }
+        if !entry.catalog_outcome.is_empty() {
+            super::chunk_catalog_outcome::ChunkCatalogOutcome::from_payload(&entry.catalog_outcome)
+                .and_then(|outcome| outcome.apply(service, groups))
+                .map_err(storage)?;
         }
         if !entry.outcome.is_empty() {
             PlacementOutcome::from_payload(&entry.outcome)
@@ -744,6 +754,7 @@ fn propose_batch(
         };
         let payload = Entry {
             version: 1,
+            catalog_outcome: Vec::new(),
             outcome: outcome.clone(),
         }
         .encode_to_vec();
@@ -1705,6 +1716,223 @@ mod tests {
         }
     }
     #[test]
+    fn live_catalog_outcomes_apply_atomically_and_recover_after_checkpoint() {
+        use super::super::chunk_catalog_outcome::ChunkCatalogOutcome;
+        use super::super::{
+            ChunkGroupCatalog, ChunkMembershipFence, ChunkMembershipHealth, MembershipStatus,
+        };
+        let (files, mut peer) = batch_peer();
+        let (mut service, fixed) = fixture(1, 0);
+        let mut group = fixed.get("group-0").unwrap().clone();
+        let identity = group.identity.as_mut().unwrap();
+        identity.version = 2;
+        identity.bootstrap_id = 91;
+        identity.bootstrap_voters = identity.voters.clone();
+        let identity = identity.clone();
+        let mut status = MembershipStatus {
+            version: 1,
+            node_id: 1,
+            term: 2,
+            applied_index: 10,
+            voters: identity.voters.clone(),
+            outgoing_voters: vec![],
+            learners: vec![],
+        };
+        let initial_health =
+            ChunkMembershipHealth::new(ChunkMembershipFence::from_status(&identity, &status).unwrap());
+        let groups = ChunkGroupCatalog::with_membership_health(
+            vec![group.clone()],
+            [(group.placement_id.clone(), initial_health.clone())].into(),
+        )
+        .unwrap();
+        let bootstrap = groups.to_bytes().unwrap();
+        for id in group
+            .member_ids
+            .iter()
+            .chain(std::iter::once(&group.placement_id))
+        {
+            let node = service.nodes.get_mut(id).unwrap();
+            node.online = false;
+            node.used_bytes = 0;
+            node.last_heartbeat_ms = 0;
+        }
+        // Use persisted canonical defaults before comparing full recovered state.
+        let canonical =
+            crate::MetaSnapshot::from_bytes(&service.export_snapshot().to_bytes().unwrap()).unwrap();
+        service = restore_snapshot(canonical, &groups).unwrap();
+        let initial_snapshot = service.export_snapshot();
+        let mut next = initial_health.clone();
+        status.applied_index = 11;
+        for node in [1, 2] {
+            status.node_id = node;
+            next.record(&identity, node, 91, &status, 100, node * 10, true, false)
+                .unwrap();
+        }
+        let decide = |service: &MatrixMetaService,
+                      groups: &ChunkGroupCatalog,
+                      next: &ChunkMembershipHealth,
+                      report_nodes: bool| {
+            let before = groups
+                .membership_health("group-0")
+                .unwrap()
+                .unwrap()
+                .to_bytes();
+            let ids = groups.affected_nodes(group.member_ids.clone());
+            let captured = PlacementOutcome::capture(service, ids, None).unwrap();
+            let draft_groups = groups.clone();
+            draft_groups
+                .replace_membership_health("group-0", &before, &next.to_bytes())
+                .unwrap();
+            let mut draft = service.clone();
+            if report_nodes {
+                for (index, node) in group.member_ids.iter().take(2).enumerate() {
+                    let state = draft.nodes.get_mut(node).unwrap();
+                    state.online = true;
+                    state.used_bytes = (index as u64 + 1) * 10;
+                    state.last_heartbeat_ms = 100;
+                }
+            }
+            draft_groups.project(&mut draft, &group.member_ids);
+            draft.placement_commit_index += 1;
+            ChunkCatalogOutcome::new(
+                "group-0".into(),
+                before,
+                next.to_bytes(),
+                &captured.finish(&draft).unwrap(),
+            )
+            .unwrap()
+        };
+        let unchanged = PlacementOutcome::capture(
+            &service,
+            groups.affected_nodes(group.member_ids.clone()),
+            None,
+        )
+        .unwrap()
+        .finish(&service)
+        .unwrap();
+        let incomplete = ChunkCatalogOutcome::new(
+            "group-0".into(),
+            initial_health.to_bytes(),
+            next.to_bytes(),
+            &unchanged,
+        )
+        .unwrap();
+        assert!(
+            incomplete.apply(&mut service, &groups).is_err(),
+            "reports and placement must advance together"
+        );
+        assert_eq!(service.export_snapshot(), initial_snapshot);
+        assert_eq!(groups.to_bytes().unwrap(), bootstrap);
+        let first = decide(&service, &groups, &next, true);
+        let encode = |outcome: &ChunkCatalogOutcome| {
+            Entry {
+                version: 2,
+                outcome: Vec::new(),
+                catalog_outcome: outcome.to_payload().unwrap(),
+            }
+            .encode_to_vec()
+        };
+        let mut bad = encode(&first);
+        bad.extend([0x78, 1]);
+        let mut pending = VecDeque::new();
+        assert!(apply_committed(
+            &mut service,
+            &groups,
+            65536,
+            &mut pending,
+            LogId { index: 1, term: 1 },
+            &bad
+        )
+        .is_err());
+        assert_eq!(service.export_snapshot(), initial_snapshot);
+        assert_eq!(groups.to_bytes().unwrap(), bootstrap);
+        // A placement mismatch must not install membership state first.
+        service.placement_commit_index += 1;
+        assert!(first.apply(&mut service, &groups).is_err());
+        assert_eq!(groups.to_bytes().unwrap(), bootstrap);
+        service.placement_commit_index -= 1;
+        peer.propose(encode(&first)).unwrap();
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
+        assert!(service.nodes["group-0"].online);
+        assert_eq!(service.nodes["group-0"].used_bytes, 20);
+        let once = service.export_snapshot();
+        assert!(first.apply(&mut service, &groups).is_err());
+        assert_eq!(
+            service.export_snapshot(),
+            once,
+            "stale health must not apply placement twice"
+        );
+        let mut stream = super::super::meta_checkpoint::capture(
+            service.export_snapshot(),
+            groups.to_bytes().unwrap(),
+            LogId {
+                index: peer.applied_index(),
+                term: peer.term(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let length = stream.length;
+        peer.checkpoint_from_reader(&mut stream, length).unwrap();
+        drop(stream);
+        status.node_id = 2;
+        status.applied_index = 20;
+        status.voters = vec![2, 3];
+        next.advance(&identity, &status).unwrap();
+        let second = decide(&service, &groups, &next, false);
+        peer.propose(encode(&second)).unwrap();
+        peer.process_ready(|id, bytes| {
+            apply_committed(&mut service, &groups, 65536, &mut pending, id, bytes)
+        })
+        .unwrap();
+        assert!(!service.nodes["group-0"].online);
+        let expected = service.export_snapshot();
+        let expected_catalog = groups.to_bytes().unwrap();
+        drop(peer);
+        let mut peer = DurablePeer::open(PeerOptions {
+            node_id: 1,
+            group_id: 19,
+            voters: vec![1],
+            wal_path: files.0.join("peer.wal"),
+        })
+        .unwrap();
+        let recovered = RefCell::new(MatrixMetaService::new());
+        let recovered_groups = ChunkGroupCatalog::from_bytes(&bootstrap).unwrap();
+        let mut installed = false;
+        peer.process_ready_with_snapshot_reader(
+            |id, bytes| {
+                apply_committed(
+                    &mut recovered.borrow_mut(),
+                    &recovered_groups,
+                    65536,
+                    &mut pending,
+                    id,
+                    bytes,
+                )
+            },
+            |id, reader, length| {
+                let (snapshot, catalog) =
+                    super::super::meta_checkpoint::restore_live(reader, length, id, &recovered_groups)?;
+                let service = restore_snapshot(snapshot, &catalog)?;
+                recovered_groups
+                    .install_membership_health(&catalog)
+                    .map_err(storage)?;
+                *recovered.borrow_mut() = service;
+                installed = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(installed);
+        assert_eq!(recovered.borrow().export_snapshot(), expected);
+        assert_eq!(recovered_groups.to_bytes().unwrap(), expected_catalog);
+        drop(peer);
+    }
+
+    #[test]
     fn manifest_outcomes_recover_from_raft_checkpoint_and_committed_suffix() {
         use std::cell::RefCell;
         let (files, mut peer) = batch_peer();
@@ -1714,6 +1942,7 @@ mod tests {
         let encode = |outcome: &PlacementOutcome| {
             Entry {
                 version: 1,
+                catalog_outcome: Vec::new(),
                 outcome: outcome.to_payload().unwrap(),
             }
             .encode_to_vec()

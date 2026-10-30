@@ -168,12 +168,39 @@ pub(super) fn capture(
     let reader = Cursor::new(prefix).chain(Producer::new(snapshot)?);
     Ok(Some(Stream { reader, length }))
 }
+// Exact-byte restoration remains available for fixed-catalog format checks.
+#[cfg(test)]
 pub(super) fn restore(
     reader: &mut dyn Read,
     size: u64,
     id: LogId,
     catalog: &[u8],
 ) -> Result<MetaSnapshot, RaftError> {
+    let (snapshot, encoded_catalog) = restore_image(reader, size, id)?;
+    if encoded_catalog != catalog {
+        return Err(storage("metadata checkpoint group catalog mismatch"));
+    }
+    Ok(snapshot)
+}
+/// Recover live membership without allowing a checkpoint to replace the inventory.
+pub(super) fn restore_live(
+    reader: &mut dyn Read,
+    size: u64,
+    id: LogId,
+    inventory: &super::ChunkGroupCatalog,
+) -> Result<(MetaSnapshot, super::ChunkGroupCatalog), RaftError> {
+    let (snapshot, encoded_catalog) = restore_image(reader, size, id)?;
+    let catalog = super::ChunkGroupCatalog::from_bytes(&encoded_catalog).map_err(storage)?;
+    if !catalog.same_inventory(inventory) {
+        return Err(storage("metadata checkpoint group inventory mismatch"));
+    }
+    Ok((snapshot, catalog))
+}
+fn restore_image(
+    reader: &mut dyn Read,
+    size: u64,
+    id: LogId,
+) -> Result<(MetaSnapshot, Vec<u8>), RaftError> {
     if !(2..=MAX_FILE_CHECKPOINT_BYTES).contains(&size) {
         return Err(storage("metadata checkpoint size exceeds limits"));
     }
@@ -181,10 +208,10 @@ pub(super) fn restore(
     reader.read_exact(&mut prefix).map_err(storage)?;
     if prefix == [8, 1] {
         let image = Image::read_at(&mut Cursor::new(prefix).chain(reader), size, 1, id)?;
-        if image.catalog != catalog {
-            return Err(storage("metadata checkpoint group catalog mismatch"));
-        }
-        return MetaSnapshot::from_bytes(&image.state).map_err(storage);
+        return Ok((
+            MetaSnapshot::from_bytes(&image.state).map_err(storage)?,
+            image.catalog,
+        ));
     }
     if prefix != [8, 2] {
         return Err(storage("metadata checkpoint version mismatch"));
@@ -208,7 +235,6 @@ pub(super) fn restore(
         || header.term != id.term
         || id.index == 0
         || id.term == 0
-        || header.catalog != catalog
         || header.roster_shape != MetaSnapshot::STREAM_ROSTER_SHAPE
     {
         return Err(storage(
@@ -222,8 +248,12 @@ pub(super) fn restore(
     if length == 0 || length != reader.limit() {
         return Err(storage("metadata checkpoint state length mismatch"));
     }
-    MetaSnapshot::read_from(&mut reader, length).map_err(storage)
+    Ok((
+        MetaSnapshot::read_from(&mut reader, length).map_err(storage)?,
+        header.catalog,
+    ))
 }
+
 
 #[cfg(test)]
 mod tests {
