@@ -399,6 +399,12 @@ jobs:
           cargo test --locked --all-features --lib cluster::meta_server::chunk_group_tests::received_health_local_journal_keeps_timestamp_after_restart -- --exact --nocapture | tee /tmp/health-report.log
           grep -q 'test result: ok. 1 passed' /tmp/health-report.log
 
+      - name: maintenance repair survives metadata failover and full restart
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_metadata_consensus maintenance_repair_stays_excluded_through_metadata_failover_and_total_restart -- --exact --nocapture | tee /tmp/maintenance-recovery.log
+          grep -q 'test result: ok. 1 passed' /tmp/maintenance-recovery.log
+
       - name: received chunk health survives failover restart and expiry
         run: |
           set -o pipefail

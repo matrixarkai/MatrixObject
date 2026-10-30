@@ -1382,3 +1382,190 @@ fn received_chunk_health_keeps_decided_time_through_failover_restart_and_expiry(
     assert!(revived.online);
     assert!(revived.last_heartbeat_ms >= second_report.last_heartbeat_ms);
 }
+
+#[cfg(feature = "replica-server")]
+#[test]
+fn maintenance_repair_stays_excluded_through_metadata_failover_and_total_restart() {
+    use matrixobjectstore_rs::cluster::{
+        PageRepairStatus, RemoteReplicaClient, RemoteReplicaSet, ReplicaClientOptions,
+    };
+    use matrixobjectstore_rs::{ChunkId, PageId};
+    let reserved: Vec<_> = (0..3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = reserved
+        .iter()
+        .map(|s| s.local_addr().unwrap().to_string())
+        .collect();
+    let roster = endpoints
+        .iter()
+        .enumerate()
+        .map(|(i, e)| format!("maintenance-{i}@{e}@rack-{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut group = Group::with_catalog_checkpoints(Some(roster), Some("60000".into()), None, 1024);
+    let metadata = group
+        .api_addresses
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let paths: Vec<_> = (0..3)
+        .map(|i| group.root.join(format!("maintenance-{i}.log")))
+        .collect();
+    drop(reserved);
+    let start_chunk = |i: usize, maintenance: bool| {
+        let id = format!("maintenance-{i}");
+        processes::start(
+            env!("CARGO_BIN_EXE_chunkserver"),
+            &[
+                ("MATRIXOBJECT_REPLICA_ADDR", &endpoints[i]),
+                ("MATRIXOBJECT_REPLICA_JOURNAL", paths[i].to_str().unwrap()),
+                ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", "8192"),
+                (
+                    "MATRIXOBJECT_REPLICA_MAINTENANCE",
+                    if maintenance { "true" } else { "false" },
+                ),
+                ("MATRIXOBJECT_CHUNK_NODE_ID", &id),
+                ("MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS", &metadata),
+                ("MATRIXOBJECT_CHUNK_HEARTBEAT_MS", "100"),
+            ],
+        )
+    };
+    let mut chunks: Vec<_> = (0..3).map(|i| Some(start_chunk(i, false))).collect();
+    let wait_health = |catalog: &mut RemoteMetaClient, maintenance: bool, used: u64| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(nodes) = catalog.list_placement_nodes() {
+                if nodes.len() == 3
+                    && nodes.iter().all(|n| {
+                        n.online == (!maintenance || n.node_id != "maintenance-0")
+                            && n.used_bytes == used
+                            && n.capacity_bytes == 8192
+                    })
+                {
+                    return nodes;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "maintenance roster did not converge"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    };
+    let mut catalog = group.client(group.leader());
+    wait_health(&mut catalog, false, 0);
+    let options = ReplicaClientOptions::default();
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
+    let page = PageId {
+        chunk_id: ChunkId::new(1, 9).unwrap(),
+        page_index: 0,
+    };
+    assert_eq!(set.write_chunk(&page, 0, b"before").unwrap(), 3);
+    drop(chunks[0].take());
+    assert_eq!(set.write_chunk(&page, 0, b"repaired-data").unwrap(), 2);
+    assert_eq!(set.discard_chunk(&page, 2, 3).unwrap(), 2);
+    chunks[0] = Some(start_chunk(0, true));
+    let repaired = set.repair_inventory_batch(None, 8).unwrap();
+    assert!(!repaired.blocked);
+    assert!(!repaired.has_more);
+    assert_eq!(repaired.pages.len(), 1);
+    let report = repaired.pages[0].result.as_ref().unwrap();
+    assert_eq!(
+        report.members,
+        vec![
+            PageRepairStatus::Installed,
+            PageRepairStatus::Current,
+            PageRepairStatus::Current
+        ]
+    );
+    let expected = report.source.clone();
+    wait_health(&mut catalog, true, 13);
+    let mut held = RemoteReplicaClient::connect(&endpoints[0], &options).unwrap();
+    assert!(held.write_chunk(page.clone(), 0, b"blocked").is_err());
+    assert_eq!(held.head_chunk(&page).unwrap(), expected);
+    drop(held);
+    let leader = group.leader();
+    group.kill(leader);
+    drop(catalog);
+    catalog = group.client(group.leader());
+    wait_health(&mut catalog, true, 13);
+    let plan = catalog
+        .plan_object_placement("bucket", "survivors", 1, 2)
+        .unwrap();
+    assert!(!plan.node_ids.contains(&"maintenance-0".to_string()));
+    assert!(catalog
+        .plan_object_placement("bucket", "too-many", 1, 3)
+        .is_err());
+    // Stop every reporter before metadata restart so fresh reports cannot hide recovery bugs.
+    drop(set);
+    for node in &mut chunks {
+        drop(node.take());
+    }
+    let saved = wait_health(&mut catalog, true, 13);
+    drop(catalog);
+    for i in 0..3 {
+        if group.nodes[i].is_some() {
+            group.kill(i);
+        }
+    }
+    for i in 0..3 {
+        group.start(i);
+    }
+    catalog = group.client(group.leader());
+    let recovered = wait_health(&mut catalog, true, 13);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    for node in &recovered {
+        let old = saved
+            .iter()
+            .find(|old| old.node_id == node.node_id)
+            .unwrap();
+        assert!(node.last_heartbeat_ms >= old.last_heartbeat_ms);
+        assert!(
+            now.saturating_sub(node.last_heartbeat_ms) < 60000,
+            "offline state must not be explained by heartbeat expiry"
+        );
+    }
+    assert!(catalog
+        .plan_object_placement("bucket", "still-offline", 1, 3)
+        .is_err());
+    for (i, node) in chunks.iter_mut().enumerate() {
+        *node = Some(start_chunk(i, i == 0));
+    }
+    wait_health(&mut catalog, true, 13);
+    for endpoint in &endpoints {
+        let mut data = RemoteReplicaClient::connect(endpoint, &options).unwrap();
+        assert_eq!(data.head_chunk(&page).unwrap(), expected);
+        assert_eq!(
+            data.read_chunk_state(&page).unwrap().data.as_slice(),
+            b"repaired-data"
+        );
+        assert!(data.read_chunk(&page, 2, 1).is_err());
+    }
+    let mut held = RemoteReplicaClient::connect(&endpoints[0], &options).unwrap();
+    assert!(held.write_chunk(page.clone(), 0, b"blocked").is_err());
+    drop(held);
+    // Resumption is a deliberate operator restart, not an effect of successful repair.
+    drop(chunks[0].take());
+    chunks[0] = Some(start_chunk(0, false));
+    wait_health(&mut catalog, false, 13);
+    let mut set = RemoteReplicaSet::connect(&endpoints, 2, 2, &options).unwrap();
+    assert_eq!(set.write_chunk(&page, 0, b"ready-to-write").unwrap(), 3);
+    wait_health(&mut catalog, false, 14);
+    assert_eq!(
+        catalog
+            .plan_object_placement("bucket", "resumed", 1, 3)
+            .unwrap()
+            .node_ids
+            .len(),
+        3
+    );
+    assert_eq!(
+        set.read_chunk(&page, 0, 14).unwrap().data,
+        b"ready-to-write"
+    );
+}
