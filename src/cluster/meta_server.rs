@@ -172,6 +172,8 @@ impl DataNodeSeed {
 /// How a metaserver node is sized and bounded.
 #[derive(Clone, Debug)]
 pub struct MetaNodeOptions {
+    /// Optional preloaded mutual-TLS identity required for API clients.
+    pub tls: Option<super::ApiTlsConfig>,
     /// Largest payload this node will read from a frame.
     ///
     /// A length field arrives before the bytes it describes, so this is the bound on what one
@@ -189,6 +191,7 @@ pub struct MetaNodeOptions {
 impl Default for MetaNodeOptions {
     fn default() -> Self {
         Self {
+            tls: None,
             max_payload_bytes: MAX_PAYLOAD_BYTES,
             // Idle sockets do not occupy a worker. Each worker shares up to 128 sockets
             // and bounds reserved frame buffers to twice the maximum payload size.
@@ -249,6 +252,9 @@ impl MetaNodeServer {
             }
             None => (None, false),
         };
+        if let Some(directory) = directory {
+            super::api_tls::pin_file(&directory.join("api.transport"), options.tls.is_some())?;
+        }
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         Ok(Self {
@@ -300,6 +306,7 @@ impl MetaNodeServer {
                 "metadata storage mode already configured",
             ));
         }
+        let directory = options.directory.clone();
         let consensus = super::meta_consensus::MetaConsensus::open(
             options,
             meta.service.clone(),
@@ -307,6 +314,7 @@ impl MetaNodeServer {
             Arc::clone(&self.stop),
             self.options.max_payload_bytes,
         )?;
+        super::api_tls::pin_file(&directory.join("api.transport"), self.options.tls.is_some())?;
         let node_count = consensus.node_count;
         meta.consensus = Some(Arc::new(consensus));
         meta.service = MatrixMetaService::new();
@@ -575,6 +583,7 @@ fn accept_loop(
         |code, payload| frame_response(code, payload, &meta, &counters, &options),
         stop,
         super::connections::Options {
+            tls: options.tls.clone(),
             max_payload_bytes: options.max_payload_bytes,
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,

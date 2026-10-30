@@ -121,6 +121,10 @@ fn main() {
     );
 
     let options = MetaNodeOptions {
+        tls: matrixobjectstore_rs::cluster::ApiTlsConfig::from_env("MATRIXOBJECT_API").unwrap_or_else(|error| {
+            eprintln!("invalid API TLS configuration: {error}");
+            std::process::exit(2);
+        }),
         max_payload_bytes,
         worker_threads,
         ..Default::default()

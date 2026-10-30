@@ -39,7 +39,7 @@ impl Waiter {
             connections
                 .iter()
                 .filter(|c| c.pending.is_none())
-                .map(|c| (&c.stream, !c.output.is_empty())),
+                .map(|c| (c.stream.raw(), !c.output.is_empty() || c.stream.wants_write())),
             timeout,
             stop,
         )
@@ -72,11 +72,12 @@ mod tests {
         server.set_nonblocking(true).unwrap();
         let active = stop.track(&server).unwrap().unwrap();
         let options = super::super::Options {
+            tls: None,
             max_payload_bytes: 64,
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
         };
-        let mut connection = Connection::new(server, active, &options, Some(&waiter.notifier()));
+        let mut connection = Connection::new(server, active, &options, Some(&waiter.notifier())).unwrap();
         client.write_all(&[7]).unwrap();
         assert!(waiter.wait(&listener, std::slice::from_ref(&connection), &stop));
         let mut byte = [0];

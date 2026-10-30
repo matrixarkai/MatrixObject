@@ -126,6 +126,10 @@ fn main() {
         }
     };
     let options = ReplicaNodeOptions {
+        tls: matrixobjectstore_rs::cluster::ApiTlsConfig::from_env("MATRIXOBJECT_API").unwrap_or_else(|error| {
+            eprintln!("invalid API TLS configuration: {error}");
+            std::process::exit(2);
+        }),
         maintenance,
         max_payload_bytes,
         worker_threads,
@@ -327,6 +331,7 @@ fn main() {
                         Err(_) => return Err("metadata identity path is not UTF-8".into()),
                     };
                 Ok(matrixobjectstore_rs::cluster::ReplicaHeartbeatOptions {
+                    tls: matrixobjectstore_rs::cluster::ApiTlsConfig::from_env("MATRIXOBJECT_CLIENT").map_err(|error| error.to_string())?,
                     expected_metadata_identity,
                     node_id,
                     advertised_endpoint,

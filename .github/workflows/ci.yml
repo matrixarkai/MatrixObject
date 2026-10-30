@@ -81,6 +81,48 @@ jobs:
       # when a filter matches nothing, so a step checking only the exit status
       # passes while testing nothing -- and `--exact` needs the full `tests::`
       # path or it matches nothing at all.
+      - name: api tls serves persistent metadata and star data connections
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::api_tls::tests::api_tls_serves_persistent_metadata_and_star_data_connections -- --exact --nocapture | tee /tmp/api-tls.log
+          grep -q '^running 1 test$' /tmp/api-tls.log
+          grep -q '^test result: ok. 1 passed' /tmp/api-tls.log
+
+      - name: api tls rejects plaintext and foreign clients before mutations
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::api_tls::tests::api_tls_rejects_plaintext_and_foreign_clients_before_mutations -- --exact --nocapture | tee /tmp/api-tls.log
+          grep -q '^running 1 test$' /tmp/api-tls.log
+          grep -q '^test result: ok. 1 passed' /tmp/api-tls.log
+
+      - name: api tls checks server identity and requires client certificates
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::api_tls::tests::api_tls_checks_server_identity_and_requires_client_certificates -- --exact --nocapture | tee /tmp/api-tls.log
+          grep -q '^running 1 test$' /tmp/api-tls.log
+          grep -q '^test result: ok. 1 passed' /tmp/api-tls.log
+
+      - name: api tls bounds stalled handshakes and server shutdown
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::api_tls::tests::api_tls_bounds_stalled_handshakes_and_server_shutdown -- --exact --nocapture | tee /tmp/api-tls.log
+          grep -q '^running 1 test$' /tmp/api-tls.log
+          grep -q '^test result: ok. 1 passed' /tmp/api-tls.log
+
+      - name: encrypted cli health and durable restart refuse plaintext downgrade
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test api_tls_processes encrypted_cli_health_and_durable_restart_refuse_plaintext_downgrade -- --exact --nocapture | tee /tmp/api-tls.log
+          grep -q '^running 1 test$' /tmp/api-tls.log
+          grep -q '^test result: ok. 1 passed' /tmp/api-tls.log
+
+      - name: authenticated api and peer objects recover after restart
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test network_chunk_consensus coupled_groups::authenticated_api_and_peer_objects_recover_after_restart -- --exact --nocapture | tee /tmp/api-tls.log
+          grep -q '^running 1 test$' /tmp/api-tls.log
+          grep -q '^test result: ok. 1 passed' /tmp/api-tls.log
+
       - name: peer TLS refuses incomplete configuration
         run: |
           set -o pipefail

@@ -11,6 +11,7 @@ use std::{
 /// Automatic reports for one chunk process. Metadata membership must already exist.
 #[derive(Clone, Debug)]
 pub struct ReplicaHeartbeatOptions {
+    pub tls: Option<crate::cluster::ApiTlsConfig>,
     pub node_id: String,
     pub advertised_endpoint: SocketAddr,
     pub metadata_endpoints: Vec<SocketAddr>,
@@ -61,6 +62,7 @@ pub(super) fn run(
         .map(ToString::to_string)
         .collect();
     let client_options = MetaClientOptions {
+        tls: options.tls.clone(),
         connect_timeout: Duration::from_millis(100),
         read_timeout: Duration::from_millis(500),
         write_timeout: Duration::from_millis(100),
@@ -154,6 +156,7 @@ mod tests {
         .unwrap();
         chunk
             .enable_heartbeats(ReplicaHeartbeatOptions {
+                tls: None,
                 expected_metadata_identity: None,
                 node_id: "chunk-1".into(),
                 advertised_endpoint: endpoint,
@@ -235,6 +238,7 @@ mod tests {
         .unwrap();
         chunk
             .enable_heartbeats(ReplicaHeartbeatOptions {
+                tls: None,
                 node_id: "maintenance-1".into(),
                 advertised_endpoint: endpoint,
                 metadata_endpoints: vec![metadata],

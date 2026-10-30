@@ -918,3 +918,8 @@ callers; internal calls use the page names. Receipt proof sources use
 honors an existing implementation of the deprecated filter hook. This naming
 change does not alter persisted bytes, proof checksums, protocol headers, or
 accepted legacy node-kind values.
+
+### Binary API transport security
+
+The chunk and metadata binary APIs support mutual TLS for local and replicated
+storage. See [API TLS configuration and WSL validation](docs/api-tls.md).

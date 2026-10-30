@@ -52,6 +52,8 @@ use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 /// How a client connects and how long it waits.
 #[derive(Clone, Debug)]
 pub struct ReplicaClientOptions {
+    /// Optional preloaded mutual-TLS identity for API connections.
+    pub tls: Option<super::ApiTlsConfig>,
     /// Optional absolute deadline shared by connection attempts and wire frames.
     /// Deadline-bound connections require numeric IP endpoints to avoid blocking DNS.
     pub deadline: Option<Instant>,
@@ -66,6 +68,7 @@ pub struct ReplicaClientOptions {
 impl Default for ReplicaClientOptions {
     fn default() -> Self {
         Self {
+            tls: None,
             deadline: None,
             connect_timeout: Duration::from_secs(5),
             read_timeout: Duration::from_secs(30),
@@ -84,8 +87,8 @@ pub struct RemoteReplicaClient {
     deadline: Option<Instant>,
     endpoint: String,
     peer: SocketAddr,
-    reader: BufReader<TcpStream>,
-    writer: TcpStream,
+    reader: BufReader<super::api_tls::ApiSocket>,
+    writer: super::api_tls::ApiSocket,
     max_payload_bytes: usize,
     connection_usable: bool,
     last_exchange: Instant,
@@ -118,15 +121,22 @@ impl PendingReplicaReply<'_> {
         time_left(self.deadline).map_err(|error| {
             transport_error(&self.client.endpoint, "sending a fan-out request", &error.to_string())
         })?;
-        let end = frame.len().min(self.request_written + 64 * 1024);
-        match self.client.writer.write(&frame[self.request_written..end]) {
-            Ok(0) => return Err(transport_error(&self.client.endpoint, "sending a fan-out request", "zero-byte write")),
-            Ok(count) => self.request_written += count,
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => return Ok(false),
-            Err(error) => return Err(transport_error(&self.client.endpoint, "sending a fan-out request", &error.to_string())),
+        if self.request_written < frame.len() {
+            let end = frame.len().min(self.request_written + 64 * 1024);
+            match self.client.writer.write(&frame[self.request_written..end]) {
+                Ok(0) => return Err(transport_error(&self.client.endpoint, "sending a fan-out request", "zero-byte write")),
+                Ok(count) => self.request_written += count,
+                Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => return Ok(false),
+                Err(error) => return Err(transport_error(&self.client.endpoint, "sending a fan-out request", &error.to_string())),
+            }
         }
         if self.request_written != frame.len() {
             return Ok(false);
+        }
+        match self.client.writer.flush() {
+            Ok(()) => {},
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => return Ok(false),
+            Err(error) => return Err(transport_error(&self.client.endpoint, "flushing a fan-out request", &error.to_string())),
         }
         self.request = None;
         self.deadline = exchange_deadline(self.client.read_timeout, self.client.deadline)?;
@@ -217,7 +227,7 @@ impl RemoteReplicaClient {
     /// an established socket with a PID on each end is the observable form of "these
     /// processes are talking to each other".
     pub fn connect(endpoint: &str, options: &ReplicaClientOptions) -> Result<Self, ObjectError> {
-        let address = if options.deadline.is_some() {
+        let address = if options.deadline.is_some() || options.tls.is_some() {
             endpoint.parse::<SocketAddr>().map_err(|_| ObjectError::InvalidArgument(
                 "deadline-bound connections require a numeric IP endpoint".into()))?
         } else {
@@ -228,8 +238,12 @@ impl RemoteReplicaClient {
                 .map_err(|error| transport_error(endpoint, "connecting", &error.to_string()))?),
             None => options.connect_timeout,
         };
+        let handshake_deadline = Instant::now().checked_add(connect_timeout)
+            .ok_or_else(|| ObjectError::InvalidArgument("connection timeout exceeds clock range".into()))?;
         let stream = TcpStream::connect_timeout(&address, connect_timeout)
             .map_err(|err| transport_error(endpoint, "connecting", &err.to_string()))?;
+        let stream = super::api_tls::ApiSocket::client(stream, address, options.tls.as_ref(), handshake_deadline)
+            .map_err(|err| transport_error(endpoint, "authenticating API connection", &err.to_string()))?;
         stream
             .set_read_timeout(Some(options.read_timeout))
             .map_err(|err| transport_error(endpoint, "setting a read timeout", &err.to_string()))?;
@@ -992,7 +1006,7 @@ fn time_left(deadline: Instant) -> std::io::Result<Duration> {
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "replica frame deadline"))
 }
 fn read_before(
-    reader: &mut BufReader<TcpStream>,
+    reader: &mut BufReader<super::api_tls::ApiSocket>,
     mut bytes: &mut [u8],
     deadline: Instant,
 ) -> std::io::Result<()> {
@@ -1000,7 +1014,11 @@ fn read_before(
         reader
             .get_ref()
             .set_read_timeout(Some(time_left(deadline)?))?;
-        let count = reader.read(bytes)?;
+        let count = match reader.read(bytes) {
+            Ok(count) => count,
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => continue,
+            Err(error) => return Err(error),
+        };
         if count == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -1012,13 +1030,17 @@ fn read_before(
     Ok(())
 }
 fn write_before(
-    writer: &mut TcpStream,
+    writer: &mut super::api_tls::ApiSocket,
     mut bytes: &[u8],
     deadline: Instant,
 ) -> std::io::Result<()> {
     while !bytes.is_empty() {
         writer.set_write_timeout(Some(time_left(deadline)?))?;
-        let count = writer.write(bytes)?;
+        let count = match writer.write(bytes) {
+            Ok(count) => count,
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => continue,
+            Err(error) => return Err(error),
+        };
         if count == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WriteZero,
@@ -1027,7 +1049,14 @@ fn write_before(
         }
         bytes = &bytes[count..];
     }
-    Ok(())
+    loop {
+        writer.set_write_timeout(Some(time_left(deadline)?))?;
+        match writer.flush() {
+            Ok(()) => return Ok(()),
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => continue,
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn not_leader() -> ObjectError {
