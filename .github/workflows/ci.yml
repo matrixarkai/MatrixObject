@@ -69,7 +69,7 @@ jobs:
       # not ship. Without this the build fails in 30 seconds with
       # "Could not find `protoc` installation".
       - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler autoconf automake libtool
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler autoconf automake libtool iproute2 iptables util-linux
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.0
@@ -416,6 +416,12 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --test network_chunk_consensus coupled_groups::unavailable_group_preserves_striped_objects_and_other_group_writes -- --exact --nocapture | tee /tmp/striped-isolation.log
           grep -q 'test result: ok. 1 passed' /tmp/striped-isolation.log
+
+      - name: live peer partitions preserve objects and recover
+        run: |
+          set -o pipefail
+          bash tools/network_partition_test.sh | tee /tmp/live-peer-partitions.log
+          grep -q 'test result: ok. 1 passed' /tmp/live-peer-partitions.log
 
       - name: external probe verifies data across leader loss and restart
         run: |

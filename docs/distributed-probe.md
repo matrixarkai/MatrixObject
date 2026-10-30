@@ -59,3 +59,24 @@ byte size, leader loss and full restart. That is single-host functional evidence
 Multi-host qualification still requires running this workload on the intended
 deployment, recording host resources, replication settings, data size, machine
 load, sustained duration and fault schedule alongside its output.
+
+## WSL packet-partition simulation
+
+Run `bash tools/network_partition_test.sh` from the local WSL checkout. The
+wrapper builds the test executable, creates a private network namespace, enables
+its loopback interface and runs the named test there. It needs Linux networking
+tools and root access (or sudo). No host firewall rules or external resources are
+used. The test refuses to install rules in PID 1's network namespace.
+
+The nine-process fixture drops inbound Raft peer traffic to the current leader of
+each of two data groups and the metadata group. This is a one-way partition:
+client API ports remain reachable and the isolated voters may still send packets.
+Kernel rule counters must show actual drops. All server processes must remain
+alive while the isolated voters refuse quorum reads and the majorities verify
+existing objects and publish new ones.
+
+After removing the rules, the fixture stops the replacement leaders, forcing the
+healed voters to participate in new metadata and data write quorums. It then
+restarts every process and verifies all 36 objects written before, during and
+after the partition. The ordinary leader-kill test remains separate. Neither
+test establishes behavior under every network failure pattern or sustained load.
