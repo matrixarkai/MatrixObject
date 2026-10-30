@@ -387,25 +387,32 @@ fn election_noops_checkpoint_and_replay_without_changing_metadata() {
 
 #[test]
 fn peer_storage_refuses_missing_zeroed_or_reidentified_history() {
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_metaserver"))
-        .env("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0")
-        .env("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", "1")
-        .env_remove("MATRIXOBJECT_METASERVER_RAFT_PEERS")
-        .env_remove("MATRIXOBJECT_METASERVER_STATE_DIR")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let status = processes::reap_within(&mut child, Duration::from_secs(3));
-    if status.is_none() {
-        child.kill().unwrap();
-        child.wait().unwrap();
+    for (setting, value) in [
+        ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", "1"),
+        ("MATRIXOBJECT_METASERVER_RAFT_BOOTSTRAP_VOTERS", "1,2,3"),
+    ] {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_metaserver"))
+            .env("MATRIXOBJECT_METASERVER_ADDR", "127.0.0.1:0")
+            .env_remove("MATRIXOBJECT_METASERVER_RAFT_NODE_ID")
+            .env_remove("MATRIXOBJECT_METASERVER_RAFT_BOOTSTRAP_VOTERS")
+            .env(setting, value)
+            .env_remove("MATRIXOBJECT_METASERVER_RAFT_PEERS")
+            .env_remove("MATRIXOBJECT_METASERVER_STATE_DIR")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let status = processes::reap_within(&mut child, Duration::from_secs(3));
+        if status.is_none() {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+        assert_eq!(
+            status,
+            Some(2),
+            "partial Raft configuration silently selected local mode"
+        );
     }
-    assert_eq!(
-        status,
-        Some(2),
-        "partial Raft configuration silently selected local mode"
-    );
 
     let directory = std::env::temp_dir().join(node_regime::run_token("peer-storage"));
     std::fs::create_dir(&directory).unwrap();
@@ -789,6 +796,8 @@ fn metadata_raft_recovers_chunk_catalog_and_group_health() {
         placement_id: "group-a".into(),
         failure_domain: "rack-a".into(),
         identity: Some(ChunkGroupIdentity {
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
             version: 1,
             group_id: 1,
             node_id: 1,

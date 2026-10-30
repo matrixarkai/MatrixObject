@@ -61,6 +61,8 @@ fn config(socket: &TcpListener, id: u64) -> ChunkGroupConfig {
         placement_id: format!("group-{id}"),
         failure_domain: format!("zone-{id}"),
         identity: Some(ChunkGroupIdentity {
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
             version: 1,
             group_id: id,
             node_id: 1,

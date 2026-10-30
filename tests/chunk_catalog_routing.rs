@@ -216,6 +216,8 @@ fn a_valid_chunk_not_leader_reply_preserves_the_connection() {
 
 fn identity(node: u64) -> matrixobjectstore_rs::cluster::ChunkGroupIdentity {
     matrixobjectstore_rs::cluster::ChunkGroupIdentity {
+        bootstrap_voters: Vec::new(),
+        bootstrap_id: 0,
         version: 1,
         group_id: 42,
         node_id: node,

@@ -44,7 +44,7 @@ impl MembershipRequest {
     pub fn is_read(&self) -> bool {
         self.operation == MembershipOperation::Read as i32
     }
-    #[cfg(feature = "metadata-consensus")]
+    #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
     pub(super) fn change(&self) -> Result<matrixraft::peer_runtime::MembershipChange, ObjectError> {
         use matrixraft::peer_runtime::MembershipChange as C;
         self.validate()?;
@@ -108,7 +108,7 @@ impl MembershipStatus {
         }
         Ok(())
     }
-    #[cfg(feature = "metadata-consensus")]
+    #[cfg(any(feature = "metadata-consensus", feature = "chunk-consensus"))]
     pub(super) fn from_peer(peer: &matrixraft::peer_runtime::DurablePeer) -> Self {
         let state = peer.membership();
         Self {
@@ -195,5 +195,86 @@ mod tests {
         bytes.extend([0x78, 1]);
         assert!(MetaReply::decode(MetaRequestCode::Membership, &bytes).is_err());
         assert!(MetaReply::decode(MetaRequestCode::Membership, &[0; 2049]).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "replica-server"))]
+mod chunk_tests {
+    use super::*;
+    use crate::cluster::{ChunkGroupIdentity, ReplicaReply, ReplicaRequest, RequestCode};
+    #[test]
+    fn chunk_membership_frames_and_inventory_identity_are_canonical() {
+        for operation in 0..=4 {
+            let value = MembershipRequest {
+                version: 1,
+                bootstrap_id: 9,
+                operation,
+                node_id: if operation == 0 || operation == 4 {
+                    0
+                } else {
+                    4
+                },
+            };
+            let request = ReplicaRequest::Membership(value.clone());
+            let bytes = request.encode_payload();
+            assert_eq!(
+                ReplicaRequest::decode(RequestCode::Membership, &bytes).unwrap(),
+                request
+            );
+            for suffix in [vec![0x78, 1], vec![8, 1]] {
+                let mut bad = bytes.clone();
+                bad.extend(suffix);
+                assert!(ReplicaRequest::decode(RequestCode::Membership, &bad).is_err());
+            }
+        }
+        assert!(ReplicaRequest::decode(RequestCode::Membership, &[0; 129]).is_err());
+        let status = MembershipStatus {
+            version: 1,
+            node_id: 1,
+            term: 2,
+            applied_index: 8,
+            voters: vec![1, 2, 4],
+            outgoing_voters: vec![1, 2, 3],
+            learners: vec![5],
+        };
+        let reply = ReplicaReply::Membership(status);
+        assert_eq!(
+            ReplicaReply::decode(RequestCode::Membership, &reply.encode_payload()).unwrap(),
+            reply
+        );
+        let mut bad = reply.encode_payload();
+        bad.extend([0x78, 1]);
+        assert!(ReplicaReply::decode(RequestCode::Membership, &bad).is_err());
+        assert!(ReplicaReply::decode(RequestCode::Membership, &[0; 2049]).is_err());
+        let identity = ChunkGroupIdentity {
+            version: 2,
+            group_id: 3,
+            node_id: 4,
+            capacity_bytes: 4096,
+            max_pages: 64,
+            voters: vec![1, 2, 3, 4],
+            peer_endpoints: (1..=4)
+                .map(|id| format!("127.0.0.1:{}", 9100 + id))
+                .collect(),
+            bootstrap_voters: vec![1, 2, 3],
+            bootstrap_id: 9,
+        };
+        let reply = ReplicaReply::GroupIdentity(identity.clone());
+        assert_eq!(
+            ReplicaReply::decode(RequestCode::GroupIdentity, &reply.encode_payload()).unwrap(),
+            reply
+        );
+        for field in 0..4 {
+            let mut bad = identity.clone();
+            match field {
+                0 => bad.bootstrap_id = 0,
+                1 => bad.bootstrap_voters.clear(),
+                2 => bad.bootstrap_voters = vec![5],
+                _ => bad.version = 1,
+            }
+            assert!(
+                ReplicaReply::decode(RequestCode::GroupIdentity, &bad.encode_to_vec()).is_err()
+            );
+        }
     }
 }

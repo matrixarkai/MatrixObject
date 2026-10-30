@@ -724,6 +724,9 @@ pub(super) fn apply_to_replica(
             length,
         )
         .map(ReplicaReply::StateRange),
+        ReplicaRequest::Membership(_) => Err(ObjectError::InvalidArgument(
+            "membership requires an enabled consensus group".into(),
+        )),
         ReplicaRequest::GroupIdentity => Err(ObjectError::PreconditionFailed(
             "standalone replica has no Raft group identity".into(),
         )),

@@ -57,12 +57,22 @@ pub struct ChunkGroupIdentity {
     pub voters: Vec<u64>,
     #[prost(string, repeated, tag = "7")]
     pub peer_endpoints: Vec<String>,
+    /// Version 2: initial voters; voters/peer_endpoints describe the permitted inventory.
+    #[prost(uint64, repeated, tag = "8")]
+    pub bootstrap_voters: Vec<u64>,
+    /// Version 2: effective group ID binding limits, bootstrap voters and endpoints.
+    #[prost(uint64, tag = "9")]
+    pub bootstrap_id: u64,
 }
 impl ChunkGroupIdentity {
     pub(crate) fn validate(&self) -> Result<(), ObjectError> {
         let mut sockets = std::collections::BTreeSet::new();
-        if self.version != 1 || self.group_id == 0 || self.node_id == 0
-            || self.voters.is_empty() || self.voters.len() > 7
+        if !matches!(self.version, 1 | 2) || self.group_id == 0 || self.node_id == 0
+            || self.voters.is_empty() || self.voters.len() > if self.version == 1 {7} else {64}
+            || (self.version == 1 && (!self.bootstrap_voters.is_empty() || self.bootstrap_id != 0))
+            || (self.version == 2 && (self.bootstrap_id == 0 || self.bootstrap_voters.is_empty() || self.bootstrap_voters.len() > 7
+                || self.bootstrap_voters.windows(2).any(|w| w[0] >= w[1])
+                || self.bootstrap_voters.iter().any(|id| !self.voters.contains(id))))
             || self.voters[0] == 0 || self.voters.windows(2).any(|w| w[0] >= w[1])
             || !self.voters.contains(&self.node_id)
             || self.peer_endpoints.len() != self.voters.len()
@@ -87,6 +97,7 @@ impl ChunkGroupIdentity {
 /// A request as both ends understand it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaRequest {
+    Membership(super::MembershipRequest),
     StateInstall(super::state_install::StateInstall),
     ReadChunkStateRange {
         page_id: PageId,
@@ -135,6 +146,7 @@ pub enum ReplicaRequest {
 impl ReplicaRequest {
     pub fn code(&self) -> RequestCode {
         match self {
+            ReplicaRequest::Membership(_) => RequestCode::Membership,
             ReplicaRequest::StateInstall(_) => RequestCode::StateInstall,
             ReplicaRequest::ReadChunkStateRange { .. } => RequestCode::ReadChunkStateRange,
             ReplicaRequest::DiscardChunkIfSequence { .. } => RequestCode::DiscardChunkIfSequence,
@@ -153,6 +165,7 @@ impl ReplicaRequest {
     pub fn encode_payload(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
+            ReplicaRequest::Membership(value) => return value.encode_to_vec(),
             ReplicaRequest::StateInstall(value) => return value.encode_to_vec(),
             ReplicaRequest::ReadChunkStateRange {
                 page_id,
@@ -248,6 +261,16 @@ impl ReplicaRequest {
     /// the wrong place -- a page address read one field short still parses into a valid
     /// `PageId`, naming a page nobody asked about.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::Membership {
+            if payload.len() > 128 {
+                return Err(ObjectError::Corruption(
+                    "membership request exceeds bound".into(),
+                ));
+            }
+            let value: super::MembershipRequest = super::conditional_requests::decode(payload)?;
+            value.validate()?;
+            return Ok(Self::Membership(value));
+        }
         if code == RequestCode::StateInstall {
             return super::state_install::StateInstall::decode_payload(payload)
                 .map(Self::StateInstall);
@@ -324,7 +347,7 @@ impl ReplicaRequest {
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
-            RequestCode::StateInstall => unreachable!(),
+            RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::WriteChunkIfSequence | RequestCode::DiscardChunkIfSequence => {
                 unreachable!()
@@ -393,6 +416,7 @@ impl ReplicaRequest {
 /// A decoded reply, including a typed pre-admission refusal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReplicaReply {
+    Membership(super::MembershipStatus),
     StateRange(super::state_transfer::ChunkStateRange),
     /// This voter did not admit the request; a catalog may try another voter.
     NotLeader,
@@ -413,6 +437,7 @@ impl ReplicaReply {
         match self {
             Self::StateRange(value) => value.encoded_len(),
             Self::Applied | Self::NotLeader => 0,
+            Self::Membership(value) => value.encoded_len(),
             Self::GroupIdentity(identity) => identity.encoded_len(),
             Self::Read(read) => 16usize
                 .saturating_add(read.checksum.len())
@@ -433,6 +458,7 @@ impl ReplicaReply {
         match self {
             ReplicaReply::StateRange(value) => return value.encode_to_vec(),
             ReplicaReply::Applied | ReplicaReply::NotLeader => {}
+            ReplicaReply::Membership(value) => return value.encode_to_vec(),
             ReplicaReply::GroupIdentity(identity) => return identity.encode_to_vec(),
             ReplicaReply::Read(read) => {
                 put_u64(&mut out, read.write_sequence);
@@ -469,6 +495,16 @@ impl ReplicaReply {
     /// whose shape is read from the reply itself can be read as the wrong shape. The caller
     /// knows what it asked.
     pub fn decode(code: RequestCode, payload: &[u8]) -> Result<Self, ObjectError> {
+        if code == RequestCode::Membership {
+            if payload.len() > 2048 {
+                return Err(ObjectError::Corruption(
+                    "membership reply exceeds bound".into(),
+                ));
+            }
+            let value: super::MembershipStatus = super::conditional_requests::decode(payload)?;
+            value.validate()?;
+            return Ok(Self::Membership(value));
+        }
         if code == RequestCode::StateInstall {
             if !payload.is_empty() {
                 return Err(ObjectError::Corruption(
@@ -499,7 +535,7 @@ impl ReplicaReply {
         }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
-            RequestCode::StateInstall => unreachable!(),
+            RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::GroupIdentity => unreachable!(),
             RequestCode::WriteChunk

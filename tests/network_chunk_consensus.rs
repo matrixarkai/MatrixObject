@@ -36,6 +36,7 @@ fn api_tls_environment(root: Option<&PathBuf>) -> Vec<(&'static str, String)> {
     ].into_iter().map(|(name, file)| (name, root.join(file).to_str().unwrap().to_owned())).collect()
 }
 struct Group {
+    membership: bool,
     peer_tls: Option<PathBuf>,
     api_tls: Option<PathBuf>,
     nodes: Vec<Option<NodeProcess>>,
@@ -65,7 +66,7 @@ impl Group {
         Self::configured_voters(capacity, 3)
     }
     fn configured_voters(capacity: u64, voters: usize) -> Self {
-        assert!([3, 5, 7].contains(&voters));
+        assert!([3, 4, 5, 7].contains(&voters));
         let root = std::env::temp_dir().join(node_regime::run_token("chunk-peers"));
         std::fs::create_dir(&root).unwrap();
         // Hold all distinct listeners until their process takes ownership.
@@ -88,6 +89,7 @@ impl Group {
             .map(|(api, _)| api.local_addr().unwrap())
             .collect();
         let g = Self {
+            membership: false,
             peer_tls: None,
             api_tls: None,
             nodes: (0..voters).map(|_| None).collect(),
@@ -155,6 +157,9 @@ impl Group {
                 checkpoint_bytes.as_str(),
             ),
         ];
+        if self.membership {
+            environment.push(("MATRIXOBJECT_CHUNK_RAFT_BOOTSTRAP_VOTERS", "1,2,3"));
+        }
         if let Some((metadata, _)) = &self.report {
             environment.extend([
                 ("MATRIXOBJECT_CHUNK_NODE_ID", node_id.as_str()),
@@ -351,6 +356,7 @@ fn chunk_peer_storage_lock_configuration_and_truncation_fail_closed() {
     let address = reserved.local_addr().unwrap();
     drop(reserved);
     let options = ChunkRaftOptions {
+        bootstrap_voters: None,
         peer_tls: None,
         checkpoint_after_bytes: 0,
         node_id: 1,
@@ -396,6 +402,7 @@ fn slow_chunk_peer_packets_do_not_prevent_shutdown() {
     drop(socket);
     server
         .enable_consensus(ChunkRaftOptions {
+            bootstrap_voters: None,
             peer_tls: None,
             checkpoint_after_bytes: 0,
             node_id: 1,
@@ -421,6 +428,7 @@ fn partial_chunk_raft_settings_and_local_journal_combination_are_refused() {
     use std::process::{Command, Stdio};
     for env in [
         vec![("MATRIXOBJECT_CHUNK_RAFT_NODE_ID", "1")],
+        vec![("MATRIXOBJECT_CHUNK_RAFT_BOOTSTRAP_VOTERS", "1,2,3")],
         vec![("MATRIXOBJECT_CHUNK_RAFT_PEERS", "1@127.0.0.1:18801")],
         vec![
             ("MATRIXOBJECT_CHUNK_RAFT_PEERS", "1@127.0.0.1:18801"),
@@ -480,6 +488,7 @@ fn chunk_voter_catalog_rejects_aliases_and_invalid_addresses_before_storage() {
             ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
         assert!(server
             .enable_consensus(ChunkRaftOptions {
+                bootstrap_voters: None,
                 peer_tls: None,
                 checkpoint_after_bytes: 0,
                 node_id: 1,
@@ -573,6 +582,7 @@ fn oversized_chunk_outcome_is_refused_without_poisoning_the_group() {
     drop(socket);
     server
         .enable_consensus(ChunkRaftOptions {
+            bootstrap_voters: None,
             peer_tls: None,
             checkpoint_after_bytes: 0,
             node_id: 1,
@@ -737,6 +747,8 @@ fn metadata_catalog_routes_chunk_group_through_leader_loss() {
         placement_id: "group-a".into(),
         failure_domain: "rack-a".into(),
         identity: Some(ChunkGroupIdentity {
+            bootstrap_voters: Vec::new(),
+            bootstrap_id: 0,
             version: 1,
             group_id: 1,
             node_id: 1,
@@ -919,6 +931,8 @@ mod coupled_groups {
                         placement_id: chunk.placement_id(),
                         failure_domain: format!("rack-{}", chunk.group_id),
                         identity: Some(ChunkGroupIdentity {
+                            bootstrap_voters: Vec::new(),
+                            bootstrap_id: 0,
                             version: 1,
                             group_id: chunk.group_id,
                             node_id: 1,
@@ -3763,4 +3777,185 @@ fn conditional_discards_replicate_and_recover_without_accepting_stale_sequences(
     assert!(c.read_chunk(&page(90), 5, 1).is_err());
     c.write_chunk_if_sequence(page(90), 2, b"CDEF", 3).unwrap();
     assert_eq!(c.read_chunk(&page(90), 0, 8).unwrap().data, b"abCDEFgh");
+}
+
+#[test]
+fn chunk_membership_replaces_lost_storage_with_a_distinct_process() {
+    use matrixobjectstore_rs::cluster::{MembershipOperation as Op, MembershipRequest};
+    let mut group = Group::configured_voters(65536, 4);
+    group.membership = true;
+    group.checkpoint_bytes = 1024;
+    for i in 0..3 {
+        group.start(i);
+    }
+    let first = group.leader();
+    let identity = group.client(first).chunk_group_identity().unwrap();
+    assert_eq!(identity.version, 2);
+    assert_eq!(identity.bootstrap_voters, vec![1, 2, 3]);
+    assert_eq!(identity.voters, vec![1, 2, 3, 4]);
+    let command = |op: Op, id| MembershipRequest {
+        version: 1,
+        bootstrap_id: identity.bootstrap_id,
+        operation: op as i32,
+        node_id: id,
+    };
+    let mut saved = Vec::new();
+    for i in 0..16 {
+        let p = page(i);
+        let data = vec![i as u8; 1024];
+        let mut client = group.client(first);
+        client.write_chunk(p.clone(), 0, &data).unwrap();
+        client.discard_chunk(&p, 128, 32).unwrap();
+        saved.push((
+            p.clone(),
+            client.read_chunk_state(&p).unwrap(),
+            client.head_chunk(&p).unwrap(),
+        ));
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !group
+        .root
+        .join(first.to_string())
+        .join("chunk.peer.wal.payloads")
+        .is_dir()
+    {
+        assert!(Instant::now() < deadline, "checkpoint was not captured");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    group.kill(first);
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let mut wrong = command(Op::Read, 0);
+    wrong.bootstrap_id ^= 1;
+    assert!(client.chunk_membership(wrong).is_err());
+    assert_eq!(
+        client
+            .chunk_membership(command(Op::AddLearner, 4))
+            .unwrap()
+            .learners,
+        vec![4]
+    );
+    assert!(client.chunk_membership(command(Op::Promote, 4)).is_err());
+    group.start(3);
+    let newcomer = group.client(3).chunk_group_identity().unwrap();
+    assert_eq!(newcomer.bootstrap_id, identity.bootstrap_id);
+    assert!(group.client(3).ping().is_err());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let joint = loop {
+        match client.chunk_membership(command(Op::Promote, 4)) {
+            Ok(status) => break status,
+            Err(error) if error.to_string().contains("caught-up learner") => {
+                assert!(
+                    Instant::now() < deadline,
+                    "learner did not catch up: {error}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("promotion failed: {error}"),
+        }
+    };
+    assert_eq!(joint.voters, vec![1, 2, 3, 4]);
+    assert_eq!(joint.outgoing_voters, vec![1, 2, 3]);
+    client.chunk_membership(command(Op::LeaveJoint, 0)).unwrap();
+    client
+        .chunk_membership(command(Op::Remove, first as u64 + 1))
+        .unwrap();
+    let status = client.chunk_membership(command(Op::LeaveJoint, 0)).unwrap();
+    let expected: Vec<_> = (1..=4).filter(|id| *id != first as u64 + 1).collect();
+    assert_eq!(status.voters, expected);
+    assert!(status.outgoing_voters.is_empty());
+    group.kill(leader);
+    let serving = group.leader();
+    let mut client = group.client(serving);
+    for (p, state, head) in &saved {
+        assert_eq!(client.read_chunk_state(p).unwrap(), *state);
+        assert_eq!(client.head_chunk(p).unwrap(), *head);
+    }
+    client.write_chunk(page(40), 0, b"new quorum").unwrap();
+    for i in 0..4 {
+        if group.nodes[i].is_some() {
+            group.kill(i);
+        }
+    }
+    for i in 0..4 {
+        group.start(i);
+    }
+    let serving = group.leader();
+    assert_ne!(serving, first);
+    let mut client = group.client(serving);
+    assert_eq!(
+        client
+            .chunk_membership(command(Op::Read, 0))
+            .unwrap()
+            .voters,
+        expected
+    );
+    assert_eq!(
+        client.read_chunk(&page(40), 0, 10).unwrap().data,
+        b"new quorum"
+    );
+    for (p, state, head) in &saved {
+        assert_eq!(client.read_chunk_state(p).unwrap(), *state);
+        assert_eq!(client.head_chunk(p).unwrap(), *head);
+    }
+    assert!(group
+        .client(first)
+        .write_chunk(page(41), 0, b"removed")
+        .is_err());
+}
+
+#[test]
+fn chunk_membership_requires_quorum_and_removes_the_serving_leader() {
+    use matrixobjectstore_rs::cluster::{MembershipOperation as Op, MembershipRequest};
+    let mut group = Group::configured_voters(65536, 4);
+    group.membership = true;
+    for i in 0..3 {
+        group.start(i);
+    }
+    let first = group.leader();
+    let mut client = group.client(first);
+    let identity = client.chunk_group_identity().unwrap();
+    let command = |op: Op, id| MembershipRequest {
+        version: 1,
+        bootstrap_id: identity.bootstrap_id,
+        operation: op as i32,
+        node_id: id,
+    };
+    for i in 0..3 {
+        if i != first {
+            group.kill(i);
+        }
+    }
+    assert!(client.chunk_membership(command(Op::AddLearner, 4)).is_err());
+    assert!(client.chunk_membership(command(Op::Read, 0)).is_err());
+    for i in 0..3 {
+        if i != first {
+            group.start(i);
+        }
+    }
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let status = client.chunk_membership(command(Op::Read, 0)).unwrap();
+    assert_eq!(status.voters, vec![1, 2, 3]);
+    assert!(status.learners.is_empty() || status.learners == vec![4]);
+    if status.learners.is_empty() {
+        client.chunk_membership(command(Op::AddLearner, 4)).unwrap();
+    }
+    assert!(client
+        .chunk_membership(command(Op::Remove, 4))
+        .unwrap()
+        .learners
+        .is_empty());
+    client
+        .chunk_membership(command(Op::Remove, leader as u64 + 1))
+        .unwrap();
+    let status = client.chunk_membership(command(Op::LeaveJoint, 0)).unwrap();
+    assert!(!status.voters.contains(&(leader as u64 + 1)));
+    assert!(client.write_chunk(page(0), 0, b"removed").is_err());
+    let next = group.leader();
+    assert_ne!(next, leader);
+    group
+        .client(next)
+        .write_chunk(page(0), 0, b"remaining quorum")
+        .unwrap();
 }

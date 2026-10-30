@@ -39,6 +39,8 @@ const NETWORK_TIMEOUT: Duration = Duration::from_millis(100);
 /// Fixed voter endpoints. Each process uses its own existing state directory.
 #[derive(Clone, Debug)]
 pub struct ChunkRaftOptions {
+    /// Opt in to membership changes. peers then contains all permitted endpoints.
+    pub bootstrap_voters: Option<Vec<u64>>,
     /// Mutual TLS for peer ports; this does not protect client API ports.
     pub peer_tls: Option<crate::cluster::PeerTlsOptions>,
     pub node_id: u64,
@@ -127,7 +129,12 @@ impl ChunkConsensus {
         if options.group_id == 0
             || options.node_id == 0
             || options.peers.is_empty()
-            || options.peers.len() > 7
+            || options.peers.len()
+                > if options.bootstrap_voters.is_some() {
+                    64
+                } else {
+                    7
+                }
             || options.peers.keys().any(|id| *id == 0)
             || !options.peers.contains_key(&options.node_id)
             || options.request_timeout < Duration::from_millis(100)
@@ -145,6 +152,17 @@ impl ChunkConsensus {
                 != options.peers.len()
         {
             return Err(invalid("invalid chunk voter configuration"));
+        }
+        let voters = options
+            .bootstrap_voters
+            .clone()
+            .unwrap_or_else(|| options.peers.keys().copied().collect());
+        if voters.is_empty()
+            || voters.len() > 7
+            || voters.windows(2).any(|w| w[0] >= w[1])
+            || voters.iter().any(|id| !options.peers.contains_key(id))
+        {
+            return Err(invalid("invalid chunk bootstrap voters"));
         }
         let transport = crate::cluster::peer_tls::PeerTransport::load(options.peer_tls.as_ref())?;
         let directory = options.directory.canonicalize()?;
@@ -195,8 +213,14 @@ impl ChunkConsensus {
         } else {
             expected
         };
-        let group_identity = ChunkGroupIdentity {
-            version: 1,
+        let mut group_identity = ChunkGroupIdentity {
+            bootstrap_voters: options.bootstrap_voters.clone().unwrap_or_default(),
+            bootstrap_id: 0,
+            version: if options.bootstrap_voters.is_some() {
+                2
+            } else {
+                1
+            },
             group_id: options.group_id,
             node_id: options.node_id,
             capacity_bytes: configuration.capacity_bytes,
@@ -211,13 +235,34 @@ impl ChunkConsensus {
         let mut identity = b"chunk-consensus".to_vec();
         identity.extend_from_slice(&bytes);
         identity.extend_from_slice(&options.group_id.to_be_bytes());
+        if options.bootstrap_voters.is_some() {
+            identity.extend_from_slice(b"membership-v1");
+            identity.extend_from_slice(&(voters.len() as u64).to_be_bytes());
+            for id in &voters {
+                identity.extend_from_slice(&id.to_be_bytes());
+            }
+            for (id, endpoint) in options.peers.keys().zip(&group_identity.peer_endpoints) {
+                identity.extend_from_slice(&id.to_be_bytes());
+                identity.extend_from_slice(&(endpoint.len() as u64).to_be_bytes());
+                identity.extend_from_slice(endpoint.as_bytes());
+            }
+        }
         let group_id = hash(&identity).max(1);
-        let mut peer = DurablePeer::open(PeerOptions {
+        if options.bootstrap_voters.is_some() {
+            group_identity.bootstrap_id = group_id;
+        }
+        group_identity.validate().map_err(invalid)?;
+        let peer_options = PeerOptions {
             node_id: options.node_id,
             group_id,
-            voters: options.peers.keys().copied().collect(),
+            voters,
             wal_path: wal,
-        })
+        };
+        let mut peer = if options.bootstrap_voters.is_some() {
+            DurablePeer::open_with_membership(peer_options, options.peers.keys().copied().collect())
+        } else {
+            DurablePeer::open(peer_options)
+        }
         .map_err(invalid)?;
         if !base.exists() {
             let mut file = OpenOptions::new()
@@ -314,6 +359,12 @@ impl ChunkConsensus {
         self.failed.load(Ordering::SeqCst)
     }
     pub(super) fn request(&self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+        if let ReplicaRequest::Membership(command) = &request {
+            command.validate()?;
+            if self.identity.version != 2 || command.bootstrap_id != self.identity.bootstrap_id {
+                return Err(refused("membership mode or group identity mismatch"));
+            }
+        }
         if matches!(request, ReplicaRequest::GroupIdentity) {
             if self.is_failed() {
                 return Err(refused("chunk consensus unavailable"));
@@ -369,10 +420,12 @@ fn run(
     let mut pending_read: Option<(u64, Vec<Request>)> = None;
     let mut deferred = None;
     let applied_term = Cell::new(0);
+    let mut recovered = false;
+    let mut pending_membership: Option<(LogId, Request)> = None;
     while !stop.is_stopped() {
         progress.mark(WorkerPhase::PeerPackets);
         let mut admitted = false;
-        for _ in 0..32 {
+        for _ in 0..if recovered { 32 } else { 0 } {
             match packets.try_recv() {
                 Ok(bytes) => {
                     let _ = peer.step(&bytes);
@@ -380,7 +433,7 @@ fn run(
                 Err(_) => break,
             }
         }
-        if tick.elapsed() >= TICK {
+        if recovered && tick.elapsed() >= TICK {
             peer.tick()?;
             tick = Instant::now();
         }
@@ -452,6 +505,20 @@ fn run(
         )?;
         progress.mark(WorkerPhase::Requests);
         drop(application);
+        recovered = true;
+        if let Some((id, _)) = &pending_membership {
+            if peer.term() == id.term && peer.applied_index() >= id.index {
+                let (_, request) = pending_membership.take().unwrap();
+                let _ = request.reply.try_send(Ok(ReplicaReply::Membership(
+                    crate::cluster::MembershipStatus::from_peer(peer),
+                )));
+            } else if !peer.is_leader() || peer.term() != id.term {
+                let (_, request) = pending_membership.take().unwrap();
+                let _ = request.reply.try_send(Err(refused(
+                    "chunk leadership changed; membership outcome may be committed",
+                )));
+            }
+        }
         for packet in output {
             if let Some(tx) = outgoing.get(&packet.to) {
                 let _ = tx.try_send(crate::cluster::peer_delivery::PeerDelivery::new(
@@ -478,7 +545,14 @@ fn run(
                         let reply = match &result {
                             Ok(true) => {
                                 let max_pages = node.max_pages;
-                                checked_apply(&mut node.service, request.request, max_pages, limit)
+                                match request.request {
+                                    ReplicaRequest::Membership(_) => Ok(ReplicaReply::Membership(
+                                        crate::cluster::MembershipStatus::from_peer(peer),
+                                    )),
+                                    other => {
+                                        checked_apply(&mut node.service, other, max_pages, limit)
+                                    }
+                                }
                             }
                             Err(error) => read_failure(error),
                             Ok(false) => unreachable!(),
@@ -490,7 +564,7 @@ fn run(
         }
         // A timed-out accepted proposal remains pending until applied or leadership changes.
         // Proposing a second outcome against the same old state would be invalid.
-        if pending.is_none() && pending_read.is_none() {
+        if pending.is_none() && pending_read.is_none() && pending_membership.is_none() {
             progress.mark(WorkerPhase::PublishCheckpoint);
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
                 let mut snapshot = node.service.export_snapshot_unsealed();
@@ -526,6 +600,17 @@ fn run(
                                 for request in batch {
                                     let _ = request.reply.try_send(read_failure(&error));
                                 }
+                            }
+                        }
+                    } else if let ReplicaRequest::Membership(command) = &request.request {
+                        request.progress.mark(RequestPhase::ProposalCompletion);
+                        match command
+                            .change()
+                            .and_then(|change| peer.propose_membership(change).map_err(refused))
+                        {
+                            Ok(id) => pending_membership = Some((id, request)),
+                            Err(error) => {
+                                let _ = request.reply.try_send(Err(error));
                             }
                         }
                     } else {
@@ -628,6 +713,7 @@ fn restore_snapshot(
 }
 fn read_only(request: &ReplicaRequest) -> bool {
     match request {
+        ReplicaRequest::Membership(command) => command.is_read(),
         ReplicaRequest::ReadChunk { .. }
         | ReplicaRequest::ReadChunkStateRange { .. }
         | ReplicaRequest::HeadChunk { .. }
