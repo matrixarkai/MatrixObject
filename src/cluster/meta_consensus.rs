@@ -8,7 +8,7 @@ use super::shutdown::ServerShutdown;
 use crate::cluster::consensus_checkpoint::Image;
 use crate::cluster::consensus_checkpoint::{storage, Policy};
 use crate::cluster::consensus_inbox::{
-    ConsensusChannels, ConsensusInbox, RequestPhase, RequestProgress,
+    ConsensusChannels, ConsensusInbox, RequestPhase, RequestProgress, WorkerPhase, WorkerProgress,
 };
 use crate::cluster::socket_readiness::Notify;
 use crate::placement_outcome::PlacementOutcome;
@@ -71,6 +71,7 @@ struct Pending {
     reply: Option<Result<MetaReply, ObjectError>>,
 }
 pub(super) struct MetaConsensus {
+    progress: WorkerProgress,
     pub(super) node_count: usize,
     identity: super::MetaGroupIdentity,
     groups: Arc<super::ChunkGroupCatalog>,
@@ -257,6 +258,8 @@ impl MetaConsensus {
         let failed = Arc::new(AtomicBool::new(false));
         let worker_failed = Arc::clone(&failed);
         let worker_stop = Arc::clone(&stop);
+        let progress = WorkerProgress::new();
+        let worker_progress = progress.clone();
         handles.push(thread::spawn(move || {
             let _lock = lock;
             if let Err(error) = run(
@@ -264,6 +267,7 @@ impl MetaConsensus {
                 &mut service,
                 &worker_groups,
                 ConsensusChannels {
+                    progress: worker_progress.clone(),
                     requests: rx,
                     packets,
                     outgoing,
@@ -276,8 +280,10 @@ impl MetaConsensus {
                 eprintln!("metadata consensus stopped: {error}");
                 worker_stop.stop();
             }
+            worker_progress.mark(WorkerPhase::Stopped);
         }));
         Ok(Self {
+            progress,
             identity: group_identity,
             groups,
             reply_limit: limit,
@@ -331,7 +337,7 @@ impl MetaConsensus {
         if let Some(wake) = &self.wake {
             wake.notify();
         }
-        progress.wait(&rx, self.timeout, "metadata")
+        progress.wait_observed(&rx, self.timeout, "metadata", Some(&self.progress))
     }
 }
 impl Drop for MetaConsensus {
@@ -357,6 +363,7 @@ fn run(
     mut checkpoint: Policy,
 ) -> Result<(), RaftError> {
     let ConsensusChannels {
+        progress,
         requests,
         packets,
         outgoing,
@@ -367,6 +374,7 @@ fn run(
     let mut pending_read: Option<(u64, Vec<Request>)> = None;
     let applied_term = Cell::new(0);
     while !stop.is_stopped() {
+        progress.mark(WorkerPhase::PeerPackets);
         let mut admitted = false;
         for _ in 0..32 {
             match packets.try_recv() {
@@ -381,6 +389,7 @@ fn run(
             tick = Instant::now();
         }
         let application = RefCell::new(&mut *service);
+        progress.mark(WorkerPhase::ApplyReady);
         let output = peer.process_ready_with_snapshot_reader(
             |id, bytes| {
                 applied_term.set(id.term);
@@ -395,6 +404,7 @@ fn run(
                 Ok(())
             },
             |id, reader, length| {
+                progress.mark(WorkerPhase::RestoreCheckpoint);
                 let snapshot = super::meta_checkpoint::restore(
                     reader,
                     length,
@@ -405,9 +415,11 @@ fn run(
                 **application.borrow_mut() = restored;
                 applied_term.set(id.term);
                 checkpoint.restored(id.index);
+                progress.mark(WorkerPhase::ApplyReady);
                 Ok(())
             },
         )?;
+        progress.mark(WorkerPhase::Requests);
         drop(application);
         for packet in output {
             if let Some(tx) = outgoing.get(&packet.to) {
@@ -446,6 +458,7 @@ fn run(
         // No new batch is prepared until all earlier accepted outcomes apply or
         // leadership changes. A client timeout alone does not remove a proposal.
         if pending.is_empty() && pending_read.is_none() {
+            progress.mark(WorkerPhase::PublishCheckpoint);
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
                 let mut snapshot = service.export_snapshot_unsealed();
                 let catalog = groups.to_bytes().map_err(storage)?;
@@ -459,6 +472,7 @@ fn run(
                     })
                 })
             })?;
+            progress.mark(WorkerPhase::Requests);
             while queued.len() < PROPOSALS_PER_BATCH {
                 match requests.try_recv() {
                     Ok(request) => queued.push_back(request),
@@ -511,6 +525,7 @@ fn run(
         // Process newly proposed local work before sleeping. Peer packets and
         // requests signal the inbox; the next Raft tick bounds all idle waits.
         if !admitted {
+            progress.mark(WorkerPhase::Idle);
             requests.wait(stop, TICK.saturating_sub(tick.elapsed()));
         }
     }
@@ -914,6 +929,7 @@ mod tests {
         let expected = groups.get("group-0").unwrap().clone();
         let (requests, receiver) = mpsc::sync_channel(1);
         let mut consensus = MetaConsensus {
+            progress: WorkerProgress::new(),
             node_count: 4,
             identity: super::super::MetaGroupIdentity {
                 version: 1,

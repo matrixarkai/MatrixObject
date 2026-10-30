@@ -384,3 +384,19 @@ a guarantee that quorum remains available during host stalls.
 Optional [mutual TLS](peer-tls.md) protects metadata and chunk Raft peer ports.
 Without that configuration peer traffic remains plaintext. Client API transport
 and authorization remain separate requirements.
+
+### Worker observations on request timeout
+
+Consensus deadline and disconnected-worker errors include both the request's
+last observed phase and the shared worker's last observed phase with its elapsed
+monotonic milliseconds. Worker phases distinguish peer packets, application-ready
+processing, checkpoint restoration, checkpoint publication, request processing,
+idle waits and shutdown; chunk voters also report state-lock waits. Phase and
+start time are sampled as one atomic observation without acquiring the service
+state lock. These are diagnostics only, not proof of liveness, cancellation or
+safe replay. A timed-out write still has an uncertain outcome and must not be
+automatically replayed. Normal replies and durable formats are unchanged.
+
+A durable checkpoint record can become visible before application restoration
+finishes. A recorded checkpoint is not a voter-readiness certificate. Use quorum
+operations to establish service availability after recovery.

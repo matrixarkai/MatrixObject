@@ -6,7 +6,7 @@ use super::{apply_to_replica, NodeReplica};
 use crate::cluster::consensus_checkpoint::Image;
 use crate::cluster::consensus_checkpoint::{storage, Policy};
 use crate::cluster::consensus_inbox::{
-    ConsensusChannels, ConsensusInbox, RequestPhase, RequestProgress,
+    ConsensusChannels, ConsensusInbox, RequestPhase, RequestProgress, WorkerPhase, WorkerProgress,
 };
 use crate::cluster::socket_readiness::Notify;
 use crate::cluster::message::{ChunkGroupIdentity, ReplicaReply, ReplicaRequest};
@@ -78,6 +78,7 @@ struct Pending {
     reply: Option<Result<ReplicaReply, ObjectError>>,
 }
 pub(super) struct ChunkConsensus {
+    progress: WorkerProgress,
     identity: ChunkGroupIdentity,
     requests: SyncSender<Request>,
     wake: Option<Notify>,
@@ -272,12 +273,15 @@ impl ChunkConsensus {
         let failed = Arc::new(AtomicBool::new(false));
         let worker_failed = Arc::clone(&failed);
         let worker_stop = Arc::clone(&stop);
+        let progress = WorkerProgress::new();
+        let worker_progress = progress.clone();
         handles.push(thread::spawn(move || {
             let _lock = lock;
             if let Err(error) = run(
                 &mut peer,
                 &state,
                 ConsensusChannels {
+                    progress: worker_progress.clone(),
                     requests: rx,
                     packets,
                     outgoing,
@@ -293,8 +297,10 @@ impl ChunkConsensus {
                 eprintln!("chunk consensus stopped: {error}");
                 worker_stop.stop();
             }
+            worker_progress.mark(WorkerPhase::Stopped);
         }));
         Ok(Self {
+            progress,
             identity: group_identity,
             requests,
             wake,
@@ -328,7 +334,7 @@ impl ChunkConsensus {
         if let Some(wake) = &self.wake {
             wake.notify();
         }
-        progress.wait(&rx, self.timeout, "chunk")
+        progress.wait_observed(&rx, self.timeout, "chunk", Some(&self.progress))
     }
 }
 impl Drop for ChunkConsensus {
@@ -353,6 +359,7 @@ fn run(
     mut checkpoint: Policy,
 ) -> Result<(), RaftError> {
     let ConsensusChannels {
+        progress,
         requests,
         packets,
         outgoing,
@@ -363,6 +370,7 @@ fn run(
     let mut deferred = None;
     let applied_term = Cell::new(0);
     while !stop.is_stopped() {
+        progress.mark(WorkerPhase::PeerPackets);
         let mut admitted = false;
         for _ in 0..32 {
             match packets.try_recv() {
@@ -376,10 +384,12 @@ fn run(
             peer.tick()?;
             tick = Instant::now();
         }
+        progress.mark(WorkerPhase::StateLock);
         let mut node = state
             .lock()
             .map_err(|_| RaftError::Storage("chunk state poisoned".into()))?;
         let application = RefCell::new(&mut *node);
+        progress.mark(WorkerPhase::ApplyReady);
         let output = peer.process_ready_with_snapshot_reader(
             |id, bytes| {
                 let mut node = application.borrow_mut();
@@ -424,6 +434,7 @@ fn run(
                 Ok(())
             },
             |id, reader, length| {
+                progress.mark(WorkerPhase::RestoreCheckpoint);
                 let mut node = application.borrow_mut();
                 let snapshot = crate::cluster::chunk_checkpoint::restore(
                     reader,
@@ -435,9 +446,11 @@ fn run(
                 restore_snapshot(&mut node, snapshot)?;
                 applied_term.set(id.term);
                 checkpoint.restored(id.index);
+                progress.mark(WorkerPhase::ApplyReady);
                 Ok(())
             },
         )?;
+        progress.mark(WorkerPhase::Requests);
         drop(application);
         for packet in output {
             if let Some(tx) = outgoing.get(&packet.to) {
@@ -478,6 +491,7 @@ fn run(
         // A timed-out accepted proposal remains pending until applied or leadership changes.
         // Proposing a second outcome against the same old state would be invalid.
         if pending.is_none() && pending_read.is_none() {
+            progress.mark(WorkerPhase::PublishCheckpoint);
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
                 let mut snapshot = node.service.export_snapshot_unsealed();
                 Ok(move || {
@@ -490,6 +504,7 @@ fn run(
                     })
                 })
             })?;
+            progress.mark(WorkerPhase::Requests);
             if let Some(request) = deferred.take().or_else(|| requests.try_recv().ok()) {
                 admitted = true;
                 if request.deadline <= Instant::now() {
@@ -540,6 +555,7 @@ fn run(
         // Process newly proposed local work before sleeping. Peer packets and
         // requests signal the inbox; the next Raft tick bounds all idle waits.
         if !admitted {
+            progress.mark(WorkerPhase::Idle);
             requests.wait(stop, TICK.saturating_sub(tick.elapsed()));
         }
     }
