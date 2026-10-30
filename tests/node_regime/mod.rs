@@ -410,6 +410,7 @@ pub mod sockets {
 pub mod checkpoints;
 
 #[cfg(target_os = "linux")]
+#[path = "isolated_network_partitions.rs"]
 pub mod network;
 
 #[cfg(feature = "peer-tls")]
