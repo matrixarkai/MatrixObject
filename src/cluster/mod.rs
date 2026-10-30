@@ -234,6 +234,10 @@ mod chunk_groups;
 #[cfg(feature = "meta-server")]
 mod chunk_catalog_outcome;
 #[cfg(feature = "meta-server")]
+mod chunk_catalog_command;
+#[cfg(feature = "meta-server")]
+pub use chunk_catalog_command::ChunkCatalogCommand;
+#[cfg(feature = "meta-server")]
 mod chunk_membership_health;
 #[cfg(feature = "meta-server")]
 pub use chunk_membership_health::ChunkMembershipHealth;

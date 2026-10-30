@@ -548,6 +548,9 @@ fn run(
                             Err(error) => { let _ = request.reply.try_send(Err(error)); }
                         }
                     }
+                } else if queued.front().is_some_and(|r| matches!(r.request, MetaRequest::ChunkCatalog(_))) {
+                    let request = queued.pop_front().unwrap();
+                    propose_catalog(peer, service, groups, limit, request, &mut pending);
                 } else if queued.front().is_some_and(|r| read_only(&r.request)) {
                     let mut reads = Vec::new();
                     while queued.front().is_some_and(|r| read_only(&r.request)) {
@@ -576,7 +579,7 @@ fn run(
                 } else {
                     // A later write must not pass reads already admitted to this queue.
                     let mut writes = VecDeque::new();
-                    while queued.front().is_some_and(|r| !read_only(&r.request) && !matches!(r.request, MetaRequest::Membership(_))) {
+                    while queued.front().is_some_and(|r| !read_only(&r.request) && !matches!(r.request, MetaRequest::Membership(_) | MetaRequest::ChunkCatalog(_))) {
                         writes.push_back(queued.pop_front().unwrap());
                     }
                     propose_batch(peer, service, groups, limit, &mut writes, &mut pending)?;
@@ -631,7 +634,8 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::ReadObjectRootPlacement { .. }
         | MetaRequest::GroupIdentity
         | MetaRequest::Ping => true,
-        MetaRequest::AllocateObjectPages { .. }
+        MetaRequest::ChunkCatalog(_)
+        | MetaRequest::AllocateObjectPages { .. }
         | MetaRequest::PublishManifest { .. }
         | MetaRequest::HeartbeatRootNode { .. }
         | MetaRequest::ReportChunkNode { .. }
@@ -681,6 +685,52 @@ fn apply_committed(
         let _ = p.request.reply.try_send(reply);
     }
     Ok(())
+}
+
+fn propose_catalog(
+    peer: &mut DurablePeer,
+    service: &mut MatrixMetaService,
+    groups: &super::ChunkGroupCatalog,
+    limit: usize,
+    request: Request,
+    pending: &mut VecDeque<Pending>,
+) {
+    let prepared = (|| {
+        if request.deadline <= Instant::now() {
+            return Err(refused("catalog request expired before proposal"));
+        }
+        request.progress.mark(RequestPhase::Preparing);
+        let MetaRequest::ChunkCatalog(command) = &request.request else {
+            unreachable!()
+        };
+        let (outcome, reply) =
+            super::chunk_catalog_command::prepare(service, groups, command, limit)?;
+        let payload = Entry {
+            version: 2,
+            outcome: Vec::new(),
+            catalog_outcome: outcome.to_payload()?,
+        }
+        .encode_to_vec();
+        if payload.len() > PACKET_LIMIT / 2 {
+            return Err(refused("catalog proposal exceeds byte limit"));
+        }
+        if request.deadline <= Instant::now() {
+            return Err(refused("catalog request expired during preparation"));
+        }
+        request.progress.mark(RequestPhase::ProposalCompletion);
+        let id = peer.propose(payload).map_err(refused)?;
+        Ok((id, reply))
+    })();
+    match prepared {
+        Ok((id, reply)) => pending.push_back(Pending {
+            id,
+            request,
+            reply: Some(Ok(reply)),
+        }),
+        Err(error) => {
+            let _ = request.reply.try_send(Err(error));
+        }
+    }
 }
 
 fn propose_batch(

@@ -83,9 +83,10 @@ impl MetaSnapshotFile {
         if !recovered && path.exists() && path.metadata()?.len() != 0 {
             return Err(invalid("placement outcomes exist without a base snapshot"));
         }
-        storage.journal = Some(super::placement_journal::PlacementJournal::open(
+        storage.journal = Some(super::placement_journal::PlacementJournal::open_with_catalog(
             &path,
             service,
+            &storage.groups,
             initialized,
         )?);
         if recovered {
@@ -95,6 +96,16 @@ impl MetaSnapshotFile {
         }
         storage.groups.validate_roster(service).map_err(invalid)?;
         Ok((storage, recovered))
+    }
+
+    pub(super) fn append_catalog_outcome(
+        &mut self,
+        outcome: &super::chunk_catalog_outcome::ChunkCatalogOutcome,
+    ) -> io::Result<()> {
+        self.journal
+            .as_mut()
+            .ok_or_else(|| invalid("placement journal is not open"))?
+            .append_catalog(outcome)
     }
 
     pub(super) fn append_outcome(

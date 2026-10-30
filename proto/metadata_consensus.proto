@@ -9,4 +9,6 @@ message Entry {
   uint32 version = 1;
   // The complete MOMP placement outcome envelope used by the local journal.
   bytes outcome = 2;
+  // Version 2 requires an empty outcome and one canonical ChunkCatalogOutcome.
+  bytes catalog_outcome = 3;
 }

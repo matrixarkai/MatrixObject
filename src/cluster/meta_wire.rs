@@ -85,6 +85,7 @@ pub enum MetaRequestCode {
     /// Report chunk health using the receiving metadata leader's clock.
     ReportChunkNode = 78,
     Membership = 79,
+    ChunkCatalog = 80,
 }
 
 impl MetaRequestCode {
@@ -111,6 +112,7 @@ impl MetaRequestCode {
             77 => Some(MetaRequestCode::AllocateObjectPages),
             78 => Some(MetaRequestCode::ReportChunkNode),
             79 => Some(MetaRequestCode::Membership),
+            80 => Some(MetaRequestCode::ChunkCatalog),
             _ => None,
         }
     }
@@ -134,6 +136,7 @@ impl MetaRequestCode {
             MetaRequestCode::AllocateObjectPages,
             MetaRequestCode::ReportChunkNode,
             MetaRequestCode::Membership,
+            MetaRequestCode::ChunkCatalog,
         ]
     }
 }

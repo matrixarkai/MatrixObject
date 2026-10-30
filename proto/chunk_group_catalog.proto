@@ -14,10 +14,16 @@ message ChunkGroupConfig {
 message ChunkGroupCatalogImage {
   uint32 version = 1;
   repeated ChunkGroupConfig groups = 2;
+  repeated ChunkCatalogHealth health = 3;
 }
 // MOGB prefix, canonical protobuf, then little-endian FNV-1a checksum.
 message MetadataGroupBootstrap {
   uint32 version = 1;
   bytes snapshot = 2;
   bytes catalog = 3;
+}
+
+message ChunkCatalogHealth {
+  string placement_id = 1;
+  bytes state = 2;
 }

@@ -119,10 +119,34 @@ impl ChunkGroupCatalog {
     }
     /// Build a catalog with separately retained membership observations. The
     /// immutable inventory remains in each identity; health never expands it.
-    pub(super) fn with_membership_health(
+    pub fn with_membership_health(
         groups: Vec<ChunkGroupConfig>,
         health: BTreeMap<String, ChunkMembershipHealth>,
     ) -> Result<Self, ObjectError> {
+        let mut result = Self::inventory(groups)?;
+        for group in result.groups.values() {
+            let identity = group.identity.as_ref().unwrap();
+            match (identity.version, health.get(&group.placement_id)) {
+                (1, None) => {}
+                (2, Some(state)) => {
+                    ChunkMembershipHealth::from_bytes(&state.to_bytes(), identity)?;
+                }
+                _ => {
+                    return Err(invalid(
+                        "chunk catalog membership state does not match identity",
+                    ))
+                }
+            }
+        }
+        if health.keys().any(|id| !result.groups.contains_key(id)) {
+            return Err(invalid("chunk catalog health names an unknown group"));
+        }
+        result.health = Mutex::new(health);
+        Ok(result)
+    }
+    // Structural decoding is also used for read replies. It never supplies a
+    // membership observation or creates a usable dynamic catalog by itself.
+    fn inventory(groups: Vec<ChunkGroupConfig>) -> Result<Self, ObjectError> {
         if groups.len() > 512 {
             return Err(invalid("chunk catalog exceeds 512 groups"));
         }
@@ -143,17 +167,6 @@ impl ChunkGroupCatalog {
                 .as_mut()
                 .ok_or_else(|| invalid("chunk group identity missing"))?;
             identity.validate()?;
-            match (identity.version, health.get(&group.placement_id)) {
-                (1, None) => {}
-                (2, Some(state)) => {
-                    ChunkMembershipHealth::from_bytes(&state.to_bytes(), identity)?;
-                }
-                _ => {
-                    return Err(invalid(
-                        "chunk catalog membership state does not match identity",
-                    ))
-                }
-            }
             identity.node_id = identity.voters[0];
             for endpoint in &identity.peer_endpoints {
                 if !peer_endpoints.insert(endpoint.clone()) {
@@ -195,10 +208,6 @@ impl ChunkGroupCatalog {
         {
             return Err(invalid("chunk API and peer sockets overlap"));
         }
-        if health.keys().any(|id| !result.groups.contains_key(id)) {
-            return Err(invalid("chunk catalog health names an unknown group"));
-        }
-        result.health = Mutex::new(health);
         Ok(result)
     }
     /// Check only immutable configuration when restoring a newer committed catalog.
@@ -747,5 +756,12 @@ pub(super) mod tests {
             "127.0.0.1:9303".into(),
         ];
         assert!(ChunkGroupCatalog::new(vec![first, second]).is_err());
+    }
+}
+
+impl ChunkGroupConfig {
+    pub(super) fn normalized_inventory(self) -> Result<Self, ObjectError> {
+        let catalog = ChunkGroupCatalog::inventory(vec![self])?;
+        Ok(catalog.groups.into_values().next().unwrap())
     }
 }

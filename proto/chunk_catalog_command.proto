@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+syntax = "proto3";
+package matrixobject.catalog.v1;
+message MembershipStatus {
+  uint32 version = 1;
+  uint64 node_id = 2;
+  uint64 term = 3;
+  uint64 applied_index = 4;
+  repeated uint64 voters = 5;
+  repeated uint64 outgoing_voters = 6;
+  repeated uint64 learners = 7;
+}
+// Request code 80, canonical protobuf, at most 4096 bytes.
+message ChunkCatalogCommand {
+  uint32 version = 1;
+  // 1: advance observed membership; 2: report member health.
+  uint32 operation = 2;
+  string placement_id = 3;
+  bytes expected_fence = 4;
+  uint64 bootstrap_id = 5;
+  MembershipStatus status = 6;
+  string member_id = 7;
+  string expected_endpoint = 8;
+  uint64 used_bytes = 9;
+  uint64 capacity_bytes = 10;
+  bool online = 11;
+}
+// Local MOCJ records use the existing 24-byte checksummed journal header.
+// The same payload is carried in metadata consensus Entry version 2.
+message ChunkCatalogOutcome {
+  uint32 version = 1;
+  string placement_id = 2;
+  bytes before = 3;
+  bytes after = 4;
+  bytes placement = 5;
+}
+
+message ChunkMembershipFence {
+  uint32 version = 1;
+  uint64 bootstrap_id = 2;
+  uint64 applied_floor = 3;
+  repeated uint64 voters = 4;
+  repeated uint64 outgoing_voters = 5;
+  repeated uint64 learners = 6;
+  uint64 group_id = 7;
+}
+message ChunkMemberReport {
+  uint64 node_id = 1;
+  uint64 applied_index = 2;
+  uint64 observed_at_ms = 3;
+  uint64 used_bytes = 4;
+  bool online = 5;
+  bool draining = 6;
+}
+// Canonical bytes stored in catalog health and outcome before/after fields.
+message ChunkMembershipHealth {
+  uint32 version = 1;
+  bytes fence = 2;
+  repeated ChunkMemberReport reports = 3;
+}
