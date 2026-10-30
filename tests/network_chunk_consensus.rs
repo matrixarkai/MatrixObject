@@ -159,15 +159,21 @@ impl Group {
     }
     fn leader(&self) -> usize {
         let deadline = Instant::now() + Duration::from_secs(15);
+        let mut last = [String::new(), String::new(), String::new()];
         loop {
-            for i in 0..3 {
-                if self.nodes[i].is_some() && self.client(i).ping().is_ok() {
-                    return i;
+            for (i, reply) in last.iter_mut().enumerate() {
+                if self.nodes[i].is_some() {
+                    match self.client(i).ping() {
+                        Ok(_) => return i,
+                        Err(error) => *reply = error.to_string(),
+                    }
+                } else {
+                    *reply = "process stopped".into();
                 }
             }
             assert!(
                 Instant::now() < deadline,
-                "no chunk leader committed a read barrier"
+                "no chunk leader committed a read barrier; last replies: {last:?}"
             );
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -2994,13 +3000,23 @@ fn chunk_checkpoints_reclaim_history_transfer_large_state_and_recover_processes(
 #[test]
 #[ignore = "272 MiB three-process recovery; run explicitly in release mode"]
 fn chunk_streamed_checkpoints_recover_large_process_state() {
+    let started = Instant::now();
+    let phase = |name: &str| {
+        eprintln!(
+            "LARGE_CHUNK phase={name} elapsed_ms={}",
+            started.elapsed().as_millis()
+        )
+    };
+    phase("start");
     let mut group = Group::configured(300 * 1024 * 1024);
     group.max_pages = 300;
     group.checkpoint_bytes = 128 * 1024 * 1024;
     for i in 0..3 {
         group.start(i);
     }
+    phase("initial-quorum");
     let leader = group.leader();
+    phase("write-pages");
     let lagging = (leader + 1) % 3;
     let other = (leader + 2) % 3;
     group.kill(lagging);
@@ -3033,14 +3049,18 @@ fn chunk_streamed_checkpoints_recover_large_process_state() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    phase("start-lagging-voter");
     group.start(lagging);
     node_regime::checkpoints::wait_for_checkpoint(
         &group.root.join(lagging.to_string()).join("chunk.peer.wal"),
         4,
     );
+    phase("checkpoint-received");
     group.kill(other);
     drop(client);
+    phase("recovered-voter-quorum");
     let active = group.leader();
+    phase("write-after-transfer");
     let mut client = group.client(active);
     create_checkpoint_page(&group, &mut client, 280, b"after large transfer");
     drop(client);
@@ -3049,7 +3069,9 @@ fn chunk_streamed_checkpoints_recover_large_process_state() {
     for i in 0..3 {
         group.start(i);
     }
+    phase("full-restart-quorum");
     let recovered = group.leader();
+    phase("verify-pages");
     let mut client = group.client(recovered);
     for index in 0..272u64 {
         let response = client.read_chunk(&page(index), 0, 1024 * 1024).unwrap();
