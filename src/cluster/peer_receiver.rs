@@ -42,6 +42,7 @@ struct Frame {
     header_read: usize,
     body: Vec<u8>,
     body_read: usize,
+    completed: bool,
 }
 impl Frame {
     fn advance(&mut self, reserved: &mut usize) -> io::Result<bool> {
@@ -78,7 +79,7 @@ impl Frame {
 }
 
 // One bounded sweep per connection prevents a fragmented sender from holding
-// the listener. Each connection still carries exactly one existing wire frame.
+// the listener. Completed frames release their buffers before the next frame.
 #[cfg(test)]
 pub(super) fn receive(
     listener: TcpListener,
@@ -153,6 +154,7 @@ pub(super) fn receive_observed(
                         header_read: 0,
                         body: Vec::new(),
                         body_read: 0,
+                        completed: false,
                     });
                 }
                 Err(_) => break,
@@ -174,22 +176,37 @@ pub(super) fn receive_observed(
                 {
                     index += 1
                 }
+                Ok(true) if Instant::now() < frames[index].deadline => {
+                    let frame = &mut frames[index];
+                    reserved -= frame.body.len();
+                    if incoming.try_send(std::mem::take(&mut frame.body)).is_ok() {
+                        counters.0.enqueued.fetch_add(1, Relaxed);
+                        if let Some(wake) = &wake {
+                            wake.notify();
+                        }
+                    } else {
+                        counters.0.inbox_rejected.fetch_add(1, Relaxed);
+                    }
+                    frame.header = [0; 4];
+                    frame.header_read = 0;
+                    frame.body_read = 0;
+                    frame.completed = true;
+                    // Idle time and the next frame share a bounded budget. Bytes
+                    // trickled into a partial frame never extend its deadline.
+                    frame.deadline = Instant::now() + timeout;
+                    progressed = true;
+                    index += 1;
+                }
                 result => {
                     let frame = frames.swap_remove(index);
                     reserved -= frame.body.len();
-                    if Instant::now() >= frame.deadline
+                    let idle = frame.completed && frame.header_read == 0;
+                    if idle && matches!(&result, Err(error) if matches!(error.kind(), io::ErrorKind::UnexpectedEof | io::ErrorKind::TimedOut)) {
+                        // A completed stream may close normally or exhaust its idle budget.
+                    } else if Instant::now() >= frame.deadline
                         || matches!(&result, Err(error) if error.kind()==io::ErrorKind::TimedOut)
                     {
                         counters.0.expired.fetch_add(1, Relaxed);
-                    } else if matches!(result, Ok(true)) {
-                        if incoming.try_send(frame.body).is_ok() {
-                            counters.0.enqueued.fetch_add(1, Relaxed);
-                            if let Some(wake) = &wake {
-                                wake.notify();
-                            }
-                        } else {
-                            counters.0.inbox_rejected.fetch_add(1, Relaxed);
-                        }
                     } else {
                         counters.0.failed.fetch_add(1, Relaxed);
                     }
@@ -237,6 +254,66 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::{mpsc, Arc};
+
+    #[test]
+    fn receiver_preserves_frame_order_on_one_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(ServerShutdown::default());
+        let worker_stop = Arc::clone(&stop);
+        let (tx, rx) = mpsc::sync_channel(8);
+        let counters = PeerReceiveCounters::default();
+        let observed = counters.clone();
+        let worker = std::thread::spawn(move || receive_observed(
+            listener, tx, &worker_stop, Duration::from_secs(2), None,
+            &PeerTransport::Plain, &observed,
+        ));
+        let mut stream = TcpStream::connect(address).unwrap();
+        for value in [b"first".as_slice(), b"second", b"third"] {
+            stream.write_all(&(value.len() as u32).to_be_bytes()).unwrap();
+            stream.write_all(value).unwrap();
+        }
+        for value in [b"first".as_slice(), b"second", b"third"] {
+            assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), value);
+        }
+        stop.stop();
+        worker.join().unwrap();
+        use std::sync::atomic::Ordering::Relaxed;
+        assert_eq!(counters.0.accepted.load(Relaxed), 1);
+        assert_eq!(counters.0.enqueued.load(Relaxed), 3);
+        assert_eq!(counters.0.failed.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn partial_second_frame_expires_without_delivering_or_extending_the_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(ServerShutdown::default());
+        let worker_stop = Arc::clone(&stop);
+        let (tx, rx) = mpsc::sync_channel(8);
+        let counters = PeerReceiveCounters::default();
+        let observed = counters.clone();
+        let worker = std::thread::spawn(move || receive_observed(
+            listener, tx, &worker_stop, Duration::from_millis(250), None,
+            &PeerTransport::Plain, &observed,
+        ));
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.write_all(b"\0\0\0\x02ok").unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), b"ok");
+        stream.write_all(b"\0\0\0\x04x").unwrap();
+        use std::sync::atomic::Ordering::Relaxed;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while counters.0.expired.load(Relaxed) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        stop.stop();
+        worker.join().unwrap();
+        assert_eq!(counters.0.expired.load(Relaxed), 1);
+        assert_eq!(counters.0.enqueued.load(Relaxed), 1);
+        assert!(rx.try_recv().is_err());
+    }
 
     #[test]
     fn receiver_observations_separate_expiry_invalid_frames_and_full_inboxes() {
@@ -320,6 +397,7 @@ mod tests {
                 header_read: 0,
                 body: Vec::new(),
                 body_read: 0,
+                completed: false,
             });
         }
         let _queued = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -366,6 +444,7 @@ mod tests {
                     header_read: 0,
                     body: Vec::new(),
                     body_read: 0,
+                    completed: false,
                 },
             )
         }

@@ -279,6 +279,30 @@ mod tests {
             .send_with_transport(address, transport)
     }
     #[test]
+    fn authenticated_stream_preserves_consecutive_frames() {
+        let files = TlsFiles::new();
+        let transport = PeerTransport::load(Some(&options(&files, "peer"))).unwrap();
+        let (address, received, stop, worker) = receiver(transport.clone());
+        let PeerTransport::Tls(config) = &transport else { unreachable!() };
+        let mut connection = rustls::ClientConnection::new(
+            config.client.clone(),
+            rustls::pki_types::ServerName::IpAddress(address.ip().into()),
+        ).unwrap();
+        let mut socket = TcpStream::connect(address).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        socket.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+        {
+            let mut stream = rustls::Stream::new(&mut connection, &mut socket);
+            stream.write_all(b"\0\0\0\x03one\0\0\0\x03two").unwrap();
+            stream.flush().unwrap();
+        }
+        assert_eq!(received.recv_timeout(Duration::from_secs(3)).unwrap(), b"one");
+        assert_eq!(received.recv_timeout(Duration::from_secs(3)).unwrap(), b"two");
+        stop.stop();
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn peer_tls_requires_trusted_client_certificates_and_preserves_frames() {
         let files = TlsFiles::new();
         let good = PeerTransport::load(Some(&options(&files, "peer"))).unwrap();

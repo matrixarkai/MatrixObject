@@ -756,6 +756,12 @@ jobs:
           grep -q 'test result: ok. 1 passed' /tmp/peer-delivery.log
           cargo test --locked --all-features --lib cluster::peer_receiver::tests::receiver_observations_separate_expiry_invalid_frames_and_full_inboxes -- --exact --nocapture | tee /tmp/peer-receiver.log
           grep -q 'test result: ok. 1 passed' /tmp/peer-receiver.log
+          cargo test --locked --all-features --lib cluster::peer_receiver::tests::receiver_preserves_frame_order_on_one_connection -- --exact --nocapture | tee /tmp/peer-stream.log
+          grep -q 'test result: ok. 1 passed' /tmp/peer-stream.log
+          cargo test --locked --all-features --lib cluster::peer_receiver::tests::partial_second_frame_expires_without_delivering_or_extending_the_stream -- --exact --nocapture | tee /tmp/peer-stream.log
+          grep -q 'test result: ok. 1 passed' /tmp/peer-stream.log
+          cargo test --locked --all-features --lib cluster::peer_tls::tests::authenticated_stream_preserves_consecutive_frames -- --exact --nocapture | tee /tmp/peer-stream.log
+          grep -q 'test result: ok. 1 passed' /tmp/peer-stream.log
 
       - name: consensus inbox bounds admission and wakes for work ticks and shutdown
         run: |

@@ -27,3 +27,17 @@ The same per-worker diagnostics report the inbound side:
 Counters preserve the existing eight-frame inbox, sixteen active receive slots, frame/buffer limits and absolute deadlines. Accepted connections can remain in flight or be closed at shutdown, so the counters are not an accounting equality. A locally successful sender can still correspond to a receiver expiry or inbox rejection.
 
 A local 67-process repetition failed during initial writes despite the affected chunk leader reporting 324 local sends, zero outgoing failures, a 2 ms maximum queue age and a 43 ms maximum completed worker phase. Two later repetitions passed. These observations justify inspecting the receive side; they do not identify a root cause or establish stable availability.
+
+## Consecutive receive frames
+
+The receiver accepts multiple length-prefixed frames on one socket, in wire order.
+Each completed frame releases its body reservation before the next is read. The
+next frame and any intervening idle time share one fresh receive timeout; partial
+bytes never extend that deadline. The existing sixteen-socket, eight-MiB frame,
+sixteen-MiB aggregate buffer and per-sweep read limits remain in force. A normal
+close or idle expiry after a completed frame is not reported as a failed frame;
+an incomplete subsequent frame still counts as expired or failed.
+
+Current senders still open one connection per packet. This receive capability
+alone does not reduce connection counts. Sender reuse requires compatible peer
+configuration and separate validation of reconnect and authentication behavior.
