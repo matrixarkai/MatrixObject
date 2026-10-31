@@ -156,6 +156,8 @@ impl MatrixReplicaService {
     /// disagreeing with the log it is replaying. So the fence is named in the method rather
     /// than duplicated: `unfenced` says the caller owes one, and the two callers pay it.
     pub(crate) fn install_page_unfenced(&mut self, page_id: PageId, state: PageState) {
+        // NOT AN APPEND, so the batch undo cannot be a length here.
+        self.materialise_page_undo(&page_id);
         self.pages.insert(page_id, std::sync::Arc::new(state));
     }
 

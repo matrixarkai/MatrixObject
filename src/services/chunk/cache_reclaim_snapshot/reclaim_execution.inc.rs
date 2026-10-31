@@ -161,6 +161,8 @@ impl MatrixReplicaService {
         }
         let consumed_trim_ops = plan.scheduled_trim_ops;
         for candidate in plan.candidates {
+            // NOT AN APPEND, so the batch undo cannot be a length here.
+            self.materialise_page_undo(&candidate.page_id);
             let Some(state) = self.pages.get_mut(&candidate.page_id) else {
                 continue;
             };
