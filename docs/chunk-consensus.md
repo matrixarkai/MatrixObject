@@ -79,8 +79,14 @@ fault tests, not a large-scale throughput result. Metadata placement of Raft gro
 is described in `chunk-group-catalog.md`. Binary APIs support optional
 [mutual TLS](api-tls.md), including replicated load and recovery validation.
 New standalone groups support [committed voter replacement](metadata-consensus.md#chunk-voter-replacement-for-new-groups) with distinct node identities.
-The HTTP distributed backend, per-user authorization and placement-catalog membership
-updates remain unfinished. File-backed checkpoint recovery is described below. To exercise already-running metadata and data quorums,
+Placement-catalog membership changes use committed fences and verified controller refresh,
+as described in [chunk-group routing and membership](chunk-group-catalog.md). Repeated voter
+rejoin tests cover multiple replacement rounds with intervening writes, leader loss and full
+restart. Intermittent leadership and deadline failures in the 67-process workload remain
+unresolved; passing bounded runs do not establish sustained availability.
+
+The HTTP distributed backend and per-user authorization remain unfinished.
+File-backed checkpoint recovery is described below. To exercise already-running metadata and data quorums,
 use the [external workload probe](distributed-probe.md); it supports a separate
 read-only verification run after an operator-controlled restart.
 

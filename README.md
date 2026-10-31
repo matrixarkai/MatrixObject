@@ -611,10 +611,16 @@ blind mutation retries are not idempotent. Linux process-kill tests verify write
 exclusive ownership, and recovery of all three replicas followed by another node loss.
 Power-loss and non-Linux filesystem behavior have not been tested.
 
-The journal grows with mutations; checkpointing and compaction remain unfinished. Do not
-replace or remove a journal while its server runs. Recovery restores that node's own history;
-it does not fetch writes missed while offline, authorize readmission, or replicate the metadata
-server. Those require additional coordinated recovery work.
+Standalone journal nodes support opt-in checkpointing through
+`MATRIXOBJECT_REPLICA_CHECKPOINT_BYTES`. The server writes and syncs a checkpoint before
+reclaiming covered journal records. Do not replace or remove these files while the server runs.
+Recovery restores that node's own durable history; it does not fetch writes missed while offline
+or authorize readmission. Explicit `RemoteReplicaSet::repair_inventory_batch` repairs bounded
+page batches from a matching source quorum. Returning nodes can remain in maintenance mode,
+excluded from placement and ordinary writes, until an operator explicitly resumes them.
+The [five-replica repair workload](docs/star-repair-scale.md) verifies this sequence through
+metadata failover and full process restart. Automatic repair scheduling remains unfinished.
+Replicated metadata uses the separate [MatrixRaft configuration](docs/metadata-consensus.md).
 
 ### Metadata restart recovery
 
@@ -665,23 +671,20 @@ The bounded `page_inventory` call below also reads page identities and sequences
 **`MatrixChunkService` -- the service that holds `replicas` and runs the fan-out described
 above -- is unchanged and does not route through `ReplicaPlacement`.**
 
-The size of that stop was measured with the compiler rather than estimated. Giving the
-`replicas` field a type with no methods and asking what broke produced 298 errors:
+Remote clients also support conditional writes and discards, complete page-state reads,
+staged state installation and explicit bounded star repair. The distributed object client
+writes fresh pages to configured Raft groups, verifies their contents, and conditionally
+publishes a manifest through replicated metadata. These paths do not convert every operation
+of the local `MatrixChunkService` into a network operation.
 
-| what the compiler found | count |
-|---|---:|
-| distinct replica **methods** called through the field | 82 |
-| call sites for them | 198 |
-| distinct **private fields** of the replica read directly through it | 13 |
-| sites reading those fields | 35 |
-| files involved | 57 |
-
-The 35 field reads are the part that is a redesign and not a port. `replica.pages` alone is
-read at 12 sites, as a borrow of the whole chunk map by callers that walk it; there is no
-socket call behind that, only a snapshot transfer with a different name. So the work is two
-pieces in order -- turn those reads into methods, deciding for each whether the answer is a
-value or a stream, and only then put the 82 methods behind a dispatch. `src/cluster/mod.rs`
-carries the table and the reasoning.
+Use `tools/replica_surface.sh` on a clean checkout to measure the local service's current
+replica-call surface. It temporarily substitutes the replica element type and classifies
+compiler diagnostics before restoring the file. Its historical counts are not a current
+readiness score. Read [chunk consensus](docs/chunk-consensus.md),
+[chunk-group routing and membership](docs/chunk-group-catalog.md), and
+[object manifests](docs/object-manifests.md) for the implemented remote contracts and limits.
+The local multi-process tests do not establish sustained large-scale availability or
+independent-host production qualification.
 
 ### Remote page inventory
 
