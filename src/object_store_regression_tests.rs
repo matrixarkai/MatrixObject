@@ -40012,6 +40012,14 @@ fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
     // a front trim made a `truncate(captured_len)` undo a no-op and a rolled
     // back mutation left its record behind. So the restore semantics are pinned
     // here, and any cheaper undo has to keep them.
+    //
+    // A CHEAPER UNDO NOW EXISTS AND KEEPS THEM, which is why this test is worth
+    // reading next to it. The batch's undo is the length for an append and the
+    // BYTES EACH WRITE REPLACED for a write inside the payload -- so the overwrite
+    // case below restores from recorded bytes rather than from a length, and the
+    // trim case is covered by `materialise_page_undo`, which hands the whole
+    // pre-image back before a reclaim touches the page. This test is unchanged;
+    // dropping either half makes it fail.
     let page = PageId {
         chunk_id: ChunkId::new(0, 11).unwrap(),
         page_index: 0,
@@ -40064,20 +40072,15 @@ fn aborting_a_batch_restores_the_bytes_a_write_overwrote() {
 }
 
 #[test]
-fn only_the_first_write_in_a_batch_should_copy_its_page() {
-    // An open batch makes a write copy its page, because the batch's snapshot
-    // shares the page's data `Arc`. After that copy the live page should be the
-    // only holder -- the snapshot keeps the original -- so a SECOND write in
-    // the same batch ought to go in place.
+fn no_write_in_a_batch_copies_its_page_however_many_there_are() {
+    // REPLACES `only_the_first_write_in_a_batch_should_copy_its_page`. Its claim was
+    // that the FIRST write in a batch copies the page, because the batch's snapshot
+    // shares it, and that later writes then go in place -- and it noted what that
+    // cost: the benchmark measured the same bytes an object at batch sizes 1, 8 and
+    // 64 (625,918 / 636,190 / 628,571), so batching amortised nothing.
     //
-    // Whether it does decides what batching is worth. Measured on the
-    // benchmark, writing 400 objects costs the same per object at batch sizes
-    // 1, 8 and 64 (625,918 / 636,190 / 628,571 bytes), which says batching
-    // amortises nothing. Either each object still gets its own batch, or every
-    // write re-shares the page.
-    //
-    // Pointer identity settles which, and the answer is a property worth
-    // pinning either way.
+    // Now none of them copies. The undo gives up its handle on the page and keeps
+    // what the writes replaced instead, so there is no first copy to amortise.
     fn data_pointer(service: &MatrixReplicaService, page: &PageId) -> *const Vec<u8> {
         std::sync::Arc::as_ptr(&service.pages_local().get(page).expect("the page exists").data)
     }
@@ -40089,78 +40092,188 @@ fn only_the_first_write_in_a_batch_should_copy_its_page() {
 
     let mut service = MatrixReplicaService::new();
     service.write_chunk(page.clone(), 0, &[b'a'; 4096]).unwrap();
+    let before = page_state_owning_its_bytes(&service, &page);
     service.begin_mutation_batch("batch-two-writes").unwrap();
 
     let before_first = data_pointer(&service, &page);
     service.write_chunk(page.clone(), 0, &[b'b'; 1024]).unwrap();
     let after_first = data_pointer(&service, &page);
-
     service.write_chunk(page.clone(), 1024, &[b'c'; 1024]).unwrap();
     let after_second = data_pointer(&service, &page);
-
     service.write_chunk(page.clone(), 2048, &[b'd'; 1024]).unwrap();
     let after_third = data_pointer(&service, &page);
+    // And one past the end, so the batch mixes in-place writes with an append.
+    service.write_chunk(page.clone(), 4096, &[b'e'; 1024]).unwrap();
+    let after_append = data_pointer(&service, &page);
 
     println!(
-        "BATCHWRITES first_moved={} second_moved={} third_moved={}",
+        "BATCHWRITES first_moved={} second_moved={} third_moved={} append_moved={}",
         before_first != after_first,
         after_first != after_second,
-        after_second != after_third
+        after_second != after_third,
+        after_third != after_append
     );
-
-    assert_ne!(
+    assert_eq!(
         before_first, after_first,
-        "the first write in a batch copies the page, because the snapshot shares it"
+        "the first write in a batch should go in place now: the undo holds the \
+         bytes it replaces rather than the page"
     );
-    assert_eq!(
-        after_first, after_second,
-        "the second write in the same batch should go in place: the snapshot \
-         holds the ORIGINAL, so the live page is the only holder of the copy. \
-         If this fails, something re-shares the page on every write and \
-         batching cannot amortise the copy -- which is what the benchmark \
-         measures, 625,918 bytes an object at batch size 1 against 628,571 at 64"
-    );
-    assert_eq!(
-        after_second, after_third,
-        "and the third, for the same reason"
-    );
+    assert_eq!(after_first, after_second, "and the second");
+    assert_eq!(after_second, after_third, "and the third");
 
-    // The batch must still restore everything when it aborts, whatever the
-    // copies did.
+    // The batch must still restore everything, which with four overlapping and
+    // adjacent writes is the case the record's ordering rule exists for.
     service.abort_mutation_batch("batch-two-writes").unwrap();
-    let restored = service.pages_local().get(&page).unwrap();
-    assert_eq!(restored.data.len(), 4096, "the abort restores the length");
-    assert!(
-        restored.data.iter().all(|byte| *byte == b'a'),
-        "the abort restores every byte the three writes replaced"
+    assert_eq!(
+        page_state_owning_its_bytes(&service, &page),
+        before,
+        "the abort restores the page the batch started from, bytes and length"
     );
 }
 
 #[test]
-fn an_open_batch_makes_an_in_place_write_copy_the_whole_page() {
-    // A write takes the page state mutably through `Arc::make_mut`, and the
-    // comment there accounts for copying `PageState`. But `PageState.data` is
-    // itself an `Arc<Vec<u8>>`, so cloning the state SHARES the data, and the
-    // line that writes the bytes has to take that mutably too -- copying the
-    // whole page.
+fn a_write_after_a_discard_in_the_same_batch_still_goes_in_place() {
+    // THE SHAPE THE PUT PATH ACTUALLY USES, and the one the first version of this
+    // record missed entirely. An overwrite discards the range it is replacing before
+    // writing it, and `discard_chunk` takes the page through `Arc::make_mut` -- which
+    // clones the page STATE and leaves the payload shared with the batch's undo. So
+    // by the time the write arrives, the undo no longer names the same state, and a
+    // condition written as "the undo names this page state" refuses the record and
+    // the write copies the whole page. Measured on the benchmark, every one of the 60
+    // in-place writes arrived in exactly that shape.
     //
-    // RENAMED FROM `..._every_write_...`, because every one of its three cases
-    // writes IN PLACE and an append no longer copies at all -- see
-    // `an_append_inside_a_batch_writes_in_place_and_still_rolls_back`. The name
-    // said more than the body checked, and the body is the part worth keeping:
-    // an in-place write has nothing a length can undo, so it still pays.
+    // Two things have to hold at once here, and they pull in opposite directions:
+    // the write goes in place (so the condition is about the PAYLOAD, not the state),
+    // and the abort restores the DISCARD as well as the write (so the record's fields
+    // come from the undo's page and not from the live clone, whose
+    // `discarded_ranges` and `write_sequence` the discard has already moved).
+    let page = PageId {
+        chunk_id: ChunkId::new(0, 46).unwrap(),
+        page_index: 0,
+    };
+    let mut service = MatrixReplicaService::new();
+    let original: Vec<u8> = (0..8192u32).map(|index| (index % 241) as u8).collect();
+    service.write_chunk(page.clone(), 0, &original).unwrap();
+    let before = page_state_owning_its_bytes(&service, &page);
+    assert!(
+        before.discarded_ranges.is_empty(),
+        "this fixture starts with no discarded range, so the one below is the batch's"
+    );
+
+    service.begin_mutation_batch("batch-discard-then-write").unwrap();
+    service.discard_chunk(&page, 1024, 512).unwrap();
+    let pointer_before = std::sync::Arc::as_ptr(&service.pages_local().get(&page).unwrap().data);
+    // ELSEWHERE in the page, deliberately. A write over the discarded range would
+    // claim those bytes back and empty `discarded_ranges` on its own, and then the
+    // assertion below that the abort undoes the discard would hold however the
+    // record's fields were sourced -- which is the clause this fixture exists for.
+    service.write_chunk(page.clone(), 4096, &[b'z'; 512]).unwrap();
+    let pointer_after = std::sync::Arc::as_ptr(&service.pages_local().get(&page).unwrap().data);
+    assert_eq!(
+        service.pages_local().get(&page).unwrap().discarded_ranges.len(),
+        1,
+        "the discard has to survive the write for this test to be about anything"
+    );
+    println!(
+        "DISCARDTHENWRITE copied={} discarded_during={}",
+        pointer_before != pointer_after,
+        service.pages_local().get(&page).unwrap().discarded_ranges.len()
+    );
+    assert_eq!(
+        pointer_before, pointer_after,
+        "the write after a discard must still go in place: the undo's only claim on \
+         this page is the payload, and the record takes that claim over"
+    );
+
+    service.abort_mutation_batch("batch-discard-then-write").unwrap();
+    let after = page_state_owning_its_bytes(&service, &page);
+    println!(
+        "DISCARDTHENWRITE restored={} discarded_after={}",
+        after == before,
+        after.discarded_ranges.len()
+    );
+    assert_eq!(
+        after.data.as_ref(),
+        &original,
+        "the abort has to put the overwritten bytes back"
+    );
+    assert!(
+        after.discarded_ranges.is_empty(),
+        "and undo the discard, which is what makes the record's fields come from the \
+         undo's page rather than from the live clone the discard left behind"
+    );
+    assert_eq!(after, before, "and the rest of the state with it");
+}
+
+#[test]
+fn overlapping_writes_in_one_batch_roll_back_to_what_the_batch_started_from() {
+    // THE RECORD'S ORDERING RULE. Each write in a batch records the bytes IT
+    // replaced, and restoring applies those records in REVERSE so that the earliest
+    // record covering a byte is applied last and wins. Without that, two writes
+    // overlapping the same byte would restore the value the SECOND write found --
+    // which is the first write's output, not the state the batch started from.
     //
-    // Measured on the benchmark, a put allocates 512 bytes for every object
-    // already stored, per replica, and the largest single allocation in a put
-    // is exactly the bytes already in the page. This is the same fact asked as
-    // a question a test can answer: does the data allocation MOVE?
+    // The fixture is built so that different stretches of the page are covered by a
+    // different number of records: none, one, two, three, and one that straddles
+    // the old end so part of it comes back by bytes and part by the truncation.
+    let page = PageId {
+        chunk_id: ChunkId::new(0, 45).unwrap(),
+        page_index: 0,
+    };
+    let mut service = MatrixReplicaService::new();
+    let original: Vec<u8> = (0..4096u32).map(|index| (index % 251) as u8).collect();
+    service.write_chunk(page.clone(), 0, &original).unwrap();
+    let before = page_state_owning_its_bytes(&service, &page);
+
+    service.begin_mutation_batch("batch-overlapping").unwrap();
+    // [0, 1024) once; [512, 1024) twice; [768, 1024) three times; [2048, 3584) never.
+    service.write_chunk(page.clone(), 0, &[b'1'; 1024]).unwrap();
+    service.write_chunk(page.clone(), 512, &[b'2'; 512]).unwrap();
+    service.write_chunk(page.clone(), 768, &[b'3'; 256]).unwrap();
+    service.write_chunk(page.clone(), 3584, &[b'4'; 1024]).unwrap();
+    {
+        let during = service.pages_local().get(&page).unwrap();
+        assert_eq!(
+            during.data.len(),
+            4608,
+            "the straddling write should have grown the page"
+        );
+        assert_eq!(during.data[0], b'1');
+        assert_eq!(during.data[512], b'2');
+        assert_eq!(during.data[768], b'3');
+        assert_eq!(during.data[4096], b'4');
+    }
+
+    service.abort_mutation_batch("batch-overlapping").unwrap();
+    let after = page_state_owning_its_bytes(&service, &page);
+    println!(
+        "OVERLAPUNDO len={} restored={}",
+        after.data.len(),
+        after == before
+    );
+    assert_eq!(
+        after.data.as_ref(),
+        &original,
+        "every byte has to come back to what the batch started from, whether one \
+         write covered it, three did, or the page grew over it"
+    );
+    assert_eq!(after, before, "and the rest of the state with it");
+}
+
+#[test]
+fn a_write_in_an_open_batch_goes_in_place_whatever_it_covers() {
+    // REPLACES `an_open_batch_makes_an_in_place_write_copy_the_whole_page`, whose
+    // claim this change removes. That test pinned the defect: a write took the page
+    // state through `Arc::make_mut`, the batch's undo named it, and
+    // `PageState.data` is itself an `Arc<Vec<u8>>` -- so cloning the state shared
+    // the payload and the line that wrote the bytes copied the whole page. It said
+    // in as many words that if this stopped being true the per-put page copy had
+    // been fixed, and it has: an append's undo is a length and an in-place write's
+    // undo is the bytes it replaced, so neither needs a copy of the page.
     //
     // Pointer identity is the only honest test. A byte comparison cannot tell a
-    // copy from a share, and an allocation counter cannot be attributed when
-    // other tests run beside this one.
-    //
-    // The write used here overwrites a range that already exists, so growing
-    // the vector cannot be what moves it.
+    // copy from a share, and an allocation counter cannot be attributed when other
+    // tests run beside this one.
     fn data_pointer(service: &MatrixReplicaService, page: &PageId) -> *const Vec<u8> {
         std::sync::Arc::as_ptr(
             &service
@@ -40176,77 +40289,64 @@ fn an_open_batch_makes_an_in_place_write_copy_the_whole_page() {
         page_index: 0,
     };
 
-    // Without a batch open, nothing else names the page, so an in-place write
-    // must not move the data.
-    let mut quiet = MatrixReplicaService::new();
-    quiet.write_chunk(page.clone(), 0, &[b'a'; 2048]).unwrap();
-    let before_quiet = data_pointer(&quiet, &page);
-    quiet.write_chunk(page.clone(), 0, &[b'b'; 1024]).unwrap();
-    let after_quiet = data_pointer(&quiet, &page);
-    println!(
-        "PAGECOPY no_batch moved={} len={}",
-        before_quiet != after_quiet,
-        quiet.pages_local().get(&page).unwrap().data.len()
-    );
-    assert_eq!(
-        before_quiet, after_quiet,
-        "with nothing else naming the page, an in-place write should write in \
-         place rather than copying the page"
-    );
-
-    // With a batch open, the snapshot it captures names every page, so the same
-    // write has to copy. `begin_mutation_batch` is what the store's put path
-    // uses; `begin_mutation_batch_without_undo` is the variant whose doc says it
-    // skips that snapshot.
-    let mut batched = MatrixReplicaService::new();
-    batched.write_chunk(page.clone(), 0, &[b'a'; 2048]).unwrap();
-    batched.begin_mutation_batch("batch-a").unwrap();
-    let before_batched = data_pointer(&batched, &page);
-    batched.write_chunk(page.clone(), 0, &[b'b'; 1024]).unwrap();
-    let after_batched = data_pointer(&batched, &page);
-    println!(
-        "PAGECOPY with_batch moved={} len={}",
-        before_batched != after_batched,
-        batched.pages_local().get(&page).unwrap().data.len()
-    );
-    assert_ne!(
-        before_batched, after_batched,
-        "an open batch's snapshot names the page, so the write copies it -- if \
-         this stops being true the per-put page copy has been fixed and the \
-         benchmark figures in #13 should be re-measured"
-    );
-
-    // And the without-undo variant should leave the write in place, which is
-    // what makes it the cheaper option its own documentation claims.
-    let mut unsnapshotted = MatrixReplicaService::new();
-    unsnapshotted
-        .write_chunk(page.clone(), 0, &[b'a'; 2048])
-        .unwrap();
-    unsnapshotted
-        .begin_mutation_batch_without_undo("batch-b")
-        .unwrap();
-    let before_unsnapshotted = data_pointer(&unsnapshotted, &page);
-    unsnapshotted
-        .write_chunk(page.clone(), 0, &[b'b'; 1024])
-        .unwrap();
-    let after_unsnapshotted = data_pointer(&unsnapshotted, &page);
-    println!(
-        "PAGECOPY without_undo moved={}",
-        before_unsnapshotted != after_unsnapshotted
-    );
-    assert_eq!(
-        before_unsnapshotted, after_unsnapshotted,
-        "a batch that skips the snapshot should leave the write in place, which \
-         is the saving its documentation describes"
-    );
+    // Five fixtures, and the write has to land in place in all of them. The shape
+    // of the write and the shape of the batch are varied separately, because the
+    // old behaviour depended on both.
+    for (name, open_batch, write_at) in [
+        ("no batch, in place", 0u8, 0u64),
+        ("no batch, appending", 0, 2048),
+        ("batch with undo, in place", 1, 0),
+        ("batch with undo, appending", 1, 2048),
+        ("batch without undo, in place", 2, 0),
+    ] {
+        let mut service = MatrixReplicaService::new();
+        service.write_chunk(page.clone(), 0, &[b'a'; 2048]).unwrap();
+        let before = page_state_owning_its_bytes(&service, &page);
+        match open_batch {
+            1 => {
+                service.begin_mutation_batch("batch-a").unwrap();
+            }
+            2 => {
+                service
+                    .begin_mutation_batch_without_undo("batch-b")
+                    .unwrap();
+            }
+            _ => {}
+        }
+        let pointer_before = data_pointer(&service, &page);
+        service
+            .write_chunk(page.clone(), write_at, &[b'b'; 1024])
+            .unwrap();
+        let pointer_after = data_pointer(&service, &page);
+        println!(
+            "PAGECOPY {name} moved={} len={}",
+            pointer_before != pointer_after,
+            service.pages_local().get(&page).unwrap().data.len()
+        );
+        assert_eq!(
+            pointer_before, pointer_after,
+            "{name}: the write should go in the payload the replica already holds, \
+             and it copied the page instead"
+        );
+        if open_batch == 1 {
+            // And the undo still works, which is the half that makes the above
+            // worth having rather than a bug.
+            service.abort_mutation_batch("batch-a").unwrap();
+            assert_eq!(
+                page_state_owning_its_bytes(&service, &page),
+                before,
+                "{name}: the abort has to restore the page the batch started from"
+            );
+        }
+    }
 }
 
 /// A page state that shares NOTHING with the service it came from.
 ///
 /// `PageState::clone` copies the struct and ARC-CLONES the payload, so a test that
-/// keeps one around raises the payload's holder count -- and the append fast path
+/// keeps one around raises the payload's holder count -- and the write fast path
 /// refuses to work on a payload with more than one holder, by design. A test that
-/// captured a page with `clone()` and then asserted the append went in place was
+/// captured a page with `clone()` and then asserted the write went in place was
 /// therefore asserting against its own fixture. Everything below captures with this.
 #[cfg(test)]
 fn page_state_owning_its_bytes(service: &MatrixReplicaService, page: &PageId) -> PageState {
@@ -43850,7 +43950,7 @@ fn the_audit_reports_what_an_open_mutation_batch_holds() {
         "the open batch names the replicas' chunks, and reported none"
     );
     assert_eq!(
-        read(&store, "open_batch.replica_chunks.append_undo_records"),
+        read(&store, "open_batch.replica_chunks.write_undo_records"),
         0,
         "nothing has been written yet, so no page's undo is a length"
     );
@@ -43860,7 +43960,7 @@ fn the_audit_reports_what_an_open_mutation_batch_holds() {
     //
     // An append inside an open batch gives the undo's HANDLE on that page up and
     // leaves a length behind instead -- that is the saving. So the audit has to
-    // report the page leaving `entries` AND arriving in `append_undo_records`, or
+    // report the page leaving `entries` AND arriving in `write_undo_records`, or
     // a store with a mutation in flight reads as holding nothing at all. Writing
     // through the replica directly is what the page service's own write path does
     // to it; `put_object` cannot be used here because it opens a batch of its own.
@@ -43884,8 +43984,8 @@ fn the_audit_reports_what_an_open_mutation_batch_holds() {
         .write_chunk(appended_page.clone(), append_at, &[b'y'; 4096])
         .unwrap();
     let entries_after = read(&store, "open_batch.replica_chunks.entries");
-    let records_after = read(&store, "open_batch.replica_chunks.append_undo_records");
-    let record_bytes = read(&store, "open_batch.replica_chunks.append_undo_bytes");
+    let records_after = read(&store, "open_batch.replica_chunks.write_undo_records");
+    let record_bytes = read(&store, "open_batch.replica_chunks.write_undo_bytes");
     println!(
         "OPENBATCH after_one_append entries={entries_before_any_write} -> {entries_after} \
          records={records_after} record_bytes={record_bytes}"

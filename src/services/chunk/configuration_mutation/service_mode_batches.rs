@@ -65,7 +65,7 @@ impl MatrixReplicaService {
             batch_id,
             started_control_commit_index: self.chunk_mutation_control_commit_index,
             snapshot,
-            page_append_undo: BTreeMap::new(),
+            page_write_undo: BTreeMap::new(),
         });
         Ok(self.mutation_batch_status())
     }
@@ -107,36 +107,27 @@ impl MatrixReplicaService {
         }
         let batch_id = active.batch_id;
         let started_control_commit_index = active.started_control_commit_index;
-        let page_append_undo = active.page_append_undo;
+        let page_write_undo = active.page_write_undo;
         // A marker batch has no undo: whoever opened it holds one, and
         // restoring is theirs to do.
         if let Some(snapshot) = active.snapshot {
             let mut rollback = *snapshot;
-            // THE PAGES WHOSE UNDO IS A LENGTH. Each is absent from the rollback
-            // because its append was allowed to land in the live payload; its old
-            // state is that payload truncated, which moves no bytes, plus the
-            // scalars the write advanced.
-            for (page_id, undo) in page_append_undo {
+            // THE PAGES WHOSE UNDO IS WHAT THE WRITES REPLACED. Each is absent from
+            // the rollback because its writes were allowed to land in the live
+            // payload; its old state is that payload truncated, with the replaced
+            // bytes put back, plus the scalars the writes advanced.
+            for (page_id, undo) in page_write_undo {
                 let Some(live) = self.pages.remove(&page_id) else {
                     // Unreachable: every path that can drop a page calls
                     // `materialise_page_undo` first, which takes the record with it.
-                    debug_assert!(false, "an append undo outlived the page it describes");
+                    debug_assert!(false, "a write undo outlived the page it describes");
                     continue;
                 };
                 let mut state = match std::sync::Arc::try_unwrap(live) {
                     Ok(state) => state,
                     Err(shared) => (*shared).clone(),
                 };
-                let payload = std::sync::Arc::make_mut(&mut state.data);
-                payload.truncate(undo.payload_len);
-                // The allocation too: see `payload_capacity`.
-                payload.shrink_to(undo.payload_capacity);
-                state.logical_length = undo.logical_length;
-                state.write_sequence = undo.write_sequence;
-                state.checksum_fnv1a64 = undo.checksum_fnv1a64;
-                state.discarded_ranges = undo.discarded_ranges;
-                state.ec_parity_fragment = undo.ec_parity_fragment;
-                state.ec_fragment_digests = undo.ec_fragment_digests;
+                Self::restore_page_from_write_undo(&mut state, undo);
                 rollback.pages.insert(page_id, std::sync::Arc::new(state));
             }
             rollback.seal_checksum();
@@ -193,30 +184,47 @@ impl MatrixReplicaService {
     // the full pre-image and hands it back to the undo. The copy is then paid exactly
     // once, at the point where it is the only correct answer.
 
-    /// How many payload bytes this batch's undo would truncate this page back to,
-    /// if this page's undo is a length.
-    fn recorded_append_undo_len(&self, page_id: &PageId) -> Option<usize> {
-        self.active_mutation_batch
-            .as_ref()?
-            .page_append_undo
-            .get(page_id)
-            .map(|undo| undo.payload_len)
-    }
-
-    /// Keep this page's undo cheap if this write is an append, and pay for the
-    /// page's full pre-image now if it is not.
+    /// Keep this page's undo to what this write replaces, rather than the page.
     ///
-    /// `start_index` is the LOWEST payload index the write will touch. Call this
-    /// before taking the page mutably: whether it runs decides how many holders the
-    /// page has, and so whether taking it copies.
-    pub(crate) fn keep_page_undo_cheap_for_write(&mut self, page_id: &PageId, start_index: usize) {
-        if let Some(recorded) = self.recorded_append_undo_len(page_id) {
-            if start_index < recorded {
-                // This write reaches under the bytes the record would truncate away,
-                // so truncating would not put them back.
-                self.materialise_page_undo(page_id);
+    /// `start_index` and `end_index` are the payload range the write will cover.
+    /// Call this BEFORE taking the page mutably: whether it runs decides how many
+    /// holders the page has, and so whether taking it copies.
+    pub(crate) fn keep_page_undo_cheap_for_write(
+        &mut self,
+        page_id: &PageId,
+        start_index: usize,
+        end_index: usize,
+    ) {
+        {
+            let Self {
+                active_mutation_batch,
+                pages,
+                ..
+            } = self;
+            if let Some(batch) = active_mutation_batch.as_mut() {
+                if let Some(undo) = batch.page_write_undo.get_mut(page_id) {
+                    // A RECORD IS ALREADY STANDING for this page, so this write only
+                    // has to add what IT replaces. Clipped to the payload as it was
+                    // when the batch opened, because anything above that is truncated
+                    // away rather than restored.
+                    let covered_end = end_index.min(undo.payload_len);
+                    if start_index < covered_end {
+                        if let Some(live) = pages.get(page_id) {
+                            if covered_end <= live.data.len() {
+                                undo.replaced.push((
+                                    start_index,
+                                    live.data[start_index..covered_end].to_vec(),
+                                ));
+                            } else {
+                                // Cannot happen: `payload_len` is the length when the
+                                // batch opened and a payload only grows inside one.
+                                debug_assert!(false, "a page shrank inside its own batch");
+                            }
+                        }
+                    }
+                    return;
+                }
             }
-            return;
         }
         let Self {
             active_mutation_batch,
@@ -232,41 +240,77 @@ impl MatrixReplicaService {
         let Some(live) = pages.get(page_id) else {
             return;
         };
-        if start_index < live.data.len() {
-            return;
-        }
         let Some(taken) = snapshot.pages.get(page_id) else {
             return;
         };
-        // THE UNDO MUST BE THE ONLY OTHER HOLDER, and the counts say so rather than
-        // being assumed: two holders of the state (live and undo, which are the same
-        // allocation) and one of the payload.
+        // THE CONDITION IS ABOUT THE PAYLOAD, NOT THE STATE, and that distinction was
+        // measured rather than reasoned.
         //
-        // WHAT THESE COUNTS ARE AND ARE NOT. They are NOT what keeps another holder's
-        // bytes -- `Arc::make_mut` is, at both levels, and it is why loosening these
-        // to admit a third holder breaks nothing. Planted that way, every test in the
+        // The obvious condition is "the undo names the same page state": live and
+        // undo are one allocation, two holders of it, one holder of the payload. That
+        // is what an append arrives in, and the first version of this required it --
+        // and it missed every in-place write on the put path. An overwrite DISCARDS
+        // the range it is replacing first, and `discard_chunk` takes the page through
+        // `Arc::make_mut`, which clones the state and leaves the payload shared. So by
+        // the time the write arrives the live state is a clone: `ptr_eq` is false, the
+        // state has one holder, and the PAYLOAD has two. Measured on the benchmark,
+        // all 60 in-place writes landed in exactly that shape and the record was
+        // refused for all 60.
+        //
+        // What the record actually needs is that the undo's only claim on the live
+        // page is the payload allocation, and that nothing else claims it. Then
+        // giving the entry up leaves the writer alone with the bytes, and the record
+        // -- built from the UNDO's fields, which are the ones the batch started from,
+        // not the live clone's post-discard ones -- can put everything back.
+        //
+        // WHAT THE COUNTS ARE AND ARE NOT. They are NOT what keeps another holder's
+        // bytes; `Arc::make_mut` is, at both levels, and it is why loosening them to
+        // admit a third holder breaks nothing. Planted that way, every test in the
         // suite still passed, which is the honest state of it. What they do is keep
-        // the record to the case where it BUYS something: with a third holder the
-        // append copies anyway, so taking the record would give up the undo's handle
-        // for nothing. Refusing is the conservative answer and it keeps this path's
-        // precondition small enough to read.
-        if !std::sync::Arc::ptr_eq(live, taken)
-            || std::sync::Arc::strong_count(live) != 2
-            || std::sync::Arc::strong_count(&live.data) != 1
-        {
+        // the record to the case where it BUYS something, and keep this precondition
+        // small enough to read.
+        let same_state = std::sync::Arc::ptr_eq(live, taken);
+        let payload_is_the_only_tie = std::sync::Arc::ptr_eq(&live.data, &taken.data)
+            && if same_state {
+                // One state, held by the live map and by the undo; one payload.
+                std::sync::Arc::strong_count(live) == 2
+                    && std::sync::Arc::strong_count(&live.data) == 1
+            } else {
+                // Two states, each held once; one payload, held by both of them.
+                std::sync::Arc::strong_count(live) == 1
+                    && std::sync::Arc::strong_count(taken) == 1
+                    && std::sync::Arc::strong_count(&live.data) == 2
+            };
+        if !payload_is_the_only_tie {
             return;
         }
-        batch.page_append_undo.insert(
+        // THE PAYLOAD IS SHARED, so reading the replaced bytes off the live page reads
+        // the bytes the batch started from: no write in this batch can have changed
+        // them, because a write with the payload shared copies it instead of writing
+        // through it, and that copy would have left no second holder to find here.
+        let covered_end = end_index.min(live.data.len());
+        let replaced = if start_index < covered_end {
+            vec![(start_index, live.data[start_index..covered_end].to_vec())]
+        } else {
+            // An append replaces nothing.
+            Vec::new()
+        };
+        // EVERY FIELD FROM `taken`, which is the page as the batch found it. The live
+        // state can already have diverged -- a discard before this write moved its
+        // `discarded_ranges` and `write_sequence` -- and restoring the live clone's
+        // values would undo the write and keep the discard.
+        batch.page_write_undo.insert(
             page_id.clone(),
-            PageAppendUndo {
-                payload_len: live.data.len(),
-                payload_capacity: live.data.capacity(),
-                logical_length: live.logical_length,
-                write_sequence: live.write_sequence,
-                checksum_fnv1a64: live.checksum_fnv1a64,
-                discarded_ranges: live.discarded_ranges.clone(),
-                ec_parity_fragment: live.ec_parity_fragment.clone(),
-                ec_fragment_digests: live.ec_fragment_digests.clone(),
+            PageWriteUndo {
+                payload_len: taken.data.len(),
+                payload_capacity: taken.data.capacity(),
+                logical_length: taken.logical_length,
+                write_sequence: taken.write_sequence,
+                checksum_fnv1a64: taken.checksum_fnv1a64,
+                discarded_ranges: taken.discarded_ranges.clone(),
+                ec_parity_fragment: taken.ec_parity_fragment.clone(),
+                ec_fragment_digests: taken.ec_fragment_digests.clone(),
+                replaced,
             },
         );
         snapshot.pages.remove(page_id);
@@ -286,7 +330,7 @@ impl MatrixReplicaService {
         let Some(batch) = active_mutation_batch.as_mut() else {
             return;
         };
-        if !batch.page_append_undo.contains_key(page_id) {
+        if !batch.page_write_undo.contains_key(page_id) {
             return;
         }
         let Some(snapshot) = batch.snapshot.as_mut() else {
@@ -296,20 +340,42 @@ impl MatrixReplicaService {
             debug_assert!(false, "an append undo outlived the page it describes");
             return;
         };
-        let Some(undo) = batch.page_append_undo.remove(page_id) else {
+        let Some(undo) = batch.page_write_undo.remove(page_id) else {
             return;
         };
         let mut state = (**live).clone();
+        Self::restore_page_from_write_undo(&mut state, undo);
+        snapshot.pages.insert(page_id.clone(), std::sync::Arc::new(state));
+    }
+
+    /// Put a page back the way this batch's write undo says it was.
+    ///
+    /// Shared by the abort and by `materialise_page_undo`, because the two have to
+    /// agree byte for byte: one of them restoring a field the other does not is a
+    /// rollback whose result depends on which path reached it.
+    fn restore_page_from_write_undo(state: &mut PageState, undo: PageWriteUndo) {
         let payload = std::sync::Arc::make_mut(&mut state.data);
         payload.truncate(undo.payload_len);
+        // The allocation too: see `payload_capacity`.
         payload.shrink_to(undo.payload_capacity);
+        // IN REVERSE, so the earliest record covering a byte is applied last and
+        // wins. See `replaced`.
+        for (at, bytes) in undo.replaced.into_iter().rev() {
+            let end = at.saturating_add(bytes.len());
+            if end <= payload.len() {
+                payload[at..end].copy_from_slice(&bytes);
+            } else {
+                // Cannot happen: every record is clipped to `payload_len`, which the
+                // truncate above restored.
+                debug_assert!(false, "a write undo range outran the page it restores");
+            }
+        }
         state.logical_length = undo.logical_length;
         state.write_sequence = undo.write_sequence;
         state.checksum_fnv1a64 = undo.checksum_fnv1a64;
         state.discarded_ranges = undo.discarded_ranges;
         state.ec_parity_fragment = undo.ec_parity_fragment;
         state.ec_fragment_digests = undo.ec_fragment_digests;
-        snapshot.pages.insert(page_id.clone(), std::sync::Arc::new(state));
     }
 
     /// The undo an open batch on THIS replica holds, for the footprint audit.
@@ -327,28 +393,35 @@ impl MatrixReplicaService {
             .map(|snapshot| snapshot.as_ref())
     }
 
-    /// The pages whose undo is a LENGTH, and what those records cost.
+    /// The pages whose undo is WHAT THE WRITES REPLACED, and what those records
+    /// cost -- the replaced bytes included, since they are real memory.
     ///
     /// Reported apart from the pages the undo still HOLDS, because they are
-    /// different quantities: a record is a handful of scalars and the page it
-    /// describes is not duplicated at all. Adding them together would read as if
-    /// the undo still held every page, which is exactly what stopped being true.
-    pub(crate) fn open_mutation_batch_append_undo(&self) -> (u64, u64) {
+    /// different quantities: a record is a handful of scalars plus the bytes this
+    /// batch's writes covered, and the page it describes is not duplicated at all.
+    /// Adding them together would read as if the undo still held every page, which
+    /// is exactly what stopped being true.
+    pub(crate) fn open_mutation_batch_write_undo(&self) -> (u64, u64) {
         let Some(batch) = self.active_mutation_batch.as_ref() else {
             return (0, 0);
         };
         let mut bytes = 0u64;
-        for undo in batch.page_append_undo.values() {
+        for undo in batch.page_write_undo.values() {
             bytes = bytes
                 .saturating_add(
-                    (std::mem::size_of::<PageId>() + std::mem::size_of::<PageAppendUndo>()) as u64,
+                    (std::mem::size_of::<PageId>() + std::mem::size_of::<PageWriteUndo>()) as u64,
                 )
                 .saturating_add(
                     (undo.discarded_ranges.capacity() as u64)
                         .saturating_mul(std::mem::size_of::<DataRange>() as u64),
                 );
+            for (_, bytes_replaced) in &undo.replaced {
+                bytes = bytes
+                    .saturating_add(std::mem::size_of::<(usize, Vec<u8>)>() as u64)
+                    .saturating_add(bytes_replaced.capacity() as u64);
+            }
         }
-        (batch.page_append_undo.len() as u64, bytes)
+        (batch.page_write_undo.len() as u64, bytes)
     }
 
     pub fn mutation_batch_status(&self) -> ReplicaMutationBatchStatus {
