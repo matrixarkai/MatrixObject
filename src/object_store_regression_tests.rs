@@ -40352,9 +40352,15 @@ fn an_append_stays_a_copy_when_another_snapshot_holds_the_page() {
     // bytes that checkpoint still claims, and a checkpoint written out afterwards
     // would carry a page that never existed.
     //
-    // The two holder counts in `keep_page_undo_cheap_for_write` are what refuse
-    // that. They are easy to loosen by accident -- `!= 2` to `< 2`, say -- and
-    // nothing else in the suite would notice, so this is here to.
+    // What refuses that is `Arc::make_mut` itself, at both levels: the checkpoint is
+    // a second holder of the page state, so taking it mutably copies. The holder
+    // counts in `keep_page_undo_cheap_for_write` refuse the record as well, but they
+    // are the conservative half rather than the safe half -- loosening them to admit
+    // a third holder was planted and no test in the suite failed.
+    //
+    // So this pins the PROPERTY and not the mechanism: a checkpoint taken while a
+    // batch is open still holds what it held. That is what would break if the record
+    // were ever taken somewhere the copy does not happen.
     let page = PageId {
         chunk_id: ChunkId::new(0, 44).unwrap(),
         page_index: 0,
@@ -40484,10 +40490,15 @@ fn an_append_undo_restores_every_field_a_write_changes() {
         after.checksum_fnv1a64, before.checksum_fnv1a64,
         "checksum_fnv1a64"
     );
+    // `discarded_ranges` CANNOT BE DRIVEN TO DIFFER HERE, and saying so is better
+    // than implying this clause caught something: a discard is refused above
+    // `logical_length` and an append starts at or after the payload length, so no
+    // append reaches a discarded range and `subtract_range` leaves the list alone.
+    // Dropping the restore of this field was planted and nothing failed. The clause
+    // stays as a statement about the record covering what the write touches.
     assert_eq!(
         after.discarded_ranges, before.discarded_ranges,
-        "discarded_ranges -- the append subtracts the range it covers, and the undo \
-         has to put the list back"
+        "discarded_ranges"
     );
     assert_eq!(after.ec_parity_fragment, before.ec_parity_fragment, "the sidecar");
     assert_eq!(

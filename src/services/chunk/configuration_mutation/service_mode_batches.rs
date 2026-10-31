@@ -174,6 +174,15 @@ impl MatrixReplicaService {
     // write touches has to be added here, and
     // `an_append_undo_restores_every_field_a_write_changes` is what fails if it is not.
     //
+    // ONE OF THE SEVEN CANNOT BE OBSERVED TO MATTER, and it is worth saying which
+    // rather than implying all seven are load-bearing. `discarded_ranges` is carried
+    // because the write runs `subtract_range` over it -- but a discarded range is
+    // refused above `logical_length`, and an append starts at or after the payload
+    // length, so no append reaches one. Dropping this leg from the restore was
+    // planted and no test failed. It stays because it is what `write_chunk` touches,
+    // and a restore that covers what the write touches needs no case analysis to
+    // stay right when either side moves.
+    //
     // WHAT MAKES IT SAFE WHEN SOMETHING ELSE HAPPENS TO THE PAGE. A record describes
     // an append and nothing else. Any other mutation of that page inside the same
     // batch -- a write reaching below the recorded length, a discard, a reclaim, a
@@ -226,10 +235,18 @@ impl MatrixReplicaService {
         let Some(taken) = snapshot.pages.get(page_id) else {
             return;
         };
-        // THE UNDO MUST BE THE ONLY OTHER HOLDER. A page some other snapshot names
-        // as well would lose its old bytes if this append landed in place, so the
-        // counts are checked rather than assumed: two holders of the state (live and
-        // undo, which are the same allocation), and one of the payload.
+        // THE UNDO MUST BE THE ONLY OTHER HOLDER, and the counts say so rather than
+        // being assumed: two holders of the state (live and undo, which are the same
+        // allocation) and one of the payload.
+        //
+        // WHAT THESE COUNTS ARE AND ARE NOT. They are NOT what keeps another holder's
+        // bytes -- `Arc::make_mut` is, at both levels, and it is why loosening these
+        // to admit a third holder breaks nothing. Planted that way, every test in the
+        // suite still passed, which is the honest state of it. What they do is keep
+        // the record to the case where it BUYS something: with a third holder the
+        // append copies anyway, so taking the record would give up the undo's handle
+        // for nothing. Refusing is the conservative answer and it keeps this path's
+        // precondition small enough to read.
         if !std::sync::Arc::ptr_eq(live, taken)
             || std::sync::Arc::strong_count(live) != 2
             || std::sync::Arc::strong_count(&live.data) != 1

@@ -59,6 +59,14 @@ impl MatrixReplicaService {
         }
         self.admit_mutation_qos(0, 0, 1, length, now_millis())?;
         // NOT AN APPEND, so the batch undo cannot be a length here.
+        //
+        // A discard would in fact survive the record -- it moves `discarded_ranges`
+        // and `write_sequence`, which the record carries -- and removing this call
+        // was planted without breaking any behaviour test. It is here so that the
+        // rule is "a page mutation pays its undo first", with no exceptions to
+        // remember and a scan that can check it: see
+        // `every_page_mutation_pays_its_undo_before_mutating`. A discard is not on a
+        // hot path, so the uniform rule costs nothing worth keeping.
         self.materialise_page_undo(page_id);
         let chunk = self
             .pages
@@ -332,7 +340,8 @@ impl MatrixReplicaService {
         let request_checksum = chunk_batch_discard_nonempty_request_checksum(page_id, ranges);
         let merged = merge_range_slice(ranges);
         self.admit_mutation_qos(0, 0, merged.len() as u64, stats.input_bytes, now_millis())?;
-        // NOT AN APPEND, so the batch undo cannot be a length here.
+        // NOT AN APPEND, so the batch undo cannot be a length here -- and the
+        // uniform rule, as on the single discard above.
         self.materialise_page_undo(page_id);
         let chunk = self
             .pages
