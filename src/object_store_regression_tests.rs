@@ -2586,6 +2586,77 @@ fn object_inventory_pages_metadata_and_placement() {
 }
 
 #[test]
+fn a_chunk_checksum_is_the_hash_of_its_payload_however_the_write_arrived() {
+    // `write_chunk` resumes the FNV-1a fold over the appended bytes instead of re-hashing the
+    // whole payload, which is only sound where the write begins at or past the old end. This
+    // walks the shapes a write can have -- appends, an append beyond the end that the resize pads
+    // with zeros, overwrites that land inside the payload, one that straddles the old end, and
+    // empty writes -- and after every one of them asserts the stored checksum is still exactly
+    // the hash of the bytes now held. A fast path that is wrong for any of these shows up here
+    // as a mismatch rather than as a corrupt read somewhere later.
+    let mut chunk = MatrixReplicaService::new();
+    let page_id = PageId {
+        chunk_id: ChunkId::new(0, 991).unwrap(),
+        page_index: 0,
+    };
+    // (offset, bytes) covering: first write, pure append, empty append, an append beyond the end,
+    // overwrite wholly inside, overwrite straddling the end, empty write inside.
+    let writes: &[(u64, &[u8])] = &[
+        (0, b"abcd"),
+        (4, b"efgh"),
+        (8, b""),
+        (12, b"ijkl"),
+        (2, b"XY"),
+        (14, b"ZZZZ"),
+        (3, b""),
+        (18, b"mnopqrst"),
+    ];
+    // The payload the writes should compose into, kept alongside rather than written out as a
+    // literal: a literal has to be re-derived by hand every time a case is added, and getting it
+    // wrong makes the test assert against the wrong bytes. A write beyond the end pads the bytes
+    // it skipped with zeros, so this mirrors that.
+    let mut expected: Vec<u8> = Vec::new();
+    for (offset, bytes) in writes {
+        let start = usize::try_from(*offset).unwrap();
+        let end = start + bytes.len();
+        if end > expected.len() {
+            expected.resize(end, 0);
+        }
+        expected[start..end].copy_from_slice(bytes);
+
+        chunk
+            .write_chunk(page_id.clone(), *offset, bytes)
+            .unwrap_or_else(|err| panic!("write at {offset} of {} bytes: {err:?}", bytes.len()));
+        let state = chunk
+            .read_chunk_state_validated(&page_id)
+            .unwrap_or_else(|err| {
+                panic!("the write at {offset} left a payload its own checksum rejects: {err:?}")
+            });
+        assert_eq!(
+            state.data.as_slice(),
+            expected.as_slice(),
+            "the write of {} byte(s) at {offset} did not land where this test expects",
+            bytes.len()
+        );
+        assert_eq!(
+            state.checksum_fnv1a64,
+            fnv1a64(&state.data),
+            "after writing {} byte(s) at {offset} the stored checksum is not the hash of the \
+             {} byte(s) now held",
+            bytes.len(),
+            state.data.len()
+        );
+    }
+    // Premise: the sequence above actually exercised growth past the end, an overwrite inside the
+    // payload, and zero padding. Without that this walks one shape and says nothing.
+    assert!(expected.len() > 20, "the writes should have grown the payload");
+    assert!(
+        expected.contains(&0u8),
+        "one write should have left zero padding"
+    );
+}
+
+#[test]
 fn chunkserver_recovers_corrupt_payload_from_ec_sidecars() {
     let mut chunk = MatrixReplicaService::new();
     let page_id = PageId {
