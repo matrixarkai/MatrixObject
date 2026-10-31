@@ -46521,14 +46521,25 @@ fn every_guard_the_workflow_pins_by_name_exists() {
             }
         }
     }
+    // ONLY FOR NAMES THIS BUILD HAS. `pinned` is already feature-aware: a step asking for
+    // `--features matrix-raft` contributes to `unavailable` instead when that feature is off,
+    // and the pairing has to respect the same thing. CI runs this guard on DEFAULT features --
+    // `cargo test --locked --lib tests::every_guard_the_workflow_pins_by_name_exists -- --exact`
+    // -- so there the consensus and raft guards are not compiled, select zero, and would fail a
+    // pairing against the one their own step asserts. Verifying this only under `--all-features`
+    // is what hid that, and CI found it.
+    let paired: Vec<(&&str, &usize)> = asserted
+        .iter()
+        .filter(|(name, _)| pinned.iter().any(|candidate| candidate == *name))
+        .collect();
     // Not vacuous: if the pairing found nothing, the loop below would assert nothing.
     assert!(
-        asserted.len() >= 20,
-        "only {} pinned guards could be paired with the count their own step greps for, so the \
-         assertion below is proving almost nothing",
-        asserted.len()
+        paired.len() >= 20,
+        "only {} pinned guards present in this build could be paired with the count their own \
+         step greps for, so the assertion below is proving almost nothing",
+        paired.len()
     );
-    for (name, expected) in &asserted {
+    for (name, expected) in paired {
         assert_eq!(
             selected(name),
             *expected,
