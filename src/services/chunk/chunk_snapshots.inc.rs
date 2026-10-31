@@ -384,6 +384,8 @@ impl MatrixReplicaService {
             }
         }
         self.pages = snapshot.pages;
+        // EVERY page was replaced, so there is no per-page delta to apply.
+        self.recount_page_totals();
         self.receipt_retention = snapshot.receipt_retention;
         self.write_request_receipts = snapshot.write_request_receipts;
         self.discard_request_receipts = snapshot.discard_request_receipts;

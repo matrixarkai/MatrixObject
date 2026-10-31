@@ -19,7 +19,9 @@ impl MatrixReplicaService {
         self.invalidate_chunk_cache(&page_id, 0, state.logical_length);
         // NOT AN APPEND, so the batch undo cannot be a length here.
         self.materialise_page_undo(&page_id);
-        self.pages.insert(page_id, std::sync::Arc::new(state));
+        let accounting_before = self.page_accounting(&page_id);
+        self.pages.insert(page_id.clone(), std::sync::Arc::new(state));
+        self.reaccount_page(&page_id, accounting_before);
         Ok(())
     }
 
@@ -87,6 +89,7 @@ impl MatrixReplicaService {
         self.ensure_writable()?;
         // NOT AN APPEND, so the batch undo cannot be a length here.
         self.materialise_page_undo(page_id);
+        let accounting_before = self.page_accounting(page_id);
         let chunk = self
             .pages
             .get_mut(page_id)
@@ -126,6 +129,8 @@ impl MatrixReplicaService {
         self.ec_reconstructed_reads
             .set(self.ec_reconstructed_reads.get().saturating_add(1));
         self.invalidate_chunk_cache(page_id, 0, u64::MAX);
+        // The payload was rebuilt from the sidecar, so its length can have moved.
+        self.reaccount_page(page_id, accounting_before);
         Ok(true)
     }
 

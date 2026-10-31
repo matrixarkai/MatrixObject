@@ -109,6 +109,10 @@ pub struct MatrixReplicaService {
     snapshot_export_cache: RefCell<Option<ReplicaSnapshotExportCache>>,
     snapshot_assembler: ReplicaServiceSnapshotAssembler,
     active_mutation_batch: Option<ReplicaMutationBatch>,
+    /// Σ of every page's payload length, and Σ of every page's merged discarded
+    /// ranges. Maintained; see `physical_bytes`.
+    physical_bytes: u64,
+    discarded_bytes: u64,
 }
 
 #[cfg(feature = "chunk-consensus")]
@@ -194,6 +198,8 @@ impl MatrixReplicaService {
             snapshot_export_cache: self.snapshot_export_cache.clone(),
             snapshot_assembler: self.snapshot_assembler.clone(),
             active_mutation_batch: self.active_mutation_batch.clone(),
+            physical_bytes: self.physical_bytes,
+            discarded_bytes: self.discarded_bytes,
         }
     }
 }

@@ -97,6 +97,8 @@ impl MatrixReplicaService {
             snapshot_export_cache: RefCell::new(None),
             snapshot_assembler: ReplicaServiceSnapshotAssembler::default(),
             active_mutation_batch: None,
+            physical_bytes: 0,
+            discarded_bytes: 0,
         }
     }
 

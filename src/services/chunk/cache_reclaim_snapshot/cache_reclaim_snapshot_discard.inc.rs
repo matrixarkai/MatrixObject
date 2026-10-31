@@ -68,6 +68,7 @@ impl MatrixReplicaService {
         // `every_page_mutation_pays_its_undo_before_mutating`. A discard is not on a
         // hot path, so the uniform rule costs nothing worth keeping.
         self.materialise_page_undo(page_id);
+        let accounting_before = self.page_accounting(page_id);
         let chunk = self
             .pages
             .get_mut(page_id)
@@ -79,6 +80,7 @@ impl MatrixReplicaService {
         );
         chunk.write_sequence = chunk.write_sequence.saturating_add(1);
         self.invalidate_chunk_cache(page_id, offset, length);
+        self.reaccount_page(page_id, accounting_before);
         self.physical_discard_ranges = self.physical_discard_ranges.saturating_add(1);
         self.physical_discard_bytes = self.physical_discard_bytes.saturating_add(length);
         self.mark_metadata_mutation();
@@ -343,6 +345,7 @@ impl MatrixReplicaService {
         // NOT AN APPEND, so the batch undo cannot be a length here -- and the
         // uniform rule, as on the single discard above.
         self.materialise_page_undo(page_id);
+        let accounting_before = self.page_accounting(page_id);
         let chunk = self
             .pages
             .get_mut(page_id)
@@ -351,6 +354,7 @@ impl MatrixReplicaService {
         merge_discard_ranges_in_place(&mut chunk.discarded_ranges, &merged);
         chunk.write_sequence = chunk.write_sequence.saturating_add(1);
         let _ = chunk;
+        self.reaccount_page(page_id, accounting_before);
         for range in merged {
             stats.coalesced_ranges = stats.coalesced_ranges.saturating_add(1);
             stats.coalesced_bytes = stats.coalesced_bytes.saturating_add(range.length);

@@ -32,6 +32,7 @@ impl MatrixReplicaService {
         // BEFORE THE PAGE IS TAKEN, not after: this decides how many holders it has.
         // An append leaves the undo a length, so `make_mut` below copies nothing.
         self.keep_page_undo_cheap_for_write(&page_id, start_index, end_index);
+        let accounting_before = self.page_accounting(&page_id);
         // `make_mut` copies this one chunk's state if a snapshot still names
         // it, so the copy is per chunk WRITTEN rather than per chunk held.
         let chunk = std::sync::Arc::make_mut(
@@ -88,6 +89,7 @@ impl MatrixReplicaService {
             clear_chunk_ec_sidecars(chunk);
         }
         self.invalidate_chunk_cache(&cache_chunk_id, offset, data.len() as u64);
+        self.reaccount_page(&cache_chunk_id, accounting_before);
         self.physical_write_count = self.physical_write_count.saturating_add(1);
         self.physical_write_bytes = self.physical_write_bytes.saturating_add(data.len() as u64);
         self.mark_metadata_mutation();
@@ -327,6 +329,7 @@ impl MatrixReplicaService {
             lowest_written_index,
             highest_written_index,
         );
+        let accounting_before = self.page_accounting(&page_id);
         {
             let chunk = std::sync::Arc::make_mut(
                 self.pages
@@ -380,6 +383,7 @@ impl MatrixReplicaService {
         for (offset, length) in invalidations {
             self.invalidate_chunk_cache(&cache_chunk_id, offset, length);
         }
+        self.reaccount_page(&cache_chunk_id, accounting_before);
         self.mark_metadata_mutation();
         if record_internal_receipt {
             // `format!` sizes its buffer at twice the literal's length and
