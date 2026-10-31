@@ -168,8 +168,28 @@ impl MatrixReplicaService {
     /// only keep the snapshot in memory -- the mutation-batch rollback copy --
     /// take this and call `seal_checksum` on the rare path that installs it.
     pub fn export_snapshot_unsealed(&self) -> ReplicaServiceSnapshot {
+        self.export_snapshot_unsealed_with_pages(self.pages.clone())
+    }
+
+    /// The same, carrying NO pages.
+    ///
+    /// For the page service's mutation undo, which gives the replicas' pages up
+    /// because each replica holds its own page undo -- see its
+    /// `begin_mutation_batch`. Taking the full export and emptying the maps
+    /// afterwards is what this replaces, and that cost one clone of every page map
+    /// PER APPEND, thrown away immediately: measured as a 10-25% append regression
+    /// on TemporalStore's shared store, whose pages are 1 KiB, where there is no
+    /// page copy for the undo to be saving in exchange.
+    pub(crate) fn export_snapshot_unsealed_without_pages(&self) -> ReplicaServiceSnapshot {
+        self.export_snapshot_unsealed_with_pages(BTreeMap::new())
+    }
+
+    fn export_snapshot_unsealed_with_pages(
+        &self,
+        pages: BTreeMap<PageId, std::sync::Arc<PageState>>,
+    ) -> ReplicaServiceSnapshot {
         ReplicaServiceSnapshot {
-            pages: self.pages.clone(),
+            pages,
             receipt_retention: self.receipt_retention,
             write_request_receipts: self.write_request_receipts.clone(),
             discard_request_receipts: self.discard_request_receipts.clone(),
