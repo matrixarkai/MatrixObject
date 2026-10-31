@@ -35625,7 +35625,7 @@ fn measure_what_the_mutation_batch_copies() {
     let audit: std::collections::BTreeMap<String, u64> = store
         .chunk_service
         .export_snapshot_unsealed()
-        .footprint_audit()
+        .footprint_audit(&[])
         .into_iter()
         .collect();
     println!("BATCHCOPY objects={objects}");
@@ -39609,7 +39609,7 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
                 .put_object("bucket", key, vec![b'x'; size], "application/octet-stream")
                 .unwrap();
         }
-        for (key, value) in store.chunk_service.export_snapshot_unsealed().footprint_audit() {
+        for (key, value) in store.chunk_service.export_snapshot_unsealed().footprint_audit(&[]) {
             if value != 0 {
                 println!("BATCH objects={objects} {key}={value}");
             }
@@ -39626,7 +39626,7 @@ fn measure_what_a_mutation_batch_snapshot_costs() {
         for key in keys.iter() {
             store.delete_object("bucket", key).unwrap();
         }
-        for (key, value) in store.chunk_service.export_snapshot_unsealed().footprint_audit() {
+        for (key, value) in store.chunk_service.export_snapshot_unsealed().footprint_audit(&[]) {
             if value != 0 {
                 println!("BATCH-AFTER-DELETES objects={objects} {key}={value}");
             }
@@ -39669,7 +39669,7 @@ fn the_published_mutation_copy_figures_are_the_ones_this_tree_produces() {
         store
             .chunk_service
             .export_snapshot_unsealed()
-            .footprint_audit()
+            .footprint_audit(&[])
             .into_iter()
             .collect()
     }
@@ -40771,9 +40771,10 @@ fn every_page_mutation_pays_its_undo_before_mutating() {
             };
             let tail = &text[after_name..];
             let assigned = tail.starts_with('=') && !tail.starts_with("==");
-            let called = tail.strip_prefix('.').and_then(|rest| {
-                step_over_space(after_name + 1).map(|start| &text[start..])
-            });
+            let called = tail
+                .strip_prefix('.')
+                .and_then(|_| step_over_space(after_name + 1))
+                .map(|start| &text[start..]);
             let mutates = assigned
                 || called.is_some_and(|call| mutators.iter().any(|name| call.starts_with(name)));
             if !mutates {
@@ -43843,15 +43844,84 @@ fn the_audit_reports_what_an_open_mutation_batch_holds() {
         quiet_total + held,
         "the total must grow by exactly what the open batch holds"
     );
+    let entries_before_any_write = read(&store, "open_batch.replica_chunks.entries");
     assert!(
-        read(&store, "open_batch.replica_chunks.entries") > 0,
+        entries_before_any_write > 0,
         "the open batch names the replicas' chunks, and reported none"
+    );
+    assert_eq!(
+        read(&store, "open_batch.replica_chunks.append_undo_records"),
+        0,
+        "nothing has been written yet, so no page's undo is a length"
+    );
+
+    // ---- AND WHAT AN APPEND DOES TO THAT, which is the part the figures above
+    // ---- would otherwise hide.
+    //
+    // An append inside an open batch gives the undo's HANDLE on that page up and
+    // leaves a length behind instead -- that is the saving. So the audit has to
+    // report the page leaving `entries` AND arriving in `append_undo_records`, or
+    // a store with a mutation in flight reads as holding nothing at all. Writing
+    // through the replica directly is what the page service's own write path does
+    // to it; `put_object` cannot be used here because it opens a batch of its own.
+    let appended_page = store
+        .chunk_service
+        .replicas
+        .first()
+        .expect("a store has replicas")
+        .pages_local()
+        .keys()
+        .next()
+        .expect("the puts above left pages")
+        .clone();
+    let append_at = store.chunk_service.replicas[0]
+        .pages_local()
+        .get(&appended_page)
+        .expect("the page is there")
+        .data
+        .len() as u64;
+    store.chunk_service.replicas[0]
+        .write_chunk(appended_page.clone(), append_at, &[b'y'; 4096])
+        .unwrap();
+    let entries_after = read(&store, "open_batch.replica_chunks.entries");
+    let records_after = read(&store, "open_batch.replica_chunks.append_undo_records");
+    let record_bytes = read(&store, "open_batch.replica_chunks.append_undo_bytes");
+    println!(
+        "OPENBATCH after_one_append entries={entries_before_any_write} -> {entries_after} \
+         records={records_after} record_bytes={record_bytes}"
+    );
+    assert_eq!(
+        records_after, 1,
+        "one appended page should have an undo that is a length"
+    );
+    assert_eq!(
+        entries_after,
+        entries_before_any_write - 1,
+        "and that page should have left the set the undo still holds"
+    );
+    assert!(
+        record_bytes > 0,
+        "a record costs something, and the audit charged nothing for it"
+    );
+    assert!(
+        record_bytes < 512,
+        "a record is a handful of scalars, not a page: {record_bytes} bytes for one"
     );
 
     store
         .chunk_service
         .abort_mutation_batch("batch-the-audit-can-see")
         .unwrap();
+    assert_eq!(
+        store.chunk_service.replicas[0]
+            .pages_local()
+            .get(&appended_page)
+            .expect("the page survives the abort")
+            .data
+            .len() as u64,
+        append_at,
+        "the abort truncates the appended page back"
+    );
     assert_eq!(
         read(&store, "open_batch.COPIED_bytes"),
         0,
@@ -43998,7 +44068,7 @@ fn the_snapshot_a_mutation_holds_copies_a_fixed_cost_for_every_chunk() {
         store
             .chunk_service
             .export_snapshot_unsealed()
-            .footprint_audit()
+            .footprint_audit(&[])
             .into_iter()
             .collect()
     }

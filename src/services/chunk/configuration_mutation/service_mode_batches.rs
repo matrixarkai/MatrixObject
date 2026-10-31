@@ -127,7 +127,10 @@ impl MatrixReplicaService {
                     Ok(state) => state,
                     Err(shared) => (*shared).clone(),
                 };
-                std::sync::Arc::make_mut(&mut state.data).truncate(undo.payload_len);
+                let payload = std::sync::Arc::make_mut(&mut state.data);
+                payload.truncate(undo.payload_len);
+                // The allocation too: see `payload_capacity`.
+                payload.shrink_to(undo.payload_capacity);
                 state.logical_length = undo.logical_length;
                 state.write_sequence = undo.write_sequence;
                 state.checksum_fnv1a64 = undo.checksum_fnv1a64;
@@ -257,6 +260,7 @@ impl MatrixReplicaService {
             page_id.clone(),
             PageAppendUndo {
                 payload_len: live.data.len(),
+                payload_capacity: live.data.capacity(),
                 logical_length: live.logical_length,
                 write_sequence: live.write_sequence,
                 checksum_fnv1a64: live.checksum_fnv1a64,
@@ -296,7 +300,9 @@ impl MatrixReplicaService {
             return;
         };
         let mut state = (**live).clone();
-        std::sync::Arc::make_mut(&mut state.data).truncate(undo.payload_len);
+        let payload = std::sync::Arc::make_mut(&mut state.data);
+        payload.truncate(undo.payload_len);
+        payload.shrink_to(undo.payload_capacity);
         state.logical_length = undo.logical_length;
         state.write_sequence = undo.write_sequence;
         state.checksum_fnv1a64 = undo.checksum_fnv1a64;
@@ -304,6 +310,45 @@ impl MatrixReplicaService {
         state.ec_parity_fragment = undo.ec_parity_fragment;
         state.ec_fragment_digests = undo.ec_fragment_digests;
         snapshot.pages.insert(page_id.clone(), std::sync::Arc::new(state));
+    }
+
+    /// The undo an open batch on THIS replica holds, for the footprint audit.
+    ///
+    /// The page service's batch used to carry every replica's pages, and the audit
+    /// read them there. Now the page service gives them up and each replica holds
+    /// its own, so the audit has to come here or it reports no pages held at all
+    /// while a mutation is in flight -- which is the one moment it was added to be
+    /// able to see.
+    pub(crate) fn open_mutation_batch_undo(&self) -> Option<&ReplicaServiceSnapshot> {
+        self.active_mutation_batch
+            .as_ref()?
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.as_ref())
+    }
+
+    /// The pages whose undo is a LENGTH, and what those records cost.
+    ///
+    /// Reported apart from the pages the undo still HOLDS, because they are
+    /// different quantities: a record is a handful of scalars and the page it
+    /// describes is not duplicated at all. Adding them together would read as if
+    /// the undo still held every page, which is exactly what stopped being true.
+    pub(crate) fn open_mutation_batch_append_undo(&self) -> (u64, u64) {
+        let Some(batch) = self.active_mutation_batch.as_ref() else {
+            return (0, 0);
+        };
+        let mut bytes = 0u64;
+        for undo in batch.page_append_undo.values() {
+            bytes = bytes
+                .saturating_add(
+                    (std::mem::size_of::<PageId>() + std::mem::size_of::<PageAppendUndo>()) as u64,
+                )
+                .saturating_add(
+                    (undo.discarded_ranges.capacity() as u64)
+                        .saturating_mul(std::mem::size_of::<DataRange>() as u64),
+                );
+        }
+        (batch.page_append_undo.len() as u64, bytes)
     }
 
     pub fn mutation_batch_status(&self) -> ReplicaMutationBatchStatus {

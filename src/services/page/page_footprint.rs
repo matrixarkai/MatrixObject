@@ -422,10 +422,49 @@ impl MatrixChunkService {
     /// deployment's resident bytes peak -- which is precisely while a mutation
     /// is in flight.
     pub(crate) fn open_mutation_batch_footprint_audit(&self) -> Vec<(String, u64)> {
-        match &self.active_mutation_batch {
-            Some(batch) => batch.snapshot.footprint_audit(),
-            None => Vec::new(),
+        let Some(batch) = &self.active_mutation_batch else {
+            return Vec::new();
+        };
+        // THE UNDO IS IN TWO PLACES. This service's snapshot gave up the replicas'
+        // pages when the batch opened, so the audit reads them from each replica's
+        // own undo -- and separately counts the pages whose undo is a LENGTH, which
+        // nothing holds a copy of. Reading only this snapshot would report that an
+        // open batch holds no pages, which is true of its own snapshot and false of
+        // the store.
+        let replica_undos: Vec<Option<&ReplicaServiceSnapshot>> = (0..self.replicas.len())
+            .map(|index| {
+                if batch.replica_indices.contains(&index) {
+                    self.replicas[index].open_mutation_batch_undo()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut append_records = 0u64;
+        let mut append_bytes = 0u64;
+        for index in &batch.replica_indices {
+            if let Some(replica) = self.replicas.get(*index) {
+                let (records, bytes) = replica.open_mutation_batch_append_undo();
+                append_records = append_records.saturating_add(records);
+                append_bytes = append_bytes.saturating_add(bytes);
+            }
         }
+        let mut audit = batch.snapshot.footprint_audit(&replica_undos);
+        audit.push((
+            "batch.replica_chunks.append_undo_records".to_string(),
+            append_records,
+        ));
+        audit.push((
+            "batch.replica_chunks.append_undo_bytes".to_string(),
+            append_bytes,
+        ));
+        // The headline follows the records, which are copied state like the rest.
+        for (name, value) in audit.iter_mut() {
+            if name == "batch.COPIED_bytes" {
+                *value = value.saturating_add(append_bytes);
+            }
+        }
+        audit
     }
 }
 
@@ -434,7 +473,23 @@ impl ChunkServiceSnapshot {
     /// `open_mutation_batch_footprint_audit` so that `Store::footprint_audit`
     /// reports what an open batch holds. Every total that audit reported before
     /// excluded all of it.
-    pub(crate) fn footprint_audit(&self) -> Vec<(String, u64)> {
+    /// Takes each replica's OWN undo, where it stands in for the pages this
+    /// snapshot no longer carries.
+    ///
+    /// `replica_undos` is indexed like `self.replicas`; `None` means this snapshot's
+    /// own page map for that replica is the one to charge, which is the case for
+    /// every snapshot taken for any reason other than a mutation batch's undo --
+    /// those pass `&[]`.
+    ///
+    /// NO ZERO-ARGUMENT WRAPPER, deliberately. One existed and its only callers were
+    /// in the test suite, so a plain `cargo build` saw it as dead while
+    /// `cargo test --lib` saw it as alive. This repository has been bitten by that
+    /// shape before -- see the note in `page_access.rs` -- and `-D warnings` on
+    /// `--all-targets` is what named it.
+    pub(crate) fn footprint_audit(
+        &self,
+        replica_undos: &[Option<&ReplicaServiceSnapshot>],
+    ) -> Vec<(String, u64)> {
         let chunk_receipts = chunk_receipt_maps_bytes(
             &self.pending_allocations,
             &self.allocation_request_receipts,
@@ -487,7 +542,7 @@ impl ChunkServiceSnapshot {
         let mut chunks_shared = 0u64;
         let mut replica_other = 0u64;
         let mut page_count = 0u64;
-        for replica in &self.replicas {
+        for (replica_index, replica) in self.replicas.iter().enumerate() {
             // Seven handles, and the maps behind them are shared with the
             // live service until the batch writes one -- at which point
             // `Arc::make_mut` copies that one map and no other. So the handles
@@ -551,7 +606,14 @@ impl ChunkServiceSnapshot {
                 .saturating_add(std::mem::size_of::<ReplicaServiceSnapshot>() as u64)
                 .saturating_add(replica.checksum.capacity() as u64)
                 .saturating_add(replica.last_partial_reclaim_failure_status.capacity() as u64);
-            for (_, state) in replica.pages.iter() {
+            // The pages the undo for this replica actually holds, which is this
+            // snapshot's own map unless a replica's own batch is holding them.
+            let held_pages = replica_undos
+                .get(replica_index)
+                .copied()
+                .flatten()
+                .map_or(&replica.pages, |undo| &undo.pages);
+            for (_, state) in held_pages.iter() {
                 page_count = page_count.saturating_add(1);
                 // The chunk identity and one handle. The state behind the
                 // handle is named rather than copied, so it is charged below

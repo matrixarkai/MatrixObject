@@ -27,6 +27,15 @@ struct ReplicaMutationBatch {
 struct PageAppendUndo {
     /// Truncate the payload back to this many bytes.
     payload_len: usize,
+    /// And give the allocation back down to this.
+    ///
+    /// `truncate` does not shrink a `Vec`, so without this a rolled-back append
+    /// leaves the payload holding the capacity the refused write grew it to --
+    /// which `a_write_that_fails_part_way_through_its_pages_did_not_happen` and
+    /// `an_append_that_fails_after_mutating_leaves_the_store_unchanged` both see,
+    /// as `replica.data.capacity`. A refused write has to move nothing a reader
+    /// can measure, capacity included.
+    payload_capacity: usize,
     logical_length: u64,
     write_sequence: u64,
     checksum_fnv1a64: u64,

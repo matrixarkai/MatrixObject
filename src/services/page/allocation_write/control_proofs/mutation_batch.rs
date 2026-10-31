@@ -32,11 +32,9 @@ impl MatrixChunkService {
         }
         for index in &replica_indices {
             let replica_batch_id = replica_mutation_batch_id(&batch_id, *index);
-            // `snapshot` above already carries every replica, and the abort below
-            // rebuilds them from it, so the replica needs no second copy.
-            if let Err(err) =
-                self.replicas[*index].begin_mutation_batch_without_undo(replica_batch_id)
-            {
+            // EACH REPLICA OWNS ITS PAGE UNDO, and this service's own copy of its
+            // pages comes out below. See the note on `undo`.
+            if let Err(err) = self.replicas[*index].begin_mutation_batch(replica_batch_id) {
                 // `install_snapshot` clears `active_mutation_batch` itself, and
                 // this batch has not been registered yet, so the snapshot is
                 // still in hand and needs no copy.
@@ -46,11 +44,43 @@ impl MatrixChunkService {
                 return Err(err);
             }
         }
+        // ---------------------------------------------------------------------------
+        // THE UNDO DOES NOT HOLD THE REPLICAS' PAGES, AND THAT IS THE WHOLE POINT
+        // ---------------------------------------------------------------------------
+        //
+        // `export_snapshot_unsealed` above clones each replica's page map, which SHARES
+        // every page's handle. Cheap to take -- and then the next write to any of those
+        // pages goes through `Arc::make_mut` and copies the WHOLE PAGE, payload
+        // included, so that this undo keeps the old bytes. A put is an append, so
+        // filling one page with many puts copied the page once per put: quadratic in the
+        // page size, and 303,599,229 instructions of `memcpy` in a 400-put callgrind
+        // run, 38.8% of it.
+        //
+        // The copy was never needed HERE. Each replica can hold its own undo, and a
+        // replica knows which of its writes are appends -- so its undo for an appended
+        // page is a LENGTH to truncate back to rather than a copy of the page. That is
+        // why the loop above opens each replica's batch WITH its undo, where it used to
+        // skip it on the grounds that this snapshot already carried the pages.
+        //
+        // So this snapshot gives the pages up. It keeps everything else, including each
+        // replica's receipts and counters, and `abort_mutation_batch` fills the page
+        // maps back in from the replicas AFTER they have rolled themselves back -- which
+        // leaves what gets installed byte for byte what this snapshot would have carried.
+        //
+        // ONLY the replicas whose batches were opened above. A replica that was not
+        // writable gets no batch, so it will not roll itself back, and its pages have to
+        // stay here.
+        let mut undo = snapshot;
+        for index in &replica_indices {
+            if let Some(taken) = undo.replicas.get_mut(*index) {
+                taken.pages = BTreeMap::new();
+            }
+        }
         self.active_mutation_batch = Some(ChunkMutationBatch {
             batch_id,
             started_route_commit_index,
             replica_indices,
-            snapshot: Box::new(snapshot),
+            snapshot: Box::new(undo),
         });
         Ok(self.mutation_batch_status())
     }
@@ -102,6 +132,18 @@ impl MatrixChunkService {
         let batch_id = active.batch_id;
         let started_route_commit_index = active.started_route_commit_index;
         let mut rollback = *active.snapshot;
+        // THE REPLICAS ROLL THEMSELVES BACK FIRST, because this snapshot gave up their
+        // pages when the batch opened -- see the note in `begin_mutation_batch`. Each
+        // replica restores its own page map from its own undo, which for an appended
+        // page is a truncation and moves no bytes, and the restored map is then what
+        // goes into the snapshot this service installs.
+        for index in &active.replica_indices {
+            let replica_batch_id = replica_mutation_batch_id(&batch_id, *index);
+            self.replicas[*index].abort_mutation_batch(replica_batch_id)?;
+            if let Some(taken) = rollback.replicas.get_mut(*index) {
+                taken.pages = self.replicas[*index].pages_local().clone();
+            }
+        }
         rollback.seal_checksum();
         self.install_snapshot(rollback)?;
         let mut status = self.mutation_batch_status();
