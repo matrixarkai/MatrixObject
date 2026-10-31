@@ -46434,9 +46434,22 @@ fn every_guard_the_workflow_pins_by_name_exists() {
         .iter()
         .copied()
         .filter(|name| {
-            !compiled
+            // A PINNED FILTER SELECTS A TEST OR A MODULE OF THEM, and this only knew the first.
+            // The workflow runs `cluster::meta_consensus::tests::catalog_batches` and asserts
+            // `4 passed`; `catalog_batches` is a `mod`, so no compiled test ENDS with it -- four
+            // of them contain it -- and this guard called a working filter missing.
+            //
+            // What it is for is that the filter matches something, because `cargo test` exits 0
+            // when it matches nothing. A module filter that selects four tests matches something.
+            // Renaming either the test or the module still matches neither shape and is still
+            // caught, which is the half this check was added to cover.
+            let selects_a_test = compiled
                 .iter()
-                .any(|test| test.ends_with(&format!("::{name}")))
+                .any(|test| test.ends_with(&format!("::{name}")));
+            let selects_a_module = compiled
+                .iter()
+                .any(|test| test.contains(&format!("::{name}::")));
+            !(selects_a_test || selects_a_module)
         })
         .collect();
     assert!(
@@ -46465,14 +46478,63 @@ fn every_guard_the_workflow_pins_by_name_exists() {
     // always error, which is noisy rather than dangerous, but the reverse is worth pinning:
     // the steps rely on a single test passing, so none of them may name a filter that
     // matches more than one test.
-    for name in &pinned {
-        let matches = compiled
+    // The rule was "exactly one test", reasoned from every step grepping `ok. 1 passed`. Not
+    // every step does: the one pinning `catalog_batches` greps `ok. 4 passed`, because that
+    // filter names a module of four. So the invariant is the PAIRING -- a filter selects as many
+    // tests as its own step asserts passed -- which is stronger than a fixed one, since it
+    // catches a filter that grew or lost a test as well as one that matches nothing, and it is
+    // true of a test name and a module alike.
+    let selected = |name: &str| {
+        compiled
             .iter()
-            .filter(|test| test.ends_with(&format!("::{name}")))
-            .count();
+            .filter(|test| {
+                test.ends_with(&format!("::{name}")) || test.contains(&format!("::{name}::"))
+            })
+            .count()
+    };
+    let workflow_lines: Vec<&str> = WORKFLOW.lines().collect();
+    let mut asserted: std::collections::BTreeMap<&str, usize> =
+        std::collections::BTreeMap::new();
+    for (index, line) in workflow_lines.iter().enumerate() {
+        let Some(at) = line.find("tests::") else {
+            continue;
+        };
+        let name = line[at + "tests::".len()..]
+            .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+            .next()
+            .unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        // The step's own check sits within a few lines of the command it checks.
+        for ahead in workflow_lines.iter().skip(index).take(8) {
+            let Some(rest) = ahead.split("test result: ok. ").nth(1) else {
+                continue;
+            };
+            if let Some(count) = rest
+                .split_whitespace()
+                .next()
+                .and_then(|word| word.parse::<usize>().ok())
+            {
+                asserted.insert(name, count);
+                break;
+            }
+        }
+    }
+    // Not vacuous: if the pairing found nothing, the loop below would assert nothing.
+    assert!(
+        asserted.len() >= 20,
+        "only {} pinned guards could be paired with the count their own step greps for, so the \
+         assertion below is proving almost nothing",
+        asserted.len()
+    );
+    for (name, expected) in &asserted {
         assert_eq!(
-            matches, 1,
-            "a pinned guard must name exactly one test, and {name} names {matches}"
+            selected(name),
+            *expected,
+            "the step pinning {name} greps for {expected} passed, and that filter selects {} \
+             test(s) in this build",
+            selected(name)
         );
     }
 }
@@ -46796,30 +46858,86 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     // flagged it: four new steps met the claim -- none of them can run a library test -- while
     // failing a check that only knew the one spelling which used to achieve it. Widened to
     // assert the claim rather than the spelling, because the spelling was never the point.
-    let names_a_library_test = |command: &str| command.contains("tests::");
-    let names_an_integration_test = |command: &str| {
-        // `cargo test ... --test <target> <name> -- --exact`: the word two past `--test` is
-        // the test being named. A `--test <target>` with nothing after it would run every
-        // test in that target, which is not a named test, so it is refused here too.
-        command
-            .split_whitespace()
-            .skip_while(|word| *word != "--test")
-            .nth(2)
-            .is_some_and(|word| !word.starts_with('-') && word != "|")
+    // AND THE SPELLING WAS NOT THE POINT A THIRD TIME. The two shapes above refused nine steps
+    // that all satisfy the claim:
+    //
+    //   * `--lib cluster::chunk_group_route::tests` carries a filter and cannot reach the whole
+    //     suite, but it spells `::tests` rather than `tests::`;
+    //   * `--test chunk_membership_controller` runs one integration target, which the comment on
+    //     the old predicate says "links no library tests at all" -- and which that predicate then
+    //     refused anyway, for having no test named after the target.
+    //
+    // So this asks the claim directly: does the command reach the whole library suite? A `--lib`
+    // run with a filter after it does not. A `--test` target links no library tests, filtered or
+    // not. Anything else -- a bare `cargo test`, `--all-targets` -- builds and runs the suite.
+    // The filter is a POSITIONAL argument, and it is not necessarily the word after `--lib`:
+    // `cargo test --lib --features matrix-raft <name>` puts two flags between them. So walk
+    // cargo's own arguments, skipping flags and the values they take, and stop at the `--` that
+    // hands the rest to the test harness. Whatever positional survives is the filter.
+    let takes_a_value = |flag: &str| {
+        matches!(
+            flag,
+            "--features"
+                | "--test"
+                | "--bin"
+                | "--example"
+                | "--package"
+                | "-p"
+                | "--manifest-path"
+                | "--target"
+                | "--profile"
+                | "--jobs"
+                | "-j"
+        )
     };
+    let has_a_filter = |command: &str| {
+        let mut words = command.split_whitespace().skip_while(|word| *word != "test");
+        words.next();
+        let mut words = words.peekable();
+        while let Some(word) = words.next() {
+            if word == "--" || word == "|" {
+                return false;
+            }
+            if word.starts_with('-') {
+                if takes_a_value(word) {
+                    words.next();
+                }
+                continue;
+            }
+            return true;
+        }
+        false
+    };
+    let runs_the_whole_library_suite = |command: &str| {
+        if command.split_whitespace().any(|word| word == "--test") {
+            // An integration target links no library tests, filtered or not.
+            return false;
+        }
+        if !command.split_whitespace().any(|word| word == "--lib") {
+            // Neither `--lib` nor `--test`: a bare `cargo test` or `--all-targets` builds and
+            // runs the library suite along with everything else.
+            return true;
+        }
+        !has_a_filter(command)
+    };
+    let filters_a_library_run = |command: &str| {
+        command.split_whitespace().any(|word| word == "--lib")
+            && !runs_the_whole_library_suite(command)
+    };
+    let uses_an_integration_target =
+        |command: &str| command.split_whitespace().any(|word| word == "--test");
     let unfiltered: Vec<&String> = joined
         .iter()
         .filter(is_command)
         .filter(|command| {
-            command.contains("cargo test")
-                && !names_a_library_test(command)
-                && !names_an_integration_test(command)
+            command.contains("cargo test") && runs_the_whole_library_suite(command)
         })
         .collect();
     assert!(
         unfiltered.is_empty(),
-        "every cargo test in the workflow should name one test, either with a `tests::` \
-         filter or as a named test of a `--test` target, and these do neither: {unfiltered:?}"
+        "every cargo test in the workflow must stop short of the whole library suite, by \
+         filtering a `--lib` run or by running a `--test` target, and these do neither: \
+         {unfiltered:?}"
     );
     // NOT VACUOUS: if the join produced nothing, the filter above would find nothing either.
     let test_commands = joined
@@ -46837,24 +46955,24 @@ fn the_readme_describes_the_continuous_integration_it_has() {
     let library_filtered = joined
         .iter()
         .filter(is_command)
-        .filter(|command| command.contains("cargo test") && names_a_library_test(command))
+        .filter(|command| command.contains("cargo test") && filters_a_library_run(command))
         .count();
     let integration_named = joined
         .iter()
         .filter(is_command)
         .filter(|command| {
-            command.contains("cargo test") && names_an_integration_test(command)
+            command.contains("cargo test") && uses_an_integration_target(command)
         })
         .count();
     assert!(
         library_filtered >= 20,
-        "only {library_filtered} steps name a library test, so the `tests::` clause is not \
-         carrying the weight this check thinks it is"
+        "only {library_filtered} steps run a filtered `--lib`, so that clause is not carrying \
+         the weight this check thinks it is"
     );
     assert!(
         integration_named >= 1,
-        "no step names a test of a `--test` target, so the clause admitting that shape is \
-         admitting nothing and could be removed without failing anything"
+        "no step runs a `--test` target, so the clause admitting that shape is admitting \
+         nothing and could be removed without failing anything"
     );
 
     // 4. When it runs.
