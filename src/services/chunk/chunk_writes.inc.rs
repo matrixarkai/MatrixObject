@@ -23,6 +23,15 @@ impl MatrixReplicaService {
             now_millis(),
         )?;
         let cache_chunk_id = page_id.clone();
+        let end_index = usize::try_from(end).map_err(|_| {
+            ObjectError::InvalidArgument("chunk write range exceeds memory size".to_string())
+        })?;
+        let start_index = usize::try_from(offset).map_err(|_| {
+            ObjectError::InvalidArgument("chunk write offset exceeds memory size".to_string())
+        })?;
+        // BEFORE THE PAGE IS TAKEN, not after: this decides how many holders it has.
+        // An append leaves the undo a length, so `make_mut` below copies nothing.
+        self.keep_page_undo_cheap_for_write(&page_id, start_index);
         // `make_mut` copies this one chunk's state if a snapshot still names
         // it, so the copy is per chunk WRITTEN rather than per chunk held.
         let chunk = std::sync::Arc::make_mut(
@@ -30,12 +39,6 @@ impl MatrixReplicaService {
                 .entry(page_id)
                 .or_insert_with(|| std::sync::Arc::new(PageState::empty())),
         );
-        let end_index = usize::try_from(end).map_err(|_| {
-            ObjectError::InvalidArgument("chunk write range exceeds memory size".to_string())
-        })?;
-        let start_index = usize::try_from(offset).map_err(|_| {
-            ObjectError::InvalidArgument("chunk write offset exceeds memory size".to_string())
-        })?;
         // Captured before the payload grows, so the checksum below can carry on from the hash
         // of the bytes that were already here instead of re-reading them.
         let bytes_before_write = chunk.data.len();
@@ -300,6 +303,15 @@ impl MatrixReplicaService {
         let coalesced_write_sequence_delta = coalesced.len() as u64;
         let mut invalidations = Vec::with_capacity(coalesced.len());
         let cache_chunk_id = page_id.clone();
+        // `coalesced` is sorted by offset, so its first range is the lowest index
+        // this batch touches -- which is what decides whether the whole thing is an
+        // append. See `keep_page_undo_cheap_for_write`.
+        let lowest_written_index = coalesced
+            .first()
+            .map(|(offset, _)| *offset)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .unwrap_or(0);
+        self.keep_page_undo_cheap_for_write(&page_id, lowest_written_index);
         {
             let chunk = std::sync::Arc::make_mut(
                 self.pages

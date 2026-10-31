@@ -40137,12 +40137,18 @@ fn only_the_first_write_in_a_batch_should_copy_its_page() {
 }
 
 #[test]
-fn an_open_batch_makes_every_write_copy_the_whole_page() {
+fn an_open_batch_makes_an_in_place_write_copy_the_whole_page() {
     // A write takes the page state mutably through `Arc::make_mut`, and the
     // comment there accounts for copying `PageState`. But `PageState.data` is
     // itself an `Arc<Vec<u8>>`, so cloning the state SHARES the data, and the
     // line that writes the bytes has to take that mutably too -- copying the
     // whole page.
+    //
+    // RENAMED FROM `..._every_write_...`, because every one of its three cases
+    // writes IN PLACE and an append no longer copies at all -- see
+    // `an_append_inside_a_batch_writes_in_place_and_still_rolls_back`. The name
+    // said more than the body checked, and the body is the part worth keeping:
+    // an in-place write has nothing a length can undo, so it still pays.
     //
     // Measured on the benchmark, a put allocates 512 bytes for every object
     // already stored, per replica, and the largest single allocation in a put
@@ -40232,6 +40238,587 @@ fn an_open_batch_makes_every_write_copy_the_whole_page() {
         before_unsnapshotted, after_unsnapshotted,
         "a batch that skips the snapshot should leave the write in place, which \
          is the saving its documentation describes"
+    );
+}
+
+/// A page state that shares NOTHING with the service it came from.
+///
+/// `PageState::clone` copies the struct and ARC-CLONES the payload, so a test that
+/// keeps one around raises the payload's holder count -- and the append fast path
+/// refuses to work on a payload with more than one holder, by design. A test that
+/// captured a page with `clone()` and then asserted the append went in place was
+/// therefore asserting against its own fixture. Everything below captures with this.
+#[cfg(test)]
+fn page_state_owning_its_bytes(service: &MatrixReplicaService, page: &PageId) -> PageState {
+    let live = service
+        .pages_local()
+        .get(page)
+        .expect("the page should exist");
+    PageState {
+        logical_length: live.logical_length,
+        write_sequence: live.write_sequence,
+        checksum_fnv1a64: live.checksum_fnv1a64,
+        data: std::sync::Arc::new(live.data.as_ref().clone()),
+        ec_parity_fragment: live
+            .ec_parity_fragment
+            .as_ref()
+            .map(|fragment| std::sync::Arc::new(fragment.as_ref().clone())),
+        ec_fragment_digests: live
+            .ec_fragment_digests
+            .as_ref()
+            .map(|digests| std::sync::Arc::new(digests.as_ref().clone())),
+        discarded_ranges: live.discarded_ranges.clone(),
+    }
+}
+
+#[test]
+fn an_append_inside_a_batch_writes_in_place_and_still_rolls_back() {
+    // THE FIX THIS PINS. `begin_mutation_batch` shares every page's handle with its
+    // undo, so the next write to a page goes through `Arc::make_mut` and copies the
+    // whole payload. A put is an append, and filling one page with many puts copied
+    // the page once per put -- 294,202,726 instructions, 24.0% of a 400-put
+    // callgrind run.
+    //
+    // An append's undo does not need a copy: nothing below the old end changes, so
+    // the undo is a LENGTH to truncate back to plus the scalars the write advances.
+    // Both halves have to hold at once, which is why they are one test: the write
+    // goes in place (pointer identity, because a byte comparison cannot tell a copy
+    // from a share), AND the abort still puts the page back exactly.
+    fn data_pointer(service: &MatrixReplicaService, page: &PageId) -> *const Vec<u8> {
+        std::sync::Arc::as_ptr(
+            &service
+                .pages_local()
+                .get(page)
+                .expect("the page should exist after a write")
+                .data,
+        )
+    }
+
+    let page = PageId {
+        chunk_id: ChunkId::new(0, 41).unwrap(),
+        page_index: 0,
+    };
+    let mut service = MatrixReplicaService::new();
+    service.write_chunk(page.clone(), 0, &[b'a'; 4096]).unwrap();
+    let before = page_state_owning_its_bytes(&service, &page);
+    let pointer_before = data_pointer(&service, &page);
+
+    service.begin_mutation_batch("batch-append-in-place").unwrap();
+    // Three appends, so the second and third also have to stay in place with a
+    // record already standing.
+    service.write_chunk(page.clone(), 4096, &[b'b'; 1024]).unwrap();
+    let after_first = data_pointer(&service, &page);
+    service.write_chunk(page.clone(), 5120, &[b'c'; 1024]).unwrap();
+    service.write_chunk(page.clone(), 6144, &[b'd'; 1024]).unwrap();
+    let after_third = data_pointer(&service, &page);
+    assert_eq!(
+        service.pages_local().get(&page).unwrap().data.len(),
+        7168,
+        "the three appends should have landed before the abort"
+    );
+    println!(
+        "APPENDINPLACE moved_on_first={} moved_after={}",
+        pointer_before != after_first,
+        after_first != after_third
+    );
+    assert_eq!(
+        pointer_before, after_first,
+        "an append inside a batch must write in place: its undo is the old length, \
+         not a copy of the old bytes"
+    );
+    assert_eq!(
+        after_first, after_third,
+        "and so must the appends after it"
+    );
+
+    service.abort_mutation_batch("batch-append-in-place").unwrap();
+    let restored = page_state_owning_its_bytes(&service, &page);
+    println!(
+        "APPENDINPLACE restored_len={} restored={}",
+        restored.data.len(),
+        restored == before
+    );
+    assert_eq!(
+        restored, before,
+        "truncating back has to restore the page exactly, or the saving above is a bug"
+    );
+}
+
+#[test]
+fn an_append_stays_a_copy_when_another_snapshot_holds_the_page() {
+    // The cheap undo is sound only while the batch's undo is the ONLY other holder
+    // of the page. A checkpoint taken while a batch is open is a second holder, and
+    // it keeps the page BY HANDLE -- so an append that landed in place would rewrite
+    // bytes that checkpoint still claims, and a checkpoint written out afterwards
+    // would carry a page that never existed.
+    //
+    // The two holder counts in `keep_page_undo_cheap_for_write` are what refuse
+    // that. They are easy to loosen by accident -- `!= 2` to `< 2`, say -- and
+    // nothing else in the suite would notice, so this is here to.
+    let page = PageId {
+        chunk_id: ChunkId::new(0, 44).unwrap(),
+        page_index: 0,
+    };
+    let mut service = MatrixReplicaService::new();
+    service.write_chunk(page.clone(), 0, &[b'a'; 4096]).unwrap();
+    service
+        .begin_mutation_batch("batch-and-a-checkpoint")
+        .unwrap();
+    let checkpoint = service.export_snapshot_unsealed();
+    assert!(
+        std::sync::Arc::ptr_eq(
+            checkpoint.pages.get(&page).expect("the checkpoint holds the page"),
+            service.pages_local().get(&page).expect("so does the service"),
+        ),
+        "the checkpoint should NAME the live page rather than copy it, or this test \
+         is not about a second holder"
+    );
+
+    let pointer_before =
+        std::sync::Arc::as_ptr(&service.pages_local().get(&page).unwrap().data);
+    // An APPEND -- exactly the shape that takes the cheap undo when the undo is
+    // alone, so only the holder count can be refusing it here.
+    service.write_chunk(page.clone(), 4096, &[b'b'; 1024]).unwrap();
+    let pointer_after = std::sync::Arc::as_ptr(&service.pages_local().get(&page).unwrap().data);
+    let held = checkpoint.pages.get(&page).expect("the checkpoint still holds it");
+    println!(
+        "APPENDTHIRDHOLDER copied={} checkpoint_len={} checkpoint_intact={}",
+        pointer_before != pointer_after,
+        held.data.len(),
+        held.data.iter().all(|byte| *byte == b'a')
+    );
+    assert_ne!(
+        pointer_before, pointer_after,
+        "with a checkpoint holding the page as well, the append must copy: landing \
+         in place would rewrite bytes the checkpoint still claims"
+    );
+    assert_eq!(held.data.len(), 4096, "the checkpoint's page must not have grown");
+    assert!(
+        held.data.iter().all(|byte| *byte == b'a'),
+        "the checkpoint's page must still hold what it held when it was taken"
+    );
+
+    // And the batch still rolls back to the same page.
+    service
+        .abort_mutation_batch("batch-and-a-checkpoint")
+        .unwrap();
+    let restored = service.pages_local().get(&page).unwrap();
+    assert_eq!(restored.data.len(), 4096);
+    assert!(restored.data.iter().all(|byte| *byte == b'a'));
+}
+
+#[test]
+fn an_append_undo_restores_every_field_a_write_changes() {
+    // A length-based undo is only correct if it covers EVERY field the write moves.
+    // `write_chunk` moves seven: the payload, `logical_length`, `write_sequence`,
+    // `checksum_fnv1a64`, `discarded_ranges`, and the two EC sidecars. Five are in
+    // the record; the sidecars are excluded by the condition that allows the record
+    // at all, which this also exercises.
+    //
+    // Compared FIELD BY FIELD rather than with one `assert_eq!` on the whole state,
+    // so a field added later and left out of the record is named by the failure
+    // instead of being one line of a struct diff. The final whole-state comparison
+    // is what fails if a field is added that this test does not know about.
+    let page = PageId {
+        chunk_id: ChunkId::new(0, 42).unwrap(),
+        page_index: 0,
+    };
+    let mut service = MatrixReplicaService::new();
+    service.write_chunk(page.clone(), 0, &[b'a'; 8192]).unwrap();
+    // A discarded range, so `discarded_ranges` is not vacuously equal: the append
+    // below lands past it, and `subtract_range` runs over a non-empty list.
+    service.discard_chunk(&page, 1024, 512).unwrap();
+    let before = page_state_owning_its_bytes(&service, &page);
+    assert!(
+        !before.discarded_ranges.is_empty(),
+        "this test needs a discarded range to compare, and has none"
+    );
+    // A sidecar PRESENT, deliberately: a replica with no peers keeps one, the
+    // write replaces it, and the record has to carry the old handle back. A fixture
+    // without one would leave that leg of the record unexercised.
+    assert!(
+        before.ec_parity_fragment.is_some() && before.ec_fragment_digests.is_some(),
+        "a replica with no peers keeps a sidecar, and this fixture has none"
+    );
+
+    service.begin_mutation_batch("batch-every-field").unwrap();
+    let pointer_before = std::sync::Arc::as_ptr(&service.pages_local().get(&page).unwrap().data);
+    service.write_chunk(page.clone(), 8192, &[b'z'; 777]).unwrap();
+    // Not vacuous: if the payload MOVED, this exercised the old whole-copy undo
+    // and says nothing about the record.
+    assert_eq!(
+        pointer_before,
+        std::sync::Arc::as_ptr(&service.pages_local().get(&page).unwrap().data),
+        "this test is about the length-based record, and the append copied instead"
+    );
+    let during = page_state_owning_its_bytes(&service, &page);
+    // Not vacuous: each field the loop below checks has to have MOVED.
+    assert_ne!(during.data.len(), before.data.len(), "the payload should have grown");
+    assert_ne!(
+        during.logical_length, before.logical_length,
+        "the logical length should have moved"
+    );
+    assert_ne!(
+        during.write_sequence, before.write_sequence,
+        "the write sequence should have moved"
+    );
+    assert_ne!(
+        during.checksum_fnv1a64, before.checksum_fnv1a64,
+        "the checksum should have moved"
+    );
+
+    service.abort_mutation_batch("batch-every-field").unwrap();
+    let after = page_state_owning_its_bytes(&service, &page);
+    println!(
+        "APPENDUNDOFIELDS len={} logical={} sequence={} checksum={} discarded={}",
+        after.data.len() == before.data.len(),
+        after.logical_length == before.logical_length,
+        after.write_sequence == before.write_sequence,
+        after.checksum_fnv1a64 == before.checksum_fnv1a64,
+        after.discarded_ranges == before.discarded_ranges,
+    );
+    assert_eq!(after.data.as_ref(), before.data.as_ref(), "the payload bytes");
+    assert_eq!(after.logical_length, before.logical_length, "logical_length");
+    assert_eq!(after.write_sequence, before.write_sequence, "write_sequence");
+    assert_eq!(
+        after.checksum_fnv1a64, before.checksum_fnv1a64,
+        "checksum_fnv1a64"
+    );
+    assert_eq!(
+        after.discarded_ranges, before.discarded_ranges,
+        "discarded_ranges -- the append subtracts the range it covers, and the undo \
+         has to put the list back"
+    );
+    assert_eq!(after.ec_parity_fragment, before.ec_parity_fragment, "the sidecar");
+    assert_eq!(
+        after.ec_fragment_digests, before.ec_fragment_digests,
+        "the sidecar digests"
+    );
+    // The catch-all: a field added to `PageState` that a write touches and the
+    // record leaves out fails here even if the list above was never extended.
+    assert_eq!(
+        after, before,
+        "the whole page state has to come back, field for field"
+    );
+}
+
+#[test]
+fn every_mutation_that_is_not_an_append_pays_for_the_whole_pre_image() {
+    // The record above describes AN APPEND AND NOTHING ELSE. Anything else that
+    // happens to the same page inside the same batch has to turn the record back
+    // into a full pre-image first, or the abort restores a page that was never
+    // there.
+    //
+    // THIS IS THE HALF THAT CAN BREAK SILENTLY. A site that mutates a page and
+    // forgets to call `materialise_page_undo` loses nothing visible until something
+    // aborts, so every mutation kind is exercised here against the one answer that
+    // matters: after the abort the page is byte for byte what it was before the
+    // batch. `every_page_mutation_pays_its_undo_before_mutating` is the companion
+    // that refuses a NEW site; this one refuses a broken one.
+    //
+    // Each case appends FIRST, so a record is standing when the mutation arrives.
+    fn pinned(
+        name: &str,
+        mutate: &dyn Fn(&mut MatrixReplicaService, &PageId),
+        expect_page_present: bool,
+    ) {
+        let page = PageId {
+            chunk_id: ChunkId::new(0, 43).unwrap(),
+            page_index: 0,
+        };
+        let mut service = MatrixReplicaService::new();
+        service.write_chunk(page.clone(), 0, &[b'a'; 4096]).unwrap();
+        service.discard_chunk(&page, 2048, 256).unwrap();
+        let before = page_state_owning_its_bytes(&service, &page);
+
+        service.begin_mutation_batch("batch-not-an-append").unwrap();
+        let pointer_before =
+            std::sync::Arc::as_ptr(&service.pages_local().get(&page).unwrap().data);
+        service.write_chunk(page.clone(), 4096, &[b'b'; 1024]).unwrap();
+        // THE PREMISE OF EVERY CASE: the append took the cheap undo, so what the
+        // mutation below has to deal with is a record and not a pre-image. Without
+        // this each case would pass just as happily against the old whole-copy undo.
+        assert_eq!(
+            pointer_before,
+            std::sync::Arc::as_ptr(&service.pages_local().get(&page).unwrap().data),
+            "{name}: the append should have gone in place, leaving a record for the \
+             mutation to deal with, and it copied the page instead"
+        );
+        mutate(&mut service, &page);
+        service.abort_mutation_batch("batch-not-an-append").unwrap();
+
+        let after = service
+            .pages_local()
+            .get(&page)
+            .is_some()
+            .then(|| page_state_owning_its_bytes(&service, &page));
+        println!(
+            "NOTANAPPEND {name} present={} restored={}",
+            after.is_some(),
+            after.as_ref() == Some(&before)
+        );
+        assert_eq!(
+            after.is_some(),
+            expect_page_present,
+            "{name}: the abort should leave the page {}",
+            if expect_page_present { "in place" } else { "absent" }
+        );
+        if let Some(after) = after {
+            assert_eq!(
+                after, before,
+                "{name}: the abort has to restore the page the batch started from"
+            );
+        }
+    }
+
+    // A write reaching UNDER the appended bytes: the record would truncate them
+    // away, which cannot restore what this overwrote.
+    pinned(
+        "a write under the recorded length",
+        &|service, page| {
+            service.write_chunk(page.clone(), 0, &[b'x'; 64]).unwrap();
+        },
+        true,
+    );
+    pinned(
+        "a discard",
+        &|service, page| {
+            service.discard_chunk(page, 100, 64).unwrap();
+        },
+        true,
+    );
+    pinned(
+        "a batched discard",
+        &|service, page| {
+            service
+                .discard_chunk_ranges(
+                    page,
+                    vec![
+                        DataRange { offset: 200, length: 32 },
+                        DataRange { offset: 300, length: 32 },
+                    ],
+                )
+                .unwrap();
+        },
+        true,
+    );
+    pinned(
+        "a reclaim",
+        &|service, _page| {
+            // Thresholds low enough that the discarded range above qualifies.
+            let report = service.reclaim_chunks_with_limits(8, u64::MAX, 1, 0, 64, u64::MAX);
+            let _ = report;
+        },
+        true,
+    );
+    pinned(
+        "a state install",
+        &|service, page| {
+            let mut state = PageState::empty();
+            state.data = std::sync::Arc::new(vec![b'q'; 2048]);
+            state.logical_length = 2048;
+            state.checksum_fnv1a64 = fnv1a64(&state.data);
+            service.install_chunk_state(page.clone(), state).unwrap();
+        },
+        true,
+    );
+    pinned(
+        "a payload corruption",
+        &|service, page| {
+            service.corrupt_chunk_payload_for_repair(page).unwrap();
+        },
+        true,
+    );
+    // The page itself going is the case a length cannot describe at all.
+    pinned(
+        "the page removed for repair",
+        &|service, page| {
+            assert!(service.remove_chunk_for_repair(page));
+        },
+        true,
+    );
+}
+
+#[test]
+fn every_page_mutation_pays_its_undo_before_mutating() {
+    // THE SOURCE-SCAN HALF. The append undo is only safe because every site that
+    // changes a page in a way a truncation cannot undo calls
+    // `materialise_page_undo` first. A site added later that does not is a
+    // correctness bug with no failing test of its own -- nothing goes red until
+    // something aborts, which the suite does only where it was written to.
+    //
+    // So the sites are enumerated from the source. Each line that reaches a page
+    // mutably -- inserting, removing, taking it with `get_mut` or `entry`, or
+    // `make_mut` on a page handle -- has to be either the append fast path, which
+    // calls `keep_page_undo_cheap_for_write`, or within a few lines after a
+    // `materialise_page_undo` call. A new site is neither, and fails here.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/services/chunk");
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(&directory).expect("the chunk service directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|name| name.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+    assert!(
+        files.len() > 10,
+        "this guard should be reading the whole chunk service, and found {} files",
+        files.len()
+    );
+
+    // `self.pages` reached in a way that can change it. A read -- `get`, `len`,
+    // `iter`, `values`, `range`, `is_empty`, `contains_key` -- cannot.
+    //
+    // MATCHED ACROSS LINES, not line by line, because this code is written fluently:
+    //
+    //     let chunk = self
+    //         .pages
+    //         .get_mut(page_id)
+    //
+    // is one expression over three lines, and the string `self.pages` does not occur
+    // in it at all. Two versions of this guard got that wrong -- a line-by-line
+    // needle found 6 sites and a `self.pages` needle found 8, where there are 12,
+    // and both would have approved a new multi-line site without ever seeing it. So
+    // the scan walks the token sequence `self` `.` `pages` `.` `<method>` with
+    // whitespace allowed between the tokens, which is what the language means.
+    //
+    // It REFUSES to step over a `//` while doing that, so a mention of this shape in
+    // a comment cannot be read as code.
+    let mutators = [
+        "insert(", "remove(", "get_mut(", "entry(", "retain(", "clear(",
+        "values_mut(", "iter_mut(", "append(", "split_off(", "pop_first(",
+        "pop_last(", "first_entry(", "last_entry(", "extend(",
+    ];
+    let mut sites = 0usize;
+    let mut reads = 0usize;
+    let mut unpaid: Vec<String> = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("a source file");
+        let lines: Vec<&str> = text.lines().collect();
+        // The two places that OWN the undo and may move pages without paying: the
+        // helpers themselves, and installing a snapshot, which replaces the whole
+        // map and clears the batch with it.
+        let owns_the_undo = path.ends_with("service_mode_batches.rs")
+            || path.ends_with("chunk_snapshots.inc.rs");
+        // `self` ... `.` ... `pages`, then whatever follows.
+        let step_over_space = |from: usize| -> Option<usize> {
+            let mut cursor = from;
+            let gap_start = cursor;
+            while cursor < text.len()
+                && text[cursor..]
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_whitespace())
+            {
+                cursor += text[cursor..].chars().next().map_or(1, char::len_utf8);
+            }
+            if text[gap_start..cursor].contains("//") {
+                return None;
+            }
+            Some(cursor)
+        };
+        let mut search = 0usize;
+        while let Some(found) = text[search..].find("self") {
+            let at = search + found;
+            search = at + "self".len();
+            if at > 0
+                && text[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|character| character.is_alphanumeric() || character == '_')
+            {
+                continue;
+            }
+            let Some(mut cursor) = step_over_space(at + "self".len()) else {
+                continue;
+            };
+            if !text[cursor..].starts_with('.') {
+                continue;
+            }
+            let Some(next) = step_over_space(cursor + 1) else {
+                continue;
+            };
+            cursor = next;
+            if !text[cursor..].starts_with("pages") {
+                continue;
+            }
+            cursor += "pages".len();
+            if text[cursor..]
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_alphanumeric() || character == '_')
+            {
+                continue;
+            }
+            let Some(after_name) = step_over_space(cursor) else {
+                continue;
+            };
+            let tail = &text[after_name..];
+            let assigned = tail.starts_with('=') && !tail.starts_with("==");
+            let called = tail.strip_prefix('.').and_then(|rest| {
+                step_over_space(after_name + 1).map(|start| &text[start..])
+            });
+            let mutates = assigned
+                || called.is_some_and(|call| mutators.iter().any(|name| call.starts_with(name)));
+            if !mutates {
+                reads += 1;
+                continue;
+            }
+            let offset = at;
+            let line = text[..offset].matches('\n').count();
+            if lines[line].trim_start().starts_with("//") {
+                continue;
+            }
+            sites += 1;
+            if owns_the_undo {
+                continue;
+            }
+            // Look back a short way for the call that pays, or for the fast path.
+            let first = line.saturating_sub(14);
+            let paid = lines[first..=line].iter().any(|earlier| {
+                earlier.contains("materialise_page_undo(")
+                    || earlier.contains("keep_page_undo_cheap_for_write(")
+            });
+            if !paid {
+                unpaid.push(format!(
+                    "{}:{}: {}",
+                    path.strip_prefix(&root).unwrap_or(path).display(),
+                    line + 1,
+                    lines[line].trim_start()
+                ));
+            }
+        }
+    }
+    println!(
+        "PAGEUNDOSITES scanned_files={} mutating_sites={} reads={}",
+        files.len(),
+        sites,
+        reads
+    );
+    // Not vacuous, twice over: if the needles stopped matching nothing would be
+    // checked, and if they matched EVERYTHING the reads would have collapsed to
+    // zero and the paid-for check below would be about reads rather than writes.
+    assert!(
+        sites >= 12,
+        "the chunk service should have at least 12 sites that change a page, and \
+         this scan found {sites} -- the needles have probably gone stale"
+    );
+    assert!(
+        reads > sites,
+        "most reaches for the page map are reads, and this scan counted {reads} \
+         reads against {sites} mutations, which says the classifier is wrong"
+    );
+    assert!(
+        unpaid.is_empty(),
+        "these sites change a page without first turning this batch's append undo \
+         back into a full pre-image, so an abort after them restores a page that \
+         was never there -- call `materialise_page_undo` before the mutation:\n{}",
+        unpaid.join("\n")
     );
 }
 

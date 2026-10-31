@@ -58,6 +58,8 @@ impl MatrixReplicaService {
             ));
         }
         self.admit_mutation_qos(0, 0, 1, length, now_millis())?;
+        // NOT AN APPEND, so the batch undo cannot be a length here.
+        self.materialise_page_undo(page_id);
         let chunk = self
             .pages
             .get_mut(page_id)
@@ -330,6 +332,8 @@ impl MatrixReplicaService {
         let request_checksum = chunk_batch_discard_nonempty_request_checksum(page_id, ranges);
         let merged = merge_range_slice(ranges);
         self.admit_mutation_qos(0, 0, merged.len() as u64, stats.input_bytes, now_millis())?;
+        // NOT AN APPEND, so the batch undo cannot be a length here.
+        self.materialise_page_undo(page_id);
         let chunk = self
             .pages
             .get_mut(page_id)

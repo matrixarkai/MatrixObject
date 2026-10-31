@@ -17,6 +17,8 @@ impl MatrixReplicaService {
         validate_chunk_state(&state)?;
         self.ensure_capacity_for_chunk_len(&page_id, state.data.len() as u64)?;
         self.invalidate_chunk_cache(&page_id, 0, state.logical_length);
+        // NOT AN APPEND, so the batch undo cannot be a length here.
+        self.materialise_page_undo(&page_id);
         self.pages.insert(page_id, std::sync::Arc::new(state));
         Ok(())
     }
@@ -83,6 +85,8 @@ impl MatrixReplicaService {
         page_id: &PageId,
     ) -> Result<bool, ObjectError> {
         self.ensure_writable()?;
+        // NOT AN APPEND, so the batch undo cannot be a length here.
+        self.materialise_page_undo(page_id);
         let chunk = self
             .pages
             .get_mut(page_id)

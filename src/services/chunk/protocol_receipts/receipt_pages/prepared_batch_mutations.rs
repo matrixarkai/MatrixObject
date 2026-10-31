@@ -9,6 +9,37 @@ struct ReplicaMutationBatch {
     /// its own batch snapshot already carries every replica, and its abort
     /// rebuilds the replicas from it, so a second copy here is never read.
     snapshot: Option<Box<ReplicaServiceSnapshot>>,
+    /// Pages whose undo is a LENGTH rather than a copy of their old state.
+    ///
+    /// A page listed here is NOT in `snapshot.pages`: the undo gave up its
+    /// handle so that the append could land in the live payload instead of in a
+    /// copy of it. `MatrixReplicaService::materialise_page_undo` puts it back
+    /// the moment anything happens to the page that a truncation cannot undo,
+    /// and `abort_mutation_batch` rebuilds it by truncating.
+    page_append_undo: BTreeMap<PageId, PageAppendUndo>,
+}
+
+/// What it takes to undo an append, when an append is all that happened.
+///
+/// Every field a write changes is either here or provably unchanged -- see the
+/// note above `MatrixReplicaService::keep_page_undo_cheap_for_write`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PageAppendUndo {
+    /// Truncate the payload back to this many bytes.
+    payload_len: usize,
+    logical_length: u64,
+    write_sequence: u64,
+    checksum_fnv1a64: u64,
+    discarded_ranges: Vec<DataRange>,
+    /// The sidecar as it was, by HANDLE and not by copy.
+    ///
+    /// `refresh_chunk_ec_sidecars` REPLACES both of these rather than writing
+    /// through them, so holding the old handles copies nothing and keeps nothing
+    /// alive that the page would otherwise have dropped. That is what lets the
+    /// fast path apply to a replica that keeps a sidecar -- a single-replica
+    /// store -- instead of only to one that has peers.
+    ec_parity_fragment: Option<std::sync::Arc<Vec<u8>>>,
+    ec_fragment_digests: Option<std::sync::Arc<Vec<u64>>>,
 }
 
 pub struct ReplicaMutationBatchStatus {

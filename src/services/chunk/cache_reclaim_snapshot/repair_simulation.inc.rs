@@ -3,6 +3,9 @@
 impl MatrixReplicaService {
     pub fn remove_chunk_for_repair(&mut self, page_id: &PageId) -> bool {
         self.invalidate_chunk_cache(page_id, 0, u64::MAX);
+        // THE PAGE ITSELF GOES, so the batch undo has to hold its whole pre-image
+        // before it does -- a length cannot describe a page that is not there.
+        self.materialise_page_undo(page_id);
         self.pages.remove(page_id).is_some()
     }
 
@@ -10,6 +13,9 @@ impl MatrixReplicaService {
         &mut self,
         page_id: &PageId,
     ) -> Result<(), ObjectError> {
+        // NOT AN APPEND -- it damages byte zero -- so the batch undo cannot be a
+        // length here.
+        self.materialise_page_undo(page_id);
         let chunk = self
             .pages
             .get_mut(page_id)
