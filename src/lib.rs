@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CHUNK_READ_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// Granularity at which a chunk payload is integrity-checked on read.
-const CHUNK_VALIDATION_PAGE_BYTES: usize = 64 * 1024;
+const CHUNK_VALIDATION_PAGE_BYTES: usize = 4 * 1024;
 /// Fewest data shards a chunk payload is split into for its XOR sidecar.
 const CHUNK_EC_MIN_DATA_FRAGMENTS: usize = 2;
 /// Most data shards, bounding how many recovery hypotheses a repair tries.
