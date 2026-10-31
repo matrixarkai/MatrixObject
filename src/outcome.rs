@@ -117,7 +117,7 @@ impl PageOutcome {
             data_length: after.data.len() as u64,
             physical_deltas: vec![0; 4],
         };
-        result.to_payload()?;
+        result.checked_encoded_len()?;
         Ok(result)
     }
     pub fn counters(service: &MatrixReplicaService) -> [u64; 4] {
@@ -136,11 +136,17 @@ impl PageOutcome {
             .collect();
         self
     }
-    pub fn to_payload(&self) -> Result<Vec<u8>, ObjectError> {
-        if self.encoded_len() > MAX_OUTCOME_BYTES - 4 {
+    fn checked_encoded_len(&self) -> Result<usize, ObjectError> {
+        let length = self.encoded_len();
+        if length > MAX_OUTCOME_BYTES - OUTCOME_MAGIC.len() {
             return Err(invalid("page outcome exceeds size limit"));
         }
-        let mut bytes = OUTCOME_MAGIC.to_vec();
+        Ok(length)
+    }
+    pub fn to_payload(&self) -> Result<Vec<u8>, ObjectError> {
+        let length = self.checked_encoded_len()?;
+        let mut bytes = Vec::with_capacity(OUTCOME_MAGIC.len() + length);
+        bytes.extend_from_slice(OUTCOME_MAGIC);
         self.encode(&mut bytes)
             .map_err(|_| invalid("page outcome encoding failed"))?;
         Ok(bytes)

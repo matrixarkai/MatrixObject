@@ -48,6 +48,13 @@ An individually oversized outcome retains the existing proposal-size refusal.
 Every admitted request receives its own committed result; admission alone sends
 no success reply, and uncertain writes are never automatically replayed.
 
+Page outcome construction checks the exact protobuf length without serializing
+a temporary payload. Final encoding allocates the complete envelope once. This
+preserves the envelope size limit and wire bytes; canonical decoding still
+checks the encoded representation. `outcome_encoding_cost` checks allocation
+volume for 64 KiB, 1 MiB and 4 MiB full-page changes, exact wire bytes, replay,
+and the envelope boundary. These are allocation checks, not throughput results.
+
 `chunk.peer.base` is a canonical `MOCB` binary protobuf bootstrap containing the
 capacity and page limit. `chunk.peer.wal` is the independently durable MatrixRaft
 peer log; `chunk.peer.lock` prevents a second writer. Missing paired files,
