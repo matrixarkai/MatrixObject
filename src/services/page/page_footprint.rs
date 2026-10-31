@@ -444,18 +444,18 @@ impl MatrixChunkService {
         let mut append_bytes = 0u64;
         for index in &batch.replica_indices {
             if let Some(replica) = self.replicas.get(*index) {
-                let (records, bytes) = replica.open_mutation_batch_append_undo();
+                let (records, bytes) = replica.open_mutation_batch_write_undo();
                 append_records = append_records.saturating_add(records);
                 append_bytes = append_bytes.saturating_add(bytes);
             }
         }
         let mut audit = batch.snapshot.footprint_audit(&replica_undos);
         audit.push((
-            "batch.replica_chunks.append_undo_records".to_string(),
+            "batch.replica_chunks.write_undo_records".to_string(),
             append_records,
         ));
         audit.push((
-            "batch.replica_chunks.append_undo_bytes".to_string(),
+            "batch.replica_chunks.write_undo_bytes".to_string(),
             append_bytes,
         ));
         // The headline follows the records, which are copied state like the rest.

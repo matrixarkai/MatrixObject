@@ -9,22 +9,23 @@ struct ReplicaMutationBatch {
     /// its own batch snapshot already carries every replica, and its abort
     /// rebuilds the replicas from it, so a second copy here is never read.
     snapshot: Option<Box<ReplicaServiceSnapshot>>,
-    /// Pages whose undo is a LENGTH rather than a copy of their old state.
+    /// Pages whose undo is WHAT THE WRITES REPLACED rather than a copy of the
+    /// whole page.
     ///
     /// A page listed here is NOT in `snapshot.pages`: the undo gave up its
-    /// handle so that the append could land in the live payload instead of in a
+    /// handle so that the writes could land in the live payload instead of in a
     /// copy of it. `MatrixReplicaService::materialise_page_undo` puts it back
-    /// the moment anything happens to the page that a truncation cannot undo,
-    /// and `abort_mutation_batch` rebuilds it by truncating.
-    page_append_undo: BTreeMap<PageId, PageAppendUndo>,
+    /// the moment something happens to the page that this record cannot undo,
+    /// and `abort_mutation_batch` rebuilds it.
+    page_write_undo: BTreeMap<PageId, PageWriteUndo>,
 }
 
-/// What it takes to undo an append, when an append is all that happened.
+/// What it takes to undo this batch's writes to one page.
 ///
 /// Every field a write changes is either here or provably unchanged -- see the
 /// note above `MatrixReplicaService::keep_page_undo_cheap_for_write`.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct PageAppendUndo {
+struct PageWriteUndo {
     /// Truncate the payload back to this many bytes.
     payload_len: usize,
     /// And give the allocation back down to this.
@@ -49,6 +50,20 @@ struct PageAppendUndo {
     /// store -- instead of only to one that has peers.
     ec_parity_fragment: Option<std::sync::Arc<Vec<u8>>>,
     ec_fragment_digests: Option<std::sync::Arc<Vec<u64>>>,
+    /// The bytes each write in this batch replaced, in the order the writes
+    /// happened, clipped to the payload as it was when the batch opened.
+    ///
+    /// EMPTY FOR AN APPEND, which is the whole saving: an append replaces
+    /// nothing, so its undo is the length above and no bytes at all. A write
+    /// inside the payload records the range it is about to cover, which is the
+    /// bytes it replaces and not the page.
+    ///
+    /// ORDER IS LOAD-BEARING. Restoring applies these in REVERSE, so the
+    /// EARLIEST record covering a byte is applied last and wins. That is what
+    /// makes overlapping writes come out right without any interval algebra: a
+    /// byte's earliest record was taken before any write in this batch touched
+    /// it, so it holds the value the batch started from.
+    replaced: Vec<(usize, Vec<u8>)>,
 }
 
 pub struct ReplicaMutationBatchStatus {

@@ -31,7 +31,7 @@ impl MatrixReplicaService {
         })?;
         // BEFORE THE PAGE IS TAKEN, not after: this decides how many holders it has.
         // An append leaves the undo a length, so `make_mut` below copies nothing.
-        self.keep_page_undo_cheap_for_write(&page_id, start_index);
+        self.keep_page_undo_cheap_for_write(&page_id, start_index, end_index);
         // `make_mut` copies this one chunk's state if a snapshot still names
         // it, so the copy is per chunk WRITTEN rather than per chunk held.
         let chunk = std::sync::Arc::make_mut(
@@ -311,7 +311,22 @@ impl MatrixReplicaService {
             .map(|(offset, _)| *offset)
             .and_then(|offset| usize::try_from(offset).ok())
             .unwrap_or(0);
-        self.keep_page_undo_cheap_for_write(&page_id, lowest_written_index);
+        // And the highest, so the record covers every byte this batch of ranges
+        // replaces. Saturating rather than refused: a range that does not fit a
+        // `usize` makes the record cover the whole payload, which is the safe way
+        // round.
+        let highest_written_index = coalesced
+            .iter()
+            .map(|(offset, data)| {
+                usize::try_from(offset.saturating_add(data.len() as u64)).unwrap_or(usize::MAX)
+            })
+            .max()
+            .unwrap_or(0);
+        self.keep_page_undo_cheap_for_write(
+            &page_id,
+            lowest_written_index,
+            highest_written_index,
+        );
         {
             let chunk = std::sync::Arc::make_mut(
                 self.pages
