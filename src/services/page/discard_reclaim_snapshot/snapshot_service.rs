@@ -179,6 +179,42 @@ impl MatrixChunkService {
     /// Builds the snapshot without computing any checksum, its replicas'
     /// included. See `MatrixReplicaService::export_snapshot_unsealed`.
     pub fn export_snapshot_unsealed(&self) -> ChunkServiceSnapshot {
+        self.export_snapshot_unsealed_with_replicas(
+            self.replicas
+                .iter()
+                .map(MatrixReplicaService::export_snapshot_unsealed)
+                .collect(),
+        )
+    }
+
+    /// The same, with the page maps left out for the replicas named.
+    ///
+    /// Only the mutation undo asks for this, and only for the replicas whose own
+    /// batches it opened: those roll themselves back, so this snapshot never reads
+    /// their pages, and cloning them per append was pure waste.
+    pub(crate) fn export_snapshot_unsealed_without_pages_for(
+        &self,
+        without_pages: &[usize],
+    ) -> ChunkServiceSnapshot {
+        self.export_snapshot_unsealed_with_replicas(
+            self.replicas
+                .iter()
+                .enumerate()
+                .map(|(index, replica)| {
+                    if without_pages.contains(&index) {
+                        replica.export_snapshot_unsealed_without_pages()
+                    } else {
+                        replica.export_snapshot_unsealed()
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    fn export_snapshot_unsealed_with_replicas(
+        &self,
+        replicas: Vec<ReplicaServiceSnapshot>,
+    ) -> ChunkServiceSnapshot {
         ChunkServiceSnapshot {
             page_size: self.page_size,
             write_quorum: self.write_quorum,
@@ -221,11 +257,7 @@ impl MatrixChunkService {
             cumulative_failed_repairs: self.cumulative_failed_repairs,
             cumulative_replica_read_repairs: self.cumulative_replica_read_repairs,
             cumulative_replica_read_repair_failures: self.cumulative_replica_read_repair_failures,
-            replicas: self
-                .replicas
-                .iter()
-                .map(MatrixReplicaService::export_snapshot_unsealed)
-                .collect(),
+            replicas,
             checksum: String::new(),
         }
     }
