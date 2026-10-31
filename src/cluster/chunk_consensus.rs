@@ -20,7 +20,7 @@ use matrixraft::{
 use prost::Message;
 use std::cell::{Cell, RefCell};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener},
@@ -436,7 +436,7 @@ fn run(
         outgoing,
     } = channels;
     let mut tick = Instant::now();
-    let mut pending: Option<Pending> = None;
+    let mut pending: VecDeque<Pending> = VecDeque::new();
     let mut pending_read: Option<(u64, Vec<Request>)> = None;
     let mut deferred = None;
     let applied_term = Cell::new(0);
@@ -494,8 +494,8 @@ fn run(
                     }
                 }
                 applied_term.set(id.term);
-                if pending.as_ref().is_some_and(|p| p.id == id) {
-                    let p = pending.take().unwrap();
+                if pending.front().is_some_and(|p| p.id == id) {
+                    let p = pending.pop_front().unwrap();
                     let reply = match p.reply {
                         Some(reply) => reply,
                         None => {
@@ -593,13 +593,14 @@ fn run(
             }
         }
         if pending
-            .as_ref()
+            .front()
             .is_some_and(|p| !peer.is_leader() || p.id.term != peer.term())
         {
-            let p = pending.take().unwrap();
-            let _ = p.request.reply.try_send(Err(refused(
-                format!("chunk leadership changed; write outcome may be committed{}", progress.describe()),
-            )));
+            for p in pending.drain(..) {
+                let _ = p.request.reply.try_send(Err(refused(
+                    format!("chunk leadership changed; write outcome may be committed{}", progress.describe()),
+                )));
+            }
         }
         if let Some((token, _)) = &pending_read {
             match peer.poll_read(*token) {
@@ -627,9 +628,9 @@ fn run(
                 }
             }
         }
-        // A timed-out accepted proposal remains pending until applied or leadership changes.
-        // Proposing a second outcome against the same old state would be invalid.
-        if pending.is_none() && pending_read.is_none() && pending_membership.is_none() {
+        // Accepted batches remain pending through client timeouts. A later batch
+        // must start from committed state, not from an earlier speculative draft.
+        if pending.is_empty() && pending_read.is_none() && pending_membership.is_none() {
             progress.mark(WorkerPhase::PublishCheckpoint);
             checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
                 let mut snapshot = node.service.export_snapshot_unsealed();
@@ -679,22 +680,29 @@ fn run(
                             }
                         }
                     } else {
-                        request.progress.mark(RequestPhase::Preparing);
-                        let (outcome, reply) =
-                            match prepare(&node.service, &request.request, node.max_pages, limit) {
-                                Ok((outcome, reply)) => (outcome, reply.map(Ok)),
-                                Err(error) => (Vec::new(), Some(Err(error))),
-                            };
-                        let payload = Entry {
-                            version: 1,
-                            outcome,
+                        let batch = prepare_write_batch(
+                            &node.service, node.max_pages, limit, request,
+                            requests.receiver(), &mut deferred,
+                        )?;
+                        let (mut payloads, replies): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
+                        for (request, _) in &replies {
+                            request.progress.mark(RequestPhase::ProposalCompletion);
                         }
-                        .encode_to_vec();
-                        request.progress.mark(RequestPhase::ProposalCompletion);
-                        match peer.propose(payload) {
-                            Ok(id) => pending = Some(Pending { id, request, reply }),
+                        let admitted = if payloads.len() == 1 {
+                            peer.propose(payloads.pop().unwrap()).map(|id| vec![id])
+                        } else {
+                            peer.propose_batch(payloads)
+                        };
+                        match admitted {
+                            Ok(ids) => {
+                                for (id, (request, reply)) in ids.into_iter().zip(replies) {
+                                    pending.push_back(Pending { id, request, reply });
+                                }
+                            }
                             Err(e) => {
-                                let _ = request.reply.try_send(Err(refused(e)));
+                                for (request, _) in replies {
+                                    let _ = request.reply.try_send(Err(refused(&e)));
+                                }
                             }
                         }
                     }
@@ -710,6 +718,59 @@ fn run(
         }
     }
     Ok(())
+}
+
+type PreparedWrite = (Vec<u8>, (Request, Option<Result<ReplicaReply, ObjectError>>));
+
+fn prepare_write_batch(
+    service: &MatrixReplicaService,
+    max_pages: usize,
+    limit: usize,
+    first: Request,
+    incoming: &Receiver<Request>,
+    deferred: &mut Option<Request>,
+) -> Result<Vec<PreparedWrite>, RaftError> {
+    debug_assert!(deferred.is_none());
+    let mut candidate = None;
+    let mut next = Some(first);
+    let mut batch = Vec::new();
+    let mut bytes = 0usize;
+    for _ in 0..32 {
+        let Some(request) = next.take().or_else(|| incoming.try_recv().ok()) else { break };
+        if read_only(&request.request) || matches!(request.request, ReplicaRequest::Membership(_)) {
+            *deferred = Some(request);
+            break;
+        }
+        if request.deadline <= Instant::now() {
+            let _ = request.reply.try_send(Err(refused("chunk request expired before proposal")));
+            continue;
+        }
+        request.progress.mark(RequestPhase::Preparing);
+        let (outcome, reply, prepared) = match prepare_candidate(
+            candidate.as_ref().unwrap_or(service), &request.request, max_pages, limit,
+        ) {
+            Ok((outcome, reply, prepared)) => (outcome, reply.map(Ok), prepared),
+            Err(error) => (Vec::new(), Some(Err(error)), None),
+        };
+        let entry = Entry { version: 1, outcome };
+        let payload = entry.encode_to_vec();
+        if !batch.is_empty() && bytes.saturating_add(payload.len()) > 4 * 1024 * 1024 {
+            *deferred = Some(request);
+            break;
+        }
+        if !entry.outcome.is_empty() {
+            if let Some(prepared) = prepared { candidate = Some(prepared); }
+        }
+        bytes += payload.len();
+        batch.push((payload, (request, reply)));
+        if bytes >= 4 * 1024 * 1024 { break; }
+    }
+    Ok(batch)
+}
+
+#[cfg(test)]
+mod write_batch_tests {
+    include!("chunk_write_batch_tests.rs");
 }
 
 // Admission ends before begin_read: later arrivals cannot reuse this confirmation.
@@ -814,12 +875,22 @@ fn checked_apply(
     crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
     Ok(reply)
 }
+#[cfg(test)]
 fn prepare(
     service: &MatrixReplicaService,
     request: &ReplicaRequest,
     max_pages: usize,
     limit: usize,
 ) -> Result<(Vec<u8>, Option<ReplicaReply>), ObjectError> {
+    let (outcome, reply, _) = prepare_candidate(service, request, max_pages, limit)?;
+    Ok((outcome, reply))
+}
+fn prepare_candidate(
+    service: &MatrixReplicaService,
+    request: &ReplicaRequest,
+    max_pages: usize,
+    limit: usize,
+) -> Result<(Vec<u8>, Option<ReplicaReply>, Option<MatrixReplicaService>), ObjectError> {
     if matches!(request, ReplicaRequest::StateInstall(_)) {
         return Err(ObjectError::PreconditionFailed(
             "standalone state installation is unavailable on Raft nodes".into(),
@@ -830,7 +901,7 @@ fn prepare(
         | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
         | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
         | ReplicaRequest::DiscardChunk { page_id, .. } => page_id,
-        _ => return Ok((Vec::new(), None)),
+        _ => return Ok((Vec::new(), None, None)),
     };
     let before = match service.read_chunk_state(page) {
         Ok(state) => Some(state),
@@ -842,13 +913,13 @@ fn prepare(
     let reply = checked_apply(&mut candidate, request.clone(), max_pages, limit)?;
     let after = match candidate.read_chunk_state(page) {
         Ok(state) => state,
-        Err(ObjectError::NotFound(_)) if before.is_none() => return Ok((Vec::new(), Some(reply))),
+        Err(ObjectError::NotFound(_)) if before.is_none() => return Ok((Vec::new(), Some(reply), Some(candidate))),
         Err(e) => return Err(e),
     };
     let outcome = PageOutcome::between(page, before.as_ref(), &after)?
         .with_counters(counters, PageOutcome::counters(&candidate))
         .to_payload()?;
-    Ok((outcome, Some(reply)))
+    Ok((outcome, Some(reply), Some(candidate)))
 }
 
 #[cfg(test)]

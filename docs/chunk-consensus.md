@@ -27,7 +27,7 @@ combining Raft state with `MATRIXOBJECT_REPLICA_JOURNAL` are refused.
 
 ## Durability and request behavior
 
-Writes and discards are prepared against committed state and encoded as `MOPO`
+Write batches begin from committed state and encode writes and discards as `MOPO`
 binary protobuf page outcomes. The peer WAL syncs its Raft records before the
 outcome is applied and acknowledged. Recovery applies decided outcomes; it does
 not execute original write commands. Reads, inventories, heads, and pings require
@@ -35,7 +35,18 @@ a current-term quorum confirmation and application through its commit index,
 so an isolated minority cannot answer from stale state. These reads append no log
 entries. One confirmation may be pending, including after a caller timeout.
 A timeout does not mean a submitted write was rolled back: it may commit later.
-The pending proposal remains serialized until commit or a leadership change.
+The pending batch remains serialized until commit or a leadership change.
+
+A chunk leader groups up to 32 queued mutations into one proposal admission,
+with at most 4 MiB of encoded outcomes. Each outcome is prepared against the
+preceding successful speculative outcome; live state is unchanged until commit.
+Preparation retains the isolated candidate already produced for each write,
+without decoding its outcome again. Reads and membership commands end the batch,
+and a request that exceeds the remaining byte budget is deferred in queue order.
+Expired requests are refused before admission. No batch waits for new arrivals.
+An individually oversized outcome retains the existing proposal-size refusal.
+Every admitted request receives its own committed result; admission alone sends
+no success reply, and uncertain writes are never automatically replayed.
 
 `chunk.peer.base` is a canonical `MOCB` binary protobuf bootstrap containing the
 capacity and page limit. `chunk.peer.wal` is the independently durable MatrixRaft
@@ -445,8 +456,9 @@ The next operation consumes that mutation before later reads, preserving queue
 order. Additional read requests whose deadlines have already expired are refused
 before confirmation. The existing bounded request channel remains unchanged;
 the runtime holds at most 32 reads plus one deferred mutation outside it.
-No mutations are batched by this change, and accepted writes still wait for
-application or leadership change even if a caller times out.
+Write batches use separate admission and never share a read confirmation.
+Accepted writes still wait for application or leadership change even if a caller
+times out.
 
 The admission guard checks the batch limit, expiration, late-arrival exclusion
 and mutation ordering. The process guard runs eight concurrent clients reading
