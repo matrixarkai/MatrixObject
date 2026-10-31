@@ -36,6 +36,10 @@ impl MatrixReplicaService {
         let start_index = usize::try_from(offset).map_err(|_| {
             ObjectError::InvalidArgument("chunk write offset exceeds memory size".to_string())
         })?;
+        // Captured before the payload grows, so the checksum below can carry on from the hash
+        // of the bytes that were already here instead of re-reading them.
+        let bytes_before_write = chunk.data.len();
+        let checksum_before_write = chunk.checksum_fnv1a64;
         if end_index > chunk.data.len() {
             let payload = std::sync::Arc::make_mut(&mut chunk.data);
             // reserve_exact, not resize's doubling: a chunk filled by many small
@@ -54,7 +58,27 @@ impl MatrixReplicaService {
                 subtract_range(&chunk.discarded_ranges, offset, data.len() as u64);
         }
         chunk.write_sequence = chunk.write_sequence.saturating_add(1);
-        chunk.checksum_fnv1a64 = fnv1a64(&chunk.data);
+        // A WRITE PAST THE END RESUMES THE HASH RATHER THAN REDOING IT.
+        //
+        // FNV-1a is a left fold over the bytes, so the hash of `old ++ new` is the hash of
+        // `old` carried on over `new` -- `fnv1a64_resumed_equals_hashing_the_concatenation`
+        // pins that identity. The value stored is therefore the same one `fnv1a64(&chunk.data)`
+        // produced; nothing about the durable checksum changes, only what it costs to arrive at.
+        //
+        // That matters because a page filled by appends was re-hashing every byte it already
+        // held on every write: whole-payload work per write, so quadratic work to fill a page.
+        // Appending is the shape a log-structured writer actually uses.
+        //
+        // `start_index >= bytes_before_write` is what makes it a pure append: the write begins
+        // at or past the old end, so the bytes before it are untouched. The resize above pads
+        // the skipped bytes with zeros, and the slice taken here spans that padding as well as the data,
+        // which is exactly the byte sequence appended. A write that lands inside the existing
+        // payload has no such prefix and recomputes.
+        chunk.checksum_fnv1a64 = if start_index >= bytes_before_write {
+            fnv1a64_resumed(checksum_before_write, &chunk.data[bytes_before_write..end_index])
+        } else {
+            fnv1a64(&chunk.data)
+        };
         if self.keep_ec_sidecar {
             refresh_chunk_ec_sidecars(chunk);
         } else {

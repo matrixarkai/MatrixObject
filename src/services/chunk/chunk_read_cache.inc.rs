@@ -165,8 +165,24 @@ impl MatrixReplicaService {
                             .saturating_add(result_bytes),
                     );
                 }
-                let (compressed_chunks, _) = chunk_compression_stats(chunk);
-                if compressed_chunks > 0 {
+                // CLASSIFY THE FILL BY THE BYTES BEING FILLED, NOT BY THE WHOLE PAGE.
+                //
+                // This counts cache fills that hold compressible bytes, and the bytes a fill
+                // holds are `result.data` -- the range just read -- not the page it came from.
+                // Asking `chunk_compression_stats(chunk)` ran a run-length scan over the entire
+                // page on every read, which is where this workload spent most of its time: with
+                // one 380 KiB page and 1,560 reads it is ~590 MB of per-byte scanning, to pick
+                // which of two counters to add one to. It also answered about bytes the fill does
+                // not hold, so a fill of incompressible bytes out of a compressible page counted
+                // as compressed.
+                //
+                // Scanning the range instead is bounded by the read length and describes the
+                // entry actually inserted below. The reading of this counter changes with it:
+                // "fills whose cached bytes are compressible" rather than "fills taken from a
+                // page that is compressible".
+                let fill_is_compressible = !result.data.is_empty()
+                    && chunk_rle_encoded_len(&result.data) < result.data.len();
+                if fill_is_compressible {
                     self.read_cache_compressed_fill_pages.set(
                         self.read_cache_compressed_fill_pages
                             .get()
