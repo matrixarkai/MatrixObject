@@ -255,18 +255,75 @@ pub struct MatrixObjectStore {
     snapshot_assembler: StoreSnapshotChunkAssembler,
 }
 
-#[derive(Clone, Debug)]
 /// What a put changed in the three containers it does not copy.
 ///
 /// A put inserts one `buckets` entry, writes one `objects` key and appends one
 /// `object_changes` record, so each can be undone exactly. Copying those three
 /// maps instead is 83.7% of the allocations a put makes.
+/// What a targeted mutation has to put back where the object was.
+///
+/// # WHY AN APPEND GETS ITS OWN SHAPE
+///
+/// This was `Option<ObjectMetadata>`, and the metadata holds the object's whole
+/// extent list. An append grows that list by two entries, so cloning it for the
+/// undo is O(extents) per append -- quadratic to build an append-only log, and
+/// measured as such: 909,414,414 instructions, 18.1% of a TemporalStore
+/// shared-store run at 1,600 entries, and 12.5 MILLISECONDS per append at 25,600
+/// where the per-entry cost had multiplied by 5.39x over the last corpus doubling
+/// alone.
+///
+/// An append does not need a copy. It only ever GROWS the list and advances six
+/// scalars, inheriting every other field from the object it appends to, so the
+/// undo is the old length plus those six -- the same answer the page layer took
+/// twice (`PageWriteUndo` in the object store this sits on).
+#[derive(Clone, Debug)]
+pub(crate) enum PutTargetedPrevious {
+    /// No object was there, so the undo is to remove the one the mutation made.
+    Absent,
+    /// The whole previous metadata, for a mutation that can change any of it: a
+    /// put replaces the extent list outright, a copy writes a new object over an
+    /// old one, a delete marks it. None of those is a pure growth.
+    Whole(ObjectMetadata),
+    /// An append, which only grew the list.
+    Appended(AppendedObjectUndo),
+}
+
+/// Everything an append moves, for a page it only appended to.
+///
+/// THE COMPLETENESS ARGUMENT, because a record that misses a field restores an
+/// object that never existed. `apply_append_object` builds the new metadata with:
+///
+/// * `object_id` -- the key it was looked up by, unchanged;
+/// * `version` -- `next_object_version`, recorded here;
+/// * `length` -- previous + appended, recorded here;
+/// * `etag_digest_bits` and `has_etag` -- recomputed, both recorded here;
+/// * `content_type`, `user_metadata`, `storage_class`, `tags`, `lock` -- taken
+///   from the previous object UNCHANGED (the code reads each off `previous`), so
+///   there is nothing to restore;
+/// * `update_time_ms` -- the caller's, recorded here;
+/// * `extents` -- EXTENDED, so its old length is enough;
+/// * `deleted` -- an append refuses a deleted object above, and writes `false`,
+///   which is what it already was.
+///
+/// `an_appends_undo_restores_every_field_the_append_moves` drives that list.
+#[derive(Clone, Debug)]
+pub(crate) struct AppendedObjectUndo {
+    /// Truncate the extent list back to this many entries.
+    extents_len: usize,
+    length: u64,
+    etag_digest_bits: u64,
+    has_etag: bool,
+    update_time_ms: u64,
+    version: u64,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct PutTargetedUndo {
     meta: MetaRecordUndo,
     bucket: String,
     bucket_existed: bool,
     object_id: ObjectId,
-    previous_object: Option<ObjectMetadata>,
+    previous_object: PutTargetedPrevious,
     /// The payload entries naming the previous object's extents.
     ///
     /// A put that replaces an object marks the old extents stale, and

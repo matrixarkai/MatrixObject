@@ -136,6 +136,58 @@ impl MatrixObjectStore {
             meta: self.meta_service.capture_record_undo(&meta_object_key(&object_id)),
             bucket_existed: self.buckets.contains(bucket),
             bucket: bucket.to_string(),
+            previous_object: match previous_object {
+                None => PutTargetedPrevious::Absent,
+                Some(previous) => PutTargetedPrevious::Whole(previous),
+            },
+            previous_payloads,
+            object_id,
+        };
+        self.capture_object_mutation_rollback_inner(Some(targeted))
+    }
+
+    /// The same undo for a mutation that only APPENDS to the object.
+    ///
+    /// Records the extent list's old LENGTH and the six scalars an append advances
+    /// instead of cloning the metadata -- see `AppendedObjectUndo` for why those
+    /// are all of them. The payload entries are still captured, because the
+    /// restore drops whatever the mutation added and re-inserts these, and that is
+    /// the same work whichever shape the metadata undo takes.
+    pub(crate) fn capture_appended_mutation_rollback(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> ObjectMutationRollback {
+        let object_id = ObjectId::new(bucket.to_string(), key.to_string());
+        // BORROWED, not cloned. This is the whole point of the variant.
+        let previous = self.object(&object_id);
+        let previous_payloads = previous.map_or_else(Vec::new, |previous| {
+            let mut captured = Vec::with_capacity(previous.extents.len());
+            for extent in previous.extents.iter() {
+                if let Some(payload) = self.payloads.get(&extent.chunk_id, extent.offset()) {
+                    captured.push((
+                        (extent.chunk_id.clone(), extent.offset()),
+                        payload.clone(),
+                    ));
+                }
+            }
+            captured
+        });
+        let previous_object = match previous {
+            None => PutTargetedPrevious::Absent,
+            Some(previous) => PutTargetedPrevious::Appended(AppendedObjectUndo {
+                extents_len: previous.extents.len(),
+                length: previous.length,
+                etag_digest_bits: previous.etag_digest_bits,
+                has_etag: previous.has_etag,
+                update_time_ms: previous.update_time_ms,
+                version: previous.version,
+            }),
+        };
+        let targeted = PutTargetedUndo {
+            meta: self.meta_service.capture_record_undo(&meta_object_key(&object_id)),
+            bucket_existed: self.buckets.contains(bucket),
+            bucket: bucket.to_string(),
             previous_object,
             previous_payloads,
             object_id,
@@ -196,11 +248,50 @@ impl MatrixObjectStore {
                     self.buckets.remove(targeted.bucket.as_str());
                 }
                 match targeted.previous_object {
-                    Some(mut previous) => {
+                    PutTargetedPrevious::Whole(mut previous) => {
                         self.file_object(targeted.object_id, &mut previous);
                     }
-                    None => {
+                    PutTargetedPrevious::Absent => {
                         self.objects.remove(&targeted.object_id);
+                    }
+                    // THE APPEND'S UNDO IS A LENGTH. Take the object out by value --
+                    // `take` moves it, so nothing is copied -- truncate the list the
+                    // append grew, put the six scalars back, and file it again.
+                    //
+                    // An object that is no longer there cannot be restored from a
+                    // length, and nothing between the capture and here removes one: the
+                    // append refuses a deleted object, and a removal is a different
+                    // mutation with its own undo. So this is `debug_assert` plus the
+                    // conservative arm rather than a silent skip.
+                    PutTargetedPrevious::Appended(appended) => {
+                        match self.take_object(&targeted.object_id) {
+                            Some(mut previous) => {
+                                let mut extents = previous.extents.to_vec();
+                                extents.truncate(appended.extents_len);
+                                previous.extents = extents.into();
+                                previous.length = appended.length;
+                                previous.etag_digest_bits = appended.etag_digest_bits;
+                                previous.has_etag = appended.has_etag;
+                                previous.update_time_ms = appended.update_time_ms;
+                                previous.version = appended.version;
+                                // PUT BACK AS IT WAS, not re-filed. `file_object`
+                                // re-interns the object key and the content type, and
+                                // the object taken here already holds the interned
+                                // ones -- re-interning after the set's copy was
+                                // removed makes a FRESH allocation, which the
+                                // footprint audit sees as a string that stopped being
+                                // shared: `object_changes.object_id_bytes 0 -> 17` on
+                                // a refused append, caught by
+                                // `an_append_that_fails_after_mutating_leaves_the_store_unchanged`.
+                                self.objects.replace(KeyedObject::new(previous));
+                            }
+                            None => {
+                                debug_assert!(
+                                    false,
+                                    "an append undo outlived the object it describes"
+                                );
+                            }
+                        }
                     }
                 }
                 // Dropping the tail by length was exact while a mutation only
