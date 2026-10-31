@@ -5,18 +5,100 @@ impl MatrixReplicaService {
         self.service_mode_rejected_mutations
     }
 
+    // ---------------------------------------------------------------------------
+    // TWO TOTALS OVER EVERY PAGE, MAINTAINED RATHER THAN FOLDED
+    // ---------------------------------------------------------------------------
+    //
+    // Both of these walked every page the replica holds, and their callers are the
+    // problem. `physical_bytes` is read by write admission on EVERY write, by
+    // `control_proof` and `storage_readiness` per operation, and by a mutation
+    // batch's status at begin and at end. `discarded_bytes` is read by that status
+    // and by nothing else at all -- and it allocated a merged range list per page
+    // per call to answer.
+    //
+    // So a store holding N pages did O(N) work per write, twice, to answer two
+    // questions whose answers change by one page's delta. MEASURED on TemporalStore's
+    // shared-store scale report, which is where N is large and pages are small:
+    // `discarded_bytes` 445,661,742 instructions and the `merge_range_slice` under it
+    // 575,134,116, together 15.6% of a 6.56-billion-instruction run, with
+    // `mutation_batch_status` a further 5.4%. The report had already named this as the
+    // per-append term that still grows with the corpus.
+    //
+    // WHAT KEEPS THEM HONEST. A maintained counter is a second source of truth, and
+    // the rule for those here is that something must fail when they diverge. Two
+    // things do: in a debug build each accessor asserts against its fold ON EVERY
+    // CALL, so the whole library suite is checking them rather than one test; and
+    // `the_maintained_page_totals_match_the_walk_after_every_kind_of_mutation` drives
+    // each mutation kind on purpose. A site that changes a page and forgets to
+    // re-account fails in the suite instead of reporting a wrong capacity.
+
     pub fn physical_bytes(&self) -> u64 {
+        debug_assert_eq!(
+            self.physical_bytes,
+            self.physical_bytes_by_walking_every_page(),
+            "the maintained payload total has drifted from what the pages hold"
+        );
+        self.physical_bytes
+    }
+
+    pub fn discarded_bytes(&self) -> u64 {
+        debug_assert_eq!(
+            self.discarded_bytes,
+            self.discarded_bytes_by_walking_every_page(),
+            "the maintained discarded total has drifted from what the pages hold"
+        );
+        self.discarded_bytes
+    }
+
+    /// The fold `physical_bytes` used to be, kept as what the counter is checked against.
+    pub(crate) fn physical_bytes_by_walking_every_page(&self) -> u64 {
         self.pages.values().fold(0u64, |acc, state| {
             acc.saturating_add(state.data.len() as u64)
         })
     }
 
-    pub fn discarded_bytes(&self) -> u64 {
+    /// The fold `discarded_bytes` used to be.
+    pub(crate) fn discarded_bytes_by_walking_every_page(&self) -> u64 {
         self.pages.values().fold(0u64, |acc, state| {
             acc.saturating_add(discarded_range_bytes(&merge_range_slice(
                 &state.discarded_ranges,
             )))
         })
+    }
+
+    /// What one page contributes to both totals as things stand.
+    ///
+    /// Taken BEFORE a mutation and handed back to `reaccount_page` after it, which is
+    /// one pattern for every site rather than a delta each site works out for itself:
+    /// a caller that computes a delta can get the sign wrong, and a caller that hands
+    /// back the pair it was given cannot.
+    pub(crate) fn page_accounting(&self, page_id: &PageId) -> (usize, u64) {
+        match self.pages.get(page_id) {
+            None => (0, 0),
+            Some(state) => (
+                state.data.len(),
+                discarded_range_bytes(&merge_range_slice(&state.discarded_ranges)),
+            ),
+        }
+    }
+
+    /// Re-account for one page after changing, inserting or removing it.
+    pub(crate) fn reaccount_page(&mut self, page_id: &PageId, before: (usize, u64)) {
+        let after = self.page_accounting(page_id);
+        self.physical_bytes = self
+            .physical_bytes
+            .saturating_sub(before.0 as u64)
+            .saturating_add(after.0 as u64);
+        self.discarded_bytes = self
+            .discarded_bytes
+            .saturating_sub(before.1)
+            .saturating_add(after.1);
+    }
+
+    /// Recount both from the pages, for the paths that replace all of them.
+    pub(crate) fn recount_page_totals(&mut self) {
+        self.physical_bytes = self.physical_bytes_by_walking_every_page();
+        self.discarded_bytes = self.discarded_bytes_by_walking_every_page();
     }
 
     pub fn capacity_free_bytes(&self) -> u64 {

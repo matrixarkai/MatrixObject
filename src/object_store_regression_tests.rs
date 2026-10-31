@@ -40132,6 +40132,189 @@ fn no_write_in_a_batch_copies_its_page_however_many_there_are() {
 }
 
 #[test]
+fn the_maintained_page_totals_match_the_walk_after_every_kind_of_mutation() {
+    // `physical_bytes` and `discarded_bytes` are MAINTAINED now, not folded over every
+    // page, because their callers read them per write and per batch. A maintained
+    // counter is a second source of truth, so this drives every kind of mutation that
+    // can move either one and compares both against the fold they replaced.
+    //
+    // THE DEBUG ASSERTION INSIDE EACH ACCESSOR IS THE WIDER NET -- it makes every test
+    // in this suite check them, which is what caught the sites this test does not
+    // reach. This one exists because that net only catches what the suite happens to
+    // do, and a mutation kind nobody else exercises would slip through it.
+    let page = PageId {
+        chunk_id: ChunkId::new(0, 47).unwrap(),
+        page_index: 0,
+    };
+    let other = PageId {
+        chunk_id: ChunkId::new(0, 47).unwrap(),
+        page_index: 1,
+    };
+    let mut service = MatrixReplicaService::new();
+
+    // Each step names itself, so a failure says which mutation drifted rather than
+    // which line number did.
+    let mut steps: Vec<(&str, u64, u64)> = Vec::new();
+    macro_rules! check {
+        ($name:expr) => {{
+            let walked_physical = service.physical_bytes_by_walking_every_page();
+            let walked_discarded = service.discarded_bytes_by_walking_every_page();
+            assert_eq!(
+                service.physical_bytes(),
+                walked_physical,
+                "{}: the payload total drifted",
+                $name
+            );
+            assert_eq!(
+                service.discarded_bytes(),
+                walked_discarded,
+                "{}: the discarded total drifted",
+                $name
+            );
+            steps.push(($name, walked_physical, walked_discarded));
+        }};
+    }
+
+    check!("a fresh replica");
+    service.write_chunk(page.clone(), 0, &[b'a'; 4096]).unwrap();
+    check!("a first write");
+    service.write_chunk(page.clone(), 4096, &[b'b'; 2048]).unwrap();
+    check!("an append");
+    service.write_chunk(page.clone(), 1024, &[b'c'; 512]).unwrap();
+    check!("a write in place");
+    service.write_chunk(other.clone(), 0, &[b'd'; 1024]).unwrap();
+    check!("a second page");
+    service.discard_chunk(&page, 2048, 512).unwrap();
+    check!("a discard");
+    service
+        .discard_chunk_ranges(
+            &page,
+            vec![
+                DataRange { offset: 3072, length: 128 },
+                DataRange { offset: 3300, length: 128 },
+            ],
+        )
+        .unwrap();
+    check!("a batched discard");
+    service
+        .write_chunk_ranges(page.clone(), vec![(5000, vec![b'e'; 256]), (6144, vec![b'f'; 512])])
+        .unwrap();
+    check!("a coalesced write");
+    service.write_chunk(page.clone(), 2048, &[b'g'; 512]).unwrap();
+    check!("a write that reclaims a discarded range");
+    {
+        let mut state = PageState::empty();
+        state.data = std::sync::Arc::new(vec![b'h'; 777]);
+        state.logical_length = 777;
+        state.checksum_fnv1a64 = fnv1a64(&state.data);
+        service.install_chunk_state(other.clone(), state).unwrap();
+    }
+    check!("a state install over an existing page");
+    let report = service.reclaim_chunks_with_limits(8, u64::MAX, 1, 0, 64, u64::MAX);
+    assert!(
+        report.reclaimed_chunks > 0,
+        "this test needs the reclaim to do something, and it reclaimed nothing"
+    );
+    check!("a reclaim");
+    service.corrupt_chunk_payload_for_repair(&other).unwrap();
+    check!("a payload corruption");
+
+    // THE THREE SITES THE FIRST VERSION OF THIS TEST DID NOT REACH, found by removing
+    // each accounting call in turn and seeing which removals nothing refused. Two of
+    // the three needed a fixture the test did not have; the third needed a call the
+    // test was not making.
+    //
+    // An EMPTY page corrupted, because `corrupt_chunk_payload_for_repair` XORs a byte
+    // when there is one and PUSHES one when there is not -- and only the push moves
+    // the payload length. With a non-empty page its accounting is a no-op, which is
+    // why removing it changed nothing.
+    let blank = PageId {
+        chunk_id: ChunkId::new(0, 47).unwrap(),
+        page_index: 2,
+    };
+    service.install_chunk_state(blank.clone(), PageState::empty()).unwrap();
+    check!("an empty page installed");
+    service.corrupt_chunk_payload_for_repair(&blank).unwrap();
+    check!("an EMPTY page corrupted, which pushes a byte");
+
+    // The unfenced install, which the prepared-batch apply path uses and nothing in
+    // this test did. Reached directly, because what is being checked is the
+    // accounting and not the fence the caller owes.
+    {
+        let mut state = PageState::empty();
+        state.data = std::sync::Arc::new(vec![b'j'; 333]);
+        state.logical_length = 333;
+        state.checksum_fnv1a64 = fnv1a64(&state.data);
+        service.install_page_unfenced(blank.clone(), state);
+    }
+    check!("an unfenced install over an existing page");
+
+    // AND THE ONE SITE WHOSE ACCOUNTING CANNOT BE EXERCISED, which is worth saying
+    // rather than leaving as an untested call. Removing the accounting in
+    // `repair_chunk_payload_from_ec` was planted and nothing in the suite failed, so
+    // a fixture was built to reach it: damage a page's payload LENGTH and repair it.
+    // The repair REFUSES that -- `chunk EC sidecar length mismatch` -- because the
+    // sidecar is sized for the payload it was computed over. It recovers damaged
+    // BYTES at an unchanged length, and `data.len() == logical_length` is an
+    // invariant of the write and reclaim paths, so that repair cannot move either
+    // total. The accounting there is belt-and-braces and is kept because it is what
+    // the function touches; this is the shape that would have to change for it to
+    // start mattering.
+    let damaged = PageId {
+        chunk_id: ChunkId::new(0, 47).unwrap(),
+        page_index: 3,
+    };
+    service.write_chunk(damaged.clone(), 0, &[b'k'; 2048]).unwrap();
+    check!("a page to damage");
+    service.corrupt_chunk_payload_for_repair(&damaged).unwrap();
+    check!("its bytes damaged");
+    let repaired = service.repair_chunk_payload_from_ec(&damaged).unwrap();
+    assert!(repaired, "the sidecar should have repaired the damaged bytes");
+    assert_eq!(
+        service.pages_local().get(&damaged).expect("the page").data.len(),
+        2048,
+        "and the length is unchanged, which is why this site's accounting is a no-op"
+    );
+    check!("a repair from the sidecar, which cannot move either total");
+
+    assert!(service.remove_chunk_for_repair(&other));
+    check!("a page removed for repair");
+
+    // A batch that rolls back, which restores pages through a different path.
+    service.begin_mutation_batch("batch-totals").unwrap();
+    service.write_chunk(page.clone(), 7000, &[b'i'; 1024]).unwrap();
+    check!("an append inside a batch");
+    service.discard_chunk(&page, 100, 64).unwrap();
+    check!("a discard inside a batch");
+    service.abort_mutation_batch("batch-totals").unwrap();
+    check!("the abort");
+
+    // And a snapshot installed over the top, which replaces every page at once.
+    let snapshot = service.export_snapshot();
+    service.install_snapshot(snapshot).unwrap();
+    check!("a snapshot install");
+
+    for (name, physical, discarded) in &steps {
+        println!("PAGETOTALS {name}: physical={physical} discarded={discarded}");
+    }
+    // Not vacuous: if nothing moved either total, every comparison above would have
+    // been 0 == 0.
+    assert!(
+        steps.iter().any(|(_, physical, _)| *physical > 0),
+        "the payload total never moved, so this proved nothing"
+    );
+    assert!(
+        steps.iter().any(|(_, _, discarded)| *discarded > 0),
+        "the discarded total never moved, so the discard half proved nothing"
+    );
+    assert!(
+        steps.len() >= 20,
+        "this should be driving at least 20 mutation kinds and drove {}",
+        steps.len()
+    );
+}
+
+#[test]
 fn a_write_after_a_discard_in_the_same_batch_still_goes_in_place() {
     // THE SHAPE THE PUT PATH ACTUALLY USES, and the one the first version of this
     // record missed entirely. An overwrite discards the range it is replacing before

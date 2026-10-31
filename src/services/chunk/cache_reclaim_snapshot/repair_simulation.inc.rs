@@ -6,7 +6,10 @@ impl MatrixReplicaService {
         // THE PAGE ITSELF GOES, so the batch undo has to hold its whole pre-image
         // before it does -- a length cannot describe a page that is not there.
         self.materialise_page_undo(page_id);
-        self.pages.remove(page_id).is_some()
+        let accounting_before = self.page_accounting(page_id);
+        let removed = self.pages.remove(page_id).is_some();
+        self.reaccount_page(page_id, accounting_before);
+        removed
     }
 
     pub fn corrupt_chunk_payload_for_repair(
@@ -16,6 +19,7 @@ impl MatrixReplicaService {
         // NOT AN APPEND -- it damages byte zero -- so the batch undo cannot be a
         // length here.
         self.materialise_page_undo(page_id);
+        let accounting_before = self.page_accounting(page_id);
         let chunk = self
             .pages
             .get_mut(page_id)
@@ -27,6 +31,7 @@ impl MatrixReplicaService {
             std::sync::Arc::make_mut(&mut chunk.data)[0] ^= 0xff;
         }
         self.invalidate_chunk_cache(page_id, 0, u64::MAX);
+        self.reaccount_page(page_id, accounting_before);
         Ok(())
     }
 

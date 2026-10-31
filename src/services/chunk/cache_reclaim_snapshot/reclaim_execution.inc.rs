@@ -163,6 +163,8 @@ impl MatrixReplicaService {
         for candidate in plan.candidates {
             // NOT AN APPEND, so the batch undo cannot be a length here.
             self.materialise_page_undo(&candidate.page_id);
+            let accounting_before = self.page_accounting(&candidate.page_id);
+            let reaccount = candidate.page_id.clone();
             let Some(state) = self.pages.get_mut(&candidate.page_id) else {
                 continue;
             };
@@ -210,6 +212,10 @@ impl MatrixReplicaService {
                 .saturating_add(candidate.rewrite_bytes);
             report.trimmed_bytes = report.trimmed_bytes.saturating_add(candidate.trim_bytes);
             self.invalidate_chunk_cache(&candidate.page_id, 0, candidate.logical_length);
+            // This page's payload was zeroed, trimmed, or both, and its discarded
+            // ranges were taken, so both totals move. `reaccount` is a clone of the
+            // id because `candidate` is consumed by the loop above it.
+            self.reaccount_page(&reaccount, accounting_before);
         }
         if self.trim_flow_enabled() {
             self.trim_flow_available_bytes = self

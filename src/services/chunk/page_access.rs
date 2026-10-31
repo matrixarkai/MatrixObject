@@ -158,7 +158,9 @@ impl MatrixReplicaService {
     pub(crate) fn install_page_unfenced(&mut self, page_id: PageId, state: PageState) {
         // NOT AN APPEND, so the batch undo cannot be a length here.
         self.materialise_page_undo(&page_id);
-        self.pages.insert(page_id, std::sync::Arc::new(state));
+        let accounting_before = self.page_accounting(&page_id);
+        self.pages.insert(page_id.clone(), std::sync::Arc::new(state));
+        self.reaccount_page(&page_id, accounting_before);
     }
 
     /// The whole page map, by reference. **THIS CALL CANNOT CROSS A PROCESS BOUNDARY.**
