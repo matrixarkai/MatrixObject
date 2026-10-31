@@ -17,7 +17,6 @@ impl MatrixChunkService {
                 "page mutation batch already active".to_string(),
             ));
         }
-        let snapshot = self.export_snapshot_unsealed();
         let started_route_commit_index = self.chunk_route_control_commit_index;
         let mut replica_indices = Vec::with_capacity(self.replicas.len());
         for index in 0..self.replicas.len() {
@@ -30,52 +29,55 @@ impl MatrixChunkService {
                 "page mutation batch requires writable replica quorum".to_string(),
             ));
         }
+        // THE REPLICAS FIRST, THE SNAPSHOT AFTER, so that a failure here needs no
+        // snapshot to recover from. Nothing of this service's own state has changed
+        // until the batch is registered below, and the replicas that did open roll
+        // themselves back -- which also means this no longer has to hold a snapshot
+        // carrying every replica's pages just for an error path.
+        let mut opened: Vec<usize> = Vec::with_capacity(replica_indices.len());
         for index in &replica_indices {
             let replica_batch_id = replica_mutation_batch_id(&batch_id, *index);
             // EACH REPLICA OWNS ITS PAGE UNDO, and this service's own copy of its
-            // pages comes out below. See the note on `undo`.
+            // pages is left out below. See the note on `undo`.
             if let Err(err) = self.replicas[*index].begin_mutation_batch(replica_batch_id) {
-                // `install_snapshot` clears `active_mutation_batch` itself, and
-                // this batch has not been registered yet, so the snapshot is
-                // still in hand and needs no copy.
-                let mut rollback = snapshot;
-                rollback.seal_checksum();
-                self.install_snapshot(rollback)?;
+                for already_open in opened {
+                    let _ = self.replicas[already_open]
+                        .abort_mutation_batch(replica_mutation_batch_id(&batch_id, already_open));
+                }
                 return Err(err);
             }
+            opened.push(*index);
         }
         // ---------------------------------------------------------------------------
         // THE UNDO DOES NOT HOLD THE REPLICAS' PAGES, AND THAT IS THE WHOLE POINT
         // ---------------------------------------------------------------------------
         //
-        // `export_snapshot_unsealed` above clones each replica's page map, which SHARES
-        // every page's handle. Cheap to take -- and then the next write to any of those
-        // pages goes through `Arc::make_mut` and copies the WHOLE PAGE, payload
-        // included, so that this undo keeps the old bytes. A put is an append, so
-        // filling one page with many puts copied the page once per put: quadratic in the
-        // page size, and 303,599,229 instructions of `memcpy` in a 400-put callgrind
-        // run, 38.8% of it.
+        // A snapshot of this service clones each replica's page map, which SHARES every
+        // page's handle. Cheap to take -- and then the next write to any of those pages
+        // goes through `Arc::make_mut` and copies the WHOLE PAGE, payload included, so
+        // that this undo keeps the old bytes. A put is an append, so filling one page
+        // with many puts copied the page once per put: quadratic in the page size, and
+        // 303,599,229 instructions of `memcpy` in a 400-put callgrind run, 38.8% of it.
         //
         // The copy was never needed HERE. Each replica can hold its own undo, and a
-        // replica knows which of its writes are appends -- so its undo for an appended
-        // page is a LENGTH to truncate back to rather than a copy of the page. That is
-        // why the loop above opens each replica's batch WITH its undo, where it used to
-        // skip it on the grounds that this snapshot already carried the pages.
+        // replica knows what its writes replaced -- so its undo is a length for an
+        // append and the replaced bytes for a write inside the payload, never a copy of
+        // the page. That is why the loop above opens each replica's batch WITH its undo,
+        // where it used to skip it on the grounds that this snapshot already carried the
+        // pages.
         //
-        // So this snapshot gives the pages up. It keeps everything else, including each
-        // replica's receipts and counters, and `abort_mutation_batch` fills the page
-        // maps back in from the replicas AFTER they have rolled themselves back -- which
-        // leaves what gets installed byte for byte what this snapshot would have carried.
+        // So this snapshot is built without them, for exactly the replicas that opened a
+        // batch above: ASKED FOR RATHER THAN EMPTIED AFTERWARDS, because emptying meant
+        // cloning every page map per append and throwing it away, which measured as a
+        // 10-25% append regression on TemporalStore's shared store -- 1 KiB pages, where
+        // there is no page copy for the undo to be saving in exchange.
         //
-        // ONLY the replicas whose batches were opened above. A replica that was not
-        // writable gets no batch, so it will not roll itself back, and its pages have to
-        // stay here.
-        let mut undo = snapshot;
-        for index in &replica_indices {
-            if let Some(taken) = undo.replicas.get_mut(*index) {
-                taken.pages = BTreeMap::new();
-            }
-        }
+        // It keeps everything else, including each replica's receipts and counters, and
+        // `abort_mutation_batch` fills the page maps back in from the replicas AFTER
+        // they have rolled themselves back -- which leaves what gets installed byte for
+        // byte what a full snapshot would have carried. A replica that was not writable
+        // gets no batch, so it will not roll itself back, and its pages stay here.
+        let undo = self.export_snapshot_unsealed_without_pages_for(&replica_indices);
         self.active_mutation_batch = Some(ChunkMutationBatch {
             batch_id,
             started_route_commit_index,
