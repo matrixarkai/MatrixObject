@@ -38502,15 +38502,46 @@ fn an_extent_list_carries_no_spare_capacity() {
             .unwrap_or_else(|| panic!("the audit should report {key}"))
     }
 
+    // ---- WHAT AN OBJECT PAYS IS THE ENUM, NOT THE VARIANT INSIDE IT.
+    //
+    // This used to compare `size_of::<Box<[ObjectExtent]>>()` against
+    // `size_of::<Vec<ObjectExtent>>()` and conclude 16 < 24. Both figures are right and
+    // the comparison is beside the point: what an object stores is `ObjectExtents`, and
+    // `One(ObjectExtent)` is sixteen bytes that leave eight spare -- which is where a
+    // discriminant goes. A boxed slice, an `Arc<[T]>` and a `Vec<T>` therefore ALL leave
+    // this enum at twenty-four bytes. The out-of-line variant is free; the inline extent
+    // is what the eight bytes buy.
+    //
+    // Pinned as an arithmetic over the two terms, so it follows a change to either
+    // instead of going stale as a literal would.
     assert_eq!(
-        std::mem::size_of::<Box<[ObjectExtent]>>(),
-        2 * std::mem::size_of::<usize>(),
-        "a pointer and a length"
+        std::mem::size_of::<ObjectExtents>(),
+        std::mem::size_of::<ObjectExtent>() + std::mem::size_of::<usize>(),
+        "one extent inline, plus the word its discriminant shares"
     );
-    assert!(
-        std::mem::size_of::<Box<[ObjectExtent]>>() < std::mem::size_of::<Vec<ObjectExtent>>(),
-        "which is smaller than a pointer, a length and a capacity"
-    );
+
+    // ---- AND CLONING THE LIST IS AN INCREMENT, NOT A COPY.
+    //
+    // `ObjectMetadata` is cloned on paths that only READ it -- `head_object` and
+    // `get_object_range` both return it by value -- and an append-only object grows two
+    // extents per append, so a copying clone was O(extents) on every one of them. The
+    // list is shared, and this is the assertion that says so: two clones of one list
+    // point at one allocation.
+    //
+    // It is written as a pointer comparison because that is the property that matters. A
+    // revert to `Box<[ObjectExtent]>` keeps every size assertion above passing and fails
+    // here, which is the right way round.
+    {
+        let extent = ObjectExtent::new(ChunkId::new(0, 7).expect("a valid chunk id"), 0, 64).expect("a valid extent");
+        let many = ObjectExtents::from(vec![extent.clone(), extent.clone(), extent]);
+        assert_eq!(many.heap_len(), 3, "three extents do not fit inline");
+        let shared = many.clone();
+        assert_eq!(
+            many.as_slice().as_ptr(),
+            shared.as_slice().as_ptr(),
+            "cloning an extent list should share its allocation, not copy it"
+        );
+    }
 
     let mut store = MatrixObjectStore::new(test_options()).unwrap();
     store.create_bucket("bucket").unwrap();
