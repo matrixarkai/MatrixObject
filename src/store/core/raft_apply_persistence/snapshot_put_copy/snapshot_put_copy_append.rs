@@ -111,10 +111,32 @@ impl MatrixObjectStore {
             })?;
         self.check_bucket_quota_for_put(&object_id, length)?;
         let appended_extents = self.allocate_extents(&data)?;
-        let mut extents = previous
+        // ---- BUILT AT ITS FINAL CAPACITY, so the `extents.into()` below is a MOVE.
+        //
+        // `ObjectExtents::Many` holds a `Box<[ObjectExtent]>`, and the conversion from a
+        // `Vec` goes through `into_boxed_slice`, which copies the whole list whenever the
+        // vector's capacity is not exactly its length. Growing a `to_vec()` by `extend`
+        // guarantees that mismatch: `to_vec` allocates exactly, so the reserve inside
+        // `extend` has to grow, and it grows GEOMETRICALLY -- leaving spare capacity that
+        // `into_boxed_slice` then has to shrink away by copying every extent again.
+        //
+        // Reserving the final length up front costs nothing and makes the shrink a no-op,
+        // so an append copies the extent list once instead of twice. The list grows by two
+        // per append, so this is one of the O(extents) terms that make an append-only log
+        // quadratic to build; see the digest note below for the other one this path used
+        // to carry.
+        let previous_extents = previous
             .as_ref()
-            .map_or_else(Vec::new, |metadata| metadata.extents.to_vec());
+            .map_or(&[][..], |metadata| metadata.extents.as_slice());
+        let mut extents = Vec::with_capacity(previous_extents.len() + appended_extents.len());
+        extents.extend_from_slice(previous_extents);
         extents.extend(appended_extents);
+        debug_assert_eq!(
+            extents.len(),
+            extents.capacity(),
+            "the extent list was built at its final capacity so that `into()` below moves \
+             instead of copying; a spare slot here means something grew it after the reserve"
+        );
 
         // ---- THE DIGEST IS CARRIED FORWARD, NOT RECOMPUTED.
         //
