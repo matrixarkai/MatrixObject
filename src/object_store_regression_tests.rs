@@ -41130,8 +41130,16 @@ fn every_page_mutation_pays_its_undo_before_mutating() {
     // checked, and if they matched EVERYTHING the reads would have collapsed to
     // zero and the paid-for check below would be about reads rather than writes.
     assert!(
-        sites >= 12,
-        "the chunk service should have at least 12 sites that change a page, and \
+        // ELEVEN, NOT TWELVE, BECAUSE THE ABORT STOPPED BEING A SITE.
+        // `abort_mutation_batch` used to fix pages up in `self.pages`; it now takes
+        // the live map OUT of the service with `mem::take` and fixes up that
+        // detached map before installing it. Mutating a map nothing can read is not
+        // what this rule is about: the rule is that a mutation of LIVE state must
+        // first secure a pre-image, and the abort IS the code that restores one.
+        // The floor moved by exactly the one site that left. `unpaid` below is what
+        // guards the rule; this only keeps the scan from checking nothing at all.
+        sites >= 11,
+        "the chunk service should have at least 11 sites that change a page, and \
          this scan found {sites} -- the needles have probably gone stale"
     );
     assert!(
@@ -44159,9 +44167,18 @@ fn the_audit_reports_what_an_open_mutation_batch_holds() {
         "the total must grow by exactly what the open batch holds"
     );
     let entries_before_any_write = read(&store, "open_batch.replica_chunks.entries");
-    assert!(
-        entries_before_any_write > 0,
-        "the open batch names the replicas' chunks, and reported none"
+    // AND IT HOLDS NOTHING YET, WHICH IS THE WHOLE SAVING.
+    //
+    // This asserted `> 0` while the undo was a clone of the whole page map, taken
+    // when the batch opened. It is not one any more: `capture_page_pre_image` keeps
+    // a page's pre-image the first time something touches that page, so a batch
+    // that has touched nothing holds nothing. The old assertion was true of the old
+    // design and is false of this one BY CONSTRUCTION, so it is replaced rather
+    // than relaxed -- and the replacement is the stronger claim, since `> 0` was
+    // satisfied by any number at all and this is satisfied by exactly one.
+    assert_eq!(
+        entries_before_any_write, 0,
+        "a batch that has touched no page should hold no page's pre-image"
     );
     assert_eq!(
         read(&store, "open_batch.replica_chunks.write_undo_records"),
@@ -44209,9 +44226,24 @@ fn the_audit_reports_what_an_open_mutation_batch_holds() {
         "one appended page should have an undo that is a length"
     );
     assert_eq!(
-        entries_after,
-        entries_before_any_write - 1,
-        "and that page should have left the set the undo still holds"
+        entries_after, 0,
+        "the touched page's pre-image became a record, so none is held outright"
+    );
+    // THE COST OF AN OPEN BATCH IS WHAT IT TOUCHED, NOT WHAT THE STORE HOLDS.
+    //
+    // This is the assertion the change exists to make true, and the one that fails
+    // if the eager clone is ever restored: with it, `entries` would be every page
+    // this replica holds except the appended one, so the sum below would be that
+    // page count rather than one. Inverse-planted that way before being trusted.
+    let pages_held = store.chunk_service.replicas[0].pages_local().len() as u64;
+    assert!(
+        pages_held > 1,
+        "this fixture must hold several pages or the bound says nothing: {pages_held}"
+    );
+    assert_eq!(
+        entries_after + records_after,
+        1,
+        "one page was touched, so the undo accounts for one, not for {pages_held}"
     );
     assert!(
         record_bytes > 0,

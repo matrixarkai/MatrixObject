@@ -18,6 +18,16 @@ struct ReplicaMutationBatch {
     /// the moment something happens to the page that this record cannot undo,
     /// and `abort_mutation_batch` rebuilds it.
     page_write_undo: BTreeMap<PageId, PageWriteUndo>,
+    /// Pages this batch CREATED, which therefore have no pre-image.
+    ///
+    /// The undo for a page that was not there is to remove it again. This used
+    /// to need no recording: the snapshot was a clone of the whole page map
+    /// taken when the batch opened, so a page absent from it was known to be
+    /// new, and the abort replaced the map wholesale. The snapshot is now filled
+    /// LAZILY, one page per first touch, so absence from it no longer
+    /// distinguishes "created here" from "never touched" -- and that difference
+    /// is the whole of what this set carries.
+    created_pages: std::collections::BTreeSet<PageId>,
 }
 
 /// What it takes to undo this batch's writes to one page.
