@@ -74,10 +74,36 @@ impl ObjectExtent {
 /// still does, and `From<Vec<ObjectExtent>>` is how it is built -- which is how the old
 /// field was built too, so no construction site moved. The wire is untouched: the snapshot
 /// writes a count and then each extent, read off the slice either way.
+///
+/// # WHY THE MANY ARE SHARED
+///
+/// `Many` holds an `Arc<[ObjectExtent]>` and not a `Box<[ObjectExtent]>`, so **cloning
+/// this is an atomic increment rather than a copy of the list**. That matters because
+/// `ObjectMetadata` is cloned on paths that only READ it: `head_object` and
+/// `get_object_range` both return it by value, and the append's apply takes a copy of the
+/// previous object. An append-only object grows two extents per append, so a clone of its
+/// metadata was O(extents) and every one of those paths paid it -- 7.00% of a 6,400-entry
+/// shared-store sweep, inclusive, across four separately-inlined copies of
+/// `ObjectMetadata::clone`.
+///
+/// IT COSTS NOTHING INLINE. `One(ObjectExtent)` is sixteen bytes and leaves eight spare,
+/// which is where a discriminant goes; `Box<[T]>`, `Arc<[T]>` and `Vec<T>` all leave this
+/// enum at twenty-four bytes. The size to compare is the ENUM's, never the variant's --
+/// comparing `size_of::<Box<[T]>>()` against `size_of::<Vec<T>>()` says 16 < 24 and
+/// answers a question nobody asked, because what an object stores is this enum.
+///
+/// IT CARRIES NO SPARE CAPACITY, so `an_extent_list_carries_no_spare_capacity` still
+/// holds: an `Arc<[T]>` is exact, exactly as a boxed slice is.
+///
+/// NOTHING MUTATES IT IN PLACE. Every site that changes an object's extents assigns a
+/// whole new list (`metadata.extents = new_extents.into()`), so no caller needs
+/// `Arc::make_mut` and sharing can never be observed. A site that wants to push one extent
+/// onto a live object would have to go through `make_mut` and would pay the copy there,
+/// which is the only place it could be correct.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ObjectExtents {
     One(ObjectExtent),
-    Many(Box<[ObjectExtent]>),
+    Many(std::sync::Arc<[ObjectExtent]>),
 }
 
 impl ObjectExtents {
@@ -85,7 +111,7 @@ impl ObjectExtents {
     pub fn as_slice(&self) -> &[ObjectExtent] {
         match self {
             Self::One(extent) => std::slice::from_ref(extent),
-            Self::Many(extents) => extents,
+            Self::Many(extents) => &extents[..],
         }
     }
 
@@ -118,7 +144,7 @@ impl From<Vec<ObjectExtent>> for ObjectExtents {
                     .expect("a vector of length one has an element to pop"),
             )
         } else {
-            Self::Many(extents.into_boxed_slice())
+            Self::Many(std::sync::Arc::from(extents))
         }
     }
 }
