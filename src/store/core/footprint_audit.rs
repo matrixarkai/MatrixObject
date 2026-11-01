@@ -956,10 +956,18 @@ impl ObjectMutationRollback {
                 .saturating_add(targeted.meta.footprint_bytes(&mut ledger))
                 .saturating_add(audit_string_heap(&targeted.bucket))
                 .saturating_add(audit_object_id_heap(&mut ledger, &targeted.object_id))
-                .saturating_add(targeted.previous_object.as_ref().map_or(0u64, |previous| {
-                    (std::mem::size_of::<ObjectMetadata>() as u64)
-                        .saturating_add(audit_object_metadata_heap(&mut ledger, previous))
-                }))
+                // THE TWO SHAPES COST DIFFERENT THINGS, and reporting the append's as
+                // a metadata clone would hide the saving this audit exists to see.
+                .saturating_add(match &targeted.previous_object {
+                    PutTargetedPrevious::Absent => 0u64,
+                    PutTargetedPrevious::Whole(previous) => {
+                        (std::mem::size_of::<ObjectMetadata>() as u64)
+                            .saturating_add(audit_object_metadata_heap(&mut ledger, previous))
+                    }
+                    PutTargetedPrevious::Appended(_) => {
+                        std::mem::size_of::<AppendedObjectUndo>() as u64
+                    }
+                })
                 // The payload entries the mutation will remove. One object's
                 // worth, where the undo used to copy the whole index -- and
                 // counted at capacity, because a `Vec` that was grown holds its

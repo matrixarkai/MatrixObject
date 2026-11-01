@@ -16,7 +16,7 @@ impl MatrixObjectStore {
         // key, one metadata record and one change record. What it allocates is
         // identified from the chunk records the undo carries rather than by
         // copying the payload index.
-        let rollback = self.capture_targeted_mutation_rollback(&bucket, &key);
+        let rollback = self.capture_appended_mutation_rollback(&bucket, &key);
         let batch_material = format!(
             "append_object:{bucket}/{key}:{update_time_ms}:{}",
             data.len()
