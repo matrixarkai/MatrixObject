@@ -184,7 +184,8 @@ impl MatrixReplicaService {
         }
         self.page_validation.borrow_mut().insert(
             page_id.clone(),
-            (chunk.write_sequence, chunk.checksum().clone(), hashes),
+            // `checksum()` returns an owned String; the clone was a second allocation.
+            (chunk.write_sequence, chunk.checksum(), hashes),
         );
         true
     }

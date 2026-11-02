@@ -344,7 +344,8 @@ impl ObjectMetadata {
             self.object_id.bucket.to_string(),
         );
         fields.insert(format!("{field_prefix}key"), self.object_id.key.to_string());
-        fields.insert(format!("{field_prefix}etag"), self.etag().clone().into());
+        // `etag()` returns an owned String; the clone was a second allocation of it.
+        fields.insert(format!("{field_prefix}etag"), self.etag().into());
         fields.insert(
             format!("{field_prefix}content_type"),
             self.content_type.clone().into(),

@@ -143,7 +143,9 @@ impl MatrixReplicaService {
         let result = ReplicaReadResult {
             data,
             write_sequence: chunk.write_sequence,
-            checksum: chunk.checksum().clone(),
+            // `checksum()` BUILDS a String; cloning that temporary allocated a second
+            // one and dropped the first, once per cache fill on the read path.
+            checksum: chunk.checksum(),
         };
         let result_bytes = result.data.len() as u64;
         if use_read_cache {
