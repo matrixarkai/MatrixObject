@@ -145,6 +145,7 @@ impl MatrixObjectStore {
         let chunk = self
             .chunks
             .get_mut(chunk_id)
+            .map(std::sync::Arc::make_mut)
             .ok_or_else(|| ObjectError::NotFound(format!("chunk {:?}", chunk_id)))?;
         for range in merged {
             range.end()?;

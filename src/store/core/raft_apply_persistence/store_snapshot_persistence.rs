@@ -133,7 +133,14 @@ impl MatrixObjectStore {
             object_changes: self.object_changes.clone(),
             object_change_cursors: self.object_change_cursors.clone(),
             next_object_change_sequence: self.next_object_change_sequence,
-            chunks: self.chunks.clone(),
+            // THE DURABLE SNAPSHOT KEEPS THE RECORDS INLINE, so this is where the
+            // deep copy happens -- once per snapshot, where it used to happen once
+            // per mutation.
+            chunks: self
+                .chunks
+                .iter()
+                .map(|(chunk_id, info)| (chunk_id.clone(), (**info).clone()))
+                .collect(),
             payloads,
             meta_snapshot: self.meta_service.export_snapshot(),
             next_chunk_id: self.next_chunk_id,
@@ -698,7 +705,11 @@ impl MatrixObjectStore {
         self.meta_service
             .install_placement_roster(&snapshot.meta_snapshot)?;
         self.meta_service.install_snapshot(snapshot.meta_snapshot)?;
-        self.chunks = snapshot.chunks;
+        self.chunks = snapshot
+            .chunks
+            .into_iter()
+            .map(|(chunk_id, info)| (chunk_id, std::sync::Arc::new(info)))
+            .collect();
         self.payloads = payload_index;
         self.chunk_service = chunk_service;
         self.next_chunk_id = snapshot.next_chunk_id;

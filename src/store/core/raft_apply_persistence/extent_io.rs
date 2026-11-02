@@ -26,6 +26,7 @@ impl MatrixObjectStore {
         let chunk = self
             .chunks
             .get_mut(&chunk_id)
+            .map(std::sync::Arc::make_mut)
             .ok_or_else(|| ObjectError::NotFound("allocated chunk missing".to_string()))?;
         let offset = chunk.next_offset;
         chunk.next_offset = chunk
@@ -64,6 +65,7 @@ impl MatrixObjectStore {
             let chunk = self
                 .chunks
                 .get_mut(&chunk_id)
+                .map(std::sync::Arc::make_mut)
                 .ok_or_else(|| ObjectError::NotFound("allocated chunk missing".to_string()))?;
             let offset = chunk.next_offset;
             chunk.next_offset = chunk
@@ -108,7 +110,7 @@ impl MatrixObjectStore {
                 .position(|range| range.length >= length)
                 .map(|index| (chunk_id.clone(), index))
         })?;
-        let info = self.chunks.get_mut(&chunk_id)?;
+        let info = std::sync::Arc::make_mut(self.chunks.get_mut(&chunk_id)?);
         let range = *info.stale_ranges.get(index)?;
         if range.length == length {
             info.stale_ranges.remove(index);
@@ -145,7 +147,7 @@ impl MatrixObjectStore {
         let chunk_id = ChunkId::new((id - 1) % self.options.volume_count, id)?;
         self.chunks.insert(
             chunk_id.clone(),
-            ChunkInfo {
+            std::sync::Arc::new(ChunkInfo {
                 chunk_id: chunk_id.clone(),
                 logical_bytes: 0,
                 live_bytes: 0,
@@ -154,7 +156,7 @@ impl MatrixObjectStore {
                 next_offset: 0,
                 stale_ranges: Vec::new(),
                 discarded_ranges: Vec::new(),
-            },
+            }),
         );
         Ok(chunk_id)
     }
@@ -193,6 +195,7 @@ impl MatrixObjectStore {
             let chunk = self
                 .chunks
                 .get_mut(&chunk_id)
+                .map(std::sync::Arc::make_mut)
                 .ok_or_else(|| ObjectError::NotFound("extent chunk missing".to_string()))?;
             let stale_bytes = merged_ranges
                 .iter()
