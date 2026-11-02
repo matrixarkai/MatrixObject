@@ -130,7 +130,9 @@ impl MatrixObjectStore {
             multipart_uploads,
             multipart_complete_receipts: self.multipart_complete_receipts.clone(),
             multipart_abort_receipts,
-            object_changes: self.object_changes.clone(),
+            // The durable snapshot keeps a Vec; the live feed is a deque, so this is where
+            // the two meet -- once per snapshot rather than once per append.
+            object_changes: self.object_changes.iter().cloned().collect(),
             object_change_cursors: self.object_change_cursors.clone(),
             next_object_change_sequence: self.next_object_change_sequence,
             // THE DURABLE SNAPSHOT KEEPS THE RECORDS INLINE, so this is where the
@@ -699,7 +701,7 @@ impl MatrixObjectStore {
         self.multipart_uploads = snapshot.multipart_uploads;
         self.multipart_complete_receipts = snapshot.multipart_complete_receipts;
         self.multipart_abort_receipts = snapshot.multipart_abort_receipts;
-        self.object_changes = snapshot.object_changes;
+        self.object_changes = snapshot.object_changes.into();
         self.object_change_cursors = snapshot.object_change_cursors;
         self.next_object_change_sequence = snapshot.next_object_change_sequence;
         self.meta_service
