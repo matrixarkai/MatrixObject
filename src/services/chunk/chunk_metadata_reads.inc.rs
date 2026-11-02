@@ -13,11 +13,14 @@ impl MatrixReplicaService {
             .pages
             .get(page_id)
             .ok_or_else(|| ObjectError::NotFound("chunk is missing".to_string()))?;
+        // `checksum()` BUILDS a String on each call, and this asked for it twice and
+        // cloned one of them: three allocations of the same 24 characters. Built once.
+        let checksum = state.checksum();
         Ok(ReplicaHead {
             logical_length: state.logical_length,
             write_sequence: state.write_sequence,
-            checksum: state.checksum().clone(),
-            state_checksum: chunk_state_handoff_checksum(page_id, state, &state.checksum()),
+            state_checksum: chunk_state_handoff_checksum(page_id, state, &checksum),
+            checksum,
             discarded_ranges: state.discarded_ranges.clone(),
         })
     }
