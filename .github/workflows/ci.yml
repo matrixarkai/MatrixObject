@@ -2374,6 +2374,19 @@ jobs:
           grep -q '^running 1 test$' /tmp/read-position.log
           grep -q '^test result: ok. 1 passed' /tmp/read-position.log
 
+      - name: a page mutation pays its undo before mutating
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::every_page_mutation_pays_its_undo_before_mutating -- --exact | tee /tmp/page-undo.log
+          grep -q '^running 1 test$' /tmp/page-undo.log
+          grep -q '^test result: ok. 1 passed' /tmp/page-undo.log
+      - name: an open mutation batch holds only the pages it touched
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib tests::the_audit_reports_what_an_open_mutation_batch_holds -- --exact | tee /tmp/page-undo.log
+          grep -q '^running 1 test$' /tmp/page-undo.log
+          grep -q '^test result: ok. 1 passed' /tmp/page-undo.log
+
   metadata-consensus:
     name: network metadata consensus
     runs-on: ubuntu-latest
