@@ -56,8 +56,11 @@ impl MatrixReplicaService {
                 "chunk mutation batch already active".to_string(),
             ));
         }
+        // THE PAGES ARE NOT COPIED HERE. See `capture_page_pre_image`: the undo
+        // collects pre-images as pages are touched, so opening a batch costs the
+        // scalars and nothing per page held.
         let snapshot = if capture_undo {
-            Some(Box::new(self.export_snapshot_unsealed()))
+            Some(Box::new(self.export_snapshot_unsealed_without_pages()))
         } else {
             None
         };
@@ -66,6 +69,7 @@ impl MatrixReplicaService {
             started_control_commit_index: self.chunk_mutation_control_commit_index,
             snapshot,
             page_write_undo: BTreeMap::new(),
+            created_pages: std::collections::BTreeSet::new(),
         });
         Ok(self.mutation_batch_status())
     }
@@ -108,16 +112,31 @@ impl MatrixReplicaService {
         let batch_id = active.batch_id;
         let started_control_commit_index = active.started_control_commit_index;
         let page_write_undo = active.page_write_undo;
+        let created_pages = active.created_pages;
         // A marker batch has no undo: whoever opened it holds one, and
         // restoring is theirs to do.
         if let Some(snapshot) = active.snapshot {
             let mut rollback = *snapshot;
+            // THE ROLLBACK STARTS FROM THE LIVE MAP, MOVED. The snapshot holds only
+            // the pages this batch touched, so installing its map would drop every
+            // page the batch never looked at. Taking the live map costs nothing --
+            // it is a move -- and the three loops below put the touched pages back.
+            let mut pages = std::mem::take(&mut self.pages);
+            // PAGES WHOSE PRE-IMAGE WAS KEPT OUTRIGHT, which is every touch that a
+            // record cannot describe: an install, a repair, a discard, a removal.
+            for (page_id, state) in std::mem::take(&mut rollback.pages) {
+                pages.insert(page_id, state);
+            }
             // THE PAGES WHOSE UNDO IS WHAT THE WRITES REPLACED. Each is absent from
-            // the rollback because its writes were allowed to land in the live
+            // the pre-images because its writes were allowed to land in the live
             // payload; its old state is that payload truncated, with the replaced
             // bytes put back, plus the scalars the writes advanced.
             for (page_id, undo) in page_write_undo {
-                let Some(live) = self.pages.remove(&page_id) else {
+                debug_assert!(
+                    !created_pages.contains(&page_id),
+                    "a page created inside the batch cannot also have a pre-image record"
+                );
+                let Some(live) = pages.remove(&page_id) else {
                     // Unreachable: every path that can drop a page calls
                     // `materialise_page_undo` first, which takes the record with it.
                     debug_assert!(false, "a write undo outlived the page it describes");
@@ -128,8 +147,13 @@ impl MatrixReplicaService {
                     Err(shared) => (*shared).clone(),
                 };
                 Self::restore_page_from_write_undo(&mut state, undo);
-                rollback.pages.insert(page_id, std::sync::Arc::new(state));
+                pages.insert(page_id, std::sync::Arc::new(state));
             }
+            // AND THE PAGES THAT WERE NOT THERE. Undoing a creation is a removal.
+            for page_id in created_pages {
+                pages.remove(&page_id);
+            }
+            rollback.pages = pages;
             rollback.seal_checksum();
             self.install_snapshot(rollback)?;
         }
@@ -189,12 +213,85 @@ impl MatrixReplicaService {
     /// `start_index` and `end_index` are the payload range the write will cover.
     /// Call this BEFORE taking the page mutably: whether it runs decides how many
     /// holders the page has, and so whether taking it copies.
+    /// Keep this page as the batch found it, the first time anything touches it.
+    ///
+    /// # WHY THE UNDO IS FILLED LAZILY AND NOT AT `begin`
+    ///
+    /// `begin_mutation_batch` used to capture its undo by cloning the whole page
+    /// map. Each VALUE in that clone is a handle, so it copies no payload -- that
+    /// was measured, and it is why the clone looked free. What it is not free in is
+    /// the MAP: one `BTreeMap` node allocation per page held, per batch, and a
+    /// matching deallocation when the batch ends. A batch touches a handful of
+    /// pages and a replica holds thousands, so nearly all of that work was for
+    /// pages the batch never looked at, and on the commit path -- which is every
+    /// path that is not an abort -- the whole structure was dropped unread.
+    ///
+    /// MEASURED on TemporalStore's five-node shared-store sweep, where the page
+    /// count is large and pages are small: `clone_subtree` of
+    /// `BTreeMap<PageId, Arc<PageState>>` at **31.82% inclusive** of a
+    /// 17,632,228,672-instruction run, its matching `drop` at 19.36%, and
+    /// `IntoIter::dying_next` under that drop at 17.03%.
+    ///
+    /// So the pre-image is collected one page at a time instead, as pages are
+    /// touched. Every site that mutates a page already calls either this or
+    /// `materialise_page_undo` before mutating -- `keep_page_undo_cheap_for_write`
+    /// calls this, and `materialise_page_undo` calls it too -- and
+    /// `every_page_mutation_pays_its_undo_before_mutating` is the guard that keeps
+    /// that true of sites added later.
+    ///
+    /// # WHAT ABSENCE MEANS NOW
+    ///
+    /// A page absent from `snapshot.pages` used to mean "created inside this
+    /// batch", because the map started complete. It now means "created inside this
+    /// batch OR never touched", and those two need opposite undos, so the first is
+    /// recorded in `created_pages` rather than inferred.
+    pub(crate) fn capture_page_pre_image(&mut self, page_id: &PageId) {
+        let Self {
+            active_mutation_batch,
+            pages,
+            ..
+        } = self;
+        let Some(batch) = active_mutation_batch.as_mut() else {
+            return;
+        };
+        let Some(snapshot) = batch.snapshot.as_mut() else {
+            return;
+        };
+        // Already accounted for: kept outright, re-encoded as a record, or known new.
+        if snapshot.pages.contains_key(page_id)
+            || batch.page_write_undo.contains_key(page_id)
+            || batch.created_pages.contains(page_id)
+        {
+            return;
+        }
+        match pages.get(page_id) {
+            // A HANDLE, NOT A COPY -- exactly what the whole-map clone gave every
+            // page. This is also why the strong counts that
+            // `keep_page_undo_cheap_for_write` checks need no adjusting: the capture
+            // runs immediately before the check, so the page it reads has the same
+            // two state holders and one payload holder it had when the map was
+            // cloned at `begin`.
+            Some(live) => {
+                snapshot
+                    .pages
+                    .insert(page_id.clone(), std::sync::Arc::clone(live));
+            }
+            // NOT THERE, so the pre-image IS its absence.
+            None => {
+                batch.created_pages.insert(page_id.clone());
+            }
+        }
+    }
+
     pub(crate) fn keep_page_undo_cheap_for_write(
         &mut self,
         page_id: &PageId,
         start_index: usize,
         end_index: usize,
     ) {
+        // FIRST TOUCH KEEPS THE PRE-IMAGE. A no-op on every later write to the
+        // same page, and the reason the lookup below finds anything at all.
+        self.capture_page_pre_image(page_id);
         {
             let Self {
                 active_mutation_batch,
@@ -322,6 +419,12 @@ impl MatrixReplicaService {
     /// A no-op unless this page's undo is currently a length, so every site that
     /// mutates a page can call it unconditionally.
     pub(crate) fn materialise_page_undo(&mut self, page_id: &PageId) {
+        // BEFORE THE EARLY RETURN BELOW, because this is the call every site that
+        // mutates a page in a way a record cannot describe already makes, and the
+        // pre-image has to be kept whether or not a record happens to exist. A
+        // page with no record and no pre-image yet is captured here; one that was
+        // never there is marked as created.
+        self.capture_page_pre_image(page_id);
         let Self {
             active_mutation_batch,
             pages,
