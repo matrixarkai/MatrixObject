@@ -226,7 +226,7 @@ impl MatrixObjectStore {
     /// the index ran on every mutation that succeeded.
     fn restore_targeted_payloads(
         &mut self,
-        chunks_before: &BTreeMap<ChunkId, ChunkInfo>,
+        chunks_before: &BTreeMap<ChunkId, std::sync::Arc<ChunkInfo>>,
         previous_payloads: Vec<((ChunkId, u64), StoredPayload)>,
     ) {
         self.payloads.retain(|chunk_id, offset, _| {

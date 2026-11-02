@@ -214,7 +214,19 @@ pub struct MatrixObjectStore {
     metadata_route_cache_expired_invalidations: u64,
     metadata_route_cache_capacity_evictions: u64,
     metadata_route_cache_sequence: u64,
-    pub(crate) chunks: BTreeMap<ChunkId, ChunkInfo>,
+    /// The chunk records, behind handles.
+    ///
+    /// A chunk record is a DEEP value -- `stale_ranges` and `discarded_ranges` are
+    /// both `Vec` -- and every mutation copies this whole map to hold its undo. With
+    /// the records inline that copied two heap allocations per chunk to protect the
+    /// one or two chunks a put touches, so the cost of starting a write grew with how
+    /// much the store already held. Behind an `Arc` the same copy is one refcount per
+    /// chunk, and `Arc::make_mut` pays for a record only when it is actually written.
+    ///
+    /// The DURABLE snapshot keeps the records inline -- see `store_snapshot_contracts`
+    /// -- so the conversion happens at that boundary, once per snapshot rather than
+    /// once per mutation.
+    pub(crate) chunks: BTreeMap<ChunkId, std::sync::Arc<ChunkInfo>>,
     /// The chunk a compaction is draining, which must not be allocated into.
     ///
     /// `ensure_writable_chunk` takes the first chunk with room, and with a chunk size that
@@ -358,7 +370,7 @@ pub(crate) struct ObjectMutationRollback {
     multipart_abort_receipts: BTreeMap<String, MultipartAbortReceipt>,
     next_upload_sequence: u64,
     meta_service: Option<MatrixMetaService>,
-    chunks: BTreeMap<ChunkId, ChunkInfo>,
+    chunks: BTreeMap<ChunkId, std::sync::Arc<ChunkInfo>>,
     payloads: PayloadIndex,
     /// Absent on the put path, where the page service's own mutation batch
     /// holds the undo and the put drives its abort.
