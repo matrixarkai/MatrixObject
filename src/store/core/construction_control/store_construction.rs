@@ -197,7 +197,7 @@ impl MatrixObjectStore {
             multipart_uploads: BTreeMap::new(),
             multipart_complete_receipts: BTreeMap::new(),
             multipart_abort_receipts: BTreeMap::new(),
-            object_changes: Vec::new(),
+            object_changes: std::collections::VecDeque::new(),
             object_change_cursors: BTreeMap::new(),
             next_object_change_sequence: 1,
             meta_service: MatrixMetaService::new(),

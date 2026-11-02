@@ -29,10 +29,10 @@ impl MatrixObjectStore {
         self.next_object_change_sequence = self.next_object_change_sequence.saturating_add(1);
         let previous_sequence = self
             .object_changes
-            .last()
+            .back()
             .map_or(0, |change| change.sequence);
         self.bound_unconsumed_object_changes();
-        self.object_changes.push(ObjectChangeRecord {
+        self.object_changes.push_back(ObjectChangeRecord {
             sequence,
             previous_sequence,
             operation: interned_change_operation(operation),
@@ -79,7 +79,7 @@ impl MatrixObjectStore {
     }
 
     fn replace_last_object_change_metadata(&mut self, operation: &str, metadata: &ObjectMetadata) {
-        let Some(change) = self.object_changes.last_mut() else {
+        let Some(change) = self.object_changes.back_mut() else {
             return;
         };
         if &*change.operation != operation || change.object_id != metadata.object_id {

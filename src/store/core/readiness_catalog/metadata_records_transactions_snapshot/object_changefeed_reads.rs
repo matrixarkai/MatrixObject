@@ -27,7 +27,7 @@ impl MatrixObjectStore {
             max_payload_bytes,
             ..ObjectChangePage::default()
         };
-        if let Some(first_change) = self.object_changes.first() {
+        if let Some(first_change) = self.object_changes.front() {
             page.retained_floor_sequence = first_change.sequence.saturating_sub(1);
             page.resync_from_sequence = page.retained_floor_sequence;
             if after_sequence < page.retained_floor_sequence {
@@ -45,7 +45,7 @@ impl MatrixObjectStore {
         let start = self
             .object_changes
             .partition_point(|change| change.sequence <= after_sequence);
-        for change in self.object_changes[start..].iter() {
+        for change in self.object_changes.range(start..) {
             if page.records.len() >= limit {
                 page.truncated = true;
                 break;

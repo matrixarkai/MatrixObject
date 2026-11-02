@@ -24,7 +24,7 @@ impl MatrixObjectStore {
         validate_changefeed_consumer_id(consumer_id)?;
         let compacted_floor = self
             .object_changes
-            .first()
+            .front()
             .and_then(|change| change.sequence.checked_sub(1))
             .unwrap_or_else(|| self.next_object_change_sequence.saturating_sub(1));
         Ok(self

@@ -195,7 +195,9 @@ pub struct MatrixObjectStore {
     multipart_uploads: BTreeMap<String, MultipartUpload>,
     pub(crate) multipart_complete_receipts: BTreeMap<String, MultipartCompleteReceipt>,
     pub(crate) multipart_abort_receipts: BTreeMap<String, MultipartAbortReceipt>,
-    object_changes: Vec<ObjectChangeRecord>,
+    // Matches the live feed's type, so the undo is a deque clone and the restore is
+    // a move rather than a conversion.
+    object_changes: std::collections::VecDeque<ObjectChangeRecord>,
     object_change_cursors: BTreeMap<String, ObjectChangeCursor>,
     next_object_change_sequence: u64,
     pub(crate) meta_service: MatrixMetaService,
@@ -363,7 +365,17 @@ pub(crate) struct ObjectMutationRollback {
     bucket_cors_receipts: BTreeMap<String, BucketCorsMutationReceipt>,
     objects: BTreeSet<KeyedObject>,
     versions: BTreeMap<ObjectId, Vec<ObjectMetadata>>,
-    object_changes: Vec<ObjectChangeRecord>,
+    /// The unconsumed change feed, bounded at `UNCONSUMED_OBJECT_CHANGE_RETENTION`.
+    ///
+    /// A DEQUE, not a `Vec`, because the bound is enforced by dropping the OLDEST record
+    /// on every append once the feed is full, and `Vec::drain(0..1)` moves every
+    /// remaining record left by one to do that. At the 1,024-record bound that is a
+    /// 1,024-element memmove per append, for ever. Measured: appends cost 36.4 us/entry
+    /// at 1,600 entries and 58.3 at 6,400, and `append_object_change` grew from 122,576
+    /// to 167,865 instructions per entry across that range while the D1 miss rate FELL,
+    /// so it was work and not cache. A deque drops the front in constant time and holds
+    /// the same bound.
+    object_changes: std::collections::VecDeque<ObjectChangeRecord>,
     next_object_change_sequence: u64,
     multipart_uploads: BTreeMap<String, MultipartUpload>,
     multipart_complete_receipts: BTreeMap<String, MultipartCompleteReceipt>,
