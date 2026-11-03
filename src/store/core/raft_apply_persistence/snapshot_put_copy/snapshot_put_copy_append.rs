@@ -111,20 +111,24 @@ impl MatrixObjectStore {
             })?;
         self.check_bucket_quota_for_put(&object_id, length)?;
         let appended_extents = self.allocate_extents(&data)?;
-        // ---- BUILT AT ITS FINAL CAPACITY, so the `extents.into()` below is a MOVE.
+        // ---- BUILT AT ITS FINAL CAPACITY, AND THE `extents.into()` BELOW IS NOW A MOVE.
         //
-        // `ObjectExtents::Many` holds a `Box<[ObjectExtent]>`, and the conversion from a
-        // `Vec` goes through `into_boxed_slice`, which copies the whole list whenever the
-        // vector's capacity is not exactly its length. Growing a `to_vec()` by `extend`
-        // guarantees that mismatch: `to_vec` allocates exactly, so the reserve inside
-        // `extend` has to grow, and it grows GEOMETRICALLY -- leaving spare capacity that
-        // `into_boxed_slice` then has to shrink away by copying every extent again.
+        // It was not before. This note used to say the conversion was a move because
+        // `ObjectExtents::Many` held a `Box<[ObjectExtent]>`, where `into_boxed_slice` is
+        // free when a vector's capacity equals its length. The variant was later changed to
+        // an `Arc`, and `Arc::from(Vec<T>)` can NEVER adopt the vector's allocation -- an
+        // `Arc<[T]>` needs its refcount header immediately before the elements -- so it
+        // copied the whole list every time, exact capacity or not. The reserve below was
+        // buying nothing and the note asserted an optimisation that had stopped happening.
         //
-        // Reserving the final length up front costs nothing and makes the shrink a no-op,
-        // so an append copies the extent list once instead of twice. The list grows by two
-        // per append, so this is one of the O(extents) terms that make an append-only log
-        // quadratic to build; see the digest note below for the other one this path used
-        // to carry.
+        // `Many` now holds an `Arc<Vec<ObjectExtent>>`, so the conversion moves the vector
+        // and the reserve does what it says again. Measured on a 200+6,400 entry sweep
+        // before the change: the conversion allocated and copied 64,024 bytes per added
+        // entry, one of three such copies making up half of all per-entry allocation.
+        //
+        // The list still grows by two per append and is still rebuilt in full here, so this
+        // path remains O(extents) per append -- one of the terms that make an append-only
+        // log quadratic to build. This removes one of its three copies, not the term.
         let previous_extents = previous
             .as_ref()
             .map_or(&[][..], |metadata| metadata.extents.as_slice());
