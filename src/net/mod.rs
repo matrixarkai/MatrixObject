@@ -327,6 +327,102 @@ mod tests {
     }
 
     #[test]
+    fn an_append_over_http_lands_at_the_end_and_refuses_a_stale_offset() {
+        // S3 HAS NO APPEND VERB, AND THIS DOOR ANSWERS NOTHING THAT IS NOT S3. So an append is
+        // `PutObject` carrying `x-amz-write-offset-bytes`, which is how S3 itself spells one --
+        // S3 Express One Zone appends when that header is present. Without this, the store's
+        // `append_object` is reachable in process and unreachable over the wire, and a shared
+        // log cannot be written by anything that is not linked into the store.
+        let (_handle, addr) = serve();
+
+        // The first append CREATES the object. A missing key is a length of zero here, not a
+        // `NoSuchKey`: an append is how an append-only object comes into being.
+        let first = roundtrip(
+            &addr,
+            &request("PUT", "/b/wal", "x-amz-write-offset-bytes: 0
+", b"aaaa"),
+        );
+        assert_eq!(status_of(&first), 200, "first append answered: {first}");
+        assert!(
+            first.to_ascii_lowercase().contains("x-amz-object-size: 4"),
+            "an append has to report what the object is NOW -- the client knows how many bytes              it sent and not where they landed, and `content-length` describes the response;              got: {first}"
+        );
+
+        let second = roundtrip(
+            &addr,
+            &request("PUT", "/b/wal", "x-amz-write-offset-bytes: 4
+", b"bbb"),
+        );
+        assert_eq!(status_of(&second), 200, "second append answered: {second}");
+        assert!(
+            second.to_ascii_lowercase().contains("x-amz-object-size: 7"),
+            "got: {second}"
+        );
+
+        // EXTENDED, NOT REPLACED. This is the whole point, and a put that silently replaced
+        // would pass every assertion above.
+        let get = roundtrip(&addr, &request("GET", "/b/wal", "", b""));
+        assert_eq!(status_of(&get), 200, "{get}");
+        assert_eq!(
+            body_of(&get),
+            "aaaabbb",
+            "the second append must have extended the object, not replaced it"
+        );
+
+        // A RANGED READ OF JUST THE APPENDED BYTES, which is how a reader of a shared log
+        // fetches one entry instead of the whole log.
+        let ranged = roundtrip(&addr, &request("GET", "/b/wal", "range: bytes=4-6
+", b""));
+        assert_eq!(status_of(&ranged), 206, "a ranged read answered: {ranged}");
+        assert_eq!(body_of(&ranged), "bbb", "the range served the wrong bytes");
+
+        // A STALE OFFSET IS REFUSED, and the object is left alone. The offset is a condition,
+        // not a destination: a client that thinks the object is shorter than it is would
+        // otherwise write its bytes somewhere other than where it believes, and a reader
+        // deriving entry positions from its own bookkeeping would read the wrong ones.
+        let stale = roundtrip(
+            &addr,
+            &request("PUT", "/b/wal", "x-amz-write-offset-bytes: 2
+", b"zz"),
+        );
+        assert_ne!(
+            status_of(&stale),
+            200,
+            "an append at an offset that is not the end must be refused: {stale}"
+        );
+        let after_refusal = roundtrip(&addr, &request("GET", "/b/wal", "", b""));
+        assert_eq!(
+            body_of(&after_refusal),
+            "aaaabbb",
+            "a refused append must leave the object exactly as it was"
+        );
+
+        // AND A PUT WITHOUT THE HEADER STILL REPLACES, so this did not quietly turn every
+        // write into an append.
+        let replaced = roundtrip(&addr, &request("PUT", "/b/wal", "", b"zzz"));
+        assert_eq!(status_of(&replaced), 200, "{replaced}");
+        let after_put = roundtrip(&addr, &request("GET", "/b/wal", "", b""));
+        assert_eq!(
+            body_of(&after_put),
+            "zzz",
+            "a put carrying no offset header must replace the object as it always did"
+        );
+
+        // A header that is not a number is refused rather than treated as absent, which would
+        // turn a malformed append into a silent whole-object replacement.
+        let malformed = roundtrip(
+            &addr,
+            &request("PUT", "/b/wal2", "x-amz-write-offset-bytes: end
+", b"q"),
+        );
+        assert_ne!(
+            status_of(&malformed),
+            200,
+            "a non-numeric offset must be refused, not ignored: {malformed}"
+        );
+    }
+
+    #[test]
     fn an_object_written_over_http_reads_back_over_http() {
         let (handle, addr) = serve();
         let put = roundtrip(&addr, &request("PUT", "/b/k1", "", b"hello-over-http"));

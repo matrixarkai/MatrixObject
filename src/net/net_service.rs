@@ -61,6 +61,14 @@ pub const DEFAULT_CONTENT_TYPE: &str = "application/octet-stream";
 /// Header prefix carrying caller-supplied object metadata.
 pub const USER_METADATA_PREFIX: &str = "x-amz-meta-";
 
+/// Offset a `PutObject` body is expected to land at, which turns the put into an append.
+///
+/// Spelled as S3 spells it. S3 Express One Zone takes this header on `PutObject` and appends
+/// when it is present, so answering it widens what this door covers of S3 rather than adding
+/// a verb of its own -- which matters here, because there is no HTTP mode of this server that
+/// answers anything other than S3.
+pub const WRITE_OFFSET_HEADER: &str = "x-amz-write-offset-bytes";
+
 /// Most keys one bucket listing will answer with, when the caller names no limit.
 pub const DEFAULT_LIST_LIMIT: usize = 1_000;
 
@@ -1477,12 +1485,77 @@ impl ObjectService {
             ..PutOptions::default()
         };
 
+        // AN APPEND, WHEN THE CLIENT ASKS FOR ONE BY OFFSET.
+        //
+        // S3 has no append verb, and this door answers nothing that is not S3 -- so an append
+        // is not a route of its own here. It is `PutObject` carrying the offset the write is
+        // expected to land at, which is how S3 itself spells an append: S3 Express One Zone
+        // takes `x-amz-write-offset-bytes` on `PutObject` and appends when it is present. So
+        // this widens what the door answers WITHIN S3 rather than stepping outside it.
+        //
+        // The offset is a condition, not a destination. The store appends at the end or not
+        // at all; a client that believes the object is shorter than it is would otherwise
+        // silently write its bytes somewhere other than where it thinks, and a WAL reader
+        // deriving entry positions from its own bookkeeping would then read the wrong bytes.
+        // Mismatch is refused.
+        let write_offset = request
+            .header(WRITE_OFFSET_HEADER)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value.parse::<u64>().map_err(|_| {
+                    ObjectError::InvalidArgument(format!(
+                        "{WRITE_OFFSET_HEADER} must be a whole number of bytes, and {value:?} is not"
+                    ))
+                })
+            });
+        let write_offset = match write_offset {
+            Some(Ok(offset)) => Some(offset),
+            Some(Err(err)) => return s3_error(err, &resource, false),
+            None => None,
+        };
+
         let mut guard = match self.store.lock() {
             Ok(guard) => guard,
             Err(_) => return poisoned(&resource),
         };
-        match guard.put_object_with_options(bucket, key, request.body.clone(), content_type, options)
-        {
+
+        // CHECKED UNDER THE SAME LOCK AS THE WRITE, for the reason the conditions above are
+        // pushed into the store: reading the length, deciding, and then writing with the lock
+        // released in between lets two appends agree on the same offset and one of them land
+        // somewhere else.
+        let appended = match write_offset {
+            None => None,
+            Some(offset) => {
+                let current = match guard.head_object(bucket, key) {
+                    Ok(metadata) => metadata.length,
+                    // No object yet is a length of zero, not a missing key: an append is how
+                    // an append-only object is created.
+                    Err(ObjectError::NotFound(_)) => 0,
+                    Err(err) => return s3_error(err, &resource, false),
+                };
+                if offset != current {
+                    return s3_error(
+                        ObjectError::PreconditionFailed(format!(
+                            "{WRITE_OFFSET_HEADER} is {offset} and the object is {current} bytes                              long, so this append would not land at its end"
+                        )),
+                        &resource,
+                        false,
+                    );
+                }
+                Some(guard.append_object_with_options(
+                    bucket,
+                    key,
+                    request.body.clone(),
+                    content_type.clone(),
+                    options.clone(),
+                ))
+            }
+        };
+
+        match appended.unwrap_or_else(|| {
+            guard.put_object_with_options(bucket, key, request.body.clone(), content_type, options)
+        }) {
             Ok(metadata) => {
                 // FLUSHED HERE, AND THE RESULT IS NOT SWALLOWED. The store rewrites its durable
                 // snapshot on commit only for some operations; a plain put mutates memory and
@@ -1501,6 +1574,15 @@ impl ObjectService {
                 }
                 let mut response = Response::status(200);
                 apply_metadata_headers(&mut response, &metadata);
+                // WHAT THE OBJECT IS NOW, which a plain put's answer does not need and an
+                // append's does: the client knows how many bytes it sent but not where they
+                // landed, and `content-length` on a response describes the response. Named as
+                // S3 names it. Sent for both shapes, because a header that appears only
+                // sometimes is one every client has to branch on.
+                response.headers.push((
+                    "x-amz-object-size".to_string(),
+                    metadata.length.to_string(),
+                ));
                 response
             }
             Err(err) => s3_error(err, &resource, false),
