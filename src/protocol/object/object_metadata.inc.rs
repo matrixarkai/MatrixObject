@@ -77,7 +77,7 @@ impl ObjectExtent {
 ///
 /// # WHY THE MANY ARE SHARED
 ///
-/// `Many` holds an `Arc<[ObjectExtent]>` and not a `Box<[ObjectExtent]>`, so **cloning
+/// `Many` holds an `Arc<Vec<ObjectExtent>>` and not a `Box<[ObjectExtent]>`, so **cloning
 /// this is an atomic increment rather than a copy of the list**. That matters because
 /// `ObjectMetadata` is cloned on paths that only READ it: `head_object` and
 /// `get_object_range` both return it by value, and the append's apply takes a copy of the
@@ -93,7 +93,7 @@ impl ObjectExtent {
 /// answers a question nobody asked, because what an object stores is this enum.
 ///
 /// IT CARRIES NO SPARE CAPACITY, so `an_extent_list_carries_no_spare_capacity` still
-/// holds: an `Arc<[T]>` is exact, exactly as a boxed slice is.
+/// holds: the vector behind the `Arc` is built at its exact length by every caller.
 ///
 /// NOTHING MUTATES IT IN PLACE. Every site that changes an object's extents assigns a
 /// whole new list (`metadata.extents = new_extents.into()`), so no caller needs
@@ -103,7 +103,7 @@ impl ObjectExtent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ObjectExtents {
     One(ObjectExtent),
-    Many(std::sync::Arc<[ObjectExtent]>),
+    Many(std::sync::Arc<Vec<ObjectExtent>>),
 }
 
 impl ObjectExtents {
@@ -144,7 +144,19 @@ impl From<Vec<ObjectExtent>> for ObjectExtents {
                     .expect("a vector of length one has an element to pop"),
             )
         } else {
-            Self::Many(std::sync::Arc::from(extents))
+            // `Arc::new` MOVES the vector; `Arc::from(Vec)` would copy every element,
+            // because an `Arc<[T]>` needs its refcount header adjacent to the elements and
+            // so cannot adopt the vector's allocation. That copy was O(extents) on every
+            // append, measured at 64,024 bytes an entry on a 200+6,400-entry sweep.
+            //
+            // `shrink_to_fit` keeps `an_extent_list_carries_no_spare_capacity` true. It has
+            // to be explicit now: `Arc::from(Vec)` produced an exact slice and so discarded
+            // any slack as a side effect of the copy, and moving the vector would otherwise
+            // carry that slack into the `Arc`. It is a no-op -- no reallocation -- when the
+            // caller already built at its exact length, which the append path does, so the
+            // fast path stays a move and only a caller with slack pays what it used to.
+            extents.shrink_to_fit();
+            Self::Many(std::sync::Arc::new(extents))
         }
     }
 }
