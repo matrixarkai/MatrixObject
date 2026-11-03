@@ -42025,6 +42025,89 @@ fn the_published_metadata_footprint_line_is_the_one_this_tree_produces() {
 }
 
 #[test]
+fn a_refused_mutation_restores_the_chunk_map_it_mutated() {
+    // `self.chunks = rollback.chunks` is what puts the chunk map back after a refusal, and
+    // the undo clones the WHOLE map on every mutation to make that possible. Measured on a
+    // 200+6,400-entry shared-store sweep, that clone is the single largest allocation-COUNT
+    // cost of the run: `BTreeMap::clone_subtree` at 192 bytes a node, about 52 allocations
+    // per entry. Narrowing it to the chunks a mutation actually touches is worth -7.8%
+    // bytes, -9.5% blocks and -4.5% instructions.
+    //
+    // None of that may be attempted until something FAILS when the map comes back wrong,
+    // and before this nothing did. `an_append_undo_restores_every_field_a_write_changes`
+    // covers the replica service's page record, which is a different layer:
+    // `restore_object_mutation_rollback` restores the store's maps and deliberately does
+    // not touch the page service. So the store's chunk map had no guard at all.
+    //
+    // Driven the way a refusal drives it: capture, mutate, restore.
+    let mut store = MatrixObjectStore::new(StoreOptions {
+        volume_count: 1,
+        reuse_stale_chunk_space: false,
+        ..test_options()
+    })
+    .unwrap();
+    store.create_bucket("bucket").unwrap();
+    store
+        .append_object("bucket", "wal", vec![b'a'; 8], "application/octet-stream")
+        .unwrap();
+
+    // Every field of every chunk, via `Debug`, so a field added to `ChunkInfo` later is
+    // compared without this test being taught about it.
+    fn chunk_map(store: &MatrixObjectStore) -> Vec<String> {
+        store
+            .chunks
+            .iter()
+            .map(|(chunk_id, info)| format!("{chunk_id:?}={info:?}"))
+            .collect()
+    }
+
+    let before = chunk_map(&store);
+    assert!(
+        !before.is_empty(),
+        "the first append should have left at least one chunk to compare"
+    );
+
+    let rollback = store.capture_targeted_mutation_rollback("bucket", "wal");
+    store
+        .append_object("bucket", "wal", vec![b'b'; 12], "application/octet-stream")
+        .unwrap();
+    let during = chunk_map(&store);
+
+    // NOT VACUOUS, in both the dimensions that matter: the map has to have CHANGED, and it
+    // has to have gained a key -- otherwise a restore that only fixed offsets would pass
+    // while leaving an added chunk behind.
+    assert_ne!(
+        during, before,
+        "the second append must have changed the chunk map, or the restore below proves nothing"
+    );
+    assert!(
+        during.len() > before.len(),
+        "this fixture needs the append to ADD a chunk so the restore has a key to remove;          before={} during={}. chunk_size is {} and max_extent_bytes {}, so raise the          appended length if this ever stops holding",
+        before.len(),
+        during.len(),
+        store.options.chunk_size,
+        store.options.max_extent_bytes
+    );
+
+    store.restore_object_mutation_rollback(rollback);
+    let after = chunk_map(&store);
+    assert_eq!(
+        after, before,
+        "the undo must leave the chunk map exactly as it found it: every chunk the mutation          added has to be gone and every one it advanced has to be back at its own offsets"
+    );
+
+    // AND WHAT THIS DOES NOT COVER, said rather than left to be assumed.
+    // `ObjectMutationRollback` does not carry `next_chunk_id`, so a refused mutation leaves
+    // that counter wherever `ensure_writable_chunk` pushed it rather than where it found it.
+    // It is not asserted here because it is not observable from this module -- the field is
+    // private to `store::object_store_state` -- and because the shipped behaviour is that it
+    // stays ahead. It is benign for this store: a higher counter only skips ids, and the map
+    // and the counter stay consistent with each other. It is named so that a narrowing of
+    // the chunk undo is not mistaken for having covered it.
+    println!("CHUNKUNDO chunks_restored={}", after == before);
+}
+
+#[test]
 fn a_refused_put_restores_the_payload_entry_it_replaced() {
     // `restore_targeted_payloads` drops the entries the mutation added and puts back the
     // ones it replaced. The digest in a dropped entry is not derivable from anything the
