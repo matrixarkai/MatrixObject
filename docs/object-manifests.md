@@ -110,6 +110,14 @@ sequence/checksum, and preserve old extents until readers no longer need them.
 For fresh object pages, the writer confirms each committed range with its
 sequence, length and SHA-256 digest. A server that does not implement the digest
 request triggers full-byte readback. A mismatched digest refuses publication.
+Within each data group, the first conditional page write confirms the current
+leader. Up to seven subsequent independent page writes are then sent before
+their ordered replies are collected. A failed or partial batch closes that
+connection and leaves publication unattempted; outstanding writes may have
+committed and are never replayed. This overlaps client request delivery with
+server processing but does not reduce Raft or storage bytes. The local nine-process
+64 MiB failover and restart test passed; its single timing does not establish a
+throughput gain.
 
 `RemoteMetaClient::read_object` fetches one committed manifest and assembles its
 extents using verified data-group connections. It returns the manifest with the

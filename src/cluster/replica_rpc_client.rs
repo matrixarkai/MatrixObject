@@ -492,6 +492,55 @@ impl RemoteReplicaClient {
         }
     }
 
+    /// Confirm the first write through leader routing, then send the remaining
+    /// independent page writes before waiting for their ordered replies. A
+    /// failed exchange leaves every outstanding mutation uncertain and retires
+    /// the socket; none is replayed.
+    pub fn write_chunks_if_sequence_pipelined(
+        &mut self,
+        writes: &[(PageId, u64, &[u8], u64)],
+    ) -> Result<(), ObjectError> {
+        if writes.len() > 8 {
+            return Err(ObjectError::InvalidArgument("write batch exceeds eight pages".into()));
+        }
+        let Some((page, offset, data, sequence)) = writes.first() else {
+            return Ok(());
+        };
+        self.write_chunk_if_sequence(page.clone(), *offset, data, *sequence)?;
+        if writes.len() == 1 {
+            return Ok(());
+        }
+        self.connection_usable = false;
+        let result = (|| {
+            for (page, offset, data, sequence) in &writes[1..] {
+                self.send_request(&ReplicaRequest::WriteChunkIfSequence {
+                    page_id: page.clone(),
+                    offset: *offset,
+                    data: data.to_vec(),
+                    expected_sequence: *sequence,
+                })?;
+            }
+            for _ in &writes[1..] {
+                match self.read_reply(
+                    crate::cluster::wire::RequestCode::WriteChunkIfSequence,
+                    exchange_deadline(self.read_timeout, self.deadline)?,
+                )? {
+                    ReplicaReply::Applied => {}
+                    ReplicaReply::NotLeader => return Err(not_leader()),
+                    other => return Err(unexpected_reply("a conditional chunk write", &other)),
+                }
+            }
+            Ok(())
+        })();
+        self.last_exchange = Instant::now();
+        if result.is_ok() {
+            self.connection_usable = true;
+        } else {
+            let _ = self.writer.shutdown(Shutdown::Both);
+        }
+        result
+    }
+
     pub fn write_chunk(
         &mut self,
         page_id: PageId,

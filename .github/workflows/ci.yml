@@ -424,6 +424,12 @@ jobs:
           cargo test --locked --all-features --test object_writer_connections writer_reuses_preflight_connection_and_only_looks_up_each_group_once -- --exact | tee /tmp/object-connections.log
           grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
 
+      - name: failed pipelined writes retire the socket without replay
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test object_writer_connections failed_pipelined_write_retires_socket_without_replaying -- --exact | tee /tmp/object-connections.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
+
       - name: unavailable data group is isolated and recovers without losing objects
         run: |
           set -o pipefail

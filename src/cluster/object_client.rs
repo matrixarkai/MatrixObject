@@ -123,6 +123,7 @@ fn write_group_extents(
     };
     for batch in indexes.chunks(8) {
         let mut pages = Vec::with_capacity(batch.len());
+        let mut writes = Vec::with_capacity(batch.len());
         for &index in batch {
             let extent = &manifest.extents[index];
             let start = extent.object_offset as usize;
@@ -131,9 +132,10 @@ fn write_group_extents(
                 chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)?,
                 page_index: extent.page_index,
             };
-            client.write_chunk_if_sequence(page.clone(), 0, bytes, 0)?;
+            writes.push((page.clone(), 0, bytes, 0));
             pages.push((page, 0, extent.length));
         }
+        client.write_chunks_if_sequence_pipelined(&writes)?;
         match client.digest_chunks_pipelined(&pages) {
             Ok(digests) => {
                 for (&index, (sequence, actual_length, sha256)) in batch.iter().zip(digests) {
