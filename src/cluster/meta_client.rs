@@ -673,36 +673,46 @@ impl RemoteMetaClient {
         bytes.resize(length, 0);
         let mut order: Vec<_> = manifest.extents.iter().collect();
         order.sort_by(|left, right| left.group.cmp(&right.group));
-        let mut connection: Option<(String, super::RemoteReplicaClient)> = None;
-        for extent in order {
-            if connection.as_ref().map(|(group, _)| group) != Some(&extent.group) {
-                connection = Some((
-                    extent.group.clone(),
-                    self.connect_chunk_group(&extent.group, options)?,
-                ));
+        let mut cursor = 0;
+        while cursor < order.len() {
+            let group = order[cursor].group.clone();
+            let mut end = cursor + 1;
+            while end < order.len() && order[end].group == group {
+                end += 1;
             }
-            let page = crate::PageId {
-                chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)?,
-                page_index: extent.page_index,
-            };
-            let read = connection.as_mut().unwrap().1.read_chunk(
-                &page,
-                extent.page_offset,
-                extent.length,
-            )?;
-            let checksum = read.data.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
-                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-            });
-            if read.write_sequence != extent.write_sequence
-                || read.data.len() as u64 != extent.length
-                || checksum != extent.data_checksum
-            {
-                return Err(ObjectError::Corruption(
-                    "object extent does not match manifest".into(),
-                ));
+            let mut connection = self.connect_chunk_group(&group, options)?;
+            for batch in order[cursor..end].chunks(8) {
+                let pages = batch
+                    .iter()
+                    .map(|extent| {
+                        Ok((
+                            crate::PageId {
+                                chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)?,
+                                page_index: extent.page_index,
+                            },
+                            extent.page_offset,
+                            extent.length,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, ObjectError>>()?;
+                let reads = connection.read_chunks_pipelined(&pages)?;
+                for (extent, read) in batch.iter().zip(reads) {
+                    let checksum = read.data.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+                        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+                    });
+                    if read.write_sequence != extent.write_sequence
+                        || read.data.len() as u64 != extent.length
+                        || checksum != extent.data_checksum
+                    {
+                        return Err(ObjectError::Corruption(
+                            "object extent does not match manifest".into(),
+                        ));
+                    }
+                    let start = extent.object_offset as usize;
+                    bytes[start..start + read.data.len()].copy_from_slice(&read.data);
+                }
             }
-            let start = extent.object_offset as usize;
-            bytes[start..start + read.data.len()].copy_from_slice(&read.data);
+            cursor = end;
         }
         self.check_operation_deadline()?;
         Ok((manifest, bytes))

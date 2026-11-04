@@ -132,7 +132,7 @@ fn write_group_extents(
                 page_index: extent.page_index,
             };
             client.write_chunk_if_sequence(page.clone(), 0, bytes, 0)?;
-            pages.push((page, extent.length));
+            pages.push((page, 0, extent.length));
         }
         let reads = client.read_chunks_pipelined(&pages)?;
         for (&index, read) in batch.iter().zip(reads) {
