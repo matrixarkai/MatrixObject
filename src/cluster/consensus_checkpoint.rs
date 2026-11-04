@@ -143,12 +143,13 @@ fn body(reader: &mut io::Take<&mut dyn Read>, tag: u8) -> Result<Vec<u8>, RaftEr
     Ok(bytes)
 }
 type CaptureWorker = std::thread::JoinHandle<
-    Result<Option<matrixraft::peer_runtime::PreparedCheckpoint>, RaftError>,
+    Result<Option<(matrixraft::peer_runtime::PreparedCheckpoint, u64)>, RaftError>,
 >;
 pub(super) struct Policy {
     worker: Option<(CaptureWorker, u64)>,
     kind: u32,
     interval: u64,
+    next_interval: u64,
     baseline: u64,
     observed: u64,
     checkpoint: u64,
@@ -164,6 +165,7 @@ impl Policy {
             worker: None,
             kind,
             interval,
+            next_interval: interval,
             baseline: 0,
             observed: 0,
             checkpoint: 0,
@@ -175,6 +177,7 @@ impl Policy {
         // A reopened WAL may already contain a large suffix. Reclaim it on the
         // next applied advance rather than treating its total size as new space.
         self.baseline = 0;
+        self.next_interval = self.interval;
     }
     fn due(&mut self, peer: &DurablePeer) -> Result<Option<(u64, u64)>, RaftError> {
         let index = peer.applied_index();
@@ -186,7 +189,7 @@ impl Policy {
         }
         self.observed = index;
         let size = peer.persisted_wal_bytes()?;
-        if !membership_due && size.saturating_sub(self.baseline) < self.interval {
+        if !membership_due && size.saturating_sub(self.baseline) < self.next_interval {
             return Ok(None);
         }
         Ok(Some((index, size)))
@@ -211,10 +214,16 @@ impl Policy {
                 .join()
                 .map_err(|_| storage("checkpoint worker panicked"))??
             {
-                Some(prepared) => {
+                Some((prepared, length)) => {
                     let index = prepared.position().index;
                     if peer.install_checkpoint(&prepared)? {
                         self.checkpoint = index;
+                        // Rewriting an ever larger snapshot after only a small
+                        // WAL increment amplifies writes. Amortize the next
+                        // capture over at least twice the current state size.
+                        self.next_interval = self
+                            .interval
+                            .max(length.saturating_mul(2).min(128 * 1024 * 1024));
                         // Retained writes accumulated during capture must count
                         // toward the next interval rather than disappearing into
                         // the baseline of the compacted WAL.
@@ -246,7 +255,9 @@ impl Policy {
                 let Some((mut reader, length)) = capture()? else {
                     return Ok(None);
                 };
-                ticket.capture(&mut reader, length).map(Some)
+                ticket
+                    .capture(&mut reader, length)
+                    .map(|prepared| Some((prepared, length)))
             })
             .map_err(storage)?;
         self.worker = Some((worker, size));
@@ -321,7 +332,7 @@ mod tests {
                     Ok(move || {
                         started_tx.send(()).unwrap();
                         resume_rx.recv().unwrap();
-                        let bytes = Image::new(kind, id, vec![7], vec![]).encode_to_vec();
+                        let bytes = Image::new(kind, id, vec![7; 2048], vec![]).encode_to_vec();
                         let length = bytes.len() as u64;
                         Ok(Some((Cursor::new(bytes), length)))
                     })
@@ -353,6 +364,7 @@ mod tests {
                 .unwrap();
             assert!(policy.worker.is_none());
             assert!(policy.checkpoint < later);
+            assert!(policy.next_interval >= 4096);
             drop(policy);
             drop(peer);
             let mut peer = DurablePeer::open(options).unwrap();
