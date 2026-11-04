@@ -660,6 +660,73 @@ impl RemoteReplicaClient {
         }
     }
 
+    /// Probe up to eight staged pages on one group, retaining missing-page results.
+    /// An incomplete batch retires the socket before retrying read-only probes.
+    pub fn probe_chunk_digests_pipelined(
+        &mut self,
+        pages: &[(PageId, u64, u64)],
+    ) -> Result<Vec<Option<(u64, u64, [u8; 32])>>, ObjectError> {
+        if pages.len() > 8 {
+            return Err(ObjectError::InvalidArgument("digest probe exceeds eight pages".into()));
+        }
+        let Some((page, offset, length)) = pages.first() else {
+            return Ok(Vec::new());
+        };
+        let first = match self.digest_chunk(page, *offset, *length) {
+            Ok(digest) => Some(digest),
+            Err(ObjectError::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        let mut digests = vec![first];
+        if pages.len() == 1 {
+            return Ok(digests);
+        }
+        self.connection_usable = false;
+        let result = (|| {
+            for (page, offset, length) in &pages[1..] {
+                self.send_request(&ReplicaRequest::DigestChunk {
+                    page_id: page.clone(),
+                    offset: *offset,
+                    length: *length,
+                })?;
+            }
+            let mut remaining = Vec::with_capacity(pages.len() - 1);
+            for _ in &pages[1..] {
+                let digest = match self.read_reply(
+                    crate::cluster::wire::RequestCode::DigestChunk,
+                    exchange_deadline(self.read_timeout, self.deadline)?,
+                ) {
+                    Ok(ReplicaReply::Digest { write_sequence, length, sha256 }) => {
+                        Some((write_sequence, length, sha256))
+                    }
+                    Err(ObjectError::NotFound(_)) => None,
+                    Ok(ReplicaReply::NotLeader) => return Err(not_leader()),
+                    Ok(other) => return Err(unexpected_reply("a chunk digest", &other)),
+                    Err(error) => return Err(error),
+                };
+                self.connection_usable = false;
+                remaining.push(digest);
+            }
+            Ok(remaining)
+        })();
+        self.last_exchange = Instant::now();
+        if let Ok(remaining) = result {
+            self.connection_usable = true;
+            digests.extend(remaining);
+            return Ok(digests);
+        }
+        self.connection_usable = false;
+        let _ = self.writer.shutdown(Shutdown::Both);
+        for (page, offset, length) in &pages[1..] {
+            digests.push(match self.digest_chunk(page, *offset, *length) {
+                Ok(digest) => Some(digest),
+                Err(ObjectError::NotFound(_)) => None,
+                Err(error) => return Err(error),
+            });
+        }
+        Ok(digests)
+    }
+
     /// Probe the range digest verb, then pipeline the rest of a bounded batch.
     /// A failed batch retires the socket so callers can read back full bytes.
     pub fn digest_chunks_pipelined(

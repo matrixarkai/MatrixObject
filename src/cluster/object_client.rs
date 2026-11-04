@@ -248,10 +248,12 @@ impl RemoteMetaClient {
         }
         let mut clients = std::collections::BTreeMap::new();
         let mut routes = std::collections::BTreeMap::new();
-        let group_ids: Vec<String> = staged.extents.iter()
-            .map(|extent| extent.group.clone())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter().collect();
+        let mut grouped: std::collections::BTreeMap<String, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (index, extent) in staged.extents.iter().enumerate() {
+            grouped.entry(extent.group.clone()).or_default().push(index);
+        }
+        let group_ids: Vec<String> = grouped.keys().cloned().collect();
         for ids in group_ids.chunks(4) {
             self.check_operation_deadline().map_err(&staged_error)?;
             for (id, route) in ids.iter().zip(self.read_chunk_routes(ids).map_err(&staged_error)?) {
@@ -260,41 +262,42 @@ impl RemoteMetaClient {
         }
         let mut missing: std::collections::BTreeMap<String, Vec<usize>> =
             std::collections::BTreeMap::new();
-        for (index, extent) in staged.extents.iter().enumerate() {
-            self.check_operation_deadline().map_err(&staged_error)?;
-            if !clients.contains_key(&extent.group) {
-                let route = routes.get(&extent.group).ok_or_else(|| {
-                    staged_error(ObjectError::Corruption("staged page route missing".into()))
-                })?;
-                let client = connect_group(&route, &options.replica).map_err(&staged_error)?;
-                clients.insert(extent.group.clone(), client);
-            }
-            let client: &mut RemoteReplicaClient = clients.get_mut(&extent.group).unwrap();
-            let page = crate::PageId {
-                chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)
-                    .map_err(&staged_error)?,
-                page_index: extent.page_index,
-            };
-            let start = extent.object_offset as usize;
-            let bytes = &data[start..start + extent.length as usize];
-            match client.digest_chunk(&page, 0, extent.length) {
-                Ok((sequence, length, digest)) => {
-                    if sequence != 1
-                        || length != extent.length
-                        || digest.as_ref()
-                            != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
-                    {
-                        return Err(staged_error(ObjectError::Corruption(
-                            "staged page verification failed".into(),
-                        )));
+        for (group, indexes) in &grouped {
+            let route = routes.get(group).ok_or_else(|| {
+                staged_error(ObjectError::Corruption("staged page route missing".into()))
+            })?;
+            let mut client = connect_group(route, &options.replica).map_err(&staged_error)?;
+            for batch in indexes.chunks(8) {
+                self.check_operation_deadline().map_err(&staged_error)?;
+                let pages = batch.iter().map(|&index| {
+                    let extent = &staged.extents[index];
+                    Ok((crate::PageId {
+                        chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)?,
+                        page_index: extent.page_index,
+                    }, 0, extent.length))
+                }).collect::<Result<Vec<_>, ObjectError>>().map_err(&staged_error)?;
+                let probes = client.probe_chunk_digests_pipelined(&pages).map_err(&staged_error)?;
+                for (&index, probe) in batch.iter().zip(probes) {
+                    let extent = &staged.extents[index];
+                    match probe {
+                        Some((sequence, length, digest)) => {
+                            let start = extent.object_offset as usize;
+                            let bytes = &data[start..start + extent.length as usize];
+                            if sequence != 1
+                                || length != extent.length
+                                || digest.as_ref()
+                                    != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
+                            {
+                                return Err(staged_error(ObjectError::Corruption(
+                                    "staged page verification failed".into(),
+                                )));
+                            }
+                        }
+                        None => missing.entry(group.clone()).or_default().push(index),
                     }
-                    continue;
                 }
-                Err(ObjectError::NotFound(_)) => {
-                    missing.entry(extent.group.clone()).or_default().push(index);
-                }
-                Err(error) => return Err(staged_error(error)),
             }
+            clients.insert(group.clone(), client);
         }
         for (group, indexes) in missing {
             self.check_operation_deadline().map_err(&staged_error)?;
