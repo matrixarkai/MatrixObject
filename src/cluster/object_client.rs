@@ -121,18 +121,27 @@ fn write_group_extents(
         Some(client) => client,
         None => connect_group(configured, &options.replica)?,
     };
-    for &index in indexes {
-        let extent = &manifest.extents[index];
-        let start = extent.object_offset as usize;
-        let bytes = &data[start..start + extent.length as usize];
-        let page = crate::PageId {
-            chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)?,
-            page_index: extent.page_index,
-        };
-        client.write_chunk_if_sequence(page.clone(), 0, bytes, 0)?;
-        let read = client.read_chunk(&page, 0, extent.length)?;
-        if read.write_sequence != 1 || read.data != bytes {
-            return Err(ObjectError::Corruption("written page verification failed".into()));
+    for batch in indexes.chunks(8) {
+        let mut pages = Vec::with_capacity(batch.len());
+        for &index in batch {
+            let extent = &manifest.extents[index];
+            let start = extent.object_offset as usize;
+            let bytes = &data[start..start + extent.length as usize];
+            let page = crate::PageId {
+                chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)?,
+                page_index: extent.page_index,
+            };
+            client.write_chunk_if_sequence(page.clone(), 0, bytes, 0)?;
+            pages.push((page, extent.length));
+        }
+        let reads = client.read_chunks_pipelined(&pages)?;
+        for (&index, read) in batch.iter().zip(reads) {
+            let extent = &manifest.extents[index];
+            let start = extent.object_offset as usize;
+            let bytes = &data[start..start + extent.length as usize];
+            if read.write_sequence != 1 || read.data != bytes {
+                return Err(ObjectError::Corruption("written page verification failed".into()));
+            }
         }
     }
     Ok(())
