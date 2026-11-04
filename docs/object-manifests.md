@@ -210,7 +210,7 @@ Its optional staged manifest identifies candidate pages, some of which may be
 unwritten or unverified. A caller can explicitly pass that manifest, the original
 expected value, data and options to `resume_unpublished_object`. The method checks
 the current manifest, resolves up to four group routes per confirmed metadata read,
-verifies existing pages by digest, conditionally writes
+probes up to eight pages per data group with their digests, conditionally writes
 missing pages with expected sequence zero, and publishes only after all pages
 verify. Missing pages in the same group use the bounded write and digest batches
 used by fresh writes; a failed batch leaves the staged manifest for a later
