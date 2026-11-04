@@ -547,7 +547,7 @@ mod tests {
     }
     #[test]
     fn typed_publication_refusals_do_not_become_uncertain_or_replay() {
-        for catalog in [false, true] {
+        for (deadline, catalog) in [(false, false), (false, true), (true, false), (true, true)] {
             for typed in [false, true] {
                 let listener = TcpListener::bind("127.0.0.1:0").unwrap();
                 listener.set_nonblocking(true).unwrap();
@@ -612,8 +612,11 @@ mod tests {
                 } else {
                     RemoteMetaClient::connect(&endpoint, &options).unwrap()
                 };
-                let result =
-                    client.write_object("bucket", "key", None, b"", &ObjectWriteOptions::default());
+                let mut write_options = ObjectWriteOptions::default();
+                if deadline {
+                    write_options.replica.deadline = Some(Instant::now() + Duration::from_secs(2));
+                }
+                let result = client.write_object("bucket", "key", None, b"", &write_options);
                 let attempted = worker.join().unwrap();
                 if typed {
                     let ObjectWriteFailure::BeforePublication {

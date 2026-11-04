@@ -841,15 +841,27 @@ impl RemoteMetaClient {
         let mut saw_not_leader = false;
         let mut unadmitted = true;
         let mut retry_delay = Duration::from_millis(25);
-        // A mutation may wait for an election only when every voter has
-        // explicitly refused admission. Any uncertain exchange still stops it.
-        let retry_until = options.deadline.or_else(|| {
+        // Control-plane mutations may wait for an election after every voter
+        // explicitly refuses admission. Object publication and allocation
+        // return that refusal to their callers without another attempt.
+        let control_retry = matches!(
+            &request,
+            MetaRequest::Membership(_)
+                | MetaRequest::ChunkCatalog(_)
+                | MetaRequest::ReportChunkNode { .. }
+                | MetaRequest::HeartbeatChunkNode { .. }
+                | MetaRequest::HeartbeatRootNode { .. }
+                | MetaRequest::ExpireRootNodeHeartbeats { .. }
+        );
+        let retry_until = (read_only || control_retry).then(|| {
             let window = if read_only {
                 Duration::from_secs(1)
             } else {
                 Duration::from_secs(3)
             };
-            Some(Instant::now() + options.read_timeout.min(window))
+            options
+                .deadline
+                .unwrap_or_else(|| Instant::now() + options.read_timeout.min(window))
         });
         loop {
             let mut refusals = 0;
