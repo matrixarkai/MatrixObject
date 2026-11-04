@@ -393,11 +393,14 @@ impl RemoteMetaClient {
             // Verify every selected group before allocation or data writes. Visit
             // the first write target last so its verified connection can be reused.
             // Keep configurations only for this operation and retain one connection.
-            for group in plan.node_ids.iter().rev() {
-                let configured = self.read_chunk_route(group).map_err(before)?;
-                let client = connect_group(&configured, &options.replica).map_err(before)?;
-                groups.insert(group.clone(), configured);
-                connection = Some((group.clone(), client));
+            for window in plan.node_ids.rchunks(4) {
+                let ids: Vec<String> = window.iter().rev().cloned().collect();
+                let routes = self.read_chunk_routes(&ids).map_err(before)?;
+                for (group, configured) in ids.into_iter().zip(routes) {
+                    let client = connect_group(&configured, &options.replica).map_err(before)?;
+                    groups.insert(group.clone(), configured);
+                    connection = Some((group, client));
+                }
             }
             let allocation = self.allocate_object_pages(pages).map_err(before)?;
             for (index, bytes) in data.chunks(options.page_bytes).enumerate() {

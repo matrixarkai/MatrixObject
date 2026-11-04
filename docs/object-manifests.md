@@ -183,9 +183,12 @@ all pages of that group before moving to each remaining group once. Switching gr
 opens a new connection using the saved configuration and verifies its complete
 identity again. Manifest extents retain their original object order; only I/O order
 changes. For nonempty objects with P pages over G healthy groups, preflight and writing use at most
-2G - 1 group connections instead of up to P + G - 1. Reads use G group lookups
-and connections instead of up to P. Configurations are not cached across operations, and each lookup
-checks that the returned placement name matches the request. The client then
+2G - 1 group connections instead of up to P + G - 1. Current metadata servers
+return up to four routes per quorum-confirmed read, so writes and reads need
+`ceil(G/4)` route requests rather than G; reads still use G data connections.
+The client falls back to individual route reads if a batch request fails, and
+checks every returned placement name. Configurations are not cached across
+operations. The client then
 allocates fresh pages and distributes contiguous
 extents across those groups. Each page is written with expected sequence zero,
 then read back to check sequence one and exact bytes. Only then does the client

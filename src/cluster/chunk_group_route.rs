@@ -106,6 +106,65 @@ pub(super) struct RouteRead {
     #[prost(string, tag = "2")]
     pub placement_id: String,
 }
+/// A bounded set of route reads served after one metadata read barrier.
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct RouteReads {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(string, repeated, tag = "2")]
+    pub placement_ids: Vec<String>,
+}
+impl RouteReads {
+    pub(super) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
+        if bytes.len() > 1024 {
+            return Err(invalid("chunk route batch request exceeds bound"));
+        }
+        let request = Self::decode(bytes)
+            .map_err(|_| invalid("invalid chunk route batch request protobuf"))?;
+        if request.version != 1
+            || !(2..=4).contains(&request.placement_ids.len())
+            || request.placement_ids.iter().any(|id| {
+                id.is_empty()
+                    || id.len() > 128
+                    || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            })
+            || request.placement_ids.iter().collect::<BTreeSet<_>>().len()
+                != request.placement_ids.len()
+            || request.encode_to_vec() != bytes
+        {
+            return Err(invalid("invalid chunk route batch request"));
+        }
+        Ok(request)
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Message)]
+pub struct RouteBatch {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub routes: Vec<ChunkGroupRoute>,
+}
+impl RouteBatch {
+    pub(super) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
+        if bytes.len() > 4 * 65536 + 64 {
+            return Err(invalid("chunk route batch reply exceeds bound"));
+        }
+        let batch = Self::decode(bytes)
+            .map_err(|_| invalid("invalid chunk route batch reply protobuf"))?;
+        if batch.version != 1
+            || !(2..=4).contains(&batch.routes.len())
+            || batch.routes.iter().any(|route| route.membership_fence().is_err())
+            || batch.routes.iter().filter_map(|route| route.group.as_ref())
+                .map(|group| &group.placement_id).collect::<BTreeSet<_>>().len()
+                != batch.routes.len()
+            || batch.encode_to_vec() != bytes
+        {
+            return Err(invalid("invalid chunk route batch reply"));
+        }
+        Ok(batch)
+    }
+}
 impl RouteRead {
     pub(super) fn from_payload(bytes: &[u8]) -> Result<Self, ObjectError> {
         if bytes.len() > 256 {
@@ -273,5 +332,32 @@ mod tests {
         bytes.extend([0x78, 1]);
         assert!(RouteRead::from_payload(&bytes).is_err());
         assert!(RouteRead::from_payload(&vec![0; 257]).is_err());
+    }
+
+    #[test]
+    fn route_batches_require_distinct_bounded_names_and_valid_routes() {
+        let request = RouteReads {
+            version: 1,
+            placement_ids: vec!["group-a".into(), "group-b".into()],
+        };
+        assert_eq!(RouteReads::from_payload(&request.encode_to_vec()).unwrap(), request);
+        let mut bad = request.clone();
+        bad.placement_ids[1] = bad.placement_ids[0].clone();
+        assert!(RouteReads::from_payload(&bad.encode_to_vec()).is_err());
+        bad.placement_ids = vec!["group/a".into(), "group-b".into()];
+        assert!(RouteReads::from_payload(&bad.encode_to_vec()).is_err());
+        bad.placement_ids = (0..5).map(|i| format!("group-{i}")).collect();
+        assert!(RouteReads::from_payload(&bad.encode_to_vec()).is_err());
+
+        let first = route();
+        let mut second = first.clone();
+        second.group.as_mut().unwrap().placement_id = "group-b".into();
+        let batch = RouteBatch { version: 1, routes: vec![first.clone(), second] };
+        assert_eq!(RouteBatch::from_payload(&batch.encode_to_vec()).unwrap(), batch);
+        let duplicate = RouteBatch { version: 1, routes: vec![first.clone(), first] };
+        assert!(RouteBatch::from_payload(&duplicate.encode_to_vec()).is_err());
+        let mut truncated = batch.encode_to_vec();
+        truncated.pop();
+        assert!(RouteBatch::from_payload(&truncated).is_err());
     }
 }

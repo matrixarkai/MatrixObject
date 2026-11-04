@@ -665,6 +665,7 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::ListRootNodes
         | MetaRequest::ReadChunkGroup { .. }
         | MetaRequest::ReadChunkRoute { .. }
+        | MetaRequest::ReadChunkRoutes { .. }
         | MetaRequest::PlanObjectPlacement { .. }
         | MetaRequest::ReadObjectRootPlacement { .. }
         | MetaRequest::GroupIdentity

@@ -1694,6 +1694,11 @@ mod coupled_groups {
             group.leader();
         }
         group_usage(&metadata.api, &groups, &[]);
+        let ids: Vec<String> = groups.iter().map(Group::placement_id).collect();
+        let routes = meta.read_chunk_routes(&ids).unwrap();
+        assert_eq!(routes.len(), ids.len());
+        assert!(routes.iter().zip(&ids).all(|(route, id)|
+            route.group.as_ref().is_some_and(|group| &group.placement_id == id)));
         let allocation = meta.allocate_object_pages(8).unwrap();
         let mut extents = Vec::new();
         for index in 0..8 {

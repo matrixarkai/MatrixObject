@@ -209,6 +209,7 @@ pub enum MetaRequest {
     Membership(super::MembershipRequest),
     ChunkCatalog(super::ChunkCatalogCommand),
     ReadChunkRoute { placement_id: String },
+    ReadChunkRoutes { placement_ids: Vec<String> },
     AllocateObjectPages {
         page_count: u32,
     },
@@ -283,6 +284,7 @@ impl MetaRequest {
             MetaRequest::Membership(_) => MetaRequestCode::Membership,
             MetaRequest::ChunkCatalog(_) => MetaRequestCode::ChunkCatalog,
             MetaRequest::ReadChunkRoute { .. } => MetaRequestCode::ReadChunkRoute,
+            MetaRequest::ReadChunkRoutes { .. } => MetaRequestCode::ReadChunkRoutes,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
             MetaRequest::ReportChunkNode { .. } => MetaRequestCode::ReportChunkNode,
@@ -334,6 +336,7 @@ impl MetaRequest {
             MetaRequest::Membership(value) => return value.encode_to_vec(),
             MetaRequest::ChunkCatalog(value) => return value.encode_to_vec(),
             MetaRequest::ReadChunkRoute { placement_id } => return super::chunk_group_route::RouteRead { version: 1, placement_id: placement_id.clone() }.encode_to_vec(),
+            MetaRequest::ReadChunkRoutes { placement_ids } => return super::chunk_group_route::RouteReads { version: 1, placement_ids: placement_ids.clone() }.encode_to_vec(),
             MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
                 placement,
@@ -447,6 +450,10 @@ impl MetaRequest {
             let request = super::chunk_group_route::RouteRead::from_payload(payload)?;
             return Ok(Self::ReadChunkRoute { placement_id: request.placement_id });
         }
+        if code == MetaRequestCode::ReadChunkRoutes {
+            let request = super::chunk_group_route::RouteReads::from_payload(payload)?;
+            return Ok(Self::ReadChunkRoutes { placement_ids: request.placement_ids });
+        }
         if code == MetaRequestCode::ChunkCatalog {
             return super::ChunkCatalogCommand::from_payload(payload).map(Self::ChunkCatalog);
         }
@@ -537,6 +544,7 @@ impl MetaRequest {
             MetaRequestCode::Membership
             | MetaRequestCode::ChunkCatalog
             | MetaRequestCode::ReadChunkRoute
+            | MetaRequestCode::ReadChunkRoutes
             | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
@@ -603,6 +611,7 @@ pub enum MetaReply {
     GroupIdentity(super::MetaGroupIdentity),
     ChunkGroup(super::ChunkGroupConfig),
     ChunkRoute(super::ChunkGroupRoute),
+    ChunkRoutes(super::chunk_group_route::RouteBatch),
     /// A routing response: this request was not proposed or applied.
     NotLeader,
     PlacementNode(PlacementNodeSummary),
@@ -634,6 +643,7 @@ impl MetaReply {
             Self::GroupIdentity(identity) => identity.encoded_len(),
             Self::ChunkGroup(group) => group.encoded_len(),
             Self::ChunkRoute(route) => route.encoded_len(),
+            Self::ChunkRoutes(routes) => routes.encoded_len(),
             Self::PlacementNode(node) => node_payload_len(
                 &node.node_id,
                 &node.endpoint,
@@ -671,6 +681,7 @@ impl MetaReply {
             MetaReply::GroupIdentity(identity) => return identity.encode_to_vec(),
             MetaReply::ChunkGroup(group) => return group.encode_to_vec(),
             MetaReply::ChunkRoute(route) => return route.encode_to_vec(),
+            MetaReply::ChunkRoutes(routes) => return routes.encode_to_vec(),
             MetaReply::PlacementNode(node) => put_node(&mut out, node),
             MetaReply::RootNodes(nodes) => {
                 put_u64(&mut out, nodes.len() as u64);
@@ -761,6 +772,10 @@ impl MetaReply {
         if code == MetaRequestCode::ReadChunkRoute {
             return super::ChunkGroupRoute::from_payload(payload).map(Self::ChunkRoute);
         }
+        if code == MetaRequestCode::ReadChunkRoutes {
+            return super::chunk_group_route::RouteBatch::from_payload(payload)
+                .map(Self::ChunkRoutes);
+        }
         if code == MetaRequestCode::ReadChunkGroup {
             if payload.len() > 32768 {
                 return Err(ObjectError::Corruption(
@@ -786,6 +801,7 @@ impl MetaReply {
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::ReadChunkGroup
             | MetaRequestCode::ReadChunkRoute
+            | MetaRequestCode::ReadChunkRoutes
             | MetaRequestCode::GroupIdentity => unreachable!(),
             MetaRequestCode::ChunkCatalog
             | MetaRequestCode::ReportChunkNode

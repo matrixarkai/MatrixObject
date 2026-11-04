@@ -470,6 +470,37 @@ impl RemoteMetaClient {
         }
     }
 
+    /// Resolve up to four distinct groups after one metadata read barrier.
+    /// Older servers or failed read-only batches use the individual route path.
+    pub fn read_chunk_routes(
+        &mut self,
+        placement_ids: &[String],
+    ) -> Result<Vec<super::ChunkGroupRoute>, ObjectError> {
+        if placement_ids.is_empty() || placement_ids.len() > 4
+            || placement_ids.iter().collect::<std::collections::BTreeSet<_>>().len()
+                != placement_ids.len()
+        {
+            return Err(ObjectError::InvalidArgument("invalid chunk route batch".into()));
+        }
+        if placement_ids.len() == 1 {
+            return self.read_chunk_route(&placement_ids[0]).map(|route| vec![route]);
+        }
+        match self.call(MetaRequest::ReadChunkRoutes { placement_ids: placement_ids.to_vec() }) {
+            Ok(MetaReply::ChunkRoutes(batch)) => {
+                if batch.routes.len() != placement_ids.len()
+                    || batch.routes.iter().zip(placement_ids).any(|(route, id)| {
+                        route.group.as_ref().is_none_or(|group| &group.placement_id != id)
+                    })
+                {
+                    return Err(ObjectError::Corruption("chunk route batch names another group".into()));
+                }
+                Ok(batch.routes)
+            }
+            Ok(_) => Err(ObjectError::Corruption("unexpected chunk route batch reply".into())),
+            Err(_) => placement_ids.iter().map(|id| self.read_chunk_route(id)).collect(),
+        }
+    }
+
     /// Refresh retained membership from a quorum-confirmed chunk membership read.
     /// Uses the current metadata route and checks every chunk socket's identity.
     /// A concurrent catalog change or uncertain commit is returned to the caller;
@@ -728,10 +759,12 @@ impl RemoteMetaClient {
         };
         // Route lookups use the metadata connection. Overlap the data-group
         // connections and page reads, while bounding sockets and read buffers.
-        for window in groups.chunks(4) {
+            for window in groups.chunks(4) {
             let mut jobs = Vec::new();
-            for (group, start, end) in window {
-                jobs.push((self.read_chunk_route(group)?, &order[*start..*end]));
+            let ids: Vec<String> = window.iter().map(|(group, _, _)| group.clone()).collect();
+            let routes = self.read_chunk_routes(&ids)?;
+            for ((_, start, end), route) in window.iter().zip(routes) {
+                jobs.push((route, &order[*start..*end]));
             }
             if jobs.len() == 1 {
                 let (route, extents) = jobs.pop().unwrap();
@@ -836,6 +869,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadObjectRootPlacement { .. }
                 | MetaRequest::ReadChunkGroup { .. }
                 | MetaRequest::ReadChunkRoute { .. }
+                | MetaRequest::ReadChunkRoutes { .. }
         ) || matches!(&request, MetaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
         let mut saw_not_leader = false;
