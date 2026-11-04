@@ -438,7 +438,9 @@ endpoint. A new operation should supply a new absolute deadline.
 Expiry before publication returns `BeforePublication` with any staged manifest.
 Expiry after publication is attempted retains `PublicationUnconfirmed` unless
 the exact publication was confirmed; it never authorizes replay. Staged pages
-are not automatically reclaimed. The deadline bounds network waits, not CPU
+can be explicitly resumed after the caller confirms publication was not admitted;
+the resume method verifies pages and reuses their allocation. They are not
+automatically reclaimed. The deadline bounds network waits, not CPU
 execution or operating-system scheduling. It does not cancel server-side work.
 Callers constructing either option struct without a default update must now
 provide `deadline: None` or an explicit deadline.

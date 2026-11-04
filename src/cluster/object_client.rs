@@ -167,6 +167,159 @@ fn write_group_extents(
 }
 
 impl RemoteMetaClient {
+    /// Continue a caller-retained unpublished write without allocating new pages.
+    /// Each invocation makes at most one conditional write per missing page.
+    /// An uncertain data response returns the same candidate for a later probe.
+    pub fn resume_unpublished_object(
+        &mut self,
+        expected: Option<ObjectManifest>,
+        staged: ObjectManifest,
+        data: &[u8],
+        options: &ObjectWriteOptions,
+    ) -> Result<ObjectManifest, ObjectWriteFailure> {
+        self.with_operation_deadline(options.replica.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.replica.deadline = client.operation_deadline();
+            client.resume_unpublished_object_inner(expected, staged, data, &bounded)
+        })
+    }
+
+    fn resume_unpublished_object_inner(
+        &mut self,
+        expected: Option<ObjectManifest>,
+        staged: ObjectManifest,
+        data: &[u8],
+        options: &ObjectWriteOptions,
+    ) -> Result<ObjectManifest, ObjectWriteFailure> {
+        let staged_error = |error| ObjectWriteFailure::BeforePublication {
+            error,
+            staged: Some(Box::new(staged.clone())),
+        };
+        self.check_operation_deadline().map_err(&staged_error)?;
+        staged.validate().map_err(&staged_error)?;
+        let (pages, generation) = preflight(
+            &staged.bucket,
+            &staged.key,
+            expected.as_ref(),
+            data.len(),
+            options,
+        )
+        .map_err(&staged_error)?;
+        if staged.deleted
+            || staged.generation != generation
+            || staged.length != data.len() as u64
+            || staged.extents.len() != pages as usize
+            || staged
+                .extents
+                .iter()
+                .map(|e| &e.group)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                > options.target_groups as usize
+            || staged
+                .extents
+                .iter()
+                .zip(data.chunks(options.page_bytes))
+                .enumerate()
+                .any(|(index, (extent, bytes))| {
+                    extent.object_offset != (index * options.page_bytes) as u64
+                        || extent.page_offset != 0
+                        || extent.length != bytes.len() as u64
+                        || extent.write_sequence != 1
+                        || extent.data_checksum != crate::fnv1a64(bytes)
+                })
+        {
+            return Err(staged_error(invalid(
+                "staged object does not match the write",
+            )));
+        }
+        let current = match self.read_manifest(&staged.bucket, &staged.key) {
+            Ok(value) => Some(value),
+            Err(ObjectError::NotFound(_)) => None,
+            Err(error) => return Err(staged_error(error)),
+        };
+        if current.as_ref() == Some(&staged) {
+            return Ok(staged);
+        }
+        if current != expected {
+            return Err(staged_error(ObjectError::PreconditionFailed(
+                "object manifest changed before resume".into(),
+            )));
+        }
+        let mut clients = std::collections::BTreeMap::new();
+        for extent in &staged.extents {
+            self.check_operation_deadline().map_err(&staged_error)?;
+            if !clients.contains_key(&extent.group) {
+                let route = self
+                    .read_chunk_route(&extent.group)
+                    .map_err(&staged_error)?;
+                let client = connect_group(&route, &options.replica).map_err(&staged_error)?;
+                clients.insert(extent.group.clone(), client);
+            }
+            let client: &mut RemoteReplicaClient = clients.get_mut(&extent.group).unwrap();
+            let page = crate::PageId {
+                chunk_id: crate::ChunkId::new(extent.volume_id, extent.chunk_id)
+                    .map_err(&staged_error)?,
+                page_index: extent.page_index,
+            };
+            let start = extent.object_offset as usize;
+            let bytes = &data[start..start + extent.length as usize];
+            match client.digest_chunk(&page, 0, extent.length) {
+                Ok((sequence, length, digest)) => {
+                    if sequence != 1
+                        || length != extent.length
+                        || digest.as_ref()
+                            != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
+                    {
+                        return Err(staged_error(ObjectError::Corruption(
+                            "staged page verification failed".into(),
+                        )));
+                    }
+                    continue;
+                }
+                Err(ObjectError::NotFound(_)) => {}
+                Err(error) => return Err(staged_error(error)),
+            }
+            client
+                .write_chunk_if_sequence(page.clone(), 0, bytes, 0)
+                .map_err(&staged_error)?;
+            let (sequence, length, digest) = client
+                .digest_chunk(&page, 0, extent.length)
+                .map_err(&staged_error)?;
+            if sequence != 1
+                || length != extent.length
+                || digest.as_ref() != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
+            {
+                return Err(staged_error(ObjectError::Corruption(
+                    "resumed page verification failed".into(),
+                )));
+            }
+        }
+        self.check_operation_deadline().map_err(&staged_error)?;
+        let outcome = ManifestOutcome::decide(expected, staged.clone()).map_err(&staged_error)?;
+        let (publication, unadmitted) =
+            self.publish_manifest_attempt(outcome.clone(), options.update_time_ms);
+        match publication {
+            Ok(value) => Ok(value),
+            Err(error) if unadmitted => Err(staged_error(error)),
+            Err(error) => {
+                if self
+                    .read_manifest(&staged.bucket, &staged.key)
+                    .ok()
+                    .as_ref()
+                    == Some(&staged)
+                {
+                    Ok(staged)
+                } else {
+                    Err(ObjectWriteFailure::PublicationUnconfirmed {
+                        error,
+                        outcome: Box::new(outcome),
+                    })
+                }
+            }
+        }
+    }
+
     /// Write fresh pages, verify them and conditionally publish one generation.
     /// Data errors never trigger automatic writes or publication. Pages are not
     /// reclaimed on failure because they may still be in flight or held by readers.
