@@ -38,6 +38,18 @@ sixteen-MiB aggregate buffer and per-sweep read limits remain in force. A normal
 close or idle expiry after a completed frame is not reported as a failed frame;
 an incomplete subsequent frame still counts as expired or failed.
 
-Current senders still open one connection per packet. This receive capability
-alone does not reduce connection counts. Sender reuse requires compatible peer
-configuration and separate validation of reconnect and authentication behavior.
+Senders default to one connection per packet. Set `MATRIXOBJECT_RAFT_STREAMS=1`
+only after every metadata and chunk receiver in the deployment supports consecutive
+frames. Other values leave the setting disabled. No capability negotiation or
+fallback is performed; leave this unset in a mixed-version deployment.
+
+With this setting, each destination worker retains at most one connection and its
+TLS session. It reuses that connection only when its last successful send was less
+than 50 ms ago, below the receiver's 100 ms idle-and-frame budget. A new packet still
+uses its original absolute deadline, including queue time. Any send failure drops
+the connection without replaying the packet; Raft handles retransmission. A locally
+successful send does not prove remote receipt, and an idle or restarted receiver
+can close a connection before a sender notices. Shutdown releases cached sockets.
+
+This option requires scale and partition validation before a deployment performance
+claim. It changes neither admission limits nor quorum and durability requirements.
