@@ -13,7 +13,10 @@ impl PlacementSnapshot {
         const PLACEMENT_SNAPSHOT_WITH_RECEIPT_PROOFS_VERSION: &str = "MOSRSROOT33";
         const PLACEMENT_SNAPSHOT_BASE_VERSION: &str = "MOSRSROOT33";
         const PLACEMENT_SNAPSHOT_RECEIPT_PROOF_PERSISTENCE_THRESHOLD: u64 = 27;
-        let snapshot_version = if self.leader_lease_receipts.is_empty() {
+        let has_group_bytes = self.placements.values().any(|placement| !placement.group_bytes.is_empty());
+        let snapshot_version = if has_group_bytes {
+            "MOSRSROOT34"
+        } else if self.leader_lease_receipts.is_empty() {
             PLACEMENT_SNAPSHOT_BASE_VERSION
         } else {
             PLACEMENT_SNAPSHOT_WITH_RECEIPT_PROOFS_VERSION
@@ -32,6 +35,7 @@ impl PlacementSnapshot {
                 .and_then(|suffix| suffix.parse::<u64>().ok())
                 .unwrap_or(0)
                 >= PLACEMENT_SNAPSHOT_RECEIPT_PROOF_PERSISTENCE_THRESHOLD,
+            has_group_bytes,
         );
         append_string(&mut out, &self.checksum);
         let envelope_checksum = etag(&out[snapshot_start..]);
@@ -131,11 +135,15 @@ impl PlacementSnapshot {
         let node_bytes = self.nodes.iter().fold(0usize, |total, (node_id, node)| {
             total.saturating_add(node_size(node_id, node))
         });
+        let has_group_bytes = self.placements.values().any(|placement| !placement.group_bytes.is_empty());
         let placement_bytes =
             self.placements
                 .iter()
                 .fold(0usize, |total, (object_id, placement)| {
                     total.saturating_add(placement_size(object_id, placement))
+                        .saturating_add(if has_group_bytes {
+                            U64.saturating_mul(1 + placement.group_bytes.len())
+                        } else { 0 })
                 });
         let receipt_bytes =
             self.leader_lease_receipts
@@ -143,7 +151,7 @@ impl PlacementSnapshot {
                 .fold(0usize, |total, (idempotency_key, receipt)| {
                     total.saturating_add(leader_lease_receipt_size(idempotency_key, receipt))
                 });
-        encoded_string_len("MOSRSROOT33")
+        encoded_string_len(if has_group_bytes { "MOSRSROOT34" } else { "MOSRSROOT33" })
             .saturating_add(U64)
             .saturating_add(U64)
             .saturating_add(node_bytes)
@@ -182,6 +190,7 @@ pub(crate) fn append_placement_roster(
     leader_lease_receipts: &BTreeMap<String, PlacementLeaderLeaseReceipt>,
     coordinator_config: &MetadataCoordinatorConfig,
     with_receipt_proof: bool,
+    with_group_bytes: bool,
 ) {
     visit_placement_roster(
         nodes,
@@ -190,6 +199,7 @@ pub(crate) fn append_placement_roster(
         leader_lease_receipts,
         coordinator_config,
         with_receipt_proof,
+        with_group_bytes,
         &mut |bytes| {
             out.extend_from_slice(bytes);
             Ok::<(), std::convert::Infallible>(())
@@ -205,6 +215,7 @@ pub(crate) fn visit_placement_roster<E>(
     leader_lease_receipts: &BTreeMap<String, PlacementLeaderLeaseReceipt>,
     coordinator_config: &MetadataCoordinatorConfig,
     with_receipt_proof: bool,
+    with_group_bytes: bool,
     emit: &mut impl FnMut(&[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
     let mut out = Vec::with_capacity(1024);
@@ -249,6 +260,12 @@ pub(crate) fn visit_placement_roster<E>(
             append_string(&mut out, node_id);
             emit(&out)?;
             out.clear();
+        }
+        if with_group_bytes {
+            append_u64(&mut out, placement.group_bytes.len() as u64);
+            for charged in &placement.group_bytes {
+                append_u64(&mut out, *charged);
+            }
         }
         emit(&out)?;
         out.clear();

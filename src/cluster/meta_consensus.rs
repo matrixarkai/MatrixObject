@@ -1166,6 +1166,7 @@ mod tests {
                     version: 1,
                     length: 128,
                     node_ids: vec!["group-0".into()],
+                    group_bytes: Vec::new(),
                     update_time_ms: 1,
                 },
             );

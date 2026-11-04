@@ -40,6 +40,10 @@ impl MatrixMetaService {
         let mut report = PlacementRepairReport::default();
         for placement in self.placements.values() {
             report.scanned_objects = report.scanned_objects.saturating_add(1);
+            if self.object_manifests.get(&placement.object_id).is_some() {
+                report.skipped_objects = report.skipped_objects.saturating_add(1);
+                continue;
+            }
             let Some(source_node_id) = self.repair_source_for_placement(placement) else {
                 continue;
             };

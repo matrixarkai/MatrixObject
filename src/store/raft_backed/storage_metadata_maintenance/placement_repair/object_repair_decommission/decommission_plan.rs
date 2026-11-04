@@ -117,6 +117,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                             version: item.plan.version,
                             length: item.plan.length,
                             node_ids: item.plan.after_node_ids,
+                            group_bytes: Vec::new(),
                             update_time_ms: metadata.update_time_ms,
                         });
                     }

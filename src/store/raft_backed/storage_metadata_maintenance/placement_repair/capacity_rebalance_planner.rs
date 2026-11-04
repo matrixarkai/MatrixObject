@@ -69,11 +69,12 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                                 report.migrated_objects = report.migrated_objects.saturating_add(1);
                                 report.bytes_migrated =
                                     report.bytes_migrated.saturating_add(item.plan.length);
-                                report.migrated.push(ObjectPlacement {
+                            report.migrated.push(ObjectPlacement {
                                     object_id: item.plan.object_id,
                                     version: item.plan.version,
                                     length: item.plan.length,
                                     node_ids: item.plan.after_node_ids,
+                                    group_bytes: Vec::new(),
                                     update_time_ms,
                                 });
                             }
@@ -143,6 +144,7 @@ impl<R: RustRaftLog> RaftBackedObjectStore<R> {
                             version: item.plan.version,
                             length: item.plan.length,
                             node_ids: item.plan.after_node_ids,
+                            group_bytes: Vec::new(),
                             update_time_ms: item.object.update_time_ms,
                         });
                     }

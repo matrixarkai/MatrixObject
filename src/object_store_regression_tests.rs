@@ -7560,6 +7560,7 @@ fn plans_capacity_and_persists_placements() {
         version: 1,
         length: 32,
         node_ids: plan.node_ids.clone(),
+        group_bytes: Vec::new(),
         update_time_ms: 3,
     };
     store
@@ -7641,6 +7642,7 @@ fn snapshot_chunks_restore_replacement_nodes() {
             version: 7,
             length: 40,
             node_ids: plan.node_ids.clone(),
+            group_bytes: Vec::new(),
             update_time_ms: 9,
         },
         &plan.plan_checksum,
@@ -8942,6 +8944,7 @@ fn placement_honors_chunkserver_service_health() {
         version: 1,
         length: plan.length,
         node_ids: plan.node_ids.clone(),
+        group_bytes: Vec::new(),
         update_time_ms: 10,
     };
     root.commit_object_placement(placed.clone(), &plan.plan_checksum)
@@ -8972,6 +8975,7 @@ fn placement_honors_chunkserver_service_health() {
             version: 1,
             length: 10,
             node_ids: vec!["chunk-read-only".to_string()],
+            group_bytes: Vec::new(),
             update_time_ms: 10,
         },
     );
@@ -9506,6 +9510,7 @@ fn placement_safely_removes_nodes() {
                 version: 1,
                 length: 10,
                 node_ids: plan.node_ids.clone(),
+                group_bytes: Vec::new(),
                 update_time_ms: 10,
             },
             &plan.plan_checksum,
@@ -9838,6 +9843,7 @@ fn pages_placement_health_for_repair_controllers() {
                 version: 1,
                 length: 10,
                 node_ids: nodes,
+                group_bytes: Vec::new(),
                 update_time_ms: 10,
             },
         );
@@ -9934,6 +9940,7 @@ fn repairs_unhealthy_placements_from_health_audit() {
                 version: 1,
                 length: 10,
                 node_ids: nodes,
+                group_bytes: Vec::new(),
                 update_time_ms: 10,
             },
         );
@@ -34325,6 +34332,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSMETA-INTEGRITY1",
         "MOSRSMETA18",
         "MOSRSMETA19",
+        "MOSRSMETA20",
         "MOSRSMANIFEST1",
         "MOSRSMODULESTATUS32",
         "MOSRSOBJECTREADY77",
@@ -34333,6 +34341,7 @@ fn every_durable_format_constant_is_accounted_for() {
         "MOSRSROOT-PLACEMENT-MIGRATION-COMMIT-ENVELOPE2",
         "MOSRSROOT-PLACEMENT-MIGRATION-ENVELOPE2",
         "MOSRSROOT33",
+        "MOSRSROOT34",
         "MOSRSROOTRAFTSTATUS7",
         "MOSRSSTORE",
         "MOSRSSTORE28",
@@ -34487,7 +34496,7 @@ fn every_durable_format_constant_is_accounted_for() {
     );
     assert_eq!(
         found.len(),
-        151,
+        153,
         "the count is pinned as well, so a rename that happens to swap two names cannot pass"
     );
 }
@@ -35866,7 +35875,11 @@ fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_
 
     assert!(
         !magic_rejected("MOSRSMETA19"),
-        "the version this build writes must not be refused by its own decoder"
+        "the older manifest snapshot must still be accepted"
+    );
+    assert!(
+        !magic_rejected("MOSRSMETA20"),
+        "the snapshot with group charges must be accepted"
     );
     assert!(
         !magic_rejected("MOSRSMETA17"),
@@ -35874,7 +35887,7 @@ fn the_snapshot_decoder_accepts_the_version_before_this_one_and_refuses_the_one_
          snapshot written before it unreadable"
     );
     assert!(
-        magic_rejected("MOSRSMETA20"),
+        magic_rejected("MOSRSMETA21"),
         "a version after this one must be refused, or a field this build does not know would be \
          read as one of its own"
     );
@@ -48986,7 +48999,7 @@ fn the_placement_snapshot_encoding_is_byte_for_byte_what_it_was() {
 #[test]
 fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
     // THE BASE MUST BE VALID, or every case below would be refused for a reason that has
-    // nothing to do with what it is testing, and all fourteen would pass vacuously.
+    // nothing to do with what it is testing, and all sixteen would pass vacuously.
     a_placement_snapshot_that_validates()
         .to_bytes()
         .expect("the base fixture must validate, or the cases below prove nothing");
@@ -49027,6 +49040,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
                         version: 1,
                         length: 10,
                         node_ids: Vec::new(),
+                        group_bytes: Vec::new(),
                         update_time_ms: 3,
                     },
                 );
@@ -49046,12 +49060,41 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
                         version: 1,
                         length: 10,
                         node_ids: vec!["ghost-node".to_string()],
+                        group_bytes: Vec::new(),
                         update_time_ms: 3,
                     },
                 );
                 sealed(snapshot)
             }),
             "root snapshot placement references missing node",
+        ),
+        (
+            "a placement whose charge count differs from its group count",
+            Box::new(|| {
+                let mut snapshot = a_placement_snapshot_that_validates();
+                let object_id = ObjectId::new("bucket", "object");
+                snapshot.placements.insert(object_id.clone(), ObjectPlacement {
+                    object_id, version: 1, length: 10,
+                    node_ids: vec!["block-a".into()], group_bytes: vec![5, 5],
+                    update_time_ms: 3,
+                });
+                sealed(snapshot)
+            }),
+            "root snapshot placement charge count mismatch",
+        ),
+        (
+            "a placement whose charges do not sum to its length",
+            Box::new(|| {
+                let mut snapshot = a_placement_snapshot_that_validates();
+                let object_id = ObjectId::new("bucket", "object");
+                snapshot.placements.insert(object_id.clone(), ObjectPlacement {
+                    object_id, version: 1, length: 10,
+                    node_ids: vec!["block-a".into()], group_bytes: vec![9],
+                    update_time_ms: 3,
+                });
+                sealed(snapshot)
+            }),
+            "root snapshot placement charges do not sum to object length",
         ),
         (
             "placed bytes the node does not account for",
@@ -49065,6 +49108,7 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
                         version: 1,
                         length: 10,
                         node_ids: vec!["block-a".to_string()],
+                        group_bytes: Vec::new(),
                         update_time_ms: 3,
                     },
                 );
@@ -49239,11 +49283,13 @@ fn a_rule_the_write_path_refuses_is_refused_on_the_read_path_too() {
     // `return Err` is not something the compiler can make us enumerate.
     const VALIDATION: &str = include_str!("protocol/root/root_snapshot/root_snapshot_validation.rs");
     let sites = VALIDATION.matches("ObjectError::Corruption").count();
+    // The two manifest-only refusals are exercised by the striped manifest test.
+    const MANIFEST_ONLY_SITES: usize = 2;
     assert_eq!(
-        cases.len(),
+        cases.len() + MANIFEST_ONLY_SITES,
         sites,
-        "validation.rs refuses a snapshot at {sites} places and this test covers {} of them; \
-         a rule that is not exercised on both paths is a rule that can be deleted from one",
+        "validation.rs refuses a snapshot at {sites} places; this test covers {} root cases \
+         and the striped manifest test covers {MANIFEST_ONLY_SITES} metadata cases",
         cases.len()
     );
 
@@ -51835,7 +51881,7 @@ fn the_node_decoder_accepts_the_page_tier_shape_before_the_encoder_writes_it() {
     // existing store unreadable, so it is asserted rather than assumed.
     const DECODING: &str = include_str!("protocol/root/root_snapshot/root_snapshot_decoding.rs");
     assert!(
-        DECODING.contains("(1..=33).contains(version)"),
+        DECODING.contains("(1..=34).contains(version)"),
         "the accepted shape range no longer spans the old shapes through the new one"
     );
     assert!(
@@ -52268,7 +52314,7 @@ fn binary_placement_outcome_carries_object_and_capacity_atomically() {
     let plan=source.plan_object_placement(id.clone(),200,1).unwrap();
     let mut target=source.clone();
     let before=PlacementOutcome::capture(&source,plan.node_ids.clone(),Some(id.clone())).unwrap();
-    source.commit_object_placement(ObjectPlacement { object_id:id.clone(), version:1,length:200,node_ids:plan.node_ids,update_time_ms:10 },&plan.plan_checksum).unwrap();
+    source.commit_object_placement(ObjectPlacement { object_id:id.clone(), version:1,length:200,node_ids:plan.node_ids,group_bytes: Vec::new(), update_time_ms:10 },&plan.plan_checksum).unwrap();
     let outcome=before.finish(&source).unwrap();
     let mut bad=outcome.clone();
     bad.placements[0].after.as_mut().unwrap().node_ids.push("missing".into());
@@ -54454,6 +54500,7 @@ fn placement_uses_distinct_domains_before_reusing_a_domain() {
             version: 1,
             length: 10,
             node_ids: plan.node_ids.clone(),
+            group_bytes: Vec::new(),
             update_time_ms: 2,
         };
         store
@@ -54537,6 +54584,103 @@ pub(crate) fn manifest_publication_fixture() -> (
 }
 
 #[test]
+fn striped_manifest_charges_each_group_for_its_own_extents() {
+    use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest};
+    use crate::placement_outcome::PlacementOutcome;
+    let mut service = MatrixMetaService::new();
+    for name in ["group-a", "group-b"] {
+        let mut node = placement_node(name, name, 6);
+        node.meta_health.control_proof.coordinator_backend = "embedded-raft".into();
+        node.chunk_health.accepting_writes = true;
+        node.chunk_health.raft_writable = true;
+        service.register_node(node).unwrap();
+    }
+    let manifest = ObjectManifest {
+        format_version: 1, bucket: "bucket".into(), key: "striped".into(),
+        generation: 1, length: 8, deleted: false,
+        extents: ["group-a", "group-b"].into_iter().enumerate().map(|(index, group)| {
+            ObjectExtent {
+                group: group.into(), volume_id: 1, chunk_id: 1, page_index: index as u64,
+                object_offset: index as u64 * 4, page_offset: 0, length: 4,
+                write_sequence: 1, data_checksum: 42,
+            }
+        }).collect(),
+    };
+    let outcome = PlacementOutcome::publish_manifest(
+        &service, ManifestOutcome::decide(None, manifest.clone()).unwrap(), 10
+    ).unwrap();
+    PlacementOutcome::from_payload(&outcome.to_payload().unwrap()).unwrap()
+        .apply(&mut service).unwrap();
+    assert_eq!(service.nodes["group-a"].committed_bytes, 4);
+    assert_eq!(service.nodes["group-b"].committed_bytes, 4);
+    assert_eq!(service.placements[&manifest.object_id()].group_bytes, [4, 4]);
+    assert!(service.plan_placement_migration(&manifest.object_id(), "group-a", "group-c").is_err());
+    let mut mixed = service.clone();
+    let legacy_id = crate::ObjectId::new("bucket", "legacy");
+    let plan = mixed.plan_object_placement(legacy_id.clone(), 1, 1).unwrap();
+    mixed.commit_object_placement(ObjectPlacement {
+        object_id: legacy_id, version: 1, length: 1, node_ids: plan.node_ids,
+        group_bytes: Vec::new(), update_time_ms: 11,
+    }, &plan.plan_checksum).unwrap();
+    let mixed_snapshot = mixed.export_snapshot();
+    assert_eq!(MetaSnapshot::from_bytes(&mixed_snapshot.to_bytes().unwrap()).unwrap(), mixed_snapshot);
+    let mixed_root = mixed.export_placement_snapshot();
+    assert_eq!(crate::PlacementSnapshot::from_bytes(&mixed_root.to_bytes().unwrap()).unwrap(), mixed_root);
+    let root = service.export_placement_snapshot();
+    assert_eq!(crate::PlacementSnapshot::from_bytes(&root.to_bytes().unwrap()).unwrap(), root);
+    let mut restored_roster = service.clone();
+    restored_roster.install_placement_snapshot(root.clone()).unwrap();
+    assert!(MatrixMetaService::new().install_placement_snapshot(root).is_err());
+    let metadata = service.export_snapshot();
+    let snapshot_bytes = metadata.to_bytes().unwrap();
+    assert_eq!(MetaSnapshot::from_bytes(&snapshot_bytes).unwrap(), metadata);
+    assert_eq!(MetaSnapshot::read_from(&mut snapshot_bytes.as_slice(), snapshot_bytes.len() as u64).unwrap(), metadata);
+    let mut invalid = metadata.clone();
+    invalid.placements.get_mut(&manifest.object_id()).unwrap().group_bytes[0] = 3;
+    invalid.placements.get_mut(&manifest.object_id()).unwrap().group_bytes[1] = 5;
+    invalid.checksum = invalid.checksum_material_hash();
+    assert!(invalid.validate().unwrap_err().to_string().contains("root snapshot placement charge mismatch"));
+    let mut unbound = metadata.clone();
+    unbound.object_manifests = Default::default();
+    unbound.checksum = unbound.checksum_material_hash();
+    assert!(unbound.validate().unwrap_err().to_string().contains("root snapshot placement charges lack a manifest"));
+    let mut replacement = manifest.clone();
+    replacement.generation = 2;
+    replacement.extents[0].length = 6;
+    replacement.extents[1].object_offset = 6;
+    replacement.extents[1].length = 2;
+    PlacementOutcome::publish_manifest(
+        &service, ManifestOutcome::decide(Some(manifest), replacement.clone()).unwrap(), 20
+    ).unwrap().apply(&mut service).unwrap();
+    assert_eq!(service.nodes["group-a"].committed_bytes, 6);
+    assert_eq!(service.nodes["group-b"].committed_bytes, 2);
+    let mut deleted = replacement.clone();
+    deleted.generation = 3;
+    deleted.deleted = true;
+    deleted.length = 0;
+    deleted.extents.clear();
+    PlacementOutcome::publish_manifest(
+        &service, ManifestOutcome::decide(Some(replacement), deleted).unwrap(), 30
+    ).unwrap().apply(&mut service).unwrap();
+    assert_eq!(service.nodes["group-a"].committed_bytes, 0);
+    assert_eq!(service.nodes["group-b"].committed_bytes, 0);
+}
+
+#[test]
+fn older_manifest_outcome_without_group_charges_still_replays() {
+    use crate::placement_outcome::PlacementOutcome;
+    let (mut service, mut create, _) = manifest_publication_fixture();
+    create.placements[0].after.as_mut().unwrap().group_bytes.clear();
+    let bytes = create.to_payload().unwrap();
+    PlacementOutcome::from_payload(&bytes).unwrap().apply(&mut service).unwrap();
+    let id = crate::ObjectId::new("bucket", "object");
+    assert!(service.placements[&id].group_bytes.is_empty());
+    assert_eq!(service.nodes["group-a"].committed_bytes, 4);
+    let snapshot = service.export_snapshot();
+    assert_eq!(MetaSnapshot::from_bytes(&snapshot.to_bytes().unwrap()).unwrap(), snapshot);
+}
+
+#[test]
 fn manifest_publication_moves_capacity_and_preserves_deleted_generations_atomically() {
     use crate::object_manifest::ManifestOutcome;
     use crate::placement_outcome::PlacementOutcome;
@@ -54596,6 +54740,7 @@ fn malformed_manifest_publications_leave_all_metadata_unchanged() {
     let mut bad = create.clone(); bad.nodes[0].after.as_mut().unwrap().committed_bytes += 1; invalid.push(bad);
     let mut bad = create.clone(); bad.nodes.clear(); invalid.push(bad);
     let mut bad = create.clone(); bad.placements[0].after.as_mut().unwrap().length += 1; invalid.push(bad);
+    let mut bad = create.clone(); bad.placements[0].after.as_mut().unwrap().group_bytes[0] -= 1; invalid.push(bad);
     let mut bad = create.clone(); bad.manifest.as_mut().unwrap().after.as_mut().unwrap().generation = 2; invalid.push(bad);
     let mut bad = create.clone(); bad.version = 1; invalid.push(bad);
     let mut bad = create.clone(); bad.before_index += 1; invalid.push(bad);
@@ -54617,7 +54762,7 @@ fn malformed_manifest_publications_leave_all_metadata_unchanged() {
     let plan = service.plan_object_placement(ObjectId::new(&next.bucket, &next.key), next.length, 1).unwrap();
     assert!(service.commit_object_placement(ObjectPlacement {
         object_id: ObjectId::new(&next.bucket, &next.key), version: 2, length: next.length,
-        node_ids: plan.node_ids, update_time_ms: 20
+        node_ids: plan.node_ids, group_bytes: Vec::new(), update_time_ms: 20
     }, &plan.plan_checksum).is_err());
     assert_eq!(service.export_snapshot(), saved);
     service.nodes.get_mut("group-b").unwrap().capacity_bytes = 1;

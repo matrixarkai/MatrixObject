@@ -6,10 +6,23 @@ pub struct ObjectPlacement {
     pub version: u64,
     pub length: u64,
     pub node_ids: Vec<String>,
+    /// Bytes charged to each node in `node_ids`; empty preserves older full-length charges.
+    pub group_bytes: Vec<u64>,
     pub update_time_ms: u64,
 }
 
 impl ObjectPlacement {
+    pub fn charged_bytes_at(&self, index: usize) -> u64 {
+        self.group_bytes.get(index).copied().unwrap_or(self.length)
+    }
+
+    pub fn charged_bytes(&self, node_id: &str) -> u64 {
+        self.node_ids
+            .iter()
+            .position(|id| id == node_id)
+            .map_or(0, |index| self.charged_bytes_at(index))
+    }
+
     pub fn to_control_fields(&self, field_prefix: &str) -> BTreeMap<String, String> {
         let mut fields = BTreeMap::new();
         fields.insert(

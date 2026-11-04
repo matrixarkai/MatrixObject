@@ -33,6 +33,7 @@ pub(crate) struct PlacementSnapshotDecodeFeatures {
     pub(crate) has_root_chunk_control_health: bool,
     pub(crate) has_root_replica_service_health: bool,
     pub(crate) has_serves_page_tier: bool,
+    pub(crate) has_group_bytes: bool,
 }
 
 impl PlacementSnapshotDecodeFeatures {
@@ -69,6 +70,7 @@ impl PlacementSnapshotDecodeFeatures {
             has_root_chunk_control_health: version >= 17,
             has_root_replica_service_health: version >= 32,
             has_serves_page_tier: version >= 33,
+            has_group_bytes: version >= 34,
         }
     }
 }

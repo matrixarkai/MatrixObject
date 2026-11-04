@@ -243,6 +243,12 @@ impl PlacementSnapshot {
             for node_id in &placement.node_ids {
                 append_string(&mut material, node_id);
             }
+            if !placement.group_bytes.is_empty() {
+                append_u64(&mut material, placement.group_bytes.len() as u64);
+                for charged in &placement.group_bytes {
+                    append_u64(&mut material, *charged);
+                }
+            }
         }
         if let Some(lease) = &self.leader_lease {
             append_u64(&mut material, 1);

@@ -2,9 +2,9 @@
 // Copyright 2026 MatrixArkAI
 impl MatrixMetaService {
     fn release_committed_bytes(&mut self, placement: &ObjectPlacement) {
-        for node_id in &placement.node_ids {
+        for (index, node_id) in placement.node_ids.iter().enumerate() {
             if let Some(node) = self.nodes.get_mut(node_id) {
-                node.committed_bytes = node.committed_bytes.saturating_sub(placement.length);
+                node.committed_bytes = node.committed_bytes.saturating_sub(placement.charged_bytes_at(index));
             }
         }
     }
