@@ -221,9 +221,12 @@ impl Policy {
                         // Rewriting an ever larger snapshot after only a small
                         // WAL increment amplifies writes. Amortize the next
                         // capture over at least twice the current state size.
-                        self.next_interval = self
-                            .interval
-                            .max(length.saturating_mul(2).min(128 * 1024 * 1024));
+                        self.next_interval = if self.kind == 2 {
+                            self.interval
+                                .max(length.saturating_mul(2).min(128 * 1024 * 1024))
+                        } else {
+                            self.interval
+                        };
                         // Retained writes accumulated during capture must count
                         // toward the next interval rather than disappearing into
                         // the baseline of the compacted WAL.
@@ -364,7 +367,11 @@ mod tests {
                 .unwrap();
             assert!(policy.worker.is_none());
             assert!(policy.checkpoint < later);
-            assert!(policy.next_interval >= 4096);
+            if kind == 2 {
+                assert!(policy.next_interval >= 4096);
+            } else {
+                assert_eq!(policy.next_interval, policy.interval);
+            }
             drop(policy);
             drop(peer);
             let mut peer = DurablePeer::open(options).unwrap();
