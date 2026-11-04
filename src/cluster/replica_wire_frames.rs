@@ -84,6 +84,8 @@ pub enum RequestCode {
     ReadChunkStateRange = 10,
     StateInstall = 11,
     Membership = 12,
+    /// Return the sequence, length and SHA-256 of a bounded page range.
+    DigestChunk = 13,
 }
 
 impl RequestCode {
@@ -106,6 +108,7 @@ impl RequestCode {
             10 => Some(RequestCode::ReadChunkStateRange),
             11 => Some(RequestCode::StateInstall),
             12 => Some(RequestCode::Membership),
+            13 => Some(RequestCode::DigestChunk),
             _ => None,
         }
     }

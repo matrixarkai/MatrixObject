@@ -134,13 +134,30 @@ fn write_group_extents(
             client.write_chunk_if_sequence(page.clone(), 0, bytes, 0)?;
             pages.push((page, 0, extent.length));
         }
-        let reads = client.read_chunks_pipelined(&pages)?;
-        for (&index, read) in batch.iter().zip(reads) {
-            let extent = &manifest.extents[index];
-            let start = extent.object_offset as usize;
-            let bytes = &data[start..start + extent.length as usize];
-            if read.write_sequence != 1 || read.data != bytes {
-                return Err(ObjectError::Corruption("written page verification failed".into()));
+        match client.digest_chunks_pipelined(&pages) {
+            Ok(digests) => {
+                for (&index, (sequence, actual_length, sha256)) in batch.iter().zip(digests) {
+                    let extent = &manifest.extents[index];
+                    let start = extent.object_offset as usize;
+                    let bytes = &data[start..start + extent.length as usize];
+                    if sequence != 1
+                        || actual_length != extent.length
+                        || sha256.as_ref() != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
+                    {
+                        return Err(ObjectError::Corruption("written page verification failed".into()));
+                    }
+                }
+            }
+            Err(_) => {
+                let reads = client.read_chunks_pipelined(&pages)?;
+                for (&index, read) in batch.iter().zip(reads) {
+                    let extent = &manifest.extents[index];
+                    let start = extent.object_offset as usize;
+                    let bytes = &data[start..start + extent.length as usize];
+                    if read.write_sequence != 1 || read.data != bytes {
+                        return Err(ObjectError::Corruption("written page verification failed".into()));
+                    }
+                }
             }
         }
     }
@@ -358,6 +375,74 @@ mod tests {
         let mut payload = vec![0; size];
         stream.read_exact(&mut payload).unwrap();
         MetaRequest::decode(MetaRequestCode::from_u8(header[1]).unwrap(), &payload).unwrap()
+    }
+    fn receive_replica(stream: &mut TcpStream) -> crate::cluster::ReplicaRequest {
+        let mut header = [0; 6];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[0], crate::cluster::PROTOCOL_STAMP);
+        let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+        assert!(size <= 4096);
+        let mut payload = vec![0; size];
+        stream.read_exact(&mut payload).unwrap();
+        crate::cluster::ReplicaRequest::decode(
+            crate::cluster::RequestCode::from_u8(header[1]).unwrap(),
+            &payload,
+        )
+        .unwrap()
+    }
+    #[test]
+    fn mismatched_page_digest_refuses_staged_write() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            assert!(matches!(
+                receive_replica(&mut stream),
+                crate::cluster::ReplicaRequest::WriteChunkIfSequence { .. }
+            ));
+            stream.write_all(&crate::cluster::message::encode_reply(
+                &crate::cluster::ReplicaReply::Applied,
+            )).unwrap();
+            assert!(matches!(
+                receive_replica(&mut stream),
+                crate::cluster::ReplicaRequest::DigestChunk { length: 4, .. }
+            ));
+            stream.write_all(&crate::cluster::message::encode_reply(
+                &crate::cluster::ReplicaReply::Digest {
+                    write_sequence: 1,
+                    length: 4,
+                    sha256: [0; 32],
+                },
+            )).unwrap();
+            assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        });
+        let client = RemoteReplicaClient::connect(&endpoint, &ReplicaClientOptions::default()).unwrap();
+        let manifest = ObjectManifest {
+            format_version: 1,
+            bucket: "bucket".into(),
+            key: "key".into(),
+            generation: 1,
+            length: 4,
+            extents: vec![ObjectExtent {
+                group: "group".into(),
+                volume_id: 1,
+                chunk_id: 1,
+                page_index: 0,
+                object_offset: 0,
+                page_offset: 0,
+                length: 4,
+                write_sequence: 1,
+                data_checksum: 0,
+            }],
+            deleted: false,
+        };
+        let route = ChunkGroupRoute { version: 1, group: None, fence: vec![] };
+        assert!(matches!(
+            write_group_extents(&[0], &route, Some(client), &manifest, b"abcd", &ObjectWriteOptions::default()),
+            Err(ObjectError::Corruption(_))
+        ));
+        worker.join().unwrap();
     }
     #[test]
     fn expired_object_deadline_sends_nothing_and_restores_client_scope() {

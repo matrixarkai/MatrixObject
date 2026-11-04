@@ -264,6 +264,7 @@ dependencies = [
  "matrixraft",
  "prost",
  "raft 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ring",
  "rustls",
  "rustls-pemfile",
 ]

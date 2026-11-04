@@ -142,6 +142,27 @@ fn replica_read_budget_includes_overhead_and_keeps_connection_usable() {
         ReplicaReply::Read(read) => assert_eq!(read.data, vec![7; 88]),
         _ => panic!("read reply expected"),
     }
+    let digest = exchange(
+        &mut stream,
+        encode_request(&ReplicaRequest::DigestChunk {
+            page_id: page(0),
+            offset: 0,
+            length: 92,
+        }),
+        128,
+    );
+    assert_eq!(digest.0, 0);
+    assert_eq!(digest.1.len(), 52);
+    let mut expected = [0; 32];
+    expected.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &[7; 92]).as_ref());
+    assert_eq!(
+        ReplicaReply::decode(RequestCode::DigestChunk, &digest.1).unwrap(),
+        ReplicaReply::Digest {
+            write_sequence: 1,
+            length: 92,
+            sha256: expected,
+        }
+    );
     for length in [89, 92, u64::MAX] {
         refused(exchange(
             &mut stream,
