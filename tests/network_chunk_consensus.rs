@@ -2716,7 +2716,16 @@ mod coupled_groups {
             .collect();
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let nodes = meta.list_placement_nodes().unwrap();
+            let nodes = match meta.list_placement_nodes() {
+                Ok(nodes) => nodes,
+                Err(matrixobjectstore_rs::ObjectError::PreconditionFailed(_))
+                    if Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                Err(error) => panic!("cannot read multi-group accounting: {error}"),
+            };
             assert_eq!(nodes.len(), groups.iter().map(|g| g.nodes.len() + 1).sum::<usize>());
             if groups.iter().all(|g| {
                 let id = g.placement_id();
@@ -3714,7 +3723,7 @@ fn chunk_checkpoints_reclaim_history_transfer_large_state_and_recover_processes(
     // Recovered payload accounting still enforces the original capacity.
     let too_large = vec![0; 1024 * 1024];
     for id in 30..52 {
-        client.write_chunk(page(id), 0, &too_large).unwrap();
+        create_checkpoint_page(&group, &mut client, id, &too_large);
     }
     assert!(client.write_chunk(page(60), 0, &too_large).is_err());
 }

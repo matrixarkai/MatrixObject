@@ -527,6 +527,7 @@ fn run(
             .map_err(|_| RaftError::Storage("chunk state poisoned".into()))?;
         let application = RefCell::new(&mut *node);
         progress.mark(WorkerPhase::ApplyReady);
+        let applied_before = peer.applied_index();
         let output = peer.process_ready_with_snapshot_reader(
             |id, bytes| {
                 let _observation = progress.applying_outcome();
@@ -588,6 +589,11 @@ fn run(
                 Ok(())
             },
         )?;
+        if peer.applied_index() != applied_before {
+            // The quiet period starts after a committed write finishes, even
+            // when its durability work took longer than the interval itself.
+            last_request = Instant::now();
+        }
         progress.mark(WorkerPhase::Requests);
         drop(application);
         // Capture only after Ready has durably applied data and membership. The

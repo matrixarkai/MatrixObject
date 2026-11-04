@@ -246,7 +246,7 @@ fn main() {
                     directory,
                     request_timeout: std::time::Duration::from_millis(env_usize(
                         "MATRIXOBJECT_CHUNK_RAFT_TIMEOUT_MS",
-                        3000,
+                        5000,
                     ) as u64),
                 })
             })();
