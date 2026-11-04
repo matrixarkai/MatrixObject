@@ -372,13 +372,13 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                 plan_checksum: "plan".into(),
             }),
         );
-        for group in groups.clone().into_iter().rev() {
-            let MetaRequest::ReadChunkRoute { placement_id } = meta(&mut stream) else {
-                panic!("group lookup missing");
-            };
-            assert_eq!(placement_id, group.placement_id);
-            reply(&mut stream, MetaReply::ChunkRoute(ChunkGroupRoute {version:1,group:Some(group),fence:vec![]}));
-        }
+        let MetaRequest::ReadChunkRoutes { placement_ids } = meta(&mut stream) else {
+            panic!("write route batch missing");
+        };
+        assert_eq!(placement_ids, ["group-2", "group-1"]);
+        reply(&mut stream, MetaReply::ChunkRoutes(ChunkRouteBatch { version: 1, routes: groups.clone().into_iter().rev()
+            .map(|group| ChunkGroupRoute { version: 1, group: Some(group), fence: vec![] })
+            .collect() }));
         assert!(matches!(
             meta(&mut stream),
             MetaRequest::AllocateObjectPages { page_count: 32 }
@@ -402,13 +402,13 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
             MetaRequest::ReadManifest { .. }
         ));
         reply(&mut stream, MetaReply::Manifest(manifest.clone()));
-        for group in groups {
-            let MetaRequest::ReadChunkRoute { placement_id } = meta(&mut stream) else {
-                panic!("read group lookup missing");
-            };
-            assert_eq!(placement_id, group.placement_id);
-            reply(&mut stream, MetaReply::ChunkRoute(ChunkGroupRoute {version:1,group:Some(group),fence:vec![]}));
-        }
+        let MetaRequest::ReadChunkRoutes { placement_ids } = meta(&mut stream) else {
+            panic!("read route batch missing");
+        };
+        assert_eq!(placement_ids, ["group-1", "group-2"]);
+        reply(&mut stream, MetaReply::ChunkRoutes(ChunkRouteBatch { version: 1, routes: groups.into_iter()
+            .map(|group| ChunkGroupRoute { version: 1, group: Some(group), fence: vec![] })
+            .collect() }));
         assert_eq!(stream.read(&mut [0]).unwrap(), 0);
         manifest
     });

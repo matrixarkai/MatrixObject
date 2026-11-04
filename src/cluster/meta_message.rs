@@ -611,7 +611,7 @@ pub enum MetaReply {
     GroupIdentity(super::MetaGroupIdentity),
     ChunkGroup(super::ChunkGroupConfig),
     ChunkRoute(super::ChunkGroupRoute),
-    ChunkRoutes(super::chunk_group_route::RouteBatch),
+    ChunkRoutes(super::ChunkRouteBatch),
     /// A routing response: this request was not proposed or applied.
     NotLeader,
     PlacementNode(PlacementNodeSummary),
