@@ -86,6 +86,7 @@ pub enum RequestCode {
     Membership = 12,
     /// Return the sequence, length and SHA-256 of a bounded page range.
     DigestChunk = 13,
+    WriteChunkBatchIfSequence = 14,
 }
 
 impl RequestCode {
@@ -109,6 +110,7 @@ impl RequestCode {
             11 => Some(RequestCode::StateInstall),
             12 => Some(RequestCode::Membership),
             13 => Some(RequestCode::DigestChunk),
+            14 => Some(RequestCode::WriteChunkBatchIfSequence),
             _ => None,
         }
     }

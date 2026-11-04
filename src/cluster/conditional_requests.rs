@@ -31,6 +31,13 @@ pub(super) struct ChunkWrite {
     pub data: Vec<u8>,
 }
 #[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkWriteBatch {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub writes: Vec<ChunkWrite>,
+}
+#[derive(Clone, PartialEq, Message)]
 pub(super) struct ChunkDiscard {
     #[prost(uint32, tag = "1")]
     pub version: u32,
@@ -107,6 +114,34 @@ mod tests {
     use super::*;
     use crate::cluster::{ReplicaRequest, RequestCode};
     use crate::{ChunkId, PageId};
+    #[test]
+    fn conditional_write_batches_require_canonical_bounded_protobuf() {
+        let write = crate::cluster::message::ConditionalChunkWrite {
+            page_id: PageId { chunk_id: ChunkId::new(1, 2).unwrap(), page_index: 3 },
+            offset: 0,
+            data: b"abc".to_vec(),
+            expected_sequence: 0,
+        };
+        let request = ReplicaRequest::WriteChunkBatchIfSequence { writes: vec![write; 2] };
+        let bytes = request.encode_payload();
+        assert_eq!(RequestCode::from_u8(14), Some(RequestCode::WriteChunkBatchIfSequence));
+        assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
+        let mut value: ChunkWriteBatch = decode(&bytes).unwrap();
+        value.version = 2;
+        assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
+        value.version = 1;
+        value.writes[0].version = 2;
+        assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
+        value.writes[0].version = 1;
+        value.writes.resize(5, value.writes[0].clone());
+        assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
+        let mut extra = bytes.clone();
+        extra.extend([0x08, 0x01]);
+        assert!(ReplicaRequest::decode(request.code(), &extra).is_err());
+        let mut truncated = bytes;
+        truncated.pop();
+        assert!(ReplicaRequest::decode(request.code(), &truncated).is_err());
+    }
     #[test]
     fn conditional_discard_requests_require_canonical_bounded_protobuf() {
         let request = ReplicaRequest::DiscardChunkIfSequence {

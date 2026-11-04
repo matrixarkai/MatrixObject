@@ -111,13 +111,19 @@ For fresh object pages, the writer confirms each committed range with its
 sequence, length and SHA-256 digest. A server that does not implement the digest
 request triggers full-byte readback. A mismatched digest refuses publication.
 Within each data group, the first conditional page write confirms the current
-leader. Up to seven subsequent independent page writes are then sent before
-their ordered replies are collected. A failed or partial batch closes that
+leader. For pages no larger than 64 KiB, an empty non-mutating request probes
+batch support. An upgraded server admits up to three following conditional
+writes through one bounded request; older servers retain the prior page pipeline.
+Larger pages also retain that pipeline. A failed or partial batch closes that
 connection and leaves publication unattempted; outstanding writes may have
-committed and are never replayed. This overlaps client request delivery with
-server processing but does not reduce Raft or storage bytes. The local nine-process
-64 MiB failover and restart test passed; its single timing does not establish a
-throughput gain.
+committed and are never replayed. Raft may propose adjacent writes together,
+but this does not reduce replicated payload or storage bytes. Alternating local
+51-process runs on 1 KiB striped objects measured 43.4 and 39.1 initial writes
+per second on the individual-write path, and 48.8 and 48.2 with bounded batch
+admission. The post-failover write samples were 52.5 and 53.7 versus 56.8 and
+69.4. These WSL samples support a small-object gain on this host, not a
+production throughput guarantee. At 1 MiB per object, batch admission did not
+show a repeatable gain, so it is not selected for those pages.
 
 `RemoteMetaClient::read_object` fetches one committed manifest and assembles its
 extents using verified data-group connections. It returns the manifest with the

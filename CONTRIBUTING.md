@@ -60,9 +60,9 @@ The **network chunk consensus** job runs thirty-four identity, routing, process,
 capacity, shutdown, and metadata-health tests with the chunk consensus feature. The coupled
 quorum test additionally enables metadata consensus and starts three voters for each service.
 
-Across these jobs, 231 individual tests run in the library.
+Across these jobs, 232 individual tests run in the library.
 
-**CI does not run the suite.** It compiles everything and runs those 231 guards plus the integration tests. A green
+**CI does not run the suite.** It compiles everything and runs those 232 guards plus the integration tests. A green
 tick means the tree builds and those guards hold; it does not mean the suite passed. Run
 `tools/suite_gate.sh` yourself.
 

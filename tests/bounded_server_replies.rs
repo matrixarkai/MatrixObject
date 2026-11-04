@@ -4,7 +4,7 @@
 #![cfg(all(feature = "meta-server", feature = "replica-server"))]
 
 use matrixobjectstore_rs::cluster::{
-    message::{decode_failure, encode_request},
+    message::{decode_failure, encode_request, ConditionalChunkWrite},
     meta_message::encode_meta_request,
     MetaNodeOptions, MetaNodeServer, MetaReply, MetaRequest, ReplicaNodeOptions, ReplicaNodeServer,
     ReplicaReply, ReplicaRequest, RequestCode, StatusCode,
@@ -108,6 +108,33 @@ fn ping(stream: &mut TcpStream, limit: usize, count: u64) {
         ReplicaReply::decode(RequestCode::Ping, &reply.1).unwrap(),
         ReplicaReply::Pong { page_count: count }
     );
+}
+
+#[test]
+fn conditional_batch_failure_reports_partial_application() {
+    let node = Node::replica(1024);
+    let mut stream = node.connect();
+    let writes = [page(0), page(0), page(1)].into_iter().map(|page_id|
+        ConditionalChunkWrite {
+            page_id,
+            offset: 0,
+            data: b"data".to_vec(),
+            expected_sequence: 0,
+        }
+    ).collect();
+    refused(exchange(&mut stream, encode_request(
+        &ReplicaRequest::WriteChunkBatchIfSequence { writes },
+    ), 1024));
+    ping(&mut stream, 1024, 1);
+    let first = exchange(&mut stream, encode_request(&ReplicaRequest::ReadChunk {
+        page_id: page(0), offset: 0, length: 4,
+    }), 1024);
+    assert_eq!(first.0, StatusCode::Ok as u8);
+    assert!(matches!(ReplicaReply::decode(RequestCode::ReadChunk, &first.1).unwrap(),
+        ReplicaReply::Read(read) if read.data == b"data" && read.write_sequence == 1));
+    assert_eq!(exchange(&mut stream, encode_request(&ReplicaRequest::HeadChunk {
+        page_id: page(1),
+    }), 1024).0, StatusCode::NotFound as u8);
 }
 
 #[test]

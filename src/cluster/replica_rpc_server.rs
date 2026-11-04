@@ -425,12 +425,22 @@ fn frame_response(
             }
             Ok(request) => {
                 #[cfg(feature = "chunk-consensus")]
-                let result = match consensus {
-                    Some(c) => c.request(request),
-                    None => apply(replica, request, options.max_payload_bytes),
+                let result = match request {
+                    ReplicaRequest::WriteChunkBatchIfSequence { writes } => match consensus {
+                        Some(c) => c.request_batch(writes),
+                        None => apply_batch(replica, writes, options.max_payload_bytes),
+                    },
+                    request => match consensus {
+                        Some(c) => c.request(request),
+                        None => apply(replica, request, options.max_payload_bytes),
+                    },
                 };
                 #[cfg(not(feature = "chunk-consensus"))]
-                let result = apply(replica, request, options.max_payload_bytes);
+                let result = match request {
+                    ReplicaRequest::WriteChunkBatchIfSequence { writes } =>
+                        apply_batch(replica, writes, options.max_payload_bytes),
+                    request => apply(replica, request, options.max_payload_bytes),
+                };
                 match result.and_then(|reply| {
                     crate::cluster::message::check_reply_size(
                         reply.payload_len(),
@@ -447,6 +457,22 @@ fn frame_response(
             }
         },
     }
+}
+
+fn apply_batch(
+    replica: &Arc<Mutex<NodeReplica>>,
+    writes: Vec<super::message::ConditionalChunkWrite>,
+    max_payload_bytes: usize,
+) -> Result<ReplicaReply, ObjectError> {
+    for write in writes {
+        apply(replica, ReplicaRequest::WriteChunkIfSequence {
+            page_id: write.page_id,
+            offset: write.offset,
+            data: write.data,
+            expected_sequence: write.expected_sequence,
+        }, max_payload_bytes)?;
+    }
+    Ok(ReplicaReply::Applied)
 }
 
 /// Run one request against the replica.
@@ -745,6 +771,9 @@ pub(super) fn apply_to_replica(
         .map(ReplicaReply::StateRange),
         ReplicaRequest::Membership(_) => Err(ObjectError::InvalidArgument(
             "membership requires an enabled consensus group".into(),
+        )),
+        ReplicaRequest::WriteChunkBatchIfSequence { .. } => Err(ObjectError::InvalidArgument(
+            "batch writes require node request dispatch".into(),
         )),
         ReplicaRequest::GroupIdentity => Err(ObjectError::PreconditionFailed(
             "standalone replica has no Raft group identity".into(),

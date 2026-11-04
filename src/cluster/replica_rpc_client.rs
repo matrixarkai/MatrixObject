@@ -510,6 +510,38 @@ impl RemoteReplicaClient {
         if writes.len() == 1 {
             return Ok(());
         }
+        // Larger pages keep one mutation per consensus turn. Preparing several
+        // large candidate states together can delay Raft traffic long enough
+        // to trigger an election under load.
+        if writes.iter().all(|(_, _, data, _)| data.len() <= 64 * 1024)
+            && self.probe_conditional_write_batch()?
+        {
+            for batch in writes[1..].chunks(3) {
+                if batch.len() == 1 {
+                    let (page, offset, data, sequence) = &batch[0];
+                    self.write_chunk_if_sequence(page.clone(), *offset, data, *sequence)?;
+                    continue;
+                }
+                let request = ReplicaRequest::WriteChunkBatchIfSequence {
+                    writes: batch.iter().map(|(page, offset, data, sequence)|
+                        crate::cluster::message::ConditionalChunkWrite {
+                            page_id: page.clone(), offset: *offset,
+                            data: data.to_vec(), expected_sequence: *sequence,
+                        }).collect(),
+                };
+                if request.encode_payload().len() > self.max_payload_bytes {
+                    for (page, offset, data, sequence) in batch {
+                        self.write_chunk_if_sequence(page.clone(), *offset, data, *sequence)?;
+                    }
+                    continue;
+                }
+                match self.call(request)? {
+                    ReplicaReply::Applied => {}
+                    other => return Err(unexpected_reply("a conditional chunk write batch", &other)),
+                }
+            }
+            return Ok(());
+        }
         self.connection_usable = false;
         let result = (|| {
             for (page, offset, data, sequence) in &writes[1..] {
@@ -536,6 +568,40 @@ impl RemoteReplicaClient {
         if result.is_ok() {
             self.connection_usable = true;
         } else {
+            let _ = self.writer.shutdown(Shutdown::Both);
+        }
+        result
+    }
+
+    /// An empty batch cannot mutate a page. A decoded unknown-verb status is
+    /// therefore the only safe signal to use the older per-page path.
+    fn probe_conditional_write_batch(&mut self) -> Result<bool, ObjectError> {
+        if !self.connection_usable {
+            return Err(transport_error(&self.endpoint, "probing batch writes", "connection unavailable"));
+        }
+        self.connection_usable = false;
+        let result = (|| {
+            self.send_request(&ReplicaRequest::WriteChunkBatchIfSequence { writes: Vec::new() })?;
+            let deadline = exchange_deadline(self.read_timeout, self.deadline)?;
+            let mut header = [0u8; HEADER_BYTES];
+            read_before(&mut self.reader, &mut header, deadline).map_err(|error|
+                transport_error(&self.endpoint, "reading a batch probe", &error.to_string()))?;
+            let (status, length) = self.reply_header(&header)?;
+            let mut payload = vec![0u8; length];
+            read_before(&mut self.reader, &mut payload, deadline).map_err(|error|
+                transport_error(&self.endpoint, "reading a batch probe", &error.to_string()))?;
+            if status == StatusCode::UnknownRequest {
+                decode_failure(&payload)?;
+                self.connection_usable = true;
+                return Ok(false);
+            }
+            match self.decode_reply(crate::cluster::wire::RequestCode::WriteChunkBatchIfSequence, status, &payload)? {
+                ReplicaReply::Applied => Ok(true),
+                other => Err(unexpected_reply("a batch write probe", &other)),
+            }
+        })();
+        self.last_exchange = Instant::now();
+        if result.is_err() {
             let _ = self.writer.shutdown(Shutdown::Both);
         }
         result

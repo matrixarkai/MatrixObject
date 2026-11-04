@@ -9,7 +9,7 @@ use crate::cluster::consensus_inbox::{
     ConsensusChannels, ConsensusInbox, RequestPhase, RequestProgress, WorkerPhase, WorkerProgress,
 };
 use crate::cluster::socket_readiness::Notify;
-use crate::cluster::message::{ChunkGroupIdentity, ReplicaReply, ReplicaRequest};
+use crate::cluster::message::{ChunkGroupIdentity, ConditionalChunkWrite, ReplicaReply, ReplicaRequest};
 use crate::cluster::shutdown::ServerShutdown;
 use crate::outcome::PageOutcome;
 use crate::{MatrixReplicaService, ObjectError};
@@ -379,6 +379,10 @@ impl ChunkConsensus {
         self.failed.load(Ordering::SeqCst)
     }
     pub(super) fn request(&self, request: ReplicaRequest) -> Result<ReplicaReply, ObjectError> {
+        let request = match request {
+            ReplicaRequest::WriteChunkBatchIfSequence { writes } => return self.request_batch(writes),
+            request => request,
+        };
         if let ReplicaRequest::Membership(command) = &request {
             command.validate()?;
             if self.identity.version != 2 || command.bootstrap_id != self.identity.bootstrap_id {
@@ -406,6 +410,64 @@ impl ChunkConsensus {
             wake.notify();
         }
         progress.wait_observed(&rx, self.timeout, "chunk", Some(&self.progress))
+    }
+
+    pub(super) fn request_batch(
+        &self,
+        writes: Vec<ConditionalChunkWrite>,
+    ) -> Result<ReplicaReply, ObjectError> {
+        if self.is_failed() {
+            return Err(refused("chunk consensus unavailable"));
+        }
+        if writes.len() > 4 || writes.iter().any(|write| write.data.len() > 1024 * 1024)
+            || writes.iter().map(|write| write.data.len()).sum::<usize>() > 4 * 1024 * 1024
+        {
+            return Err(refused("invalid conditional write batch"));
+        }
+        if writes.is_empty() {
+            return Ok(ReplicaReply::Applied);
+        }
+        let deadline = Instant::now() + self.timeout;
+        let mut pending = Vec::with_capacity(writes.len());
+        for write in writes {
+            let progress = RequestProgress::new(false);
+            let (reply, rx) = mpsc::sync_channel(1);
+            let request = Request {
+                request: ReplicaRequest::WriteChunkIfSequence {
+                    page_id: write.page_id,
+                    offset: write.offset,
+                    data: write.data,
+                    expected_sequence: write.expected_sequence,
+                },
+                reply,
+                deadline,
+                progress: progress.clone(),
+            };
+            if self.requests.try_send(request).is_err() {
+                if let Some(wake) = &self.wake { wake.notify(); }
+                return Err(refused("chunk batch admission incomplete; writes may be committed; do not replay"));
+            }
+            pending.push((progress, rx));
+        }
+        if let Some(wake) = &self.wake { wake.notify(); }
+        let mut applied = 0;
+        let mut refused_leader = 0;
+        let mut failure = None;
+        for (progress, rx) in pending {
+            match progress.wait_observed(
+                &rx, deadline.saturating_duration_since(Instant::now()),
+                "chunk", Some(&self.progress),
+            ) {
+                Ok(ReplicaReply::Applied) => applied += 1,
+                Ok(ReplicaReply::NotLeader) => refused_leader += 1,
+                Ok(other) => { failure.get_or_insert_with(|| refused(format!("unexpected chunk batch reply: {other:?}"))); }
+                Err(error) => { failure.get_or_insert(error); }
+            }
+        }
+        if let Some(error) = failure { return Err(error); }
+        if applied > 0 && refused_leader == 0 { return Ok(ReplicaReply::Applied); }
+        if refused_leader > 0 && applied == 0 { return Ok(ReplicaReply::NotLeader); }
+        Err(refused("chunk batch outcome uncertain; do not replay"))
     }
 }
 impl Drop for ChunkConsensus {
@@ -851,6 +913,7 @@ fn read_only(request: &ReplicaRequest) -> bool {
         ReplicaRequest::StateInstall(_)
         | ReplicaRequest::WriteChunk { .. }
         | ReplicaRequest::WriteChunkIfSequence { .. }
+        | ReplicaRequest::WriteChunkBatchIfSequence { .. }
         | ReplicaRequest::DiscardChunk { .. }
         | ReplicaRequest::DiscardChunkIfSequence { .. } => false,
     }
@@ -897,6 +960,9 @@ fn prepare_candidate(
         return Err(ObjectError::PreconditionFailed(
             "standalone state installation is unavailable on Raft nodes".into(),
         ));
+    }
+    if matches!(request, ReplicaRequest::WriteChunkBatchIfSequence { .. }) {
+        return Err(ObjectError::InvalidArgument("batch writes require batch admission".into()));
     }
     let page = match request {
         ReplicaRequest::WriteChunk { page_id, .. }

@@ -351,6 +351,25 @@ or authenticate replies. Explicit repair is available through `repair_chunk` and
 `repair_inventory_batch`; see [maintenance and repair](configuring.md).
 Raft-group writes continue through their leader and do not use this star fan-out.
 
+## Bounded object-write admission
+
+Replica request code 14 carries a canonical binary protobuf with at most four
+conditional page writes and no more than 4 MiB of page data. An empty request
+probes support without changing state. The object writer uses the request only
+for pages of at most 64 KiB, sending at most three after its first individually
+confirmed write. An older server rejects the empty probe before admission, so
+the client keeps its bounded individual-write path. Larger pages use that path
+without probing.
+
+On a Raft voter, each accepted member becomes an independent conditional write
+in the consensus inbox. Adjacent writes can enter the existing proposal batch.
+One batch response is successful only after every member has a confirmed reply;
+an uncertain member or mixed leadership result refuses the whole response.
+The members are not an atomic transaction. Failed publication never replays an
+uncertain write. Standalone journal nodes apply and sync members one at a time.
+This reduces request admission overhead for small object pages; it does not
+reduce replicated page payload bytes or physical storage writes.
+
 ## Star head-read scheduling
 
 `RemoteReplicaSet::head_chunk` sends a head request to every member before waiting
