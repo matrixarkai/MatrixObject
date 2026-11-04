@@ -248,16 +248,25 @@ impl RemoteMetaClient {
         }
         let mut clients = std::collections::BTreeMap::new();
         let mut routes = std::collections::BTreeMap::new();
+        let group_ids: Vec<String> = staged.extents.iter()
+            .map(|extent| extent.group.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter().collect();
+        for ids in group_ids.chunks(4) {
+            self.check_operation_deadline().map_err(&staged_error)?;
+            for (id, route) in ids.iter().zip(self.read_chunk_routes(ids).map_err(&staged_error)?) {
+                routes.insert(id.clone(), route);
+            }
+        }
         let mut missing: std::collections::BTreeMap<String, Vec<usize>> =
             std::collections::BTreeMap::new();
         for (index, extent) in staged.extents.iter().enumerate() {
             self.check_operation_deadline().map_err(&staged_error)?;
             if !clients.contains_key(&extent.group) {
-                let route = self
-                    .read_chunk_route(&extent.group)
-                    .map_err(&staged_error)?;
+                let route = routes.get(&extent.group).ok_or_else(|| {
+                    staged_error(ObjectError::Corruption("staged page route missing".into()))
+                })?;
                 let client = connect_group(&route, &options.replica).map_err(&staged_error)?;
-                routes.insert(extent.group.clone(), route);
                 clients.insert(extent.group.clone(), client);
             }
             let client: &mut RemoteReplicaClient = clients.get_mut(&extent.group).unwrap();
