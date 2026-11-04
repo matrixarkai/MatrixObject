@@ -782,6 +782,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadChunkRoute { .. }
         ) || matches!(&request, MetaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
+        let mut saw_not_leader = false;
         let mut unadmitted = true;
         let mut retry_delay = Duration::from_millis(25);
         let retry_until = options.deadline.or_else(|| {
@@ -832,6 +833,7 @@ impl RemoteMetaClient {
                 match self.exchange(&request, request.code()) {
                     Ok(Ok(MetaReply::NotLeader)) => {
                         last = not_leader();
+                        saw_not_leader = true;
                         refusals += 1;
                     }
                     Ok(Ok(reply)) => return (MetaCallOutcome::Answered(reply), false),
@@ -857,7 +859,11 @@ impl RemoteMetaClient {
             std::thread::sleep(retry_delay);
             retry_delay = (retry_delay * 2).min(Duration::from_millis(250));
         }
-        (last, unadmitted)
+        if read_only && saw_not_leader {
+            (not_leader(), unadmitted)
+        } else {
+            (last, unadmitted)
+        }
     }
 
     fn call_one(&mut self, request: &MetaRequest) -> MetaCallOutcome {
