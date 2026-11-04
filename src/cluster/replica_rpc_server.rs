@@ -769,6 +769,25 @@ pub(super) fn apply_to_replica(
         } => Ok(ReplicaReply::Read(
             guard.read_chunk(&page_id, offset, length)?,
         )),
+        ReplicaRequest::DigestChunk {
+            page_id,
+            offset,
+            length,
+        } => {
+            if length > 1024 * 1024 {
+                return Err(ObjectError::InvalidArgument(
+                    "page digest range exceeds one MiB".into(),
+                ));
+            }
+            let read = guard.read_chunk(&page_id, offset, length)?;
+            let mut sha256 = [0u8; 32];
+            sha256.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref());
+            Ok(ReplicaReply::Digest {
+                write_sequence: read.write_sequence,
+                length: read.data.len() as u64,
+                sha256,
+            })
+        }
         ReplicaRequest::HeadChunk { page_id } => {
             Ok(ReplicaReply::Head(guard.head_chunk(&page_id)?))
         }

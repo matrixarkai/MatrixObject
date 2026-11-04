@@ -127,6 +127,11 @@ pub enum ReplicaRequest {
         offset: u64,
         length: u64,
     },
+    DigestChunk {
+        page_id: PageId,
+        offset: u64,
+        length: u64,
+    },
     HeadChunk {
         page_id: PageId,
     },
@@ -153,6 +158,7 @@ impl ReplicaRequest {
             ReplicaRequest::WriteChunk { .. } => RequestCode::WriteChunk,
             ReplicaRequest::WriteChunkIfSequence { .. } => RequestCode::WriteChunkIfSequence,
             ReplicaRequest::ReadChunk { .. } => RequestCode::ReadChunk,
+            ReplicaRequest::DigestChunk { .. } => RequestCode::DigestChunk,
             ReplicaRequest::HeadChunk { .. } => RequestCode::HeadChunk,
             ReplicaRequest::DiscardChunk { .. } => RequestCode::DiscardChunk,
             ReplicaRequest::Ping => RequestCode::Ping,
@@ -228,6 +234,11 @@ impl ReplicaRequest {
                 put_bytes(&mut out, data);
             }
             ReplicaRequest::ReadChunk {
+                page_id,
+                offset,
+                length,
+            }
+            | ReplicaRequest::DigestChunk {
                 page_id,
                 offset,
                 length,
@@ -372,6 +383,21 @@ impl ReplicaRequest {
                     length,
                 }
             }
+            RequestCode::DigestChunk => {
+                let page_id = take_page_id(&mut cursor)?;
+                let offset = cursor.take_u64()?;
+                let length = cursor.take_u64()?;
+                if length > 1024 * 1024 {
+                    return Err(ObjectError::InvalidArgument(
+                        "page digest range exceeds one MiB".into(),
+                    ));
+                }
+                ReplicaRequest::DigestChunk {
+                    page_id,
+                    offset,
+                    length,
+                }
+            }
             RequestCode::HeadChunk => ReplicaRequest::HeadChunk {
                 page_id: take_page_id(&mut cursor)?,
             },
@@ -423,6 +449,11 @@ pub enum ReplicaReply {
     /// A write or a discard was applied. Nothing to carry back.
     Applied,
     Read(ReplicaReadResult),
+    Digest {
+        write_sequence: u64,
+        length: u64,
+        sha256: [u8; 32],
+    },
     Head(ReplicaHead),
     /// The replica is answering, and holds this many pages.
     Pong {
@@ -442,6 +473,7 @@ impl ReplicaReply {
             Self::Read(read) => 16usize
                 .saturating_add(read.checksum.len())
                 .saturating_add(read.data.len()),
+            Self::Digest { .. } => 52,
             Self::Head(head) => 32usize
                 .saturating_add(head.checksum.len())
                 .saturating_add(head.state_checksum.len())
@@ -464,6 +496,15 @@ impl ReplicaReply {
                 put_u64(&mut out, read.write_sequence);
                 put_str(&mut out, &read.checksum);
                 put_bytes(&mut out, &read.data);
+            }
+            ReplicaReply::Digest {
+                write_sequence,
+                length,
+                sha256,
+            } => {
+                put_u64(&mut out, *write_sequence);
+                put_u64(&mut out, *length);
+                put_bytes(&mut out, sha256);
             }
             ReplicaReply::Head(head) => {
                 put_u64(&mut out, head.logical_length);
@@ -551,6 +592,21 @@ impl ReplicaReply {
                     write_sequence,
                     checksum,
                 })
+            }
+            RequestCode::DigestChunk => {
+                let write_sequence = cursor.take_u64()?;
+                let length = cursor.take_u64()?;
+                let mut sha256 = [0u8; 32];
+                let encoded = cursor.take_bytes()?;
+                if encoded.len() != sha256.len() {
+                    return Err(ObjectError::Corruption("invalid page digest length".into()));
+                }
+                sha256.copy_from_slice(encoded);
+                ReplicaReply::Digest {
+                    write_sequence,
+                    length,
+                    sha256,
+                }
             }
             RequestCode::HeadChunk => {
                 let logical_length = cursor.take_u64()?;

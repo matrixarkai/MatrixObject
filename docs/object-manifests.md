@@ -96,16 +96,20 @@ the result. When every voter explicitly refuses admission and the caller supplie
 an absolute deadline, metadata and chunk clients wait before another voter round
 within that same budget. The delay starts at 25 ms, doubles after each retry, and
 is capped at 250 ms. A further round is refused when its delay no longer fits the
-remaining budget, bounding repeated probes during elections. Calls without an
-absolute deadline retain one-round behavior. The reduced probe rate can delay
-discovery of a new leader by up to the current backoff interval. Transport failures
-and decoded server errors do not enable another
-round; uncertain mutations are never replayed.
+remaining budget, bounding repeated probes during elections. Read-only calls
+without an absolute deadline allow repeat rounds for up to one second. A read
+can retry when a voter is unreachable while others refuse leadership. The
+reduced probe rate can delay discovery of a new leader by up to the current
+backoff interval. Mutations require explicit refusal from every voter before
+another round; uncertain mutations are never replayed.
 
 Unknown chunk-group names are rejected before proposal. The metadata
 node does not read extent payloads or prove their durability or immutability.
 Clients must finish immutable data writes first, verify group identity and read
 sequence/checksum, and preserve old extents until readers no longer need them.
+For fresh object pages, the writer confirms each committed range with its
+sequence, length and SHA-256 digest. A server that does not implement the digest
+request triggers full-byte readback. A mismatched digest refuses publication.
 
 `RemoteMetaClient::read_object` fetches one committed manifest and assembles its
 extents using verified data-group connections. It returns the manifest with the
@@ -258,8 +262,9 @@ Each executor waits for its Raft result, so two executors limit how many request
 can reach the existing batcher while 48 chunk processes report health. Sixteen
 executors passed this workload. Size `MATRIXOBJECT_METASERVER_THREADS` for the
 request and heartbeat load, then measure on the deployment hardware; the product
-default remains two. Per-page readback and the remaining metadata operations
-still cost round trips. This check does not certify large catalog cardinality, large-object
+default remains two. Per-page digest confirmation, full-byte readback against
+older servers, and the remaining metadata operations still cost round trips.
+This check does not certify large catalog cardinality, large-object
 bandwidth, sustained soak behavior, authentication, or multi-host fault isolation.
 
 ## Isolating an unavailable data group

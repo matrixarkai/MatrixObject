@@ -157,6 +157,40 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                                     .write_all(&message::encode_reply(&ReplicaReply::Applied))
                                     .unwrap();
                             }
+                            if index == 0 {
+                                let mut responses = Vec::new();
+                                for (position, &page_index) in batch.iter().enumerate() {
+                                    let start = page_index as usize * 4;
+                                    let data = &object[start..object.len().min(start + 4)];
+                                    let ReplicaRequest::DigestChunk { page_id, offset, length } = replica(&mut stream) else {
+                                        panic!("page digest missing");
+                                    };
+                                    assert_eq!(page_id.page_index, page_index);
+                                    assert_eq!(offset, 0);
+                                    assert_eq!(length, data.len() as u64);
+                                    let mut sha256 = [0; 32];
+                                    sha256.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, data).as_ref());
+                                    let response = message::encode_reply(&ReplicaReply::Digest {
+                                        write_sequence: 1,
+                                        length,
+                                        sha256,
+                                    });
+                                    if position == 0 {
+                                        stream.write_all(&response).unwrap();
+                                    } else {
+                                        responses.push(response);
+                                    }
+                                }
+                                for response in responses {
+                                    stream.write_all(&response).unwrap();
+                                }
+                                continue;
+                            }
+                            assert!(matches!(replica(&mut stream), ReplicaRequest::DigestChunk { .. }));
+                            stream.write_all(&message::encode_failure(
+                                StatusCode::UnknownRequest,
+                                "older peer",
+                            )).unwrap();
                         }
                         let mut replies = Vec::new();
                         for &page_index in batch {

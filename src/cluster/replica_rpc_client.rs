@@ -524,6 +524,79 @@ impl RemoteReplicaClient {
         }
     }
 
+    /// Return a bounded range digest after a confirmed Raft read.
+    pub fn digest_chunk(
+        &mut self,
+        page_id: &PageId,
+        offset: u64,
+        length: u64,
+    ) -> Result<(u64, u64, [u8; 32]), ObjectError> {
+        match self.call(ReplicaRequest::DigestChunk {
+            page_id: page_id.clone(),
+            offset,
+            length,
+        })? {
+            ReplicaReply::Digest {
+                write_sequence,
+                length,
+                sha256,
+            } => Ok((write_sequence, length, sha256)),
+            other => Err(unexpected_reply("a chunk digest", &other)),
+        }
+    }
+
+    /// Probe the range digest verb, then pipeline the rest of a bounded batch.
+    /// A failed batch retires the socket so callers can read back full bytes.
+    pub fn digest_chunks_pipelined(
+        &mut self,
+        pages: &[(PageId, u64, u64)],
+    ) -> Result<Vec<(u64, u64, [u8; 32])>, ObjectError> {
+        if pages.len() > 8 {
+            return Err(ObjectError::InvalidArgument("digest batch exceeds eight pages".into()));
+        }
+        let Some((first_page, first_offset, first_length)) = pages.first() else {
+            return Ok(Vec::new());
+        };
+        let first = self.digest_chunk(first_page, *first_offset, *first_length)?;
+        if pages.len() == 1 {
+            return Ok(vec![first]);
+        }
+        self.connection_usable = false;
+        let result = (|| {
+            for (page_id, offset, length) in &pages[1..] {
+                self.send_request(&ReplicaRequest::DigestChunk {
+                    page_id: page_id.clone(),
+                    offset: *offset,
+                    length: *length,
+                })?;
+            }
+            let mut digests = Vec::with_capacity(pages.len());
+            digests.push(first);
+            for _ in &pages[1..] {
+                match self.read_reply(
+                    crate::cluster::wire::RequestCode::DigestChunk,
+                    exchange_deadline(self.read_timeout, self.deadline)?,
+                )? {
+                    ReplicaReply::Digest { write_sequence, length, sha256 } => {
+                        digests.push((write_sequence, length, sha256));
+                    }
+                    ReplicaReply::NotLeader => return Err(not_leader()),
+                    other => return Err(unexpected_reply("a chunk digest", &other)),
+                }
+                self.connection_usable = false;
+            }
+            Ok(digests)
+        })();
+        self.last_exchange = Instant::now();
+        if result.is_ok() {
+            self.connection_usable = true;
+        } else {
+            self.connection_usable = false;
+            let _ = self.writer.shutdown(Shutdown::Both);
+        }
+        result
+    }
+
     /// Read up to eight pages over one established connection. A partial batch
     /// retires the socket before individual read-only retries.
     pub fn read_chunks_pipelined(
@@ -869,6 +942,7 @@ impl RemoteReplicaClient {
             request,
             ReplicaRequest::Ping
                 | ReplicaRequest::ReadChunk { .. }
+                | ReplicaRequest::DigestChunk { .. }
                 | ReplicaRequest::ReadChunkStateRange { .. }
                 | ReplicaRequest::HeadChunk { .. }
                 | ReplicaRequest::PageInventory { .. }
