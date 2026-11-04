@@ -1209,6 +1209,67 @@ mod operation_deadline_tests {
     use std::net::TcpListener;
 
     #[test]
+    fn route_batch_falls_back_to_confirmed_reads_on_older_server() {
+        use crate::cluster::{ChunkGroupConfig, ChunkGroupIdentity, ChunkGroupRoute};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let names = vec!["group-a".to_string(), "group-b".to_string()];
+        let worker = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            for index in 0..3 {
+                let mut header = [0u8; HEADER_BYTES];
+                server.read_exact(&mut header).unwrap();
+                let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                let mut payload = vec![0; length];
+                server.read_exact(&mut payload).unwrap();
+                let code = MetaRequestCode::from_u8(header[1]).unwrap();
+                let request = MetaRequest::decode(code, &payload).unwrap();
+                if index == 0 {
+                    assert!(matches!(request, MetaRequest::ReadChunkRoutes { placement_ids }
+                        if placement_ids == ["group-a", "group-b"]));
+                    server.write_all(&super::super::message::encode_failure(
+                        StatusCode::UnknownRequest, "unknown route batch",
+                    )).unwrap();
+                    continue;
+                }
+                let name = format!("group-{}", if index == 1 { 'a' } else { 'b' });
+                assert!(matches!(request, MetaRequest::ReadChunkRoute { placement_id }
+                    if placement_id == name));
+                let route = ChunkGroupRoute {
+                    version: 1,
+                    fence: Vec::new(),
+                    group: Some(ChunkGroupConfig {
+                        placement_id: name,
+                        failure_domain: "local".into(),
+                        identity: Some(ChunkGroupIdentity {
+                            version: 1,
+                            group_id: index as u64,
+                            node_id: 1,
+                            capacity_bytes: 4096,
+                            max_pages: 16,
+                            voters: vec![1],
+                            peer_endpoints: vec![format!("127.0.0.1:{}", 19000 + index)],
+                            bootstrap_voters: Vec::new(),
+                            bootstrap_id: 0,
+                        }),
+                        api_endpoints: vec![format!("127.0.0.1:{}", 20000 + index)],
+                        member_ids: vec![format!("member-{index}")],
+                    }),
+                };
+                server.write_all(&super::super::meta_message::encode_meta_reply(
+                    &MetaReply::ChunkRoute(route),
+                )).unwrap();
+            }
+        });
+        let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+        let routes = client.read_chunk_routes(&names).unwrap();
+        assert_eq!(routes.iter().map(|route| route.group.as_ref().unwrap().placement_id.as_str())
+            .collect::<Vec<_>>(), vec!["group-a", "group-b"]);
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn catalog_read_waits_briefly_for_a_new_leader_without_an_explicit_deadline() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
