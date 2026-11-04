@@ -134,48 +134,56 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                         continue;
                     }
                     let writing = turn == if index == 0 { 0 } else { 1 };
-                    let pages = (index as u64..32).step_by(2);
-                    for page_index in pages {
-                        let start = page_index as usize * 4;
-                        let data = object[start..object.len().min(start + 4)].to_vec();
+                    let pages: Vec<_> = (index as u64..32).step_by(2).collect();
+                    for batch in pages.chunks(if writing { 8 } else { 1 }) {
                         if writing {
-                            let ReplicaRequest::WriteChunkIfSequence {
+                            for &page_index in batch {
+                                let start = page_index as usize * 4;
+                                let data = &object[start..object.len().min(start + 4)];
+                                let ReplicaRequest::WriteChunkIfSequence {
+                                    page_id,
+                                    offset,
+                                    data: actual,
+                                    expected_sequence,
+                                } = replica(&mut stream)
+                                else {
+                                    panic!("conditional write missing");
+                                };
+                                assert_eq!(page_id.page_index, page_index);
+                                assert_eq!(offset, 0);
+                                assert_eq!(expected_sequence, 0);
+                                assert_eq!(actual, data);
+                                stream
+                                    .write_all(&message::encode_reply(&ReplicaReply::Applied))
+                                    .unwrap();
+                            }
+                        }
+                        let mut replies = Vec::new();
+                        for &page_index in batch {
+                            let start = page_index as usize * 4;
+                            let data = object[start..object.len().min(start + 4)].to_vec();
+                            let ReplicaRequest::ReadChunk {
                                 page_id,
                                 offset,
-                                data: actual,
-                                expected_sequence,
+                                length,
                             } = replica(&mut stream)
                             else {
-                                panic!("conditional write missing");
+                                panic!("readback missing");
                             };
                             assert_eq!(page_id.page_index, page_index);
                             assert_eq!(offset, 0);
-                            assert_eq!(expected_sequence, 0);
-                            assert_eq!(actual, data);
-                            stream
-                                .write_all(&message::encode_reply(&ReplicaReply::Applied))
-                                .unwrap();
-                        }
-                        let ReplicaRequest::ReadChunk {
-                            page_id,
-                            offset,
-                            length,
-                        } = replica(&mut stream)
-                        else {
-                            panic!("readback missing");
-                        };
-                        assert_eq!(page_id.page_index, page_index);
-                        assert_eq!(offset, 0);
-                        assert_eq!(length, data.len() as u64);
-                        stream
-                            .write_all(&message::encode_reply(&ReplicaReply::Read(
+                            assert_eq!(length, data.len() as u64);
+                            replies.push(message::encode_reply(&ReplicaReply::Read(
                                 ReplicaReadResult {
                                     data,
                                     write_sequence: 1,
                                     checksum: String::new(),
                                 },
-                            )))
-                            .unwrap();
+                            )));
+                        }
+                        for response in replies {
+                            stream.write_all(&response).unwrap();
+                        }
                     }
                     assert_eq!(stream.read(&mut [0]).unwrap(), 0);
                 }

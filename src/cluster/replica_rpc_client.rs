@@ -524,6 +524,61 @@ impl RemoteReplicaClient {
         }
     }
 
+    /// Read up to eight pages over one established connection. A partial batch
+    /// retires the socket before individual read-only retries.
+    pub fn read_chunks_pipelined(
+        &mut self,
+        pages: &[(PageId, u64)],
+    ) -> Result<Vec<ReplicaReadResult>, ObjectError> {
+        if pages.len() > 8 {
+            return Err(ObjectError::InvalidArgument("read batch exceeds eight pages".into()));
+        }
+        if pages.is_empty() {
+            return Ok(Vec::new());
+        }
+        if pages.len() == 1 {
+            return self
+                .read_chunk(&pages[0].0, 0, pages[0].1)
+                .map(|read| vec![read]);
+        }
+        if self.connection_usable {
+            self.connection_usable = false;
+            let result = (|| {
+                for (page_id, length) in pages {
+                    self.send_request(&ReplicaRequest::ReadChunk {
+                        page_id: page_id.clone(),
+                        offset: 0,
+                        length: *length,
+                    })?;
+                }
+                let mut reads = Vec::with_capacity(pages.len());
+                for _ in pages {
+                    match self.read_reply(
+                        crate::cluster::wire::RequestCode::ReadChunk,
+                        exchange_deadline(self.read_timeout, self.deadline)?,
+                    )? {
+                        ReplicaReply::Read(read) => reads.push(read),
+                        ReplicaReply::NotLeader => return Err(not_leader()),
+                        other => return Err(unexpected_reply("a chunk read", &other)),
+                    }
+                    self.connection_usable = false;
+                }
+                Ok(reads)
+            })();
+            self.last_exchange = Instant::now();
+            if let Ok(reads) = result {
+                self.connection_usable = true;
+                return Ok(reads);
+            }
+            self.connection_usable = false;
+            let _ = self.writer.shutdown(Shutdown::Both);
+        }
+        pages
+            .iter()
+            .map(|(page_id, length)| self.read_chunk(page_id, 0, *length))
+            .collect()
+    }
+
     /// Read bounded raw bytes at a complete page-state checksum, including discarded bytes.
     pub fn read_chunk_state_range(
         &mut self,
