@@ -208,7 +208,9 @@ unwritten or unverified. A caller can explicitly pass that manifest, the origina
 expected value, data and options to `resume_unpublished_object`. The method checks
 the current manifest, verifies existing pages by digest, conditionally writes
 missing pages with expected sequence zero, and publishes only after all pages
-verify. It does not allocate another page namespace. An uncertain data response
+verify. Missing pages in the same group use the bounded write and digest batches
+used by fresh writes; a failed batch leaves the staged manifest for a later
+caller-directed probe. It does not allocate another page namespace. An uncertain data response
 returns the same staged manifest for a later explicit attempt. A data error never
 triggers an automatic retry or publication. Dropping the staged manifest can
 still leave abandoned pages; the client does not reclaim them.

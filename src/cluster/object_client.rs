@@ -247,13 +247,17 @@ impl RemoteMetaClient {
             )));
         }
         let mut clients = std::collections::BTreeMap::new();
-        for extent in &staged.extents {
+        let mut routes = std::collections::BTreeMap::new();
+        let mut missing: std::collections::BTreeMap<String, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (index, extent) in staged.extents.iter().enumerate() {
             self.check_operation_deadline().map_err(&staged_error)?;
             if !clients.contains_key(&extent.group) {
                 let route = self
                     .read_chunk_route(&extent.group)
                     .map_err(&staged_error)?;
                 let client = connect_group(&route, &options.replica).map_err(&staged_error)?;
+                routes.insert(extent.group.clone(), route);
                 clients.insert(extent.group.clone(), client);
             }
             let client: &mut RemoteReplicaClient = clients.get_mut(&extent.group).unwrap();
@@ -277,23 +281,22 @@ impl RemoteMetaClient {
                     }
                     continue;
                 }
-                Err(ObjectError::NotFound(_)) => {}
+                Err(ObjectError::NotFound(_)) => {
+                    missing.entry(extent.group.clone()).or_default().push(index);
+                }
                 Err(error) => return Err(staged_error(error)),
             }
-            client
-                .write_chunk_if_sequence(page.clone(), 0, bytes, 0)
+        }
+        for (group, indexes) in missing {
+            self.check_operation_deadline().map_err(&staged_error)?;
+            let route = routes.get(&group).ok_or_else(|| {
+                staged_error(ObjectError::Corruption("staged page route missing".into()))
+            })?;
+            let client = clients.remove(&group).ok_or_else(|| {
+                staged_error(ObjectError::Corruption("staged page connection missing".into()))
+            })?;
+            write_group_extents(&indexes, route, Some(client), &staged, data, options)
                 .map_err(&staged_error)?;
-            let (sequence, length, digest) = client
-                .digest_chunk(&page, 0, extent.length)
-                .map_err(&staged_error)?;
-            if sequence != 1
-                || length != extent.length
-                || digest.as_ref() != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
-            {
-                return Err(staged_error(ObjectError::Corruption(
-                    "resumed page verification failed".into(),
-                )));
-            }
         }
         self.check_operation_deadline().map_err(&staged_error)?;
         let outcome = ManifestOutcome::decide(expected, staged.clone()).map_err(&staged_error)?;
