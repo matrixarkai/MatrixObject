@@ -430,6 +430,12 @@ jobs:
           cargo test --locked --all-features --test object_writer_connections failed_pipelined_write_retires_socket_without_replaying -- --exact | tee /tmp/object-connections.log
           grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
 
+      - name: large pages retain individual conditional writes
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test object_writer_connections large_pages_keep_bounded_individual_writes -- --exact | tee /tmp/object-connections.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
+
       - name: unavailable data group is isolated and recovers without losing objects
         run: |
           set -o pipefail
@@ -534,6 +540,12 @@ jobs:
           set -o pipefail
           cargo test --locked --all-features --lib cluster::conditional_requests::tests::conditional_discard_requests_require_canonical_bounded_protobuf -- --exact --nocapture | tee /tmp/conditional-discard.log
           grep -q 'test result: ok. 1 passed' /tmp/conditional-discard.log
+
+      - name: conditional write batches require canonical bounded protobuf
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --lib cluster::conditional_requests::tests::conditional_write_batches_require_canonical_bounded_protobuf -- --exact --nocapture | tee /tmp/conditional-write-batch.log
+          grep -q 'test result: ok. 1 passed' /tmp/conditional-write-batch.log
 
       - name: conditional mutations refuse exhausted page sequences
         run: |
@@ -1988,6 +2000,11 @@ jobs:
       - name: replica read budget includes overhead and keeps connection usable
         run: |
           cargo test --locked --test bounded_server_replies replica_read_budget_includes_overhead_and_keeps_connection_usable -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
+          grep -q '^running 1 test$' /tmp/guard.log
+          grep -q '^test result: ok. 1 passed' /tmp/guard.log
+      - name: conditional batch failure reports partial application
+        run: |
+          cargo test --locked --test bounded_server_replies conditional_batch_failure_reports_partial_application -- --exact --test-threads=1 2>&1 | tee /tmp/guard.log
           grep -q '^running 1 test$' /tmp/guard.log
           grep -q '^test result: ok. 1 passed' /tmp/guard.log
       - name: replica head and inventory obey reply budget
