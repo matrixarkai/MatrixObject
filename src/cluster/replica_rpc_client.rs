@@ -528,7 +528,7 @@ impl RemoteReplicaClient {
     /// retires the socket before individual read-only retries.
     pub fn read_chunks_pipelined(
         &mut self,
-        pages: &[(PageId, u64)],
+        pages: &[(PageId, u64, u64)],
     ) -> Result<Vec<ReplicaReadResult>, ObjectError> {
         if pages.len() > 8 {
             return Err(ObjectError::InvalidArgument("read batch exceeds eight pages".into()));
@@ -538,16 +538,16 @@ impl RemoteReplicaClient {
         }
         if pages.len() == 1 {
             return self
-                .read_chunk(&pages[0].0, 0, pages[0].1)
+                .read_chunk(&pages[0].0, pages[0].1, pages[0].2)
                 .map(|read| vec![read]);
         }
         if self.connection_usable {
             self.connection_usable = false;
             let result = (|| {
-                for (page_id, length) in pages {
+                for (page_id, offset, length) in pages {
                     self.send_request(&ReplicaRequest::ReadChunk {
                         page_id: page_id.clone(),
-                        offset: 0,
+                        offset: *offset,
                         length: *length,
                     })?;
                 }
@@ -575,7 +575,7 @@ impl RemoteReplicaClient {
         }
         pages
             .iter()
-            .map(|(page_id, length)| self.read_chunk(page_id, 0, *length))
+            .map(|(page_id, offset, length)| self.read_chunk(page_id, *offset, *length))
             .collect()
     }
 

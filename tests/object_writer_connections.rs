@@ -135,7 +135,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                     }
                     let writing = turn == if index == 0 { 0 } else { 1 };
                     let pages: Vec<_> = (index as u64..32).step_by(2).collect();
-                    for batch in pages.chunks(if writing { 8 } else { 1 }) {
+                    for batch in pages.chunks(8) {
                         if writing {
                             for &page_index in batch {
                                 let start = page_index as usize * 4;
