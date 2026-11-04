@@ -875,8 +875,12 @@ impl RemoteReplicaClient {
         ) || matches!(&request, ReplicaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
         let mut retry_delay = Duration::from_millis(25);
+        let retry_until = options.deadline.or_else(|| {
+            read_only.then(|| Instant::now() + options.read_timeout.min(Duration::from_secs(1)))
+        });
         loop {
             let mut refusals = 0;
+            let mut unreachable = 0;
             for offset in 0..endpoints.len() {
                 let endpoint = &endpoints[(start + offset) % endpoints.len()];
                 if !self.connection_usable || self.endpoint != *endpoint {
@@ -887,6 +891,7 @@ impl RemoteReplicaClient {
                                     Ok(identity) => identity,
                                     Err(error) if !next.connection_usable => {
                                         last = error;
+                                        unreachable += 1;
                                         continue;
                                     }
                                     Err(error) => return Err(error),
@@ -907,6 +912,7 @@ impl RemoteReplicaClient {
                         }
                         Err(error) => {
                             last = error;
+                            unreachable += 1;
                             continue;
                         }
                     }
@@ -924,12 +930,14 @@ impl RemoteReplicaClient {
                             return Err(error);
                         }
                         last = error;
+                        unreachable += 1;
                     }
                 }
             }
-            // Only explicit non-admission from every voter permits another round.
-            // Keep the caller's original deadline; uncertain mutations never reach here.
-            if refusals != endpoints.len() || !options.deadline.is_some_and(|deadline|
+            // Reads can wait through voter restarts. Uncertain mutations cannot.
+            let retryable = refusals == endpoints.len()
+                || (read_only && refusals + unreachable == endpoints.len());
+            if !retryable || !retry_until.is_some_and(|deadline|
                 deadline.saturating_duration_since(Instant::now()) > retry_delay) {
                 break;
             }
@@ -1186,6 +1194,95 @@ fn not_leader() -> ObjectError {
 mod pending_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn catalog_read_waits_briefly_for_a_new_leader_without_an_explicit_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let options = ReplicaClientOptions {
+            read_timeout: Duration::from_millis(250),
+            ..Default::default()
+        };
+        let mut client = RemoteReplicaClient::connect(&endpoint, &options).unwrap();
+        client.catalog = Some((vec![endpoint], options));
+        let page_id = crate::PageId {
+            chunk_id: crate::ChunkId::new(0, 1).unwrap(),
+            page_index: 0,
+        };
+        let expected = encode_request(&ReplicaRequest::ReadChunk {
+            page_id: page_id.clone(),
+            offset: 0,
+            length: 1,
+        });
+        let worker = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            for reply in [
+                ReplicaReply::NotLeader,
+                ReplicaReply::Read(ReplicaReadResult {
+                    data: vec![7],
+                    write_sequence: 1,
+                    checksum: String::new(),
+                }),
+            ] {
+                let mut request = vec![0; expected.len()];
+                server.read_exact(&mut request).unwrap();
+                assert_eq!(request, expected);
+                server.write_all(&super::super::message::encode_reply(&reply)).unwrap();
+            }
+        });
+        assert_eq!(client.read_chunk(&page_id, 0, 1).unwrap().data, vec![7]);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn catalog_read_retries_mixed_refusal_and_disconnection() {
+        let first = TcpListener::bind("127.0.0.1:0").unwrap();
+        let second = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoints = vec![
+            first.local_addr().unwrap().to_string(),
+            second.local_addr().unwrap().to_string(),
+        ];
+        let options = ReplicaClientOptions {
+            read_timeout: Duration::from_millis(250),
+            ..Default::default()
+        };
+        let mut client = RemoteReplicaClient::connect(&endpoints[0], &options).unwrap();
+        client.catalog = Some((endpoints, options));
+        let page_id = crate::PageId {
+            chunk_id: crate::ChunkId::new(0, 1).unwrap(),
+            page_index: 0,
+        };
+        let expected = encode_request(&ReplicaRequest::ReadChunk {
+            page_id: page_id.clone(),
+            offset: 0,
+            length: 1,
+        });
+        let first_worker = std::thread::spawn(move || {
+            for reply in [
+                ReplicaReply::NotLeader,
+                ReplicaReply::Read(ReplicaReadResult {
+                    data: vec![7],
+                    write_sequence: 1,
+                    checksum: String::new(),
+                }),
+            ] {
+                let (mut server, _) = first.accept().unwrap();
+                server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut request = vec![0; expected.len()];
+                server.read_exact(&mut request).unwrap();
+                assert_eq!(request, expected);
+                server.write_all(&super::super::message::encode_reply(&reply)).unwrap();
+            }
+        });
+        let second_worker = std::thread::spawn(move || {
+            let (server, _) = second.accept().unwrap();
+            drop(server);
+        });
+        assert_eq!(client.read_chunk(&page_id, 0, 1).unwrap().data, vec![7]);
+        first_worker.join().unwrap();
+        second_worker.join().unwrap();
+    }
 
     #[test]
     fn catalog_retries_only_explicit_non_admission_within_deadline() {

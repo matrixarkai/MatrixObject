@@ -784,8 +784,12 @@ impl RemoteMetaClient {
         let mut last = not_leader();
         let mut unadmitted = true;
         let mut retry_delay = Duration::from_millis(25);
+        let retry_until = options.deadline.or_else(|| {
+            read_only.then(|| Instant::now() + options.read_timeout.min(Duration::from_secs(1)))
+        });
         loop {
             let mut refusals = 0;
+            let mut unreachable = 0;
             for offset in 0..endpoints.len() {
                 let endpoint = &endpoints[(start + offset) % endpoints.len()];
                 if !self.live || self.endpoint != *endpoint {
@@ -809,6 +813,7 @@ impl RemoteMetaClient {
                                     }
                                     MetaCallOutcome::Unreachable(error) => {
                                         last = MetaCallOutcome::Unreachable(error);
+                                        unreachable += 1;
                                         continue;
                                     }
                                     outcome => return (outcome, unadmitted),
@@ -819,6 +824,7 @@ impl RemoteMetaClient {
                         }
                         Err(error) => {
                             last = MetaCallOutcome::Unreachable(error);
+                            unreachable += 1;
                             continue;
                         }
                     }
@@ -836,11 +842,15 @@ impl RemoteMetaClient {
                         if !read_only {
                             return (last, false);
                         }
+                        unreachable += 1;
                     }
                 }
             }
-            // Retry only an entirely unadmitted round, within the existing budget.
-            if refusals != endpoints.len() || !options.deadline.is_some_and(|deadline|
+            // Reads can move past a voter that is still restarting. Mutations
+            // retry only when every voter explicitly refused admission.
+            let retryable = refusals == endpoints.len()
+                || (read_only && refusals + unreachable == endpoints.len());
+            if !retryable || !retry_until.is_some_and(|deadline|
                 deadline.saturating_duration_since(Instant::now()) > retry_delay) {
                 break;
             }
@@ -1082,6 +1092,67 @@ fn write_before(
 mod operation_deadline_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn catalog_read_waits_briefly_for_a_new_leader_without_an_explicit_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let options = MetaClientOptions {
+            read_timeout: Duration::from_millis(250),
+            ..Default::default()
+        };
+        let mut client = RemoteMetaClient::connect_catalog(&[endpoint], &options).unwrap();
+        let expected = encode_meta_request(&MetaRequest::ListRootNodes);
+        let worker = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            for reply in [MetaReply::NotLeader, MetaReply::RootNodes(Vec::new())] {
+                let mut request = vec![0; expected.len()];
+                server.read_exact(&mut request).unwrap();
+                assert_eq!(request, expected);
+                server
+                    .write_all(&super::super::meta_message::encode_meta_reply(&reply))
+                    .unwrap();
+            }
+        });
+        assert!(client.list_placement_nodes().unwrap().is_empty());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn catalog_read_retries_mixed_refusal_and_disconnection() {
+        let first = TcpListener::bind("127.0.0.1:0").unwrap();
+        let second = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoints = vec![
+            first.local_addr().unwrap().to_string(),
+            second.local_addr().unwrap().to_string(),
+        ];
+        let options = MetaClientOptions {
+            read_timeout: Duration::from_millis(250),
+            ..Default::default()
+        };
+        let mut client = RemoteMetaClient::connect_catalog(&endpoints, &options).unwrap();
+        let expected = encode_meta_request(&MetaRequest::ListRootNodes);
+        let first_worker = std::thread::spawn(move || {
+            for reply in [MetaReply::NotLeader, MetaReply::RootNodes(Vec::new())] {
+                let (mut server, _) = first.accept().unwrap();
+                server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut request = vec![0; expected.len()];
+                server.read_exact(&mut request).unwrap();
+                assert_eq!(request, expected);
+                server
+                    .write_all(&super::super::meta_message::encode_meta_reply(&reply))
+                    .unwrap();
+            }
+        });
+        let second_worker = std::thread::spawn(move || {
+            let (server, _) = second.accept().unwrap();
+            drop(server);
+        });
+        assert!(client.list_placement_nodes().unwrap().is_empty());
+        first_worker.join().unwrap();
+        second_worker.join().unwrap();
+    }
 
     #[test]
     fn catalog_retries_only_explicit_non_admission_within_deadline() {
