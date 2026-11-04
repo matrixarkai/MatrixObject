@@ -499,6 +499,7 @@ fn run(
         outgoing,
     } = channels;
     let mut tick = Instant::now();
+    let mut last_request = Instant::now();
     let mut pending: VecDeque<Pending> = VecDeque::new();
     let mut pending_read: Option<(u64, Vec<Request>)> = None;
     let mut deferred = None;
@@ -694,21 +695,37 @@ fn run(
         // Accepted batches remain pending through client timeouts. A later batch
         // must start from committed state, not from an earlier speculative draft.
         if pending.is_empty() && pending_read.is_none() && pending_membership.is_none() {
-            progress.mark(WorkerPhase::PublishCheckpoint);
-            checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
-                let mut snapshot = node.service.export_snapshot_unsealed();
-                Ok(move || {
-                    snapshot.seal_for_checkpoint();
-                    crate::cluster::chunk_checkpoint::capture(snapshot, id).map(|stream| {
-                        stream.map(|s| {
-                            let length = s.length;
-                            (s, length)
+            if deferred.is_none() {
+                deferred = requests.try_recv().ok();
+                if deferred.is_some() {
+                    last_request = Instant::now();
+                }
+            }
+            // Publish during a quiet window so an expensive WAL rewrite does
+            // not interrupt a burst. Membership changes and a large retained
+            // WAL still make progress while requests keep arriving.
+            let checkpoint_window = peer.membership_checkpoint_needed()
+                || (last_request.elapsed() >= Duration::from_millis(250)
+                    && deferred.is_none())
+                || peer.persisted_wal_bytes()? >= 128 * 1024 * 1024;
+            if checkpoint_window {
+                progress.mark(WorkerPhase::PublishCheckpoint);
+                checkpoint.maybe_checkpoint_stream(peer, applied_term.get(), |id| {
+                    let mut snapshot = node.service.export_snapshot_unsealed();
+                    Ok(move || {
+                        snapshot.seal_for_checkpoint();
+                        crate::cluster::chunk_checkpoint::capture(snapshot, id).map(|stream| {
+                            stream.map(|s| {
+                                let length = s.length;
+                                (s, length)
+                            })
                         })
                     })
-                })
-            })?;
+                })?;
+            }
             progress.mark(WorkerPhase::Requests);
             if let Some(request) = deferred.take().or_else(|| requests.try_recv().ok()) {
+                last_request = Instant::now();
                 admitted = true;
                 if request.deadline <= Instant::now() {
                     let _ = request
