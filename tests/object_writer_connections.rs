@@ -5,6 +5,7 @@ use matrixobjectstore_rs::{cluster::*, object_manifest::ObjectPageAllocation, Ch
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    sync::{Arc, Condvar, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -171,12 +172,14 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
     let object: Vec<u8> = (0..125).collect();
     let sockets = [listener(), listener()];
     let groups = [config(&sockets[0], 1), config(&sockets[1], 2)];
+    let simultaneous_reads = Arc::new((Mutex::new(0usize), Condvar::new()));
     let workers: Vec<_> = sockets
         .into_iter()
         .zip(groups.clone())
         .enumerate()
         .map(|(index, (socket, group))| {
             let object = object.clone();
+            let simultaneous_reads = Arc::clone(&simultaneous_reads);
             thread::spawn(move || {
                 // One retained preflight connection for group 1; group 2 verifies
                 // preflight then reconnects once for all writes. Each read visits once.
@@ -198,7 +201,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                     }
                     let writing = turn == if index == 0 { 0 } else { 1 };
                     let pages: Vec<_> = (index as u64..32).step_by(2).collect();
-                    for batch in pages.chunks(8) {
+                    for (batch_index, batch) in pages.chunks(8).enumerate() {
                         if writing {
                             for (position, &page_index) in batch.iter().enumerate() {
                                 if position > 0 { break; }
@@ -306,6 +309,21 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                                     checksum: String::new(),
                                 },
                             )));
+                        }
+                        if !writing && batch_index == 0 {
+                            let (count, ready) = &*simultaneous_reads;
+                            let mut arrived = count.lock().unwrap();
+                            *arrived += 1;
+                            ready.notify_all();
+                            let (arrived, timeout) = ready
+                                .wait_timeout_while(arrived, Duration::from_secs(5), |count| {
+                                    *count < 2
+                                })
+                                .unwrap();
+                            assert!(
+                                !timeout.timed_out() && *arrived == 2,
+                                "group reads were serialized"
+                            );
                         }
                         for response in replies {
                             stream.write_all(&response).unwrap();

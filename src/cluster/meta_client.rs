@@ -673,6 +673,7 @@ impl RemoteMetaClient {
         bytes.resize(length, 0);
         let mut order: Vec<_> = manifest.extents.iter().collect();
         order.sort_by(|left, right| left.group.cmp(&right.group));
+        let mut groups = Vec::new();
         let mut cursor = 0;
         while cursor < order.len() {
             let group = order[cursor].group.clone();
@@ -680,8 +681,16 @@ impl RemoteMetaClient {
             while end < order.len() && order[end].group == group {
                 end += 1;
             }
-            let mut connection = self.connect_chunk_group(&group, options)?;
-            for batch in order[cursor..end].chunks(8) {
+            groups.push((group, cursor, end));
+            cursor = end;
+        }
+        let output = std::sync::Mutex::new(bytes.as_mut_slice());
+        let read_group = |route: super::ChunkGroupRoute,
+                          extents: &[&crate::object_manifest::ObjectExtent]| {
+            let mut connection = super::RemoteReplicaClient::connect_routed_raft_catalog(
+                &route, options,
+            )?;
+            for batch in extents.chunks(8) {
                 let pages = batch
                     .iter()
                     .map(|extent| {
@@ -709,11 +718,58 @@ impl RemoteMetaClient {
                         ));
                     }
                     let start = extent.object_offset as usize;
-                    bytes[start..start + read.data.len()].copy_from_slice(&read.data);
+                    let mut destination = output.lock().map_err(|_| {
+                        ObjectError::Corruption("object read buffer lock failed".into())
+                    })?;
+                    destination[start..start + read.data.len()].copy_from_slice(&read.data);
                 }
             }
-            cursor = end;
+            Ok::<(), ObjectError>(())
+        };
+        // Route lookups use the metadata connection. Overlap the data-group
+        // connections and page reads, while bounding sockets and read buffers.
+        for window in groups.chunks(4) {
+            let mut jobs = Vec::new();
+            for (group, start, end) in window {
+                jobs.push((self.read_chunk_route(group)?, &order[*start..*end]));
+            }
+            if jobs.len() == 1 {
+                let (route, extents) = jobs.pop().unwrap();
+                read_group(route, extents)?;
+                continue;
+            }
+            std::thread::scope(|scope| {
+                let mut handles = Vec::new();
+                let mut first_error = None;
+                for (route, extents) in jobs {
+                    let reader = &read_group;
+                    match std::thread::Builder::new()
+                        .name("object-group-read".into())
+                        .spawn_scoped(scope, move || reader(route, extents))
+                    {
+                        Ok(handle) => handles.push(handle),
+                        Err(error) => {
+                            first_error = Some(ObjectError::PreconditionFailed(format!(
+                                "cannot start object group reader: {error}"
+                            )));
+                            break;
+                        }
+                    }
+                }
+                for handle in handles {
+                    let result = handle.join().unwrap_or_else(|_| {
+                        Err(ObjectError::Corruption("object group reader panicked".into()))
+                    });
+                    if let Err(error) = result {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                }
+                first_error.map_or(Ok(()), Err)
+            })?;
         }
+        drop(output);
         self.check_operation_deadline()?;
         Ok((manifest, bytes))
     }
