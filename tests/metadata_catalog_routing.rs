@@ -71,6 +71,29 @@ fn typed_not_leader_can_route_an_unadmitted_mutation() {
     assert_eq!(two.join().unwrap(), mutation().code() as u8);
 }
 #[test]
+fn fully_refused_mutation_waits_for_a_new_metadata_leader() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        for attempt in 0..3 {
+            assert_eq!(receive(&mut stream), mutation().code() as u8);
+            let reply = if attempt < 2 {
+                MetaReply::NotLeader
+            } else {
+                MetaReply::Expired { offline_count: 7 }
+            };
+            stream.write_all(&encode_meta_reply(&reply)).unwrap();
+        }
+    });
+    let mut client = RemoteMetaClient::connect_catalog(&[address], &options()).unwrap();
+    assert_eq!(
+        client.try_call(mutation()).into_result().unwrap(),
+        MetaReply::Expired { offline_count: 7 }
+    );
+    worker.join().unwrap();
+}
+#[test]
 fn uncertain_mutations_are_never_sent_to_another_node() {
     let placement = matrixobjectstore_rs::cluster::CommittedPlacement {
         bucket: "bucket".into(),

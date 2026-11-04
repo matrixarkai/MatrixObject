@@ -47,7 +47,34 @@ fn replace_member(meta: &mut RemoteMetaClient, group: &mut Group, recycle: bool)
                     );
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                Err(error) => panic!("membership operation {op:?} failed for {placement}: {error}"),
+                Err(error) => break {
+                    // A lost reply may follow commitment. Read the new leader's
+                    // confirmed state; never replay an uncertain membership change.
+                    let read = MembershipRequest {
+                        operation: Op::Read as i32,
+                        node_id: 0,
+                        ..request.clone()
+                    };
+                    loop {
+                        if let Ok(observed) = client.chunk_membership(read.clone()) {
+                            let applied = match op {
+                                Op::AddLearner => observed.learners.contains(&added),
+                                Op::Promote => observed.voters.contains(&added),
+                                Op::Remove => !observed.voters.contains(&removed),
+                                Op::LeaveJoint => observed.outgoing_voters.is_empty(),
+                                Op::Read => unreachable!(),
+                            };
+                            if applied {
+                                break observed;
+                            }
+                        }
+                        assert!(
+                            Instant::now() < deadline,
+                            "membership operation {op:?} remained unconfirmed for {placement}: {error}"
+                        );
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                },
             }
         };
         let previous_floor = fence.applied_floor();
@@ -212,7 +239,7 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool, rounds: u
                 let expected: Vec<_> = saved.iter().chain(added_objects.iter()).cloned().collect();
                 group_usage(&metadata.api, &groups, &expected);
                 let start = writes + round * (writes / 4);
-                added_objects.extend(load_batch_sized(
+                added_objects.extend(load_batch_sized_with_attempts(
                     &LoadEndpoint {
                         api: &metadata.api,
                         tls: None,
@@ -223,6 +250,7 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool, rounds: u
                     true,
                     2,
                     16384,
+                    4,
                 ));
             }
         }
@@ -233,7 +261,7 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool, rounds: u
     saved.extend(added_objects);
     group_usage(&metadata.api, &groups, &saved);
     if rounds == 1 {
-        saved.extend(load_batch_sized(
+        saved.extend(load_batch_sized_with_attempts(
             &LoadEndpoint {
                 api: &metadata.api,
                 tls: None,
@@ -244,6 +272,7 @@ fn replacement_load(group_count: usize, writes: u64, concurrent: bool, rounds: u
             true,
             2,
             16384,
+            4,
         ));
     }
     let fences: Vec<_> = groups
