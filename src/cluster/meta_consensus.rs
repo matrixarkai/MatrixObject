@@ -295,13 +295,14 @@ impl MetaConsensus {
             let transport = transport.clone();
             let stop = Arc::clone(&stop);
             handles.push(thread::spawn(move || {
+                let mut sender = crate::cluster::peer_delivery::PeerSender::configured(address, transport);
                 while !stop.is_stopped() {
                     let delivery = match rx.recv_timeout(NETWORK_TIMEOUT) {
                         Ok(bytes) => bytes,
                         Err(mpsc::RecvTimeoutError::Timeout) => continue,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
-                    let _ = delivery.send_with_transport(&address, &transport);
+                    let _ = sender.send(delivery);
                 }
             }));
         }

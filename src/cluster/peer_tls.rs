@@ -99,12 +99,23 @@ fn send_tls(
     bytes: &[u8],
     deadline: Instant,
 ) -> io::Result<()> {
-    use std::io::Write;
-    use super::peer_delivery::remaining;
     let name = rustls::pki_types::ServerName::IpAddress(address.ip().into());
     let mut connection =
         rustls::ClientConnection::new(config.client.clone(), name).map_err(invalid)?;
     connection.set_buffer_limit(Some(64 * 1024));
+    send_tls_connection(&mut connection, stream, bytes, deadline, true)
+}
+
+#[cfg(feature = "peer-tls")]
+fn send_tls_connection(
+    connection: &mut rustls::ClientConnection,
+    stream: &mut TcpStream,
+    bytes: &[u8],
+    deadline: Instant,
+    close: bool,
+) -> io::Result<()> {
+    use std::io::Write;
+    use super::peer_delivery::remaining;
     fn flush(
         connection: &mut rustls::ClientConnection,
         stream: &mut TcpStream,
@@ -122,7 +133,7 @@ fn send_tls(
         Ok(())
     }
     while connection.is_handshaking() {
-        flush(&mut connection, stream, deadline)?;
+        flush(connection, stream, deadline)?;
         if !connection.is_handshaking() {
             break;
         }
@@ -136,7 +147,7 @@ fn send_tls(
             Err(error) => return Err(error),
         }
     }
-    flush(&mut connection, stream, deadline)?;
+    flush(connection, stream, deadline)?;
     if connection.alpn_protocol() != Some(&b"matrixobject-raft-v1"[..]) {
         return Err(invalid("peer TLS application protocol was not negotiated"));
     }
@@ -144,11 +155,50 @@ fn send_tls(
         for block in part.chunks(16 * 1024) {
             remaining(deadline)?;
             connection.writer().write_all(block)?;
-            flush(&mut connection, stream, deadline)?;
+            flush(connection, stream, deadline)?;
         }
     }
-    connection.send_close_notify();
-    flush(&mut connection, stream, deadline)
+    if close { connection.send_close_notify(); }
+    flush(connection, stream, deadline)
+}
+
+/// A destination-bound connection; never shared between identities or workers.
+pub(super) struct PeerSendStream {
+    socket: TcpStream,
+    #[cfg(feature = "peer-tls")]
+    tls: Option<rustls::ClientConnection>,
+}
+impl PeerSendStream {
+    #[cfg(test)]
+    pub(super) fn local_port(&self) -> u16 { self.socket.local_addr().unwrap().port() }
+    #[cfg(test)]
+    pub(super) fn stop_writes(&self) { self.socket.shutdown(std::net::Shutdown::Write).unwrap(); }
+
+    pub(super) fn connect(address: &SocketAddr, transport: &PeerTransport, deadline: Instant) -> io::Result<Self> {
+        let socket = TcpStream::connect_timeout(address, super::peer_delivery::remaining(deadline)?)?;
+        socket.set_nodelay(true)?;
+        #[cfg(feature = "peer-tls")]
+        let tls = match transport {
+            PeerTransport::Plain => None,
+            PeerTransport::Tls(config) => {
+                let name = rustls::pki_types::ServerName::IpAddress(address.ip().into());
+                let mut connection = rustls::ClientConnection::new(config.client.clone(), name).map_err(invalid)?;
+                connection.set_buffer_limit(Some(64 * 1024));
+                Some(connection)
+            }
+        };
+        #[cfg(not(feature = "peer-tls"))]
+        let _ = transport;
+        Ok(Self { socket, #[cfg(feature = "peer-tls")] tls })
+    }
+    pub(super) fn send(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
+        #[cfg(feature = "peer-tls")]
+        if let Some(connection) = &mut self.tls {
+            return send_tls_connection(connection, &mut self.socket, bytes, deadline, false);
+        }
+        super::peer_delivery::write_until(&mut self.socket, &(bytes.len() as u32).to_be_bytes(), deadline)?;
+        super::peer_delivery::write_until(&mut self.socket, bytes, deadline)
+    }
 }
 
 pub(super) struct PeerSocket {
@@ -278,6 +328,20 @@ mod tests {
         super::super::peer_delivery::PeerDelivery::new(bytes.to_vec(), Duration::from_secs(2))
             .send_with_transport(address, transport)
     }
+    #[test]
+    fn authenticated_sender_stream_reuses_tls_session() {
+        let files = TlsFiles::new();
+        let transport = PeerTransport::load(Some(&options(&files, "peer"))).unwrap();
+        let (address, received, stop, worker) = receiver(transport.clone());
+        let mut stream = PeerSendStream::connect(&address, &transport, Instant::now() + Duration::from_secs(3)).unwrap();
+        stream.send(b"one", Instant::now() + Duration::from_secs(3)).unwrap();
+        stream.send(b"two", Instant::now() + Duration::from_secs(3)).unwrap();
+        assert_eq!(received.recv_timeout(Duration::from_secs(3)).unwrap(), b"one");
+        assert_eq!(received.recv_timeout(Duration::from_secs(3)).unwrap(), b"two");
+        stop.stop();
+        worker.join().unwrap();
+    }
+
     #[test]
     fn authenticated_stream_preserves_consecutive_frames() {
         let files = TlsFiles::new();
