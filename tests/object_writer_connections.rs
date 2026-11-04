@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #![cfg(all(feature = "meta-server", feature = "replica-server"))]
-use matrixobjectstore_rs::{cluster::*, object_manifest::ObjectPageAllocation, ReplicaReadResult};
+use matrixobjectstore_rs::{cluster::*, object_manifest::ObjectPageAllocation, ChunkId, PageId, ReplicaReadResult};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -75,6 +75,38 @@ fn config(socket: &TcpListener, id: u64) -> ChunkGroupConfig {
         member_ids: vec![format!("member-{id}")],
     }
 }
+
+#[test]
+fn failed_pipelined_write_retires_socket_without_replaying() {
+    let socket = listener();
+    let address = socket.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let mut stream = accept(&socket);
+        assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkIfSequence { .. }));
+        stream.write_all(&message::encode_reply(&ReplicaReply::Applied)).unwrap();
+        // Hold the second response until the third request arrives. This
+        // distinguishes a pipeline from a sequence of round trips.
+        assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkIfSequence { .. }));
+        assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkIfSequence { .. }));
+        stream.write_all(&message::encode_failure(
+            StatusCode::PreconditionFailed,
+            "write condition changed",
+        )).unwrap();
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        assert!(matches!(socket.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+    });
+    let mut client = RemoteReplicaClient::connect(&address, &ReplicaClientOptions::default()).unwrap();
+    let chunk_id = ChunkId::new(1, 1).unwrap();
+    let writes: Vec<_> = (0..3)
+        .map(|index| (PageId { chunk_id: chunk_id.clone(), page_index: index }, 0, b"page".as_slice(), 0))
+        .collect();
+    assert!(matches!(
+        client.write_chunks_if_sequence_pipelined(&writes),
+        Err(matrixobjectstore_rs::ObjectError::PreconditionFailed(_))
+    ));
+    assert!(client.ping().is_err());
+    worker.join().unwrap();
+}
 #[test]
 fn chunk_route_reply_must_name_the_requested_placement() {
     for matched in [true, false] {
@@ -137,7 +169,8 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                     let pages: Vec<_> = (index as u64..32).step_by(2).collect();
                     for batch in pages.chunks(8) {
                         if writing {
-                            for &page_index in batch {
+                            let mut write_replies = Vec::new();
+                            for (position, &page_index) in batch.iter().enumerate() {
                                 let start = page_index as usize * 4;
                                 let data = &object[start..object.len().min(start + 4)];
                                 let ReplicaRequest::WriteChunkIfSequence {
@@ -153,9 +186,15 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                                 assert_eq!(offset, 0);
                                 assert_eq!(expected_sequence, 0);
                                 assert_eq!(actual, data);
-                                stream
-                                    .write_all(&message::encode_reply(&ReplicaReply::Applied))
-                                    .unwrap();
+                                let response = message::encode_reply(&ReplicaReply::Applied);
+                                if position == 0 {
+                                    stream.write_all(&response).unwrap();
+                                } else {
+                                    write_replies.push(response);
+                                }
+                            }
+                            for response in write_replies {
+                                stream.write_all(&response).unwrap();
                             }
                             if index == 0 {
                                 let mut responses = Vec::new();
