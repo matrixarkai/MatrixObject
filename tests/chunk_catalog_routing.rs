@@ -78,6 +78,27 @@ fn chunk_catalog_routes_only_typed_unadmitted_mutations() {
     }
 }
 #[test]
+fn fully_refused_chunk_mutation_waits_for_a_new_leader() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        for attempt in 0..3 {
+            let code = receive(&mut socket);
+            assert_eq!(code, matrixobjectstore_rs::cluster::RequestCode::WriteChunk as u8);
+            let reply = if attempt < 2 {
+                ReplicaReply::NotLeader
+            } else {
+                ReplicaReply::Applied
+            };
+            socket.write_all(&encode_reply(&reply)).unwrap();
+        }
+    });
+    let mut client = RemoteReplicaClient::connect_catalog(&[endpoint], &options()).unwrap();
+    client.write_chunk(page(), 0, b"data").unwrap();
+    worker.join().unwrap();
+}
+#[test]
 fn chunk_catalog_never_replays_uncertain_or_refused_mutations() {
     let mut malformed = vec![PROTOCOL_STAMP, StatusCode::NotLeader as u8, 0, 0, 0, 1, 0];
     malformed.extend(encode_reply(&ReplicaReply::Applied));

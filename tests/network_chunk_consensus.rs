@@ -2553,8 +2553,21 @@ mod coupled_groups {
         target_groups: u32,
         object_bytes: u64,
     ) -> Vec<(u64, CommittedPlacement)> {
+        load_batch_sized_with_attempts(endpoint, start, end, workers, objects, target_groups, object_bytes, 1)
+    }
+    fn load_batch_sized_with_attempts(
+        endpoint: &LoadEndpoint<'_>,
+        start: u64,
+        end: u64,
+        workers: usize,
+        objects: bool,
+        target_groups: u32,
+        object_bytes: u64,
+        max_attempts: usize,
+    ) -> Vec<(u64, CommittedPlacement)> {
         assert!(objects || object_bytes == 1024);
         assert_eq!(object_bytes % 4, 0);
+        assert!(max_attempts > 0);
         let begin = Instant::now();
         let results = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
@@ -2566,6 +2579,7 @@ mod coupled_groups {
                         let mut saved = Vec::new();
                         let mut latencies = Vec::new();
                         let mut stages = [0u128; 4];
+                        let mut retries = 0usize;
                         for n in ((start + worker as u64)..end).step_by(workers) {
                             assert!(
                                 begin.elapsed() < Duration::from_secs(180),
@@ -2573,11 +2587,28 @@ mod coupled_groups {
                             );
                             let started = Instant::now();
                             if objects {
-                                let options = matrixobjectstore_rs::cluster::ObjectWriteOptions {
-                                    page_bytes: (object_bytes / 4) as usize, update_time_ms: n + 1, target_groups,
-                                    replica: ReplicaClientOptions { deadline: Some(started + Duration::from_secs(10)), ..endpoint.replica_options() }, ..Default::default()
+                                let key = format!("object-{n}");
+                                let data = load_data_sized(n, object_bytes);
+                                let mut attempts = 0;
+                                let manifest = loop {
+                                    attempts += 1;
+                                    let options = matrixobjectstore_rs::cluster::ObjectWriteOptions {
+                                        page_bytes: (object_bytes / 4) as usize, update_time_ms: n + 1, target_groups,
+                                        replica: ReplicaClientOptions { deadline: Some(Instant::now() + Duration::from_secs(10)), ..endpoint.replica_options() }, ..Default::default()
+                                    };
+                                    match meta.write_object("load", &key, None, &data, &options) {
+                                        Ok(manifest) => break manifest,
+                                        Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { error, .. })
+                                            if attempts < max_attempts =>
+                                        {
+                                            assert!(matches!(meta.read_manifest("load", &key), Err(matrixobjectstore_rs::ObjectError::NotFound(_))),
+                                                "cannot start a new write after {error}");
+                                            retries += 1;
+                                            std::thread::sleep(Duration::from_millis(50));
+                                        }
+                                        Err(error) => panic!("object {key} write failed after {attempts} attempts: {error}"),
+                                    }
                                 };
-                                let manifest = meta.write_object("load", &format!("object-{n}"), None, &load_data_sized(n, object_bytes), &options).unwrap();
                                 assert_eq!(manifest.extents.len(), 4);
                                 let distinct = manifest.extents.iter().map(|e| &e.group).collect::<std::collections::BTreeSet<_>>();
                                 assert_eq!(distinct.len(), target_groups as usize);
@@ -2631,7 +2662,7 @@ mod coupled_groups {
                                 println!("MULTIGROUP_STAGE worker={worker} completed={} plan_us={} connect_us={} write_us={} commit_us={}", saved.len(), stages[0], stages[1], stages[2], stages[3]);
                             }
                         }
-                        (saved, latencies)
+                        (saved, latencies, retries)
                     })
                 })
                 .collect();
@@ -2643,14 +2674,16 @@ mod coupled_groups {
         let elapsed = begin.elapsed();
         let mut saved = Vec::new();
         let mut latencies = Vec::new();
-        for (records, timings) in results {
+        let mut retries = 0usize;
+        for (records, timings, worker_retries) in results {
             saved.extend(records);
             latencies.extend(timings);
+            retries += worker_retries;
         }
         saved.sort_by_key(|(n, _)| *n);
         latencies.sort_unstable();
         assert_eq!(saved.len() as u64, end - start);
-        println!("MULTIGROUP objects={objects} object_bytes={object_bytes} writes={} workers={} elapsed_ms={} operations_per_second={:.1} p50_us={} p95_us={} p99_us={}", saved.len(), workers, elapsed.as_millis(), saved.len() as f64 / elapsed.as_secs_f64(), latencies[latencies.len()/2], latencies[latencies.len()*95/100], latencies[latencies.len()*99/100]);
+        println!("MULTIGROUP objects={objects} object_bytes={object_bytes} writes={} workers={} retries={retries} elapsed_ms={} operations_per_second={:.1} p50_us={} p95_us={} p99_us={}", saved.len(), workers, elapsed.as_millis(), saved.len() as f64 / elapsed.as_secs_f64(), latencies[latencies.len()/2], latencies[latencies.len()*95/100], latencies[latencies.len()*99/100]);
         saved
     }
     fn group_usage(api: &[String], groups: &[Group], saved: &[(u64, CommittedPlacement)]) {
