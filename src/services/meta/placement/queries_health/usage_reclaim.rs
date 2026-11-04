@@ -38,13 +38,13 @@ impl MatrixMetaService {
             page.total_referenced_object_bytes = page
                 .total_referenced_object_bytes
                 .saturating_add(placement.length);
-            for node_id in &placement.node_ids {
+            for (index, node_id) in placement.node_ids.iter().enumerate() {
                 let entry = referenced_by_node.entry(node_id.clone()).or_default();
                 entry.0 = entry.0.saturating_add(1);
-                entry.1 = entry.1.saturating_add(placement.length);
+                entry.1 = entry.1.saturating_add(placement.charged_bytes_at(index));
                 page.total_replicated_object_bytes = page
                     .total_replicated_object_bytes
-                    .saturating_add(placement.length);
+                    .saturating_add(placement.charged_bytes_at(index));
             }
         }
         let mut usage_by_node = BTreeMap::new();

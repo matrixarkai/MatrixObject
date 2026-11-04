@@ -76,6 +76,11 @@ impl MatrixMetaService {
                 ));
             }
             let current = self.object_placement(&plan.object_id)?;
+            if self.object_manifests.get(&plan.object_id).is_some() {
+                return Err(ObjectError::PreconditionFailed(
+                    "manifest data groups require chunk membership changes".into(),
+                ));
+            }
             if current.version != plan.version
                 || current.length != plan.length
                 || current.node_ids != plan.before_node_ids
@@ -139,6 +144,7 @@ impl MatrixMetaService {
                 version: current.version,
                 length: current.length,
                 node_ids: plan.after_node_ids.clone(),
+                group_bytes: Vec::new(),
                 update_time_ms: current.update_time_ms,
             });
         }

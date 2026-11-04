@@ -190,6 +190,7 @@ impl CommittedPlacement {
             version: self.version,
             length: self.length,
             node_ids: self.node_ids,
+            group_bytes: Vec::new(),
             update_time_ms: self.update_time_ms,
         }
     }

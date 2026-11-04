@@ -16,7 +16,7 @@ impl MetaSnapshot {
     }
 
     #[cfg(any(feature = "metadata-consensus", test))]
-    pub(crate) const STREAM_ROSTER_SHAPE: u64 = 33;
+    pub(crate) const STREAM_ROSTER_SHAPE: u64 = 34;
 
     #[cfg(any(feature = "metadata-consensus", test))]
     pub(crate) fn read_from(reader: &mut dyn std::io::Read, length: u64) -> Result<Self, ObjectError> {
@@ -29,7 +29,7 @@ impl MetaSnapshot {
         let version = magic
             .strip_prefix("MOSRSMETA")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=19).contains(version))
+            .filter(|version| (1..=20).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("metadata snapshot byte magic mismatch".to_string())
             })?;
@@ -38,8 +38,8 @@ impl MetaSnapshot {
                 "metadata snapshot byte magic mismatch".to_string(),
             ));
         }
-        if cursor.stream.is_some() && !(18..=19).contains(&version) {
-            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 or 19".into()));
+        if cursor.stream.is_some() && !(18..=20).contains(&version) {
+            return Err(ObjectError::Corruption("streamed metadata snapshot needs version 18 through 20".into()));
         }
         let has_transaction_read_versions = version >= 2;
         let has_tombstone_compaction_counters = version >= 3;
@@ -316,7 +316,11 @@ impl MetaSnapshot {
             let commit_index = cursor.read_u64()?;
             let roster = read_placement_roster(
                 &mut cursor,
-                PlacementSnapshotDecodeFeatures::for_version(roster_shape),
+                PlacementSnapshotDecodeFeatures::for_version(if version >= 20 {
+                    34
+                } else {
+                    roster_shape.min(33)
+                }),
                 commit_index,
             )?;
             (commit_index, roster)
@@ -337,7 +341,7 @@ impl MetaSnapshot {
             let bytes = cursor.read_owned_blob(64 * 1024 * 1024 + 12)?;
             let catalog = crate::object_manifest::ManifestCatalog::from_bytes(&bytes)?;
             if catalog.is_empty() {
-                return Err(ObjectError::Corruption("version 19 metadata snapshot has no manifests".into()));
+                return Err(ObjectError::Corruption("metadata snapshot manifest catalog is empty".into()));
             }
             catalog
         } else { Default::default() };

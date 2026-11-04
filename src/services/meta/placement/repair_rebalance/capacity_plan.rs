@@ -46,6 +46,10 @@ impl MatrixMetaService {
                 continue;
             }
             report.scanned_objects = report.scanned_objects.saturating_add(1);
+            if self.object_manifests.get(&placement.object_id).is_some() {
+                report.skipped_objects = report.skipped_objects.saturating_add(1);
+                continue;
+            }
             let Some(source_node_id) = placement
                 .node_ids
                 .iter()

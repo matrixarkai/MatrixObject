@@ -29,17 +29,7 @@ impl MatrixMetaService {
                 skipped_draining = skipped_draining.saturating_add(1);
                 continue;
             }
-            let previous_bytes = previous.map_or(0, |old| {
-                if old
-                    .node_ids
-                    .iter()
-                    .any(|old_node| old_node == &node.node_id)
-                {
-                    old.length
-                } else {
-                    0
-                }
-            });
+            let previous_bytes = previous.map_or(0, |old| old.charged_bytes(&node.node_id));
             let projected = node
                 .committed_bytes
                 .saturating_sub(previous_bytes)
@@ -92,6 +82,9 @@ impl MatrixMetaService {
         placement: ObjectPlacement,
         expected_plan_checksum: &str,
     ) -> Result<ObjectPlacement, ObjectError> {
+        if !placement.group_bytes.is_empty() {
+            return Err(ObjectError::InvalidArgument("standalone placement cannot carry group charges".into()));
+        }
         if self.object_manifests.get(&placement.object_id).is_some() {
             return Err(ObjectError::PreconditionFailed(
                 "manifest-backed objects require atomic publication".into(),
@@ -124,13 +117,7 @@ impl MatrixMetaService {
                     "root placement node is not writable".to_string(),
                 ));
             }
-            let previous_bytes = previous.as_ref().map_or(0, |old| {
-                if old.node_ids.iter().any(|old_node| old_node == node_id) {
-                    old.length
-                } else {
-                    0
-                }
-            });
+            let previous_bytes = previous.as_ref().map_or(0, |old| old.charged_bytes(node_id));
             if node
                 .committed_bytes
                 .saturating_sub(previous_bytes)

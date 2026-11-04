@@ -24,7 +24,18 @@ impl MetaSnapshot {
                 emit(bytes)
             };
             let mut out = Vec::with_capacity(1024);
-            append_string(&mut out, if self.object_manifests.is_empty() { "MOSRSMETA18" } else { "MOSRSMETA19" });
+            let has_group_bytes = self
+                .placements
+                .values()
+                .any(|placement| !placement.group_bytes.is_empty());
+            let version = if has_group_bytes {
+                "MOSRSMETA20"
+            } else if self.object_manifests.is_empty() {
+                "MOSRSMETA18"
+            } else {
+                "MOSRSMETA19"
+            };
+            append_string(&mut out, version);
             append_u64(&mut out, self.next_commit_index);
             append_u64(&mut out, self.next_change_sequence);
             append_u64(&mut out, self.compacted_tombstone_count);
@@ -192,6 +203,7 @@ impl MetaSnapshot {
                 // Always: this snapshot has carried the receipt proof fields from its first
                 // version, so there is no older shape of it to stay compatible with.
                 true,
+                has_group_bytes,
                 &mut emit_body,
             )?;
             if !self.object_manifests.is_empty() {

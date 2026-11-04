@@ -387,8 +387,13 @@ impl RemoteMetaClient {
         let mut connection: Option<(String, RemoteReplicaClient)> = None;
         if pages > 0 {
             let count = options.target_groups.min(pages);
+            let mut planned_group_bytes = vec![0u64; count as usize];
+            for (index, page) in data.chunks(options.page_bytes).enumerate() {
+                planned_group_bytes[index % count as usize] += page.len() as u64;
+            }
+            let max_group_bytes = planned_group_bytes.into_iter().max().unwrap_or(0);
             let plan = self
-                .plan_object_placement(bucket, key, manifest.length, u64::from(count))
+                .plan_object_placement(bucket, key, max_group_bytes, u64::from(count))
                 .map_err(before)?;
             if plan.node_ids.len() != count as usize
                 || plan

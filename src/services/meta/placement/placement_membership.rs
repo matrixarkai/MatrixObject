@@ -199,7 +199,7 @@ impl MatrixMetaService {
             if placement.node_ids.iter().any(|placed| placed == node_id) {
                 report.referencing_object_count = report.referencing_object_count.saturating_add(1);
                 report.referencing_bytes =
-                    report.referencing_bytes.saturating_add(placement.length);
+                    report.referencing_bytes.saturating_add(placement.charged_bytes(node_id));
             }
         }
         if report.referencing_object_count != 0 && !force {

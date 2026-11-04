@@ -26,6 +26,10 @@ impl MatrixMetaService {
             ..PlacementRepairReport::default()
         };
         for item in health.items {
+            if self.object_manifests.get(&item.placement.object_id).is_some() {
+                report.skipped_objects = report.skipped_objects.saturating_add(1);
+                continue;
+            }
             match self.plan_health_repair_for_item(&item, expected_replica_count, min_free_bytes) {
                 Ok(plan) => {
                     report.repair_objects = report.repair_objects.saturating_add(1);

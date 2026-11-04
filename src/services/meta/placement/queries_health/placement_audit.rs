@@ -42,7 +42,8 @@ impl MatrixMetaService {
             page.payload_bytes = page
                 .payload_bytes
                 .saturating_add(placement.length)
-                .saturating_add(placement.node_ids.len() as u64);
+                .saturating_add(placement.node_ids.len() as u64)
+                .saturating_add((placement.group_bytes.len() as u64).saturating_mul(8));
             page.placements.push(placement.clone());
         }
         if !page.has_more {

@@ -333,6 +333,17 @@ impl MatrixMetaService {
 
     pub fn install_placement_snapshot(&mut self, snapshot: PlacementSnapshot) -> Result<(), ObjectError> {
         snapshot.validate()?;
+        if snapshot.placements.values().any(|placement| !placement.group_bytes.is_empty()) {
+            validate_placement_roster_with_manifests(
+                &snapshot.nodes,
+                &snapshot.placements,
+                &snapshot.leader_lease,
+                &snapshot.leader_lease_receipts,
+                &snapshot.coordinator_config,
+                snapshot.next_commit_index,
+                Some(&self.object_manifests),
+            )?;
+        }
         self.invalidate_snapshot_export_cache();
         self.nodes = snapshot.nodes;
         self.placements = snapshot.placements;

@@ -41,12 +41,16 @@ serving reads. These are required integration steps, not implemented guarantees
 of the current HTTP path.
 
 Metadata snapshots with no manifests keep the version-18 encoding and checksum.
-A nonempty catalog uses version 19 and stores the canonical binary catalog after
-the placement roster. Both the service checksum and snapshot envelope cover it.
+A catalog with older placement charges uses version 19. Snapshots with per-group
+charges use version 20 and carry those charges in the placement roster. The
+canonical binary catalog follows the roster. Both the service checksum and
+snapshot envelope cover these records. Placement snapshots use version 34 when
+they contain per-group charges; older placements keep their existing encoding.
 The snapshot export cache stamp also includes the catalog. Installation restores
 the catalog together with metadata, including deletion generations.
 
-Upgrade readers before writing version-19 snapshots: older readers reject them.
+Upgrade all metaserver voters before resuming manifest writes. Older voters
+cannot apply outcomes carrying per-group charges or read version-20 snapshots.
 Local metadata snapshot files retain their 64 MiB total limit, including the
 catalog and all other metadata; a catalog near its own limit may not fit that
 local envelope. Streamed Raft checkpoints retain their separate total limit.
@@ -59,7 +63,13 @@ change must match the manifest object identity, generation, length and sorted
 set of extent groups. Creation expects both records absent; deletion retains a
 zero-length placement and a manifest tombstone. Recreating the object names that
 tombstone. Capacity reservations move atomically with both records. As with the
-existing placement model, each target reserves the full object length.
+existing placement model, an older record without per-group charges reserves the
+full object length on each target. New manifest publications charge each target
+for the lengths of its own extents. The writer plans against the largest group
+share before allocating pages; publication checks each actual group charge.
+Root placement migration refuses manifest-backed objects because their extents
+name durable data groups. Group repair uses chunk membership changes; moving an
+extent to another group requires copying its page and publishing a new manifest.
 
 Decision checks writable target groups and capacity without changing state.
 Replay does not repeat health-policy admission. Apply validates all expected
@@ -199,9 +209,8 @@ group. Pages must be 1..1048576 bytes, with no more than 4096 per object. The ca
 supplies the modification time. The input is borrowed; temporary payload memory
 is proportional to one page plus transport buffers, bounded manifest state and
 one configuration per selected group (each wire response is at most 4 KiB).
-Connections have their configured per-call timeouts; there is no whole-operation
-timeout. Placement currently reserves the complete object length on every target
-group, even when extents are spread across groups.
+Connections have their configured per-call timeouts. A supplied replica deadline
+also bounds the complete metadata and data operation.
 
 `ObjectWriteFailure::BeforePublication` means publication was not admitted. This
 includes a request that was never sent and a typed leader refusal from every

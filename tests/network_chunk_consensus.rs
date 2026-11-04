@@ -4,7 +4,7 @@
 #[allow(dead_code)]
 mod node_regime;
 use matrixobjectstore_rs::cluster::{
-    ChunkRaftOptions, RemoteReplicaClient, ReplicaClientOptions, ReplicaNodeOptions,
+    ChunkRaftOptions, ObjectWriteOptions, RemoteReplicaClient, ReplicaClientOptions, ReplicaNodeOptions,
     ReplicaNodeServer,
 };
 use matrixobjectstore_rs::{ChunkId, PageId};
@@ -1857,6 +1857,56 @@ mod coupled_groups {
         object_writer_recovery(4);
     }
     #[test]
+    fn striped_write_uses_each_groups_capacity() {
+        let mut groups: Vec<_> = (1..=2).map(|id| {
+            let mut group = Group::configured(6);
+            group.group_id = id;
+            group.checkpoint_bytes = 1024;
+            group
+        }).collect();
+        let mut metadata = MetadataGroup::for_groups(&groups);
+        for group in &mut groups {
+            group.report = Some((metadata.api.join(","), group.api_addresses.clone()));
+            for id in 0..3 {
+                group.start(id);
+            }
+            group.leader();
+        }
+        let mut meta = metadata.ready();
+        group_usage(&metadata.api, &groups, &[]);
+        let options = ObjectWriteOptions {
+            page_bytes: 4,
+            target_groups: 2,
+            replica: chunk_options(),
+            ..Default::default()
+        };
+        let bytes = b"abcdefgh";
+        let manifest = meta.write_object("striped", "capacity", None, bytes, &options).unwrap();
+        assert_eq!(manifest.extents.len(), 2);
+        assert_ne!(manifest.extents[0].group, manifest.extents[1].group);
+        assert_eq!(meta.read_object("striped", "capacity", 8, &options.replica).unwrap(),
+            (manifest, bytes.to_vec()));
+        let nodes = meta.list_placement_nodes().unwrap();
+        for group in &groups {
+            let node = nodes.iter().find(|node| node.node_id == group.placement_id()).unwrap();
+            assert_eq!(node.committed_bytes, 4);
+        }
+        for id in 0..3 {
+            metadata.kill(id);
+        }
+        for id in 0..3 {
+            metadata.start(id);
+        }
+        let mut recovered = metadata.ready();
+        assert_eq!(recovered.read_object("striped", "capacity", 8, &options.replica).unwrap().1,
+            bytes);
+        let nodes = recovered.list_placement_nodes().unwrap();
+        for group in &groups {
+            let node = nodes.iter().find(|node| node.node_id == group.placement_id()).unwrap();
+            assert_eq!(node.committed_bytes, 4);
+        }
+    }
+    #[test]
     fn serial_object_writer_preserves_verified_recovery() {
         object_writer_recovery(1);
     }
@@ -2740,7 +2790,7 @@ mod coupled_groups {
                 for (_, placement) in saved.iter().filter(|(_, p)| p.node_ids.contains(&id)) {
                     assert_eq!(placement.length % placement.node_ids.len() as u64, 0);
                     physical += placement.length / placement.node_ids.len() as u64;
-                    committed += placement.length;
+                    committed += placement.length / placement.node_ids.len() as u64;
                 }
                 (id, (physical, committed))
             })

@@ -51,6 +51,9 @@ pub struct PlacementValue {
     pub node_ids: Vec<String>,
     #[prost(uint64, tag = "6")]
     pub update_time_ms: u64,
+    /// Aligned with `node_ids`; empty keeps the older full-length charge.
+    #[prost(uint64, repeated, tag = "7")]
+    pub group_bytes: Vec<u64>,
 }
 impl PlacementValue {
     fn from_value(v: &ObjectPlacement) -> Self {
@@ -61,6 +64,7 @@ impl PlacementValue {
             length: v.length,
             node_ids: v.node_ids.clone(),
             update_time_ms: v.update_time_ms,
+            group_bytes: v.group_bytes.clone(),
         }
     }
     fn id(&self) -> ObjectId {
@@ -72,8 +76,19 @@ impl PlacementValue {
             version: self.version,
             length: self.length,
             node_ids: self.node_ids.clone(),
+            group_bytes: self.group_bytes.clone(),
             update_time_ms: self.update_time_ms,
         }
+    }
+
+    fn charges(&self) -> std::collections::BTreeMap<&str, u64> {
+        self.node_ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                (id.as_str(), self.group_bytes.get(index).copied().unwrap_or(self.length))
+            })
+            .collect()
     }
 }
 #[derive(Clone, PartialEq, Message)]
@@ -118,11 +133,23 @@ fn manifest_groups(manifest: &ObjectManifest) -> Vec<String> {
         .into_iter()
         .collect()
 }
+fn manifest_group_bytes(manifest: &ObjectManifest, groups: &[String]) -> Vec<u64> {
+    let mut totals = std::collections::BTreeMap::<&str, u64>::new();
+    for extent in &manifest.extents {
+        *totals.entry(extent.group.as_str()).or_default() += extent.length;
+    }
+    groups
+        .iter()
+        .map(|group| totals.get(group.as_str()).copied().unwrap_or(0))
+        .collect()
+}
 fn matches_manifest(placement: &PlacementValue, manifest: &ObjectManifest) -> bool {
     placement.id() == manifest.object_id()
         && placement.version == manifest.generation
         && placement.length == manifest.length
         && placement.node_ids == manifest_groups(manifest)
+        && (placement.group_bytes.is_empty()
+            || placement.group_bytes == manifest_group_bytes(manifest, &placement.node_ids))
 }
 impl PlacementOutcome {
     fn validate_manifest_binding(&self) -> Result<(), ObjectError> {
@@ -167,12 +194,14 @@ impl PlacementOutcome {
             .placements
             .get(&after.object_id())
             .map(PlacementValue::from_value);
+        let node_ids = manifest_groups(after);
         let placement = PlacementValue {
             bucket: after.bucket.clone(),
             key: after.key.clone(),
             version: after.generation,
             length: after.length,
-            node_ids: manifest_groups(after),
+            group_bytes: manifest_group_bytes(after, &node_ids),
+            node_ids,
             update_time_ms,
         };
         let ids: BTreeSet<_> = before
@@ -181,6 +210,8 @@ impl PlacementOutcome {
             .chain(placement.node_ids.iter())
             .cloned()
             .collect();
+        let before_charges = before.as_ref().map(PlacementValue::charges).unwrap_or_default();
+        let after_charges = placement.charges();
         let mut nodes = Vec::new();
         for id in ids {
             let current = service
@@ -189,15 +220,8 @@ impl PlacementOutcome {
                 .ok_or_else(|| invalid("manifest group is missing"))?;
             let prior = NodeUsage::from_node(current);
             let mut next = prior.clone();
-            let released = before
-                .as_ref()
-                .filter(|p| p.node_ids.contains(&id))
-                .map_or(0, |p| p.length);
-            let added = if placement.node_ids.contains(&id) {
-                placement.length
-            } else {
-                0
-            };
+            let released = before_charges.get(id.as_str()).copied().unwrap_or(0);
+            let added = after_charges.get(id.as_str()).copied().unwrap_or(0);
             next.committed_bytes = prior
                 .committed_bytes
                 .checked_sub(released)
@@ -258,6 +282,8 @@ impl PlacementOutcome {
             .chain(placement.node_ids.iter())
             .cloned()
             .collect();
+        let before_charges = change.before.as_ref().map(PlacementValue::charges).unwrap_or_default();
+        let after_charges = placement.charges();
         let mut expected = Vec::new();
         for id in ids {
             let node = service
@@ -266,16 +292,8 @@ impl PlacementOutcome {
                 .ok_or_else(|| invalid("manifest group is missing"))?;
             let before = NodeUsage::from_node(node);
             let mut after = before.clone();
-            let released = change
-                .before
-                .as_ref()
-                .filter(|p| p.node_ids.contains(&id))
-                .map_or(0, |p| p.length);
-            let added = if placement.node_ids.contains(&id) {
-                placement.length
-            } else {
-                0
-            };
+            let released = before_charges.get(id.as_str()).copied().unwrap_or(0);
+            let added = after_charges.get(id.as_str()).copied().unwrap_or(0);
             after.committed_bytes = before
                 .committed_bytes
                 .checked_sub(released)

@@ -63,6 +63,11 @@ impl MatrixMetaService {
                 .get(&plan.object_id)
                 .cloned()
                 .ok_or_else(|| ObjectError::NotFound("root placement missing".to_string()))?;
+            if self.object_manifests.get(&plan.object_id).is_some() {
+                return Err(ObjectError::PreconditionFailed(
+                    "manifest data groups require chunk membership changes".into(),
+                ));
+            }
             if current.version != plan.version
                 || current.length != plan.length
                 || current.node_ids != plan.before_node_ids
@@ -117,6 +122,7 @@ impl MatrixMetaService {
                 version: plan.version,
                 length: plan.length,
                 node_ids: plan.after_node_ids.clone(),
+                group_bytes: Vec::new(),
                 update_time_ms: current.update_time_ms,
             });
         }

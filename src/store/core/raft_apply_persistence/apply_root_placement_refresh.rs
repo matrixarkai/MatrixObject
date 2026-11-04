@@ -43,6 +43,7 @@ impl MatrixObjectStore {
             version: metadata.version,
             length: metadata.length,
             node_ids: plan.node_ids,
+            group_bytes: Vec::new(),
             update_time_ms,
         };
         if self

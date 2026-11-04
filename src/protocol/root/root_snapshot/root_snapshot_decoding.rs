@@ -7,7 +7,7 @@ impl PlacementSnapshot {
         let version = magic
             .strip_prefix("MOSRSROOT")
             .and_then(|suffix| suffix.parse::<u64>().ok())
-            .filter(|version| (1..=33).contains(version))
+            .filter(|version| (1..=34).contains(version))
             .ok_or_else(|| {
                 ObjectError::Corruption("root snapshot byte magic mismatch".to_string())
             })?;
@@ -139,6 +139,15 @@ pub(crate) fn read_placement_roster(
         for _ in 0..cursor.read_count("root snapshot placement node count")? {
             node_ids.push(cursor.read_string()?);
         }
+        let group_bytes = if features.has_group_bytes {
+            let count = cursor.read_count("root snapshot placement charge count")?;
+            if count != 0 && count != node_ids.len() {
+                return Err(ObjectError::Corruption("root snapshot placement charge count mismatch".into()));
+            }
+            (0..count).map(|_| cursor.read_u64()).collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
         placements.insert(
             map_object_id,
             ObjectPlacement {
@@ -146,6 +155,7 @@ pub(crate) fn read_placement_roster(
                 version,
                 length,
                 node_ids,
+                group_bytes,
                 update_time_ms,
             },
         );

@@ -44,6 +44,9 @@ impl PlacementSnapshot {
     /// left it green, so nothing anywhere asserted that an older snapshot still validates.
     /// Exposing the list is what lets a guard walk it and check each one.
     pub(crate) fn accepted_checksum_formats(&self) -> Vec<(&'static str, String)> {
+        if self.placements.values().any(|placement| !placement.group_bytes.is_empty()) {
+            return vec![("current", self.checksum_material_hash())];
+        }
         let mut accepted = vec![
             ("current", self.checksum_material_hash()),
             // The format current until the page-tier field joined the material.
@@ -136,14 +139,40 @@ pub(crate) fn validate_placement_roster_with_manifests(
                 "root snapshot placement is invalid".to_string(),
             ));
         }
-        for node_id in &placement.node_ids {
+        if !placement.group_bytes.is_empty() {
+            if placement.group_bytes.len() != placement.node_ids.len() {
+                return Err(ObjectError::Corruption("root snapshot placement charge count mismatch".into()));
+            }
+            if placement.group_bytes.iter().try_fold(0u64, |total, charged| total.checked_add(*charged))
+                != Some(placement.length)
+            {
+                return Err(ObjectError::Corruption("root snapshot placement charges do not sum to object length".into()));
+            }
+            if let Some(catalog) = manifests {
+                let manifest = catalog.get(object_id).ok_or_else(|| {
+                    ObjectError::Corruption("root snapshot placement charges lack a manifest".into())
+                })?;
+                let mut totals = BTreeMap::<&str, u128>::new();
+                for extent in &manifest.extents {
+                    let entry = totals.entry(extent.group.as_str()).or_default();
+                    *entry += u128::from(extent.length);
+                }
+                for (index, node_id) in placement.node_ids.iter().enumerate() {
+                    let actual = totals.get(node_id.as_str()).copied().unwrap_or(0);
+                    if u128::from(placement.group_bytes[index]) != actual {
+                        return Err(ObjectError::Corruption("root snapshot placement charge mismatch".into()));
+                    }
+                }
+            }
+        }
+        for (index, node_id) in placement.node_ids.iter().enumerate() {
             if !nodes.contains_key(node_id) {
                 return Err(ObjectError::Corruption(
                     "root snapshot placement references missing node".to_string(),
                 ));
             }
             let entry = committed.entry(node_id.clone()).or_insert(0);
-            *entry = entry.saturating_add(placement.length);
+            *entry = entry.saturating_add(placement.charged_bytes_at(index));
         }
     }
     for (node_id, bytes) in committed {

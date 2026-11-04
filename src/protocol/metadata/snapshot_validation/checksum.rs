@@ -167,6 +167,7 @@ impl MetaSnapshot {
             &self.placement_leader_lease_receipts,
             &self.placement_coordinator_config,
             true,
+            self.placements.values().any(|placement| !placement.group_bytes.is_empty()),
             &mut |bytes| {
                 digest = fnv1a64_resumed(digest, bytes);
                 Ok::<(), std::convert::Infallible>(())

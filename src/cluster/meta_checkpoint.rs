@@ -129,7 +129,11 @@ pub(super) fn capture(
         index: id.index,
         term: id.term,
         catalog,
-        roster_shape: MetaSnapshot::STREAM_ROSTER_SHAPE,
+        roster_shape: if snapshot.placements.values().any(|placement| !placement.group_bytes.is_empty()) {
+            34
+        } else {
+            33
+        },
     };
     if header.encoded_len() > MAX_CHECKPOINT_BYTES {
         return Ok(None);
@@ -235,7 +239,7 @@ fn restore_image(
         || header.term != id.term
         || id.index == 0
         || id.term == 0
-        || header.roster_shape != MetaSnapshot::STREAM_ROSTER_SHAPE
+        || !matches!(header.roster_shape, 33 | 34)
     {
         return Err(storage(
             "metadata checkpoint identity, catalog or encoding mismatch",

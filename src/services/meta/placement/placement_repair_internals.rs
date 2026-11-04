@@ -47,6 +47,11 @@ impl MatrixMetaService {
         expected_replica_count: usize,
         min_free_bytes: u64,
     ) -> Result<PlacementMigrationPlan, ObjectError> {
+        if self.object_manifests.get(&item.placement.object_id).is_some() {
+            return Err(ObjectError::PreconditionFailed(
+                "manifest data groups require chunk membership changes".into(),
+            ));
+        }
         let source_node_id = item
             .missing_node_ids
             .first()
@@ -138,6 +143,11 @@ impl MatrixMetaService {
             ));
         }
         let current = self.object_placement(&plan.object_id)?;
+        if self.object_manifests.get(&plan.object_id).is_some() {
+            return Err(ObjectError::PreconditionFailed(
+                "manifest data groups require chunk membership changes".into(),
+            ));
+        }
         if current.version != plan.version
             || current.length != plan.length
             || current.node_ids != plan.before_node_ids
@@ -201,6 +211,7 @@ impl MatrixMetaService {
             version: current.version,
             length: current.length,
             node_ids: plan.after_node_ids,
+            group_bytes: Vec::new(),
             update_time_ms: current.update_time_ms,
         };
         for node_id in &repaired.node_ids {
