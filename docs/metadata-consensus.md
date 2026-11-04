@@ -19,7 +19,7 @@ MATRIXOBJECT_METASERVER_RAFT_STATE_DIR=/var/lib/matrixobject/meta-1 \
 
 Use node ids 2 and 3, their own API ports and directories for the other voters.
 `MATRIXOBJECT_METASERVER_RAFT_GROUP_ID` defaults to 1.
-`MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS` defaults to 3000 and accepts 100 through
+`MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS` defaults to 5000 and accepts 100 through
 30000 milliseconds. The fixed voter set supports one through seven nodes. Use an
 odd voter count for fault tolerance. Do not combine this mode with
 `MATRIXOBJECT_METASERVER_STATE_DIR`, which selects single-node journal storage.

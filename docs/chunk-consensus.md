@@ -14,7 +14,7 @@ MATRIXOBJECT_CHUNK_RAFT_NODE_ID=1 \
 MATRIXOBJECT_CHUNK_RAFT_GROUP_ID=1 \
 MATRIXOBJECT_CHUNK_RAFT_PEERS=1@127.0.0.1:18301,2@127.0.0.1:18302,3@127.0.0.1:18303 \
 MATRIXOBJECT_CHUNK_RAFT_STATE_DIR=/existing/chunk-1 \
-MATRIXOBJECT_CHUNK_RAFT_TIMEOUT_MS=3000 \
+MATRIXOBJECT_CHUNK_RAFT_TIMEOUT_MS=5000 \
 cargo run --features chunk-consensus --bin chunkserver
 ```
 
@@ -22,7 +22,7 @@ Use a distinct API address, node ID, and directory for each process. Every voter
 has the same peer catalog, group ID, capacity, and page-count bounds. The catalog
 contains 1..7 distinct IP sockets with nonzero voter IDs and ports; wildcards,
 multicast addresses, and duplicate sockets including mapped aliases are refused.
-The request timeout accepts 100..30000 milliseconds. Partial configuration and
+The request timeout defaults to 5000 and accepts 100..30000 milliseconds. Partial configuration and
 combining Raft state with `MATRIXOBJECT_REPLICA_JOURNAL` are refused.
 
 ## Durability and request behavior
