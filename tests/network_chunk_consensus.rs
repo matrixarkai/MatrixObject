@@ -1694,9 +1694,10 @@ mod coupled_groups {
             group.leader();
         }
         group_usage(&metadata.api, &groups, &[]);
-        let allocation = meta.allocate_object_pages(2).unwrap();
+        let allocation = meta.allocate_object_pages(8).unwrap();
         let mut extents = Vec::new();
-        for (index, group) in groups.iter().enumerate() {
+        for index in 0..8 {
+            let group = &groups[index % groups.len()];
             let page = allocation.page(index as u32).unwrap();
             let bytes = vec![index as u8 + 1; 4];
             let mut data = meta
@@ -1729,7 +1730,7 @@ mod coupled_groups {
             bucket: "allocated".into(),
             key: "object".into(),
             generation: 1,
-            length: 8,
+            length: 32,
             extents,
             deleted: false,
         };
@@ -1740,7 +1741,7 @@ mod coupled_groups {
             replica: chunk_options(),
             ..Default::default()
         };
-        let bytes = [1, 1, 1, 1, 2, 2, 2, 2];
+        let bytes: Vec<u8> = (1..=8).flat_map(|value| [value; 4]).collect();
         assert!(matches!(
             meta.resume_unpublished_object(None, manifest.clone(), b"bad data", &write_options),
             Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { .. })
@@ -1754,9 +1755,9 @@ mod coupled_groups {
             manifest
         );
         assert_eq!(
-            meta.read_object("allocated", "object", 8, &chunk_options())
+            meta.read_object("allocated", "object", 32, &chunk_options())
                 .unwrap(),
-            (manifest.clone(), vec![1, 1, 1, 1, 2, 2, 2, 2])
+            (manifest.clone(), bytes.to_vec())
         );
         // Independent clients race allocations through the same committed sequence.
         let mut threads = Vec::new();
@@ -1802,10 +1803,10 @@ mod coupled_groups {
         assert!(next.allocation_id > last);
         last = next.allocation_id;
         assert_eq!(
-            meta.read_object("allocated", "object", 8, &chunk_options())
+            meta.read_object("allocated", "object", 32, &chunk_options())
                 .unwrap()
                 .1,
-            vec![1, 1, 1, 1, 2, 2, 2, 2]
+            bytes.to_vec()
         );
         for id in 0..3 {
             if metadata.nodes[id].is_some() {
@@ -1829,9 +1830,9 @@ mod coupled_groups {
         }
         assert!(meta.allocate_object_pages(2).unwrap().allocation_id > last);
         assert_eq!(
-            meta.read_object("allocated", "object", 8, &chunk_options())
+            meta.read_object("allocated", "object", 32, &chunk_options())
                 .unwrap(),
-            (manifest, vec![1, 1, 1, 1, 2, 2, 2, 2])
+            (manifest, bytes.to_vec())
         );
         let leader = metadata
             .api
