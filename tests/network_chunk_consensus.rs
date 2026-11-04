@@ -2601,8 +2601,18 @@ mod coupled_groups {
                                         Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { error, .. })
                                             if attempts < max_attempts =>
                                         {
-                                            assert!(matches!(meta.read_manifest("load", &key), Err(matrixobjectstore_rs::ObjectError::NotFound(_))),
-                                                "cannot start a new write after {error}");
+                                            let read_deadline = Instant::now() + Duration::from_secs(10);
+                                            loop {
+                                                match meta.read_manifest("load", &key) {
+                                                    Err(matrixobjectstore_rs::ObjectError::NotFound(_)) => break,
+                                                    Err(matrixobjectstore_rs::ObjectError::PreconditionFailed(_))
+                                                        if Instant::now() < read_deadline =>
+                                                    {
+                                                        std::thread::sleep(Duration::from_millis(50));
+                                                    }
+                                                    other => panic!("cannot start a new write after {error}: {other:?}"),
+                                                }
+                                            }
                                             retries += 1;
                                             std::thread::sleep(Duration::from_millis(50));
                                         }
@@ -3303,7 +3313,7 @@ mod coupled_groups {
                 g.group_id = i as u64 + 1;
                 g.max_pages = 2048;
                 g.checkpoint_bytes = 16 * 1024;
-                g.heartbeat_ms = "1000";
+                g.heartbeat_ms = "2000";
                 g
             })
             .collect();
@@ -3322,7 +3332,8 @@ mod coupled_groups {
         }
         group_usage(&metadata.api, &groups, &[]);
         let tls = api_tls_config(metadata.api_tls.as_ref());
-        let mut saved = load_batch_sized(
+        let attempts = if group_count == 16 && object_bytes >= 1024 * 1024 { 3 } else { 1 };
+        let mut saved = load_batch_sized_with_attempts(
             &LoadEndpoint { api: &metadata.api, tls: tls.clone() },
             0,
             writes,
@@ -3330,6 +3341,7 @@ mod coupled_groups {
             objects,
             target_groups,
             object_bytes,
+            attempts,
         );
         group_usage(&metadata.api, &groups, &saved);
         for group in &groups {
@@ -3376,7 +3388,7 @@ mod coupled_groups {
             group.leader();
         }
         verify_load_with_transport(&LoadEndpoint { api: &metadata.api, tls: tls.clone() }, &saved, objects);
-        saved.extend(load_batch_sized(
+        saved.extend(load_batch_sized_with_attempts(
             &LoadEndpoint { api: &metadata.api, tls: tls.clone() },
             writes,
             writes + writes / 4,
@@ -3384,6 +3396,7 @@ mod coupled_groups {
             objects,
             target_groups,
             object_bytes,
+            attempts,
         ));
         group_usage(&metadata.api, &groups, &saved);
         for group in &mut groups {

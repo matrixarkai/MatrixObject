@@ -24,7 +24,7 @@
 //! | `MATRIXOBJECT_CHUNK_NODE_ID` | *(unset)* | configured metadata roster ID; enables reports with the catalog |
 //! | `MATRIXOBJECT_CHUNK_METADATA_ENDPOINTS` | *(unset)* | comma-separated metaserver API IP sockets, 1..7 |
 //! | `MATRIXOBJECT_CHUNK_ADVERTISE_ADDR` | bound address | socket address matching the metadata roster |
-//! | `MATRIXOBJECT_CHUNK_HEARTBEAT_MS` | `1000` | report interval, 100..60000 ms |
+//! | `MATRIXOBJECT_CHUNK_HEARTBEAT_MS` | `2000` | report interval, 100..60000 ms |
 //! | `MATRIXOBJECT_REPLICA_MAINTENANCE` | `false` | standalone repair mode; refuse ordinary writes and report offline |
 //! | `MATRIXOBJECT_REPLICA_THREADS` | `4` | connections served at once |
 //! | `MATRIXOBJECT_REPLICA_MAX_PAYLOAD_BYTES` | `8388608` | largest payload one frame may declare |
@@ -355,7 +355,7 @@ fn main() {
                     metadata_endpoints,
                     interval: std::time::Duration::from_millis(env_usize(
                         "MATRIXOBJECT_CHUNK_HEARTBEAT_MS",
-                        1000,
+                        2000,
                     ) as u64),
                 })
             })();
