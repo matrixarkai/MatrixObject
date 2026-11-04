@@ -204,10 +204,14 @@ group, even when extents are spread across groups.
 includes a request that was never sent and a typed leader refusal from every
 contacted voter. Ordinary error text is not evidence of non-admission.
 Its optional staged manifest identifies candidate pages, some of which may be
-unwritten or unverified; it is diagnostic state, not authorization to publish it.
-A data error never triggers an automatic write retry or publication. Failed writes
-may leave data behind, which the client does not reclaim. An early manifest check
-reduces wasted writes but does not replace the final publication condition.
+unwritten or unverified. A caller can explicitly pass that manifest, the original
+expected value, data and options to `resume_unpublished_object`. The method checks
+the current manifest, verifies existing pages by digest, conditionally writes
+missing pages with expected sequence zero, and publishes only after all pages
+verify. It does not allocate another page namespace. An uncertain data response
+returns the same staged manifest for a later explicit attempt. A data error never
+triggers an automatic retry or publication. Dropping the staged manifest can
+still leave abandoned pages; the client does not reclaim them.
 
 After a publication error whose admission is uncertain, the client reads the manifest and returns success only
 when the exact attempted result is visible. Otherwise it returns

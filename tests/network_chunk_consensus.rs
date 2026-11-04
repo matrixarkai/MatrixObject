@@ -1672,9 +1672,8 @@ mod coupled_groups {
 
     #[test]
     fn allocated_pages_span_data_groups_and_stay_unique_after_metadata_recovery() {
-        use matrixobjectstore_rs::object_manifest::{
-            ManifestOutcome, ObjectExtent, ObjectManifest,
-        };
+        use matrixobjectstore_rs::cluster::ObjectWriteOptions;
+        use matrixobjectstore_rs::object_manifest::{ObjectExtent, ObjectManifest};
         let mut groups: Vec<_> = (1..=2)
             .map(|id| {
                 let mut group = Group::configured(1024 * 1024);
@@ -1703,12 +1702,14 @@ mod coupled_groups {
             let mut data = meta
                 .connect_chunk_group(&group.placement_id(), &chunk_options())
                 .unwrap();
-            data.write_chunk_if_sequence(page.clone(), 0, &bytes, 0)
-                .unwrap();
-            assert!(data
-                .write_chunk_if_sequence(page.clone(), 0, b"late", 0)
-                .is_err());
-            assert_eq!(data.read_chunk(&page, 0, 4).unwrap().data, bytes);
+            if index == 0 {
+                data.write_chunk_if_sequence(page.clone(), 0, &bytes, 0)
+                    .unwrap();
+                assert!(data
+                    .write_chunk_if_sequence(page.clone(), 0, b"late", 0)
+                    .is_err());
+                assert_eq!(data.read_chunk(&page, 0, 4).unwrap().data, bytes);
+            }
             extents.push(ObjectExtent {
                 group: group.placement_id(),
                 volume_id: page.chunk_id.volume_id(),
@@ -1732,8 +1733,26 @@ mod coupled_groups {
             extents,
             deleted: false,
         };
-        meta.publish_manifest(ManifestOutcome::decide(None, manifest.clone()).unwrap(), 10)
-            .unwrap();
+        let write_options = ObjectWriteOptions {
+            page_bytes: 4,
+            target_groups: 2,
+            update_time_ms: 10,
+            replica: chunk_options(),
+            ..Default::default()
+        };
+        let bytes = [1, 1, 1, 1, 2, 2, 2, 2];
+        assert!(matches!(
+            meta.resume_unpublished_object(None, manifest.clone(), b"bad data", &write_options),
+            Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { .. })
+        ));
+        assert_eq!(
+            meta.resume_unpublished_object(None, manifest.clone(), &bytes, &write_options).unwrap(),
+            manifest
+        );
+        assert_eq!(
+            meta.resume_unpublished_object(None, manifest.clone(), &bytes, &write_options).unwrap(),
+            manifest
+        );
         assert_eq!(
             meta.read_object("allocated", "object", 8, &chunk_options())
                 .unwrap(),
@@ -2590,15 +2609,20 @@ mod coupled_groups {
                                 let key = format!("object-{n}");
                                 let data = load_data_sized(n, object_bytes);
                                 let mut attempts = 0;
+                                let mut staged = None;
                                 let manifest = loop {
                                     attempts += 1;
                                     let options = matrixobjectstore_rs::cluster::ObjectWriteOptions {
                                         page_bytes: (object_bytes / 4) as usize, update_time_ms: n + 1, target_groups,
                                         replica: ReplicaClientOptions { deadline: Some(Instant::now() + Duration::from_secs(10)), ..endpoint.replica_options() }, ..Default::default()
                                     };
-                                    match meta.write_object("load", &key, None, &data, &options) {
+                                    let result = match staged.take() {
+                                        Some(candidate) => meta.resume_unpublished_object(None, candidate, &data, &options),
+                                        None => meta.write_object("load", &key, None, &data, &options),
+                                    };
+                                    match result {
                                         Ok(manifest) => break manifest,
-                                        Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { error, .. })
+                                        Err(matrixobjectstore_rs::cluster::ObjectWriteFailure::BeforePublication { error, staged: candidate })
                                             if attempts < max_attempts =>
                                         {
                                             let read_deadline = Instant::now() + Duration::from_secs(10);
@@ -2613,6 +2637,7 @@ mod coupled_groups {
                                                     other => panic!("cannot start a new write after {error}: {other:?}"),
                                                 }
                                             }
+                                            staged = candidate.map(|manifest| *manifest);
                                             retries += 1;
                                             std::thread::sleep(Duration::from_millis(50));
                                         }
