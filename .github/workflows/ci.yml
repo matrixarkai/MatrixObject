@@ -127,7 +127,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --all-features --lib cluster::chunk_group_route::tests -- --test-threads=1 | tee /tmp/chunk-route.log
-          grep -q 'test result: ok. 3 passed' /tmp/chunk-route.log
+          grep -q 'test result: ok. 4 passed' /tmp/chunk-route.log
       - name: Check routed chunk sockets and uncertain writes
         shell: bash
         run: |
