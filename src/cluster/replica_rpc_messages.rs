@@ -125,6 +125,12 @@ pub enum ReplicaRequest {
         data: Vec<u8>,
         expected_sequence: u64,
     },
+    WriteChunkIfSequenceDigest {
+        page_id: PageId,
+        offset: u64,
+        data: Vec<u8>,
+        expected_sequence: u64,
+    },
     WriteChunkBatchIfSequence {
         writes: Vec<ConditionalChunkWrite>,
     },
@@ -168,7 +174,12 @@ impl ReplicaRequest {
             ReplicaRequest::DiscardChunkIfSequence { .. } => RequestCode::DiscardChunkIfSequence,
             ReplicaRequest::WriteChunk { .. } => RequestCode::WriteChunk,
             ReplicaRequest::WriteChunkIfSequence { .. } => RequestCode::WriteChunkIfSequence,
-            ReplicaRequest::WriteChunkBatchIfSequence { .. } => RequestCode::WriteChunkBatchIfSequence,
+            ReplicaRequest::WriteChunkIfSequenceDigest { .. } => {
+                RequestCode::WriteChunkIfSequenceDigest
+            }
+            ReplicaRequest::WriteChunkBatchIfSequence { .. } => {
+                RequestCode::WriteChunkBatchIfSequence
+            }
             ReplicaRequest::ReadChunk { .. } => RequestCode::ReadChunk,
             ReplicaRequest::DigestChunk { .. } => RequestCode::DigestChunk,
             ReplicaRequest::HeadChunk { .. } => RequestCode::HeadChunk,
@@ -220,6 +231,12 @@ impl ReplicaRequest {
                 .encode_to_vec();
             }
             ReplicaRequest::WriteChunkIfSequence {
+                page_id,
+                offset,
+                data,
+                expected_sequence,
+            }
+            | ReplicaRequest::WriteChunkIfSequenceDigest {
                 page_id,
                 offset,
                 data,
@@ -364,7 +381,10 @@ impl ReplicaRequest {
             });
         }
 
-        if code == RequestCode::WriteChunkIfSequence {
+        if matches!(
+            code,
+            RequestCode::WriteChunkIfSequence | RequestCode::WriteChunkIfSequenceDigest
+        ) {
             let value: super::conditional_requests::ChunkWrite =
                 super::conditional_requests::decode(payload)?;
             if value.version != 1 {
@@ -372,43 +392,69 @@ impl ReplicaRequest {
                     "unsupported conditional write version".into(),
                 ));
             }
-            return Ok(Self::WriteChunkIfSequence {
-                page_id: PageId {
-                    chunk_id: ChunkId::new(value.volume, value.chunk)?,
-                    page_index: value.page,
+            let page_id = PageId {
+                chunk_id: ChunkId::new(value.volume, value.chunk)?,
+                page_index: value.page,
+            };
+            return Ok(match code {
+                RequestCode::WriteChunkIfSequenceDigest => Self::WriteChunkIfSequenceDigest {
+                    page_id,
+                    offset: value.offset,
+                    data: value.data,
+                    expected_sequence: value.expected_sequence,
                 },
-                offset: value.offset,
-                data: value.data,
-                expected_sequence: value.expected_sequence,
+                _ => Self::WriteChunkIfSequence {
+                    page_id,
+                    offset: value.offset,
+                    data: value.data,
+                    expected_sequence: value.expected_sequence,
+                },
             });
         }
         if code == RequestCode::WriteChunkBatchIfSequence {
             if payload.len() > 4 * 1024 * 1024 + 512 {
-                return Err(ObjectError::InvalidArgument("conditional write batch exceeds size bound".into()));
+                return Err(ObjectError::InvalidArgument(
+                    "conditional write batch exceeds size bound".into(),
+                ));
             }
             let value: super::conditional_requests::ChunkWriteBatch =
                 super::conditional_requests::decode(payload)?;
-            if value.version != 1 || value.writes.len() > 4
-                || value.writes.iter().any(|write| write.version != 1 || write.data.len() > 1024 * 1024)
+            if value.version != 1
+                || value.writes.len() > 4
+                || value
+                    .writes
+                    .iter()
+                    .any(|write| write.version != 1 || write.data.len() > 1024 * 1024)
             {
-                return Err(ObjectError::InvalidArgument("invalid conditional write batch".into()));
+                return Err(ObjectError::InvalidArgument(
+                    "invalid conditional write batch".into(),
+                ));
             }
-            let writes = value.writes.into_iter().map(|write| Ok(ConditionalChunkWrite {
-                page_id: PageId {
-                    chunk_id: ChunkId::new(write.volume, write.chunk)?,
-                    page_index: write.page,
-                },
-                offset: write.offset,
-                data: write.data,
-                expected_sequence: write.expected_sequence,
-            })).collect::<Result<Vec<_>, ObjectError>>()?;
+            let writes = value
+                .writes
+                .into_iter()
+                .map(|write| {
+                    Ok(ConditionalChunkWrite {
+                        page_id: PageId {
+                            chunk_id: ChunkId::new(write.volume, write.chunk)?,
+                            page_index: write.page,
+                        },
+                        offset: write.offset,
+                        data: write.data,
+                        expected_sequence: write.expected_sequence,
+                    })
+                })
+                .collect::<Result<Vec<_>, ObjectError>>()?;
             return Ok(Self::WriteChunkBatchIfSequence { writes });
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
-            RequestCode::WriteChunkIfSequence | RequestCode::WriteChunkBatchIfSequence | RequestCode::DiscardChunkIfSequence => {
+            RequestCode::WriteChunkIfSequence
+            | RequestCode::WriteChunkIfSequenceDigest
+            | RequestCode::WriteChunkBatchIfSequence
+            | RequestCode::DiscardChunkIfSequence => {
                 unreachable!()
             }
             RequestCode::WriteChunk => {
@@ -642,7 +688,7 @@ impl ReplicaReply {
                     checksum,
                 })
             }
-            RequestCode::DigestChunk => {
+            RequestCode::DigestChunk | RequestCode::WriteChunkIfSequenceDigest => {
                 let write_sequence = cursor.take_u64()?;
                 let length = cursor.take_u64()?;
                 let mut sha256 = [0u8; 32];

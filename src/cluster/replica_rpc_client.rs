@@ -495,6 +495,53 @@ impl RemoteReplicaClient {
         }
     }
 
+    /// Return the applied range digest in the write acknowledgment. An older
+    /// replica explicitly rejects the new verb before admitting a mutation;
+    /// only that refusal permits the separate write and digest path.
+    pub fn write_chunk_if_sequence_with_digest(
+        &mut self,
+        page_id: PageId,
+        offset: u64,
+        data: &[u8],
+        expected_sequence: u64,
+    ) -> Result<(u64, u64, [u8; 32]), ObjectError> {
+        if data.len() > 1024 * 1024 {
+            return Err(ObjectError::InvalidArgument(
+                "write digest range exceeds one MiB".into(),
+            ));
+        }
+        match self.call(ReplicaRequest::WriteChunkIfSequenceDigest {
+            page_id: page_id.clone(),
+            offset,
+            data: data.to_vec(),
+            expected_sequence,
+        }) {
+            Ok(ReplicaReply::Digest {
+                write_sequence,
+                length,
+                sha256,
+            }) => Ok((write_sequence, length, sha256)),
+            Err(ObjectError::PreconditionFailed(message))
+                if message.starts_with("the replica does not implement this request:") =>
+            {
+                self.write_chunk_if_sequence(page_id.clone(), offset, data, expected_sequence)?;
+                match self.digest_chunk(&page_id, offset, data.len() as u64) {
+                    Ok(digest) => Ok(digest),
+                    Err(_) => {
+                        let read = self.read_chunk(&page_id, offset, data.len() as u64)?;
+                        let mut sha256 = [0u8; 32];
+                        sha256.copy_from_slice(
+                            ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref(),
+                        );
+                        Ok((read.write_sequence, read.data.len() as u64, sha256))
+                    }
+                }
+            }
+            Ok(other) => Err(unexpected_reply("a conditional write digest", &other)),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Confirm the first write through leader routing, then send the remaining
     /// independent page writes before waiting for their ordered replies. A
     /// failed exchange leaves every outstanding mutation uncertain and retires
