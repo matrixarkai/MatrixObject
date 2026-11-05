@@ -34,6 +34,11 @@ not execute original write commands. Reads, inventories, heads, and pings requir
 a current-term quorum confirmation and application through its commit index,
 so an isolated minority cannot answer from stale state. These reads append no log
 entries. One confirmation may be pending, including after a caller timeout.
+A code-17 protobuf request groups up to eight page ranges of at most 64 KiB each
+and 512 KiB total into one read command. The ordered protobuf reply is checked
+against the configured reply budget before page bytes are copied. The group
+therefore performs one quorum confirmation for the whole bounded read batch;
+larger ranges retain the scalar path.
 A timeout does not mean a submitted write was rolled back: it may commit later.
 The pending batch remains serialized until commit or a leadership change.
 

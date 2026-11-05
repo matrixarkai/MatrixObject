@@ -572,6 +572,14 @@ fn apply(
             .saturating_add(40);
         crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
     }
+    if let ReplicaRequest::ReadChunkBatch { reads } = &request {
+        let size = reads.iter().try_fold(0usize, |sum, (_, _, length)| {
+            usize::try_from(*length).ok().and_then(|length| {
+                sum.checked_add(length.saturating_add(64))
+            })
+        }).unwrap_or(usize::MAX);
+        crate::cluster::message::check_reply_size(size, max_payload_bytes)?;
+    }
     let page = if guard.journal.is_some() {
         match &request {
             ReplicaRequest::WriteChunk { page_id, .. }
@@ -840,6 +848,11 @@ pub(super) fn apply_to_replica(
         } => Ok(ReplicaReply::Read(
             guard.read_chunk(&page_id, offset, length)?,
         )),
+        ReplicaRequest::ReadChunkBatch { reads } => {
+            let reads = reads.into_iter().map(|(page_id, offset, length)|
+                guard.read_chunk(&page_id, offset, length)).collect::<Result<Vec<_>, _>>()?;
+            Ok(ReplicaReply::Reads(reads))
+        }
         ReplicaRequest::DigestChunk {
             page_id,
             offset,

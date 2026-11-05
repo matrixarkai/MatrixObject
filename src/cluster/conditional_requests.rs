@@ -56,6 +56,46 @@ pub(super) struct ChunkDigestBatch {
     pub digests: Vec<ChunkDigest>,
 }
 #[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkRead {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint64, tag = "2")]
+    pub volume: u64,
+    #[prost(uint64, tag = "3")]
+    pub chunk: u64,
+    #[prost(uint64, tag = "4")]
+    pub page: u64,
+    #[prost(uint64, tag = "5")]
+    pub offset: u64,
+    #[prost(uint64, tag = "6")]
+    pub length: u64,
+}
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkReadBatch {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub reads: Vec<ChunkRead>,
+}
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkReadResult {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint64, tag = "2")]
+    pub write_sequence: u64,
+    #[prost(string, tag = "3")]
+    pub checksum: String,
+    #[prost(bytes = "vec", tag = "4")]
+    pub data: Vec<u8>,
+}
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkReadBatchResult {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub reads: Vec<ChunkReadResult>,
+}
+#[derive(Clone, PartialEq, Message)]
 pub(super) struct ChunkDiscard {
     #[prost(uint32, tag = "1")]
     pub version: u32,
@@ -232,6 +272,38 @@ mod tests {
                 .is_err()
         );
     }
+    #[test]
+    fn read_batches_use_canonical_bounded_protobuf() {
+        let page = PageId {
+            chunk_id: ChunkId::new(1, 2).unwrap(),
+            page_index: 3,
+        };
+        let request = ReplicaRequest::ReadChunkBatch {
+            reads: vec![(page.clone(), 4, 5), (page, 9, 6)],
+        };
+        let bytes = request.encode_payload();
+        assert_eq!(RequestCode::from_u8(17), Some(RequestCode::ReadChunkBatch));
+        assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
+
+        let reply = ReplicaReply::Reads(vec![
+            crate::ReplicaReadResult { data: vec![1; 5], write_sequence: 7, checksum: "a".into() },
+            crate::ReplicaReadResult { data: vec![2; 6], write_sequence: 8, checksum: "b".into() },
+        ]);
+        let encoded = reply.encode_payload();
+        assert_eq!(reply.payload_len(), encoded.len());
+        assert_eq!(ReplicaReply::decode(RequestCode::ReadChunkBatch, &encoded).unwrap(), reply);
+
+        let mut invalid: ChunkReadBatch = decode(&bytes).unwrap();
+        invalid.reads[0].length = 64 * 1024 + 1;
+        assert!(ReplicaRequest::decode(request.code(), &invalid.encode_to_vec()).is_err());
+        invalid.reads[0].length = 5;
+        invalid.reads.resize(9, invalid.reads[0].clone());
+        assert!(ReplicaRequest::decode(request.code(), &invalid.encode_to_vec()).is_err());
+        let mut extra = encoded;
+        extra.extend([0x18, 1]);
+        assert!(ReplicaReply::decode(RequestCode::ReadChunkBatch, &extra).is_err());
+    }
+
     #[test]
     fn conditional_discard_requests_require_canonical_bounded_protobuf() {
         let request = ReplicaRequest::DiscardChunkIfSequence {

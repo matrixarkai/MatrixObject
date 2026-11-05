@@ -147,6 +147,9 @@ pub enum ReplicaRequest {
         offset: u64,
         length: u64,
     },
+    ReadChunkBatch {
+        reads: Vec<(PageId, u64, u64)>,
+    },
     DigestChunk {
         page_id: PageId,
         offset: u64,
@@ -187,6 +190,7 @@ impl ReplicaRequest {
                 RequestCode::WriteChunkBatchIfSequenceDigest
             }
             ReplicaRequest::ReadChunk { .. } => RequestCode::ReadChunk,
+            ReplicaRequest::ReadChunkBatch { .. } => RequestCode::ReadChunkBatch,
             ReplicaRequest::DigestChunk { .. } => RequestCode::DigestChunk,
             ReplicaRequest::HeadChunk { .. } => RequestCode::HeadChunk,
             ReplicaRequest::DiscardChunk { .. } => RequestCode::DiscardChunk,
@@ -271,6 +275,21 @@ impl ReplicaRequest {
                         offset: write.offset,
                         expected_sequence: write.expected_sequence,
                         data: write.data.clone(),
+                    }).collect(),
+                }.encode_to_vec();
+            }
+            ReplicaRequest::ReadChunkBatch { reads } => {
+                return super::conditional_requests::ChunkReadBatch {
+                    version: 1,
+                    reads: reads.iter().map(|(page_id, offset, length)| {
+                        super::conditional_requests::ChunkRead {
+                            version: 1,
+                            volume: page_id.chunk_id.volume_id(),
+                            chunk: page_id.chunk_id.id(),
+                            page: page_id.page_index,
+                            offset: *offset,
+                            length: *length,
+                        }
                     }).collect(),
                 }.encode_to_vec();
             }
@@ -418,6 +437,29 @@ impl ReplicaRequest {
                 },
             });
         }
+        if code == RequestCode::ReadChunkBatch {
+            if payload.len() > 1024 {
+                return Err(ObjectError::InvalidArgument("read batch request exceeds size bound".into()));
+            }
+            let value: super::conditional_requests::ChunkReadBatch =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 || value.reads.len() > 8 || value.reads.iter().any(|read|
+                read.version != 1 || read.length > 64 * 1024)
+            {
+                return Err(ObjectError::InvalidArgument("invalid read batch".into()));
+            }
+            let total = value.reads.iter().try_fold(0u64, |sum, read|
+                sum.checked_add(read.length).ok_or_else(|| ObjectError::InvalidArgument("read batch length overflow".into())))?;
+            if total > 512 * 1024 {
+                return Err(ObjectError::InvalidArgument("read batch exceeds byte bound".into()));
+            }
+            let reads = value.reads.into_iter().map(|read| Ok((
+                PageId { chunk_id: ChunkId::new(read.volume, read.chunk)?, page_index: read.page },
+                read.offset,
+                read.length,
+            ))).collect::<Result<Vec<_>, ObjectError>>()?;
+            return Ok(Self::ReadChunkBatch { reads });
+        }
         if matches!(
             code,
             RequestCode::WriteChunkBatchIfSequence
@@ -467,6 +509,7 @@ impl ReplicaRequest {
         let request = match code {
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
+            RequestCode::ReadChunkBatch => unreachable!(),
             RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkIfSequenceDigest
             | RequestCode::WriteChunkBatchIfSequence
@@ -560,6 +603,7 @@ pub enum ReplicaReply {
     /// A write or a discard was applied. Nothing to carry back.
     Applied,
     Read(ReplicaReadResult),
+    Reads(Vec<ReplicaReadResult>),
     Digest {
         write_sequence: u64,
         length: u64,
@@ -585,6 +629,7 @@ impl ReplicaReply {
             Self::Read(read) => 16usize
                 .saturating_add(read.checksum.len())
                 .saturating_add(read.data.len()),
+            Self::Reads(reads) => read_batch_payload_len(reads),
             Self::Digest { .. } => 52,
             Self::Digests(digests) => super::conditional_requests::ChunkDigestBatch {
                 version: 1,
@@ -624,6 +669,7 @@ impl ReplicaReply {
                 put_str(&mut out, &read.checksum);
                 put_bytes(&mut out, &read.data);
             }
+            ReplicaReply::Reads(reads) => return encode_read_batch(reads),
             ReplicaReply::Digest {
                 write_sequence,
                 length,
@@ -744,12 +790,30 @@ impl ReplicaReply {
             }
             return Ok(ReplicaReply::Digests(digests));
         }
+        if code == RequestCode::ReadChunkBatch {
+            if payload.len() > 512 * 1024 + 1024 {
+                return Err(ObjectError::Corruption("read batch reply exceeds bound".into()));
+            }
+            let value: super::conditional_requests::ChunkReadBatchResult =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 || value.reads.len() > 8 || value.reads.iter().any(|read|
+                read.version != 1 || read.checksum.len() > 128 || read.data.len() > 64 * 1024)
+            {
+                return Err(ObjectError::Corruption("invalid read batch reply".into()));
+            }
+            return Ok(Self::Reads(value.reads.into_iter().map(|read| ReplicaReadResult {
+                write_sequence: read.write_sequence,
+                checksum: read.checksum,
+                data: read.data,
+            }).collect()));
+        }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::GroupIdentity => unreachable!(),
             RequestCode::WriteChunkBatchIfSequenceDigest => unreachable!(),
+            RequestCode::ReadChunkBatch => unreachable!(),
             RequestCode::WriteChunk
             | RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkBatchIfSequence
@@ -856,6 +920,51 @@ impl ReplicaReply {
         }
         Ok(reply)
     }
+}
+
+fn protobuf_varint_len(value: u64) -> usize {
+    prost::encoding::encoded_len_varint(value)
+}
+
+fn protobuf_field_len(bytes: &[u8]) -> usize {
+    if bytes.is_empty() { 0 } else { 1 + protobuf_varint_len(bytes.len() as u64) + bytes.len() }
+}
+
+fn read_result_payload_len(read: &ReplicaReadResult) -> usize {
+    2usize
+        .saturating_add(if read.write_sequence == 0 { 0 } else { 1 + protobuf_varint_len(read.write_sequence) })
+        .saturating_add(protobuf_field_len(read.checksum.as_bytes()))
+        .saturating_add(protobuf_field_len(&read.data))
+}
+
+fn read_batch_payload_len(reads: &[ReplicaReadResult]) -> usize {
+    reads.iter().fold(2usize, |total, read| {
+        let entry = read_result_payload_len(read);
+        total.saturating_add(1 + protobuf_varint_len(entry as u64) + entry)
+    })
+}
+
+fn encode_read_batch(reads: &[ReplicaReadResult]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(read_batch_payload_len(reads));
+    out.extend([0x08, 0x01]);
+    for read in reads {
+        let entry_len = read_result_payload_len(read);
+        out.push(0x12);
+        prost::encoding::encode_varint(entry_len as u64, &mut out);
+        out.extend([0x08, 0x01]);
+        if read.write_sequence != 0 {
+            out.push(0x10);
+            prost::encoding::encode_varint(read.write_sequence, &mut out);
+        }
+        for (tag, bytes) in [(0x1a, read.checksum.as_bytes()), (0x22, read.data.as_slice())] {
+            if !bytes.is_empty() {
+                out.push(tag);
+                prost::encoding::encode_varint(bytes.len() as u64, &mut out);
+                out.extend_from_slice(bytes);
+            }
+        }
+    }
+    out
 }
 
 /// Lay out a complete request frame: header then payload.

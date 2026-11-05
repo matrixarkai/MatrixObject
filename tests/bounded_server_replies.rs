@@ -176,6 +176,34 @@ fn conditional_digest_batch_returns_ordered_binary_outcomes() {
 }
 
 #[test]
+fn read_batch_returns_ordered_binary_results_within_reply_budget() {
+    let node = Node::replica(256);
+    let mut stream = node.connect();
+    for index in 0..2 {
+        assert_eq!(exchange(&mut stream, encode_request(&ReplicaRequest::WriteChunk {
+            page_id: page(index), offset: 0, data: vec![index as u8 + 1; 96],
+        }), 256).0, StatusCode::Ok as u8);
+    }
+    let reply = exchange(&mut stream, encode_request(&ReplicaRequest::ReadChunkBatch {
+        reads: vec![(page(0), 0, 16), (page(1), 4, 16)],
+    }), 256);
+    assert_eq!(reply.0, StatusCode::Ok as u8);
+    let ReplicaReply::Reads(reads) =
+        ReplicaReply::decode(RequestCode::ReadChunkBatch, &reply.1).unwrap()
+    else { panic!("read batch reply missing"); };
+    assert_eq!(reads.len(), 2);
+    assert_eq!(reads[0].data, vec![1; 16]);
+    assert_eq!(reads[1].data, vec![2; 16]);
+
+    let oversized = exchange(&mut stream, encode_request(&ReplicaRequest::ReadChunkBatch {
+        reads: vec![(page(0), 0, 96), (page(1), 0, 96)],
+    }), 256);
+    assert_eq!(oversized.0, StatusCode::PreconditionFailed as u8);
+    assert!(!decode_failure(&oversized.1).unwrap().is_empty());
+    ping(&mut stream, 256, 2);
+}
+
+#[test]
 fn replica_read_budget_includes_overhead_and_keeps_connection_usable() {
     let node = Node::replica(128);
     let mut stream = node.connect();

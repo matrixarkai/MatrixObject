@@ -174,8 +174,13 @@ before allocating or connecting to data nodes. Allocation failure returns an err
 The client visits all extents of each group together, retaining one data-group
 connection and looking up each distinct group once. It copies validated responses
 into their original object offsets, preserving byte order even for alternating
-groups. Each data connection reads at most eight pages per batch. A broken batch
-retains complete replies and retries only pages without replies on a new connection.
+groups. Each data connection reads at most eight pages per batch. Up to eight
+small ranges use one canonical protobuf request and response and one confirmed
+Raft read, replacing eight request frames, eight response frames, and eight
+server dispatches. The client falls back to the scalar pipeline only after a
+typed unknown-request response from an older peer. Large ranges retain that
+pipeline; a broken scalar batch keeps complete replies and retries only unread
+pages on a new connection.
 Memory includes the bounded complete output, at most 4096 ordering entries,
 and up to eight extent responses per active group across at most four groups,
 plus transport buffers. This API reads a complete

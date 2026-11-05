@@ -91,6 +91,8 @@ pub enum RequestCode {
     WriteChunkIfSequenceDigest = 15,
     /// Commit up to four conditional writes and return their applied digests.
     WriteChunkBatchIfSequenceDigest = 16,
+    /// Read up to eight small page ranges with one confirmed Raft read.
+    ReadChunkBatch = 17,
 }
 
 impl RequestCode {
@@ -117,6 +119,7 @@ impl RequestCode {
             14 => Some(RequestCode::WriteChunkBatchIfSequence),
             15 => Some(RequestCode::WriteChunkIfSequenceDigest),
             16 => Some(RequestCode::WriteChunkBatchIfSequenceDigest),
+            17 => Some(RequestCode::ReadChunkBatch),
             _ => None,
         }
     }
