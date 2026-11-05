@@ -123,20 +123,33 @@ sequence/checksum, and preserve old extents until readers no longer need them.
 For fresh object pages, the writer confirms each committed range with its
 sequence, length and SHA-256 digest. A server that does not implement the digest
 request triggers full-byte readback. A mismatched digest refuses publication.
-Within each data group, the first conditional page write confirms the current
-leader. For pages no larger than 64 KiB, an empty non-mutating request probes
-batch support. An upgraded server admits up to three following conditional
-writes through one bounded request; older servers retain the prior page pipeline.
-Larger pages also retain that pipeline. A failed or partial batch closes that
-connection and leaves publication unattempted; outstanding writes may have
-committed and are never replayed. Raft may propose adjacent writes together,
-but this does not reduce replicated payload or storage bytes. Alternating local
+For pages no larger than 64 KiB, the writer starts with a nonempty conditional
+batch of up to four pages. That request follows leader routing and discovers
+batch support while performing useful work, so there is no empty capability
+round trip or separately confirmed first page. A typed unknown-request refusal
+proves the batch was not admitted and permits the prior page pipeline. Normal
+typed leadership refusals may route the batch to another voter; transport or
+application failures remain uncertain and are not replayed. Larger pages retain
+the individual pipeline. A failed or partial batch leaves publication
+unattempted; outstanding writes may have committed and are never replayed. An
+eight-page group therefore needs two successful write exchanges instead of the
+previous first write, empty probe, two three-page batches and final scalar write.
+Raft may propose adjacent writes together, but this does not reduce replicated
+payload or storage bytes. Alternating local
 51-process runs on 1 KiB striped objects measured 43.4 and 39.1 initial writes
 per second on the individual-write path, and 48.8 and 48.2 with bounded batch
 admission. The post-failover write samples were 52.5 and 53.7 versus 56.8 and
 69.4. These WSL samples support a small-object gain on this host, not a
 production throughput guarantee. At 1 MiB per object, batch admission did not
 show a repeatable gain, so it is not selected for those pages.
+
+After the first useful four-page request replaced the empty probe and scalar
+first write, two runs of the established 51-process 1 KiB complete-object
+workload measured 86.1 and 97.0 initial writes per second. The post-failover
+samples were 85.8 and 101.1. Both runs recovered 1,280 objects after a complete
+restart with zero write retries. A separate 51-process workload with 32 pages
+per object and four data groups measured 29.6 initial and 29.9 post-failover
+writes per second, then recovered all 320 objects with zero retries.
 
 `RemoteMetaClient::read_object` fetches one committed manifest and assembles its
 extents using verified data-group connections. It returns the manifest with the

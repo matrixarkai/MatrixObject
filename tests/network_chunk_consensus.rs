@@ -2641,8 +2641,32 @@ mod coupled_groups {
         object_bytes: u64,
         max_attempts: usize,
     ) -> Vec<(u64, CommittedPlacement)> {
+        load_batch_sized_with_page_bytes_attempts(
+            endpoint,
+            start,
+            end,
+            workers,
+            objects,
+            target_groups,
+            object_bytes,
+            object_bytes / 4,
+            max_attempts,
+        )
+    }
+    fn load_batch_sized_with_page_bytes_attempts(
+        endpoint: &LoadEndpoint<'_>,
+        start: u64,
+        end: u64,
+        workers: usize,
+        objects: bool,
+        target_groups: u32,
+        object_bytes: u64,
+        page_bytes: u64,
+        max_attempts: usize,
+    ) -> Vec<(u64, CommittedPlacement)> {
         assert!(objects || object_bytes == 1024);
-        assert_eq!(object_bytes % 4, 0);
+        assert!(page_bytes > 0 && object_bytes % page_bytes == 0);
+        assert!(object_bytes / page_bytes <= 4096);
         assert!(max_attempts > 0);
         let begin = Instant::now();
         let results = std::thread::scope(|scope| {
@@ -2670,7 +2694,7 @@ mod coupled_groups {
                                 let manifest = loop {
                                     attempts += 1;
                                     let options = matrixobjectstore_rs::cluster::ObjectWriteOptions {
-                                        page_bytes: (object_bytes / 4) as usize, update_time_ms: n + 1, target_groups,
+                                        page_bytes: page_bytes as usize, update_time_ms: n + 1, target_groups,
                                         replica: ReplicaClientOptions { deadline: Some(Instant::now() + Duration::from_secs(10)), ..endpoint.replica_options() }, ..Default::default()
                                     };
                                     let result = match staged.take() {
@@ -2701,13 +2725,14 @@ mod coupled_groups {
                                         Err(error) => panic!("object {key} write failed after {attempts} attempts: {error}"),
                                     }
                                 };
-                                assert_eq!(manifest.extents.len(), 4);
+                                let page_count = usize::try_from(object_bytes / page_bytes).unwrap();
+                                assert_eq!(manifest.extents.len(), page_count);
                                 let distinct = manifest.extents.iter().map(|e| &e.group).collect::<std::collections::BTreeSet<_>>();
                                 assert_eq!(distinct.len(), target_groups as usize);
                                 for group in distinct {
-                                    assert_eq!(manifest.extents.iter().filter(|e| &e.group == group).count(), 4 / target_groups as usize);
+                                    assert_eq!(manifest.extents.iter().filter(|e| &e.group == group).count(), page_count / target_groups as usize);
                                 }
-                                if target_groups == 2 {
+                                if target_groups == 2 && page_count == 4 {
                                     assert_eq!(manifest.extents[0].group, manifest.extents[2].group);
                                     assert_eq!(manifest.extents[1].group, manifest.extents[3].group);
                                     assert_ne!(manifest.extents[0].group, manifest.extents[1].group);
@@ -2868,7 +2893,7 @@ mod coupled_groups {
                                     assert_eq!(bytes, load_data_sized(*n, placement.length));
                                     assert_eq!(manifest.generation, placement.version);
                                     assert_eq!(manifest.length, placement.length);
-                                    assert_eq!(manifest.extents.len(), 4);
+                                    assert!(!manifest.extents.is_empty());
                                     assert!(manifest.extents.iter().all(|e| e.write_sequence == 1));
                                     let actual: Vec<_> = manifest
                                         .extents
@@ -2882,7 +2907,7 @@ mod coupled_groups {
                                         assert_eq!(
                                             manifest.extents.iter()
                                                 .filter(|e| &e.group == group).count(),
-                                            4 / actual.len()
+                                            manifest.extents.len() / actual.len()
                                         );
                                     }
                                     if *index % 128 == 0 {
@@ -3424,10 +3449,38 @@ mod coupled_groups {
         require_checkpoint: bool,
         overlap_reads: bool,
     ) {
+        multiple_group_load_with_transport_checkpoint_mode_page_bytes(
+            group_count,
+            writes,
+            workers,
+            objects,
+            target_groups,
+            object_bytes,
+            setup,
+            checkpoint_bytes,
+            require_checkpoint,
+            overlap_reads,
+            object_bytes / 4,
+        );
+    }
+    fn multiple_group_load_with_transport_checkpoint_mode_page_bytes(
+        group_count: usize,
+        writes: u64,
+        workers: usize,
+        objects: bool,
+        target_groups: u32,
+        object_bytes: u64,
+        setup: VoterSetup,
+        checkpoint_bytes: u64,
+        require_checkpoint: bool,
+        overlap_reads: bool,
+        page_bytes: u64,
+    ) {
         let VoterSetup { peer_tls, api_tls, voters } = setup;
         assert!(!api_tls || peer_tls.is_some());
         assert!((8..=4 * 1024 * 1024).contains(&object_bytes));
-        assert_eq!(object_bytes % 4, 0);
+        assert!(page_bytes > 0 && object_bytes % page_bytes == 0);
+        assert!(object_bytes / page_bytes <= 4096);
         assert!(objects || object_bytes == 1024);
         assert!(target_groups == 1 || (objects && matches!(target_groups, 2 | 4)));
         assert!(target_groups as usize <= group_count);
@@ -3461,7 +3514,7 @@ mod coupled_groups {
         group_usage(&metadata.api, &groups, &[]);
         let tls = api_tls_config(metadata.api_tls.as_ref());
         let attempts = if group_count == 16 && objects { 3 } else { 1 };
-        let mut saved = load_batch_sized_with_attempts(
+        let mut saved = load_batch_sized_with_page_bytes_attempts(
             &LoadEndpoint { api: &metadata.api, tls: tls.clone() },
             0,
             writes,
@@ -3469,6 +3522,7 @@ mod coupled_groups {
             objects,
             target_groups,
             object_bytes,
+            page_bytes,
             attempts,
         );
         group_usage(&metadata.api, &groups, &saved);
@@ -3517,10 +3571,10 @@ mod coupled_groups {
         for group in &groups {
             group.leader();
         }
-        let write_after_failover = || load_batch_sized_with_attempts(
+        let write_after_failover = || load_batch_sized_with_page_bytes_attempts(
             &LoadEndpoint { api: &metadata.api, tls: tls.clone() },
             writes, writes + writes / 4, workers, objects, target_groups,
-            object_bytes, attempts,
+            object_bytes, page_bytes, attempts,
         );
         let later = if overlap_reads {
             std::thread::scope(|scope| {
@@ -3593,6 +3647,27 @@ mod coupled_groups {
     #[ignore = "bounded 51-process local load and recovery measurement"]
     fn sixteen_groups_preserve_concurrent_writes_through_recovery() {
         multiple_group_load(16, 1024, 8, false);
+    }
+    #[test]
+    #[ignore = "51-process 32-page object write and recovery measurement; run explicitly in WSL"]
+    fn sixteen_groups_batch_small_pages_through_failover_and_recovery() {
+        multiple_group_load_with_transport_checkpoint_mode_page_bytes(
+            16,
+            256,
+            8,
+            true,
+            4,
+            1024,
+            VoterSetup {
+                peer_tls: None,
+                api_tls: false,
+                voters: 3,
+            },
+            16 * 1024,
+            true,
+            false,
+            32,
+        );
     }
     #[test]
     fn object_writer_load_preserves_manifests_and_pages_through_recovery() {
