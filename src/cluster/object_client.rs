@@ -402,7 +402,7 @@ impl RemoteMetaClient {
             deleted: false,
         };
         let mut groups = std::collections::BTreeMap::new();
-        let mut connection: Option<(String, RemoteReplicaClient)> = None;
+        let mut connections: Vec<(String, RemoteReplicaClient)> = Vec::new();
         if pages > 0 {
             let count = options.target_groups.min(pages);
             let mut planned_group_bytes = vec![0u64; count as usize];
@@ -432,8 +432,8 @@ impl RemoteMetaClient {
                 )));
             }
             // Verify every selected group before allocation or data writes. Visit
-            // the first write target last so its verified connection can be reused.
-            // Keep configurations only for this operation and retain one connection.
+            // the first write target last and retain at most one write batch of
+            // verified connections for reuse.
             let mut route_map = planned_routes.map(|routes| {
                 plan.node_ids.iter().cloned().zip(routes).collect::<std::collections::BTreeMap<_, _>>()
             });
@@ -447,9 +447,12 @@ impl RemoteMetaClient {
                     self.read_chunk_routes(&ids).map_err(before)?
                 };
                 for (group, configured) in ids.into_iter().zip(routes) {
+                    if connections.len() == options.max_parallel_groups {
+                        connections.remove(0);
+                    }
                     let client = connect_group(&configured, &options.replica).map_err(before)?;
                     groups.insert(group.clone(), configured);
-                    connection = Some((group, client));
+                    connections.push((group, client));
                 }
             }
             let allocation = self.allocate_object_pages(pages).map_err(before)?;
@@ -474,8 +477,8 @@ impl RemoteMetaClient {
             staged: Some(Box::new(manifest.clone())),
         };
         // Group I/O may overlap, but publication waits for every started group.
-        // Retain the verified first target and keep the manifest in object order.
-        let first_group = connection.as_ref().map(|(group, _)| group.clone());
+        // Visit the first target first and keep the manifest in object order.
+        let first_group = connections.last().map(|(group, _)| group.clone());
         let mut order: Vec<_> = (0..manifest.extents.len()).collect();
         order.sort_by_key(|index| {
             let group = manifest.extents[*index].group.as_str();
@@ -495,9 +498,8 @@ impl RemoteMetaClient {
                 let group = &manifest.extents[indexes[0]].group;
                 let configured = groups.get(group).ok_or_else(|| staged_error(
                     ObjectError::Corruption("object extent group was not verified".into())))?;
-                let client = if connection.as_ref().map(|(name, _)| name) == Some(group) {
-                    connection.take().map(|(_, client)| client)
-                } else { None };
+                let client = connections.iter().position(|(name, _)| name == group)
+                    .map(|index| connections.remove(index).1);
                 jobs.push((indexes, configured, client));
             }
             if jobs.len() == 1 {
