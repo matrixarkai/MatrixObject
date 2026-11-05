@@ -585,8 +585,10 @@ another pass after admitting local work so a new proposal or read barrier is
 processed without waiting for unrelated network traffic.
 
 When there is no newly admitted local work, the loop waits until activity,
-shutdown or its next 100 ms Raft tick. The shared readiness wait caps any single
-sleep at 50 ms, which also bounds checks for background checkpoint completion.
+shutdown or its next 300 ms Raft tick. This places idle Raft heartbeats about
+600 ms apart and lengthens leader replacement after a stopped voter. The shared
+readiness wait caps any single sleep at 50 ms, which also bounds checks for
+background checkpoint completion.
 A busy loop still checks elapsed tick time on every pass. The 32-request and
 eight-packet channel capacities are unchanged, as are ordered application,
 quorum read confirmation and handling of accepted operations after caller timeout.

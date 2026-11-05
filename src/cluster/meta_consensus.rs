@@ -35,7 +35,8 @@ use std::{
 };
 const PACKET_LIMIT: usize = 8 * 1024 * 1024;
 const PROPOSALS_PER_BATCH: usize = 8;
-const TICK: Duration = Duration::from_millis(100);
+// Keep the metadata and chunk Raft clocks aligned across a distributed cluster.
+const TICK: Duration = Duration::from_millis(300);
 const NETWORK_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Fixed voter endpoints. Each process uses its own existing state directory.
