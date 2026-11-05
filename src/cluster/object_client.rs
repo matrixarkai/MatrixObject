@@ -431,9 +431,9 @@ impl RemoteMetaClient {
                     "placement returned invalid data groups".into(),
                 )));
             }
-            // Verify every selected group before allocation or data writes. Visit
-            // the first write target last and retain at most one write batch of
-            // verified connections for reuse.
+            // Verify every selected group before allocation or data writes.
+            // Bound concurrent verification by the write width, visit the first
+            // write target last, and retain at most one batch of connections.
             let mut route_map = planned_routes.map(|routes| {
                 plan.node_ids.iter().cloned().zip(routes).collect::<std::collections::BTreeMap<_, _>>()
             });
@@ -446,13 +446,46 @@ impl RemoteMetaClient {
                 } else {
                     self.read_chunk_routes(&ids).map_err(before)?
                 };
-                for (group, configured) in ids.into_iter().zip(routes) {
-                    if connections.len() == options.max_parallel_groups {
-                        connections.remove(0);
+                let targets: Vec<_> = ids.into_iter().zip(routes).collect();
+                for batch in targets.chunks(options.max_parallel_groups) {
+                    let clients = if batch.len() == 1 {
+                        vec![connect_group(&batch[0].1, &options.replica).map_err(before)?]
+                    } else {
+                        std::thread::scope(|scope| {
+                            let mut handles = Vec::new();
+                            let mut first_error = None;
+                            for (_, configured) in batch {
+                                match std::thread::Builder::new().name("object-group-verify".into())
+                                    .spawn_scoped(scope, move || connect_group(configured, &options.replica)) {
+                                    Ok(handle) => handles.push(handle),
+                                    Err(error) => {
+                                        first_error = Some(ObjectError::PreconditionFailed(format!(
+                                            "cannot start object group verifier: {error}"
+                                        )));
+                                        break;
+                                    }
+                                }
+                            }
+                            let mut clients = Vec::new();
+                            for handle in handles {
+                                match handle.join() {
+                                    Ok(Ok(client)) => clients.push(client),
+                                    Ok(Err(error)) => { if first_error.is_none() { first_error = Some(error); } }
+                                    Err(_) => { if first_error.is_none() {
+                                        first_error = Some(ObjectError::Corruption("object group verifier panicked".into()));
+                                    } }
+                                }
+                            }
+                            first_error.map_or(Ok(clients), Err)
+                        }).map_err(before)?
+                    };
+                    for ((group, configured), client) in batch.iter().zip(clients) {
+                        if connections.len() == options.max_parallel_groups {
+                            connections.remove(0);
+                        }
+                        groups.insert(group.clone(), configured.clone());
+                        connections.push((group.clone(), client));
                     }
-                    let client = connect_group(&configured, &options.replica).map_err(before)?;
-                    groups.insert(group.clone(), configured);
-                    connections.push((group, client));
                 }
             }
             let allocation = self.allocate_object_pages(pages).map_err(before)?;
