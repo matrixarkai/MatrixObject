@@ -93,6 +93,7 @@ pub struct RemoteReplicaClient {
     connection_usable: bool,
     // Learned for this socket; replacement starts with an unknown capability.
     conditional_write_batch: Option<bool>,
+    conditional_write_digest_batch: Option<bool>,
     last_exchange: Instant,
     read_timeout: Duration,
     write_timeout: Duration,
@@ -268,6 +269,7 @@ impl RemoteReplicaClient {
             max_payload_bytes: options.max_payload_bytes,
             connection_usable: true,
             conditional_write_batch: None,
+            conditional_write_digest_batch: None,
             last_exchange: Instant::now(),
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
@@ -608,6 +610,125 @@ impl RemoteReplicaClient {
             return Ok(());
         }
         self.write_chunks_individually_pipelined(writes)
+    }
+
+    /// Apply up to eight independent writes and return their ordered digests.
+    /// Small pages use bounded groups of four so an upgraded replica can return
+    /// the committed digest outcomes in the write acknowledgment itself. Only a
+    /// typed unknown-request refusal can select the older write-then-verify path;
+    /// an uncertain batch is never replayed.
+    pub fn write_chunks_if_sequence_with_digests(
+        &mut self,
+        writes: &[(PageId, u64, &[u8], u64)],
+    ) -> Result<Vec<(u64, u64, [u8; 32])>, ObjectError> {
+        if writes.len() > 8 {
+            return Err(ObjectError::InvalidArgument(
+                "write digest batch exceeds eight pages".into(),
+            ));
+        }
+        let Some((page, offset, data, sequence)) = writes.first() else {
+            return Ok(Vec::new());
+        };
+        if writes.len() == 1 {
+            return self
+                .write_chunk_if_sequence_with_digest(
+                    page.clone(),
+                    *offset,
+                    data,
+                    *sequence,
+                )
+                .map(|digest| vec![digest]);
+        }
+
+        let mut completed = 0;
+        let mut digests = Vec::with_capacity(writes.len());
+        if writes.iter().all(|(_, _, data, _)| data.len() <= 64 * 1024)
+            && self.conditional_write_digest_batch != Some(false)
+        {
+            while completed < writes.len() {
+                let remaining = &writes[completed..];
+                let batch = &remaining[..remaining.len().min(4)];
+                if batch.len() == 1 {
+                    let (page, offset, data, sequence) = &batch[0];
+                    digests.push(self.write_chunk_if_sequence_with_digest(
+                        page.clone(),
+                        *offset,
+                        data,
+                        *sequence,
+                    )?);
+                    completed += 1;
+                    continue;
+                }
+                let request = ReplicaRequest::WriteChunkBatchIfSequenceDigest {
+                    writes: batch
+                        .iter()
+                        .map(|(page, offset, data, sequence)| {
+                            crate::cluster::message::ConditionalChunkWrite {
+                                page_id: page.clone(),
+                                offset: *offset,
+                                data: data.to_vec(),
+                                expected_sequence: *sequence,
+                            }
+                        })
+                        .collect(),
+                };
+                if request.encode_payload().len() > self.max_payload_bytes {
+                    break;
+                }
+                match self.call(request) {
+                    Ok(ReplicaReply::Digests(batch_digests))
+                        if batch_digests.len() == batch.len() =>
+                    {
+                        self.conditional_write_digest_batch = Some(true);
+                        digests.extend(batch_digests);
+                        completed += batch.len();
+                    }
+                    Ok(ReplicaReply::Digests(_)) => {
+                        return Err(ObjectError::Corruption(
+                            "conditional write digest batch reply count mismatch".into(),
+                        ));
+                    }
+                    Err(ObjectError::PreconditionFailed(message))
+                        if message.starts_with(
+                            "the replica does not implement this request:",
+                        ) =>
+                    {
+                        self.conditional_write_digest_batch = Some(false);
+                        break;
+                    }
+                    Ok(other) => {
+                        return Err(unexpected_reply(
+                            "a conditional write digest batch",
+                            &other,
+                        ));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        if completed == writes.len() {
+            return Ok(digests);
+        }
+
+        let remaining = &writes[completed..];
+        self.write_chunks_if_sequence_pipelined(remaining)?;
+        let pages: Vec<_> = remaining
+            .iter()
+            .map(|(page, offset, data, _)| (page.clone(), *offset, data.len() as u64))
+            .collect();
+        match self.digest_chunks_pipelined(&pages) {
+            Ok(remaining_digests) => digests.extend(remaining_digests),
+            Err(_) => {
+                for read in self.read_chunks_pipelined(&pages)? {
+                    let mut sha256 = [0u8; 32];
+                    sha256.copy_from_slice(
+                        ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref(),
+                    );
+                    digests.push((read.write_sequence, read.data.len() as u64, sha256));
+                }
+            }
+        }
+        Ok(digests)
     }
 
     /// Confirm the first scalar write through leader routing, then put the

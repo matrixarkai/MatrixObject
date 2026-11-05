@@ -89,6 +89,8 @@ pub enum RequestCode {
     WriteChunkBatchIfSequence = 14,
     /// Commit a conditional write and return its applied range digest.
     WriteChunkIfSequenceDigest = 15,
+    /// Commit up to four conditional writes and return their applied digests.
+    WriteChunkBatchIfSequenceDigest = 16,
 }
 
 impl RequestCode {
@@ -114,6 +116,7 @@ impl RequestCode {
             13 => Some(RequestCode::DigestChunk),
             14 => Some(RequestCode::WriteChunkBatchIfSequence),
             15 => Some(RequestCode::WriteChunkIfSequenceDigest),
+            16 => Some(RequestCode::WriteChunkBatchIfSequenceDigest),
             _ => None,
         }
     }

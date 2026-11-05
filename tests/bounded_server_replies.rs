@@ -138,6 +138,44 @@ fn conditional_batch_failure_reports_partial_application() {
 }
 
 #[test]
+fn conditional_digest_batch_returns_ordered_binary_outcomes() {
+    let node = Node::replica(1024);
+    let mut stream = node.connect();
+    let writes: Vec<_> = (0..4)
+        .map(|index| ConditionalChunkWrite {
+            page_id: page(index),
+            offset: 0,
+            data: vec![index as u8; 4],
+            expected_sequence: 0,
+        })
+        .collect();
+    let response = exchange(
+        &mut stream,
+        encode_request(&ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes }),
+        1024,
+    );
+    assert_eq!(response.0, StatusCode::Ok as u8);
+    let ReplicaReply::Digests(digests) = ReplicaReply::decode(
+        RequestCode::WriteChunkBatchIfSequenceDigest,
+        &response.1,
+    )
+    .unwrap()
+    else {
+        panic!("digest batch reply missing");
+    };
+    assert_eq!(digests.len(), 4);
+    for (index, (sequence, length, sha256)) in digests.into_iter().enumerate() {
+        assert_eq!(sequence, 1);
+        assert_eq!(length, 4);
+        assert_eq!(
+            sha256.as_ref(),
+            ring::digest::digest(&ring::digest::SHA256, &[index as u8; 4]).as_ref()
+        );
+    }
+    ping(&mut stream, 1024, 4);
+}
+
+#[test]
 fn replica_read_budget_includes_overhead_and_keeps_connection_usable() {
     let node = Node::replica(128);
     let mut stream = node.connect();

@@ -430,6 +430,10 @@ fn frame_response(
                         Some(c) => c.request_batch(writes),
                         None => apply_batch(replica, writes, options.max_payload_bytes),
                     },
+                    ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } => match consensus {
+                        Some(c) => c.request_batch_digests(writes),
+                        None => apply_batch_digests(replica, writes, options.max_payload_bytes),
+                    },
                     request => match consensus {
                         Some(c) => c.request(request),
                         None => apply(replica, request, options.max_payload_bytes),
@@ -439,6 +443,8 @@ fn frame_response(
                 let result = match request {
                     ReplicaRequest::WriteChunkBatchIfSequence { writes } =>
                         apply_batch(replica, writes, options.max_payload_bytes),
+                    ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } =>
+                        apply_batch_digests(replica, writes, options.max_payload_bytes),
                     request => apply(replica, request, options.max_payload_bytes),
                 };
                 match result.and_then(|reply| {
@@ -473,6 +479,38 @@ fn apply_batch(
         }, max_payload_bytes)?;
     }
     Ok(ReplicaReply::Applied)
+}
+
+fn apply_batch_digests(
+    replica: &Arc<Mutex<NodeReplica>>,
+    writes: Vec<super::message::ConditionalChunkWrite>,
+    max_payload_bytes: usize,
+) -> Result<ReplicaReply, ObjectError> {
+    let mut digests = Vec::with_capacity(writes.len());
+    for write in writes {
+        match apply(
+            replica,
+            ReplicaRequest::WriteChunkIfSequenceDigest {
+                page_id: write.page_id,
+                offset: write.offset,
+                data: write.data,
+                expected_sequence: write.expected_sequence,
+            },
+            max_payload_bytes,
+        )? {
+            ReplicaReply::Digest {
+                write_sequence,
+                length,
+                sha256,
+            } => digests.push((write_sequence, length, sha256)),
+            other => {
+                return Err(ObjectError::Corruption(format!(
+                    "unexpected conditional write digest reply: {other:?}"
+                )))
+            }
+        }
+    }
+    Ok(ReplicaReply::Digests(digests))
 }
 
 /// Run one request against the replica.
@@ -775,9 +813,10 @@ pub(super) fn apply_to_replica(
         ReplicaRequest::Membership(_) => Err(ObjectError::InvalidArgument(
             "membership requires an enabled consensus group".into(),
         )),
-        ReplicaRequest::WriteChunkBatchIfSequence { .. } => Err(ObjectError::InvalidArgument(
-            "batch writes require node request dispatch".into(),
-        )),
+        ReplicaRequest::WriteChunkBatchIfSequence { .. }
+        | ReplicaRequest::WriteChunkBatchIfSequenceDigest { .. } => Err(
+            ObjectError::InvalidArgument("batch writes require node request dispatch".into()),
+        ),
         ReplicaRequest::GroupIdentity => Err(ObjectError::PreconditionFailed(
             "standalone replica has no Raft group identity".into(),
         )),

@@ -353,19 +353,23 @@ Raft-group writes continue through their leader and do not use this star fan-out
 
 ## Bounded object-write admission
 
-Replica request code 14 carries a canonical binary protobuf with at most four
-conditional page writes and no more than 4 MiB of page data. The object writer
-uses the request only for pages of at most 64 KiB and starts with up to four real
-writes. This first request follows leader routing and discovers support without
-an empty capability exchange. An older server returns a typed unknown-request
-refusal before admission, which permits the client to use its bounded individual
-pipeline. Larger pages use that pipeline without attempting a batch. Empty
-code-14 requests remain harmless for older upgraded clients.
+Replica request codes 14 and 16 carry the same canonical binary protobuf with at
+most four conditional page writes and no more than 4 MiB of page data. Code 16
+returns an ordered canonical protobuf vector containing each committed range's
+write sequence, length and SHA-256 digest. The object writer uses code 16 only
+for pages of at most 64 KiB and starts with up to four real writes. This first
+request follows leader routing, discovers support and verifies the stored bytes
+without an empty capability or later digest exchange. An older server returns a
+typed unknown-request refusal before admission, which permits the client to use
+code 14 or its bounded individual pipeline followed by digest or full-byte
+verification. Larger pages retain the individual path. Empty code-14 requests
+remain harmless for older upgraded clients.
 
 On a Raft voter, each accepted member becomes an independent conditional write
 in the consensus inbox. Adjacent writes can enter the existing proposal batch.
 One batch response is successful only after every member has a confirmed reply;
-an uncertain member or mixed leadership result refuses the whole response.
+code 16 exposes no partial digest vector. An uncertain member or mixed leadership
+result refuses the whole response.
 The members are not an atomic transaction. Failed publication never replays an
 uncertain write. Standalone journal nodes apply and sync members one at a time.
 This reduces request admission overhead for small object pages; it does not

@@ -12,10 +12,20 @@ message ChunkWrite {
   uint64 expected_sequence = 6;
   bytes data = 7;
 }
-// Replica request code 14. Empty writes probe support without a mutation.
+// Replica request codes 14 and 16. Code 16 returns ChunkDigestBatch.
 message ChunkWriteBatch {
   uint32 version = 1;
   repeated ChunkWrite writes = 2;
+}
+message ChunkDigest {
+  uint32 version = 1;
+  uint64 write_sequence = 2;
+  uint64 length = 3;
+  bytes sha256 = 4;
+}
+message ChunkDigestBatch {
+  uint32 version = 1;
+  repeated ChunkDigest digests = 2;
 }
 message Placement {
   string bucket = 1;
