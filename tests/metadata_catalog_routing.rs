@@ -86,7 +86,9 @@ fn fully_refused_mutation_waits_for_a_new_metadata_leader() {
             stream.write_all(&encode_meta_reply(&reply)).unwrap();
         }
     });
-    let mut client = RemoteMetaClient::connect_catalog(&[address], &options()).unwrap();
+    let mut config = options();
+    config.deadline = Some(Instant::now() + Duration::from_secs(1));
+    let mut client = RemoteMetaClient::connect_catalog(&[address], &config).unwrap();
     assert_eq!(
         client.try_call(mutation()).into_result().unwrap(),
         MetaReply::Expired { offline_count: 7 }

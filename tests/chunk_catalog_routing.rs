@@ -94,7 +94,9 @@ fn fully_refused_chunk_mutation_waits_for_a_new_leader() {
             socket.write_all(&encode_reply(&reply)).unwrap();
         }
     });
-    let mut client = RemoteReplicaClient::connect_catalog(&[endpoint], &options()).unwrap();
+    let mut config = options();
+    config.deadline = Some(std::time::Instant::now() + Duration::from_secs(1));
+    let mut client = RemoteReplicaClient::connect_catalog(&[endpoint], &config).unwrap();
     client.write_chunk(page(), 0, b"data").unwrap();
     worker.join().unwrap();
 }

@@ -872,12 +872,12 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadChunkRoutes { .. }
         ) || matches!(&request, MetaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
-        let mut saw_not_leader = false;
+        let mut saw_all_refused = false;
         let mut unadmitted = true;
         let mut retry_delay = Duration::from_millis(25);
-        // Control-plane mutations may wait for an election after every voter
-        // explicitly refuses admission. Object publication and allocation
-        // return that refusal to their callers without another attempt.
+        // Control-plane mutations with a caller deadline may wait for an election
+        // after every voter explicitly refuses admission. Object publication
+        // and allocation return that refusal without another attempt.
         let control_retry = matches!(
             &request,
             MetaRequest::Membership(_)
@@ -887,16 +887,15 @@ impl RemoteMetaClient {
                 | MetaRequest::HeartbeatRootNode { .. }
                 | MetaRequest::ExpireRootNodeHeartbeats { .. }
         );
-        let retry_until = (read_only || control_retry).then(|| {
-            let window = if read_only {
-                Duration::from_secs(1)
-            } else {
-                Duration::from_secs(3)
-            };
-            options
-                .deadline
-                .unwrap_or_else(|| Instant::now() + options.read_timeout.min(window))
-        });
+        let retry_until = if read_only {
+            Some(options.deadline.unwrap_or_else(|| {
+                Instant::now() + options.read_timeout.min(Duration::from_secs(1))
+            }))
+        } else if control_retry {
+            options.deadline
+        } else {
+            None
+        };
         loop {
             let mut refusals = 0;
             let mut unreachable = 0;
@@ -942,7 +941,6 @@ impl RemoteMetaClient {
                 match self.exchange(&request, request.code()) {
                     Ok(Ok(MetaReply::NotLeader)) => {
                         last = not_leader();
-                        saw_not_leader = true;
                         refusals += 1;
                     }
                     Ok(Ok(reply)) => return (MetaCallOutcome::Answered(reply), false),
@@ -959,6 +957,7 @@ impl RemoteMetaClient {
             }
             // Reads can move past a voter that is still restarting. Mutations
             // retry only when every voter explicitly refused admission.
+            saw_all_refused |= refusals == endpoints.len();
             let retryable = refusals == endpoints.len()
                 || (read_only && refusals + unreachable == endpoints.len());
             if !retryable || !retry_until.is_some_and(|deadline|
@@ -968,7 +967,7 @@ impl RemoteMetaClient {
             std::thread::sleep(retry_delay);
             retry_delay = (retry_delay * 2).min(Duration::from_millis(250));
         }
-        if read_only && saw_not_leader {
+        if read_only && saw_all_refused {
             (not_leader(), unadmitted)
         } else {
             (last, unadmitted)

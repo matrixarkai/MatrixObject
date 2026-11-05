@@ -354,7 +354,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         assert!(matches!(
             meta(&mut stream),
             MetaRequest::PlanObjectPlacement {
-                length: 125,
+                length: 64,
                 replica_count: 2,
                 ..
             }
@@ -364,7 +364,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
             MetaReply::Plan(PlacementAssignment {
                 bucket: "bucket".into(),
                 key: "key".into(),
-                length: 125,
+                length: 64,
                 node_ids: groups.iter().map(|g| g.placement_id.clone()).collect(),
                 skipped_draining: 0,
                 skipped_offline: 0,
