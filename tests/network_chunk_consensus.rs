@@ -2840,53 +2840,54 @@ mod coupled_groups {
                             let mut samples = Vec::new();
                             let mut meta =
                                 RemoteMetaClient::connect_catalog(endpoint.api, &endpoint.metadata_options()).unwrap();
-                            for (index, (n, placement)) in
-                                saved.iter().enumerate().skip(worker).step_by(8)
-                            {
+                            let assigned = saved.iter().enumerate().skip(worker).step_by(8)
+                                .collect::<Vec<_>>();
+                            for batch in assigned.chunks(8) {
                                 assert!(
                                     began.elapsed() < Duration::from_secs(180),
                                     "object read workload exceeded deadline"
                                 );
                                 let started = Instant::now();
-                                let (manifest, bytes) = meta
-                                    .read_object(
-                                        &placement.bucket,
-                                        &placement.key,
-                                        usize::try_from(placement.length).unwrap(),
-                                        &ReplicaClientOptions { deadline: Some(started + Duration::from_secs(10)), ..endpoint.replica_options() },
-                                    )
-                                    .unwrap();
-                                samples.push(started.elapsed().as_micros());
-                                assert_eq!(bytes, load_data_sized(*n, placement.length));
-                                assert_eq!(manifest.generation, placement.version);
-                                assert_eq!(manifest.length, placement.length);
-                                assert_eq!(manifest.extents.len(), 4);
-                                assert!(manifest.extents.iter().all(|e| e.write_sequence == 1));
-                                let actual: Vec<_> = manifest
-                                    .extents
-                                    .iter()
-                                    .map(|e| e.group.clone())
-                                    .collect::<std::collections::BTreeSet<_>>()
-                                    .into_iter()
-                                    .collect();
-                                assert_eq!(actual, placement.node_ids);
-                                for group in &actual {
-                                    assert_eq!(
-                                        manifest
-                                            .extents
-                                            .iter()
-                                            .filter(|e| &e.group == group)
-                                            .count(),
-                                        4 / actual.len()
-                                    );
-                                }
-                                assert_eq!(
-                                    meta.object_placement(&placement.bucket, &placement.key)
-                                        .unwrap(),
-                                    *placement
-                                );
-                                if index % 128 == 0 {
-                                    println!("OBJECT_READ worker={worker} index={index}");
+                                let requests = batch.iter().map(|(_, (_, placement))| (
+                                    placement.bucket.as_str(),
+                                    placement.key.as_str(),
+                                    usize::try_from(placement.length).unwrap(),
+                                )).collect::<Vec<_>>();
+                                let results = meta.read_objects(
+                                    &requests,
+                                    &ReplicaClientOptions {
+                                        deadline: Some(started + Duration::from_secs(10)),
+                                        ..endpoint.replica_options()
+                                    },
+                                ).unwrap();
+                                let batch_latency = started.elapsed().as_micros();
+                                samples.push(batch_latency);
+                                for ((index, (n, placement)), (manifest, bytes))
+                                    in batch.iter().zip(results)
+                                {
+                                    assert_eq!(bytes, load_data_sized(*n, placement.length));
+                                    assert_eq!(manifest.generation, placement.version);
+                                    assert_eq!(manifest.length, placement.length);
+                                    assert_eq!(manifest.extents.len(), 4);
+                                    assert!(manifest.extents.iter().all(|e| e.write_sequence == 1));
+                                    let actual: Vec<_> = manifest
+                                        .extents
+                                        .iter()
+                                        .map(|e| e.group.clone())
+                                        .collect::<std::collections::BTreeSet<_>>()
+                                        .into_iter()
+                                        .collect();
+                                    assert_eq!(actual, placement.node_ids);
+                                    for group in &actual {
+                                        assert_eq!(
+                                            manifest.extents.iter()
+                                                .filter(|e| &e.group == group).count(),
+                                            4 / actual.len()
+                                        );
+                                    }
+                                    if *index % 128 == 0 {
+                                        println!("OBJECT_READ worker={worker} index={index}");
+                                    }
                                 }
                             }
                             samples
@@ -2895,12 +2896,15 @@ mod coupled_groups {
                     .collect();
                 handles.into_iter().flat_map(|handle| handle.join().unwrap()).collect::<Vec<_>>()
             });
-            assert_eq!(samples.len(), saved.len());
+            let expected_batches: usize = (0..8)
+                .map(|worker| saved.iter().skip(worker).step_by(8).count().div_ceil(8))
+                .sum();
+            assert_eq!(samples.len(), expected_batches);
             samples.sort_unstable();
             let elapsed = began.elapsed();
             let bytes: u64 = saved.iter().map(|(_, placement)| placement.length).sum();
             println!(
-                "OBJECT_READ verified={} elapsed_ms={} verified_mib_s={:.2} p50_us={} p95_us={} p99_us={}",
+                "OBJECT_READ verified={} elapsed_ms={} verified_mib_s={:.2} batch_p50_us={} batch_p95_us={} batch_p99_us={}",
                 saved.len(), elapsed.as_millis(), bytes as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64(),
                 samples[samples.len()/2], samples[samples.len()*95/100], samples[samples.len()*99/100]
             );

@@ -935,6 +935,31 @@ pub(super) fn apply_with_groups(
         crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
         return Ok(reply);
     }
+    if let MetaRequest::ReadManifestRoutesBatch { objects } = &request {
+        let mut entries = Vec::with_capacity(objects.len());
+        for (bucket, key) in objects {
+            let manifest = match apply_to_meta(service, MetaRequest::ReadManifest {
+                bucket: bucket.clone(), key: key.clone(),
+            }, limit)? {
+                MetaReply::Manifest(manifest) => manifest,
+                _ => unreachable!(),
+            };
+            let routes = super::meta_message::manifest_route_names(&manifest).iter()
+                .map(|id| groups.routing_view(id))
+                .collect::<Result<Vec<_>, _>>()?;
+            entries.push(super::ManifestRouteEntry { manifest, routes });
+        }
+        let mut reply = MetaReply::ManifestRoutesBatch { objects: entries };
+        if reply.payload_len() > limit {
+            if let MetaReply::ManifestRoutesBatch { objects } = &mut reply {
+                for object in objects {
+                    object.routes.clear();
+                }
+            }
+        }
+        crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
+        return Ok(reply);
+    }
     if let MetaRequest::AllocateObjectPages { page_count } = &request {
         let (decided, reply) = decide_allocation(service, *page_count, limit)?;
         decided.apply(service)?;
@@ -1017,6 +1042,9 @@ pub(super) fn apply_to_meta(
         }
         MetaRequest::ReadManifestRoutes { .. } => Err(ObjectError::PreconditionFailed(
             "manifest routes require a chunk catalog".into(),
+        )),
+        MetaRequest::ReadManifestRoutesBatch { .. } => Err(ObjectError::PreconditionFailed(
+            "manifest route batches require a chunk catalog".into(),
         )),
         MetaRequest::PlanObjectPlacementRoutes { .. } => Err(ObjectError::PreconditionFailed(
             "placement routes require the chunk catalog".into(),

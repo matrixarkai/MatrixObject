@@ -449,6 +449,23 @@ Callers constructing either option struct without a default update must now
 provide `deadline: None` or an explicit deadline.
 
 
+### Batched linearizable object reads
+
+`RemoteMetaClient::read_objects` accepts one through 32 object names and byte
+limits. It reads their manifests and data-group routes with one Raft quorum
+confirmation, then validates every page against its manifest before returning.
+The sum of the caller-provided byte limits may not exceed 64 MiB. Any missing,
+oversized, damaged or unavailable object fails the call without returning a
+partial result.
+
+Metadata request code 86 carries the ordered names as canonical binary protobuf.
+The reply preserves that order, carries at most four routes per manifest, and
+remains inside the normal 8 MiB frame limit. When routes make the reply too large,
+the metaserver omits them and the client obtains bounded route batches separately.
+An older metaserver that refuses code 86 is handled by issuing the existing
+single-manifest calls. Individual `read_object` behavior is unchanged.
+
+
 ### Concurrent immutable data-group writes
 
 `ObjectWriteOptions::max_parallel_groups` defaults to 4 and accepts 1..4.

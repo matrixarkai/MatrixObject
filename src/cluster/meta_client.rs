@@ -713,6 +713,55 @@ impl RemoteMetaClient {
             _ => Err(ObjectError::Corruption("unexpected manifest reply".into())),
         }
     }
+
+    /// Read up to 32 manifests and their data-group routes with one linearizable
+    /// metadata confirmation. Results preserve request order.
+    pub fn read_manifest_routes_batch(
+        &mut self,
+        objects: &[(&str, &str)],
+    ) -> Result<Vec<super::ManifestRouteEntry>, ObjectError> {
+        if objects.is_empty() || objects.len() > 32 {
+            return Err(ObjectError::InvalidArgument(
+                "manifest route batch requires one through 32 objects".into(),
+            ));
+        }
+        let names = objects.iter().map(|(bucket, key)| {
+            crate::validate_bucket(bucket)?;
+            crate::validate_key(key)?;
+            Ok(((*bucket).to_owned(), (*key).to_owned()))
+        }).collect::<Result<Vec<_>, ObjectError>>()?;
+        let result = match self.call(MetaRequest::ReadManifestRoutesBatch {
+            objects: names.clone(),
+        }) {
+            Ok(MetaReply::ManifestRoutesBatch { objects }) => objects,
+            Ok(_) => return Err(ObjectError::Corruption(
+                "unexpected manifest route batch reply".into(),
+            )),
+            Err(ObjectError::PreconditionFailed(message))
+                if message.starts_with("the replica does not implement this request:") =>
+            {
+                let mut entries = Vec::with_capacity(names.len());
+                for (bucket, key) in &names {
+                    let (manifest, routes) = self.read_manifest_routes(bucket, key)?;
+                    entries.push(super::ManifestRouteEntry {
+                        manifest,
+                        routes: routes.unwrap_or_default(),
+                    });
+                }
+                entries
+            }
+            Err(error) => return Err(error),
+        };
+        if result.len() != names.len()
+            || result.iter().zip(&names).any(|(entry, (bucket, key))|
+                entry.manifest.bucket != *bucket || entry.manifest.key != *key)
+        {
+            return Err(ObjectError::Corruption(
+                "manifest route batch reply order mismatch".into(),
+            ));
+        }
+        Ok(result)
+    }
     /// Read one committed object generation through its configured data groups.
     /// The complete result is bounded by `max_bytes`; no bytes are returned until
     /// every extent matches its committed sequence, length and FNV-1a checksum.
@@ -732,6 +781,42 @@ impl RemoteMetaClient {
         })
     }
 
+    /// Read up to 32 complete objects after one linearizable metadata confirmation.
+    /// The sum of caller-provided byte limits is bounded at 64 MiB, and an error
+    /// returns no partial result.
+    #[cfg(feature = "replica-server")]
+    pub fn read_objects(
+        &mut self,
+        objects: &[(&str, &str, usize)],
+        options: &super::ReplicaClientOptions,
+    ) -> Result<Vec<(crate::object_manifest::ObjectManifest, Vec<u8>)>, ObjectError> {
+        if objects.is_empty() || objects.len() > 32
+            || objects.iter().try_fold(0usize, |total, (_, _, limit)|
+                total.checked_add(*limit)).is_none_or(|total| total > 64 * 1024 * 1024)
+        {
+            return Err(ObjectError::InvalidArgument(
+                "object read batch exceeds count or byte limit".into(),
+            ));
+        }
+        self.with_operation_deadline(options.deadline, |client| {
+            let mut bounded = options.clone();
+            bounded.deadline = client.operation_deadline();
+            let names = objects.iter().map(|(bucket, key, _)| (*bucket, *key))
+                .collect::<Vec<_>>();
+            let entries = client.read_manifest_routes_batch(&names)?;
+            let mut results = Vec::with_capacity(entries.len());
+            for (entry, (_, _, max_bytes)) in entries.into_iter().zip(objects) {
+                results.push(client.read_object_from_manifest_routes(
+                    entry.manifest,
+                    Some(entry.routes),
+                    *max_bytes,
+                    &bounded,
+                )?);
+            }
+            Ok(results)
+        })
+    }
+
     #[cfg(feature = "replica-server")]
     fn read_object_inner(
         &mut self,
@@ -741,7 +826,24 @@ impl RemoteMetaClient {
         options: &super::ReplicaClientOptions,
     ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
         self.check_operation_deadline()?;
-        let (manifest, mut bundled_routes) = self.read_manifest_routes(bucket, key)?;
+        let (manifest, bundled_routes) = self.read_manifest_routes(bucket, key)?;
+        self.read_object_from_manifest_routes(
+            manifest,
+            bundled_routes,
+            max_bytes,
+            options,
+        )
+    }
+
+    #[cfg(feature = "replica-server")]
+    fn read_object_from_manifest_routes(
+        &mut self,
+        manifest: crate::object_manifest::ObjectManifest,
+        mut bundled_routes: Option<Vec<super::ChunkGroupRoute>>,
+        max_bytes: usize,
+        options: &super::ReplicaClientOptions,
+    ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
+        self.check_operation_deadline()?;
         manifest.validate()?;
         if manifest.deleted {
             return Err(ObjectError::NotFound("object is deleted".into()));
@@ -869,7 +971,6 @@ impl RemoteMetaClient {
         Ok((manifest, bytes))
     }
 
-    #[cfg(feature = "replica-server")]
     fn read_manifest_routes(
         &mut self, bucket: &str, key: &str,
     ) -> Result<(crate::object_manifest::ObjectManifest, Option<Vec<super::ChunkGroupRoute>>), ObjectError> {
@@ -1291,6 +1392,100 @@ fn write_before(
 mod operation_deadline_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[cfg(feature = "replica-server")]
+    #[test]
+    fn object_read_batches_are_bounded_before_network_io() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = RemoteMetaClient::connect(
+            &listener.local_addr().unwrap().to_string(),
+            &MetaClientOptions::default(),
+        )
+        .unwrap();
+        let options = super::super::ReplicaClientOptions::default();
+        assert!(matches!(
+            client.read_objects(&[], &options),
+            Err(ObjectError::InvalidArgument(_))
+        ));
+        let names = (0..33)
+            .map(|index| ("bucket".to_string(), format!("key-{index}")))
+            .collect::<Vec<_>>();
+        let requests = names
+            .iter()
+            .map(|(bucket, key)| (bucket.as_str(), key.as_str(), 1usize))
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            client.read_objects(&requests, &options),
+            Err(ObjectError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            client.read_objects(&[("bucket", "key", 64 * 1024 * 1024 + 1)], &options),
+            Err(ObjectError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn manifest_route_batch_uses_individual_confirmed_reads_on_older_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let worker = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            for index in 0..3 {
+                let mut header = [0u8; HEADER_BYTES];
+                server.read_exact(&mut header).unwrap();
+                let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                let mut payload = vec![0; length];
+                server.read_exact(&mut payload).unwrap();
+                let code = MetaRequestCode::from_u8(header[1]).unwrap();
+                let request = MetaRequest::decode(code, &payload).unwrap();
+                if index == 0 {
+                    assert!(matches!(request, MetaRequest::ReadManifestRoutesBatch { .. }));
+                    server
+                        .write_all(&super::super::message::encode_failure(
+                            StatusCode::UnknownRequest,
+                            "unsupported manifest route batch",
+                        ))
+                        .unwrap();
+                    continue;
+                }
+                let key = format!("key-{index}");
+                assert!(matches!(request, MetaRequest::ReadManifestRoutes { key: request_key, .. }
+                    if request_key == key));
+                let manifest = crate::object_manifest::ObjectManifest {
+                    format_version: 1,
+                    bucket: "bucket".into(),
+                    key,
+                    generation: 1,
+                    length: 0,
+                    extents: Vec::new(),
+                    deleted: false,
+                };
+                server
+                    .write_all(&super::super::meta_message::encode_meta_reply(
+                        &MetaReply::ManifestRoutes {
+                            manifest,
+                            routes: Vec::new(),
+                        },
+                    ))
+                    .unwrap();
+            }
+        });
+        let mut client =
+            RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+        let entries = client
+            .read_manifest_routes_batch(&[("bucket", "key-1"), ("bucket", "key-2")])
+            .unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.manifest.key.as_str())
+                .collect::<Vec<_>>(),
+            ["key-1", "key-2"]
+        );
+        assert!(entries.iter().all(|entry| entry.routes.is_empty()));
+        worker.join().unwrap();
+    }
 
     #[cfg(feature = "replica-server")]
     #[test]

@@ -222,6 +222,9 @@ pub enum MetaRequest {
         bucket: String,
         key: String,
     },
+    ReadManifestRoutesBatch {
+        objects: Vec<(String, String)>,
+    },
     PublishManifest {
         outcome: crate::object_manifest::ManifestOutcome,
         update_time_ms: u64,
@@ -298,6 +301,7 @@ impl MetaRequest {
             MetaRequest::AllocateObjectPages { .. } => MetaRequestCode::AllocateObjectPages,
             MetaRequest::ReadManifest { .. } => MetaRequestCode::ReadManifest,
             MetaRequest::ReadManifestRoutes { .. } => MetaRequestCode::ReadManifestRoutes,
+            MetaRequest::ReadManifestRoutesBatch { .. } => MetaRequestCode::ReadManifestRoutesBatch,
             MetaRequest::PublishManifest { .. } => MetaRequestCode::PublishManifest,
             MetaRequest::Membership(_) => MetaRequestCode::Membership,
             MetaRequest::ChunkCatalog(_) => MetaRequestCode::ChunkCatalog,
@@ -342,6 +346,18 @@ impl MetaRequest {
                     key: key.clone(),
                 }
                 .encode_to_vec();
+            }
+            MetaRequest::ReadManifestRoutesBatch { objects } => {
+                return super::conditional_requests::ManifestReads {
+                    version: 1,
+                    reads: objects.iter().map(|(bucket, key)| {
+                        super::conditional_requests::ManifestRead {
+                            version: 1,
+                            bucket: bucket.clone(),
+                            key: key.clone(),
+                        }
+                    }).collect(),
+                }.encode_to_vec();
             }
             MetaRequest::PublishManifest {
                 outcome,
@@ -530,6 +546,32 @@ impl MetaRequest {
                 _ => Self::ReadManifest { bucket: value.bucket, key: value.key },
             });
         }
+        if code == MetaRequestCode::ReadManifestRoutesBatch {
+            if payload.len() > 256 * 1024 {
+                return Err(ObjectError::Corruption(
+                    "manifest route batch request exceeds bound".into(),
+                ));
+            }
+            let value: super::conditional_requests::ManifestReads =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 || value.reads.is_empty() || value.reads.len() > 32 {
+                return Err(ObjectError::InvalidArgument(
+                    "invalid manifest route batch request".into(),
+                ));
+            }
+            let mut objects = Vec::with_capacity(value.reads.len());
+            for read in value.reads {
+                if read.version != 1 {
+                    return Err(ObjectError::Corruption(
+                        "manifest route batch entry version mismatch".into(),
+                    ));
+                }
+                crate::validate_bucket(&read.bucket)?;
+                crate::validate_key(&read.key)?;
+                objects.push((read.bucket, read.key));
+            }
+            return Ok(Self::ReadManifestRoutesBatch { objects });
+        }
         if code == MetaRequestCode::PublishManifest {
             if payload.len() > 2 * 1024 * 1024 + 256 {
                 return Err(ObjectError::Corruption(
@@ -582,6 +624,7 @@ impl MetaRequest {
             | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
             | MetaRequestCode::ReadManifestRoutes
+            | MetaRequestCode::ReadManifestRoutesBatch
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::CommitObjectPlacementIfCurrent => unreachable!(),
             MetaRequestCode::ReadChunkGroup => MetaRequest::ReadChunkGroup {
@@ -654,6 +697,20 @@ struct ManifestRoutesPayload {
     routes: Vec<super::ChunkGroupRoute>,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct ManifestRoutesBatchPayload {
+    #[prost(uint32, tag = "1")]
+    version: u32,
+    #[prost(message, repeated, tag = "2")]
+    objects: Vec<ManifestRoutesPayload>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManifestRouteEntry {
+    pub manifest: crate::object_manifest::ObjectManifest,
+    pub routes: Vec<super::ChunkGroupRoute>,
+}
+
 #[derive(Clone, PartialEq, prost::Message)]
 struct PlanRoutesPayload {
     #[prost(uint32, tag = "1")]
@@ -691,6 +748,24 @@ pub(super) fn manifest_route_names(
         .into_iter().take(4).map(str::to_owned).collect()
 }
 
+fn validate_manifest_route_payload(
+    value: ManifestRoutesPayload,
+) -> Result<ManifestRouteEntry, ObjectError> {
+    let manifest = value.manifest.ok_or_else(||
+        ObjectError::Corruption("manifest route reply missing manifest".into()))?;
+    manifest.validate()?;
+    let names = manifest_route_names(&manifest);
+    if value.version != 1 || value.routes.len() > 4
+        || value.routes.iter().any(|route| route.membership_fence().is_err())
+        || (!value.routes.is_empty() && names.len() != value.routes.len())
+        || value.routes.iter().zip(&names).any(|(route, name)|
+            route.group.as_ref().is_none_or(|group| &group.placement_id != name))
+    {
+        return Err(ObjectError::Corruption("invalid manifest route reply".into()));
+    }
+    Ok(ManifestRouteEntry { manifest, routes: value.routes })
+}
+
 /// Reply contents, including a pre-admission leader-routing response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
@@ -700,6 +775,9 @@ pub enum MetaReply {
     ManifestRoutes {
         manifest: crate::object_manifest::ObjectManifest,
         routes: Vec<super::ChunkGroupRoute>,
+    },
+    ManifestRoutesBatch {
+        objects: Vec<ManifestRouteEntry>,
     },
     PlanRoutes {
         plan: PlacementAssignment,
@@ -765,6 +843,14 @@ impl MetaReply {
             Self::ManifestRoutes { manifest, routes } => ManifestRoutesPayload {
                 version: 1, manifest: Some(manifest.clone()), routes: routes.clone(),
             }.encoded_len(),
+            Self::ManifestRoutesBatch { objects } => ManifestRoutesBatchPayload {
+                version: 1,
+                objects: objects.iter().map(|object| ManifestRoutesPayload {
+                    version: 1,
+                    manifest: Some(object.manifest.clone()),
+                    routes: object.routes.clone(),
+                }).collect(),
+            }.encoded_len(),
             Self::PlanRoutes { plan, routes } => PlanRoutesPayload {
                 version: 1, plan: Self::Plan(plan.clone()).encode_payload(), routes: routes.clone(),
             }.encoded_len(),
@@ -790,6 +876,14 @@ impl MetaReply {
             MetaReply::Manifest(value) => return value.encode_to_vec(),
             MetaReply::ManifestRoutes { manifest, routes } => return ManifestRoutesPayload {
                 version: 1, manifest: Some(manifest.clone()), routes: routes.clone(),
+            }.encode_to_vec(),
+            MetaReply::ManifestRoutesBatch { objects } => return ManifestRoutesBatchPayload {
+                version: 1,
+                objects: objects.iter().map(|object| ManifestRoutesPayload {
+                    version: 1,
+                    manifest: Some(object.manifest.clone()),
+                    routes: object.routes.clone(),
+                }).collect(),
             }.encode_to_vec(),
             MetaReply::PlanRoutes { plan, routes } => return PlanRoutesPayload {
                 version: 1, plan: MetaReply::Plan(plan.clone()).encode_payload(), routes: routes.clone(),
@@ -888,18 +982,29 @@ impl MetaReply {
             if value.encode_to_vec() != payload {
                 return Err(ObjectError::Corruption("noncanonical manifest route reply".into()));
             }
-            let manifest = value.manifest.ok_or_else(||
-                ObjectError::Corruption("manifest route reply missing manifest".into()))?;
-            manifest.validate()?;
-            if value.version != 1 || value.routes.len() > 4
-                || value.routes.iter().any(|route| route.membership_fence().is_err())
-                || (!value.routes.is_empty() && manifest_route_names(&manifest).len() != value.routes.len())
-                || value.routes.iter().zip(manifest_route_names(&manifest)).any(|(route, name)|
-                    route.group.as_ref().is_none_or(|group| group.placement_id != name))
-            {
-                return Err(ObjectError::Corruption("invalid manifest route reply".into()));
+            let object = validate_manifest_route_payload(value)?;
+            return Ok(Self::ManifestRoutes {
+                manifest: object.manifest,
+                routes: object.routes,
+            });
+        }
+        if code == MetaRequestCode::ReadManifestRoutesBatch {
+            if payload.len() > super::MAX_PAYLOAD_BYTES {
+                return Err(ObjectError::Corruption(
+                    "manifest route batch reply exceeds bound".into(),
+                ));
             }
-            return Ok(Self::ManifestRoutes { manifest, routes: value.routes });
+            let value: ManifestRoutesBatchPayload =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 || value.objects.is_empty() || value.objects.len() > 32 {
+                return Err(ObjectError::Corruption(
+                    "invalid manifest route batch reply".into(),
+                ));
+            }
+            let objects = value.objects.into_iter()
+                .map(validate_manifest_route_payload)
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(Self::ManifestRoutesBatch { objects });
         }
         if code == MetaRequestCode::PlanObjectPlacementRoutes {
             if payload.len() > MAX_PLAN_ROUTE_REPLY_BYTES {
@@ -990,6 +1095,7 @@ impl MetaReply {
             | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
             | MetaRequestCode::ReadManifestRoutes
+            | MetaRequestCode::ReadManifestRoutesBatch
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::ReadChunkGroup
             | MetaRequestCode::PlanObjectPlacementRoutes
