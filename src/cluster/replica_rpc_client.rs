@@ -1131,16 +1131,16 @@ impl RemoteReplicaClient {
         ) || matches!(&request, ReplicaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
         let mut retry_delay = Duration::from_millis(25);
-        // A mutation may wait for an election only after every voter has
-        // explicitly refused admission. An uncertain exchange is never replayed.
-        let retry_until = options.deadline.or_else(|| {
-            let window = if read_only {
-                Duration::from_secs(1)
-            } else {
-                Duration::from_secs(3)
-            };
-            Some(Instant::now() + options.read_timeout.min(window))
-        });
+        // A mutation with a caller deadline may wait for an election only after
+        // every voter has explicitly refused admission. An uncertain exchange
+        // is never replayed.
+        let retry_until = if read_only {
+            Some(options.deadline.unwrap_or_else(|| {
+                Instant::now() + options.read_timeout.min(Duration::from_secs(1))
+            }))
+        } else {
+            options.deadline
+        };
         loop {
             let mut refusals = 0;
             let mut unreachable = 0;
