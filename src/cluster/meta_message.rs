@@ -269,6 +269,12 @@ pub enum MetaRequest {
         length: u64,
         replica_count: u64,
     },
+    PlanObjectPlacementRoutes {
+        bucket: String,
+        key: String,
+        length: u64,
+        replica_count: u64,
+    },
     CommitObjectPlacement {
         placement: CommittedPlacement,
         expected_plan_checksum: String,
@@ -301,6 +307,7 @@ impl MetaRequest {
             MetaRequest::ListRootNodes => MetaRequestCode::ListRootNodes,
             MetaRequest::ReadChunkGroup { .. } => MetaRequestCode::ReadChunkGroup,
             MetaRequest::PlanObjectPlacement { .. } => MetaRequestCode::PlanObjectPlacement,
+            MetaRequest::PlanObjectPlacementRoutes { .. } => MetaRequestCode::PlanObjectPlacementRoutes,
             MetaRequest::CommitObjectPlacement { .. } => MetaRequestCode::CommitObjectPlacement,
             MetaRequest::CommitObjectPlacementIfCurrent { .. } => {
                 MetaRequestCode::CommitObjectPlacementIfCurrent
@@ -412,6 +419,11 @@ impl MetaRequest {
             }
             MetaRequest::ListRootNodes | MetaRequest::Ping => {}
             MetaRequest::PlanObjectPlacement {
+                bucket,
+                key,
+                length,
+                replica_count,
+            } | MetaRequest::PlanObjectPlacementRoutes {
                 bucket,
                 key,
                 length,
@@ -584,11 +596,16 @@ impl MetaRequest {
                 now_ms: cursor.take_u64()?,
             },
             MetaRequestCode::ListRootNodes => MetaRequest::ListRootNodes,
-            MetaRequestCode::PlanObjectPlacement => MetaRequest::PlanObjectPlacement {
-                bucket: cursor.take_str()?,
-                key: cursor.take_str()?,
-                length: cursor.take_u64()?,
-                replica_count: cursor.take_u64()?,
+            MetaRequestCode::PlanObjectPlacement | MetaRequestCode::PlanObjectPlacementRoutes => {
+                let bucket = cursor.take_str()?;
+                let key = cursor.take_str()?;
+                let length = cursor.take_u64()?;
+                let replica_count = cursor.take_u64()?;
+                if code == MetaRequestCode::PlanObjectPlacementRoutes {
+                    MetaRequest::PlanObjectPlacementRoutes { bucket, key, length, replica_count }
+                } else {
+                    MetaRequest::PlanObjectPlacement { bucket, key, length, replica_count }
+                }
             },
             MetaRequestCode::CommitObjectPlacement => MetaRequest::CommitObjectPlacement {
                 placement: take_placement(&mut cursor)?,
@@ -622,6 +639,18 @@ struct ManifestRoutesPayload {
     routes: Vec<super::ChunkGroupRoute>,
 }
 
+#[derive(Clone, PartialEq, prost::Message)]
+struct PlanRoutesPayload {
+    #[prost(uint32, tag = "1")]
+    version: u32,
+    #[prost(bytes, tag = "2")]
+    plan: Vec<u8>,
+    #[prost(message, repeated, tag = "3")]
+    routes: Vec<super::ChunkGroupRoute>,
+}
+
+pub(super) const MAX_PLAN_ROUTE_REPLY_BYTES: usize = 4 * 65536 + 8192;
+
 pub(super) const MAX_MANIFEST_ROUTE_REPLY_BYTES: usize =
     1024 * 1024 + 4 * 65536 + 256;
 
@@ -641,6 +670,10 @@ pub enum MetaReply {
     Manifest(crate::object_manifest::ObjectManifest),
     ManifestRoutes {
         manifest: crate::object_manifest::ObjectManifest,
+        routes: Vec<super::ChunkGroupRoute>,
+    },
+    PlanRoutes {
+        plan: PlacementAssignment,
         routes: Vec<super::ChunkGroupRoute>,
     },
     GroupIdentity(super::MetaGroupIdentity),
@@ -698,6 +731,9 @@ impl MetaReply {
             Self::ManifestRoutes { manifest, routes } => ManifestRoutesPayload {
                 version: 1, manifest: Some(manifest.clone()), routes: routes.clone(),
             }.encoded_len(),
+            Self::PlanRoutes { plan, routes } => PlanRoutesPayload {
+                version: 1, plan: Self::Plan(plan.clone()).encode_payload(), routes: routes.clone(),
+            }.encoded_len(),
             Self::Expired { .. } => 8,
             Self::Plan(plan) => 52usize
                 .saturating_add(plan.bucket.len())
@@ -716,6 +752,9 @@ impl MetaReply {
             MetaReply::Manifest(value) => return value.encode_to_vec(),
             MetaReply::ManifestRoutes { manifest, routes } => return ManifestRoutesPayload {
                 version: 1, manifest: Some(manifest.clone()), routes: routes.clone(),
+            }.encode_to_vec(),
+            MetaReply::PlanRoutes { plan, routes } => return PlanRoutesPayload {
+                version: 1, plan: MetaReply::Plan(plan.clone()).encode_payload(), routes: routes.clone(),
             }.encode_to_vec(),
             MetaReply::Membership(value) => return value.encode_to_vec(),
             MetaReply::NotLeader => {}
@@ -820,6 +859,26 @@ impl MetaReply {
             }
             return Ok(Self::ManifestRoutes { manifest, routes: value.routes });
         }
+        if code == MetaRequestCode::PlanObjectPlacementRoutes {
+            if payload.len() > MAX_PLAN_ROUTE_REPLY_BYTES {
+                return Err(ObjectError::Corruption("plan route reply exceeds bound".into()));
+            }
+            let value: PlanRoutesPayload = super::conditional_requests::decode(payload)?;
+            if value.version != 1 || value.encode_to_vec() != payload || value.routes.len() > 4 {
+                return Err(ObjectError::Corruption("invalid plan route reply".into()));
+            }
+            let plan = match Self::decode(MetaRequestCode::PlanObjectPlacement, &value.plan)? {
+                Self::Plan(plan) => plan,
+                _ => unreachable!(),
+            };
+            if plan.node_ids.len() != value.routes.len()
+                || value.routes.iter().zip(&plan.node_ids).any(|(route, id)|
+                    route.group.as_ref().is_none_or(|group| &group.placement_id != id)
+                    || route.membership_fence().is_err()) {
+                return Err(ObjectError::Corruption("plan routes do not match selected groups".into()));
+            }
+            return Ok(Self::PlanRoutes { plan, routes: value.routes });
+        }
 
         if code == MetaRequestCode::GroupIdentity {
             if payload.len() > 16384 {
@@ -863,6 +922,7 @@ impl MetaReply {
             | MetaRequestCode::ReadManifestRoutes
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::ReadChunkGroup
+            | MetaRequestCode::PlanObjectPlacementRoutes
             | MetaRequestCode::ReadChunkRoute
             | MetaRequestCode::ReadChunkRoutes
             | MetaRequestCode::GroupIdentity => unreachable!(),

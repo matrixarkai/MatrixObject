@@ -580,6 +580,25 @@ impl RemoteMetaClient {
         }
     }
 
+    /// Resolve a small placement and its group routes under one metadata read.
+    pub fn plan_object_placement_routes(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        length: u64,
+        replica_count: u64,
+    ) -> Result<(PlacementAssignment, Vec<super::ChunkGroupRoute>), ObjectError> {
+        match self.call(MetaRequest::PlanObjectPlacementRoutes {
+            bucket: bucket.into(), key: key.into(), length, replica_count,
+        })? {
+            MetaReply::PlanRoutes { plan, routes }
+                if plan.bucket == bucket && plan.key == key && plan.length == length
+                    && plan.node_ids.len() == replica_count as usize
+                    && routes.len() == plan.node_ids.len() => Ok((plan, routes)),
+            _ => Err(ObjectError::Corruption("unexpected placement routes reply".into())),
+        }
+    }
+
     /// Commit only if the complete current record matches, or is absent for None.
     /// This condition is independent of any data-node update.
     pub fn commit_object_placement_if_current(
@@ -892,6 +911,7 @@ impl RemoteMetaClient {
             MetaRequest::Ping
                 | MetaRequest::ListRootNodes
                 | MetaRequest::PlanObjectPlacement { .. }
+                | MetaRequest::PlanObjectPlacementRoutes { .. }
                 | MetaRequest::ReadManifest { .. }
                 | MetaRequest::ReadManifestRoutes { .. }
                 | MetaRequest::ReadObjectRootPlacement { .. }

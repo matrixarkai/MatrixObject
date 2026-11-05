@@ -78,6 +78,21 @@ fn config(socket: &TcpListener, id: u64) -> ChunkGroupConfig {
 }
 
 #[test]
+fn combined_placement_reply_rejects_a_route_for_another_group() {
+    let socket = listener();
+    let plan = PlacementAssignment {
+        bucket: "bucket".into(), key: "key".into(), length: 64,
+        node_ids: vec!["group-1".into()], skipped_draining: 0,
+        skipped_offline: 0, skipped_capacity: 0, plan_checksum: "plan".into(),
+    };
+    let route = ChunkGroupRoute {
+        version: 1, group: Some(config(&socket, 2)), fence: vec![],
+    };
+    let payload = MetaReply::PlanRoutes { plan, routes: vec![route] }.encode_payload();
+    assert!(MetaReply::decode(MetaRequestCode::PlanObjectPlacementRoutes, &payload).is_err());
+}
+
+#[test]
 fn failed_pipelined_write_retires_socket_without_replaying() {
     let socket = listener();
     let address = socket.local_addr().unwrap().to_string();
@@ -358,7 +373,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
             .unwrap();
         assert!(matches!(
             meta(&mut stream),
-            MetaRequest::PlanObjectPlacement {
+            MetaRequest::PlanObjectPlacementRoutes {
                 length: 64,
                 replica_count: 2,
                 ..
@@ -366,24 +381,22 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         ));
         reply(
             &mut stream,
-            MetaReply::Plan(PlacementAssignment {
-                bucket: "bucket".into(),
-                key: "key".into(),
-                length: 64,
-                node_ids: groups.iter().map(|g| g.placement_id.clone()).collect(),
-                skipped_draining: 0,
-                skipped_offline: 0,
-                skipped_capacity: 0,
-                plan_checksum: "plan".into(),
-            }),
+            MetaReply::PlanRoutes {
+                plan: PlacementAssignment {
+                    bucket: "bucket".into(),
+                    key: "key".into(),
+                    length: 64,
+                    node_ids: groups.iter().map(|g| g.placement_id.clone()).collect(),
+                    skipped_draining: 0,
+                    skipped_offline: 0,
+                    skipped_capacity: 0,
+                    plan_checksum: "plan".into(),
+                },
+                routes: groups.iter().cloned().map(|group| ChunkGroupRoute {
+                    version: 1, group: Some(group), fence: vec![],
+                }).collect(),
+            },
         );
-        let MetaRequest::ReadChunkRoutes { placement_ids } = meta(&mut stream) else {
-            panic!("write route batch missing");
-        };
-        assert_eq!(placement_ids, ["group-2", "group-1"]);
-        reply(&mut stream, MetaReply::ChunkRoutes(ChunkRouteBatch { version: 1, routes: groups.clone().into_iter().rev()
-            .map(|group| ChunkGroupRoute { version: 1, group: Some(group), fence: vec![] })
-            .collect() }));
         assert!(matches!(
             meta(&mut stream),
             MetaRequest::AllocateObjectPages { page_count: 32 }
