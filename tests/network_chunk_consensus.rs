@@ -3410,7 +3410,7 @@ mod coupled_groups {
         assert!(objects || object_bytes == 1024);
         assert!(target_groups == 1 || (objects && matches!(target_groups, 2 | 4)));
         assert!(target_groups as usize <= group_count);
-        assert!((2..=16).contains(&group_count));
+        assert!((2..=32).contains(&group_count));
         assert!(writes > 0 && writes <= 1024);
         let mut groups: Vec<_> = (0..group_count)
             .map(|i| {
@@ -3611,6 +3611,20 @@ mod coupled_groups {
         }
         multiple_group_load_with_transport_checkpoint(
             16, 512, 16, true, 4, 64 * 1024,
+            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
+            32 * 1024 * 1024, false,
+        );
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "99-process WSL write and read load with recovery"]
+    fn encrypted_api_thirty_two_groups_sustained_load_recovers() {
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..3 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        multiple_group_load_with_transport_checkpoint(
+            32, 512, 16, true, 4, 64 * 1024,
             VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
             32 * 1024 * 1024, false,
         );
