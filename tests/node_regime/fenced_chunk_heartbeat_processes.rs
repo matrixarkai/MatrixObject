@@ -39,6 +39,21 @@ fn member_health(client: &mut RemoteMetaClient, id: &str, used: u64) {
     }
 }
 
+fn connect_after_election(client: &mut RemoteMetaClient) -> RemoteReplicaClient {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match client.connect_chunk_group("group-a", &Default::default()) {
+            Ok(chunk) => return chunk,
+            Err(error) if error.to_string().contains("metadata consensus deadline")
+                || error.to_string().contains("metadata request was not admitted by a leader") => {
+                assert!(Instant::now() < deadline, "chunk route did not recover: {error}");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("chunk route failed: {error}"),
+        }
+    }
+}
+
 #[test]
 fn automatic_fenced_reports_follow_chunk_replacement_and_coupled_restart() {
     let mut chunks = Group::configured_voters(65536, 4);
@@ -97,7 +112,7 @@ fn automatic_fenced_reports_follow_chunk_replacement_and_coupled_restart() {
     metadata.kill(metadata_leader);
     let mut client = metadata.ready();
     let leader = chunks.leader();
-    let mut writer = client.connect_chunk_group("group-a", &Default::default()).unwrap();
+    let mut writer = connect_after_election(&mut client);
     let status = writer.chunk_membership(command(Op::AddLearner, 4)).unwrap();
     advance(&mut client, &identity, &mut fence, status);
     chunks.start(3);
@@ -111,7 +126,7 @@ fn automatic_fenced_reports_follow_chunk_replacement_and_coupled_restart() {
     // Wait for the restored quorum to commit a read before issuing membership writes.
     chunks.leader();
     drop(writer);
-    let mut writer = client.connect_chunk_group("group-a", &Default::default()).unwrap();
+    let mut writer = connect_after_election(&mut client);
     let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
         match writer.chunk_membership(command(Op::Promote, 4)) {
@@ -163,7 +178,7 @@ fn automatic_fenced_reports_follow_chunk_replacement_and_coupled_restart() {
     health(&mut client, true, 4096, 4096);
     let leader = chunks.leader();
     assert_ne!(leader, first);
-    let mut writer = client.connect_chunk_group("group-a", &Default::default()).unwrap();
+    let mut writer = connect_after_election(&mut client);
     verify(&mut client, &mut writer, &placements);
     let recovered = client.read_chunk_route("group-a").unwrap();
     assert_eq!(recovered.membership_fence().unwrap().unwrap(), fence);
