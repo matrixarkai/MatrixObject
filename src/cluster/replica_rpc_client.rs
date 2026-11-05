@@ -793,7 +793,7 @@ impl RemoteReplicaClient {
     }
 
     /// Read up to eight pages over one established connection. A partial batch
-    /// retires the socket before individual read-only retries.
+    /// retires the socket and retries only pages without complete replies.
     pub fn read_chunks_pipelined(
         &mut self,
         pages: &[(PageId, u64, u64)],
@@ -809,6 +809,7 @@ impl RemoteReplicaClient {
                 .read_chunk(&pages[0].0, pages[0].1, pages[0].2)
                 .map(|read| vec![read]);
         }
+        let mut reads = Vec::with_capacity(pages.len());
         if self.connection_usable {
             self.connection_usable = false;
             let result = (|| {
@@ -819,7 +820,6 @@ impl RemoteReplicaClient {
                         length: *length,
                     })?;
                 }
-                let mut reads = Vec::with_capacity(pages.len());
                 for _ in pages {
                     match self.read_reply(
                         crate::cluster::wire::RequestCode::ReadChunk,
@@ -831,20 +831,20 @@ impl RemoteReplicaClient {
                     }
                     self.connection_usable = false;
                 }
-                Ok(reads)
+                Ok(())
             })();
             self.last_exchange = Instant::now();
-            if let Ok(reads) = result {
+            if result.is_ok() {
                 self.connection_usable = true;
                 return Ok(reads);
             }
             self.connection_usable = false;
             let _ = self.writer.shutdown(Shutdown::Both);
         }
-        pages
-            .iter()
-            .map(|(page_id, offset, length)| self.read_chunk(page_id, *offset, *length))
-            .collect()
+        for (page_id, offset, length) in &pages[reads.len()..] {
+            reads.push(self.read_chunk(page_id, *offset, *length)?);
+        }
+        Ok(reads)
     }
 
     /// Read bounded raw bytes at a complete page-state checksum, including discarded bytes.

@@ -451,3 +451,42 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         worker.join().unwrap();
     }
 }
+
+#[test]
+fn partial_pipelined_read_retries_only_unread_pages() {
+    let socket = listener();
+    let endpoint = socket.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let mut first = accept(&socket);
+        for index in 0..3 {
+            let ReplicaRequest::ReadChunk { page_id, .. } = replica(&mut first) else {
+                panic!("pipelined read missing");
+            };
+            assert_eq!(page_id.page_index, index);
+        }
+        first.write_all(&message::encode_reply(&ReplicaReply::Read(ReplicaReadResult {
+            data: vec![10], write_sequence: 1, checksum: String::new(),
+        }))).unwrap();
+        drop(first);
+        let mut second = accept(&socket);
+        for index in 1..3 {
+            let ReplicaRequest::ReadChunk { page_id, .. } = replica(&mut second) else {
+                panic!("unread page retry missing");
+            };
+            assert_eq!(page_id.page_index, index);
+            second.write_all(&message::encode_reply(&ReplicaReply::Read(ReplicaReadResult {
+                data: vec![10 + index as u8], write_sequence: 1, checksum: String::new(),
+            }))).unwrap();
+        }
+        assert!(matches!(socket.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+    });
+    let mut client = RemoteReplicaClient::connect_catalog(&[endpoint], &ReplicaClientOptions::default()).unwrap();
+    let chunk_id = ChunkId::new(1, 1).unwrap();
+    let pages: Vec<_> = (0..3).map(|index| (
+        PageId { chunk_id: chunk_id.clone(), page_index: index }, 0, 1,
+    )).collect();
+    let reads = client.read_chunks_pipelined(&pages).unwrap();
+    assert_eq!(reads.into_iter().map(|read| read.data).collect::<Vec<_>>(),
+        [vec![10], vec![11], vec![12]]);
+    worker.join().unwrap();
+}

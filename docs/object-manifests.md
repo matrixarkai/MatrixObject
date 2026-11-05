@@ -147,9 +147,12 @@ before allocating or connecting to data nodes. Allocation failure returns an err
 The client visits all extents of each group together, retaining one data-group
 connection and looking up each distinct group once. It copies validated responses
 into their original object offsets, preserving byte order even for alternating
-groups. Memory includes the bounded complete output, at most 4096 ordering entries,
-one extent response and transport buffers. This API reads a complete object, not a
-stream or range; it does not enable HTTP routing or reclaim old pages. A concurrent
+groups. Each data connection reads at most eight pages per batch. A broken batch
+retains complete replies and retries only pages without replies on a new connection.
+Memory includes the bounded complete output, at most 4096 ordering entries,
+and up to eight extent responses per active group across at most four groups,
+plus transport buffers. This API reads a complete
+object, not a stream or range; it does not enable HTTP routing or reclaim old pages. A concurrent
 manifest update does not change the captured generation. Overwriting one of its
 pages causes sequence validation to fail even when the replacement bytes match.
 
