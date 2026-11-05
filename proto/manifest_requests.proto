@@ -10,6 +10,12 @@ message ManifestRead {
   string bucket = 2;
   string key = 3;
 }
+// Metadata request code 86. The successful reply contains matching manifests
+// and, when the bounded frame permits, their chunk-group routes.
+message ManifestReads {
+  uint32 version = 1; // 1
+  repeated ManifestRead reads = 2; // 1..32, request order is preserved
+}
 message ManifestPublish {
   uint32 version = 1; // 1
   matrixobject.ManifestOutcome outcome = 2;

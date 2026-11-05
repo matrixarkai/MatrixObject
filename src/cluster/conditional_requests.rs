@@ -277,6 +277,14 @@ pub(super) struct ManifestRead {
 }
 #[cfg(feature = "meta-server")]
 #[derive(Clone, PartialEq, Message)]
+pub(super) struct ManifestReads {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub reads: Vec<ManifestRead>,
+}
+#[cfg(feature = "meta-server")]
+#[derive(Clone, PartialEq, Message)]
 pub(super) struct ManifestPublish {
     #[prost(uint32, tag = "1")]
     pub version: u32,
@@ -341,6 +349,57 @@ mod manifest_tests {
             .encode_to_vec()
         )
         .is_err());
+    }
+
+    #[test]
+    fn manifest_route_batches_are_canonical_bounded_and_ordered() {
+        let (_, create, _) = crate::tests::manifest_publication_fixture();
+        let first = create.manifest.unwrap().after.unwrap();
+        let mut second = first.clone();
+        second.key.push_str("-second");
+        second.validate().unwrap();
+        let request = MetaRequest::ReadManifestRoutesBatch {
+            objects: vec![
+                (first.bucket.clone(), first.key.clone()),
+                (second.bucket.clone(), second.key.clone()),
+            ],
+        };
+        let code = MetaRequestCode::ReadManifestRoutesBatch;
+        let bytes = request.encode_payload();
+        assert_eq!(MetaRequest::decode(code, &bytes).unwrap(), request);
+        let mut unknown = bytes.clone();
+        unknown.extend([0xa0, 0x06, 1]);
+        assert!(MetaRequest::decode(code, &unknown).is_err());
+        assert!(MetaRequest::decode(code, &bytes[..bytes.len() - 1]).is_err());
+        assert!(MetaRequest::decode(code, &MetaRequest::ReadManifestRoutesBatch {
+            objects: vec![],
+        }.encode_payload()).is_err());
+        assert!(MetaRequest::decode(code, &MetaRequest::ReadManifestRoutesBatch {
+            objects: vec![(first.bucket.clone(), first.key.clone()); 33],
+        }.encode_payload()).is_err());
+
+        let reply = MetaReply::ManifestRoutesBatch {
+            objects: vec![
+                crate::cluster::ManifestRouteEntry {
+                    manifest: first,
+                    routes: vec![],
+                },
+                crate::cluster::ManifestRouteEntry {
+                    manifest: second,
+                    routes: vec![],
+                },
+            ],
+        };
+        let bytes = reply.encode_payload();
+        assert_eq!(reply.payload_len(), bytes.len());
+        assert_eq!(MetaReply::decode(code, &bytes).unwrap(), reply);
+        let mut unknown = bytes.clone();
+        unknown.extend([0xa0, 0x06, 1]);
+        assert!(MetaReply::decode(code, &unknown).is_err());
+        assert!(MetaReply::decode(code, &bytes[..bytes.len() - 1]).is_err());
+        assert!(MetaReply::decode(code, &MetaReply::ManifestRoutesBatch {
+            objects: vec![],
+        }.encode_payload()).is_err());
     }
 }
 

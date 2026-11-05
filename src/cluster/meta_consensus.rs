@@ -696,6 +696,7 @@ fn read_only(request: &MetaRequest) -> bool {
         MetaRequest::Membership(command) => command.is_read(),
         MetaRequest::ReadManifest { .. }
         | MetaRequest::ReadManifestRoutes { .. }
+        | MetaRequest::ReadManifestRoutesBatch { .. }
         | MetaRequest::ListRootNodes
         | MetaRequest::ReadChunkGroup { .. }
         | MetaRequest::ReadChunkRoute { .. }
