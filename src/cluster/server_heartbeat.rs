@@ -92,7 +92,9 @@ pub(super) fn run(
     let client_options = MetaClientOptions {
         tls: options.tls.clone(),
         connect_timeout: Duration::from_millis(100),
-        read_timeout: Duration::from_millis(500),
+        // A quorum report can wait behind an admitted metadata batch. Use the
+        // interval as its budget, with a 500 ms floor and 2 s cap.
+        read_timeout: options.interval.clamp(Duration::from_millis(500), Duration::from_secs(2)),
         write_timeout: Duration::from_millis(100),
         ..Default::default()
     };
@@ -204,11 +206,50 @@ pub(super) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use crate::cluster::{
         MetaNodeOptions, MetaNodeServer, RemoteReplicaClient, ReplicaClientOptions,
         ReplicaNodeOptions, ReplicaNodeServer,
     };
     use crate::{ChunkId, PageId};
+
+    #[test]
+    fn slow_metadata_reply_keeps_heartbeat_connection_open() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut chunk = ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
+        let endpoint = chunk.local_addr().unwrap();
+        chunk.enable_heartbeats(ReplicaHeartbeatOptions {
+            placement_id: None,
+            tls: None,
+            expected_metadata_identity: None,
+            node_id: "chunk-slow".into(),
+            advertised_endpoint: endpoint,
+            metadata_endpoints: vec![listener.local_addr().unwrap()],
+            interval: Duration::from_secs(2),
+        }).unwrap();
+        let stop = chunk.shutdown_handle();
+        let worker = std::thread::spawn(move || chunk.serve().unwrap());
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut header = [0; 6];
+        socket.read_exact(&mut header).unwrap();
+        let length = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
+        let mut payload = vec![0; length];
+        socket.read_exact(&mut payload).unwrap();
+        assert_eq!(header[1], crate::cluster::MetaRequestCode::ReportChunkNode as u8);
+        std::thread::sleep(Duration::from_millis(750));
+        socket.set_nonblocking(true).unwrap();
+        let mut byte = [0];
+        let still_open = matches!(socket.peek(&mut byte), Err(error)
+            if error.kind() == std::io::ErrorKind::WouldBlock);
+        let _ = socket.write_all(&crate::cluster::message::encode_failure(
+            crate::cluster::StatusCode::PreconditionFailed, "test reply",
+        ));
+        stop.stop();
+        worker.join().unwrap();
+        assert!(still_open, "heartbeat abandoned a slow metadata response");
+    }
 
     #[cfg(feature = "chunk-consensus")]
     #[test]
