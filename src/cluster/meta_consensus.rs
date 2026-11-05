@@ -526,6 +526,21 @@ fn run(
                 result => {
                     let (_, requests) = pending_read.take().unwrap();
                     for request in requests {
+                        if matches!(&request.request, MetaRequest::ExpireRootNodeHeartbeats { .. }) {
+                            // Recheck after quorum confirmation. A newly eligible node
+                            // returns to the durable proposal path before any reply.
+                            match &result {
+                                Ok(true) if empty_expiry(service, &request.request) => {
+                                    let _ = request.reply.try_send(Ok(MetaReply::Expired { offline_count: 0 }));
+                                }
+                                Ok(true) => queued.push_front(request),
+                                Err(error) => {
+                                    let _ = request.reply.try_send(read_failure(error));
+                                }
+                                Ok(false) => unreachable!(),
+                            }
+                            continue;
+                        }
                         let reply = match &result {
                             Ok(true) => match request.request {
                                 MetaRequest::Membership(_) => Ok(MetaReply::Membership(
@@ -585,6 +600,23 @@ fn run(
                     }
                 } else if queued.front().is_some_and(|r| matches!(r.request, MetaRequest::ChunkCatalog(_))) {
                     propose_catalog_batch(peer, service, groups, limit, &mut queued, &mut pending)?;
+                } else if queued.front().is_some_and(|r| empty_expiry(service, &r.request)) {
+                    // A sweep with no candidate changes no state. Confirm the current
+                    // quorum without appending an empty application entry.
+                    let request = queued.pop_front().unwrap();
+                    if request.deadline <= Instant::now() {
+                        let _ = request.reply.try_send(Err(refused(
+                            "metadata expiry request expired before read confirmation",
+                        )));
+                    } else {
+                        request.progress.mark(RequestPhase::ReadConfirmation);
+                        match peer.begin_read() {
+                            Ok(token) => pending_read = Some((token, vec![request])),
+                            Err(error) => {
+                                let _ = request.reply.try_send(read_failure(&error));
+                            }
+                        }
+                    }
                 } else if queued.front().is_some_and(|r| read_only(&r.request)) {
                     let mut reads = Vec::new();
                     while queued.front().is_some_and(|r| read_only(&r.request)) {
@@ -682,6 +714,14 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::ExpireRootNodeHeartbeats { .. }
         | MetaRequest::CommitObjectPlacement { .. }
         | MetaRequest::CommitObjectPlacementIfCurrent { .. } => false,
+    }
+}
+fn empty_expiry(service: &MatrixMetaService, request: &MetaRequest) -> bool {
+    match request {
+        MetaRequest::ExpireRootNodeHeartbeats { ttl_ms, now_ms } =>
+            super::meta_server::expired_node_ids(service, *ttl_ms, *now_ms)
+                .is_ok_and(|nodes| nodes.is_empty()),
+        _ => false,
     }
 }
 fn apply_committed(

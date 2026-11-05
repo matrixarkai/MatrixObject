@@ -1623,6 +1623,31 @@ fn maintenance_repair_stays_excluded_through_metadata_failover_and_total_restart
 }
 
 #[test]
+fn empty_expiry_ticks_keep_the_metadata_log_index_stable() {
+    use matrixobjectstore_rs::cluster::{MembershipOperation as Op, MembershipRequest};
+    let group = Group::with_membership_options(
+        Some("chunk-1@127.0.0.1:45678@rack".into()),
+        Some("3000".into()),
+        None,
+        0,
+        true,
+    );
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    let identity = client.metadata_group_identity().unwrap();
+    let read = MembershipRequest {
+        version: 1,
+        bootstrap_id: identity.bootstrap_id,
+        operation: Op::Read as i32,
+        node_id: 0,
+    };
+    let before = client.metadata_membership(read.clone()).unwrap().applied_index;
+    std::thread::sleep(Duration::from_millis(2500));
+    let after = client.metadata_membership(read).unwrap().applied_index;
+    assert_eq!(after, before, "empty expiry ticks appended Raft entries");
+}
+
+#[test]
 fn metadata_membership_replaces_a_lost_voter_with_a_new_process() {
     use matrixobjectstore_rs::cluster::{MembershipOperation as Op, MembershipRequest};
     let mut group = Group::with_membership_options(None, None, None, 1024, true);

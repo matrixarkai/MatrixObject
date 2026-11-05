@@ -74,6 +74,7 @@ without appending entries. Group identity and the immutable bootstrap data-group
 catalog are served locally by running voters; this does not report current health
 or establish quorum. Mutations prepare changes against committed state and batch
 ordered proposals; these paths still require deployment-scale measurement. The underlying WAL stops writes at its 512 MiB bound.
+An automatic expiry sweep with no eligible node uses a quorum confirmation and leaves the WAL unchanged.
 
 The process tests exercise three independent servers, leader termination, quorum
 loss, complete restart, binary outcome replay, storage identity, election no-op
