@@ -252,6 +252,100 @@ fn small_pages_start_with_full_nonempty_batches() {
     client.write_chunks_if_sequence_pipelined(&writes).unwrap();
     worker.join().unwrap();
 }
+
+#[test]
+fn small_page_writes_return_digests_in_two_batch_exchanges() {
+    let socket = listener();
+    let address = socket.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let mut stream = accept(&socket);
+        for start in [0, 4] {
+            let ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } =
+                replica(&mut stream)
+            else {
+                panic!("small pages did not use a conditional write digest batch");
+            };
+            assert_eq!(writes.len(), 4);
+            let digests = writes
+                .iter()
+                .enumerate()
+                .map(|(position, write)| {
+                    assert_eq!(write.page_id.page_index, start + position as u64);
+                    let mut sha256 = [0; 32];
+                    sha256.copy_from_slice(
+                        ring::digest::digest(&ring::digest::SHA256, &write.data).as_ref(),
+                    );
+                    (1, write.data.len() as u64, sha256)
+                })
+                .collect();
+            stream
+                .write_all(&message::encode_reply(&ReplicaReply::Digests(digests)))
+                .unwrap();
+        }
+    });
+    let mut client =
+        RemoteReplicaClient::connect(&address, &ReplicaClientOptions::default()).unwrap();
+    let chunk_id = ChunkId::new(1, 4).unwrap();
+    let writes: Vec<_> = (0..8)
+        .map(|index| {
+            (
+                PageId {
+                    chunk_id: chunk_id.clone(),
+                    page_index: index,
+                },
+                0,
+                b"page".as_slice(),
+                0,
+            )
+        })
+        .collect();
+    let digests = client
+        .write_chunks_if_sequence_with_digests(&writes)
+        .unwrap();
+    assert_eq!(digests.len(), writes.len());
+    assert!(digests.iter().all(|(sequence, length, _)| *sequence == 1 && *length == 4));
+    worker.join().unwrap();
+}
+
+#[test]
+fn uncertain_digest_batch_is_not_replayed() {
+    let socket = listener();
+    let address = socket.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let mut stream = accept(&socket);
+        assert!(matches!(
+            replica(&mut stream),
+            ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes }
+                if writes.len() == 4
+        ));
+        drop(stream);
+        thread::sleep(Duration::from_millis(50));
+        assert!(matches!(
+            socket.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+    });
+    let mut client =
+        RemoteReplicaClient::connect(&address, &ReplicaClientOptions::default()).unwrap();
+    let chunk_id = ChunkId::new(1, 5).unwrap();
+    let writes: Vec<_> = (0..4)
+        .map(|index| {
+            (
+                PageId {
+                    chunk_id: chunk_id.clone(),
+                    page_index: index,
+                },
+                0,
+                b"page".as_slice(),
+                0,
+            )
+        })
+        .collect();
+    assert!(client
+        .write_chunks_if_sequence_with_digests(&writes)
+        .is_err());
+    worker.join().unwrap();
+}
 #[test]
 fn large_pages_keep_bounded_individual_writes() {
     let socket = listener();
@@ -342,12 +436,13 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                         if writing {
                             if index == 0 {
                                 for part in batch.chunks(4) {
-                                    let ReplicaRequest::WriteChunkBatchIfSequence { writes } =
+                                    let ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } =
                                         replica(&mut stream)
                                     else {
-                                        panic!("page batch missing");
+                                        panic!("page digest batch missing");
                                     };
                                     assert_eq!(writes.len(), part.len());
+                                    let mut digests = Vec::with_capacity(writes.len());
                                     for (write, &page_index) in writes.iter().zip(part) {
                                         let start = page_index as usize * 4;
                                         assert_eq!(write.page_id.page_index, page_index);
@@ -357,13 +452,35 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                                             write.data,
                                             object[start..object.len().min(start + 4)]
                                         );
+                                        let mut sha256 = [0; 32];
+                                        sha256.copy_from_slice(
+                                            ring::digest::digest(
+                                                &ring::digest::SHA256,
+                                                &write.data,
+                                            )
+                                            .as_ref(),
+                                        );
+                                        digests.push((1, write.data.len() as u64, sha256));
                                     }
                                     stream
-                                        .write_all(&message::encode_reply(&ReplicaReply::Applied))
+                                        .write_all(&message::encode_reply(&ReplicaReply::Digests(
+                                            digests,
+                                        )))
                                         .unwrap();
                                 }
                             } else {
                                 if batch_index == 0 {
+                                    assert!(matches!(
+                                        replica(&mut stream),
+                                        ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes }
+                                            if writes.len() == 4
+                                    ));
+                                    stream
+                                        .write_all(&message::encode_failure(
+                                            StatusCode::UnknownRequest,
+                                            "older peer",
+                                        ))
+                                        .unwrap();
                                     assert!(matches!(
                                         replica(&mut stream),
                                         ReplicaRequest::WriteChunkBatchIfSequence { writes }
@@ -394,32 +511,6 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                                 for response in responses { stream.write_all(&response).unwrap(); }
                             }
                             if index == 0 {
-                                let mut responses = Vec::new();
-                                for (position, &page_index) in batch.iter().enumerate() {
-                                    let start = page_index as usize * 4;
-                                    let data = &object[start..object.len().min(start + 4)];
-                                    let ReplicaRequest::DigestChunk { page_id, offset, length } = replica(&mut stream) else {
-                                        panic!("page digest missing");
-                                    };
-                                    assert_eq!(page_id.page_index, page_index);
-                                    assert_eq!(offset, 0);
-                                    assert_eq!(length, data.len() as u64);
-                                    let mut sha256 = [0; 32];
-                                    sha256.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, data).as_ref());
-                                    let response = message::encode_reply(&ReplicaReply::Digest {
-                                        write_sequence: 1,
-                                        length,
-                                        sha256,
-                                    });
-                                    if position == 0 {
-                                        stream.write_all(&response).unwrap();
-                                    } else {
-                                        responses.push(response);
-                                    }
-                                }
-                                for response in responses {
-                                    stream.write_all(&response).unwrap();
-                                }
                                 continue;
                             }
                             assert!(matches!(replica(&mut stream), ReplicaRequest::DigestChunk { .. }));

@@ -38,6 +38,24 @@ pub(super) struct ChunkWriteBatch {
     pub writes: Vec<ChunkWrite>,
 }
 #[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkDigest {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint64, tag = "2")]
+    pub write_sequence: u64,
+    #[prost(uint64, tag = "3")]
+    pub length: u64,
+    #[prost(bytes = "vec", tag = "4")]
+    pub sha256: Vec<u8>,
+}
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkDigestBatch {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub digests: Vec<ChunkDigest>,
+}
+#[derive(Clone, PartialEq, Message)]
 pub(super) struct ChunkDiscard {
     #[prost(uint32, tag = "1")]
     pub version: u32,
@@ -112,7 +130,7 @@ pub(super) struct PlacementCommit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster::{ReplicaRequest, RequestCode};
+    use crate::cluster::{ReplicaReply, ReplicaRequest, RequestCode};
     use crate::{ChunkId, PageId};
     #[test]
     fn conditional_write_batches_require_canonical_bounded_protobuf() {
@@ -122,10 +140,24 @@ mod tests {
             data: b"abc".to_vec(),
             expected_sequence: 0,
         };
-        let request = ReplicaRequest::WriteChunkBatchIfSequence { writes: vec![write; 2] };
+        let request = ReplicaRequest::WriteChunkBatchIfSequence {
+            writes: vec![write.clone(); 2],
+        };
         let bytes = request.encode_payload();
         assert_eq!(RequestCode::from_u8(14), Some(RequestCode::WriteChunkBatchIfSequence));
         assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
+        let digest_request = ReplicaRequest::WriteChunkBatchIfSequenceDigest {
+            writes: vec![write; 2],
+        };
+        assert_eq!(
+            RequestCode::from_u8(16),
+            Some(RequestCode::WriteChunkBatchIfSequenceDigest)
+        );
+        assert_eq!(
+            ReplicaRequest::decode(digest_request.code(), &digest_request.encode_payload())
+                .unwrap(),
+            digest_request
+        );
         let mut value: ChunkWriteBatch = decode(&bytes).unwrap();
         value.version = 2;
         assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
@@ -141,6 +173,64 @@ mod tests {
         let mut truncated = bytes;
         truncated.pop();
         assert!(ReplicaRequest::decode(request.code(), &truncated).is_err());
+    }
+
+    #[test]
+    fn conditional_write_digest_batches_require_canonical_bounded_protobuf() {
+        let digest = [7; 32];
+        let reply = ReplicaReply::Digests(vec![(1, 3, digest), (2, 4, digest)]);
+        let bytes = reply.encode_payload();
+        assert_eq!(
+            ReplicaReply::decode(RequestCode::WriteChunkBatchIfSequenceDigest, &bytes).unwrap(),
+            reply
+        );
+        let mut value: ChunkDigestBatch = decode(&bytes).unwrap();
+        value.version = 2;
+        assert!(
+            ReplicaReply::decode(
+                RequestCode::WriteChunkBatchIfSequenceDigest,
+                &value.encode_to_vec()
+            )
+            .is_err()
+        );
+        value.version = 1;
+        value.digests[0].version = 2;
+        assert!(
+            ReplicaReply::decode(
+                RequestCode::WriteChunkBatchIfSequenceDigest,
+                &value.encode_to_vec()
+            )
+            .is_err()
+        );
+        value.digests[0].version = 1;
+        value.digests[0].sha256.pop();
+        assert!(
+            ReplicaReply::decode(
+                RequestCode::WriteChunkBatchIfSequenceDigest,
+                &value.encode_to_vec()
+            )
+            .is_err()
+        );
+        value.digests[0].sha256.push(7);
+        value.digests.resize(5, value.digests[0].clone());
+        assert!(
+            ReplicaReply::decode(
+                RequestCode::WriteChunkBatchIfSequenceDigest,
+                &value.encode_to_vec()
+            )
+            .is_err()
+        );
+        let mut extra = bytes.clone();
+        extra.extend([0x18, 1]);
+        assert!(
+            ReplicaReply::decode(RequestCode::WriteChunkBatchIfSequenceDigest, &extra).is_err()
+        );
+        let mut truncated = bytes;
+        truncated.pop();
+        assert!(
+            ReplicaReply::decode(RequestCode::WriteChunkBatchIfSequenceDigest, &truncated)
+                .is_err()
+        );
     }
     #[test]
     fn conditional_discard_requests_require_canonical_bounded_protobuf() {

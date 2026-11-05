@@ -341,6 +341,45 @@ fn chunk_processes_commit_binary_outcomes_survive_leader_loss_and_total_restart(
         b"after recovery"
     );
 }
+
+#[test]
+fn conditional_digest_batches_replicate_ordered_page_outcomes() {
+    let mut group = Group::new();
+    let leader = group.leader();
+    let data: Vec<Vec<u8>> = (0..4)
+        .map(|index| format!("batch-page-{index}").into_bytes())
+        .collect();
+    let writes: Vec<_> = data
+        .iter()
+        .enumerate()
+        .map(|(index, bytes)| (page(index as u64), 0, bytes.as_slice(), 0))
+        .collect();
+    let digests = group
+        .client(leader)
+        .write_chunks_if_sequence_with_digests(&writes)
+        .unwrap();
+    assert_eq!(digests.len(), writes.len());
+    for ((sequence, length, sha256), bytes) in digests.iter().zip(&data) {
+        assert_eq!(*sequence, 1);
+        assert_eq!(*length, bytes.len() as u64);
+        assert_eq!(
+            sha256.as_ref(),
+            ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
+        );
+    }
+    group.kill(leader);
+    let next = group.leader();
+    for (index, bytes) in data.iter().enumerate() {
+        assert_eq!(
+            group
+                .client(next)
+                .read_chunk(&page(index as u64), 0, bytes.len() as u64)
+                .unwrap()
+                .data,
+            *bytes
+        );
+    }
+}
 #[test]
 fn chunk_raft_capacity_refusal_does_not_commit_partial_page_state() {
     let g = Group::new();

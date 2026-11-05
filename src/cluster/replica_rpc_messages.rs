@@ -134,6 +134,9 @@ pub enum ReplicaRequest {
     WriteChunkBatchIfSequence {
         writes: Vec<ConditionalChunkWrite>,
     },
+    WriteChunkBatchIfSequenceDigest {
+        writes: Vec<ConditionalChunkWrite>,
+    },
     WriteChunk {
         page_id: PageId,
         offset: u64,
@@ -179,6 +182,9 @@ impl ReplicaRequest {
             }
             ReplicaRequest::WriteChunkBatchIfSequence { .. } => {
                 RequestCode::WriteChunkBatchIfSequence
+            }
+            ReplicaRequest::WriteChunkBatchIfSequenceDigest { .. } => {
+                RequestCode::WriteChunkBatchIfSequenceDigest
             }
             ReplicaRequest::ReadChunk { .. } => RequestCode::ReadChunk,
             ReplicaRequest::DigestChunk { .. } => RequestCode::DigestChunk,
@@ -253,7 +259,8 @@ impl ReplicaRequest {
                 }
                 .encode_to_vec();
             }
-            ReplicaRequest::WriteChunkBatchIfSequence { writes } => {
+            ReplicaRequest::WriteChunkBatchIfSequence { writes }
+            | ReplicaRequest::WriteChunkBatchIfSequenceDigest { writes } => {
                 return super::conditional_requests::ChunkWriteBatch {
                     version: 1,
                     writes: writes.iter().map(|write| super::conditional_requests::ChunkWrite {
@@ -411,7 +418,11 @@ impl ReplicaRequest {
                 },
             });
         }
-        if code == RequestCode::WriteChunkBatchIfSequence {
+        if matches!(
+            code,
+            RequestCode::WriteChunkBatchIfSequence
+                | RequestCode::WriteChunkBatchIfSequenceDigest
+        ) {
             if payload.len() > 4 * 1024 * 1024 + 512 {
                 return Err(ObjectError::InvalidArgument(
                     "conditional write batch exceeds size bound".into(),
@@ -445,7 +456,12 @@ impl ReplicaRequest {
                     })
                 })
                 .collect::<Result<Vec<_>, ObjectError>>()?;
-            return Ok(Self::WriteChunkBatchIfSequence { writes });
+            return Ok(match code {
+                RequestCode::WriteChunkBatchIfSequenceDigest => {
+                    Self::WriteChunkBatchIfSequenceDigest { writes }
+                }
+                _ => Self::WriteChunkBatchIfSequence { writes },
+            });
         }
         let mut cursor = Cursor::new(payload);
         let request = match code {
@@ -454,6 +470,7 @@ impl ReplicaRequest {
             RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkIfSequenceDigest
             | RequestCode::WriteChunkBatchIfSequence
+            | RequestCode::WriteChunkBatchIfSequenceDigest
             | RequestCode::DiscardChunkIfSequence => {
                 unreachable!()
             }
@@ -548,6 +565,7 @@ pub enum ReplicaReply {
         length: u64,
         sha256: [u8; 32],
     },
+    Digests(Vec<(u64, u64, [u8; 32])>),
     Head(ReplicaHead),
     /// The replica is answering, and holds this many pages.
     Pong {
@@ -568,6 +586,21 @@ impl ReplicaReply {
                 .saturating_add(read.checksum.len())
                 .saturating_add(read.data.len()),
             Self::Digest { .. } => 52,
+            Self::Digests(digests) => super::conditional_requests::ChunkDigestBatch {
+                version: 1,
+                digests: digests
+                    .iter()
+                    .map(|(write_sequence, length, sha256)| {
+                        super::conditional_requests::ChunkDigest {
+                            version: 1,
+                            write_sequence: *write_sequence,
+                            length: *length,
+                            sha256: sha256.to_vec(),
+                        }
+                    })
+                    .collect(),
+            }
+            .encoded_len(),
             Self::Head(head) => 32usize
                 .saturating_add(head.checksum.len())
                 .saturating_add(head.state_checksum.len())
@@ -599,6 +632,23 @@ impl ReplicaReply {
                 put_u64(&mut out, *write_sequence);
                 put_u64(&mut out, *length);
                 put_bytes(&mut out, sha256);
+            }
+            ReplicaReply::Digests(digests) => {
+                return super::conditional_requests::ChunkDigestBatch {
+                    version: 1,
+                    digests: digests
+                        .iter()
+                        .map(|(write_sequence, length, sha256)| {
+                            super::conditional_requests::ChunkDigest {
+                                version: 1,
+                                write_sequence: *write_sequence,
+                                length: *length,
+                                sha256: sha256.to_vec(),
+                            }
+                        })
+                        .collect(),
+                }
+                .encode_to_vec();
             }
             ReplicaReply::Head(head) => {
                 put_u64(&mut out, head.logical_length);
@@ -668,11 +718,38 @@ impl ReplicaReply {
             }
             return Ok(ReplicaReply::GroupIdentity(identity));
         }
+        if code == RequestCode::WriteChunkBatchIfSequenceDigest {
+            if payload.len() > 1024 {
+                return Err(ObjectError::Corruption(
+                    "conditional write digest batch reply exceeds bound".into(),
+                ));
+            }
+            let value: super::conditional_requests::ChunkDigestBatch =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 || value.digests.len() > 4 {
+                return Err(ObjectError::Corruption(
+                    "invalid conditional write digest batch reply".into(),
+                ));
+            }
+            let mut digests = Vec::with_capacity(value.digests.len());
+            for digest in value.digests {
+                if digest.version != 1 || digest.sha256.len() != 32 {
+                    return Err(ObjectError::Corruption(
+                        "invalid conditional write digest entry".into(),
+                    ));
+                }
+                let mut sha256 = [0u8; 32];
+                sha256.copy_from_slice(&digest.sha256);
+                digests.push((digest.write_sequence, digest.length, sha256));
+            }
+            return Ok(ReplicaReply::Digests(digests));
+        }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::GroupIdentity => unreachable!(),
+            RequestCode::WriteChunkBatchIfSequenceDigest => unreachable!(),
             RequestCode::WriteChunk
             | RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkBatchIfSequence

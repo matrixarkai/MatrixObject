@@ -122,7 +122,6 @@ fn write_group_extents(
         None => connect_group(configured, &options.replica)?,
     };
     for batch in indexes.chunks(8) {
-        let mut pages = Vec::with_capacity(batch.len());
         let mut writes = Vec::with_capacity(batch.len());
         for &index in batch {
             let extent = &manifest.extents[index];
@@ -133,7 +132,6 @@ fn write_group_extents(
                 page_index: extent.page_index,
             };
             writes.push((page.clone(), 0, bytes, 0));
-            pages.push((page, 0, extent.length));
         }
         if let [(page, offset, bytes, expected_sequence)] = writes.as_slice() {
             let (sequence, actual_length, sha256) = client.write_chunk_if_sequence_with_digest(
@@ -153,31 +151,18 @@ fn write_group_extents(
             }
             continue;
         }
-        client.write_chunks_if_sequence_pipelined(&writes)?;
-        match client.digest_chunks_pipelined(&pages) {
-            Ok(digests) => {
-                for (&index, (sequence, actual_length, sha256)) in batch.iter().zip(digests) {
-                    let extent = &manifest.extents[index];
-                    let start = extent.object_offset as usize;
-                    let bytes = &data[start..start + extent.length as usize];
-                    if sequence != 1
-                        || actual_length != extent.length
-                        || sha256.as_ref() != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
-                    {
-                        return Err(ObjectError::Corruption("written page verification failed".into()));
-                    }
-                }
-            }
-            Err(_) => {
-                let reads = client.read_chunks_pipelined(&pages)?;
-                for (&index, read) in batch.iter().zip(reads) {
-                    let extent = &manifest.extents[index];
-                    let start = extent.object_offset as usize;
-                    let bytes = &data[start..start + extent.length as usize];
-                    if read.write_sequence != 1 || read.data != bytes {
-                        return Err(ObjectError::Corruption("written page verification failed".into()));
-                    }
-                }
+        let digests = client.write_chunks_if_sequence_with_digests(&writes)?;
+        for (&index, (sequence, actual_length, sha256)) in batch.iter().zip(digests) {
+            let extent = &manifest.extents[index];
+            let start = extent.object_offset as usize;
+            let bytes = &data[start..start + extent.length as usize];
+            if sequence != 1
+                || actual_length != extent.length
+                || sha256.as_ref() != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
+            {
+                return Err(ObjectError::Corruption(
+                    "written page verification failed".into(),
+                ));
             }
         }
     }

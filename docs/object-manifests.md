@@ -124,16 +124,18 @@ For fresh object pages, the writer confirms each committed range with its
 sequence, length and SHA-256 digest. A server that does not implement the digest
 request triggers full-byte readback. A mismatched digest refuses publication.
 For pages no larger than 64 KiB, the writer starts with a nonempty conditional
-batch of up to four pages. That request follows leader routing and discovers
-batch support while performing useful work, so there is no empty capability
-round trip or separately confirmed first page. A typed unknown-request refusal
-proves the batch was not admitted and permits the prior page pipeline. Normal
-typed leadership refusals may route the batch to another voter; transport or
-application failures remain uncertain and are not replayed. Larger pages retain
-the individual pipeline. A failed or partial batch leaves publication
-unattempted; outstanding writes may have committed and are never replayed. An
-eight-page group therefore needs two successful write exchanges instead of the
-previous first write, empty probe, two three-page batches and final scalar write.
+batch of up to four pages. The same successful exchange returns an ordered
+canonical binary protobuf vector with each committed page's sequence, length and
+SHA-256 digest. It therefore follows leader routing, discovers support, performs
+useful writes and verifies them without an empty capability exchange, a separately
+confirmed first page or a later digest exchange. A typed unknown-request refusal
+proves the digest batch was not admitted and permits the code-14 or individual
+write pipeline followed by digest or full-byte verification. Normal typed
+leadership refusals may route the batch to another voter; transport or application
+failures remain uncertain and are not replayed. Larger pages retain the individual
+pipeline. A failed or partial batch leaves publication unattempted; outstanding
+writes may have committed and are never replayed. An eight-page group therefore
+needs two successful write-and-verification exchanges.
 Raft may propose adjacent writes together, but this does not reduce replicated
 payload or storage bytes. Alternating local
 51-process runs on 1 KiB striped objects measured 43.4 and 39.1 initial writes
@@ -150,6 +152,18 @@ samples were 85.8 and 101.1. Both runs recovered 1,280 objects after a complete
 restart with zero write retries. A separate 51-process workload with 32 pages
 per object and four data groups measured 29.6 initial and 29.9 post-failover
 writes per second, then recovered all 320 objects with zero retries.
+
+With ordered digests returned by the write batches, eight small pages use two
+request and two response frames instead of two batch-write frames plus eight
+digest request and response frames. The two write barriers and two verification
+barriers become two combined barriers; replicated payload and physical storage
+writes are unchanged. Two runs of the 51-process, 32-page/four-group workload
+measured 68.6 and 45.4 initial writes per second and 97.4 and 87.5 after failover,
+recovering all 320 objects with zero retries. Two runs of the established
+51-process 1 KiB workload measured 62.2 and 149.0 initial writes per second and
+84.2 and 168.5 after failover, recovering all 1,280 objects with zero retries.
+The spread between runs is substantial, so these local WSL measurements establish
+functional scale and reduced wire amplification rather than a throughput promise.
 
 `RemoteMetaClient::read_object` fetches one committed manifest and assembles its
 extents using verified data-group connections. It returns the manifest with the
