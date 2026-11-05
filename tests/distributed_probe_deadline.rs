@@ -73,6 +73,16 @@ fn probe_object_budget_bounds_multiple_metadata_stages_without_replay() {
         stream.write_all(&identity).unwrap();
         assert!(matches!(
             receive(&mut stream),
+            MetaRequest::PlanObjectWriteRoutes { .. }
+        ));
+        stream
+            .write_all(&matrixobjectstore_rs::cluster::message::encode_failure(
+                StatusCode::UnknownRequest,
+                "older metadata voter",
+            ))
+            .unwrap();
+        assert!(matches!(
+            receive(&mut stream),
             MetaRequest::ReadManifest { .. }
         ));
         std::thread::sleep(Duration::from_millis(150));

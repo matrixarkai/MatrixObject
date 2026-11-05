@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #![cfg(all(feature = "meta-server", feature = "replica-server"))]
-use matrixobjectstore_rs::{cluster::*, object_manifest::ObjectPageAllocation, ChunkId, PageId, ReplicaReadResult};
+use matrixobjectstore_rs::{cluster::*, object_manifest::{ObjectManifest, ObjectPageAllocation}, ChunkId, PageId, ReplicaReadResult};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -90,6 +90,78 @@ fn combined_placement_reply_rejects_a_route_for_another_group() {
     };
     let payload = MetaReply::PlanRoutes { plan, routes: vec![route] }.encode_payload();
     assert!(MetaReply::decode(MetaRequestCode::PlanObjectPlacementRoutes, &payload).is_err());
+}
+
+#[test]
+fn write_plan_reply_keeps_manifest_and_routes_for_one_object() {
+    let socket = listener();
+    let request = MetaRequest::PlanObjectWriteRoutes {
+        bucket: "bucket".into(), key: "key".into(), length: 64, replica_count: 1,
+    };
+    assert_eq!(MetaRequest::decode(request.code(), &request.encode_payload()).unwrap(), request);
+    let plan = PlacementAssignment {
+        bucket: "bucket".into(), key: "key".into(), length: 64,
+        node_ids: vec!["group-1".into()], skipped_draining: 0,
+        skipped_offline: 0, skipped_capacity: 0, plan_checksum: "plan".into(),
+    };
+    let current = ObjectManifest {
+        format_version: 1, bucket: "bucket".into(), key: "key".into(),
+        generation: 1, length: 0, extents: vec![], deleted: false,
+    };
+    let route = ChunkGroupRoute { version: 1, group: Some(config(&socket, 1)), fence: vec![] };
+    let reply = MetaReply::WritePlanRoutes {
+        current: Some(current.clone()), plan: plan.clone(), routes: vec![route.clone()],
+    };
+    assert_eq!(MetaReply::decode(request.code(), &reply.encode_payload()).unwrap(), reply);
+    let wrong_route = MetaReply::WritePlanRoutes {
+        current: None, plan: plan.clone(),
+        routes: vec![ChunkGroupRoute {
+            version: 1, group: Some(config(&socket, 2)), fence: vec![],
+        }],
+    };
+    assert!(MetaReply::decode(request.code(), &wrong_route.encode_payload()).is_err());
+    let wrong = MetaReply::WritePlanRoutes {
+        current: Some(ObjectManifest {
+            key: "another".into(), ..current
+        }),
+        plan, routes: vec![route],
+    };
+    assert!(MetaReply::decode(request.code(), &wrong.encode_payload()).is_err());
+}
+
+#[test]
+fn changed_manifest_stops_combined_write_before_data_connections() {
+    let metadata_socket = listener();
+    let data_socket = listener();
+    let endpoint = metadata_socket.local_addr().unwrap().to_string();
+    let route = ChunkGroupRoute {
+        version: 1, group: Some(config(&data_socket, 1)), fence: vec![],
+    };
+    let worker = thread::spawn(move || {
+        let mut stream = accept(&metadata_socket);
+        assert!(matches!(meta(&mut stream), MetaRequest::PlanObjectWriteRoutes { .. }));
+        reply(&mut stream, MetaReply::WritePlanRoutes {
+            current: Some(ObjectManifest {
+                format_version: 1, bucket: "bucket".into(), key: "key".into(),
+                generation: 1, length: 0, extents: vec![], deleted: false,
+            }),
+            plan: PlacementAssignment {
+                bucket: "bucket".into(), key: "key".into(), length: 4,
+                node_ids: vec!["group-1".into()], skipped_draining: 0,
+                skipped_offline: 0, skipped_capacity: 0, plan_checksum: "plan".into(),
+            },
+            routes: vec![route],
+        });
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+    let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    assert!(matches!(
+        client.write_object("bucket", "key", None, b"page", &ObjectWriteOptions::default()),
+        Err(ObjectWriteFailure::BeforePublication { staged: None, .. })
+    ));
+    drop(client);
+    worker.join().unwrap();
+    assert!(matches!(data_socket.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
 }
 
 #[test]
@@ -358,17 +430,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         let mut stream = accept(&socket);
         assert!(matches!(
             meta(&mut stream),
-            MetaRequest::ReadManifest { .. }
-        ));
-        stream
-            .write_all(&message::encode_failure(
-                StatusCode::NotFound,
-                "missing object",
-            ))
-            .unwrap();
-        assert!(matches!(
-            meta(&mut stream),
-            MetaRequest::PlanObjectPlacementRoutes {
+            MetaRequest::PlanObjectWriteRoutes {
                 length: 64,
                 replica_count: 2,
                 ..
@@ -376,7 +438,8 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         ));
         reply(
             &mut stream,
-            MetaReply::PlanRoutes {
+            MetaReply::WritePlanRoutes {
+                current: None,
                 plan: PlacementAssignment {
                     bucket: "bucket".into(),
                     key: "key".into(),

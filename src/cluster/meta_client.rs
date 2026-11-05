@@ -599,6 +599,42 @@ impl RemoteMetaClient {
         }
     }
 
+    /// Read the current manifest and a small write plan at one metadata barrier.
+    /// Older voters use the separate reads until the rolling upgrade completes.
+    pub fn plan_object_write_routes(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        length: u64,
+        replica_count: u64,
+    ) -> Result<(Option<crate::object_manifest::ObjectManifest>, PlacementAssignment, Vec<super::ChunkGroupRoute>), ObjectError> {
+        let result = self.call(MetaRequest::PlanObjectWriteRoutes {
+            bucket: bucket.into(), key: key.into(), length, replica_count,
+        });
+        match result {
+            Ok(MetaReply::WritePlanRoutes { current, plan, routes })
+                if plan.bucket == bucket && plan.key == key && plan.length == length
+                    && plan.node_ids.len() == replica_count as usize
+                    && routes.len() == plan.node_ids.len()
+                    && current.as_ref().is_none_or(|value|
+                        value.bucket == bucket && value.key == key) => Ok((current, plan, routes)),
+            Err(ObjectError::PreconditionFailed(message))
+                if message.starts_with("the replica does not implement this request:") => {
+                let current = match self.read_manifest(bucket, key) {
+                    Ok(value) => Some(value),
+                    Err(ObjectError::NotFound(_)) => None,
+                    Err(error) => return Err(error),
+                };
+                let (plan, routes) = self.plan_object_placement_routes(
+                    bucket, key, length, replica_count,
+                )?;
+                Ok((current, plan, routes))
+            }
+            Ok(_) => Err(ObjectError::Corruption("unexpected write plan reply".into())),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Commit only if the complete current record matches, or is absent for None.
     /// This condition is independent of any data-node update.
     pub fn commit_object_placement_if_current(
@@ -914,6 +950,7 @@ impl RemoteMetaClient {
                 | MetaRequest::PlanObjectPlacementRoutes { .. }
                 | MetaRequest::ReadManifest { .. }
                 | MetaRequest::ReadManifestRoutes { .. }
+                | MetaRequest::PlanObjectWriteRoutes { .. }
                 | MetaRequest::ReadObjectRootPlacement { .. }
                 | MetaRequest::ReadChunkGroup { .. }
                 | MetaRequest::ReadChunkRoute { .. }
