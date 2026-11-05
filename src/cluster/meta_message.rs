@@ -218,6 +218,10 @@ pub enum MetaRequest {
         bucket: String,
         key: String,
     },
+    ReadManifestRoutes {
+        bucket: String,
+        key: String,
+    },
     PublishManifest {
         outcome: crate::object_manifest::ManifestOutcome,
         update_time_ms: u64,
@@ -281,6 +285,7 @@ impl MetaRequest {
         match self {
             MetaRequest::AllocateObjectPages { .. } => MetaRequestCode::AllocateObjectPages,
             MetaRequest::ReadManifest { .. } => MetaRequestCode::ReadManifest,
+            MetaRequest::ReadManifestRoutes { .. } => MetaRequestCode::ReadManifestRoutes,
             MetaRequest::PublishManifest { .. } => MetaRequestCode::PublishManifest,
             MetaRequest::Membership(_) => MetaRequestCode::Membership,
             MetaRequest::ChunkCatalog(_) => MetaRequestCode::ChunkCatalog,
@@ -315,7 +320,8 @@ impl MetaRequest {
                 }
                 .encode_to_vec();
             }
-            MetaRequest::ReadManifest { bucket, key } => {
+            MetaRequest::ReadManifest { bucket, key }
+            | MetaRequest::ReadManifestRoutes { bucket, key } => {
                 return super::conditional_requests::ManifestRead {
                     version: 1,
                     bucket: bucket.clone(),
@@ -478,7 +484,7 @@ impl MetaRequest {
                 page_count: value.page_count,
             });
         }
-        if code == MetaRequestCode::ReadManifest {
+        if matches!(code, MetaRequestCode::ReadManifest | MetaRequestCode::ReadManifestRoutes) {
             if payload.len() > 8192 {
                 return Err(ObjectError::Corruption(
                     "manifest read exceeds bound".into(),
@@ -493,9 +499,11 @@ impl MetaRequest {
             }
             crate::validate_bucket(&value.bucket)?;
             crate::validate_key(&value.key)?;
-            return Ok(Self::ReadManifest {
-                bucket: value.bucket,
-                key: value.key,
+            return Ok(match code {
+                MetaRequestCode::ReadManifestRoutes => Self::ReadManifestRoutes {
+                    bucket: value.bucket, key: value.key,
+                },
+                _ => Self::ReadManifest { bucket: value.bucket, key: value.key },
             });
         }
         if code == MetaRequestCode::PublishManifest {
@@ -549,6 +557,7 @@ impl MetaRequest {
             | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
+            | MetaRequestCode::ReadManifestRoutes
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::CommitObjectPlacementIfCurrent => unreachable!(),
             MetaRequestCode::ReadChunkGroup => MetaRequest::ReadChunkGroup {
@@ -603,12 +612,37 @@ impl MetaRequest {
     }
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct ManifestRoutesPayload {
+    #[prost(uint32, tag = "1")]
+    version: u32,
+    #[prost(message, optional, tag = "2")]
+    manifest: Option<crate::object_manifest::ObjectManifest>,
+    #[prost(message, repeated, tag = "3")]
+    routes: Vec<super::ChunkGroupRoute>,
+}
+
+pub(super) const MAX_MANIFEST_ROUTE_REPLY_BYTES: usize =
+    1024 * 1024 + 4 * 65536 + 256;
+
+pub(super) fn manifest_route_names(
+    manifest: &crate::object_manifest::ObjectManifest,
+) -> Vec<String> {
+    manifest.extents.iter().map(|extent| extent.group.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter().take(4).map(str::to_owned).collect()
+}
+
 /// Reply contents, including a pre-admission leader-routing response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetaReply {
     Membership(super::MembershipStatus),
     ObjectPages(crate::object_manifest::ObjectPageAllocation),
     Manifest(crate::object_manifest::ObjectManifest),
+    ManifestRoutes {
+        manifest: crate::object_manifest::ObjectManifest,
+        routes: Vec<super::ChunkGroupRoute>,
+    },
     GroupIdentity(super::MetaGroupIdentity),
     ChunkGroup(super::ChunkGroupConfig),
     ChunkRoute(super::ChunkGroupRoute),
@@ -661,6 +695,9 @@ impl MetaReply {
             }),
             Self::ObjectPages(value) => value.encoded_len(),
             Self::Manifest(value) => value.encoded_len(),
+            Self::ManifestRoutes { manifest, routes } => ManifestRoutesPayload {
+                version: 1, manifest: Some(manifest.clone()), routes: routes.clone(),
+            }.encoded_len(),
             Self::Expired { .. } => 8,
             Self::Plan(plan) => 52usize
                 .saturating_add(plan.bucket.len())
@@ -677,6 +714,9 @@ impl MetaReply {
         match self {
             MetaReply::ObjectPages(value) => return value.encode_to_vec(),
             MetaReply::Manifest(value) => return value.encode_to_vec(),
+            MetaReply::ManifestRoutes { manifest, routes } => return ManifestRoutesPayload {
+                version: 1, manifest: Some(manifest.clone()), routes: routes.clone(),
+            }.encode_to_vec(),
             MetaReply::Membership(value) => return value.encode_to_vec(),
             MetaReply::NotLeader => {}
             MetaReply::GroupIdentity(identity) => return identity.encode_to_vec(),
@@ -759,6 +799,27 @@ impl MetaReply {
             value.validate()?;
             return Ok(Self::Manifest(value));
         }
+        if code == MetaRequestCode::ReadManifestRoutes {
+            if payload.len() > MAX_MANIFEST_ROUTE_REPLY_BYTES {
+                return Err(ObjectError::Corruption("manifest route reply exceeds bound".into()));
+            }
+            let value: ManifestRoutesPayload = super::conditional_requests::decode(payload)?;
+            if value.encode_to_vec() != payload {
+                return Err(ObjectError::Corruption("noncanonical manifest route reply".into()));
+            }
+            let manifest = value.manifest.ok_or_else(||
+                ObjectError::Corruption("manifest route reply missing manifest".into()))?;
+            manifest.validate()?;
+            if value.version != 1 || value.routes.len() > 4
+                || value.routes.iter().any(|route| route.membership_fence().is_err())
+                || (!value.routes.is_empty() && manifest_route_names(&manifest).len() != value.routes.len())
+                || value.routes.iter().zip(manifest_route_names(&manifest)).any(|(route, name)|
+                    route.group.as_ref().is_none_or(|group| group.placement_id != name))
+            {
+                return Err(ObjectError::Corruption("invalid manifest route reply".into()));
+            }
+            return Ok(Self::ManifestRoutes { manifest, routes: value.routes });
+        }
 
         if code == MetaRequestCode::GroupIdentity {
             if payload.len() > 16384 {
@@ -799,6 +860,7 @@ impl MetaReply {
             MetaRequestCode::Membership
             | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
+            | MetaRequestCode::ReadManifestRoutes
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::ReadChunkGroup
             | MetaRequestCode::ReadChunkRoute

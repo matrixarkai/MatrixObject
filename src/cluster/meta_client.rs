@@ -686,7 +686,7 @@ impl RemoteMetaClient {
         options: &super::ReplicaClientOptions,
     ) -> Result<(crate::object_manifest::ObjectManifest, Vec<u8>), ObjectError> {
         self.check_operation_deadline()?;
-        let manifest = self.read_manifest(bucket, key)?;
+        let (manifest, mut bundled_routes) = self.read_manifest_routes(bucket, key)?;
         manifest.validate()?;
         if manifest.deleted {
             return Err(ObjectError::NotFound("object is deleted".into()));
@@ -762,7 +762,14 @@ impl RemoteMetaClient {
             for window in groups.chunks(4) {
             let mut jobs = Vec::new();
             let ids: Vec<String> = window.iter().map(|(group, _, _)| group.clone()).collect();
-            let routes = self.read_chunk_routes(&ids)?;
+            let routes = match bundled_routes.take() {
+                Some(routes) if routes.is_empty() => self.read_chunk_routes(&ids)?,
+                Some(routes) if routes.len() == ids.len()
+                    && routes.iter().zip(&ids).all(|(route, id)|
+                        route.group.as_ref().is_some_and(|group| &group.placement_id == id)) => routes,
+                Some(_) => return Err(ObjectError::Corruption("manifest routes name another group".into())),
+                None => self.read_chunk_routes(&ids)?,
+            };
             for ((_, start, end), route) in window.iter().zip(routes) {
                 jobs.push((route, &order[*start..*end]));
             }
@@ -805,6 +812,26 @@ impl RemoteMetaClient {
         drop(output);
         self.check_operation_deadline()?;
         Ok((manifest, bytes))
+    }
+
+    #[cfg(feature = "replica-server")]
+    fn read_manifest_routes(
+        &mut self, bucket: &str, key: &str,
+    ) -> Result<(crate::object_manifest::ObjectManifest, Option<Vec<super::ChunkGroupRoute>>), ObjectError> {
+        let result = match self.call(MetaRequest::ReadManifestRoutes {
+            bucket: bucket.into(), key: key.into(),
+        }) {
+            Ok(MetaReply::ManifestRoutes { manifest, routes })
+                if manifest.bucket == bucket && manifest.key == key => (manifest, Some(routes)),
+            Ok(_) => return Err(ObjectError::Corruption("unexpected manifest route reply".into())),
+            Err(ObjectError::PreconditionFailed(message))
+                if message.starts_with("the replica does not implement this request:") =>
+            {
+                (self.read_manifest(bucket, key)?, None)
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(result)
     }
 
     /// Publish only after immutable extent writes are confirmed durable. An uncertain
@@ -866,6 +893,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ListRootNodes
                 | MetaRequest::PlanObjectPlacement { .. }
                 | MetaRequest::ReadManifest { .. }
+                | MetaRequest::ReadManifestRoutes { .. }
                 | MetaRequest::ReadObjectRootPlacement { .. }
                 | MetaRequest::ReadChunkGroup { .. }
                 | MetaRequest::ReadChunkRoute { .. }
@@ -1206,6 +1234,46 @@ fn write_before(
 mod operation_deadline_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[cfg(feature = "replica-server")]
+    #[test]
+    fn manifest_routes_use_confirmed_manifest_on_older_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let worker = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            for index in 0..2 {
+                let mut header = [0u8; HEADER_BYTES];
+                server.read_exact(&mut header).unwrap();
+                let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                let mut payload = vec![0; length];
+                server.read_exact(&mut payload).unwrap();
+                let code = MetaRequestCode::from_u8(header[1]).unwrap();
+                let request = MetaRequest::decode(code, &payload).unwrap();
+                if index == 0 {
+                    assert!(matches!(request, MetaRequest::ReadManifestRoutes { .. }));
+                    server.write_all(&super::super::message::encode_failure(
+                        StatusCode::UnknownRequest, "unsupported manifest route read",
+                    )).unwrap();
+                } else {
+                    assert!(matches!(request, MetaRequest::ReadManifest { .. }));
+                    let manifest = crate::object_manifest::ObjectManifest {
+                        format_version: 1, bucket: "bucket".into(), key: "key".into(),
+                        generation: 1, length: 0, extents: vec![], deleted: false,
+                    };
+                    server.write_all(&super::super::meta_message::encode_meta_reply(
+                        &MetaReply::Manifest(manifest),
+                    )).unwrap();
+                }
+            }
+        });
+        let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+        let (manifest, routes) = client.read_manifest_routes("bucket", "key").unwrap();
+        assert_eq!(manifest.length, 0);
+        assert!(routes.is_none());
+        worker.join().unwrap();
+    }
 
     #[test]
     fn route_batch_falls_back_to_confirmed_reads_on_older_server() {
