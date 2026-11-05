@@ -33,7 +33,8 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-const TICK: Duration = Duration::from_millis(100);
+// Keep the chunk and metadata Raft clocks aligned across a distributed cluster.
+const TICK: Duration = Duration::from_millis(300);
 const NETWORK_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Fixed voter endpoints. Each process uses its own existing state directory.
