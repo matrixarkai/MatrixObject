@@ -3423,7 +3423,7 @@ mod coupled_groups {
         }
         group_usage(&metadata.api, &groups, &[]);
         let tls = api_tls_config(metadata.api_tls.as_ref());
-        let attempts = if group_count == 16 && object_bytes >= 1024 * 1024 { 3 } else { 1 };
+        let attempts = if group_count == 16 && objects { 3 } else { 1 };
         let mut saved = load_batch_sized_with_attempts(
             &LoadEndpoint { api: &metadata.api, tls: tls.clone() },
             0,
@@ -3576,6 +3576,12 @@ mod coupled_groups {
     #[ignore = "51-process API and Raft TLS load; run explicitly in WSL"]
     fn encrypted_api_sixteen_groups_recover_four_way_objects() {
         api_tls_load(16, 128, 1024 * 1024);
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "51-process WSL load: 640 object publications and recovery"]
+    fn encrypted_api_sixteen_groups_recover_many_small_objects() {
+        api_tls_load(16, 512, 64 * 1024);
     }
     #[cfg(feature = "peer-tls")]
     fn tls_payload_recovery(groups: usize, writes: u64, bytes: u64) {
