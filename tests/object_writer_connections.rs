@@ -196,10 +196,9 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
             let object = object.clone();
             let simultaneous_reads = Arc::clone(&simultaneous_reads);
             thread::spawn(move || {
-                // One retained preflight connection for group 1; group 2 verifies
-                // preflight then reconnects once for all writes. Each read visits once.
-                let turns = if index == 0 { 2 } else { 3 };
-                for turn in 0..turns {
+                // Both groups write on their verified preflight connections.
+                // Each read opens one later connection.
+                for turn in 0..2 {
                     let mut stream = accept(&socket);
                     assert!(matches!(
                         replica(&mut stream),
@@ -210,11 +209,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                             group.identity.clone().unwrap(),
                         )))
                         .unwrap();
-                    if index == 1 && turn == 0 {
-                        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
-                        continue;
-                    }
-                    let writing = turn == if index == 0 { 0 } else { 1 };
+                    let writing = turn == 0;
                     let pages: Vec<_> = (index as u64..32).step_by(2).collect();
                     for (batch_index, batch) in pages.chunks(8).enumerate() {
                         if writing {
