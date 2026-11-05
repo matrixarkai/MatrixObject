@@ -66,7 +66,10 @@ tombstone. Capacity reservations move atomically with both records. As with the
 existing placement model, an older record without per-group charges reserves the
 full object length on each target. New manifest publications charge each target
 for the lengths of its own extents. The writer plans against the largest group
-share before allocating pages; publication checks each actual group charge.
+share before allocating pages; publication checks each actual group charge
+against configured capacity. Verified staged pages already reduce reported free
+space, so publication does not charge those bytes against that free space again.
+Placement planning still caps reported free space at the configured group capacity.
 Root placement migration refuses manifest-backed objects because their extents
 name durable data groups. Group repair uses chunk membership changes; moving an
 extent to another group requires copying its page and publishing a new manifest.

@@ -52304,8 +52304,8 @@ fn binary_placement_outcome_replays_decided_changes_and_refuses_wrong_state() {
 fn binary_placement_outcome_carries_object_and_capacity_atomically() {
     use crate::placement_outcome::PlacementOutcome;
     let mut source=MatrixMetaService::new();
-    // Chunk health can report capacity beyond the roster's older measurement.
-    let mut node=placement_node("node-a", "zone-a", 100);
+    // The committed placement must fit the configured durable capacity.
+    let mut node=placement_node("node-a", "zone-a", 1000);
     node.chunk_health.accepting_writes=true;
     node.chunk_health.raft_writable=true;
     node.chunk_health.capacity_free_bytes=1000;
@@ -54581,6 +54581,15 @@ pub(crate) fn manifest_publication_fixture() -> (
         &working, ManifestOutcome::decide(Some(one), two).unwrap(), 20
     ).unwrap();
     (service, create, replace)
+}
+
+#[test]
+fn stale_chunk_free_space_cannot_raise_the_capacity_ceiling() {
+    let mut node = placement_node("group-a", "domain-a", 80);
+    node.committed_bytes = 72;
+    node.used_bytes = 72;
+    node.chunk_health.capacity_free_bytes = 80;
+    assert_eq!(MatrixMetaService::node_effective_capacity_bytes(&node), 80);
 }
 
 #[test]

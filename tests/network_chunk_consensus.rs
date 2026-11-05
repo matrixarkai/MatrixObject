@@ -1859,7 +1859,7 @@ mod coupled_groups {
     #[test]
     fn striped_write_uses_each_groups_capacity() {
         let mut groups: Vec<_> = (1..=2).map(|id| {
-            let mut group = Group::configured(6);
+            let mut group = Group::configured(80);
             group.group_id = id;
             group.checkpoint_bytes = 1024;
             group
@@ -1880,17 +1880,18 @@ mod coupled_groups {
             replica: chunk_options(),
             ..Default::default()
         };
-        let bytes = b"abcdefgh";
-        let manifest = meta.write_object("striped", "capacity", None, bytes, &options).unwrap();
-        assert_eq!(manifest.extents.len(), 2);
+        let bytes: Vec<u8> = (0..144).collect();
+        let manifest = meta.write_object("striped", "capacity", None, &bytes, &options).unwrap();
+        assert_eq!(manifest.extents.len(), 36);
         assert_ne!(manifest.extents[0].group, manifest.extents[1].group);
-        assert_eq!(meta.read_object("striped", "capacity", 8, &options.replica).unwrap(),
-            (manifest, bytes.to_vec()));
+        assert_eq!(meta.read_object("striped", "capacity", 144, &options.replica).unwrap(),
+            (manifest, bytes.clone()));
         let nodes = meta.list_placement_nodes().unwrap();
         for group in &groups {
             let node = nodes.iter().find(|node| node.node_id == group.placement_id()).unwrap();
-            assert_eq!(node.committed_bytes, 4);
+            assert_eq!(node.committed_bytes, 72);
         }
+        assert!(meta.plan_object_placement("striped", "overflow", 9, 2).is_err());
         for id in 0..3 {
             metadata.kill(id);
         }
@@ -1898,12 +1899,12 @@ mod coupled_groups {
             metadata.start(id);
         }
         let mut recovered = metadata.ready();
-        assert_eq!(recovered.read_object("striped", "capacity", 8, &options.replica).unwrap().1,
+        assert_eq!(recovered.read_object("striped", "capacity", 144, &options.replica).unwrap().1,
             bytes);
         let nodes = recovered.list_placement_nodes().unwrap();
         for group in &groups {
             let node = nodes.iter().find(|node| node.node_id == group.placement_id()).unwrap();
-            assert_eq!(node.committed_bytes, 4);
+            assert_eq!(node.committed_bytes, 72);
         }
     }
     #[test]
