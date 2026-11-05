@@ -3387,6 +3387,22 @@ mod coupled_groups {
         object_bytes: u64,
         setup: VoterSetup,
     ) {
+        multiple_group_load_with_transport_checkpoint(
+            group_count, writes, workers, objects, target_groups, object_bytes,
+            setup, 16 * 1024, true,
+        );
+    }
+    fn multiple_group_load_with_transport_checkpoint(
+        group_count: usize,
+        writes: u64,
+        workers: usize,
+        objects: bool,
+        target_groups: u32,
+        object_bytes: u64,
+        setup: VoterSetup,
+        checkpoint_bytes: u64,
+        require_checkpoint: bool,
+    ) {
         let VoterSetup { peer_tls, api_tls, voters } = setup;
         assert!(!api_tls || peer_tls.is_some());
         assert!((8..=4 * 1024 * 1024).contains(&object_bytes));
@@ -3403,7 +3419,7 @@ mod coupled_groups {
                 g.api_tls = if api_tls { peer_tls.clone() } else { None };
                 g.group_id = i as u64 + 1;
                 g.max_pages = 2048;
-                g.checkpoint_bytes = 16 * 1024;
+                g.checkpoint_bytes = checkpoint_bytes;
                 g.heartbeat_ms = "2000";
                 g
             })
@@ -3445,19 +3461,21 @@ mod coupled_groups {
         }
         let leader = metadata.ready().endpoint().to_string();
         let leader = metadata.api.iter().position(|a| *a == leader).unwrap();
-        node_regime::checkpoints::wait_for_checkpoint(
-            &metadata
-                .root
-                .join(leader.to_string())
-                .join("metadata.peer.wal"),
-            2,
-        );
-        for group in &groups {
-            let leader = group.leader();
+        if require_checkpoint {
             node_regime::checkpoints::wait_for_checkpoint(
-                &group.root.join(leader.to_string()).join("chunk.peer.wal"),
+                &metadata
+                    .root
+                    .join(leader.to_string())
+                    .join("metadata.peer.wal"),
                 2,
             );
+            for group in &groups {
+                let leader = group.leader();
+                node_regime::checkpoints::wait_for_checkpoint(
+                    &group.root.join(leader.to_string()).join("chunk.peer.wal"),
+                    2,
+                );
+            }
         }
         metadata.kill(leader);
         for _ in 1..voters / 2 {
@@ -3582,6 +3600,20 @@ mod coupled_groups {
     #[ignore = "51-process WSL load: 640 object publications and recovery"]
     fn encrypted_api_sixteen_groups_recover_many_small_objects() {
         api_tls_load(16, 512, 64 * 1024);
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "51-process WSL write and read load with recovery"]
+    fn encrypted_api_sixteen_groups_sustained_load_recovers() {
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..3 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        multiple_group_load_with_transport_checkpoint(
+            16, 512, 16, true, 4, 64 * 1024,
+            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
+            32 * 1024 * 1024, false,
+        );
     }
     #[cfg(feature = "peer-tls")]
     fn tls_payload_recovery(groups: usize, writes: u64, bytes: u64) {
