@@ -410,9 +410,15 @@ impl RemoteMetaClient {
                 planned_group_bytes[index % count as usize] += page.len() as u64;
             }
             let max_group_bytes = planned_group_bytes.into_iter().max().unwrap_or(0);
-            let plan = self
-                .plan_object_placement(bucket, key, max_group_bytes, u64::from(count))
-                .map_err(before)?;
+            let (plan, planned_routes) = if count <= 4 {
+                let (plan, routes) = self
+                    .plan_object_placement_routes(bucket, key, max_group_bytes, u64::from(count))
+                    .map_err(before)?;
+                (plan, Some(routes))
+            } else {
+                (self.plan_object_placement(bucket, key, max_group_bytes, u64::from(count))
+                    .map_err(before)?, None)
+            };
             if plan.node_ids.len() != count as usize
                 || plan
                     .node_ids
@@ -428,9 +434,18 @@ impl RemoteMetaClient {
             // Verify every selected group before allocation or data writes. Visit
             // the first write target last so its verified connection can be reused.
             // Keep configurations only for this operation and retain one connection.
+            let mut route_map = planned_routes.map(|routes| {
+                plan.node_ids.iter().cloned().zip(routes).collect::<std::collections::BTreeMap<_, _>>()
+            });
             for window in plan.node_ids.rchunks(4) {
                 let ids: Vec<String> = window.iter().rev().cloned().collect();
-                let routes = self.read_chunk_routes(&ids).map_err(before)?;
+                let routes = if let Some(routes) = &mut route_map {
+                    ids.iter().map(|id| routes.remove(id).ok_or_else(|| before(ObjectError::Corruption(
+                        "selected group route missing".into(),
+                    )))).collect::<Result<Vec<_>, _>>()?
+                } else {
+                    self.read_chunk_routes(&ids).map_err(before)?
+                };
                 for (group, configured) in ids.into_iter().zip(routes) {
                     let client = connect_group(&configured, &options.replica).map_err(before)?;
                     groups.insert(group.clone(), configured);

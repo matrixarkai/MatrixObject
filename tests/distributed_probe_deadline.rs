@@ -84,7 +84,7 @@ fn probe_object_budget_bounds_multiple_metadata_stages_without_replay() {
             .unwrap();
         assert!(matches!(
             receive(&mut stream),
-            MetaRequest::PlanObjectPlacement { .. }
+            MetaRequest::PlanObjectPlacementRoutes { .. }
         ));
         let mut byte = [0];
         assert_eq!(

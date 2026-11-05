@@ -885,6 +885,25 @@ pub(super) fn apply_with_groups(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
+    if let MetaRequest::PlanObjectPlacementRoutes { bucket, key, length, replica_count } = &request {
+        if !(1..=4).contains(replica_count) {
+            return Err(ObjectError::InvalidArgument("combined placement width must be one through four".into()));
+        }
+        let plan = match apply_to_meta(service, MetaRequest::PlanObjectPlacement {
+            bucket: bucket.clone(), key: key.clone(), length: *length,
+            replica_count: *replica_count,
+        }, limit)? {
+            MetaReply::Plan(plan) => plan,
+            _ => unreachable!(),
+        };
+        let routes = plan.node_ids.iter().map(|id| groups.routing_view(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let reply = MetaReply::PlanRoutes { plan, routes };
+        crate::cluster::message::check_reply_size(
+            reply.payload_len(), limit.min(super::meta_message::MAX_PLAN_ROUTE_REPLY_BYTES),
+        )?;
+        return Ok(reply);
+    }
     if let MetaRequest::ReadManifestRoutes { bucket, key } = &request {
         let manifest = match apply_to_meta(service, MetaRequest::ReadManifest {
             bucket: bucket.clone(), key: key.clone(),
@@ -986,6 +1005,9 @@ pub(super) fn apply_to_meta(
         }
         MetaRequest::ReadManifestRoutes { .. } => Err(ObjectError::PreconditionFailed(
             "manifest routes require a chunk catalog".into(),
+        )),
+        MetaRequest::PlanObjectPlacementRoutes { .. } => Err(ObjectError::PreconditionFailed(
+            "placement routes require the chunk catalog".into(),
         )),
 
         MetaRequest::ReadChunkGroup { .. } | MetaRequest::ReadChunkRoute { .. }

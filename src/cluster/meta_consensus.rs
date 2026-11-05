@@ -668,6 +668,7 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::ReadChunkRoute { .. }
         | MetaRequest::ReadChunkRoutes { .. }
         | MetaRequest::PlanObjectPlacement { .. }
+        | MetaRequest::PlanObjectPlacementRoutes { .. }
         | MetaRequest::ReadObjectRootPlacement { .. }
         | MetaRequest::GroupIdentity
         | MetaRequest::Ping => true,
