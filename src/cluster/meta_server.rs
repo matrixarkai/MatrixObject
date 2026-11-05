@@ -885,10 +885,14 @@ pub(super) fn apply_with_groups(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
-    if let MetaRequest::PlanObjectPlacementRoutes { bucket, key, length, replica_count } = &request {
+    if let MetaRequest::PlanObjectPlacementRoutes { bucket, key, length, replica_count }
+    | MetaRequest::PlanObjectWriteRoutes { bucket, key, length, replica_count } = &request {
         if !(1..=4).contains(replica_count) {
             return Err(ObjectError::InvalidArgument("combined placement width must be one through four".into()));
         }
+        let write_plan = matches!(&request, MetaRequest::PlanObjectWriteRoutes { .. });
+        let current = write_plan.then(|| service.object_manifests
+            .get(&super::meta_message::object_id(bucket, key)).cloned()).flatten();
         let plan = match apply_to_meta(service, MetaRequest::PlanObjectPlacement {
             bucket: bucket.clone(), key: key.clone(), length: *length,
             replica_count: *replica_count,
@@ -898,9 +902,17 @@ pub(super) fn apply_with_groups(
         };
         let routes = plan.node_ids.iter().map(|id| groups.routing_view(id))
             .collect::<Result<Vec<_>, _>>()?;
-        let reply = MetaReply::PlanRoutes { plan, routes };
+        let reply = if write_plan {
+            MetaReply::WritePlanRoutes { current, plan, routes }
+        } else {
+            MetaReply::PlanRoutes { plan, routes }
+        };
         crate::cluster::message::check_reply_size(
-            reply.payload_len(), limit.min(super::meta_message::MAX_PLAN_ROUTE_REPLY_BYTES),
+            reply.payload_len(), limit.min(if write_plan {
+                super::meta_message::MAX_WRITE_PLAN_REPLY_BYTES
+            } else {
+                super::meta_message::MAX_PLAN_ROUTE_REPLY_BYTES
+            }),
         )?;
         return Ok(reply);
     }
@@ -1008,6 +1020,9 @@ pub(super) fn apply_to_meta(
         )),
         MetaRequest::PlanObjectPlacementRoutes { .. } => Err(ObjectError::PreconditionFailed(
             "placement routes require the chunk catalog".into(),
+        )),
+        MetaRequest::PlanObjectWriteRoutes { .. } => Err(ObjectError::PreconditionFailed(
+            "write plan routes require the chunk catalog".into(),
         )),
 
         MetaRequest::ReadChunkGroup { .. } | MetaRequest::ReadChunkRoute { .. }

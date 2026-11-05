@@ -275,6 +275,12 @@ pub enum MetaRequest {
         length: u64,
         replica_count: u64,
     },
+    PlanObjectWriteRoutes {
+        bucket: String,
+        key: String,
+        length: u64,
+        replica_count: u64,
+    },
     CommitObjectPlacement {
         placement: CommittedPlacement,
         expected_plan_checksum: String,
@@ -308,6 +314,7 @@ impl MetaRequest {
             MetaRequest::ReadChunkGroup { .. } => MetaRequestCode::ReadChunkGroup,
             MetaRequest::PlanObjectPlacement { .. } => MetaRequestCode::PlanObjectPlacement,
             MetaRequest::PlanObjectPlacementRoutes { .. } => MetaRequestCode::PlanObjectPlacementRoutes,
+            MetaRequest::PlanObjectWriteRoutes { .. } => MetaRequestCode::PlanObjectWriteRoutes,
             MetaRequest::CommitObjectPlacement { .. } => MetaRequestCode::CommitObjectPlacement,
             MetaRequest::CommitObjectPlacementIfCurrent { .. } => {
                 MetaRequestCode::CommitObjectPlacementIfCurrent
@@ -424,6 +431,11 @@ impl MetaRequest {
                 length,
                 replica_count,
             } | MetaRequest::PlanObjectPlacementRoutes {
+                bucket,
+                key,
+                length,
+                replica_count,
+            } | MetaRequest::PlanObjectWriteRoutes {
                 bucket,
                 key,
                 length,
@@ -596,12 +608,15 @@ impl MetaRequest {
                 now_ms: cursor.take_u64()?,
             },
             MetaRequestCode::ListRootNodes => MetaRequest::ListRootNodes,
-            MetaRequestCode::PlanObjectPlacement | MetaRequestCode::PlanObjectPlacementRoutes => {
+            MetaRequestCode::PlanObjectPlacement | MetaRequestCode::PlanObjectPlacementRoutes
+            | MetaRequestCode::PlanObjectWriteRoutes => {
                 let bucket = cursor.take_str()?;
                 let key = cursor.take_str()?;
                 let length = cursor.take_u64()?;
                 let replica_count = cursor.take_u64()?;
-                if code == MetaRequestCode::PlanObjectPlacementRoutes {
+                if code == MetaRequestCode::PlanObjectWriteRoutes {
+                    MetaRequest::PlanObjectWriteRoutes { bucket, key, length, replica_count }
+                } else if code == MetaRequestCode::PlanObjectPlacementRoutes {
                     MetaRequest::PlanObjectPlacementRoutes { bucket, key, length, replica_count }
                 } else {
                     MetaRequest::PlanObjectPlacement { bucket, key, length, replica_count }
@@ -649,10 +664,24 @@ struct PlanRoutesPayload {
     routes: Vec<super::ChunkGroupRoute>,
 }
 
+#[derive(Clone, PartialEq, prost::Message)]
+struct WritePlanRoutesPayload {
+    #[prost(uint32, tag = "1")]
+    version: u32,
+    #[prost(bytes, tag = "2")]
+    plan: Vec<u8>,
+    #[prost(message, repeated, tag = "3")]
+    routes: Vec<super::ChunkGroupRoute>,
+    #[prost(message, optional, tag = "4")]
+    current: Option<crate::object_manifest::ObjectManifest>,
+}
+
 pub(super) const MAX_PLAN_ROUTE_REPLY_BYTES: usize = 4 * 65536 + 8192;
 
 pub(super) const MAX_MANIFEST_ROUTE_REPLY_BYTES: usize =
     1024 * 1024 + 4 * 65536 + 256;
+
+pub(super) const MAX_WRITE_PLAN_REPLY_BYTES: usize = super::MAX_PAYLOAD_BYTES;
 
 pub(super) fn manifest_route_names(
     manifest: &crate::object_manifest::ObjectManifest,
@@ -673,6 +702,11 @@ pub enum MetaReply {
         routes: Vec<super::ChunkGroupRoute>,
     },
     PlanRoutes {
+        plan: PlacementAssignment,
+        routes: Vec<super::ChunkGroupRoute>,
+    },
+    WritePlanRoutes {
+        current: Option<crate::object_manifest::ObjectManifest>,
         plan: PlacementAssignment,
         routes: Vec<super::ChunkGroupRoute>,
     },
@@ -734,6 +768,10 @@ impl MetaReply {
             Self::PlanRoutes { plan, routes } => PlanRoutesPayload {
                 version: 1, plan: Self::Plan(plan.clone()).encode_payload(), routes: routes.clone(),
             }.encoded_len(),
+            Self::WritePlanRoutes { current, plan, routes } => WritePlanRoutesPayload {
+                version: 1, plan: Self::Plan(plan.clone()).encode_payload(),
+                routes: routes.clone(), current: current.clone(),
+            }.encoded_len(),
             Self::Expired { .. } => 8,
             Self::Plan(plan) => 52usize
                 .saturating_add(plan.bucket.len())
@@ -755,6 +793,10 @@ impl MetaReply {
             }.encode_to_vec(),
             MetaReply::PlanRoutes { plan, routes } => return PlanRoutesPayload {
                 version: 1, plan: MetaReply::Plan(plan.clone()).encode_payload(), routes: routes.clone(),
+            }.encode_to_vec(),
+            MetaReply::WritePlanRoutes { current, plan, routes } => return WritePlanRoutesPayload {
+                version: 1, plan: MetaReply::Plan(plan.clone()).encode_payload(),
+                routes: routes.clone(), current: current.clone(),
             }.encode_to_vec(),
             MetaReply::Membership(value) => return value.encode_to_vec(),
             MetaReply::NotLeader => {}
@@ -879,6 +921,34 @@ impl MetaReply {
             }
             return Ok(Self::PlanRoutes { plan, routes: value.routes });
         }
+        if code == MetaRequestCode::PlanObjectWriteRoutes {
+            if payload.len() > MAX_WRITE_PLAN_REPLY_BYTES {
+                return Err(ObjectError::Corruption("write plan reply exceeds bound".into()));
+            }
+            let value: WritePlanRoutesPayload = super::conditional_requests::decode(payload)?;
+            if value.version != 1 || value.encode_to_vec() != payload || value.routes.len() > 4 {
+                return Err(ObjectError::Corruption("invalid write plan reply".into()));
+            }
+            let plan = match Self::decode(MetaRequestCode::PlanObjectPlacement, &value.plan)? {
+                Self::Plan(plan) => plan,
+                _ => unreachable!(),
+            };
+            if plan.node_ids.len() != value.routes.len()
+                || value.routes.iter().zip(&plan.node_ids).any(|(route, id)|
+                    route.group.as_ref().is_none_or(|group| &group.placement_id != id)
+                    || route.membership_fence().is_err()) {
+                return Err(ObjectError::Corruption("write plan routes do not match selected groups".into()));
+            }
+            if let Some(current) = &value.current {
+                current.validate()?;
+                if current.bucket != plan.bucket || current.key != plan.key {
+                    return Err(ObjectError::Corruption("write plan manifest names another object".into()));
+                }
+            }
+            return Ok(Self::WritePlanRoutes {
+                current: value.current, plan, routes: value.routes,
+            });
+        }
 
         if code == MetaRequestCode::GroupIdentity {
             if payload.len() > 16384 {
@@ -923,6 +993,7 @@ impl MetaReply {
             | MetaRequestCode::PublishManifest
             | MetaRequestCode::ReadChunkGroup
             | MetaRequestCode::PlanObjectPlacementRoutes
+            | MetaRequestCode::PlanObjectWriteRoutes
             | MetaRequestCode::ReadChunkRoute
             | MetaRequestCode::ReadChunkRoutes
             | MetaRequestCode::GroupIdentity => unreachable!(),

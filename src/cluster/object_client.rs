@@ -382,10 +382,26 @@ impl RemoteMetaClient {
         self.check_operation_deadline().map_err(before)?;
         let (pages, generation) =
             preflight(bucket, key, expected.as_ref(), data.len(), options).map_err(before)?;
-        let current = match self.read_manifest(bucket, key) {
-            Ok(value) => Some(value),
-            Err(ObjectError::NotFound(_)) => None,
-            Err(error) => return Err(before(error)),
+        let count = options.target_groups.min(pages);
+        let max_group_bytes = if count > 0 {
+            let mut planned_group_bytes = vec![0u64; count as usize];
+            for (index, page) in data.chunks(options.page_bytes).enumerate() {
+                planned_group_bytes[index % count as usize] += page.len() as u64;
+            }
+            planned_group_bytes.into_iter().max().unwrap_or(0)
+        } else { 0 };
+        let (current, preplanned) = if (1..=4).contains(&count) {
+            let (current, plan, routes) = self.plan_object_write_routes(
+                bucket, key, max_group_bytes, u64::from(count),
+            ).map_err(before)?;
+            (current, Some((plan, routes)))
+        } else {
+            let current = match self.read_manifest(bucket, key) {
+                Ok(value) => Some(value),
+                Err(ObjectError::NotFound(_)) => None,
+                Err(error) => return Err(before(error)),
+            };
+            (current, None)
         };
         if current != expected {
             return Err(before(ObjectError::PreconditionFailed(
@@ -404,16 +420,7 @@ impl RemoteMetaClient {
         let mut groups = std::collections::BTreeMap::new();
         let mut connections: Vec<(String, RemoteReplicaClient)> = Vec::new();
         if pages > 0 {
-            let count = options.target_groups.min(pages);
-            let mut planned_group_bytes = vec![0u64; count as usize];
-            for (index, page) in data.chunks(options.page_bytes).enumerate() {
-                planned_group_bytes[index % count as usize] += page.len() as u64;
-            }
-            let max_group_bytes = planned_group_bytes.into_iter().max().unwrap_or(0);
-            let (plan, planned_routes) = if count <= 4 {
-                let (plan, routes) = self
-                    .plan_object_placement_routes(bucket, key, max_group_bytes, u64::from(count))
-                    .map_err(before)?;
+            let (plan, planned_routes) = if let Some((plan, routes)) = preplanned {
                 (plan, Some(routes))
             } else {
                 (self.plan_object_placement(bucket, key, max_group_bytes, u64::from(count))
