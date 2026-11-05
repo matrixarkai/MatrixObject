@@ -94,6 +94,7 @@ pub struct RemoteReplicaClient {
     // Learned for this socket; replacement starts with an unknown capability.
     conditional_write_batch: Option<bool>,
     conditional_write_digest_batch: Option<bool>,
+    read_batch: Option<bool>,
     last_exchange: Instant,
     read_timeout: Duration,
     write_timeout: Duration,
@@ -270,6 +271,7 @@ impl RemoteReplicaClient {
             connection_usable: true,
             conditional_write_batch: None,
             conditional_write_digest_batch: None,
+            read_batch: None,
             last_exchange: Instant::now(),
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
@@ -966,6 +968,32 @@ impl RemoteReplicaClient {
                 .read_chunk(&pages[0].0, pages[0].1, pages[0].2)
                 .map(|read| vec![read]);
         }
+        let total = pages.iter().try_fold(0usize, |sum, (_, _, length)| {
+            usize::try_from(*length).ok().and_then(|length| sum.checked_add(length))
+        });
+        if pages.iter().all(|(_, _, length)| *length <= 64 * 1024)
+            && total.is_some_and(|total| total.saturating_add(1024) <= self.max_payload_bytes)
+            && self.read_batch != Some(false)
+        {
+            match self.call(ReplicaRequest::ReadChunkBatch { reads: pages.to_vec() }) {
+                Ok(ReplicaReply::Reads(reads)) if reads.len() == pages.len() => {
+                    self.read_batch = Some(true);
+                    return Ok(reads);
+                }
+                Ok(ReplicaReply::Reads(_)) => {
+                    return Err(ObjectError::Corruption(
+                        "read batch reply count differs from request".into(),
+                    ));
+                }
+                Err(ObjectError::PreconditionFailed(message))
+                    if message.starts_with("the replica does not implement this request:") =>
+                {
+                    self.read_batch = Some(false);
+                }
+                Ok(other) => return Err(unexpected_reply("a chunk read batch", &other)),
+                Err(error) => return Err(error),
+            }
+        }
         let mut reads = Vec::with_capacity(pages.len());
         if self.connection_usable {
             self.connection_usable = false;
@@ -1294,6 +1322,7 @@ impl RemoteReplicaClient {
             request,
             ReplicaRequest::Ping
                 | ReplicaRequest::ReadChunk { .. }
+                | ReplicaRequest::ReadChunkBatch { .. }
                 | ReplicaRequest::DigestChunk { .. }
                 | ReplicaRequest::ReadChunkStateRange { .. }
                 | ReplicaRequest::HeadChunk { .. }

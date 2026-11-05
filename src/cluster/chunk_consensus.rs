@@ -976,6 +976,7 @@ fn read_only(request: &ReplicaRequest) -> bool {
     match request {
         ReplicaRequest::Membership(command) => command.is_read(),
         ReplicaRequest::ReadChunk { .. }
+        | ReplicaRequest::ReadChunkBatch { .. }
         | ReplicaRequest::DigestChunk { .. }
         | ReplicaRequest::ReadChunkStateRange { .. }
         | ReplicaRequest::HeadChunk { .. }
@@ -1008,6 +1009,12 @@ fn checked_apply(
         let size = usize::try_from(*length)
             .unwrap_or(usize::MAX)
             .saturating_add(40);
+        crate::cluster::message::check_reply_size(size, limit)?;
+    }
+    if let ReplicaRequest::ReadChunkBatch { reads } = &request {
+        let size = reads.iter().try_fold(0usize, |sum, (_, _, length)| {
+            usize::try_from(*length).ok().and_then(|length| sum.checked_add(length.saturating_add(64)))
+        }).unwrap_or(usize::MAX);
         crate::cluster::message::check_reply_size(size, limit)?;
     }
     let reply = apply_to_replica(service, request, max_pages)?;

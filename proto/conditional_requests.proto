@@ -27,6 +27,29 @@ message ChunkDigestBatch {
   uint32 version = 1;
   repeated ChunkDigest digests = 2;
 }
+// Replica request code 17. The reply is ChunkReadBatchResult.
+message ChunkRead {
+  uint32 version = 1;
+  uint64 volume = 2;
+  uint64 chunk = 3;
+  uint64 page = 4;
+  uint64 offset = 5;
+  uint64 length = 6;
+}
+message ChunkReadBatch {
+  uint32 version = 1;
+  repeated ChunkRead reads = 2;
+}
+message ChunkReadResult {
+  uint32 version = 1;
+  uint64 write_sequence = 2;
+  string checksum = 3;
+  bytes data = 4;
+}
+message ChunkReadBatchResult {
+  uint32 version = 1;
+  repeated ChunkReadResult reads = 2;
+}
 message Placement {
   string bucket = 1;
   string key = 2;

@@ -519,28 +519,22 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                                 "older peer",
                             )).unwrap();
                         }
-                        let mut replies = Vec::new();
-                        for &page_index in batch {
+                        let ReplicaRequest::ReadChunkBatch { reads } = replica(&mut stream) else {
+                            panic!("read batch missing");
+                        };
+                        assert_eq!(reads.len(), batch.len());
+                        let mut results = Vec::new();
+                        for ((page_id, offset, length), &page_index) in reads.iter().zip(batch) {
                             let start = page_index as usize * 4;
                             let data = object[start..object.len().min(start + 4)].to_vec();
-                            let ReplicaRequest::ReadChunk {
-                                page_id,
-                                offset,
-                                length,
-                            } = replica(&mut stream)
-                            else {
-                                panic!("readback missing");
-                            };
                             assert_eq!(page_id.page_index, page_index);
-                            assert_eq!(offset, 0);
-                            assert_eq!(length, data.len() as u64);
-                            replies.push(message::encode_reply(&ReplicaReply::Read(
-                                ReplicaReadResult {
-                                    data,
-                                    write_sequence: 1,
-                                    checksum: String::new(),
-                                },
-                            )));
+                            assert_eq!(*offset, 0);
+                            assert_eq!(*length, data.len() as u64);
+                            results.push(ReplicaReadResult {
+                                data,
+                                write_sequence: 1,
+                                checksum: String::new(),
+                            });
                         }
                         if !writing && batch_index == 0 {
                             let (count, ready) = &*simultaneous_reads;
@@ -557,9 +551,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                                 "group reads were serialized"
                             );
                         }
-                        for response in replies {
-                            stream.write_all(&response).unwrap();
-                        }
+                        stream.write_all(&message::encode_reply(&ReplicaReply::Reads(results))).unwrap();
                     }
                     assert_eq!(stream.read(&mut [0]).unwrap(), 0);
                 }
@@ -672,6 +664,11 @@ fn partial_pipelined_read_retries_only_unread_pages() {
     let endpoint = socket.local_addr().unwrap().to_string();
     let worker = thread::spawn(move || {
         let mut first = accept(&socket);
+        assert!(matches!(
+            replica(&mut first),
+            ReplicaRequest::ReadChunkBatch { reads } if reads.len() == 3
+        ));
+        first.write_all(&message::encode_failure(StatusCode::UnknownRequest, "older peer")).unwrap();
         for index in 0..3 {
             let ReplicaRequest::ReadChunk { page_id, .. } = replica(&mut first) else {
                 panic!("pipelined read missing");
