@@ -91,6 +91,8 @@ pub struct RemoteReplicaClient {
     writer: super::api_tls::ApiSocket,
     max_payload_bytes: usize,
     connection_usable: bool,
+    // Learned for this socket; replacement starts with an unknown capability.
+    conditional_write_batch: Option<bool>,
     last_exchange: Instant,
     read_timeout: Duration,
     write_timeout: Duration,
@@ -265,6 +267,7 @@ impl RemoteReplicaClient {
             writer,
             max_payload_bytes: options.max_payload_bytes,
             connection_usable: true,
+            conditional_write_batch: None,
             last_exchange: Instant::now(),
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
@@ -513,9 +516,19 @@ impl RemoteReplicaClient {
         // Larger pages keep one mutation per consensus turn. Preparing several
         // large candidate states together can delay Raft traffic long enough
         // to trigger an election under load.
-        if writes.iter().all(|(_, _, data, _)| data.len() <= 64 * 1024)
-            && self.probe_conditional_write_batch()?
-        {
+        let batchable = if writes.iter().all(|(_, _, data, _)| data.len() <= 64 * 1024) {
+            match self.conditional_write_batch {
+                Some(supported) => supported,
+                None => {
+                    let supported = self.probe_conditional_write_batch()?;
+                    self.conditional_write_batch = Some(supported);
+                    supported
+                }
+            }
+        } else {
+            false
+        };
+        if batchable {
             for batch in writes[1..].chunks(3) {
                 if batch.len() == 1 {
                     let (page, offset, data, sequence) = &batch[0];

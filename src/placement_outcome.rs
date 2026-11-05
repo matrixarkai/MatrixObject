@@ -302,8 +302,8 @@ impl PlacementOutcome {
             if admit
                 && placement.node_ids.contains(&id)
                 && (!MatrixMetaService::node_accepts_new_placement(node)
-                    || after.committed_bytes
-                        > MatrixMetaService::node_effective_capacity_bytes(node))
+                    // Verified staged pages already consume reported free space.
+                    || after.committed_bytes > node.capacity_bytes)
             {
                 return Err(invalid("manifest group is not writable or lacks capacity"));
             }

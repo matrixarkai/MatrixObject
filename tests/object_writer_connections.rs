@@ -223,9 +223,15 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                                 let response = message::encode_reply(&ReplicaReply::Applied);
                                 if position == 0 { stream.write_all(&response).unwrap(); }
                             }
-                            assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkBatchIfSequence { writes } if writes.is_empty()));
+                            if batch_index == 0 {
+                                assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkBatchIfSequence { writes } if writes.is_empty()));
+                                if index == 0 {
+                                    stream.write_all(&message::encode_reply(&ReplicaReply::Applied)).unwrap();
+                                } else {
+                                    stream.write_all(&message::encode_failure(StatusCode::UnknownRequest, "older peer")).unwrap();
+                                }
+                            }
                             if index == 0 {
-                                stream.write_all(&message::encode_reply(&ReplicaReply::Applied)).unwrap();
                                 for part in batch[1..].chunks(3) {
                                     if part.len() == 1 {
                                         assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkIfSequence { page_id, .. } if page_id.page_index == part[0]));
@@ -243,7 +249,6 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                                     stream.write_all(&message::encode_reply(&ReplicaReply::Applied)).unwrap();
                                 }
                             } else {
-                                stream.write_all(&message::encode_failure(StatusCode::UnknownRequest, "older peer")).unwrap();
                                 let mut responses = Vec::new();
                                 for &page_index in &batch[1..] {
                                     let ReplicaRequest::WriteChunkIfSequence { page_id, .. } = replica(&mut stream) else { panic!("fallback write missing"); };

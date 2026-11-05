@@ -109,8 +109,10 @@ impl MatrixMetaService {
     }
 
     pub(crate) fn node_effective_capacity_bytes(node: &PlacementNode) -> u64 {
+        // A delayed free-space report cannot raise the configured ceiling.
         node.committed_bytes
             .saturating_add(Self::node_effective_free_bytes(node))
+            .min(node.capacity_bytes)
     }
 
     fn node_reclaim_pressure_bytes(node: &PlacementNode) -> u64 {
