@@ -936,6 +936,7 @@ fn read_only(request: &ReplicaRequest) -> bool {
         ReplicaRequest::StateInstall(_)
         | ReplicaRequest::WriteChunk { .. }
         | ReplicaRequest::WriteChunkIfSequence { .. }
+        | ReplicaRequest::WriteChunkIfSequenceDigest { .. }
         | ReplicaRequest::WriteChunkBatchIfSequence { .. }
         | ReplicaRequest::DiscardChunk { .. }
         | ReplicaRequest::DiscardChunkIfSequence { .. } => false,
@@ -985,11 +986,14 @@ fn prepare_candidate(
         ));
     }
     if matches!(request, ReplicaRequest::WriteChunkBatchIfSequence { .. }) {
-        return Err(ObjectError::InvalidArgument("batch writes require batch admission".into()));
+        return Err(ObjectError::InvalidArgument(
+            "batch writes require batch admission".into(),
+        ));
     }
     let page = match request {
         ReplicaRequest::WriteChunk { page_id, .. }
         | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+        | ReplicaRequest::WriteChunkIfSequenceDigest { page_id, .. }
         | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
         | ReplicaRequest::DiscardChunk { page_id, .. } => page_id,
         _ => return Ok((Vec::new(), None, None)),
@@ -1001,6 +1005,8 @@ fn prepare_candidate(
     };
     let counters = PageOutcome::counters(service);
     let mut candidate = service.clone_for_raft_preparation();
+    // The digest reply describes this candidate's applied bytes. Its outcome
+    // is committed and installed before the pending reply is delivered.
     let reply = checked_apply(&mut candidate, request.clone(), max_pages, limit)?;
     let after = match candidate.read_chunk_state(page) {
         Ok(state) => state,

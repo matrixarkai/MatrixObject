@@ -509,6 +509,7 @@ fn apply(
             &request,
             ReplicaRequest::WriteChunk { .. }
                 | ReplicaRequest::WriteChunkIfSequence { .. }
+                | ReplicaRequest::WriteChunkIfSequenceDigest { .. }
                 | ReplicaRequest::DiscardChunk { .. }
                 | ReplicaRequest::DiscardChunkIfSequence { .. }
         )
@@ -537,6 +538,7 @@ fn apply(
         match &request {
             ReplicaRequest::WriteChunk { page_id, .. }
             | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+            | ReplicaRequest::WriteChunkIfSequenceDigest { page_id, .. }
             | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
             | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
             _ => None,
@@ -558,6 +560,7 @@ fn apply(
     let changed_page = match &request {
         ReplicaRequest::WriteChunk { page_id, .. }
         | ReplicaRequest::WriteChunkIfSequence { page_id, .. }
+        | ReplicaRequest::WriteChunkIfSequenceDigest { page_id, .. }
         | ReplicaRequest::DiscardChunkIfSequence { page_id, .. }
         | ReplicaRequest::DiscardChunk { page_id, .. } => Some(page_id.clone()),
         _ => None,
@@ -820,6 +823,38 @@ pub(super) fn apply_to_replica(
         ReplicaRequest::HeadChunk { page_id } => {
             Ok(ReplicaReply::Head(guard.head_chunk(&page_id)?))
         }
+        ReplicaRequest::WriteChunkIfSequenceDigest {
+            page_id,
+            offset,
+            data,
+            expected_sequence,
+        } => {
+            if data.len() > 1024 * 1024 {
+                return Err(ObjectError::InvalidArgument(
+                    "write digest range exceeds one MiB".into(),
+                ));
+            }
+            let length = data.len() as u64;
+            apply_to_replica(
+                guard,
+                ReplicaRequest::WriteChunkIfSequence {
+                    page_id: page_id.clone(),
+                    offset,
+                    data,
+                    expected_sequence,
+                },
+                max_pages,
+            )?;
+            let read = guard.read_chunk(&page_id, offset, length)?;
+            let mut sha256 = [0u8; 32];
+            sha256
+                .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &read.data).as_ref());
+            Ok(ReplicaReply::Digest {
+                write_sequence: read.write_sequence,
+                length: read.data.len() as u64,
+                sha256,
+            })
+        }
         ReplicaRequest::WriteChunkIfSequence {
             page_id,
             offset,
@@ -901,6 +936,23 @@ pub(super) fn apply_to_replica(
 mod journal_failure_tests {
     use super::*;
     use crate::{ChunkId, PageId};
+    #[test]
+    fn conditional_write_digest_matches_applied_bytes() {
+        let mut service = MatrixReplicaService::new();
+        let page_id = PageId {
+            chunk_id: ChunkId::new(1, 1).unwrap(),
+            page_index: 0,
+        };
+        let reply = apply_to_replica(&mut service, ReplicaRequest::WriteChunkIfSequenceDigest {
+            page_id: page_id.clone(), offset: 0, data: b"page".to_vec(), expected_sequence: 0,
+        }, 8).unwrap();
+        let mut expected = [0u8; 32];
+        expected.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, b"page").as_ref());
+        assert!(matches!(reply, ReplicaReply::Digest {
+            write_sequence: 1, length: 4, sha256,
+        } if sha256 == expected));
+        assert_eq!(service.read_chunk(&page_id, 0, 4).unwrap().data, b"page");
+    }
     #[test]
     fn conditional_mutations_refuse_exhausted_page_sequences() {
         let mut service = MatrixReplicaService::new();

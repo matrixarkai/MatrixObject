@@ -135,6 +135,24 @@ fn write_group_extents(
             writes.push((page.clone(), 0, bytes, 0));
             pages.push((page, 0, extent.length));
         }
+        if let [(page, offset, bytes, expected_sequence)] = writes.as_slice() {
+            let (sequence, actual_length, sha256) = client.write_chunk_if_sequence_with_digest(
+                page.clone(),
+                *offset,
+                bytes,
+                *expected_sequence,
+            )?;
+            let extent = &manifest.extents[batch[0]];
+            if sequence != 1
+                || actual_length != extent.length
+                || sha256.as_ref() != ring::digest::digest(&ring::digest::SHA256, bytes).as_ref()
+            {
+                return Err(ObjectError::Corruption(
+                    "written page verification failed".into(),
+                ));
+            }
+            continue;
+        }
         client.write_chunks_if_sequence_pipelined(&writes)?;
         match client.digest_chunks_pipelined(&pages) {
             Ok(digests) => {
@@ -574,28 +592,26 @@ mod tests {
         let endpoint = listener.local_addr().unwrap().to_string();
         let worker = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             assert!(matches!(
                 receive_replica(&mut stream),
-                crate::cluster::ReplicaRequest::WriteChunkIfSequence { .. }
+                crate::cluster::ReplicaRequest::WriteChunkIfSequenceDigest { .. }
             ));
-            stream.write_all(&crate::cluster::message::encode_reply(
-                &crate::cluster::ReplicaReply::Applied,
-            )).unwrap();
-            assert!(matches!(
-                receive_replica(&mut stream),
-                crate::cluster::ReplicaRequest::DigestChunk { length: 4, .. }
-            ));
-            stream.write_all(&crate::cluster::message::encode_reply(
-                &crate::cluster::ReplicaReply::Digest {
-                    write_sequence: 1,
-                    length: 4,
-                    sha256: [0; 32],
-                },
-            )).unwrap();
+            stream
+                .write_all(&crate::cluster::message::encode_reply(
+                    &crate::cluster::ReplicaReply::Digest {
+                        write_sequence: 1,
+                        length: 4,
+                        sha256: [0; 32],
+                    },
+                ))
+                .unwrap();
             assert_eq!(stream.read(&mut [0]).unwrap(), 0);
         });
-        let client = RemoteReplicaClient::connect(&endpoint, &ReplicaClientOptions::default()).unwrap();
+        let client =
+            RemoteReplicaClient::connect(&endpoint, &ReplicaClientOptions::default()).unwrap();
         let manifest = ObjectManifest {
             format_version: 1,
             bucket: "bucket".into(),
@@ -615,31 +631,113 @@ mod tests {
             }],
             deleted: false,
         };
-        let route = ChunkGroupRoute { version: 1, group: None, fence: vec![] };
+        let route = ChunkGroupRoute {
+            version: 1,
+            group: None,
+            fence: vec![],
+        };
         assert!(matches!(
-            write_group_extents(&[0], &route, Some(client), &manifest, b"abcd", &ObjectWriteOptions::default()),
+            write_group_extents(
+                &[0],
+                &route,
+                Some(client),
+                &manifest,
+                b"abcd",
+                &ObjectWriteOptions::default()
+            ),
             Err(ObjectError::Corruption(_))
         ));
+        worker.join().unwrap();
+    }
+    #[test]
+    fn older_replica_refusal_uses_separate_write_and_digest() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            assert!(matches!(
+                receive_replica(&mut stream),
+                crate::cluster::ReplicaRequest::WriteChunkIfSequenceDigest { .. }
+            ));
+            stream
+                .write_all(&crate::cluster::message::encode_failure(
+                    StatusCode::UnknownRequest,
+                    "unsupported request",
+                ))
+                .unwrap();
+            assert!(matches!(
+                receive_replica(&mut stream),
+                crate::cluster::ReplicaRequest::WriteChunkIfSequence { .. }
+            ));
+            stream
+                .write_all(&crate::cluster::message::encode_reply(
+                    &crate::cluster::ReplicaReply::Applied,
+                ))
+                .unwrap();
+            assert!(matches!(
+                receive_replica(&mut stream),
+                crate::cluster::ReplicaRequest::DigestChunk { length: 4, .. }
+            ));
+            let mut sha256 = [0u8; 32];
+            sha256.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, b"abcd").as_ref());
+            stream
+                .write_all(&crate::cluster::message::encode_reply(
+                    &crate::cluster::ReplicaReply::Digest {
+                        write_sequence: 1,
+                        length: 4,
+                        sha256,
+                    },
+                ))
+                .unwrap();
+        });
+        let mut client =
+            RemoteReplicaClient::connect(&endpoint, &ReplicaClientOptions::default()).unwrap();
+        let page = crate::PageId {
+            chunk_id: crate::ChunkId::new(1, 1).unwrap(),
+            page_index: 0,
+        };
+        assert_eq!(
+            client
+                .write_chunk_if_sequence_with_digest(page, 0, b"abcd", 0)
+                .unwrap()
+                .0,
+            1
+        );
         worker.join().unwrap();
     }
     #[test]
     fn expired_object_deadline_sends_nothing_and_restores_client_scope() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
-        let mut client = RemoteMetaClient::connect_catalog(&[endpoint], &MetaClientOptions::default()).unwrap();
+        let mut client =
+            RemoteMetaClient::connect_catalog(&[endpoint], &MetaClientOptions::default()).unwrap();
         let (mut server, _) = listener.accept().unwrap();
-        server.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
         let options = ObjectWriteOptions {
-            replica: ReplicaClientOptions { deadline: Some(Instant::now()), ..Default::default() },
+            replica: ReplicaClientOptions {
+                deadline: Some(Instant::now()),
+                ..Default::default()
+            },
             ..Default::default()
         };
-        assert!(matches!(client.write_object("bucket", "key", None, b"", &options),
-            Err(ObjectWriteFailure::BeforePublication { staged: None, .. })));
-        assert!(client.read_object("bucket", "key", 1, &options.replica).is_err());
+        assert!(matches!(
+            client.write_object("bucket", "key", None, b"", &options),
+            Err(ObjectWriteFailure::BeforePublication { staged: None, .. })
+        ));
+        assert!(client
+            .read_object("bucket", "key", 1, &options.replica)
+            .is_err());
         assert!(client.operation_deadline().is_none());
         let mut byte = [0];
-        assert!(matches!(server.read(&mut byte), Err(error) if matches!(error.kind(),
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)));
+        assert!(
+            matches!(server.read(&mut byte), Err(error) if matches!(error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
+        );
     }
 
     #[test]
