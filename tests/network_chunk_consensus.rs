@@ -3403,6 +3403,23 @@ mod coupled_groups {
         checkpoint_bytes: u64,
         require_checkpoint: bool,
     ) {
+        multiple_group_load_with_transport_checkpoint_mode(
+            group_count, writes, workers, objects, target_groups, object_bytes,
+            setup, checkpoint_bytes, require_checkpoint, false,
+        );
+    }
+    fn multiple_group_load_with_transport_checkpoint_mode(
+        group_count: usize,
+        writes: u64,
+        workers: usize,
+        objects: bool,
+        target_groups: u32,
+        object_bytes: u64,
+        setup: VoterSetup,
+        checkpoint_bytes: u64,
+        require_checkpoint: bool,
+        overlap_reads: bool,
+    ) {
         let VoterSetup { peer_tls, api_tls, voters } = setup;
         assert!(!api_tls || peer_tls.is_some());
         assert!((8..=4 * 1024 * 1024).contains(&object_bytes));
@@ -3496,17 +3513,25 @@ mod coupled_groups {
         for group in &groups {
             group.leader();
         }
-        verify_load_with_transport(&LoadEndpoint { api: &metadata.api, tls: tls.clone() }, &saved, objects);
-        saved.extend(load_batch_sized_with_attempts(
+        let write_after_failover = || load_batch_sized_with_attempts(
             &LoadEndpoint { api: &metadata.api, tls: tls.clone() },
-            writes,
-            writes + writes / 4,
-            workers,
-            objects,
-            target_groups,
-            object_bytes,
-            attempts,
-        ));
+            writes, writes + writes / 4, workers, objects, target_groups,
+            object_bytes, attempts,
+        );
+        let later = if overlap_reads {
+            std::thread::scope(|scope| {
+                let reader = scope.spawn(|| verify_load_with_transport(
+                    &LoadEndpoint { api: &metadata.api, tls: tls.clone() }, &saved, objects,
+                ));
+                let later = write_after_failover();
+                reader.join().unwrap();
+                later
+            })
+        } else {
+            verify_load_with_transport(&LoadEndpoint { api: &metadata.api, tls: tls.clone() }, &saved, objects);
+            write_after_failover()
+        };
+        saved.extend(later);
         group_usage(&metadata.api, &groups, &saved);
         for group in &mut groups {
             for i in 0..voters {
@@ -3627,6 +3652,20 @@ mod coupled_groups {
             32, 512, 16, true, 4, 64 * 1024,
             VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
             32 * 1024 * 1024, false,
+        );
+    }
+    #[cfg(feature = "peer-tls")]
+    #[test]
+    #[ignore = "99-process WSL mixed reads and writes with recovery"]
+    fn encrypted_api_thirty_two_groups_mixed_load_recovers() {
+        let certificates = node_regime::tls::TlsFiles::new();
+        for i in 0..3 {
+            certificates.issue(&format!("peer-{i}"), "127.0.0.1");
+        }
+        multiple_group_load_with_transport_checkpoint_mode(
+            32, 512, 16, true, 4, 64 * 1024,
+            VoterSetup { peer_tls: Some(certificates.root.clone()), api_tls: true, voters: 3 },
+            32 * 1024 * 1024, false, true,
         );
     }
     #[cfg(feature = "peer-tls")]
