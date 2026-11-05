@@ -885,6 +885,25 @@ pub(super) fn apply_with_groups(
     groups: &super::ChunkGroupCatalog,
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
+    if let MetaRequest::ReadManifestRoutes { bucket, key } = &request {
+        let manifest = match apply_to_meta(service, MetaRequest::ReadManifest {
+            bucket: bucket.clone(), key: key.clone(),
+        }, limit)? {
+            MetaReply::Manifest(manifest) => manifest,
+            _ => unreachable!(),
+        };
+        let routes = super::meta_message::manifest_route_names(&manifest).iter()
+            .map(|id| groups.routing_view(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut reply = MetaReply::ManifestRoutes { manifest, routes };
+        if reply.payload_len() > limit.min(super::meta_message::MAX_MANIFEST_ROUTE_REPLY_BYTES) {
+            if let MetaReply::ManifestRoutes { routes, .. } = &mut reply {
+                routes.clear();
+            }
+        }
+        crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
+        return Ok(reply);
+    }
     if let MetaRequest::AllocateObjectPages { page_count } = &request {
         let (decided, reply) = decide_allocation(service, *page_count, limit)?;
         decided.apply(service)?;
@@ -965,6 +984,9 @@ pub(super) fn apply_to_meta(
             crate::cluster::message::check_reply_size(reply.payload_len(), max_payload_bytes)?;
             Ok(reply)
         }
+        MetaRequest::ReadManifestRoutes { .. } => Err(ObjectError::PreconditionFailed(
+            "manifest routes require a chunk catalog".into(),
+        )),
 
         MetaRequest::ReadChunkGroup { .. } | MetaRequest::ReadChunkRoute { .. }
         | MetaRequest::ReadChunkRoutes { .. } => {

@@ -88,6 +88,8 @@ pub enum MetaRequestCode {
     ChunkCatalog = 80,
     ReadChunkRoute = 81,
     ReadChunkRoutes = 82,
+    /// Read a manifest and its first four group routes at one metadata barrier.
+    ReadManifestRoutes = 83,
 }
 
 impl MetaRequestCode {
@@ -117,6 +119,7 @@ impl MetaRequestCode {
             80 => Some(MetaRequestCode::ChunkCatalog),
             81 => Some(MetaRequestCode::ReadChunkRoute),
             82 => Some(MetaRequestCode::ReadChunkRoutes),
+            83 => Some(MetaRequestCode::ReadManifestRoutes),
             _ => None,
         }
     }
@@ -143,6 +146,7 @@ impl MetaRequestCode {
             MetaRequestCode::ChunkCatalog,
             MetaRequestCode::ReadChunkRoute,
             MetaRequestCode::ReadChunkRoutes,
+            MetaRequestCode::ReadManifestRoutes,
         ]
     }
 }
