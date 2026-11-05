@@ -170,14 +170,26 @@ fn failed_pipelined_write_retires_socket_without_replaying() {
     let address = socket.local_addr().unwrap().to_string();
     let worker = thread::spawn(move || {
         let mut stream = accept(&socket);
-        assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkIfSequence { .. }));
-        stream.write_all(&message::encode_reply(&ReplicaReply::Applied)).unwrap();
-        assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkBatchIfSequence { writes } if writes.is_empty()));
+        assert!(matches!(
+            replica(&mut stream),
+            ReplicaRequest::WriteChunkBatchIfSequence { writes } if writes.len() == 3
+        ));
         stream.write_all(&message::encode_failure(StatusCode::UnknownRequest, "older peer")).unwrap();
-        // Hold the second response until the third request arrives. This
+        assert!(matches!(
+            replica(&mut stream),
+            ReplicaRequest::WriteChunkIfSequence { page_id, .. } if page_id.page_index == 0
+        ));
+        stream.write_all(&message::encode_reply(&ReplicaReply::Applied)).unwrap();
+        // Hold the next response until the final request arrives. This
         // distinguishes a pipeline from a sequence of round trips.
-        assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkIfSequence { .. }));
-        assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkIfSequence { .. }));
+        assert!(matches!(
+            replica(&mut stream),
+            ReplicaRequest::WriteChunkIfSequence { page_id, .. } if page_id.page_index == 1
+        ));
+        assert!(matches!(
+            replica(&mut stream),
+            ReplicaRequest::WriteChunkIfSequence { page_id, .. } if page_id.page_index == 2
+        ));
         stream.write_all(&message::encode_failure(
             StatusCode::PreconditionFailed,
             "write condition changed",
@@ -195,6 +207,49 @@ fn failed_pipelined_write_retires_socket_without_replaying() {
         Err(matrixobjectstore_rs::ObjectError::PreconditionFailed(_))
     ));
     assert!(client.ping().is_err());
+    worker.join().unwrap();
+}
+
+#[test]
+fn small_pages_start_with_full_nonempty_batches() {
+    let socket = listener();
+    let address = socket.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let mut stream = accept(&socket);
+        for start in [0, 4] {
+            let ReplicaRequest::WriteChunkBatchIfSequence { writes } = replica(&mut stream) else {
+                panic!("small pages did not use a conditional write batch");
+            };
+            assert_eq!(writes.len(), 4);
+            assert_eq!(
+                writes
+                    .iter()
+                    .map(|write| write.page_id.page_index)
+                    .collect::<Vec<_>>(),
+                (start..start + 4).collect::<Vec<_>>()
+            );
+            stream
+                .write_all(&message::encode_reply(&ReplicaReply::Applied))
+                .unwrap();
+        }
+    });
+    let mut client =
+        RemoteReplicaClient::connect(&address, &ReplicaClientOptions::default()).unwrap();
+    let chunk_id = ChunkId::new(1, 3).unwrap();
+    let writes: Vec<_> = (0..8)
+        .map(|index| {
+            (
+                PageId {
+                    chunk_id: chunk_id.clone(),
+                    page_index: index,
+                },
+                0,
+                b"page".as_slice(),
+                0,
+            )
+        })
+        .collect();
+    client.write_chunks_if_sequence_pipelined(&writes).unwrap();
     worker.join().unwrap();
 }
 #[test]
@@ -285,52 +340,51 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                     let pages: Vec<_> = (index as u64..32).step_by(2).collect();
                     for (batch_index, batch) in pages.chunks(8).enumerate() {
                         if writing {
-                            for (position, &page_index) in batch.iter().enumerate() {
-                                if position > 0 { break; }
-                                let start = page_index as usize * 4;
-                                let data = &object[start..object.len().min(start + 4)];
-                                let ReplicaRequest::WriteChunkIfSequence {
-                                    page_id,
-                                    offset,
-                                    data: actual,
-                                    expected_sequence,
-                                } = replica(&mut stream)
-                                else {
-                                    panic!("conditional write missing");
-                                };
-                                assert_eq!(page_id.page_index, page_index);
-                                assert_eq!(offset, 0);
-                                assert_eq!(expected_sequence, 0);
-                                assert_eq!(actual, data);
-                                let response = message::encode_reply(&ReplicaReply::Applied);
-                                if position == 0 { stream.write_all(&response).unwrap(); }
-                            }
-                            if batch_index == 0 {
-                                assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkBatchIfSequence { writes } if writes.is_empty()));
-                                if index == 0 {
-                                    stream.write_all(&message::encode_reply(&ReplicaReply::Applied)).unwrap();
-                                } else {
-                                    stream.write_all(&message::encode_failure(StatusCode::UnknownRequest, "older peer")).unwrap();
-                                }
-                            }
                             if index == 0 {
-                                for part in batch[1..].chunks(3) {
-                                    if part.len() == 1 {
-                                        assert!(matches!(replica(&mut stream), ReplicaRequest::WriteChunkIfSequence { page_id, .. } if page_id.page_index == part[0]));
-                                    } else {
-                                        let ReplicaRequest::WriteChunkBatchIfSequence { writes } = replica(&mut stream) else { panic!("page batch missing"); };
-                                        assert_eq!(writes.len(), part.len());
-                                        for (write, &page_index) in writes.iter().zip(part) {
-                                            let start = page_index as usize * 4;
-                                            assert_eq!(write.page_id.page_index, page_index);
-                                            assert_eq!(write.offset, 0);
-                                            assert_eq!(write.expected_sequence, 0);
-                                            assert_eq!(write.data, object[start..object.len().min(start + 4)]);
-                                        }
+                                for part in batch.chunks(4) {
+                                    let ReplicaRequest::WriteChunkBatchIfSequence { writes } =
+                                        replica(&mut stream)
+                                    else {
+                                        panic!("page batch missing");
+                                    };
+                                    assert_eq!(writes.len(), part.len());
+                                    for (write, &page_index) in writes.iter().zip(part) {
+                                        let start = page_index as usize * 4;
+                                        assert_eq!(write.page_id.page_index, page_index);
+                                        assert_eq!(write.offset, 0);
+                                        assert_eq!(write.expected_sequence, 0);
+                                        assert_eq!(
+                                            write.data,
+                                            object[start..object.len().min(start + 4)]
+                                        );
                                     }
-                                    stream.write_all(&message::encode_reply(&ReplicaReply::Applied)).unwrap();
+                                    stream
+                                        .write_all(&message::encode_reply(&ReplicaReply::Applied))
+                                        .unwrap();
                                 }
                             } else {
+                                if batch_index == 0 {
+                                    assert!(matches!(
+                                        replica(&mut stream),
+                                        ReplicaRequest::WriteChunkBatchIfSequence { writes }
+                                            if writes.len() == 4
+                                    ));
+                                    stream
+                                        .write_all(&message::encode_failure(
+                                            StatusCode::UnknownRequest,
+                                            "older peer",
+                                        ))
+                                        .unwrap();
+                                }
+                                let ReplicaRequest::WriteChunkIfSequence { page_id, .. } =
+                                    replica(&mut stream)
+                                else {
+                                    panic!("fallback write missing");
+                                };
+                                assert_eq!(page_id.page_index, batch[0]);
+                                stream
+                                    .write_all(&message::encode_reply(&ReplicaReply::Applied))
+                                    .unwrap();
                                 let mut responses = Vec::new();
                                 for &page_index in &batch[1..] {
                                     let ReplicaRequest::WriteChunkIfSequence { page_id, .. } = replica(&mut stream) else { panic!("fallback write missing"); };

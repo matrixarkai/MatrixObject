@@ -542,10 +542,11 @@ impl RemoteReplicaClient {
         }
     }
 
-    /// Confirm the first write through leader routing, then send the remaining
-    /// independent page writes before waiting for their ordered replies. A
-    /// failed exchange leaves every outstanding mutation uncertain and retires
-    /// the socket; none is replayed.
+    /// Use bounded consensus batches for small independent pages. The first
+    /// nonempty batch both discovers support and follows leader routing, avoiding
+    /// a capability round trip and a separate first-page round trip. A typed
+    /// unknown-request refusal proves that no batch mutation was admitted and is
+    /// the only condition that permits the older per-page pipeline.
     pub fn write_chunks_if_sequence_pipelined(
         &mut self,
         writes: &[(PageId, u64, &[u8], u64)],
@@ -553,34 +554,24 @@ impl RemoteReplicaClient {
         if writes.len() > 8 {
             return Err(ObjectError::InvalidArgument("write batch exceeds eight pages".into()));
         }
-        let Some((page, offset, data, sequence)) = writes.first() else {
-            return Ok(());
-        };
-        self.write_chunk_if_sequence(page.clone(), *offset, data, *sequence)?;
-        if writes.len() == 1 {
+        if writes.is_empty() {
             return Ok(());
         }
         // Larger pages keep one mutation per consensus turn. Preparing several
         // large candidate states together can delay Raft traffic long enough
         // to trigger an election under load.
-        let batchable = if writes.iter().all(|(_, _, data, _)| data.len() <= 64 * 1024) {
-            match self.conditional_write_batch {
-                Some(supported) => supported,
-                None => {
-                    let supported = self.probe_conditional_write_batch()?;
-                    self.conditional_write_batch = Some(supported);
-                    supported
-                }
-            }
-        } else {
-            false
-        };
-        if batchable {
-            for batch in writes[1..].chunks(3) {
+        if writes.len() > 1
+            && writes.iter().all(|(_, _, data, _)| data.len() <= 64 * 1024)
+            && self.conditional_write_batch != Some(false)
+        {
+            let mut written = 0;
+            while written < writes.len() {
+                let remaining = &writes[written..];
+                let batch = &remaining[..remaining.len().min(4)];
                 if batch.len() == 1 {
                     let (page, offset, data, sequence) = &batch[0];
                     self.write_chunk_if_sequence(page.clone(), *offset, data, *sequence)?;
-                    continue;
+                    return Ok(());
                 }
                 let request = ReplicaRequest::WriteChunkBatchIfSequence {
                     writes: batch.iter().map(|(page, offset, data, sequence)|
@@ -590,16 +581,48 @@ impl RemoteReplicaClient {
                         }).collect(),
                 };
                 if request.encode_payload().len() > self.max_payload_bytes {
-                    for (page, offset, data, sequence) in batch {
-                        self.write_chunk_if_sequence(page.clone(), *offset, data, *sequence)?;
-                    }
-                    continue;
+                    return self.write_chunks_individually_pipelined(remaining);
                 }
-                match self.call(request)? {
-                    ReplicaReply::Applied => {}
-                    other => return Err(unexpected_reply("a conditional chunk write batch", &other)),
+                match self.call(request) {
+                    Ok(ReplicaReply::Applied) => {
+                        self.conditional_write_batch = Some(true);
+                        written += batch.len();
+                    }
+                    Err(ObjectError::PreconditionFailed(message))
+                        if message.starts_with(
+                            "the replica does not implement this request:",
+                        ) =>
+                    {
+                        self.conditional_write_batch = Some(false);
+                        return self.write_chunks_individually_pipelined(remaining);
+                    }
+                    Ok(other) => {
+                        return Err(unexpected_reply(
+                            "a conditional chunk write batch",
+                            &other,
+                        ))
+                    }
+                    Err(error) => return Err(error),
                 }
             }
+            return Ok(());
+        }
+        self.write_chunks_individually_pipelined(writes)
+    }
+
+    /// Confirm the first scalar write through leader routing, then put the
+    /// remaining independent frames on that connection before waiting for their
+    /// ordered replies. An incomplete exchange retires the socket and is never
+    /// replayed.
+    fn write_chunks_individually_pipelined(
+        &mut self,
+        writes: &[(PageId, u64, &[u8], u64)],
+    ) -> Result<(), ObjectError> {
+        let Some((page, offset, data, sequence)) = writes.first() else {
+            return Ok(());
+        };
+        self.write_chunk_if_sequence(page.clone(), *offset, data, *sequence)?;
+        if writes.len() == 1 {
             return Ok(());
         }
         self.connection_usable = false;
@@ -628,40 +651,6 @@ impl RemoteReplicaClient {
         if result.is_ok() {
             self.connection_usable = true;
         } else {
-            let _ = self.writer.shutdown(Shutdown::Both);
-        }
-        result
-    }
-
-    /// An empty batch cannot mutate a page. A decoded unknown-verb status is
-    /// therefore the only safe signal to use the older per-page path.
-    fn probe_conditional_write_batch(&mut self) -> Result<bool, ObjectError> {
-        if !self.connection_usable {
-            return Err(transport_error(&self.endpoint, "probing batch writes", "connection unavailable"));
-        }
-        self.connection_usable = false;
-        let result = (|| {
-            self.send_request(&ReplicaRequest::WriteChunkBatchIfSequence { writes: Vec::new() })?;
-            let deadline = exchange_deadline(self.read_timeout, self.deadline)?;
-            let mut header = [0u8; HEADER_BYTES];
-            read_before(&mut self.reader, &mut header, deadline).map_err(|error|
-                transport_error(&self.endpoint, "reading a batch probe", &error.to_string()))?;
-            let (status, length) = self.reply_header(&header)?;
-            let mut payload = vec![0u8; length];
-            read_before(&mut self.reader, &mut payload, deadline).map_err(|error|
-                transport_error(&self.endpoint, "reading a batch probe", &error.to_string()))?;
-            if status == StatusCode::UnknownRequest {
-                decode_failure(&payload)?;
-                self.connection_usable = true;
-                return Ok(false);
-            }
-            match self.decode_reply(crate::cluster::wire::RequestCode::WriteChunkBatchIfSequence, status, &payload)? {
-                ReplicaReply::Applied => Ok(true),
-                other => Err(unexpected_reply("a batch write probe", &other)),
-            }
-        })();
-        self.last_exchange = Instant::now();
-        if result.is_err() {
             let _ = self.writer.shutdown(Shutdown::Both);
         }
         result

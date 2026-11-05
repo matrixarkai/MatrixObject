@@ -354,12 +354,13 @@ Raft-group writes continue through their leader and do not use this star fan-out
 ## Bounded object-write admission
 
 Replica request code 14 carries a canonical binary protobuf with at most four
-conditional page writes and no more than 4 MiB of page data. An empty request
-probes support without changing state. The object writer uses the request only
-for pages of at most 64 KiB, sending at most three after its first individually
-confirmed write. An older server rejects the empty probe before admission, so
-the client keeps its bounded individual-write path. Larger pages use that path
-without probing.
+conditional page writes and no more than 4 MiB of page data. The object writer
+uses the request only for pages of at most 64 KiB and starts with up to four real
+writes. This first request follows leader routing and discovers support without
+an empty capability exchange. An older server returns a typed unknown-request
+refusal before admission, which permits the client to use its bounded individual
+pipeline. Larger pages use that pipeline without attempting a batch. Empty
+code-14 requests remain harmless for older upgraded clients.
 
 On a Raft voter, each accepted member becomes an independent conditional write
 in the consensus inbox. Adjacent writes can enter the existing proposal batch.
