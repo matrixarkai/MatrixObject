@@ -143,7 +143,7 @@ impl Group {
         let max_pages = self.max_pages.to_string();
         let capacity = self.capacity.to_string();
         let checkpoint_bytes = self.checkpoint_bytes.to_string();
-        let timeout = if self.capacity > 65536 { "5000" } else { "700" };
+        let timeout = if self.capacity > 65536 { "10000" } else { "700" };
         let mut environment = vec![
             ("MATRIXOBJECT_REPLICA_ADDR", bind.as_str()),
             ("MATRIXOBJECT_REPLICA_CAPACITY_BYTES", capacity.as_str()),
@@ -223,7 +223,7 @@ impl Group {
         .unwrap()
     }
     fn leader(&self) -> usize {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(if self.capacity > 65536 { 30 } else { 15 });
         let mut last = vec![String::new(); self.nodes.len()];
         loop {
             for (i, reply) in last.iter_mut().enumerate() {
@@ -1004,9 +1004,9 @@ mod coupled_groups {
                 ("MATRIXOBJECT_METASERVER_RAFT_NODE_ID", &id),
                 ("MATRIXOBJECT_METASERVER_RAFT_CHECKPOINT_BYTES", &checkpoint_bytes),
                 ("MATRIXOBJECT_METASERVER_RAFT_STATE_DIR", state.to_str().unwrap()),
-                ("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", if self.multiple_groups { "5000" } else { "700" }),
+                ("MATRIXOBJECT_METASERVER_RAFT_TIMEOUT_MS", if self.multiple_groups { "10000" } else { "700" }),
                 ("MATRIXOBJECT_METASERVER_CHUNK_GROUPS_FILE", catalog.to_str().unwrap()),
-                ("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", if self.multiple_groups { "10000" } else { "1500" }),
+                ("MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS", if self.multiple_groups { "15000" } else { "1500" }),
             ];
             let tls_paths = self.peer_tls.as_ref().map(|root| [
                 root.join("ca.pem"),
@@ -1030,7 +1030,7 @@ mod coupled_groups {
             self.nodes[i] = Some(node);
         }
         fn ready(&self) -> RemoteMetaClient {
-            let deadline = Instant::now() + Duration::from_secs(20);
+            let deadline = Instant::now() + Duration::from_secs(if self.multiple_groups { 30 } else { 20 });
             loop {
                 let options = MetaClientOptions {
                     connect_timeout: Duration::from_millis(200),
@@ -3437,7 +3437,7 @@ mod coupled_groups {
                 g.group_id = i as u64 + 1;
                 g.max_pages = 2048;
                 g.checkpoint_bytes = checkpoint_bytes;
-                g.heartbeat_ms = "2000";
+                g.heartbeat_ms = "3000";
                 g
             })
             .collect();

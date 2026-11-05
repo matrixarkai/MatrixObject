@@ -124,7 +124,9 @@ different address. Every report must match the endpoint stored in metadata.
 The binary heartbeat request uses code 71; older servers refuse it as unknown.
 It does not change the existing heartbeat request or durable protobuf format.
 
-`MATRIXOBJECT_CHUNK_HEARTBEAT_MS` defaults to 2000 and accepts 100..60000 ms.
+`MATRIXOBJECT_CHUNK_HEARTBEAT_MS` defaults to 3000 and accepts 100..60000 ms.
+Longer intervals reduce durable health reports but delay detection of a stopped
+chunk process when expiry is enabled.
 For a Raft control plane, set `MATRIXOBJECT_CHUNK_METADATA_IDENTITY_FILE` to a
 trusted canonical binary protobuf `MetaGroupIdentity` file (schema:
 `proto/meta_identity.proto`). Each heartbeat connection and leader redirect is
@@ -150,7 +152,7 @@ refused before the process begins serving.
 Set `MATRIXOBJECT_METASERVER_HEARTBEAT_TTL_MS` on each metaserver to enable expiry
 (1000..3600000 ms, default 0 disables it). Use a TTL comfortably larger than the
 report interval plus expected election, network, and storage delays, for example
-10000 ms with 2000 ms reports. Maintenance checks at most once a second and uses
+15000 ms with 3000 ms reports. Maintenance checks at most once a second and uses
 the normal durable mutation path; only a consensus leader can commit expiry.
 Expiry records contain only changed nodes. An empty local pass appends nothing;
 an empty consensus pass uses a compact read barrier. Clocks must be synchronized
