@@ -145,8 +145,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --all-features --lib cluster::server::heartbeat::tests -- --test-threads=1 | tee /tmp/fenced-health.log
-          grep -q '^running 4 tests$' /tmp/fenced-health.log
-          grep -q '^test result: ok. 4 passed' /tmp/fenced-health.log
+          grep -q '^running 5 tests$' /tmp/fenced-health.log
+          grep -q '^test result: ok. 5 passed' /tmp/fenced-health.log
 
       - name: catalog commands preserve durable state and quorum admission
         run: |

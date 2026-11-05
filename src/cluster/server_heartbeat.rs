@@ -93,8 +93,9 @@ pub(super) fn run(
         tls: options.tls.clone(),
         connect_timeout: Duration::from_millis(100),
         // A quorum report can wait behind an admitted metadata batch. Use the
-        // interval as its budget, with a 500 ms floor and 2 s cap.
-        read_timeout: options.interval.clamp(Duration::from_millis(500), Duration::from_secs(2)),
+        // interval as its budget, with a 500 ms floor and 1 s cap so shutdown
+        // remains bounded while a metaserver holds a response.
+        read_timeout: options.interval.clamp(Duration::from_millis(500), Duration::from_secs(1)),
         write_timeout: Duration::from_millis(100),
         ..Default::default()
     };
