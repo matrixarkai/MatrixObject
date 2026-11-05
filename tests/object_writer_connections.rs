@@ -404,16 +404,14 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         reply(&mut stream, MetaReply::Manifest(manifest.clone()));
         assert!(matches!(
             meta(&mut stream),
-            MetaRequest::ReadManifest { .. }
+            MetaRequest::ReadManifestRoutes { .. }
         ));
-        reply(&mut stream, MetaReply::Manifest(manifest.clone()));
-        let MetaRequest::ReadChunkRoutes { placement_ids } = meta(&mut stream) else {
-            panic!("read route batch missing");
-        };
-        assert_eq!(placement_ids, ["group-1", "group-2"]);
-        reply(&mut stream, MetaReply::ChunkRoutes(ChunkRouteBatch { version: 1, routes: groups.into_iter()
-            .map(|group| ChunkGroupRoute { version: 1, group: Some(group), fence: vec![] })
-            .collect() }));
+        reply(&mut stream, MetaReply::ManifestRoutes {
+            manifest: manifest.clone(),
+            routes: groups.into_iter()
+                .map(|group| ChunkGroupRoute { version: 1, group: Some(group), fence: vec![] })
+                .collect(),
+        });
         assert_eq!(stream.read(&mut [0]).unwrap(), 0);
         manifest
     });
