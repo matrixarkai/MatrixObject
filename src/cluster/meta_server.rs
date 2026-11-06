@@ -886,11 +886,21 @@ pub(super) fn apply_with_groups(
 ) -> Result<MetaReply, ObjectError> {
     groups.check_request(&request)?;
     if let MetaRequest::PlanObjectPlacementRoutes { bucket, key, length, replica_count }
-    | MetaRequest::PlanObjectWriteRoutes { bucket, key, length, replica_count } = &request {
-        if !(1..=4).contains(replica_count) {
-            return Err(ObjectError::InvalidArgument("combined placement width must be one through four".into()));
+    | MetaRequest::PlanObjectWriteRoutes { bucket, key, length, replica_count }
+    | MetaRequest::PlanObjectWriteRoutesWide { bucket, key, length, replica_count } = &request {
+        let max_groups = if matches!(&request, MetaRequest::PlanObjectWriteRoutesWide { .. }) {
+            8
+        } else {
+            4
+        };
+        if !(1..=max_groups).contains(replica_count) {
+            return Err(ObjectError::InvalidArgument(format!(
+                "combined placement width must be one through {max_groups}"
+            )));
         }
-        let write_plan = matches!(&request, MetaRequest::PlanObjectWriteRoutes { .. });
+        let write_plan = matches!(&request,
+            MetaRequest::PlanObjectWriteRoutes { .. }
+            | MetaRequest::PlanObjectWriteRoutesWide { .. });
         let current = write_plan.then(|| service.object_manifests
             .get(&super::meta_message::object_id(bucket, key)).cloned()).flatten();
         let plan = match apply_to_meta(service, MetaRequest::PlanObjectPlacement {
@@ -1053,6 +1063,9 @@ pub(super) fn apply_to_meta(
         )),
         MetaRequest::PlanObjectWriteRoutes { .. } => Err(ObjectError::PreconditionFailed(
             "write plan routes require the chunk catalog".into(),
+        )),
+        MetaRequest::PlanObjectWriteRoutesWide { .. } => Err(ObjectError::PreconditionFailed(
+            "wide write plan routes require the chunk catalog".into(),
         )),
 
         MetaRequest::ReadChunkGroup { .. } | MetaRequest::ReadChunkRoute { .. }

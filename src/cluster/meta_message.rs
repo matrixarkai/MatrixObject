@@ -285,6 +285,12 @@ pub enum MetaRequest {
         length: u64,
         replica_count: u64,
     },
+    PlanObjectWriteRoutesWide {
+        bucket: String,
+        key: String,
+        length: u64,
+        replica_count: u64,
+    },
     CommitObjectPlacement {
         placement: CommittedPlacement,
         expected_plan_checksum: String,
@@ -321,6 +327,7 @@ impl MetaRequest {
             MetaRequest::PlanObjectPlacement { .. } => MetaRequestCode::PlanObjectPlacement,
             MetaRequest::PlanObjectPlacementRoutes { .. } => MetaRequestCode::PlanObjectPlacementRoutes,
             MetaRequest::PlanObjectWriteRoutes { .. } => MetaRequestCode::PlanObjectWriteRoutes,
+            MetaRequest::PlanObjectWriteRoutesWide { .. } => MetaRequestCode::PlanObjectWriteRoutesWide,
             MetaRequest::CommitObjectPlacement { .. } => MetaRequestCode::CommitObjectPlacement,
             MetaRequest::CommitObjectPlacementIfCurrent { .. } => {
                 MetaRequestCode::CommitObjectPlacementIfCurrent
@@ -455,6 +462,11 @@ impl MetaRequest {
                 length,
                 replica_count,
             } | MetaRequest::PlanObjectWriteRoutes {
+                bucket,
+                key,
+                length,
+                replica_count,
+            } | MetaRequest::PlanObjectWriteRoutesWide {
                 bucket,
                 key,
                 length,
@@ -660,12 +672,15 @@ impl MetaRequest {
             },
             MetaRequestCode::ListRootNodes => MetaRequest::ListRootNodes,
             MetaRequestCode::PlanObjectPlacement | MetaRequestCode::PlanObjectPlacementRoutes
-            | MetaRequestCode::PlanObjectWriteRoutes => {
+            | MetaRequestCode::PlanObjectWriteRoutes
+            | MetaRequestCode::PlanObjectWriteRoutesWide => {
                 let bucket = cursor.take_str()?;
                 let key = cursor.take_str()?;
                 let length = cursor.take_u64()?;
                 let replica_count = cursor.take_u64()?;
-                if code == MetaRequestCode::PlanObjectWriteRoutes {
+                if code == MetaRequestCode::PlanObjectWriteRoutesWide {
+                    MetaRequest::PlanObjectWriteRoutesWide { bucket, key, length, replica_count }
+                } else if code == MetaRequestCode::PlanObjectWriteRoutes {
                     MetaRequest::PlanObjectWriteRoutes { bucket, key, length, replica_count }
                 } else if code == MetaRequestCode::PlanObjectPlacementRoutes {
                     MetaRequest::PlanObjectPlacementRoutes { bucket, key, length, replica_count }
@@ -1034,12 +1049,13 @@ impl MetaReply {
             }
             return Ok(Self::PlanRoutes { plan, routes: value.routes });
         }
-        if code == MetaRequestCode::PlanObjectWriteRoutes {
+        if matches!(code, MetaRequestCode::PlanObjectWriteRoutes | MetaRequestCode::PlanObjectWriteRoutesWide) {
             if payload.len() > MAX_WRITE_PLAN_REPLY_BYTES {
                 return Err(ObjectError::Corruption("write plan reply exceeds bound".into()));
             }
             let value: WritePlanRoutesPayload = super::conditional_requests::decode(payload)?;
-            if value.version != 1 || value.encode_to_vec() != payload || value.routes.len() > 4 {
+            let max_routes = if code == MetaRequestCode::PlanObjectWriteRoutesWide { 8 } else { 4 };
+            if value.version != 1 || value.encode_to_vec() != payload || value.routes.len() > max_routes {
                 return Err(ObjectError::Corruption("invalid write plan reply".into()));
             }
             let plan = match Self::decode(MetaRequestCode::PlanObjectPlacement, &value.plan)? {
@@ -1112,6 +1128,7 @@ impl MetaReply {
             | MetaRequestCode::ReadChunkGroup
             | MetaRequestCode::PlanObjectPlacementRoutes
             | MetaRequestCode::PlanObjectWriteRoutes
+            | MetaRequestCode::PlanObjectWriteRoutesWide
             | MetaRequestCode::ReadChunkRoute
             | MetaRequestCode::ReadChunkRoutes
             | MetaRequestCode::ReadChunkRoutesWide

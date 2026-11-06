@@ -473,6 +473,12 @@ four-route batches for that connection. Transport, integrity, and application
 errors do not trigger this downgrade. An eight-group object therefore reduces
 route confirmation from two metadata reads to one on upgraded servers.
 
+Metadata request code 88 returns the current manifest, an eight-group placement
+plan and the eight committed group routes after one quorum confirmation. Code 85
+retains its four-group reply bound for rolling upgrades. A typed unknown-request
+response selects and remembers the separate manifest, placement and route reads;
+other failures are returned without replay. For eight-group writes this reduces
+three metadata confirmations to one before data-group verification and allocation.
 
 ### Concurrent immutable data-group writes
 

@@ -130,6 +130,210 @@ fn write_plan_reply_keeps_manifest_and_routes_for_one_object() {
 }
 
 #[test]
+fn eight_group_write_plan_uses_one_metadata_exchange() {
+    let socket = listener();
+    let endpoint = socket.local_addr().unwrap().to_string();
+    let reply_socket = socket.try_clone().unwrap();
+    let worker = thread::spawn(move || {
+        let mut stream = accept(&reply_socket);
+        assert!(matches!(
+            meta(&mut stream),
+            MetaRequest::PlanObjectWriteRoutesWide {
+                length: 8192,
+                replica_count: 8,
+                ..
+            }
+        ));
+        let node_ids: Vec<String> = (1..=8).map(|id| format!("group-{id}")).collect();
+        let routes = (1..=8)
+            .map(|id| ChunkGroupRoute {
+                version: 1,
+                group: Some(config(&reply_socket, id)),
+                fence: Vec::new(),
+            })
+            .collect();
+        reply(
+            &mut stream,
+            MetaReply::WritePlanRoutes {
+                current: None,
+                plan: PlacementAssignment {
+                    bucket: "bucket".into(),
+                    key: "key".into(),
+                    length: 8192,
+                    node_ids,
+                    skipped_draining: 0,
+                    skipped_offline: 0,
+                    skipped_capacity: 0,
+                    plan_checksum: "plan".into(),
+                },
+                routes,
+            },
+        );
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+    let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    let (current, plan, routes) = client
+        .plan_object_write_routes("bucket", "key", 8192, 8)
+        .unwrap();
+    assert!(current.is_none());
+    assert_eq!(plan.node_ids.len(), 8);
+    assert_eq!(routes.len(), 8);
+    drop(client);
+    worker.join().unwrap();
+}
+
+#[test]
+fn four_group_decoder_refuses_an_eight_group_write_plan() {
+    let socket = listener();
+    let node_ids: Vec<String> = (1..=8).map(|id| format!("group-{id}")).collect();
+    let routes = (1..=8)
+        .map(|id| ChunkGroupRoute {
+            version: 1,
+            group: Some(config(&socket, id)),
+            fence: Vec::new(),
+        })
+        .collect();
+    let reply = MetaReply::WritePlanRoutes {
+        current: None,
+        plan: PlacementAssignment {
+            bucket: "bucket".into(),
+            key: "key".into(),
+            length: 8192,
+            node_ids,
+            skipped_draining: 0,
+            skipped_offline: 0,
+            skipped_capacity: 0,
+            plan_checksum: "plan".into(),
+        },
+        routes,
+    };
+    let payload = reply.encode_payload();
+    assert_eq!(
+        MetaReply::decode(MetaRequestCode::PlanObjectWriteRoutesWide, &payload).unwrap(),
+        reply
+    );
+    assert!(MetaReply::decode(MetaRequestCode::PlanObjectWriteRoutes, &payload).is_err());
+}
+
+#[test]
+fn older_server_wide_write_plan_fallback_is_remembered() {
+    let socket = listener();
+    let endpoint = socket.local_addr().unwrap().to_string();
+    let reply_socket = socket.try_clone().unwrap();
+    let worker = thread::spawn(move || {
+        let mut stream = accept(&reply_socket);
+        let node_ids: Vec<String> = (1..=8).map(|id| format!("group-{id}")).collect();
+        let mut wide_plans = 0;
+        let mut scalar_plans = 0;
+        for request_index in 0..26 {
+            match meta(&mut stream) {
+                MetaRequest::PlanObjectWriteRoutesWide { replica_count: 8, .. } => {
+                    wide_plans += 1;
+                    stream
+                        .write_all(&message::encode_failure(
+                            StatusCode::UnknownRequest,
+                            "unknown eight-group write plan",
+                        ))
+                        .unwrap();
+                }
+                MetaRequest::ReadManifest { .. } => {
+                    stream
+                        .write_all(&message::encode_failure(
+                            StatusCode::NotFound,
+                            "object missing",
+                        ))
+                        .unwrap();
+                }
+                MetaRequest::PlanObjectPlacement { replica_count: 8, .. } => {
+                    scalar_plans += 1;
+                    reply(
+                        &mut stream,
+                        MetaReply::Plan(PlacementAssignment {
+                            bucket: "bucket".into(),
+                            key: "key".into(),
+                            length: 8192,
+                            node_ids: node_ids.clone(),
+                            skipped_draining: 0,
+                            skipped_offline: 0,
+                            skipped_capacity: 0,
+                            plan_checksum: "plan".into(),
+                        }),
+                    );
+                }
+                MetaRequest::ReadChunkRoutesWide { placement_ids }
+                | MetaRequest::ReadChunkRoutes { placement_ids } => {
+                    assert!(!placement_ids.is_empty());
+                    assert!(placement_ids.iter().all(|id| node_ids.contains(id)));
+                    stream
+                        .write_all(&message::encode_failure(
+                            StatusCode::UnknownRequest,
+                            "unknown route batch",
+                        ))
+                        .unwrap();
+                }
+                MetaRequest::ReadChunkRoute { placement_id } => {
+                    let id = placement_id
+                        .strip_prefix("group-")
+                        .unwrap()
+                        .parse::<u64>()
+                        .unwrap();
+                    assert!(node_ids.contains(&placement_id));
+                    reply(
+                        &mut stream,
+                        MetaReply::ChunkRoute(ChunkGroupRoute {
+                            version: 1,
+                            group: Some(config(&reply_socket, id)),
+                            fence: Vec::new(),
+                        }),
+                    );
+                }
+                request => panic!("unexpected fallback request {request_index}: {request:?}"),
+            }
+        }
+        assert_eq!(wide_plans, 1);
+        assert_eq!(scalar_plans, 2);
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+    let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    for _ in 0..2 {
+        let (current, plan, routes) = client
+            .plan_object_write_routes("bucket", "key", 8192, 8)
+            .unwrap();
+        assert!(current.is_none());
+        assert_eq!(plan.node_ids.len(), 8);
+        assert_eq!(routes.len(), 8);
+    }
+    drop(client);
+    worker.join().unwrap();
+}
+
+#[test]
+fn rejected_wide_write_plan_is_not_replayed_as_separate_reads() {
+    let socket = listener();
+    let endpoint = socket.local_addr().unwrap().to_string();
+    let worker = thread::spawn(move || {
+        let mut stream = accept(&socket);
+        assert!(matches!(
+            meta(&mut stream),
+            MetaRequest::PlanObjectWriteRoutesWide { replica_count: 8, .. }
+        ));
+        stream
+            .write_all(&message::encode_failure(
+                StatusCode::InvalidArgument,
+                "write plan refused",
+            ))
+            .unwrap();
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+    let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    assert!(client
+        .plan_object_write_routes("bucket", "key", 8192, 8)
+        .is_err());
+    drop(client);
+    worker.join().unwrap();
+}
+
+#[test]
 fn changed_manifest_stops_combined_write_before_data_connections() {
     let metadata_socket = listener();
     let data_socket = listener();

@@ -112,6 +112,7 @@ pub struct RemoteMetaClient {
     write_timeout: Duration,
     catalog: Option<(Vec<String>, MetaClientOptions)>,
     wide_route_reads: Option<bool>,
+    wide_write_plan_reads: Option<bool>,
 }
 
 #[cfg(any(feature = "replica-server", test))]
@@ -178,6 +179,7 @@ impl RemoteMetaClient {
             write_timeout: options.write_timeout,
             catalog: None,
             wide_route_reads: None,
+            wide_write_plan_reads: None,
         })
     }
 
@@ -645,31 +647,80 @@ impl RemoteMetaClient {
         length: u64,
         replica_count: u64,
     ) -> Result<(Option<crate::object_manifest::ObjectManifest>, PlacementAssignment, Vec<super::ChunkGroupRoute>), ObjectError> {
-        let result = self.call(MetaRequest::PlanObjectWriteRoutes {
-            bucket: bucket.into(), key: key.into(), length, replica_count,
-        });
+        if !(1..=8).contains(&replica_count) {
+            return Err(ObjectError::InvalidArgument(
+                "combined write plan width must be one through eight".into(),
+            ));
+        }
+        let wide = replica_count > 4;
+        if wide && self.wide_write_plan_reads == Some(false) {
+            return self.plan_object_write_routes_separately(
+                bucket, key, length, replica_count,
+            );
+        }
+        let request = if wide {
+            MetaRequest::PlanObjectWriteRoutesWide {
+                bucket: bucket.into(), key: key.into(), length, replica_count,
+            }
+        } else {
+            MetaRequest::PlanObjectWriteRoutes {
+                bucket: bucket.into(), key: key.into(), length, replica_count,
+            }
+        };
+        let result = self.call(request);
         match result {
             Ok(MetaReply::WritePlanRoutes { current, plan, routes })
                 if plan.bucket == bucket && plan.key == key && plan.length == length
                     && plan.node_ids.len() == replica_count as usize
                     && routes.len() == plan.node_ids.len()
                     && current.as_ref().is_none_or(|value|
-                        value.bucket == bucket && value.key == key) => Ok((current, plan, routes)),
+                        value.bucket == bucket && value.key == key) => {
+                if wide {
+                    self.wide_write_plan_reads = Some(true);
+                }
+                Ok((current, plan, routes))
+            }
             Err(ObjectError::PreconditionFailed(message))
                 if message.starts_with("the replica does not implement this request:") => {
-                let current = match self.read_manifest(bucket, key) {
-                    Ok(value) => Some(value),
-                    Err(ObjectError::NotFound(_)) => None,
-                    Err(error) => return Err(error),
-                };
-                let (plan, routes) = self.plan_object_placement_routes(
-                    bucket, key, length, replica_count,
-                )?;
-                Ok((current, plan, routes))
+                if wide {
+                    self.wide_write_plan_reads = Some(false);
+                }
+                self.plan_object_write_routes_separately(bucket, key, length, replica_count)
             }
             Ok(_) => Err(ObjectError::Corruption("unexpected write plan reply".into())),
             Err(error) => Err(error),
         }
+    }
+
+    fn plan_object_write_routes_separately(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        length: u64,
+        replica_count: u64,
+    ) -> Result<(Option<crate::object_manifest::ObjectManifest>, PlacementAssignment, Vec<super::ChunkGroupRoute>), ObjectError> {
+        let current = match self.read_manifest(bucket, key) {
+            Ok(value) => Some(value),
+            Err(ObjectError::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        let (plan, routes) = if replica_count <= 4 {
+            self.plan_object_placement_routes(bucket, key, length, replica_count)?
+        } else {
+            let plan = self.plan_object_placement(bucket, key, length, replica_count)?;
+            if plan.bucket != bucket
+                || plan.key != key
+                || plan.length != length
+                || plan.node_ids.len() != replica_count as usize
+            {
+                return Err(ObjectError::Corruption(
+                    "separate write plan does not match the request".into(),
+                ));
+            }
+            let routes = self.read_chunk_routes(&plan.node_ids)?;
+            (plan, routes)
+        };
+        Ok((current, plan, routes))
     }
 
     /// Commit only if the complete current record matches, or is absent for None.
@@ -1095,6 +1146,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadManifest { .. }
                 | MetaRequest::ReadManifestRoutes { .. }
                 | MetaRequest::PlanObjectWriteRoutes { .. }
+                | MetaRequest::PlanObjectWriteRoutesWide { .. }
                 | MetaRequest::ReadObjectRootPlacement { .. }
                 | MetaRequest::ReadChunkGroup { .. }
                 | MetaRequest::ReadChunkRoute { .. }
