@@ -18,6 +18,8 @@ pub(super) struct ReplicaJournal {
     _lock: Option<File>,
     path: PathBuf,
     bytes_since_checkpoint: u64,
+    #[cfg(test)]
+    sync_count: u64,
 }
 
 fn invalid(message: impl ToString) -> io::Error {
@@ -151,6 +153,8 @@ impl ReplicaJournal {
             _lock: Some(lock),
             path,
             bytes_since_checkpoint: offset - base_end,
+            #[cfg(test)]
+            sync_count: 0,
         };
         if offset != 0 {
             journal.mark_initialized()?;
@@ -187,14 +191,35 @@ impl ReplicaJournal {
     }
 
     pub(super) fn append(&mut self, record: &[u8]) -> io::Result<()> {
+        self.append_deferred(record)?;
+        self.sync_deferred()
+    }
+
+    /// Append one complete outcome without acknowledging its durability yet.
+    /// The bounded standalone batch path uses this for every member, then calls
+    /// `sync_deferred` once before it returns a reply.
+    pub(super) fn append_deferred(&mut self, record: &[u8]) -> io::Result<()> {
         self.file.write_all(record)?;
-        self.file.sync_all()?;
-        self.mark_initialized()?;
         self.bytes_since_checkpoint = self
             .bytes_since_checkpoint
             .checked_add(record.len() as u64)
             .ok_or_else(|| invalid("journal length overflow"))?;
         Ok(())
+    }
+
+    pub(super) fn sync_deferred(&mut self) -> io::Result<()> {
+        self.file.sync_all()?;
+        self.mark_initialized()?;
+        #[cfg(test)]
+        {
+            self.sync_count = self.sync_count.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn sync_count(&self) -> u64 {
+        self.sync_count
     }
 
     fn mark_initialized(&self) -> io::Result<()> {
@@ -362,6 +387,7 @@ impl ReplicaJournal {
             _lock: None,
             path: path.to_path_buf(),
             bytes_since_checkpoint: 0,
+            sync_count: 0,
         }
     }
 }
