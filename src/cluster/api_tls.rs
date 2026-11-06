@@ -28,6 +28,18 @@ impl std::fmt::Debug for ApiTlsConfig {
     }
 }
 impl ApiTlsConfig {
+    pub(super) fn same_configuration(&self, other: &Self) -> bool {
+        #[cfg(feature = "peer-tls")]
+        {
+            Arc::ptr_eq(&self.config, &other.config)
+        }
+        #[cfg(not(feature = "peer-tls"))]
+        {
+            let _ = other;
+            true
+        }
+    }
+
     pub fn load(options: &ApiTlsOptions) -> io::Result<Self> {
         #[cfg(feature = "peer-tls")]
         {

@@ -241,6 +241,29 @@ impl Drop for PendingReplicaReply<'_> {
 }
 
 impl RemoteReplicaClient {
+    pub(super) fn prepare_for_reuse(&mut self, options: &ReplicaClientOptions) -> bool {
+        let Some((_, current)) = &mut self.catalog else {
+            return false;
+        };
+        let same_tls = match (&current.tls, &options.tls) {
+            (None, None) => true,
+            (Some(left), Some(right)) => left.same_configuration(right),
+            _ => false,
+        };
+        if !self.connection_usable
+            || !same_tls
+            || current.connect_timeout != options.connect_timeout
+            || current.read_timeout != options.read_timeout
+            || current.write_timeout != options.write_timeout
+            || current.max_payload_bytes != options.max_payload_bytes
+        {
+            return false;
+        }
+        self.deadline = options.deadline;
+        current.deadline = options.deadline;
+        true
+    }
+
     /// Open a connection to `endpoint` and keep it.
     ///
     /// The connection is held for the life of the client rather than opened per call. That

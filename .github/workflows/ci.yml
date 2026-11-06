@@ -424,6 +424,18 @@ jobs:
           cargo test --locked --all-features --test object_writer_connections writer_reuses_preflight_connection_and_only_looks_up_each_group_once -- --exact | tee /tmp/object-connections.log
           grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
 
+      - name: sequential writes reuse one freshly routed group connection
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test object_writer_connections sequential_writes_reuse_a_route_matched_group_connection -- --exact | tee /tmp/object-connections.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
+
+      - name: changed routes replace cached group connections
+        run: |
+          set -o pipefail
+          cargo test --locked --all-features --test object_writer_connections changed_route_replaces_the_cached_group_connection -- --exact | tee /tmp/object-connections.log
+          grep -q 'test result: ok. 1 passed' /tmp/object-connections.log
+
       - name: failed pipelined writes retire the socket without replay
         run: |
           set -o pipefail

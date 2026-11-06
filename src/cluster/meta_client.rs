@@ -114,6 +114,8 @@ pub struct RemoteMetaClient {
     wide_route_reads: Option<bool>,
     wide_write_plan_reads: Option<bool>,
     wide_manifest_route_reads: Option<bool>,
+    #[cfg(feature = "replica-server")]
+    pub(super) object_connection: Option<super::object_client::CachedGroupConnection>,
 }
 
 #[cfg(any(feature = "replica-server", test))]
@@ -182,6 +184,8 @@ impl RemoteMetaClient {
             wide_route_reads: None,
             wide_write_plan_reads: None,
             wide_manifest_route_reads: None,
+            #[cfg(feature = "replica-server")]
+            object_connection: None,
         })
     }
 

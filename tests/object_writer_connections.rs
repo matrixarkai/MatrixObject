@@ -680,6 +680,252 @@ fn chunk_route_reply_must_name_the_requested_placement() {
         worker.join().unwrap();
     }
 }
+
+#[test]
+fn sequential_writes_reuse_a_route_matched_group_connection() {
+    let data_socket = listener();
+    let group = config(&data_socket, 1);
+    let data_group = group.clone();
+    let data_worker = thread::spawn(move || {
+        let mut stream = accept(&data_socket);
+        assert!(matches!(
+            replica(&mut stream),
+            ReplicaRequest::GroupIdentity
+        ));
+        stream
+            .write_all(&message::encode_reply(&ReplicaReply::GroupIdentity(
+                data_group.identity.clone().unwrap(),
+            )))
+            .unwrap();
+        for value in [1u8, 2] {
+            let ReplicaRequest::WriteChunkIfSequenceDigest {
+                data,
+                expected_sequence,
+                ..
+            } = replica(&mut stream)
+            else {
+                panic!("conditional write digest missing");
+            };
+            assert_eq!(data, vec![value; 4]);
+            assert_eq!(expected_sequence, 0);
+            let mut sha256 = [0; 32];
+            sha256.copy_from_slice(
+                ring::digest::digest(&ring::digest::SHA256, &data).as_ref(),
+            );
+            stream
+                .write_all(&message::encode_reply(&ReplicaReply::Digest {
+                    write_sequence: 1,
+                    length: 4,
+                    sha256,
+                }))
+                .unwrap();
+        }
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        assert!(matches!(
+            data_socket.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+    });
+
+    let meta_socket = listener();
+    let endpoint = meta_socket.local_addr().unwrap().to_string();
+    let metadata_group = group.clone();
+    let metadata_worker = thread::spawn(move || {
+        let mut stream = accept(&meta_socket);
+        for (turn, key) in ["first", "second"].into_iter().enumerate() {
+            assert!(matches!(
+                meta(&mut stream),
+                MetaRequest::PlanObjectWriteRoutes {
+                    bucket,
+                    key: requested,
+                    length: 4,
+                    replica_count: 1,
+                } if bucket == "bucket" && requested == key
+            ));
+            reply(
+                &mut stream,
+                MetaReply::WritePlanRoutes {
+                    current: None,
+                    plan: PlacementAssignment {
+                        bucket: "bucket".into(),
+                        key: key.into(),
+                        length: 4,
+                        node_ids: vec![metadata_group.placement_id.clone()],
+                        skipped_draining: 0,
+                        skipped_offline: 0,
+                        skipped_capacity: 0,
+                        plan_checksum: format!("plan-{turn}"),
+                    },
+                    routes: vec![ChunkGroupRoute {
+                        version: 1,
+                        group: Some(metadata_group.clone()),
+                        fence: vec![],
+                    }],
+                },
+            );
+            assert!(matches!(
+                meta(&mut stream),
+                MetaRequest::AllocateObjectPages { page_count: 1 }
+            ));
+            reply(
+                &mut stream,
+                MetaReply::ObjectPages(ObjectPageAllocation {
+                    format_version: 1,
+                    allocation_id: turn as u64 + 1,
+                    page_count: 1,
+                }),
+            );
+            let MetaRequest::PublishManifest { outcome, .. } = meta(&mut stream) else {
+                panic!("manifest publication missing");
+            };
+            reply(
+                &mut stream,
+                MetaReply::Manifest(outcome.after.unwrap()),
+            );
+        }
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+
+    let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    let options = ObjectWriteOptions {
+        page_bytes: 4,
+        target_groups: 1,
+        ..Default::default()
+    };
+    for (key, value) in [("first", 1u8), ("second", 2)] {
+        client
+            .write_object("bucket", key, None, &[value; 4], &options)
+            .unwrap();
+    }
+    drop(client);
+    metadata_worker.join().unwrap();
+    data_worker.join().unwrap();
+}
+
+#[test]
+fn changed_route_replaces_the_cached_group_connection() {
+    let old_socket = listener();
+    let new_socket = listener();
+    let old_group = config(&old_socket, 1);
+    let new_group = config(&new_socket, 1);
+    let old_identity = old_group.identity.clone().unwrap();
+    let new_identity = new_group.identity.clone().unwrap();
+    let old_worker = thread::spawn(move || {
+        let mut stream = accept(&old_socket);
+        assert!(matches!(replica(&mut stream), ReplicaRequest::GroupIdentity));
+        stream
+            .write_all(&message::encode_reply(&ReplicaReply::GroupIdentity(old_identity)))
+            .unwrap();
+        assert!(matches!(
+            replica(&mut stream),
+            ReplicaRequest::WriteChunkIfSequenceDigest { data, .. } if data == vec![1; 4]
+        ));
+        stream
+            .write_all(&message::encode_reply(&ReplicaReply::Digest {
+                write_sequence: 1,
+                length: 4,
+                sha256: ring::digest::digest(&ring::digest::SHA256, &[1; 4])
+                    .as_ref()
+                    .try_into()
+                    .unwrap(),
+            }))
+            .unwrap();
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+    let new_worker = thread::spawn(move || {
+        let mut stream = accept(&new_socket);
+        assert!(matches!(replica(&mut stream), ReplicaRequest::GroupIdentity));
+        stream
+            .write_all(&message::encode_reply(&ReplicaReply::GroupIdentity(new_identity)))
+            .unwrap();
+        assert!(matches!(
+            replica(&mut stream),
+            ReplicaRequest::WriteChunkIfSequenceDigest { data, .. } if data == vec![2; 4]
+        ));
+        stream
+            .write_all(&message::encode_reply(&ReplicaReply::Digest {
+                write_sequence: 1,
+                length: 4,
+                sha256: ring::digest::digest(&ring::digest::SHA256, &[2; 4])
+                    .as_ref()
+                    .try_into()
+                    .unwrap(),
+            }))
+            .unwrap();
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+
+    let meta_socket = listener();
+    let endpoint = meta_socket.local_addr().unwrap().to_string();
+    let metadata_worker = thread::spawn(move || {
+        let mut stream = accept(&meta_socket);
+        for (turn, (key, group)) in [
+            ("old", old_group),
+            ("new", new_group),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(matches!(meta(&mut stream), MetaRequest::PlanObjectWriteRoutes { .. }));
+            reply(
+                &mut stream,
+                MetaReply::WritePlanRoutes {
+                    current: None,
+                    plan: PlacementAssignment {
+                        bucket: "bucket".into(),
+                        key: key.into(),
+                        length: 4,
+                        node_ids: vec![group.placement_id.clone()],
+                        skipped_draining: 0,
+                        skipped_offline: 0,
+                        skipped_capacity: 0,
+                        plan_checksum: format!("plan-{turn}"),
+                    },
+                    routes: vec![ChunkGroupRoute {
+                        version: 1,
+                        group: Some(group),
+                        fence: vec![],
+                    }],
+                },
+            );
+            assert!(matches!(
+                meta(&mut stream),
+                MetaRequest::AllocateObjectPages { page_count: 1 }
+            ));
+            reply(
+                &mut stream,
+                MetaReply::ObjectPages(ObjectPageAllocation {
+                    format_version: 1,
+                    allocation_id: turn as u64 + 1,
+                    page_count: 1,
+                }),
+            );
+            let MetaRequest::PublishManifest { outcome, .. } = meta(&mut stream) else {
+                panic!("manifest publication missing");
+            };
+            reply(&mut stream, MetaReply::Manifest(outcome.after.unwrap()));
+        }
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+
+    let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    let options = ObjectWriteOptions {
+        page_bytes: 4,
+        target_groups: 1,
+        ..Default::default()
+    };
+    client
+        .write_object("bucket", "old", None, &[1; 4], &options)
+        .unwrap();
+    client
+        .write_object("bucket", "new", None, &[2; 4], &options)
+        .unwrap();
+    drop(client);
+    metadata_worker.join().unwrap();
+    old_worker.join().unwrap();
+    new_worker.join().unwrap();
+}
+
 #[test]
 fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
     let object: Vec<u8> = (0..125).collect();
@@ -696,6 +942,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
             thread::spawn(move || {
                 // Both groups write on their verified preflight connections.
                 // Each read opens one later connection.
+                let mut retained_write = None;
                 for turn in 0..2 {
                     let mut stream = accept(&socket);
                     assert!(matches!(
@@ -828,8 +1075,14 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                         }
                         stream.write_all(&message::encode_reply(&ReplicaReply::Reads(results))).unwrap();
                     }
-                    assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+                    if writing {
+                        retained_write = Some(stream);
+                    } else {
+                        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+                    }
                 }
+                let mut write_stream = retained_write.unwrap();
+                assert_eq!(write_stream.read(&mut [0]).unwrap(), 0);
                 assert!(
                     matches!(socket.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
                 );

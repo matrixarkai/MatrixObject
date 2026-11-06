@@ -269,6 +269,25 @@ remembers the original request for that connection; transport, integrity and
 application failures are returned without replay. Eight-group reads no longer
 need a second metadata confirmation for the remaining routes.
 
+After a successful object write, the metadata client retains at most one verified
+data-group connection. Every later write still obtains a fresh quorum-confirmed
+plan and route. The socket is reused only when that complete route is unchanged
+and the TLS configuration, timeouts and payload bound match. A changed membership
+fence, endpoint, transport option, failed data exchange or uncertain data mutation
+discards the socket. Reuse never retries a mutation or bypasses publication
+checks. Keeping one hot connection accelerates the default one-group star-write
+path without letting a wide client retain idle sockets across the cluster.
+
+On November 6, 2026, paired release runs on one local WSL host measured the
+one-connection build against the preceding main commit. The 51-process,
+eight-group-per-object run completed its initial 320 writes at 44.3 objects per
+second versus 37.9, and its 80 post-failover writes at 67.3 versus 56.2. The
+67-process, two-group-per-object run completed its initial 256 writes at 56.6
+objects per second versus 46.3, then passed four concurrent membership replacement
+rounds, verified 512 objects and made no mutation retries. These paired samples
+show the effect on this machine; they are not a sustained throughput target or a
+multihost production qualification.
+
 The dedicated eight-group scale check starts 51 local WSL processes: sixteen
 three-voter data groups and three metadata voters. It writes 320 objects with
 eight 1 KiB pages each, loses leaders, writes another 80 objects, restarts every
