@@ -122,6 +122,22 @@ impl PendingReplicaReply<'_> {
         self.request_written + self.header_read + self.payload_read
     }
 
+    pub(super) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    #[cfg(unix)]
+    pub(super) fn readiness(&self) -> (&TcpStream, libc::c_short) {
+        (
+            self.client.writer.raw(),
+            if self.request.is_some() || self.client.writer.wants_write() {
+                libc::POLLOUT
+            } else {
+                libc::POLLIN
+            },
+        )
+    }
+
     fn send_pending(&mut self) -> Result<bool, ObjectError> {
         let Some(frame) = &self.request else { return Ok(true) };
         time_left(self.deadline).map_err(|error| {
