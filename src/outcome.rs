@@ -213,18 +213,23 @@ impl PageOutcome {
         }
         let mut data = before
             .as_ref()
-            .map(|s| s.data.as_ref().clone())
+            .map(|s| Arc::clone(&s.data))
             .unwrap_or_default();
-        data.resize(length, 0);
-        for patch in &self.patches {
-            data[patch.offset as usize..patch.offset as usize + patch.data.len()]
-                .copy_from_slice(&patch.data);
+        // Metadata-only outcomes retain the immutable page buffer. Changed bytes
+        // stay isolated until the complete resulting state has been validated.
+        if data.len() != length || !self.patches.is_empty() {
+            let bytes = Arc::make_mut(&mut data);
+            bytes.resize(length, 0);
+            for patch in &self.patches {
+                bytes[patch.offset as usize..patch.offset as usize + patch.data.len()]
+                    .copy_from_slice(&patch.data);
+            }
         }
         let state = PageState {
             logical_length: self.logical_length,
             write_sequence: self.write_sequence,
             checksum_fnv1a64: self.data_checksum,
-            data: Arc::new(data),
+            data,
             ec_parity_fragment: None,
             ec_fragment_digests: None,
             discarded_ranges: self

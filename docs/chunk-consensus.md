@@ -60,6 +60,13 @@ checks the encoded representation. `outcome_encoding_cost` checks allocation
 volume for 64 KiB, 1 MiB and 4 MiB full-page changes, exact wire bytes, replay,
 and the envelope boundary. These are allocation checks, not throughput results.
 
+Applying an outcome with no byte patches and unchanged data length retains the
+existing immutable page buffer. Sequence and other metadata still advance, and
+checksum, capacity and installation checks still run. Byte patches and length
+changes use an isolated buffer so rejected outcomes cannot alter live data.
+The allocation test also checks buffer sharing, changed-byte isolation and
+failure atomicity for 64 KiB, 1 MiB and 4 MiB pages.
+
 `chunk.peer.base` is a canonical `MOCB` binary protobuf bootstrap containing the
 capacity and page limit. `chunk.peer.wal` is the independently durable MatrixRaft
 peer log; `chunk.peer.lock` prevents a second writer. Missing paired files,

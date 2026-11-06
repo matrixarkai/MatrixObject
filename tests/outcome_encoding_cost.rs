@@ -99,3 +99,63 @@ fn outcome_encoding_avoids_discarded_payloads_and_preserves_limits() {
     let oversized = service.read_chunk_state(&page).unwrap();
     assert!(PageOutcome::between(&page, None, &oversized).is_err());
 }
+
+#[test]
+fn unchanged_outcome_reuses_page_bytes_and_changed_outcome_is_isolated() {
+    use std::sync::Arc;
+    let page = PageId {
+        chunk_id: ChunkId::new(1, 1).unwrap(),
+        page_index: 0,
+    };
+    for size in [64 * 1024, 1024 * 1024, 4 * 1024 * 1024] {
+        let mut live = MatrixReplicaService::new();
+        live.write_chunk(page.clone(), 0, &vec![7; size]).unwrap();
+        let before = live.read_chunk_state(&page).unwrap();
+        let mut expected = live.clone();
+        expected.write_chunk(page.clone(), 0, &[7]).unwrap();
+        let after = expected.read_chunk_state(&page).unwrap();
+        let outcome = PageOutcome::between(&page, Some(&before), &after).unwrap();
+        assert!(outcome.patches.is_empty());
+        let (_, allocated) = measured(|| outcome.apply(&mut live, 1).unwrap());
+        let applied = live.read_chunk_state(&page).unwrap();
+        assert!(
+            Arc::ptr_eq(&before.data, &applied.data),
+            "unchanged bytes must stay shared"
+        );
+        assert_eq!(applied, after);
+        // Checksum validation has size-proportional scratch space. Keep enough
+        // headroom for that, but not enough for a second full page buffer.
+        assert!(
+            allocated < size + size / 2,
+            "size={size} allocated={allocated}"
+        );
+
+        let mut changed = expected.clone();
+        changed.write_chunk(page.clone(), 17, &[9]).unwrap();
+        let changed_state = changed.read_chunk_state(&page).unwrap();
+        let update = PageOutcome::between(&page, Some(&applied), &changed_state).unwrap();
+        let saved = live.clone();
+        let mut damaged = update.clone();
+        damaged.after_checksum.push('x');
+        assert!(damaged.apply(&mut live, 1).is_err());
+        assert_eq!(live, saved);
+        update.apply(&mut live, 1).unwrap();
+        let applied_change = live.read_chunk_state(&page).unwrap();
+        assert_eq!(applied_change, changed_state);
+        assert!(!Arc::ptr_eq(&applied.data, &applied_change.data));
+        assert_eq!(applied.data[17], 7);
+        changed
+            .write_chunk(page.clone(), size as u64 + 63, &[0])
+            .unwrap();
+        let extended_state = changed.read_chunk_state(&page).unwrap();
+        let extension =
+            PageOutcome::between(&page, Some(&applied_change), &extended_state).unwrap();
+        assert!(extension.patches.is_empty());
+        extension.apply(&mut live, 1).unwrap();
+        let extended = live.read_chunk_state(&page).unwrap();
+        assert_eq!(extended, extended_state);
+        assert!(!Arc::ptr_eq(&applied_change.data, &extended.data));
+        assert_eq!(applied_change.data.len(), size);
+        println!("UNCHANGED_OUTCOME size={size} allocated={allocated}");
+    }
+}
