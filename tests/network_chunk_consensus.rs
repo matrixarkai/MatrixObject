@@ -3521,7 +3521,7 @@ mod coupled_groups {
         assert!(page_bytes > 0 && object_bytes % page_bytes == 0);
         assert!(object_bytes / page_bytes <= 4096);
         assert!(objects || object_bytes == 1024);
-        assert!(target_groups == 1 || (objects && matches!(target_groups, 2 | 4)));
+        assert!(target_groups == 1 || (objects && matches!(target_groups, 2 | 4 | 8)));
         assert!(target_groups as usize <= group_count);
         assert!((2..=64).contains(&group_count));
         assert!(writes > 0 && writes <= 1024);
@@ -3686,6 +3686,27 @@ mod coupled_groups {
     #[ignore = "bounded 51-process local load and recovery measurement"]
     fn sixteen_groups_preserve_concurrent_writes_through_recovery() {
         multiple_group_load(16, 1024, 8, false);
+    }
+    #[test]
+    #[ignore = "51-process eight-group object write and recovery measurement; run explicitly in WSL"]
+    fn sixteen_groups_preserve_eight_way_objects_through_recovery() {
+        multiple_group_load_with_transport_checkpoint_mode_page_bytes(
+            16,
+            320,
+            8,
+            true,
+            8,
+            8 * 1024,
+            VoterSetup {
+                peer_tls: None,
+                api_tls: false,
+                voters: 3,
+            },
+            16 * 1024,
+            true,
+            false,
+            1024,
+        );
     }
     #[test]
     #[ignore = "51-process 32-page object write and recovery measurement; run explicitly in WSL"]

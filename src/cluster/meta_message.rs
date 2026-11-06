@@ -211,6 +211,7 @@ pub enum MetaRequest {
     ChunkCatalog(super::ChunkCatalogCommand),
     ReadChunkRoute { placement_id: String },
     ReadChunkRoutes { placement_ids: Vec<String> },
+    ReadChunkRoutesWide { placement_ids: Vec<String> },
     AllocateObjectPages {
         page_count: u32,
     },
@@ -307,6 +308,7 @@ impl MetaRequest {
             MetaRequest::ChunkCatalog(_) => MetaRequestCode::ChunkCatalog,
             MetaRequest::ReadChunkRoute { .. } => MetaRequestCode::ReadChunkRoute,
             MetaRequest::ReadChunkRoutes { .. } => MetaRequestCode::ReadChunkRoutes,
+            MetaRequest::ReadChunkRoutesWide { .. } => MetaRequestCode::ReadChunkRoutesWide,
             MetaRequest::GroupIdentity => MetaRequestCode::GroupIdentity,
             MetaRequest::HeartbeatRootNode { .. } => MetaRequestCode::HeartbeatRootNode,
             MetaRequest::ReportChunkNode { .. } => MetaRequestCode::ReportChunkNode,
@@ -373,7 +375,8 @@ impl MetaRequest {
             MetaRequest::Membership(value) => return value.encode_to_vec(),
             MetaRequest::ChunkCatalog(value) => return value.encode_to_vec(),
             MetaRequest::ReadChunkRoute { placement_id } => return super::chunk_group_route::RouteRead { version: 1, placement_id: placement_id.clone() }.encode_to_vec(),
-            MetaRequest::ReadChunkRoutes { placement_ids } => return super::chunk_group_route::RouteReads { version: 1, placement_ids: placement_ids.clone() }.encode_to_vec(),
+            MetaRequest::ReadChunkRoutes { placement_ids }
+            | MetaRequest::ReadChunkRoutesWide { placement_ids } => return super::chunk_group_route::RouteReads { version: 1, placement_ids: placement_ids.clone() }.encode_to_vec(),
             MetaRequest::GroupIdentity => {}
             MetaRequest::CommitObjectPlacementIfCurrent {
                 placement,
@@ -501,6 +504,10 @@ impl MetaRequest {
             let request = super::chunk_group_route::RouteReads::from_payload(payload)?;
             return Ok(Self::ReadChunkRoutes { placement_ids: request.placement_ids });
         }
+        if code == MetaRequestCode::ReadChunkRoutesWide {
+            let request = super::chunk_group_route::RouteReads::from_wide_payload(payload)?;
+            return Ok(Self::ReadChunkRoutesWide { placement_ids: request.placement_ids });
+        }
         if code == MetaRequestCode::ChunkCatalog {
             return super::ChunkCatalogCommand::from_payload(payload).map(Self::ChunkCatalog);
         }
@@ -620,6 +627,7 @@ impl MetaRequest {
             | MetaRequestCode::ChunkCatalog
             | MetaRequestCode::ReadChunkRoute
             | MetaRequestCode::ReadChunkRoutes
+            | MetaRequestCode::ReadChunkRoutesWide
             | MetaRequestCode::ReportChunkNode
             | MetaRequestCode::AllocateObjectPages
             | MetaRequestCode::ReadManifest
@@ -1072,6 +1080,10 @@ impl MetaReply {
             return super::chunk_group_route::RouteBatch::from_payload(payload)
                 .map(Self::ChunkRoutes);
         }
+        if code == MetaRequestCode::ReadChunkRoutesWide {
+            return super::chunk_group_route::RouteBatch::from_wide_payload(payload)
+                .map(Self::ChunkRoutes);
+        }
         if code == MetaRequestCode::ReadChunkGroup {
             if payload.len() > 32768 {
                 return Err(ObjectError::Corruption(
@@ -1102,6 +1114,7 @@ impl MetaReply {
             | MetaRequestCode::PlanObjectWriteRoutes
             | MetaRequestCode::ReadChunkRoute
             | MetaRequestCode::ReadChunkRoutes
+            | MetaRequestCode::ReadChunkRoutesWide
             | MetaRequestCode::GroupIdentity => unreachable!(),
             MetaRequestCode::ChunkCatalog
             | MetaRequestCode::ReportChunkNode

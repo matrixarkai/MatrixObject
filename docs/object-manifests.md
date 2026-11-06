@@ -241,15 +241,33 @@ opens a new connection using the saved configuration and verifies its complete
 identity again. Manifest extents retain their original object order; only I/O order
 changes. For nonempty objects with P pages over G healthy groups, preflight and writing use at most
 2G - 1 group connections instead of up to P + G - 1. Current metadata servers
-return up to four routes per quorum-confirmed read, so writes and reads need
-`ceil(G/4)` route requests rather than G; reads still use G data connections.
-The client falls back to individual route reads if a batch request fails, and
-checks every returned placement name. Configurations are not cached across
-operations. The client then
+return up to eight routes per quorum-confirmed read, so writes and reads need
+`ceil(G/8)` route requests rather than G; reads still use G data connections.
+The four-route request remains unchanged for rolling upgrades. A client that
+receives the typed unknown-request response for the eight-route request remembers
+that server capability and uses four-route batches. It falls back to individual
+route reads only when an older server also refuses the four-route request. Other
+errors are returned without replay, and every returned placement name is checked.
+Configurations are not cached across operations. The client then
 allocates fresh pages and distributes contiguous
 extents across those groups. Each page is written with expected sequence zero,
 then read back to check sequence one and exact bytes. Only then does the client
 submit the conditional publication. Empty objects need no data pages.
+
+The dedicated eight-group scale check starts 51 local WSL processes: sixteen
+three-voter data groups and three metadata voters. It writes 320 objects with
+eight 1 KiB pages each, loses leaders, writes another 80 objects, restarts every
+process, and verifies all 400 objects. Two release runs completed with zero write
+retries. Initial writes measured 46.8 and 34.6 objects per second; post-failover
+writes measured 68.6 and 47.7 objects per second. The runs establish recovery and
+the single-confirmation route shape under local process pressure, not production
+throughput.
+
+```sh
+cargo test --release --locked --all-features --test network_chunk_consensus \
+  coupled_groups::sixteen_groups_preserve_eight_way_objects_through_recovery \
+  -- --exact --ignored --nocapture --test-threads=1
+```
 
 `ObjectWriteOptions` defaults to a 64 MiB object limit, 1 MiB pages and one data
 group. Pages must be 1..1048576 bytes, with no more than 4096 per object. The caller
@@ -265,7 +283,7 @@ contacted voter. Ordinary error text is not evidence of non-admission.
 Its optional staged manifest identifies candidate pages, some of which may be
 unwritten or unverified. A caller can explicitly pass that manifest, the original
 expected value, data and options to `resume_unpublished_object`. The method checks
-the current manifest, resolves up to four group routes per confirmed metadata read,
+the current manifest, resolves up to eight group routes per confirmed metadata read,
 probes up to eight pages per data group with their digests, conditionally writes
 missing pages with expected sequence zero, and publishes only after all pages
 verify. Missing pages in the same group use the bounded write and digest batches

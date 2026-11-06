@@ -111,6 +111,7 @@ pub struct RemoteMetaClient {
     read_timeout: Duration,
     write_timeout: Duration,
     catalog: Option<(Vec<String>, MetaClientOptions)>,
+    wide_route_reads: Option<bool>,
 }
 
 #[cfg(any(feature = "replica-server", test))]
@@ -176,6 +177,7 @@ impl RemoteMetaClient {
             read_timeout: options.read_timeout,
             write_timeout: options.write_timeout,
             catalog: None,
+            wide_route_reads: None,
         })
     }
 
@@ -470,13 +472,13 @@ impl RemoteMetaClient {
         }
     }
 
-    /// Resolve up to four distinct groups after one metadata read barrier.
-    /// Older servers or failed read-only batches use the individual route path.
+    /// Resolve up to eight distinct groups after one metadata read barrier.
+    /// Older servers are remembered and use four-route confirmed reads.
     pub fn read_chunk_routes(
         &mut self,
         placement_ids: &[String],
     ) -> Result<Vec<super::ChunkGroupRoute>, ObjectError> {
-        if placement_ids.is_empty() || placement_ids.len() > 4
+        if placement_ids.is_empty() || placement_ids.len() > 8
             || placement_ids.iter().collect::<std::collections::BTreeSet<_>>().len()
                 != placement_ids.len()
         {
@@ -485,7 +487,24 @@ impl RemoteMetaClient {
         if placement_ids.len() == 1 {
             return self.read_chunk_route(&placement_ids[0]).map(|route| vec![route]);
         }
-        match self.call(MetaRequest::ReadChunkRoutes { placement_ids: placement_ids.to_vec() }) {
+        if placement_ids.len() > 4 && self.wide_route_reads == Some(false) {
+            return placement_ids
+                .chunks(4)
+                .map(|ids| self.read_chunk_routes(ids))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|routes| routes.into_iter().flatten().collect());
+        }
+        let wide = placement_ids.len() > 4;
+        let request = if wide {
+            MetaRequest::ReadChunkRoutesWide {
+                placement_ids: placement_ids.to_vec(),
+            }
+        } else {
+            MetaRequest::ReadChunkRoutes {
+                placement_ids: placement_ids.to_vec(),
+            }
+        };
+        match self.call(request) {
             Ok(MetaReply::ChunkRoutes(batch)) => {
                 if batch.routes.len() != placement_ids.len()
                     || batch.routes.iter().zip(placement_ids).any(|(route, id)| {
@@ -494,10 +513,28 @@ impl RemoteMetaClient {
                 {
                     return Err(ObjectError::Corruption("chunk route batch names another group".into()));
                 }
+                if wide {
+                    self.wide_route_reads = Some(true);
+                }
                 Ok(batch.routes)
             }
             Ok(_) => Err(ObjectError::Corruption("unexpected chunk route batch reply".into())),
-            Err(_) => placement_ids.iter().map(|id| self.read_chunk_route(id)).collect(),
+            Err(ObjectError::PreconditionFailed(message)) if wide
+                && message.starts_with("the replica does not implement this request:") =>
+            {
+                self.wide_route_reads = Some(false);
+                placement_ids
+                    .chunks(4)
+                    .map(|ids| self.read_chunk_routes(ids))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|routes| routes.into_iter().flatten().collect())
+            }
+            Err(ObjectError::PreconditionFailed(message))
+                if message.starts_with("the replica does not implement this request:") =>
+            {
+                placement_ids.iter().map(|id| self.read_chunk_route(id)).collect()
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -916,14 +953,20 @@ impl RemoteMetaClient {
         };
         // Route lookups use the metadata connection. Overlap the data-group
         // connections and page reads, while bounding sockets and read buffers.
-            for window in groups.chunks(4) {
+        for window in groups.chunks(8) {
             let mut jobs = Vec::new();
             let ids: Vec<String> = window.iter().map(|(group, _, _)| group.clone()).collect();
             let routes = match bundled_routes.take() {
                 Some(routes) if routes.is_empty() => self.read_chunk_routes(&ids)?,
-                Some(routes) if routes.len() == ids.len()
+                Some(mut routes) if routes.len() <= ids.len()
                     && routes.iter().zip(&ids).all(|(route, id)|
-                        route.group.as_ref().is_some_and(|group| &group.placement_id == id)) => routes,
+                        route.group.as_ref().is_some_and(|group| &group.placement_id == id)) => {
+                    if routes.len() < ids.len() {
+                        let bundled = routes.len();
+                        routes.extend(self.read_chunk_routes(&ids[bundled..])?);
+                    }
+                    routes
+                }
                 Some(_) => return Err(ObjectError::Corruption("manifest routes name another group".into())),
                 None => self.read_chunk_routes(&ids)?,
             };
@@ -1056,6 +1099,7 @@ impl RemoteMetaClient {
                 | MetaRequest::ReadChunkGroup { .. }
                 | MetaRequest::ReadChunkRoute { .. }
                 | MetaRequest::ReadChunkRoutes { .. }
+                | MetaRequest::ReadChunkRoutesWide { .. }
         ) || matches!(&request, MetaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
         let mut saw_all_refused = false;
@@ -1524,6 +1568,131 @@ mod operation_deadline_tests {
         let (manifest, routes) = client.read_manifest_routes("bucket", "key").unwrap();
         assert_eq!(manifest.length, 0);
         assert!(routes.is_none());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn wide_route_batch_uses_one_confirmed_metadata_read() {
+        use crate::cluster::{ChunkGroupConfig, ChunkGroupIdentity, ChunkGroupRoute};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let names: Vec<String> = (0..8).map(|i| format!("group-{i}")).collect();
+        let expected = names.clone();
+        let worker = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut header = [0u8; HEADER_BYTES];
+            server.read_exact(&mut header).unwrap();
+            let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+            let mut payload = vec![0; length];
+            server.read_exact(&mut payload).unwrap();
+            let code = MetaRequestCode::from_u8(header[1]).unwrap();
+            assert_eq!(code, MetaRequestCode::ReadChunkRoutesWide);
+            assert!(matches!(MetaRequest::decode(code, &payload).unwrap(),
+                MetaRequest::ReadChunkRoutesWide { placement_ids } if placement_ids == expected));
+            let routes = expected.into_iter().enumerate().map(|(index, name)| ChunkGroupRoute {
+                version: 1,
+                fence: Vec::new(),
+                group: Some(ChunkGroupConfig {
+                    placement_id: name,
+                    failure_domain: "local".into(),
+                    identity: Some(ChunkGroupIdentity {
+                        version: 1,
+                        group_id: index as u64 + 1,
+                        node_id: 1,
+                        capacity_bytes: 4096,
+                        max_pages: 16,
+                        voters: vec![1],
+                        peer_endpoints: vec![format!("127.0.0.1:{}", 19000 + index)],
+                        bootstrap_voters: Vec::new(),
+                        bootstrap_id: 0,
+                    }),
+                    api_endpoints: vec![format!("127.0.0.1:{}", 20000 + index)],
+                    member_ids: vec![format!("member-{index}")],
+                }),
+            }).collect();
+            server.write_all(&super::super::meta_message::encode_meta_reply(
+                &MetaReply::ChunkRoutes(super::super::chunk_group_route::RouteBatch {
+                    version: 1,
+                    routes,
+                }),
+            )).unwrap();
+        });
+        let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+        let routes = client.read_chunk_routes(&names).unwrap();
+        assert_eq!(routes.len(), 8);
+        assert_eq!(client.wide_route_reads, Some(true));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn wide_route_batch_remembers_an_older_server() {
+        use crate::cluster::{ChunkGroupConfig, ChunkGroupIdentity, ChunkGroupRoute};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let names: Vec<String> = (0..8).map(|i| format!("group-{i}")).collect();
+        let expected = names.clone();
+        let worker = std::thread::spawn(move || {
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            for request_index in 0..5 {
+                let mut header = [0u8; HEADER_BYTES];
+                server.read_exact(&mut header).unwrap();
+                let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                let mut payload = vec![0; length];
+                server.read_exact(&mut payload).unwrap();
+                let code = MetaRequestCode::from_u8(header[1]).unwrap();
+                if request_index == 0 {
+                    assert_eq!(code, MetaRequestCode::ReadChunkRoutesWide);
+                    server.write_all(&super::super::message::encode_failure(
+                        StatusCode::UnknownRequest,
+                        "unknown wide route batch",
+                    )).unwrap();
+                    continue;
+                }
+                assert_eq!(code, MetaRequestCode::ReadChunkRoutes);
+                let ids = match MetaRequest::decode(code, &payload).unwrap() {
+                    MetaRequest::ReadChunkRoutes { placement_ids } => placement_ids,
+                    request => panic!("unexpected request {request:?}"),
+                };
+                let half = (request_index - 1) % 2;
+                assert_eq!(ids, expected[half * 4..half * 4 + 4]);
+                let routes = ids.into_iter().enumerate().map(|(offset, name)| {
+                    let index = half * 4 + offset;
+                    ChunkGroupRoute {
+                        version: 1,
+                        fence: Vec::new(),
+                        group: Some(ChunkGroupConfig {
+                            placement_id: name,
+                            failure_domain: "local".into(),
+                            identity: Some(ChunkGroupIdentity {
+                                version: 1,
+                                group_id: index as u64 + 1,
+                                node_id: 1,
+                                capacity_bytes: 4096,
+                                max_pages: 16,
+                                voters: vec![1],
+                                peer_endpoints: vec![format!("127.0.0.1:{}", 19000 + index)],
+                                bootstrap_voters: Vec::new(),
+                                bootstrap_id: 0,
+                            }),
+                            api_endpoints: vec![format!("127.0.0.1:{}", 20000 + index)],
+                            member_ids: vec![format!("member-{index}")],
+                        }),
+                    }
+                }).collect();
+                server.write_all(&super::super::meta_message::encode_meta_reply(
+                    &MetaReply::ChunkRoutes(super::super::chunk_group_route::RouteBatch {
+                        version: 1,
+                        routes,
+                    }),
+                )).unwrap();
+            }
+        });
+        let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+        assert_eq!(client.read_chunk_routes(&names).unwrap().len(), 8);
+        assert_eq!(client.wide_route_reads, Some(false));
+        assert_eq!(client.read_chunk_routes(&names).unwrap().len(), 8);
         worker.join().unwrap();
     }
 

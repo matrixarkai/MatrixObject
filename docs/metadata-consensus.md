@@ -465,6 +465,14 @@ the metaserver omits them and the client obtains bounded route batches separatel
 An older metaserver that refuses code 86 is handled by issuing the existing
 single-manifest calls. Individual `read_object` behavior is unchanged.
 
+Metadata request code 87 resolves up to eight distinct chunk-group routes after
+one quorum confirmation. Code 82 remains capped at four routes so old clients keep
+their original reply contract. Wide-object clients use code 87 only for five
+through eight routes; a typed unknown-request response selects remembered
+four-route batches for that connection. Transport, integrity, and application
+errors do not trigger this downgrade. An eight-group object therefore reduces
+route confirmation from two metadata reads to one on upgraded servers.
+
 
 ### Concurrent immutable data-group writes
 

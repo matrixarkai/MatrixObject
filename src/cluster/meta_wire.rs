@@ -96,6 +96,8 @@ pub enum MetaRequestCode {
     PlanObjectWriteRoutes = 85,
     /// Read up to 32 manifests and their routes at one metadata barrier.
     ReadManifestRoutesBatch = 86,
+    /// Read up to eight data-group routes at one metadata barrier.
+    ReadChunkRoutesWide = 87,
 }
 
 impl MetaRequestCode {
@@ -129,6 +131,7 @@ impl MetaRequestCode {
             84 => Some(MetaRequestCode::PlanObjectPlacementRoutes),
             85 => Some(MetaRequestCode::PlanObjectWriteRoutes),
             86 => Some(MetaRequestCode::ReadManifestRoutesBatch),
+            87 => Some(MetaRequestCode::ReadChunkRoutesWide),
             _ => None,
         }
     }
@@ -159,6 +162,7 @@ impl MetaRequestCode {
             MetaRequestCode::PlanObjectPlacementRoutes,
             MetaRequestCode::PlanObjectWriteRoutes,
             MetaRequestCode::ReadManifestRoutesBatch,
+            MetaRequestCode::ReadChunkRoutesWide,
         ]
     }
 }
