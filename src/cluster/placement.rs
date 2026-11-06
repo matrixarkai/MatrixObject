@@ -303,6 +303,21 @@ impl InProcessReplicaSet {
         Ok(acknowledged)
     }
 
+    pub fn write_chunks(
+        &mut self,
+        writes: &[(PageId, u64, &[u8])],
+    ) -> Result<Vec<usize>, ObjectError> {
+        if writes.len() > 8 {
+            return Err(ObjectError::InvalidArgument(
+                "write batch exceeds eight pages".into(),
+            ));
+        }
+        writes
+            .iter()
+            .map(|(page, offset, data)| self.write_chunk(page, *offset, data))
+            .collect()
+    }
+
     pub fn read_chunk(
         &mut self,
         page_id: &PageId,
@@ -454,6 +469,16 @@ impl ReplicaFanout {
         match self {
             ReplicaFanout::InProcess(set) => set.write_chunk(page_id, offset, data),
             ReplicaFanout::Remote(set) => set.write_chunk(page_id, offset, data),
+        }
+    }
+
+    pub fn write_chunks(
+        &mut self,
+        writes: &[(PageId, u64, &[u8])],
+    ) -> Result<Vec<usize>, ObjectError> {
+        match self {
+            ReplicaFanout::InProcess(set) => set.write_chunks(writes),
+            ReplicaFanout::Remote(set) => set.write_chunks(writes),
         }
     }
 
