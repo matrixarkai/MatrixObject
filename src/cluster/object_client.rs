@@ -177,7 +177,7 @@ fn write_group_extents(
 }
 
 impl RemoteMetaClient {
-    fn take_group_connection(
+    pub(super) fn take_group_connection(
         &mut self,
         group: &str,
         route: &ChunkGroupRoute,
@@ -191,7 +191,7 @@ impl RemoteMetaClient {
             .then_some(cached.client)
     }
 
-    fn cache_group_connection(
+    pub(super) fn cache_group_connection(
         &mut self,
         group: String,
         route: ChunkGroupRoute,

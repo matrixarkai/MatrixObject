@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 #![cfg(all(feature = "meta-server", feature = "replica-server"))]
-use matrixobjectstore_rs::{cluster::*, object_manifest::{ObjectManifest, ObjectPageAllocation}, ChunkId, PageId, ReplicaReadResult};
+use matrixobjectstore_rs::{
+    cluster::*,
+    object_manifest::{ObjectExtent, ObjectManifest, ObjectPageAllocation},
+    ChunkId, PageId, ReplicaReadResult,
+};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -927,6 +931,127 @@ fn changed_route_replaces_the_cached_group_connection() {
 }
 
 #[test]
+fn sequential_object_reads_reuse_one_verified_group_connection() {
+    let data = b"abcdefgh";
+    let data_socket = listener();
+    let group = config(&data_socket, 1);
+    let route = ChunkGroupRoute {
+        version: 1,
+        group: Some(group.clone()),
+        fence: vec![],
+    };
+    let checksum = |bytes: &[u8]| {
+        bytes.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
+    };
+    let manifest = ObjectManifest {
+        format_version: 1,
+        bucket: "bucket".into(),
+        key: "key".into(),
+        generation: 1,
+        length: data.len() as u64,
+        extents: vec![
+            ObjectExtent {
+                group: group.placement_id.clone(),
+                volume_id: 1,
+                chunk_id: 1,
+                page_index: 0,
+                object_offset: 0,
+                page_offset: 0,
+                length: 4,
+                write_sequence: 1,
+                data_checksum: checksum(&data[..4]),
+            },
+            ObjectExtent {
+                group: group.placement_id.clone(),
+                volume_id: 1,
+                chunk_id: 1,
+                page_index: 1,
+                object_offset: 4,
+                page_offset: 0,
+                length: 4,
+                write_sequence: 1,
+                data_checksum: checksum(&data[4..]),
+            },
+        ],
+        deleted: false,
+    };
+
+    let data_manifest = manifest.clone();
+    let data_worker = thread::spawn(move || {
+        let mut stream = accept(&data_socket);
+        assert!(matches!(replica(&mut stream), ReplicaRequest::GroupIdentity));
+        stream
+            .write_all(&message::encode_reply(&ReplicaReply::GroupIdentity(
+                group.identity.unwrap(),
+            )))
+            .unwrap();
+        for _ in 0..2 {
+            let ReplicaRequest::ReadChunkBatch { reads } = replica(&mut stream) else {
+                panic!("object read batch missing");
+            };
+            assert_eq!(reads.len(), 2);
+            let results = reads
+                .into_iter()
+                .map(|(page, offset, length)| {
+                    assert_eq!(offset, 0);
+                    assert_eq!(length, 4);
+                    let start = page.page_index as usize * 4;
+                    ReplicaReadResult {
+                        data: data[start..start + 4].to_vec(),
+                        write_sequence: 1,
+                        checksum: String::new(),
+                    }
+                })
+                .collect();
+            stream
+                .write_all(&message::encode_reply(&ReplicaReply::Reads(results)))
+                .unwrap();
+        }
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        assert!(
+            matches!(data_socket.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "sequential reads opened another data connection"
+        );
+        data_manifest
+    });
+
+    let metadata_socket = listener();
+    let endpoint = metadata_socket.local_addr().unwrap().to_string();
+    let metadata_manifest = manifest.clone();
+    let metadata_worker = thread::spawn(move || {
+        let mut stream = accept(&metadata_socket);
+        for _ in 0..2 {
+            assert!(matches!(
+                meta(&mut stream),
+                MetaRequest::ReadManifestRoutesWide { .. }
+            ));
+            reply(
+                &mut stream,
+                MetaReply::ManifestRoutes {
+                    manifest: metadata_manifest.clone(),
+                    routes: vec![route.clone()],
+                },
+            );
+        }
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    });
+
+    let mut client = RemoteMetaClient::connect(&endpoint, &MetaClientOptions::default()).unwrap();
+    for _ in 0..2 {
+        let (read_manifest, bytes) = client
+            .read_object("bucket", "key", data.len(), &ReplicaClientOptions::default())
+            .unwrap();
+        assert_eq!(read_manifest, manifest);
+        assert_eq!(bytes, data);
+    }
+    drop(client);
+    metadata_worker.join().unwrap();
+    assert_eq!(data_worker.join().unwrap(), manifest);
+}
+
+#[test]
 fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
     let object: Vec<u8> = (0..125).collect();
     let sockets = [listener(), listener()];
@@ -941,19 +1066,24 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
             let simultaneous_reads = Arc::clone(&simultaneous_reads);
             thread::spawn(move || {
                 // Both groups write on their verified preflight connections.
-                // Each read opens one later connection.
+                // The last route-matched connection is reused by the object read.
                 let mut retained_write = None;
                 for turn in 0..2 {
-                    let mut stream = accept(&socket);
-                    assert!(matches!(
-                        replica(&mut stream),
-                        ReplicaRequest::GroupIdentity
-                    ));
-                    stream
-                        .write_all(&message::encode_reply(&ReplicaReply::GroupIdentity(
-                            group.identity.clone().unwrap(),
-                        )))
-                        .unwrap();
+                    let mut stream = if turn == 1 && index == 1 {
+                        retained_write.take().unwrap()
+                    } else {
+                        let mut stream = accept(&socket);
+                        assert!(matches!(
+                            replica(&mut stream),
+                            ReplicaRequest::GroupIdentity
+                        ));
+                        stream
+                            .write_all(&message::encode_reply(&ReplicaReply::GroupIdentity(
+                                group.identity.clone().unwrap(),
+                            )))
+                            .unwrap();
+                        stream
+                    };
                     let writing = turn == 0;
                     let pages: Vec<_> = (index as u64..32).step_by(2).collect();
                     for (batch_index, batch) in pages.chunks(8).enumerate() {
@@ -1081,8 +1211,9 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
                         assert_eq!(stream.read(&mut [0]).unwrap(), 0);
                     }
                 }
-                let mut write_stream = retained_write.unwrap();
-                assert_eq!(write_stream.read(&mut [0]).unwrap(), 0);
+                if let Some(mut write_stream) = retained_write {
+                    assert_eq!(write_stream.read(&mut [0]).unwrap(), 0);
+                }
                 assert!(
                     matches!(socket.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
                 );

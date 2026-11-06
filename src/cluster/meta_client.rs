@@ -977,11 +977,13 @@ impl RemoteMetaClient {
             cursor = end;
         }
         let output = std::sync::Mutex::new(bytes.as_mut_slice());
-        let read_group = |route: super::ChunkGroupRoute,
+        let read_group = |route: &super::ChunkGroupRoute,
+                          connection: Option<super::RemoteReplicaClient>,
                           extents: &[&crate::object_manifest::ObjectExtent]| {
-            let mut connection = super::RemoteReplicaClient::connect_routed_raft_catalog(
-                &route, options,
-            )?;
+            let mut connection = match connection {
+                Some(connection) => connection,
+                None => super::RemoteReplicaClient::connect_routed_raft_catalog(route, options)?,
+            };
             for batch in extents.chunks(8) {
                 let pages = batch
                     .iter()
@@ -1016,7 +1018,7 @@ impl RemoteMetaClient {
                     destination[start..start + read.data.len()].copy_from_slice(&read.data);
                 }
             }
-            Ok::<(), ObjectError>(())
+            Ok::<super::RemoteReplicaClient, ObjectError>(connection)
         };
         // Route lookups use the metadata connection. Overlap the data-group
         // connections and page reads, while bounding sockets and read buffers.
@@ -1037,22 +1039,33 @@ impl RemoteMetaClient {
                 Some(_) => return Err(ObjectError::Corruption("manifest routes name another group".into())),
                 None => self.read_chunk_routes(&ids)?,
             };
-            for ((_, start, end), route) in window.iter().zip(routes) {
-                jobs.push((route, &order[*start..*end]));
+            let targets: Vec<_> = ids.into_iter().zip(routes).collect();
+            if targets.len() != window.len() {
+                return Err(ObjectError::Corruption(
+                    "manifest route count differs from data groups".into(),
+                ));
+            }
+            for ((_, start, end), (group, route)) in window.iter().zip(targets) {
+                let connection = self.take_group_connection(&group, &route, options);
+                jobs.push((group, route, connection, &order[*start..*end]));
             }
             if jobs.len() == 1 {
-                let (route, extents) = jobs.pop().unwrap();
-                read_group(route, extents)?;
+                let (group, route, connection, extents) = jobs.pop().unwrap();
+                let connection = read_group(&route, connection, extents)?;
+                self.cache_group_connection(group, route, connection);
                 continue;
             }
-            std::thread::scope(|scope| {
+            let completed = std::thread::scope(|scope| {
                 let mut handles = Vec::new();
                 let mut first_error = None;
-                for (route, extents) in jobs {
+                for (group, route, connection, extents) in jobs {
                     let reader = &read_group;
                     match std::thread::Builder::new()
                         .name("object-group-read".into())
-                        .spawn_scoped(scope, move || reader(route, extents))
+                        .spawn_scoped(scope, move || {
+                            reader(&route, connection, extents)
+                                .map(|connection| (group, route, connection))
+                        })
                     {
                         Ok(handle) => handles.push(handle),
                         Err(error) => {
@@ -1063,18 +1076,25 @@ impl RemoteMetaClient {
                         }
                     }
                 }
+                let mut completed = Vec::new();
                 for handle in handles {
                     let result = handle.join().unwrap_or_else(|_| {
                         Err(ObjectError::Corruption("object group reader panicked".into()))
                     });
-                    if let Err(error) = result {
-                        if first_error.is_none() {
-                            first_error = Some(error);
+                    match result {
+                        Ok(connection) => completed.push(connection),
+                        Err(error) => {
+                            if first_error.is_none() {
+                                first_error = Some(error);
+                            }
                         }
                     }
                 }
-                first_error.map_or(Ok(()), Err)
+                first_error.map_or(Ok(completed), Err)
             })?;
+            for (group, route, connection) in completed {
+                self.cache_group_connection(group, route, connection);
+            }
         }
         drop(output);
         self.check_operation_deadline()?;
