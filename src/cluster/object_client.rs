@@ -5,6 +5,13 @@ use super::{ChunkGroupRoute, RemoteMetaClient, RemoteReplicaClient, ReplicaClien
 use crate::object_manifest::{ManifestOutcome, ObjectExtent, ObjectManifest};
 use crate::ObjectError;
 
+#[derive(Debug)]
+pub(super) struct CachedGroupConnection {
+    group: String,
+    route: ChunkGroupRoute,
+    client: RemoteReplicaClient,
+}
+
 #[derive(Clone, Debug)]
 pub struct ObjectWriteOptions {
     pub max_object_bytes: usize,
@@ -116,7 +123,7 @@ fn write_group_extents(
     manifest: &ObjectManifest,
     data: &[u8],
     options: &ObjectWriteOptions,
-) -> Result<(), ObjectError> {
+) -> Result<RemoteReplicaClient, ObjectError> {
     let mut client = match client {
         Some(client) => client,
         None => connect_group(configured, &options.replica)?,
@@ -166,10 +173,82 @@ fn write_group_extents(
             }
         }
     }
-    Ok(())
+    Ok(client)
 }
 
 impl RemoteMetaClient {
+    fn take_group_connection(
+        &mut self,
+        group: &str,
+        route: &ChunkGroupRoute,
+        options: &ReplicaClientOptions,
+    ) -> Option<RemoteReplicaClient> {
+        if self.object_connection.as_ref()?.group != group {
+            return None;
+        }
+        let mut cached = self.object_connection.take().unwrap();
+        (cached.route == *route && cached.client.prepare_for_reuse(options))
+            .then_some(cached.client)
+    }
+
+    fn cache_group_connection(
+        &mut self,
+        group: String,
+        route: ChunkGroupRoute,
+        client: RemoteReplicaClient,
+    ) {
+        self.object_connection = Some(CachedGroupConnection {
+            group,
+            route,
+            client,
+        });
+    }
+
+    fn connect_group_batch(
+        &mut self,
+        batch: &[(String, ChunkGroupRoute)],
+        options: &ReplicaClientOptions,
+    ) -> Result<Vec<RemoteReplicaClient>, ObjectError> {
+        let mut clients: Vec<Option<RemoteReplicaClient>> = batch
+            .iter()
+            .map(|(group, route)| self.take_group_connection(group, route, options))
+            .collect();
+        let missing: Vec<_> = clients
+            .iter()
+            .enumerate()
+            .filter_map(|(index, client)| client.is_none().then_some(index))
+            .collect();
+        if missing.len() == 1 {
+            let index = missing[0];
+            clients[index] = Some(connect_group(&batch[index].1, options)?);
+        } else if !missing.is_empty() {
+            std::thread::scope(|scope| {
+                let mut handles = Vec::new();
+                for index in missing {
+                    let configured = &batch[index].1;
+                    match std::thread::Builder::new()
+                        .name("object-group-verify".into())
+                        .spawn_scoped(scope, move || connect_group(configured, options))
+                    {
+                        Ok(handle) => handles.push((index, handle)),
+                        Err(error) => {
+                            return Err(ObjectError::PreconditionFailed(format!(
+                                "cannot start object group verifier: {error}"
+                            )))
+                        }
+                    }
+                }
+                for (index, handle) in handles {
+                    clients[index] = Some(handle.join().map_err(|_| {
+                        ObjectError::Corruption("object group verifier panicked".into())
+                    })??);
+                }
+                Ok(())
+            })?;
+        }
+        Ok(clients.into_iter().map(Option::unwrap).collect())
+    }
+
     /// Continue a caller-retained unpublished write without allocating new pages.
     /// Each invocation makes at most one conditional write per missing page.
     /// An uncertain data response returns the same candidate for a later probe.
@@ -269,7 +348,11 @@ impl RemoteMetaClient {
             let route = routes.get(group).ok_or_else(|| {
                 staged_error(ObjectError::Corruption("staged page route missing".into()))
             })?;
-            let mut client = connect_group(route, &options.replica).map_err(&staged_error)?;
+            let mut client = self
+                .take_group_connection(group, route, &options.replica)
+                .map(Ok)
+                .unwrap_or_else(|| connect_group(route, &options.replica))
+                .map_err(&staged_error)?;
             for batch in indexes.chunks(8) {
                 self.check_operation_deadline().map_err(&staged_error)?;
                 let pages = batch.iter().map(|&index| {
@@ -310,8 +393,22 @@ impl RemoteMetaClient {
             let client = clients.remove(&group).ok_or_else(|| {
                 staged_error(ObjectError::Corruption("staged page connection missing".into()))
             })?;
-            write_group_extents(&indexes, route, Some(client), &staged, data, options)
-                .map_err(&staged_error)?;
+            let client = write_group_extents(
+                &indexes,
+                route,
+                Some(client),
+                &staged,
+                data,
+                options,
+            )
+            .map_err(&staged_error)?;
+            self.cache_group_connection(group, route.clone(), client);
+        }
+        for (group, client) in clients {
+            let route = routes.get(&group).ok_or_else(|| {
+                staged_error(ObjectError::Corruption("staged page route missing".into()))
+            })?;
+            self.cache_group_connection(group, route.clone(), client);
         }
         self.check_operation_deadline().map_err(&staged_error)?;
         let outcome = ManifestOutcome::decide(expected, staged.clone()).map_err(&staged_error)?;
@@ -402,7 +499,8 @@ impl RemoteMetaClient {
             extents: Vec::new(),
             deleted: false,
         };
-        let mut groups = std::collections::BTreeMap::new();
+        let mut groups: std::collections::BTreeMap<String, ChunkGroupRoute> =
+            std::collections::BTreeMap::new();
         let mut connections: Vec<(String, RemoteReplicaClient)> = Vec::new();
         if pages > 0 {
             let (plan, planned_routes) = if let Some((plan, routes)) = preplanned {
@@ -440,40 +538,20 @@ impl RemoteMetaClient {
                 };
                 let targets: Vec<_> = ids.into_iter().zip(routes).collect();
                 for batch in targets.chunks(options.max_parallel_groups) {
-                    let clients = if batch.len() == 1 {
-                        vec![connect_group(&batch[0].1, &options.replica).map_err(before)?]
-                    } else {
-                        std::thread::scope(|scope| {
-                            let mut handles = Vec::new();
-                            let mut first_error = None;
-                            for (_, configured) in batch {
-                                match std::thread::Builder::new().name("object-group-verify".into())
-                                    .spawn_scoped(scope, move || connect_group(configured, &options.replica)) {
-                                    Ok(handle) => handles.push(handle),
-                                    Err(error) => {
-                                        first_error = Some(ObjectError::PreconditionFailed(format!(
-                                            "cannot start object group verifier: {error}"
-                                        )));
-                                        break;
-                                    }
-                                }
-                            }
-                            let mut clients = Vec::new();
-                            for handle in handles {
-                                match handle.join() {
-                                    Ok(Ok(client)) => clients.push(client),
-                                    Ok(Err(error)) => { if first_error.is_none() { first_error = Some(error); } }
-                                    Err(_) => { if first_error.is_none() {
-                                        first_error = Some(ObjectError::Corruption("object group verifier panicked".into()));
-                                    } }
-                                }
-                            }
-                            first_error.map_or(Ok(clients), Err)
-                        }).map_err(before)?
-                    };
+                    let clients = self
+                        .connect_group_batch(batch, &options.replica)
+                        .map_err(before)?;
                     for ((group, configured), client) in batch.iter().zip(clients) {
                         if connections.len() == options.max_parallel_groups {
-                            connections.remove(0);
+                            let (old_group, old_client) = connections.remove(0);
+                            let old_route = groups.get(&old_group).ok_or_else(|| before(
+                                ObjectError::Corruption("verified group route missing".into()),
+                            ))?;
+                            self.cache_group_connection(
+                                old_group,
+                                old_route.clone(),
+                                old_client,
+                            );
                         }
                         groups.insert(group.clone(), configured.clone());
                         connections.push((group.clone(), client));
@@ -524,21 +602,40 @@ impl RemoteMetaClient {
                 let configured = groups.get(group).ok_or_else(|| staged_error(
                     ObjectError::Corruption("object extent group was not verified".into())))?;
                 let client = connections.iter().position(|(name, _)| name == group)
-                    .map(|index| connections.remove(index).1);
-                jobs.push((indexes, configured, client));
+                    .map(|index| connections.remove(index).1)
+                    .or_else(|| self.take_group_connection(group, configured, &options.replica));
+                jobs.push((group.clone(), indexes, configured.clone(), client));
             }
             if jobs.len() == 1 {
-                let (indexes, configured, client) = jobs.pop().unwrap();
-                write_group_extents(indexes, configured, client, &manifest, data, options)
-                    .map_err(&staged_error)?;
+                let (group, indexes, configured, client) = jobs.pop().unwrap();
+                let client = write_group_extents(
+                    indexes,
+                    &configured,
+                    client,
+                    &manifest,
+                    data,
+                    options,
+                )
+                .map_err(&staged_error)?;
+                self.cache_group_connection(group, configured, client);
             } else {
-                std::thread::scope(|scope| {
+                let completed = std::thread::scope(|scope| {
                     let mut handles = Vec::new();
                     let mut first_error = None;
-                    for (indexes, configured, client) in jobs {
+                    for (group, indexes, configured, client) in jobs {
                         let manifest = &manifest;
                         match std::thread::Builder::new().name("object-group-write".into())
-                            .spawn_scoped(scope, move || write_group_extents(indexes, configured, client, manifest, data, options)) {
+                            .spawn_scoped(scope, move || {
+                                write_group_extents(
+                                    indexes,
+                                    &configured,
+                                    client,
+                                    manifest,
+                                    data,
+                                    options,
+                                )
+                                .map(|client| (group, configured, client))
+                            }) {
                             Ok(handle) => handles.push(handle),
                             Err(error) => {
                                 first_error = Some(ObjectError::PreconditionFailed(format!("cannot start object group writer: {error}")));
@@ -546,14 +643,20 @@ impl RemoteMetaClient {
                             }
                         }
                     }
+                    let mut completed = Vec::new();
                     for handle in handles {
-                        let result = handle.join().unwrap_or_else(|_| Err(ObjectError::Corruption("object group writer panicked".into())));
-                        if let Err(error) = result {
-                            if first_error.is_none() { first_error = Some(error); }
+                        match handle.join().unwrap_or_else(|_| Err(ObjectError::Corruption("object group writer panicked".into()))) {
+                            Ok(connection) => completed.push(connection),
+                            Err(error) => {
+                                if first_error.is_none() { first_error = Some(error); }
+                            }
                         }
                     }
-                    first_error.map_or(Ok(()), Err)
+                    first_error.map_or(Ok(completed), Err)
                 }).map_err(&staged_error)?;
+                for (group, configured, client) in completed {
+                    self.cache_group_connection(group, configured, client);
+                }
             }
         }
         self.check_operation_deadline().map_err(&staged_error)?;
