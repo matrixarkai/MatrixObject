@@ -254,14 +254,26 @@ extents across those groups. Each page is written with expected sequence zero,
 then read back to check sequence one and exact bytes. Only then does the client
 submit the conditional publication. Empty objects need no data pages.
 
+Writes spanning five through eight groups obtain the current manifest, placement
+plan and all selected routes in one quorum-confirmed metadata reply. The original
+four-group combined request and reply remain unchanged. A typed unknown-request
+response to the eight-group form is remembered for that connection and selects
+the separate manifest, placement and route reads; transport and application
+failures do not select or replay the fallback. Data-group verification, allocation,
+page replication and conditional publication are unchanged.
+
 The dedicated eight-group scale check starts 51 local WSL processes: sixteen
 three-voter data groups and three metadata voters. It writes 320 objects with
 eight 1 KiB pages each, loses leaders, writes another 80 objects, restarts every
 process, and verifies all 400 objects. Two release runs completed with zero write
-retries. Initial writes measured 46.8 and 34.6 objects per second; post-failover
-writes measured 68.6 and 47.7 objects per second. The runs establish recovery and
-the single-confirmation route shape under local process pressure, not production
-throughput.
+retries before the combined write-plan change. Initial writes measured 46.8 and
+34.6 objects per second; post-failover writes measured 68.6 and 47.7 objects per
+second. With manifest, placement and eight routes combined under one metadata
+confirmation, two more runs measured 66.0 and 67.6 initial writes per second and
+69.2 and 42.7 post-failover. All four runs recovered every object. The initial
+samples show the expected control-plane reduction on this host; the post-failover
+spread is not a repeatable throughput gain. These runs establish functional scale
+and recovery under local process pressure, not production throughput.
 
 ```sh
 cargo test --release --locked --all-features --test network_chunk_consensus \

@@ -375,7 +375,7 @@ impl RemoteMetaClient {
             }
             planned_group_bytes.into_iter().max().unwrap_or(0)
         } else { 0 };
-        let (current, preplanned) = if (1..=4).contains(&count) {
+        let (current, preplanned) = if (1..=8).contains(&count) {
             let (current, plan, routes) = self.plan_object_write_routes(
                 bucket, key, max_group_bytes, u64::from(count),
             ).map_err(before)?;

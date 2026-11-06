@@ -705,6 +705,7 @@ fn read_only(request: &MetaRequest) -> bool {
         | MetaRequest::PlanObjectPlacement { .. }
         | MetaRequest::PlanObjectPlacementRoutes { .. }
         | MetaRequest::PlanObjectWriteRoutes { .. }
+        | MetaRequest::PlanObjectWriteRoutesWide { .. }
         | MetaRequest::ReadObjectRootPlacement { .. }
         | MetaRequest::GroupIdentity
         | MetaRequest::Ping => true,
