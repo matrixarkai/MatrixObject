@@ -380,6 +380,24 @@ fn conditional_digest_batches_replicate_ordered_page_outcomes() {
         );
     }
 }
+
+#[test]
+fn batch_heads_preserve_order_and_absence_across_chunk_leaders() {
+    let mut group = Group::new();
+    let leader = group.leader();
+    let mut client = group.client(leader);
+    client.write_chunk(page(0), 0, b"first").unwrap();
+    client.write_chunk(page(2), 0, b"third").unwrap();
+    let pages = vec![page(0), page(1), page(2)];
+    let before = client.head_chunks(&pages).unwrap();
+    assert!(before[0].is_some());
+    assert!(before[1].is_none());
+    assert!(before[2].is_some());
+    group.kill(leader);
+    let after = group.client(group.leader()).head_chunks(&pages).unwrap();
+    assert_eq!(after, before);
+}
+
 #[test]
 fn chunk_raft_capacity_refusal_does_not_commit_partial_page_state() {
     let g = Group::new();

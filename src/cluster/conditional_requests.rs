@@ -96,6 +96,55 @@ pub(super) struct ChunkReadBatchResult {
     pub reads: Vec<ChunkReadResult>,
 }
 #[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkPage {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint64, tag = "2")]
+    pub volume: u64,
+    #[prost(uint64, tag = "3")]
+    pub chunk: u64,
+    #[prost(uint64, tag = "4")]
+    pub page: u64,
+}
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkHeadBatch {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub pages: Vec<ChunkPage>,
+}
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkRange {
+    #[prost(uint64, tag = "1")]
+    pub offset: u64,
+    #[prost(uint64, tag = "2")]
+    pub length: u64,
+}
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkHead {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(bool, tag = "2")]
+    pub present: bool,
+    #[prost(uint64, tag = "3")]
+    pub logical_length: u64,
+    #[prost(uint64, tag = "4")]
+    pub write_sequence: u64,
+    #[prost(string, tag = "5")]
+    pub checksum: String,
+    #[prost(string, tag = "6")]
+    pub state_checksum: String,
+    #[prost(message, repeated, tag = "7")]
+    pub discarded_ranges: Vec<ChunkRange>,
+}
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct ChunkHeadBatchResult {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(message, repeated, tag = "2")]
+    pub heads: Vec<ChunkHead>,
+}
+#[derive(Clone, PartialEq, Message)]
 pub(super) struct ChunkDiscard {
     #[prost(uint32, tag = "1")]
     pub version: u32,
@@ -223,6 +272,65 @@ mod tests {
         let mut truncated = bytes;
         truncated.pop();
         assert!(ReplicaRequest::decode(request.code(), &truncated).is_err());
+    }
+
+    #[test]
+    fn head_batches_use_canonical_bounded_protobuf() {
+        let pages = vec![
+            PageId {
+                chunk_id: ChunkId::new(1, 2).unwrap(),
+                page_index: 3,
+            },
+            PageId {
+                chunk_id: ChunkId::new(1, 2).unwrap(),
+                page_index: 4,
+            },
+        ];
+        let request = ReplicaRequest::HeadChunkBatch {
+            pages: pages.clone(),
+        };
+        let bytes = request.encode_payload();
+        assert_eq!(RequestCode::from_u8(18), Some(RequestCode::HeadChunkBatch));
+        assert_eq!(ReplicaRequest::decode(request.code(), &bytes).unwrap(), request);
+
+        let head = crate::ReplicaHead {
+            logical_length: 5,
+            write_sequence: 7,
+            checksum: "page".into(),
+            state_checksum: "state".into(),
+            discarded_ranges: vec![crate::DataRange {
+                offset: 1,
+                length: 2,
+            }],
+        };
+        let reply = ReplicaReply::Heads(vec![Some(head), None]);
+        let reply_bytes = reply.encode_payload();
+        assert_eq!(
+            ReplicaReply::decode(RequestCode::HeadChunkBatch, &reply_bytes).unwrap(),
+            reply
+        );
+
+        let mut value: ChunkHeadBatch = decode(&bytes).unwrap();
+        value.pages.push(value.pages[0].clone());
+        assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
+        value.pages.clear();
+        assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
+        value.pages = (0..9)
+            .map(|page| ChunkPage {
+                version: 1,
+                volume: 1,
+                chunk: 2,
+                page,
+            })
+            .collect();
+        assert!(ReplicaRequest::decode(request.code(), &value.encode_to_vec()).is_err());
+
+        let mut result: ChunkHeadBatchResult = decode(&reply_bytes).unwrap();
+        result.heads[1].logical_length = 1;
+        assert!(ReplicaReply::decode(RequestCode::HeadChunkBatch, &result.encode_to_vec()).is_err());
+        let mut extra = bytes;
+        extra.extend([0x08, 0x01]);
+        assert!(ReplicaRequest::decode(request.code(), &extra).is_err());
     }
 
     #[test]

@@ -51,6 +51,34 @@ message ChunkReadBatchResult {
   uint32 version = 1;
   repeated ChunkReadResult reads = 2;
 }
+// Replica request code 18. The ordered reply carries explicit absent entries.
+message ChunkPage {
+  uint32 version = 1;
+  uint64 volume = 2;
+  uint64 chunk = 3;
+  uint64 page = 4;
+}
+message ChunkHeadBatch {
+  uint32 version = 1;
+  repeated ChunkPage pages = 2;
+}
+message ChunkRange {
+  uint64 offset = 1;
+  uint64 length = 2;
+}
+message ChunkHead {
+  uint32 version = 1;
+  bool present = 2;
+  uint64 logical_length = 3;
+  uint64 write_sequence = 4;
+  string checksum = 5;
+  string state_checksum = 6;
+  repeated ChunkRange discarded_ranges = 7;
+}
+message ChunkHeadBatchResult {
+  uint32 version = 1;
+  repeated ChunkHead heads = 2;
+}
 message Placement {
   string bucket = 1;
   string key = 2;

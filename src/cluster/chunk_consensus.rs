@@ -980,6 +980,7 @@ fn read_only(request: &ReplicaRequest) -> bool {
         | ReplicaRequest::DigestChunk { .. }
         | ReplicaRequest::ReadChunkStateRange { .. }
         | ReplicaRequest::HeadChunk { .. }
+        | ReplicaRequest::HeadChunkBatch { .. }
         | ReplicaRequest::PageInventory { .. }
         | ReplicaRequest::Ping
         | ReplicaRequest::GroupIdentity => true,

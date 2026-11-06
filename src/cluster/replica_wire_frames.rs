@@ -93,6 +93,8 @@ pub enum RequestCode {
     WriteChunkBatchIfSequenceDigest = 16,
     /// Read up to eight small page ranges with one confirmed Raft read.
     ReadChunkBatch = 17,
+    /// Read up to eight page heads with one request.
+    HeadChunkBatch = 18,
 }
 
 impl RequestCode {
@@ -120,6 +122,7 @@ impl RequestCode {
             15 => Some(RequestCode::WriteChunkIfSequenceDigest),
             16 => Some(RequestCode::WriteChunkBatchIfSequenceDigest),
             17 => Some(RequestCode::ReadChunkBatch),
+            18 => Some(RequestCode::HeadChunkBatch),
             _ => None,
         }
     }

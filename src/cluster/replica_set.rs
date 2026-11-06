@@ -287,6 +287,9 @@ impl RemoteReplicaSet {
                 "star write batch exceeds eight pages".into(),
             ));
         }
+        if writes.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut pages = BTreeSet::new();
         if writes
             .iter()
@@ -297,9 +300,12 @@ impl RemoteReplicaSet {
             ));
         }
 
+        let page_ids: Vec<_> = writes.iter().map(|(page, _, _)| page.clone()).collect();
+        let states = self.mutation_states(&page_ids)?;
         let mut groups: BTreeMap<Vec<bool>, Vec<(usize, ConditionalChunkWrite)>> = BTreeMap::new();
-        for (index, (page_id, offset, data)) in writes.iter().enumerate() {
-            let (expected, matching) = self.mutation_state(page_id)?;
+        for (index, ((page_id, offset, data), (expected, matching))) in
+            writes.iter().zip(states).enumerate()
+        {
             groups.entry(matching).or_default().push((
                 index,
                 ConditionalChunkWrite {
@@ -364,6 +370,58 @@ impl RemoteReplicaSet {
                 _ => None,
             })
             .collect();
+        self.select_mutation_state(observed)
+    }
+
+    fn mutation_states(
+        &mut self,
+        pages: &[PageId],
+    ) -> Result<Vec<(Option<ReplicaHead>, Vec<bool>)>, ObjectError> {
+        self.reconnect_failed();
+        let replies = self.fan_out(
+            &ReplicaRequest::HeadChunkBatch {
+                pages: pages.to_vec(),
+            },
+            None,
+        );
+        let unsupported = replies.iter().any(|reply| {
+            matches!(
+                reply,
+                Err(ObjectError::PreconditionFailed(message))
+                    if message.starts_with("the replica does not implement this request:")
+            )
+        });
+        if unsupported {
+            return pages
+                .iter()
+                .map(|page| self.mutation_state(page))
+                .collect();
+        }
+        let mut observed = vec![Vec::with_capacity(self.replicas.len()); pages.len()];
+        for reply in replies {
+            match reply {
+                Ok(ReplicaReply::Heads(heads)) if heads.len() == pages.len() => {
+                    for (page, head) in observed.iter_mut().zip(heads) {
+                        page.push(Some(head));
+                    }
+                }
+                _ => {
+                    for page in &mut observed {
+                        page.push(None);
+                    }
+                }
+            }
+        }
+        observed
+            .into_iter()
+            .map(|page| self.select_mutation_state(page))
+            .collect()
+    }
+
+    fn select_mutation_state(
+        &self,
+        observed: Vec<Option<Option<ReplicaHead>>>,
+    ) -> Result<(Option<ReplicaHead>, Vec<bool>), ObjectError> {
         let absent = observed
             .iter()
             .filter(|head| matches!(head, Some(None)))
