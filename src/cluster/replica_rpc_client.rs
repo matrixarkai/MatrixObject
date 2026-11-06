@@ -94,6 +94,7 @@ pub struct RemoteReplicaClient {
     // Learned for this socket; replacement starts with an unknown capability.
     conditional_write_batch: Option<bool>,
     conditional_write_digest_batch: Option<bool>,
+    conditional_write_eight: Option<bool>,
     read_batch: Option<bool>,
     last_exchange: Instant,
     read_timeout: Duration,
@@ -271,6 +272,7 @@ impl RemoteReplicaClient {
             connection_usable: true,
             conditional_write_batch: None,
             conditional_write_digest_batch: None,
+            conditional_write_eight: None,
             read_batch: None,
             last_exchange: Instant::now(),
             read_timeout: options.read_timeout,
@@ -571,7 +573,8 @@ impl RemoteReplicaClient {
             let mut written = 0;
             while written < writes.len() {
                 let remaining = &writes[written..];
-                let batch = &remaining[..remaining.len().min(4)];
+                let limit = if self.conditional_write_eight == Some(false) { 4 } else { 8 };
+                let batch = &remaining[..remaining.len().min(limit)];
                 if batch.len() == 1 {
                     let (page, offset, data, sequence) = &batch[0];
                     self.write_chunk_if_sequence(page.clone(), *offset, data, *sequence)?;
@@ -590,7 +593,15 @@ impl RemoteReplicaClient {
                 match self.call(request) {
                     Ok(ReplicaReply::Applied) => {
                         self.conditional_write_batch = Some(true);
+                        if batch.len() > 4 {
+                            self.conditional_write_eight = Some(true);
+                        }
                         written += batch.len();
+                    }
+                    Err(ObjectError::InvalidArgument(message))
+                        if batch.len() > 4 && message == "invalid conditional write batch" =>
+                    {
+                        self.conditional_write_eight = Some(false);
                     }
                     Err(ObjectError::PreconditionFailed(message))
                         if message.starts_with(
@@ -615,7 +626,7 @@ impl RemoteReplicaClient {
     }
 
     /// Apply up to eight independent writes and return their ordered digests.
-    /// Small pages use bounded groups of four so an upgraded replica can return
+    /// Small pages use bounded groups of eight so an upgraded replica can return
     /// the committed digest outcomes in the write acknowledgment itself. Only a
     /// typed unknown-request refusal can select the older write-then-verify path;
     /// an uncertain batch is never replayed.
@@ -649,7 +660,8 @@ impl RemoteReplicaClient {
         {
             while completed < writes.len() {
                 let remaining = &writes[completed..];
-                let batch = &remaining[..remaining.len().min(4)];
+                let limit = if self.conditional_write_eight == Some(false) { 4 } else { 8 };
+                let batch = &remaining[..remaining.len().min(limit)];
                 if batch.len() == 1 {
                     let (page, offset, data, sequence) = &batch[0];
                     digests.push(self.write_chunk_if_sequence_with_digest(
@@ -682,6 +694,9 @@ impl RemoteReplicaClient {
                         if batch_digests.len() == batch.len() =>
                     {
                         self.conditional_write_digest_batch = Some(true);
+                        if batch.len() > 4 {
+                            self.conditional_write_eight = Some(true);
+                        }
                         digests.extend(batch_digests);
                         completed += batch.len();
                     }
@@ -703,6 +718,11 @@ impl RemoteReplicaClient {
                             "a conditional write digest batch",
                             &other,
                         ));
+                    }
+                    Err(ObjectError::InvalidArgument(message))
+                        if batch.len() > 4 && message == "invalid conditional write batch" =>
+                    {
+                        self.conditional_write_eight = Some(false);
                     }
                     Err(error) => return Err(error),
                 }

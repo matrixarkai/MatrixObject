@@ -12,7 +12,8 @@ message ChunkWrite {
   uint64 expected_sequence = 6;
   bytes data = 7;
 }
-// Replica request codes 14 and 16. Code 16 returns ChunkDigestBatch.
+// Replica request codes 14 and 16. Up to eight writes totaling four MiB.
+// Code 16 returns ChunkDigestBatch.
 message ChunkWriteBatch {
   uint32 version = 1;
   repeated ChunkWrite writes = 2;

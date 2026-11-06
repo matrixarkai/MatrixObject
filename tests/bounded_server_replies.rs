@@ -141,7 +141,7 @@ fn conditional_batch_failure_reports_partial_application() {
 fn conditional_digest_batch_returns_ordered_binary_outcomes() {
     let node = Node::replica(1024);
     let mut stream = node.connect();
-    let writes: Vec<_> = (0..4)
+    let writes: Vec<_> = (0..8)
         .map(|index| ConditionalChunkWrite {
             page_id: page(index),
             offset: 0,
@@ -163,7 +163,7 @@ fn conditional_digest_batch_returns_ordered_binary_outcomes() {
     else {
         panic!("digest batch reply missing");
     };
-    assert_eq!(digests.len(), 4);
+    assert_eq!(digests.len(), 8);
     for (index, (sequence, length, sha256)) in digests.into_iter().enumerate() {
         assert_eq!(sequence, 1);
         assert_eq!(length, 4);
@@ -172,7 +172,7 @@ fn conditional_digest_batch_returns_ordered_binary_outcomes() {
             ring::digest::digest(&ring::digest::SHA256, &[index as u8; 4]).as_ref()
         );
     }
-    ping(&mut stream, 1024, 4);
+    ping(&mut stream, 1024, 8);
 }
 
 #[test]
