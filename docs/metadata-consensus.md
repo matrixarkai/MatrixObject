@@ -480,6 +480,13 @@ response selects and remembers the separate manifest, placement and route reads;
 other failures are returned without replay. For eight-group writes this reduces
 three metadata confirmations to one before data-group verification and allocation.
 
+Metadata request code 89 returns one manifest and its first eight committed group
+routes after one quorum confirmation. Code 83 keeps its four-route reply bound.
+Upgraded clients use code 89 for individual object reads and remember a typed
+unknown-request response before using code 83; any other failure is returned
+without replay. An eight-group object read therefore reduces manifest and route
+confirmation from two metadata reads to one.
+
 ### Concurrent immutable data-group writes
 
 `ObjectWriteOptions::max_parallel_groups` defaults to 4 and accepts 1..4.

@@ -926,18 +926,29 @@ pub(super) fn apply_with_groups(
         )?;
         return Ok(reply);
     }
-    if let MetaRequest::ReadManifestRoutes { bucket, key } = &request {
+    if let MetaRequest::ReadManifestRoutes { bucket, key }
+    | MetaRequest::ReadManifestRoutesWide { bucket, key } = &request {
         let manifest = match apply_to_meta(service, MetaRequest::ReadManifest {
             bucket: bucket.clone(), key: key.clone(),
         }, limit)? {
             MetaReply::Manifest(manifest) => manifest,
             _ => unreachable!(),
         };
-        let routes = super::meta_message::manifest_route_names(&manifest).iter()
+        let max_routes = if matches!(&request, MetaRequest::ReadManifestRoutesWide { .. }) {
+            8
+        } else {
+            4
+        };
+        let routes = super::meta_message::manifest_route_names(&manifest, max_routes).iter()
             .map(|id| groups.routing_view(id))
             .collect::<Result<Vec<_>, _>>()?;
         let mut reply = MetaReply::ManifestRoutes { manifest, routes };
-        if reply.payload_len() > limit.min(super::meta_message::MAX_MANIFEST_ROUTE_REPLY_BYTES) {
+        let max_reply_bytes = if max_routes == 8 {
+            super::meta_message::MAX_MANIFEST_ROUTE_WIDE_REPLY_BYTES
+        } else {
+            super::meta_message::MAX_MANIFEST_ROUTE_REPLY_BYTES
+        };
+        if reply.payload_len() > limit.min(max_reply_bytes) {
             if let MetaReply::ManifestRoutes { routes, .. } = &mut reply {
                 routes.clear();
             }
@@ -954,7 +965,7 @@ pub(super) fn apply_with_groups(
                 MetaReply::Manifest(manifest) => manifest,
                 _ => unreachable!(),
             };
-            let routes = super::meta_message::manifest_route_names(&manifest).iter()
+            let routes = super::meta_message::manifest_route_names(&manifest, 4).iter()
                 .map(|id| groups.routing_view(id))
                 .collect::<Result<Vec<_>, _>>()?;
             entries.push(super::ManifestRouteEntry { manifest, routes });
@@ -1054,6 +1065,9 @@ pub(super) fn apply_to_meta(
         }
         MetaRequest::ReadManifestRoutes { .. } => Err(ObjectError::PreconditionFailed(
             "manifest routes require a chunk catalog".into(),
+        )),
+        MetaRequest::ReadManifestRoutesWide { .. } => Err(ObjectError::PreconditionFailed(
+            "wide manifest routes require a chunk catalog".into(),
         )),
         MetaRequest::ReadManifestRoutesBatch { .. } => Err(ObjectError::PreconditionFailed(
             "manifest route batches require a chunk catalog".into(),
