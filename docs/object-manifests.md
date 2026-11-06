@@ -269,14 +269,14 @@ remembers the original request for that connection; transport, integrity and
 application failures are returned without replay. Eight-group reads no longer
 need a second metadata confirmation for the remaining routes.
 
-After a successful object write, the metadata client retains at most one verified
-data-group connection. Every later write still obtains a fresh quorum-confirmed
+After a successful object write, the metadata client retains up to eight verified
+data-group connections. Every later write still obtains a fresh quorum-confirmed
 plan and route. The socket is reused only when that complete route is unchanged
 and the TLS configuration, timeouts and payload bound match. A changed membership
 fence, endpoint, transport option, failed data exchange or uncertain data mutation
 discards the socket. Reuse never retries a mutation or bypasses publication
-checks. Keeping one hot connection accelerates the default one-group star-write
-path without letting a wide client retain idle sockets across the cluster.
+checks. The bound matches the group-operation window, so repeated writes can keep
+their active groups hot without retaining unbounded idle sockets across the cluster.
 
 On November 6, 2026, paired release runs on one local WSL host measured the
 one-connection build against the preceding main commit. The 51-process,

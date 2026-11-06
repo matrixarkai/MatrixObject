@@ -871,6 +871,107 @@ fn star_slow_first_member_does_not_expire_healthy_quorum_replies() {
 }
 
 #[test]
+fn star_write_returns_after_quorum_without_replaying_a_slow_member() {
+    use matrixobjectstore_rs::cluster::{
+        message::{encode_failure, encode_reply}, ReplicaReply, ReplicaRequest, RequestCode,
+        StatusCode,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{mpsc, Arc, Condvar, Mutex};
+    use std::time::Duration;
+
+    let listeners: Vec<_> = (0..3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = listeners
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().to_string())
+        .collect();
+    let (slow_arrived, slow_request) = mpsc::channel();
+    let slow_release = Arc::new((Mutex::new(false), Condvar::new()));
+    let workers: Vec<_> = listeners
+        .into_iter()
+        .enumerate()
+        .map(|(index, listener)| {
+            let slow_arrived = slow_arrived.clone();
+            let slow_release = Arc::clone(&slow_release);
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                for phase in 0..2 {
+                    let mut header = [0; 6];
+                    stream.read_exact(&mut header).unwrap();
+                    let length = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                    let mut body = vec![0; length];
+                    stream.read_exact(&mut body).unwrap();
+                    let request = ReplicaRequest::decode(
+                        RequestCode::from_u8(header[1]).unwrap(),
+                        &body,
+                    )
+                    .unwrap();
+                    match (phase, request) {
+                        (0, ReplicaRequest::HeadChunk { .. }) => stream
+                            .write_all(&encode_failure(StatusCode::NotFound, "absent"))
+                            .unwrap(),
+                        (1, ReplicaRequest::WriteChunkIfSequence { expected_sequence, .. }) => {
+                            assert_eq!(expected_sequence, 0);
+                            if index == 0 {
+                                slow_arrived.send(()).unwrap();
+                                let (released, ready) = &*slow_release;
+                                let released = released.lock().unwrap();
+                                drop(ready.wait_while(released, |released| !*released).unwrap());
+                            }
+                            let _ = stream.write_all(&encode_reply(&ReplicaReply::Applied));
+                        }
+                        other => panic!("unexpected star write phase: {other:?}"),
+                    }
+                }
+                let mut trailing = Vec::new();
+                stream.read_to_end(&mut trailing).unwrap();
+                assert!(trailing.is_empty(), "a mutation was replayed");
+            })
+        })
+        .collect();
+    drop(slow_arrived);
+
+    let (completed, completion) = mpsc::channel();
+    let coordinator = std::thread::spawn(move || {
+        let mut set = RemoteReplicaSet::connect(
+            &endpoints,
+            2,
+            2,
+            &ReplicaClientOptions {
+                read_timeout: Duration::from_secs(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        completed
+            .send(set.write_chunk(&page(40), 0, b"quorum"))
+            .unwrap();
+    });
+
+    slow_request.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        completion.recv_timeout(Duration::from_secs(1)).unwrap().unwrap(),
+        2
+    );
+    let (released, ready) = &*slow_release;
+    *released.lock().unwrap() = true;
+    ready.notify_one();
+    coordinator.join().unwrap();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
 #[ignore = "controlled three-replica latency measurement; run explicitly in release mode"]
 fn star_fanout_measures_reads_and_writes_with_delayed_replies() {
     use std::io::{Read, Write};
