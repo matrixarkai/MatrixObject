@@ -373,14 +373,16 @@ and 37.81 seconds. This is faster than the preceding sample but slower than the
 first sample; these runs do not isolate code changes from host variability. All
 1280 objects passed recovery checks with the original phase limits.
 
-The same object workload with the default two metadata executors hit the unchanged
-180-second write-phase bound after 777 completed writes, before recovery checks.
+An earlier run of the same object workload with two metadata executors hit the
+unchanged 180-second write-phase bound after 777 completed writes, before recovery checks.
 Each executor waits for its Raft result, so two executors limit how many requests
 can reach the existing batcher while 48 chunk processes report health. Sixteen
-executors passed this workload. Size `MATRIXOBJECT_METASERVER_THREADS` for the
-request and heartbeat load, then measure on the deployment hardware; the product
-default remains two. Per-page digest confirmation, full-byte readback against
-older servers, and the remaining metadata operations still cost round trips.
+executors passed this workload. The process default now uses the host's logical
+CPU count clamped to 4..=16, selecting sixteen on the measured host while keeping
+small and large machines bounded. `MATRIXOBJECT_METASERVER_THREADS` remains an
+explicit override for deployment sizing. Measure the request and heartbeat load
+on the deployment hardware. Per-page digest confirmation, full-byte readback
+against older servers, and the remaining metadata operations still cost round trips.
 This check does not certify large catalog cardinality, large-object
 bandwidth, sustained soak behavior, authentication, or multi-host fault isolation.
 
