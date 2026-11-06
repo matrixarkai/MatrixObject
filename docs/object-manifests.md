@@ -262,6 +262,13 @@ the separate manifest, placement and route reads; transport and application
 failures do not select or replay the fallback. Data-group verification, allocation,
 page replication and conditional publication are unchanged.
 
+Individual reads request the committed manifest and up to eight selected routes
+in one quorum-confirmed metadata reply. The original four-route request keeps its
+wire bound for rolling upgrades. A typed unknown-request response selects and
+remembers the original request for that connection; transport, integrity and
+application failures are returned without replay. Eight-group reads no longer
+need a second metadata confirmation for the remaining routes.
+
 The dedicated eight-group scale check starts 51 local WSL processes: sixteen
 three-voter data groups and three metadata voters. It writes 320 objects with
 eight 1 KiB pages each, loses leaders, writes another 80 objects, restarts every

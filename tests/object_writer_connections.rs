@@ -887,7 +887,7 @@ fn writer_reuses_preflight_connection_and_only_looks_up_each_group_once() {
         reply(&mut stream, MetaReply::Manifest(manifest.clone()));
         assert!(matches!(
             meta(&mut stream),
-            MetaRequest::ReadManifestRoutes { .. }
+            MetaRequest::ReadManifestRoutesWide { .. }
         ));
         reply(&mut stream, MetaReply::ManifestRoutes {
             manifest: manifest.clone(),
