@@ -540,6 +540,150 @@ fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() 
 }
 
 #[test]
+fn star_write_batch_uses_one_mutation_frame_per_member() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let nodes: Vec<_> = (0..3).map(|_| start()).collect();
+    let listeners: Vec<_> = (0..3)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let endpoints: Vec<_> = listeners
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().to_string())
+        .collect();
+    let (observed, observations) = mpsc::channel();
+    let workers: Vec<_> = listeners
+        .into_iter()
+        .enumerate()
+        .map(|(index, listener)| {
+            let endpoint = nodes[index].endpoint.clone();
+            let observed = observed.clone();
+            std::thread::spawn(move || {
+                listener.set_nonblocking(true).unwrap();
+                let until = Instant::now() + Duration::from_secs(5);
+                let mut front = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < until =>
+                        {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        other => panic!("batch proxy accept: {other:?}"),
+                    }
+                };
+                let mut back = TcpStream::connect(endpoint).unwrap();
+                for socket in [&front, &back] {
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    socket
+                        .set_write_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                }
+                loop {
+                    let mut header = [0; 6];
+                    if front.read_exact(&mut header).is_err() {
+                        break;
+                    }
+                    let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                    let mut body = vec![0; size];
+                    front.read_exact(&mut body).unwrap();
+                    observed.send((index, header[1])).unwrap();
+                    back.write_all(&header).unwrap();
+                    back.write_all(&body).unwrap();
+                    back.read_exact(&mut header).unwrap();
+                    let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
+                    body.resize(size, 0);
+                    back.read_exact(&mut body).unwrap();
+                    front.write_all(&header).unwrap();
+                    front.write_all(&body).unwrap();
+                }
+            })
+        })
+        .collect();
+    drop(observed);
+
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    assert_eq!(
+        set.write_chunks(&[(page(10), 0, b"first"), (page(11), 0, b"second")])
+            .unwrap(),
+        vec![3, 3]
+    );
+    drop(set);
+    for worker in workers {
+        worker.join().unwrap();
+    }
+
+    let mut codes = vec![Vec::new(); 3];
+    for (index, code) in observations {
+        codes[index].push(code);
+    }
+    const HEAD_CHUNK_CODE: u8 = 3;
+    const CONDITIONAL_BATCH_CODE: u8 = 14;
+    for member in codes {
+        assert_eq!(
+            member,
+            vec![
+                HEAD_CHUNK_CODE,
+                HEAD_CHUNK_CODE,
+                CONDITIONAL_BATCH_CODE,
+            ]
+        );
+    }
+    for node in &nodes {
+        let mut replica = client(node);
+        assert_eq!(replica.read_chunk(&page(10), 0, 5).unwrap().data, b"first");
+        assert_eq!(replica.read_chunk(&page(11), 0, 6).unwrap().data, b"second");
+    }
+}
+
+#[test]
+fn star_write_batch_keeps_different_matching_member_sets_separate() {
+    let nodes: Vec<_> = (0..3).map(|_| start()).collect();
+    for index in [0, 1] {
+        client(&nodes[index])
+            .write_chunk(page(20), 0, b"left")
+            .unwrap();
+    }
+    for index in [1, 2] {
+        client(&nodes[index])
+            .write_chunk(page(21), 0, b"right")
+            .unwrap();
+    }
+    let endpoints: Vec<_> = nodes.iter().map(|node| node.endpoint.clone()).collect();
+    let mut set =
+        RemoteReplicaSet::connect(&endpoints, 2, 2, &ReplicaClientOptions::default()).unwrap();
+    assert_eq!(
+        set.write_chunks(&[(page(20), 4, b"!"), (page(21), 5, b"?")])
+            .unwrap(),
+        vec![2, 2]
+    );
+    drop(set);
+
+    let mut first = client(&nodes[0]);
+    assert_eq!(first.read_chunk(&page(20), 0, 5).unwrap().data, b"left!");
+    assert!(matches!(
+        first.read_chunk(&page(21), 0, 6),
+        Err(ObjectError::NotFound(_))
+    ));
+    let mut middle = client(&nodes[1]);
+    assert_eq!(middle.read_chunk(&page(20), 0, 5).unwrap().data, b"left!");
+    assert_eq!(middle.read_chunk(&page(21), 0, 6).unwrap().data, b"right?");
+    let mut last = client(&nodes[2]);
+    assert!(matches!(
+        last.read_chunk(&page(20), 0, 5),
+        Err(ObjectError::NotFound(_))
+    ));
+    assert_eq!(last.read_chunk(&page(21), 0, 6).unwrap().data, b"right?");
+}
+
+#[test]
 fn star_slow_first_member_does_not_expire_healthy_quorum_replies() {
     use std::io::Read;
     use std::net::TcpListener;

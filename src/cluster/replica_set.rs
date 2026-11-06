@@ -29,7 +29,7 @@
 //! never written cannot tell the absence it is checking for from the outage it just caused.
 
 use crate::cluster::client::{RemoteReplicaClient, ReplicaClientOptions};
-use crate::cluster::message::{ReplicaReply, ReplicaRequest};
+use crate::cluster::message::{ConditionalChunkWrite, ReplicaReply, ReplicaRequest};
 use crate::{ObjectError, PageId, ReplicaHead, ReplicaReadResult};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -269,6 +269,78 @@ impl RemoteReplicaSet {
             }));
         }
         Ok(acknowledged)
+    }
+
+    /// Apply up to eight independent writes through the standalone star path.
+    ///
+    /// Every page is fenced against a quorum-agreed head before any mutation is
+    /// sent. Pages with the same matching member set share one encoded conditional
+    /// write batch, reducing mutation frames without letting a divergent member
+    /// vote for a write. An error can follow an acknowledged earlier group; callers
+    /// must probe candidate pages instead of replaying an uncertain batch.
+    pub fn write_chunks(
+        &mut self,
+        writes: &[(PageId, u64, &[u8])],
+    ) -> Result<Vec<usize>, ObjectError> {
+        if writes.len() > 8 {
+            return Err(ObjectError::InvalidArgument(
+                "star write batch exceeds eight pages".into(),
+            ));
+        }
+        let mut pages = BTreeSet::new();
+        if writes
+            .iter()
+            .any(|(page, _, _)| !pages.insert(page.clone()))
+        {
+            return Err(ObjectError::InvalidArgument(
+                "star write batch repeats a page".into(),
+            ));
+        }
+
+        let mut groups: BTreeMap<Vec<bool>, Vec<(usize, ConditionalChunkWrite)>> = BTreeMap::new();
+        for (index, (page_id, offset, data)) in writes.iter().enumerate() {
+            let (expected, matching) = self.mutation_state(page_id)?;
+            groups.entry(matching).or_default().push((
+                index,
+                ConditionalChunkWrite {
+                    page_id: page_id.clone(),
+                    offset: *offset,
+                    data: data.to_vec(),
+                    expected_sequence: expected.as_ref().map_or(0, |head| head.write_sequence),
+                },
+            ));
+        }
+
+        let mut acknowledgements = vec![0; writes.len()];
+        for (matching, group) in groups {
+            let indexes: Vec<_> = group.iter().map(|(index, _)| *index).collect();
+            let request = ReplicaRequest::WriteChunkBatchIfSequence {
+                writes: group.into_iter().map(|(_, write)| write).collect(),
+            };
+            let mut acknowledged = 0usize;
+            let mut first_error = None;
+            for result in self.fan_out(&request, Some(&matching)) {
+                match applied(result) {
+                    Ok(()) => acknowledged += 1,
+                    Err(error) if first_error.is_none() => first_error = Some(error),
+                    Err(_) => {}
+                }
+            }
+            if acknowledged < self.write_quorum {
+                return Err(first_error.unwrap_or_else(|| {
+                    ObjectError::Corruption(format!(
+                        "a star write batch was acknowledged by {acknowledged} of {} replica(s), \
+                         short of a write quorum of {}",
+                        self.replicas.len(),
+                        self.write_quorum
+                    ))
+                }));
+            }
+            for index in indexes {
+                acknowledgements[index] = acknowledged;
+            }
+        }
+        Ok(acknowledgements)
     }
 
     fn mutation_state(

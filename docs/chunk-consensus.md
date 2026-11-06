@@ -357,6 +357,15 @@ fall back to an unconditional write. An uncertain mutation is not retried, and
 partial application can still occur if a member fails after preflight. Callers
 must resolve uncertain results before issuing another operation.
 
+`RemoteReplicaSet::write_chunks` admits up to eight distinct pages. It retains
+the complete-head fence for every page, then groups pages by the members matching
+their selected state. Each group shares one code-14 binary protobuf mutation
+frame per selected member. Eight new pages therefore use eight head frames and
+one mutation frame per member instead of eight head frames and eight mutation
+frames. A group is successful only when its complete batch is acknowledged by a
+write quorum. Groups are sent without replay; an error can follow an earlier
+acknowledged group, so candidate pages must be probed before retrying.
+
 The check prevents an already divergent member from counting toward a fresh write
 acknowledgment. It does not repair that member, establish cross-client linearizability
 or authenticate replies. Explicit repair is available through `repair_chunk` and
