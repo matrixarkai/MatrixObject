@@ -463,13 +463,13 @@ impl ReplicaRequest {
             let value: super::conditional_requests::ChunkReadBatch =
                 super::conditional_requests::decode(payload)?;
             if value.version != 1 || value.reads.len() > 8 || value.reads.iter().any(|read|
-                read.version != 1 || read.length > 64 * 1024)
+                read.version != 1 || read.length > 1024 * 1024)
             {
                 return Err(ObjectError::InvalidArgument("invalid read batch".into()));
             }
             let total = value.reads.iter().try_fold(0u64, |sum, read|
                 sum.checked_add(read.length).ok_or_else(|| ObjectError::InvalidArgument("read batch length overflow".into())))?;
-            if total > 512 * 1024 {
+            if total > 4 * 1024 * 1024 {
                 return Err(ObjectError::InvalidArgument("read batch exceeds byte bound".into()));
             }
             let reads = value.reads.into_iter().map(|read| Ok((
@@ -853,13 +853,13 @@ impl ReplicaReply {
             return Ok(ReplicaReply::Digests(digests));
         }
         if code == RequestCode::ReadChunkBatch {
-            if payload.len() > 512 * 1024 + 1024 {
+            if payload.len() > 4 * 1024 * 1024 + 1024 {
                 return Err(ObjectError::Corruption("read batch reply exceeds bound".into()));
             }
             let value: super::conditional_requests::ChunkReadBatchResult =
                 super::conditional_requests::decode(payload)?;
             if value.version != 1 || value.reads.len() > 8 || value.reads.iter().any(|read|
-                read.version != 1 || read.checksum.len() > 128 || read.data.len() > 64 * 1024)
+                read.version != 1 || read.checksum.len() > 128 || read.data.len() > 1024 * 1024)
             {
                 return Err(ObjectError::Corruption("invalid read batch reply".into()));
             }

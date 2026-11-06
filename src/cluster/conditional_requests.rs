@@ -412,11 +412,43 @@ mod tests {
         assert_eq!(ReplicaReply::decode(RequestCode::ReadChunkBatch, &encoded).unwrap(), reply);
 
         let mut invalid: ChunkReadBatch = decode(&bytes).unwrap();
-        invalid.reads[0].length = 64 * 1024 + 1;
+        invalid.reads[0].length = 1024 * 1024 + 1;
         assert!(ReplicaRequest::decode(request.code(), &invalid.encode_to_vec()).is_err());
         invalid.reads[0].length = 5;
         invalid.reads.resize(9, invalid.reads[0].clone());
         assert!(ReplicaRequest::decode(request.code(), &invalid.encode_to_vec()).is_err());
+        let maximum = ReplicaRequest::ReadChunkBatch {
+            reads: (0..4)
+                .map(|index| {
+                    (
+                        PageId {
+                            chunk_id: ChunkId::new(1, 2).unwrap(),
+                            page_index: index,
+                        },
+                        0,
+                        1024 * 1024,
+                    )
+                })
+                .collect(),
+        };
+        assert!(ReplicaRequest::decode(maximum.code(), &maximum.encode_payload()).is_ok());
+        let mut oversized: ChunkReadBatch = decode(&maximum.encode_payload()).unwrap();
+        oversized.reads.push(oversized.reads[0].clone());
+        assert!(ReplicaRequest::decode(maximum.code(), &oversized.encode_to_vec()).is_err());
+        let maximum_reply = ReplicaReply::Reads(
+            (0..4)
+                .map(|_| crate::ReplicaReadResult {
+                    data: vec![3; 1024 * 1024],
+                    write_sequence: 9,
+                    checksum: "checksum".into(),
+                })
+                .collect(),
+        );
+        assert!(ReplicaReply::decode(
+            RequestCode::ReadChunkBatch,
+            &maximum_reply.encode_payload(),
+        )
+        .is_ok());
         let mut extra = encoded;
         extra.extend([0x18, 1]);
         assert!(ReplicaReply::decode(RequestCode::ReadChunkBatch, &extra).is_err());

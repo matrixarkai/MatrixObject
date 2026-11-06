@@ -540,7 +540,7 @@ fn star_reads_writes_and_discards_send_all_members_before_waiting_for_replies() 
 }
 
 #[test]
-fn default_page_star_write_uses_four_page_mutation_frames() {
+fn default_page_star_io_uses_four_page_frames() {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
@@ -615,6 +615,12 @@ fn default_page_star_write_uses_four_page_mutation_frames() {
         .map(|index| (page(index), 0, data.as_slice()))
         .collect();
     assert_eq!(set.write_chunks(&writes).unwrap(), vec![3; 8]);
+    let ranges: Vec<_> = (10..18)
+        .map(|index| (page(index), 0, data.len() as u64))
+        .collect();
+    let reads = set.read_chunks(&ranges).unwrap();
+    assert_eq!(reads.len(), 8);
+    assert!(reads.iter().all(|read| read.data == data));
     drop(set);
     for worker in workers {
         worker.join().unwrap();
@@ -626,6 +632,7 @@ fn default_page_star_write_uses_four_page_mutation_frames() {
     }
     const HEAD_CHUNK_BATCH_CODE: u8 = 18;
     const CONDITIONAL_BATCH_CODE: u8 = 14;
+    const READ_BATCH_CODE: u8 = 17;
     for member in codes {
         assert_eq!(
             member,
@@ -633,6 +640,8 @@ fn default_page_star_write_uses_four_page_mutation_frames() {
                 HEAD_CHUNK_BATCH_CODE,
                 CONDITIONAL_BATCH_CODE,
                 CONDITIONAL_BATCH_CODE,
+                READ_BATCH_CODE,
+                READ_BATCH_CODE,
             ]
         );
     }
@@ -650,7 +659,7 @@ fn default_page_star_write_uses_four_page_mutation_frames() {
 }
 
 #[test]
-fn star_write_batch_falls_back_to_scalar_heads_before_mutation() {
+fn star_batches_fall_back_to_scalar_requests_on_older_members() {
     use matrixobjectstore_rs::cluster::{
         message::{encode_failure, encode_reply},
         ReplicaReply, ReplicaRequest, RequestCode, StatusCode,
@@ -678,7 +687,7 @@ fn star_write_batch_falls_back_to_scalar_heads_before_mutation() {
                     .set_write_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
                 let mut codes = Vec::new();
-                for phase in 0..4 {
+                for phase in 0..7 {
                     let mut header = [0; 6];
                     stream.read_exact(&mut header).unwrap();
                     let size = u32::from_be_bytes(header[2..].try_into().unwrap()) as usize;
@@ -706,6 +715,31 @@ fn star_write_batch_falls_back_to_scalar_heads_before_mutation() {
                                 .write_all(&encode_reply(&ReplicaReply::Applied))
                                 .unwrap();
                         }
+                        (4, ReplicaRequest::ReadChunkBatch { reads }) => {
+                            assert_eq!(reads.len(), 2);
+                            stream
+                                .write_all(&encode_failure(
+                                    StatusCode::UnknownRequest,
+                                    "older peer",
+                                ))
+                                .unwrap();
+                        }
+                        (5 | 6, ReplicaRequest::ReadChunk { page_id, .. }) => {
+                            let data = if page_id.page_index == 30 {
+                                b"first".to_vec()
+                            } else {
+                                b"second".to_vec()
+                            };
+                            stream
+                                .write_all(&encode_reply(&ReplicaReply::Read(
+                                    matrixobjectstore_rs::ReplicaReadResult {
+                                        data,
+                                        write_sequence: 1,
+                                        checksum: "same".into(),
+                                    },
+                                )))
+                                .unwrap();
+                        }
                         other => panic!("unexpected fallback phase: {other:?}"),
                     }
                 }
@@ -716,6 +750,9 @@ fn star_write_batch_falls_back_to_scalar_heads_before_mutation() {
                         RequestCode::HeadChunk,
                         RequestCode::HeadChunk,
                         RequestCode::WriteChunkBatchIfSequence,
+                        RequestCode::ReadChunkBatch,
+                        RequestCode::ReadChunk,
+                        RequestCode::ReadChunk,
                     ]
                 );
             })
@@ -728,6 +765,12 @@ fn star_write_batch_falls_back_to_scalar_heads_before_mutation() {
             .unwrap(),
         vec![3, 3]
     );
+    let reads = set
+        .read_chunks(&[(page(30), 0, 5), (page(31), 0, 6)])
+        .unwrap();
+    assert_eq!(reads[0].data, b"first");
+    assert_eq!(reads[1].data, b"second");
+    assert!(set.read_chunks(&[]).unwrap().is_empty());
     assert!(set.write_chunks(&[]).unwrap().is_empty());
     drop(set);
     for worker in workers {
@@ -756,6 +799,11 @@ fn star_write_batch_keeps_different_matching_member_sets_separate() {
             .unwrap(),
         vec![2, 2]
     );
+    let reads = set
+        .read_chunks(&[(page(20), 0, 5), (page(21), 0, 6)])
+        .unwrap();
+    assert_eq!(reads[0].data, b"left!");
+    assert_eq!(reads[1].data, b"right?");
     drop(set);
 
     let mut first = client(&nodes[0]);
