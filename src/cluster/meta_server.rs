@@ -980,7 +980,9 @@ pub(super) fn apply_with_groups(
         crate::cluster::message::check_reply_size(reply.payload_len(), limit)?;
         return Ok(reply);
     }
-    if let MetaRequest::ReadChunkRoutes { placement_ids } = &request {
+    if let MetaRequest::ReadChunkRoutes { placement_ids }
+        | MetaRequest::ReadChunkRoutesWide { placement_ids } = &request
+    {
         let routes = placement_ids.iter()
             .map(|id| groups.routing_view(id))
             .collect::<Result<Vec<_>, _>>()?;
@@ -1054,7 +1056,7 @@ pub(super) fn apply_to_meta(
         )),
 
         MetaRequest::ReadChunkGroup { .. } | MetaRequest::ReadChunkRoute { .. }
-        | MetaRequest::ReadChunkRoutes { .. } => {
+        | MetaRequest::ReadChunkRoutes { .. } | MetaRequest::ReadChunkRoutesWide { .. } => {
             Err(ObjectError::NotFound("chunk group missing".into()))
         }
         MetaRequest::ReportChunkNode { .. } => Err(ObjectError::PreconditionFailed(

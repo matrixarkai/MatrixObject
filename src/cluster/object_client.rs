@@ -257,7 +257,7 @@ impl RemoteMetaClient {
             grouped.entry(extent.group.clone()).or_default().push(index);
         }
         let group_ids: Vec<String> = grouped.keys().cloned().collect();
-        for ids in group_ids.chunks(4) {
+        for ids in group_ids.chunks(8) {
             self.check_operation_deadline().map_err(&staged_error)?;
             for (id, route) in ids.iter().zip(self.read_chunk_routes(ids).map_err(&staged_error)?) {
                 routes.insert(id.clone(), route);
@@ -429,7 +429,7 @@ impl RemoteMetaClient {
             let mut route_map = planned_routes.map(|routes| {
                 plan.node_ids.iter().cloned().zip(routes).collect::<std::collections::BTreeMap<_, _>>()
             });
-            for window in plan.node_ids.rchunks(4) {
+            for window in plan.node_ids.rchunks(8) {
                 let ids: Vec<String> = window.iter().rev().cloned().collect();
                 let routes = if let Some(routes) = &mut route_map {
                     ids.iter().map(|id| routes.remove(id).ok_or_else(|| before(ObjectError::Corruption(
