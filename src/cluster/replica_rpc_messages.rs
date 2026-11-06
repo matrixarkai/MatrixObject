@@ -158,6 +158,9 @@ pub enum ReplicaRequest {
     HeadChunk {
         page_id: PageId,
     },
+    HeadChunkBatch {
+        pages: Vec<PageId>,
+    },
     DiscardChunk {
         page_id: PageId,
         offset: u64,
@@ -193,6 +196,7 @@ impl ReplicaRequest {
             ReplicaRequest::ReadChunkBatch { .. } => RequestCode::ReadChunkBatch,
             ReplicaRequest::DigestChunk { .. } => RequestCode::DigestChunk,
             ReplicaRequest::HeadChunk { .. } => RequestCode::HeadChunk,
+            ReplicaRequest::HeadChunkBatch { .. } => RequestCode::HeadChunkBatch,
             ReplicaRequest::DiscardChunk { .. } => RequestCode::DiscardChunk,
             ReplicaRequest::Ping => RequestCode::Ping,
             ReplicaRequest::GroupIdentity => RequestCode::GroupIdentity,
@@ -322,6 +326,21 @@ impl ReplicaRequest {
                 put_u64(&mut out, *length);
             }
             ReplicaRequest::HeadChunk { page_id } => put_page_id(&mut out, page_id),
+            ReplicaRequest::HeadChunkBatch { pages } => {
+                return super::conditional_requests::ChunkHeadBatch {
+                    version: 1,
+                    pages: pages
+                        .iter()
+                        .map(|page_id| super::conditional_requests::ChunkPage {
+                            version: 1,
+                            volume: page_id.chunk_id.volume_id(),
+                            chunk: page_id.chunk_id.id(),
+                            page: page_id.page_index,
+                        })
+                        .collect(),
+                }
+                .encode_to_vec();
+            }
             ReplicaRequest::Ping | ReplicaRequest::GroupIdentity => {}
             ReplicaRequest::PageInventory { after, limit } => {
                 put_u64(&mut out, u64::from(after.is_some()));
@@ -460,6 +479,40 @@ impl ReplicaRequest {
             ))).collect::<Result<Vec<_>, ObjectError>>()?;
             return Ok(Self::ReadChunkBatch { reads });
         }
+        if code == RequestCode::HeadChunkBatch {
+            if payload.len() > 512 {
+                return Err(ObjectError::InvalidArgument(
+                    "page head batch request exceeds size bound".into(),
+                ));
+            }
+            let value: super::conditional_requests::ChunkHeadBatch =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 || value.pages.is_empty() || value.pages.len() > 8 {
+                return Err(ObjectError::InvalidArgument(
+                    "invalid page head batch".into(),
+                ));
+            }
+            let mut pages = Vec::with_capacity(value.pages.len());
+            let mut distinct = std::collections::BTreeSet::new();
+            for page in value.pages {
+                if page.version != 1 {
+                    return Err(ObjectError::InvalidArgument(
+                        "invalid page head batch entry".into(),
+                    ));
+                }
+                let page_id = PageId {
+                    chunk_id: ChunkId::new(page.volume, page.chunk)?,
+                    page_index: page.page,
+                };
+                if !distinct.insert(page_id.clone()) {
+                    return Err(ObjectError::InvalidArgument(
+                        "page head batch repeats a page".into(),
+                    ));
+                }
+                pages.push(page_id);
+            }
+            return Ok(Self::HeadChunkBatch { pages });
+        }
         if matches!(
             code,
             RequestCode::WriteChunkBatchIfSequence
@@ -515,6 +568,7 @@ impl ReplicaRequest {
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
             RequestCode::ReadChunkStateRange => unreachable!(),
             RequestCode::ReadChunkBatch => unreachable!(),
+            RequestCode::HeadChunkBatch => unreachable!(),
             RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkIfSequenceDigest
             | RequestCode::WriteChunkBatchIfSequence
@@ -616,6 +670,7 @@ pub enum ReplicaReply {
     },
     Digests(Vec<(u64, u64, [u8; 32])>),
     Head(ReplicaHead),
+    Heads(Vec<Option<ReplicaHead>>),
     /// The replica is answering, and holds this many pages.
     Pong {
         page_count: u64,
@@ -655,6 +710,7 @@ impl ReplicaReply {
                 .saturating_add(head.checksum.len())
                 .saturating_add(head.state_checksum.len())
                 .saturating_add(head.discarded_ranges.len().saturating_mul(16)),
+            Self::Heads(heads) => encode_head_batch(heads).encoded_len(),
             Self::Pong { .. } => 8,
             Self::PageInventory(batch) => {
                 16usize.saturating_add(batch.entries.len().saturating_mul(32))
@@ -712,6 +768,7 @@ impl ReplicaReply {
                     put_u64(&mut out, range.length);
                 }
             }
+            ReplicaReply::Heads(heads) => return encode_head_batch(heads).encode_to_vec(),
             ReplicaReply::Pong { page_count } => put_u64(&mut out, *page_count),
             ReplicaReply::PageInventory(batch) => {
                 put_u64(&mut out, u64::from(batch.has_more));
@@ -812,6 +869,55 @@ impl ReplicaReply {
                 data: read.data,
             }).collect()));
         }
+        if code == RequestCode::HeadChunkBatch {
+            let value: super::conditional_requests::ChunkHeadBatchResult =
+                super::conditional_requests::decode(payload)?;
+            if value.version != 1 || value.heads.is_empty() || value.heads.len() > 8 {
+                return Err(ObjectError::Corruption(
+                    "invalid page head batch reply".into(),
+                ));
+            }
+            let mut heads = Vec::with_capacity(value.heads.len());
+            for head in value.heads {
+                if head.version != 1
+                    || head.checksum.len() > 128
+                    || head.state_checksum.len() > 128
+                {
+                    return Err(ObjectError::Corruption(
+                        "invalid page head batch entry".into(),
+                    ));
+                }
+                if !head.present {
+                    if head.logical_length != 0
+                        || head.write_sequence != 0
+                        || !head.checksum.is_empty()
+                        || !head.state_checksum.is_empty()
+                        || !head.discarded_ranges.is_empty()
+                    {
+                        return Err(ObjectError::Corruption(
+                            "absent page head carries state".into(),
+                        ));
+                    }
+                    heads.push(None);
+                    continue;
+                }
+                heads.push(Some(ReplicaHead {
+                    logical_length: head.logical_length,
+                    write_sequence: head.write_sequence,
+                    checksum: head.checksum,
+                    state_checksum: head.state_checksum,
+                    discarded_ranges: head
+                        .discarded_ranges
+                        .into_iter()
+                        .map(|range| DataRange {
+                            offset: range.offset,
+                            length: range.length,
+                        })
+                        .collect(),
+                }));
+            }
+            return Ok(Self::Heads(heads));
+        }
         let mut cursor = Cursor::new(payload);
         let reply = match code {
             RequestCode::Membership | RequestCode::StateInstall => unreachable!(),
@@ -819,6 +925,7 @@ impl ReplicaReply {
             RequestCode::GroupIdentity => unreachable!(),
             RequestCode::WriteChunkBatchIfSequenceDigest => unreachable!(),
             RequestCode::ReadChunkBatch => unreachable!(),
+            RequestCode::HeadChunkBatch => unreachable!(),
             RequestCode::WriteChunk
             | RequestCode::WriteChunkIfSequence
             | RequestCode::WriteChunkBatchIfSequence
@@ -924,6 +1031,44 @@ impl ReplicaReply {
             )));
         }
         Ok(reply)
+    }
+}
+
+fn encode_head_batch(
+    heads: &[Option<ReplicaHead>],
+) -> super::conditional_requests::ChunkHeadBatchResult {
+    super::conditional_requests::ChunkHeadBatchResult {
+        version: 1,
+        heads: heads
+            .iter()
+            .map(|head| match head {
+                Some(head) => super::conditional_requests::ChunkHead {
+                    version: 1,
+                    present: true,
+                    logical_length: head.logical_length,
+                    write_sequence: head.write_sequence,
+                    checksum: head.checksum.clone(),
+                    state_checksum: head.state_checksum.clone(),
+                    discarded_ranges: head
+                        .discarded_ranges
+                        .iter()
+                        .map(|range| super::conditional_requests::ChunkRange {
+                            offset: range.offset,
+                            length: range.length,
+                        })
+                        .collect(),
+                },
+                None => super::conditional_requests::ChunkHead {
+                    version: 1,
+                    present: false,
+                    logical_length: 0,
+                    write_sequence: 0,
+                    checksum: String::new(),
+                    state_checksum: String::new(),
+                    discarded_ranges: Vec::new(),
+                },
+            })
+            .collect(),
     }
 }
 

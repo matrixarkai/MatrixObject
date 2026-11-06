@@ -875,6 +875,17 @@ pub(super) fn apply_to_replica(
         ReplicaRequest::HeadChunk { page_id } => {
             Ok(ReplicaReply::Head(guard.head_chunk(&page_id)?))
         }
+        ReplicaRequest::HeadChunkBatch { pages } => {
+            let mut heads = Vec::with_capacity(pages.len());
+            for page_id in pages {
+                match guard.head_chunk(&page_id) {
+                    Ok(head) => heads.push(Some(head)),
+                    Err(ObjectError::NotFound(_)) => heads.push(None),
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(ReplicaReply::Heads(heads))
+        }
         ReplicaRequest::WriteChunkIfSequenceDigest {
             page_id,
             offset,

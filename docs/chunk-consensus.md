@@ -1,10 +1,11 @@
 # Chunk servers with independent Raft voters
 
-Build `chunkserver` with `--features chunk-consensus`. Each process owns one
-MatrixRaft `DurablePeer`, its own page state, and its own existing storage
-directory. The existing star-write client remains available for standalone chunk
-servers. A Raft group accepts requests through its current leader; it does not
-accept star writes independently at every voter.
+Standalone chunk servers use coordinator-driven star writes by default. Build
+`chunkserver` with `--features chunk-consensus` and supply complete Raft
+configuration to run a consensus group. Each group process owns one MatrixRaft
+`DurablePeer`, its own page state, and its own existing storage directory. A Raft
+group accepts requests through its current leader; it does not accept star writes
+independently at every voter.
 
 Example for voter 1 of three:
 
@@ -34,6 +35,8 @@ not execute original write commands. Reads, inventories, heads, and pings requir
 a current-term quorum confirmation and application through its commit index,
 so an isolated minority cannot answer from stale state. These reads append no log
 entries. One confirmation may be pending, including after a caller timeout.
+A code-18 head batch confirms up to eight ordered page heads, including explicit
+absence, with one Raft read barrier for the whole batch.
 A code-17 protobuf request groups up to eight page ranges of at most 64 KiB each
 and 512 KiB total into one read command. The ordered protobuf reply is checked
 against the configured reply budget before page bytes are copied. The group
@@ -357,12 +360,15 @@ fall back to an unconditional write. An uncertain mutation is not retried, and
 partial application can still occur if a member fails after preflight. Callers
 must resolve uncertain results before issuing another operation.
 
-`RemoteReplicaSet::write_chunks` admits up to eight distinct pages. It retains
-the complete-head fence for every page, then groups pages by the members matching
-their selected state. Each group shares one code-14 binary protobuf mutation
-frame per selected member. Eight new pages therefore use eight head frames and
-one mutation frame per member instead of eight head frames and eight mutation
-frames. A group is successful only when its complete batch is acknowledged by a
+`RemoteReplicaSet::write_chunks` admits up to eight distinct pages. One code-18
+binary protobuf request asks each member for the whole ordered head batch. The
+coordinator votes every page independently, then groups pages by the members
+matching their selected state. Each group shares one code-14 binary protobuf
+mutation frame per selected member. Eight new pages with the same matching set
+therefore use one head frame and one mutation frame per member instead of eight
+head frames and eight mutation frames. A typed unknown-request refusal permits
+the read-only head phase to fall back to scalar fencing before any mutation is
+sent. A group is successful only when its complete batch is acknowledged by a
 write quorum. Groups are sent without replay; an error can follow an earlier
 acknowledged group, so candidate pages must be probed before retrying.
 

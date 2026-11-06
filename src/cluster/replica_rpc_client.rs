@@ -1242,6 +1242,32 @@ impl RemoteReplicaClient {
         }
     }
 
+    pub fn head_chunks(
+        &mut self,
+        pages: &[PageId],
+    ) -> Result<Vec<Option<ReplicaHead>>, ObjectError> {
+        if pages.is_empty() || pages.len() > 8 {
+            return Err(ObjectError::InvalidArgument(
+                "page head batch must contain between one and eight pages".into(),
+            ));
+        }
+        let mut distinct = std::collections::BTreeSet::new();
+        if pages.iter().any(|page| !distinct.insert(page.clone())) {
+            return Err(ObjectError::InvalidArgument(
+                "page head batch repeats a page".into(),
+            ));
+        }
+        match self.call(ReplicaRequest::HeadChunkBatch {
+            pages: pages.to_vec(),
+        })? {
+            ReplicaReply::Heads(heads) if heads.len() == pages.len() => Ok(heads),
+            ReplicaReply::Heads(_) => Err(ObjectError::Corruption(
+                "page head batch reply count differs from request".into(),
+            )),
+            other => Err(unexpected_reply("page heads", &other)),
+        }
+    }
+
     /// Discard only at the expected existing page sequence. Uncertain replies are not retried.
     pub fn discard_chunk_if_sequence(
         &mut self,
@@ -1346,6 +1372,7 @@ impl RemoteReplicaClient {
                 | ReplicaRequest::DigestChunk { .. }
                 | ReplicaRequest::ReadChunkStateRange { .. }
                 | ReplicaRequest::HeadChunk { .. }
+                | ReplicaRequest::HeadChunkBatch { .. }
                 | ReplicaRequest::PageInventory { .. }
         ) || matches!(&request, ReplicaRequest::Membership(command) if command.is_read());
         let mut last = not_leader();
