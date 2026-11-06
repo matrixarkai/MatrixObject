@@ -362,6 +362,16 @@ impl RemoteMetaClient {
         })
     }
 
+    pub(super) fn peer_has_closed(&self) -> Result<bool, ObjectError> {
+        self.writer.peer_has_closed().map_err(|error| {
+            transport_error(
+                &self.endpoint,
+                "checking an idle metadata connection",
+                &error.to_string(),
+            )
+        })
+    }
+
     /// Send a frame and wait for the answer, RIGHT NOW.
     ///
     /// Named `probe` rather than `is_healthy` because it is not a property of this client. It

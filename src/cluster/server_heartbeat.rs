@@ -107,18 +107,10 @@ pub(super) fn run(
         .endpoint
         .to_string();
     let mut reported_failure = false;
+    let mut client: Option<RemoteMetaClient> = None;
     while !stop.is_stopped() {
+        let mut remote_attempted = false;
         let result = (|| -> Result<(), crate::ObjectError> {
-            // The client is dropped after each report so idle chunk processes never
-            // retain the metadata server's connection workers between intervals.
-            let mut client = match &options.expected_metadata_identity {
-                Some(identity) => RemoteMetaClient::connect_verified_raft_catalog(
-                    &endpoints,
-                    identity,
-                    &client_options,
-                )?,
-                None => RemoteMetaClient::connect_catalog(&endpoints, &client_options)?,
-            };
             #[cfg(feature = "chunk-consensus")]
             let dynamic = consensus.as_ref().filter(|c| c.identity().version == 2);
             let (used, capacity, online, membership) = {
@@ -153,9 +145,28 @@ pub(super) fn run(
             if stop.is_stopped() {
                 return Ok(());
             }
+            if client
+                .as_ref()
+                .is_some_and(|active| active.peer_has_closed().unwrap_or(true))
+            {
+                client = None;
+            }
+            if client.is_none() {
+                remote_attempted = true;
+                client = Some(match &options.expected_metadata_identity {
+                    Some(identity) => RemoteMetaClient::connect_verified_raft_catalog(
+                        &endpoints,
+                        identity,
+                        &client_options,
+                    )?,
+                    None => RemoteMetaClient::connect_catalog(&endpoints, &client_options)?,
+                });
+            }
+            let active = client.as_mut().expect("heartbeat client initialized");
+            remote_attempted = true;
             if let Some(status) = membership {
                 #[cfg(feature = "chunk-consensus")]
-                client.update_chunk_catalog(crate::cluster::ChunkCatalogCommand {
+                active.update_chunk_catalog(crate::cluster::ChunkCatalogCommand {
                     version: 1,
                     operation: 2,
                     placement_id: options
@@ -177,16 +188,19 @@ pub(super) fn run(
                     unreachable!("standalone replica has no applied membership");
                 }
             } else {
-                client.report_chunk_node(&options.node_id, &advertised, used, capacity, online)?;
+                active.report_chunk_node(&options.node_id, &advertised, used, capacity, online)?;
             }
             if let Some(position) = endpoints
                 .iter()
-                .position(|endpoint| endpoint == client.endpoint())
+                .position(|endpoint| endpoint == active.endpoint())
             {
                 endpoints.rotate_left(position);
             }
             Ok(())
         })();
+        if result.is_err() && remote_attempted {
+            client = None;
+        }
         match result {
             Err(error) if !reported_failure => {
                 eprintln!("chunk heartbeat for {} failed: {error}", options.node_id);
@@ -250,6 +264,152 @@ mod tests {
         stop.stop();
         worker.join().unwrap();
         assert!(still_open, "heartbeat abandoned a slow metadata response");
+    }
+
+    #[test]
+    fn successful_heartbeats_reuse_one_metadata_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let metadata = listener.local_addr().unwrap();
+        let mut chunk =
+            ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
+        let endpoint = chunk.local_addr().unwrap();
+        chunk
+            .enable_heartbeats(ReplicaHeartbeatOptions {
+                placement_id: None,
+                tls: None,
+                expected_metadata_identity: None,
+                node_id: "chunk-reuse".into(),
+                advertised_endpoint: endpoint,
+                metadata_endpoints: vec![metadata],
+                interval: Duration::from_millis(100),
+            })
+            .unwrap();
+        let stop = chunk.shutdown_handle();
+        let chunk_worker = std::thread::spawn(move || chunk.serve().unwrap());
+        let (observed_tx, observed_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let metadata_worker = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            for _ in 0..2 {
+                let mut header = [0; 6];
+                socket.read_exact(&mut header).unwrap();
+                let length = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
+                let mut payload = vec![0; length];
+                socket.read_exact(&mut payload).unwrap();
+                assert_eq!(
+                    header[1],
+                    crate::cluster::MetaRequestCode::ReportChunkNode as u8
+                );
+                let reply = crate::cluster::MetaReply::PlacementNode(
+                    crate::cluster::PlacementNodeSummary {
+                        node_id: "chunk-reuse".into(),
+                        endpoint: endpoint.to_string(),
+                        service_kind: "chunkserver".into(),
+                        data_eligible: true,
+                        online: true,
+                        capacity_bytes: 1 << 30,
+                        last_heartbeat_ms: 1,
+                        ..Default::default()
+                    },
+                );
+                socket
+                    .write_all(&crate::cluster::meta_message::encode_meta_reply(&reply))
+                    .unwrap();
+            }
+            listener.set_nonblocking(true).unwrap();
+            assert!(matches!(
+                listener.accept(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ));
+            observed_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        });
+        observed_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        stop.stop();
+        release_tx.send(()).unwrap();
+        chunk_worker.join().unwrap();
+        metadata_worker.join().unwrap();
+    }
+
+    #[test]
+    fn failed_heartbeat_drops_connection_before_next_sample() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let metadata = listener.local_addr().unwrap();
+        let mut chunk =
+            ReplicaNodeServer::bind("127.0.0.1:0", ReplicaNodeOptions::default()).unwrap();
+        let endpoint = chunk.local_addr().unwrap();
+        chunk
+            .enable_heartbeats(ReplicaHeartbeatOptions {
+                placement_id: None,
+                tls: None,
+                expected_metadata_identity: None,
+                node_id: "chunk-reconnect".into(),
+                advertised_endpoint: endpoint,
+                metadata_endpoints: vec![metadata],
+                interval: Duration::from_millis(100),
+            })
+            .unwrap();
+        let stop = chunk.shutdown_handle();
+        let chunk_worker = std::thread::spawn(move || chunk.serve().unwrap());
+        let (observed_tx, observed_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let metadata_worker = std::thread::spawn(move || {
+            let read_report = |socket: &mut std::net::TcpStream| {
+                let mut header = [0; 6];
+                socket.read_exact(&mut header).unwrap();
+                let length = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
+                let mut payload = vec![0; length];
+                socket.read_exact(&mut payload).unwrap();
+                assert_eq!(
+                    header[1],
+                    crate::cluster::MetaRequestCode::ReportChunkNode as u8
+                );
+            };
+            let (mut first, _) = listener.accept().unwrap();
+            first
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            read_report(&mut first);
+            first
+                .write_all(&crate::cluster::message::encode_failure(
+                    crate::cluster::StatusCode::PreconditionFailed,
+                    "report refused",
+                ))
+                .unwrap();
+            let mut byte = [0];
+            assert_eq!(first.read(&mut byte).unwrap(), 0);
+
+            let (mut second, _) = listener.accept().unwrap();
+            second
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            read_report(&mut second);
+            let reply = crate::cluster::MetaReply::PlacementNode(
+                crate::cluster::PlacementNodeSummary {
+                    node_id: "chunk-reconnect".into(),
+                    endpoint: endpoint.to_string(),
+                    service_kind: "chunkserver".into(),
+                    data_eligible: true,
+                    online: true,
+                    capacity_bytes: 1 << 30,
+                    last_heartbeat_ms: 2,
+                    ..Default::default()
+                },
+            );
+            second
+                .write_all(&crate::cluster::meta_message::encode_meta_reply(&reply))
+                .unwrap();
+            observed_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        });
+        observed_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        stop.stop();
+        release_tx.send(()).unwrap();
+        chunk_worker.join().unwrap();
+        metadata_worker.join().unwrap();
     }
 
     #[cfg(feature = "chunk-consensus")]

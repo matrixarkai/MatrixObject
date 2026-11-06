@@ -158,13 +158,21 @@ Expiry records contain only changed nodes. An empty local pass appends nothing;
 an empty consensus pass uses a compact read barrier. Clocks must be synchronized
 across processes because heartbeat and expiry timestamps use UTC wall time.
 
-Each reporting worker closes its metadata connection after one report, retains
-the last successful catalog ordering, and observes shutdown between calls.
-Connections have 100 ms connect/write and 500 ms whole-frame read deadlines.
-No mutation with an uncertain reply is replayed on another node; a later interval
-produces a fresh health measurement. Shutdown wakes interval waits immediately;
-an in-flight call remains bounded by the configured catalog and client deadlines.
+Each reporting worker retains one successful metadata connection across report
+intervals and keeps the last successful catalog ordering. This removes repeated
+TCP, TLS and verified-identity setup while the same metadata voter remains
+available. A remote refusal, transport failure or uncertain reply drops the
+connection; a later interval reconnects and sends a fresh health measurement
+without replaying the earlier mutation. Before writing a new sample, the worker
+also replaces a cached socket that the metaserver has already closed during a
+long idle interval. A skipped local sample does not discard an otherwise healthy
+connection. Connections have 100 ms connect/write and a 500 ms to 1 s
+whole-frame read deadline. Shutdown wakes interval waits immediately; an
+in-flight call remains bounded by the configured catalog and client deadlines.
 Abrupt termination is detected by TTL expiry, not by a graceful-offline message.
+An idle reporter occupies one of the metaserver I/O worker's 128 socket slots but
+does not reserve a request executor; size the worker count for the number of live
+chunk reporters as well as foreground clients.
 
 The six-process health test verifies automatic admission, used-byte updates,
 metaserver leader loss, killed-chunk expiry, exclusion from new placement, and

@@ -233,6 +233,23 @@ impl ApiSocket {
     pub(super) fn set_nodelay(&self, enabled: bool) -> io::Result<()> {
         self.socket.set_nodelay(enabled)
     }
+    pub(super) fn peer_has_closed(&self) -> io::Result<bool> {
+        let was_nonblocking = self.nonblocking.load(Ordering::Acquire);
+        if !was_nonblocking {
+            self.set_nonblocking(true)?;
+        }
+        let mut byte = [0];
+        let result = match self.socket.peek(&mut byte) {
+            Ok(0) => Ok(true),
+            Ok(_) => Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
+            Err(error) => Err(error),
+        };
+        if !was_nonblocking {
+            self.set_nonblocking(false)?;
+        }
+        result
+    }
     pub(super) fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         self.socket.shutdown(how)
     }
@@ -325,6 +342,27 @@ impl Write for ApiSocket {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod socket_state_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn closed_peer_is_detected_without_consuming_an_open_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        let socket = ApiSocket::plain(client, false);
+        assert!(!socket.peer_has_closed().unwrap());
+        drop(peer);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !socket.peer_has_closed().unwrap() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(socket.peer_has_closed().unwrap());
     }
 }
 
